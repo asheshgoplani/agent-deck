@@ -213,7 +213,8 @@ func FindSessionForInstance(projectPath string, createdAfter time.Time, excludeI
 	return candidates[0].sessionID
 }
 
-// getFileInternalTimestamp reads the first line of a session file and extracts the timestamp
+// getFileInternalTimestamp reads a session file and extracts the earliest timestamp
+// It scans up to 10 lines because some files start with summary lines that have no timestamp
 func getFileInternalTimestamp(filePath string) time.Time {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -222,33 +223,43 @@ func getFileInternalTimestamp(filePath string) time.Time {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	if !scanner.Scan() {
-		return time.Time{}
-	}
 
-	line := scanner.Text()
+	// Scan up to 10 lines looking for a timestamp
+	for i := 0; i < 10 && scanner.Scan(); i++ {
+		line := scanner.Text()
 
-	// Parse JSON to get timestamp field
-	var data struct {
-		Timestamp string `json:"timestamp"`
-	}
-	if err := json.Unmarshal([]byte(line), &data); err != nil {
-		return time.Time{}
-	}
-
-	if data.Timestamp == "" {
-		return time.Time{}
-	}
-
-	// Parse ISO 8601 timestamp
-	ts, err := time.Parse(time.RFC3339, data.Timestamp)
-	if err != nil {
-		// Try parsing with milliseconds
-		ts, err = time.Parse("2006-01-02T15:04:05.999Z", data.Timestamp)
-		if err != nil {
-			return time.Time{}
+		// Parse JSON to get timestamp field (direct or in snapshot)
+		var data struct {
+			Timestamp string `json:"timestamp"`
+			Snapshot  struct {
+				Timestamp string `json:"timestamp"`
+			} `json:"snapshot"`
 		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+
+		// Try direct timestamp first, then snapshot.timestamp
+		tsStr := data.Timestamp
+		if tsStr == "" {
+			tsStr = data.Snapshot.Timestamp
+		}
+		if tsStr == "" {
+			continue
+		}
+
+		// Parse ISO 8601 timestamp
+		ts, err := time.Parse(time.RFC3339, tsStr)
+		if err != nil {
+			// Try parsing with milliseconds
+			ts, err = time.Parse("2006-01-02T15:04:05.999Z", tsStr)
+			if err != nil {
+				continue
+			}
+		}
+
+		return ts
 	}
 
-	return ts
+	return time.Time{}
 }
