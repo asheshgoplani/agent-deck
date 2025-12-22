@@ -164,13 +164,13 @@ agent-deck remove <id|title>                  # By ID or title
 |-----|--------|
 | `n` | New session |
 | `g` | New group |
-| `r` / `R` | Restart session |
-| `e` | Rename session/group |
+| `r` | Rename session/group |
+| `Shift+R` | Restart session |
 | `m` | Move session to group |
 | `d` | Delete |
 | `u` | Mark unread |
 | `K` / `J` | Reorder up/down |
-| `M` | MCP Manager (Claude only) |
+| `Shift+M` | MCP Manager (Claude only) |
 
 #### Claude Code Integration
 | Key | Action |

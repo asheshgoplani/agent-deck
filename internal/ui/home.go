@@ -1319,8 +1319,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.groupDialog.Show()
 		return h, nil
 
-	case "e":
-		// Edit/Rename group or session
+	case "r":
+		// Rename group or session
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeGroup {
@@ -1448,8 +1448,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "r", "R":
-		// Restart session (recreate tmux session with resume)
+	case "R":
+		// Restart session (Shift+R - recreate tmux session with resume)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -2222,7 +2222,7 @@ func (h *Home) renderHelpBar() string {
 			contextTitle = "Group"
 			contextHints = []string{
 				h.helpKey("Tab", "Toggle"),
-				h.helpKey("e", "Rename"),
+				h.helpKey("r", "Rename"),
 				h.helpKey("d", "Delete"),
 				h.helpKey("g", "Subgroup"),
 				h.helpKey("n", "New"),
@@ -2231,14 +2231,18 @@ func (h *Home) renderHelpBar() string {
 			contextTitle = "Session"
 			contextHints = []string{
 				h.helpKey("Enter", "Attach"),
-				h.helpKey("r", "Restart"),
+				h.helpKey("R", "Restart"),
 			}
 			// Only show fork hints if session has a valid Claude session ID
 			if item.Session != nil && item.Session.CanFork() {
 				contextHints = append(contextHints, h.helpKey("f", "Fork"))
 			}
+			// Show MCP Manager hint for Claude sessions
+			if item.Session != nil && item.Session.Tool == "claude" {
+				contextHints = append(contextHints, h.helpKey("M", "MCP"))
+			}
 			contextHints = append(contextHints,
-				h.helpKey("e", "Rename"),
+				h.helpKey("r", "Rename"),
 				h.helpKey("m", "Move"),
 				h.helpKey("d", "Delete"),
 			)

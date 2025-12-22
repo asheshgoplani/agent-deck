@@ -136,7 +136,7 @@ func TestHomeLoadSessions(t *testing.T) {
 	}
 }
 
-func TestHomeRenameGroupWithE(t *testing.T) {
+func TestHomeRenameGroupWithR(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
@@ -155,8 +155,8 @@ func TestHomeRenameGroupWithE(t *testing.T) {
 		t.Fatal("First item should be a group")
 	}
 
-	// Press e to open rename dialog
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+	// Press r to open rename dialog
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
 	model, _ := home.Update(msg)
 
 	h, ok := model.(*Home)
@@ -164,14 +164,14 @@ func TestHomeRenameGroupWithE(t *testing.T) {
 		t.Fatal("Update should return *Home")
 	}
 	if !h.groupDialog.IsVisible() {
-		t.Error("Group dialog should be visible after pressing e on a group")
+		t.Error("Group dialog should be visible after pressing r on a group")
 	}
 	if h.groupDialog.Mode() != GroupDialogRename {
 		t.Errorf("Dialog mode = %v, want GroupDialogRename", h.groupDialog.Mode())
 	}
 }
 
-func TestHomeRenameSessionWithE(t *testing.T) {
+func TestHomeRenameSessionWithR(t *testing.T) {
 	home := NewHome()
 	home.width = 100
 	home.height = 30
@@ -195,8 +195,8 @@ func TestHomeRenameSessionWithE(t *testing.T) {
 	}
 	home.cursor = sessionIdx
 
-	// Press e to open rename dialog
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+	// Press r to open rename dialog
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
 	model, _ := home.Update(msg)
 
 	h, ok := model.(*Home)
@@ -204,7 +204,7 @@ func TestHomeRenameSessionWithE(t *testing.T) {
 		t.Fatal("Update should return *Home")
 	}
 	if !h.groupDialog.IsVisible() {
-		t.Error("Group dialog should be visible after pressing e on a session")
+		t.Error("Group dialog should be visible after pressing r on a session")
 	}
 	if h.groupDialog.Mode() != GroupDialogRenameSession {
 		t.Errorf("Dialog mode = %v, want GroupDialogRenameSession", h.groupDialog.Mode())
@@ -235,8 +235,8 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 	}
 	home.cursor = sessionIdx
 
-	// Press e to open rename dialog
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}}
+	// Press r to open rename dialog
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
 	home.Update(msg)
 
 	// Simulate typing a new name
