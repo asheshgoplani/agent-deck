@@ -402,8 +402,9 @@ func (m *MCPDialog) View() string {
 		errText = lipgloss.NewStyle().Foreground(ColorRed).Render("Error: " + m.err.Error())
 	}
 
-	// Hint
-	hint := DimStyle.Render("[Tab] Scope  [<->] Column  [Space] Move  [Enter] Apply  [Esc] Cancel")
+	// Hint with consistent styling
+	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
+	hint := hintStyle.Render("Tab scope │ ←→ column │ Space move │ Enter apply │ Esc cancel")
 
 	// Assemble dialog
 	titleStyle := DialogTitleStyle.Width(60)

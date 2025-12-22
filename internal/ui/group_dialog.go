@@ -247,7 +247,8 @@ func (g *GroupDialog) View() string {
 	}
 
 	titleStyle := DialogTitleStyle.Width(40)
-	hint := DimStyle.Render("[Enter] Confirm  [Esc] Cancel")
+	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
+	hint := hintStyle.Render("Enter confirm │ Esc cancel")
 
 	dialogContent := lipgloss.JoinVertical(
 		lipgloss.Center,

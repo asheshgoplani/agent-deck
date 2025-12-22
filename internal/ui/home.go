@@ -43,7 +43,11 @@ const (
 	// expensive operations (SignalFileActivity updates state, tick just redraws)
 	tickInterval = 500 * time.Millisecond
 
-	// logMaintenanceInterval - how often to check and truncate large log files
+	// logCheckInterval - how often to check for oversized logs (fast check, just file stats)
+	// This catches runaway logs before they cause high CPU
+	logCheckInterval = 10 * time.Second
+
+	// logMaintenanceInterval - how often to do full log maintenance (orphan cleanup, etc)
 	// Prevents runaway log growth that can crash the system
 	logMaintenanceInterval = 5 * time.Minute
 )
@@ -125,6 +129,7 @@ type Home struct {
 
 	// Periodic log maintenance (prevents runaway log growth)
 	lastLogMaintenance time.Time
+	lastLogCheck       time.Time // Fast 10-second check for oversized logs
 }
 
 // Messages
@@ -261,8 +266,9 @@ func NewHomeWithProfile(profile string) *Home {
 
 	// Run log maintenance at startup (non-blocking)
 	// This truncates large log files and removes orphaned logs based on user config
-	// Also initializes lastLogMaintenance so periodic maintenance starts from now
+	// Also initializes lastLogMaintenance and lastLogCheck so periodic checks start from now
 	h.lastLogMaintenance = time.Now()
+	h.lastLogCheck = time.Now()
 	go func() {
 		logSettings := session.GetLogSettings()
 		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.RemoveOrphans)
@@ -778,8 +784,18 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update animation frame for launching spinner (8 frames, cycles every tick)
 		h.animationFrame = (h.animationFrame + 1) % 8
 
-		// Periodic log maintenance (prevents runaway log growth)
-		// Runs every logMaintenanceInterval (5 min) to truncate large logs
+		// Fast log size check every 10 seconds (catches runaway logs before they cause issues)
+		// This is much faster than full maintenance - just checks file sizes
+		if time.Since(h.lastLogCheck) >= logCheckInterval {
+			h.lastLogCheck = time.Now()
+			go func() {
+				logSettings := session.GetLogSettings()
+				// Fast check - only truncate, no orphan cleanup
+				tmux.TruncateLargeLogFiles(logSettings.MaxSizeMB, logSettings.MaxLines)
+			}()
+		}
+
+		// Full log maintenance (orphan cleanup, etc) every 5 minutes
 		if time.Since(h.lastLogMaintenance) >= logMaintenanceInterval {
 			h.lastLogMaintenance = time.Now()
 			go func() {
@@ -2180,22 +2196,24 @@ func renderEmptyState(icon, title, subtitle string, hints []string) string {
 }
 
 // renderSectionDivider creates a modern section divider with optional centered label
-// Format: ────── Label ────── (lines extend to fill width)
+// Format: ─────────── Label ─────────── (lines extend to fill width)
 func renderSectionDivider(label string, width int) string {
-	if label == "" {
-		return lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", width))
-	}
-
-	labelStyle := lipgloss.NewStyle().
-		Foreground(ColorTextDim).
-		Italic(true)
 	lineStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 
-	// spacingNormal (2) chars on each side of the label
-	labelWidth := len(label) + spacingNormal // +spacingNormal for spacing around label
+	if label == "" {
+		return lineStyle.Render(strings.Repeat("─", width))
+	}
+
+	// Label with subtle background for better visibility
+	labelStyle := lipgloss.NewStyle().
+		Foreground(ColorTextDim).
+		Bold(true)
+
+	// Calculate side widths
+	labelWidth := len(label) + 2 // +2 for spacing on each side of label
 	sideWidth := (width - labelWidth) / 2
-	if sideWidth < spacingNormal {
-		sideWidth = spacingNormal
+	if sideWidth < 3 {
+		sideWidth = 3
 	}
 
 	return lineStyle.Render(strings.Repeat("─", sideWidth)) +
@@ -2203,15 +2221,20 @@ func renderSectionDivider(label string, width int) string {
 		lineStyle.Render(strings.Repeat("─", sideWidth))
 }
 
-// renderHelpBar renders context-aware keyboard shortcuts
+// renderHelpBar renders context-aware keyboard shortcuts with visual grouping
 func (h *Home) renderHelpBar() string {
-	// Determine context
-	var contextHints []string
+	// Separator style for grouping related actions
+	sepStyle := lipgloss.NewStyle().Foreground(ColorBorder)
+	sep := sepStyle.Render(" │ ")
+
+	// Determine context-specific hints grouped by action type
+	var primaryHints []string   // Main actions (attach, toggle, etc.)
+	var secondaryHints []string // Edit actions (rename, move, delete)
 	var contextTitle string
 
 	if len(h.flatItems) == 0 {
 		contextTitle = "Empty"
-		contextHints = []string{
+		primaryHints = []string{
 			h.helpKey("n", "New"),
 			h.helpKey("i", "Import"),
 			h.helpKey("g", "Group"),
@@ -2220,32 +2243,34 @@ func (h *Home) renderHelpBar() string {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
 			contextTitle = "Group"
-			contextHints = []string{
+			primaryHints = []string{
 				h.helpKey("Tab", "Toggle"),
+				h.helpKey("n", "New"),
+				h.helpKey("g", "Subgroup"),
+			}
+			secondaryHints = []string{
 				h.helpKey("r", "Rename"),
 				h.helpKey("d", "Delete"),
-				h.helpKey("g", "Subgroup"),
-				h.helpKey("n", "New"),
 			}
 		} else {
 			contextTitle = "Session"
-			contextHints = []string{
+			primaryHints = []string{
 				h.helpKey("Enter", "Attach"),
 				h.helpKey("R", "Restart"),
 			}
 			// Only show fork hints if session has a valid Claude session ID
 			if item.Session != nil && item.Session.CanFork() {
-				contextHints = append(contextHints, h.helpKey("f", "Fork"))
+				primaryHints = append(primaryHints, h.helpKey("f", "Fork"))
 			}
 			// Show MCP Manager hint for Claude sessions
 			if item.Session != nil && item.Session.Tool == "claude" {
-				contextHints = append(contextHints, h.helpKey("M", "MCP"))
+				primaryHints = append(primaryHints, h.helpKey("M", "MCP"))
 			}
-			contextHints = append(contextHints,
+			secondaryHints = []string{
 				h.helpKey("r", "Rename"),
 				h.helpKey("m", "Move"),
 				h.helpKey("d", "Delete"),
-			)
+			}
 		}
 	}
 
@@ -2253,18 +2278,24 @@ func (h *Home) renderHelpBar() string {
 	borderStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 	border := borderStyle.Render(strings.Repeat("─", h.width))
 
-	// Context indicator
+	// Context indicator with subtle styling
 	ctxStyle := lipgloss.NewStyle().
 		Foreground(ColorPurple).
 		Bold(true)
 	contextLabel := ctxStyle.Render(contextTitle + ":")
 
-	// Build shortcuts line with consistent spacing (spacingNormal between hints)
-	shortcutsLine := strings.Join(contextHints, strings.Repeat(" ", spacingNormal))
+	// Build shortcuts line with visual grouping
+	var shortcutsLine string
+	shortcutsLine = strings.Join(primaryHints, " ")
+	if len(secondaryHints) > 0 {
+		shortcutsLine += sep + strings.Join(secondaryHints, " ")
+	}
 
-	// Global shortcuts (right side, dimmer)
+	// Global shortcuts (right side) - more compact with separators
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	globalHints := globalStyle.Render("↑↓ Nav  / Search  ?Help  q Quit")
+	globalHints := globalStyle.Render("↑↓ Nav") + sep +
+		globalStyle.Render("/ Search  G Global") + sep +
+		globalStyle.Render("? Help  q Quit")
 
 	// Calculate spacing between left (context) and right (global) portions
 	leftPart := contextLabel + " " + shortcutsLine
@@ -2434,13 +2465,32 @@ func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected b
 	b.WriteString("\n")
 }
 
+// Tree drawing characters for visual hierarchy
+const (
+	treeBranch = "├─" // Mid-level item (has siblings below)
+	treeLast   = "└─" // Last item in group (no siblings below)
+	treeLine   = "│ " // Continuation line
+	treeEmpty  = "  " // Empty space (for alignment)
+)
+
 // renderSessionItem renders a single session item for the left panel
 func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected bool) {
 	inst := item.Session
 
-	// Calculate indentation - sessions are children of groups
-	// Uses spacingNormal (2 chars) per level for consistent hierarchy visualization
-	indent := strings.Repeat(strings.Repeat(" ", spacingNormal), item.Level)
+	// Calculate base indentation for parent levels
+	// Level 1 means direct child of root group, Level 2 means child of nested group, etc.
+	baseIndent := ""
+	if item.Level > 1 {
+		// For deeply nested items, add spacing for parent levels
+		baseIndent = strings.Repeat(treeEmpty, item.Level-1)
+	}
+
+	// Tree connector: └─ for last item, ├─ for others
+	treeStyle := lipgloss.NewStyle().Foreground(ColorBorder)
+	treeConnector := treeBranch
+	if item.IsLastInGroup {
+		treeConnector = treeLast
+	}
 
 	// Status indicator with consistent sizing
 	var statusIcon string
@@ -2474,13 +2524,13 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		Foreground(ColorPurple).
 		Faint(true)
 
-	// Selection cursor (spacingNormal width when not selected for alignment)
-	cursor := strings.Repeat(" ", spacingNormal)
+	// Selection indicator
+	selectionPrefix := " "
 	if selected {
-		cursor = lipgloss.NewStyle().
+		selectionPrefix = lipgloss.NewStyle().
 			Foreground(ColorAccent).
 			Bold(true).
-			Render("▶ ")
+			Render("▶")
 		titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(ColorBg).
@@ -2492,13 +2542,18 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 			Foreground(ColorBg).
 			Background(ColorAccent)
 		status = statusStyle.Render(statusIcon)
+		// Tree connector also gets selection styling
+		treeStyle = lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorAccent)
 	}
 
 	title := titleStyle.Render(inst.Title)
 	tool := toolStyle.Render(" " + inst.Tool)
 
-	// Build row: [indent][cursor][status] [title] [tool]
-	row := fmt.Sprintf("%s%s%s %s%s", indent, cursor, status, title, tool)
+	// Build row: [baseIndent][selection][tree][status] [title] [tool]
+	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
+	row := fmt.Sprintf("%s%s%s %s %s%s", baseIndent, selectionPrefix, treeStyle.Render(treeConnector), status, title, tool)
 	b.WriteString(row)
 	b.WriteString("\n")
 }

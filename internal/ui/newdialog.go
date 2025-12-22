@@ -407,7 +407,7 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString("\n  ")
 
-	// Render command options as inline pill buttons (no borders to avoid multi-line issues)
+	// Render command options as consistent pill buttons
 	var cmdButtons []string
 	for i, cmd := range d.presetCommands {
 		displayName := cmd
@@ -417,18 +417,18 @@ func (d *NewDialog) View() string {
 
 		var btnStyle lipgloss.Style
 		if i == d.commandCursor {
-			// Selected: bright background, bold
+			// Selected: bright background, bold (active pill)
 			btnStyle = lipgloss.NewStyle().
 				Foreground(ColorBg).
 				Background(ColorAccent).
 				Bold(true).
 				Padding(0, 2)
 		} else {
-			// Unselected: dim text with subtle brackets
+			// Unselected: subtle background pill (consistent style)
 			btnStyle = lipgloss.NewStyle().
 				Foreground(ColorTextDim).
-				Padding(0, 1)
-			displayName = "[" + displayName + "]"
+				Background(ColorSurface).
+				Padding(0, 2)
 		}
 
 		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
@@ -444,11 +444,11 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n\n")
 	}
 
-	// Help text
+	// Help text with better contrast
 	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")).
+		Foreground(ColorComment). // Use consistent theme color
 		MarginTop(1)
-	content.WriteString(helpStyle.Render("Tab: next/accept • ↑↓: navigate • Ctrl+N/P: suggestions • Enter: create • Esc: cancel"))
+	content.WriteString(helpStyle.Render("Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"))
 
 	// Wrap in dialog box
 	dialog := dialogStyle.Render(content.String())

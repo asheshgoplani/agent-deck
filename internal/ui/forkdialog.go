@@ -155,7 +155,7 @@ func (d *ForkDialog) View() string {
 		groupLabel + "\n" +
 		d.groupInput.View() + "\n\n" +
 		lipgloss.NewStyle().Foreground(ColorComment).
-			Render("[Enter] Create  [Esc] Cancel  [Tab] Next field")
+			Render("Enter create │ Esc cancel │ Tab next")
 
 	dialog := boxStyle.Render(content)
 

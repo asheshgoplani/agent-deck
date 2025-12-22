@@ -19,11 +19,12 @@ const (
 
 // Item represents a single item in the flattened group tree view
 type Item struct {
-	Type    ItemType
-	Group   *Group
-	Session *Instance
-	Level   int    // Indentation level (0 for root groups, 1 for sessions)
-	Path    string // Group path for this item
+	Type          ItemType
+	Group         *Group
+	Session       *Instance
+	Level         int    // Indentation level (0 for root groups, 1 for sessions)
+	Path          string // Group path for this item
+	IsLastInGroup bool   // True if this is the last session in its group (for tree rendering)
 }
 
 // Group represents a group of sessions
@@ -212,12 +213,14 @@ func (t *GroupTree) Flatten() []Item {
 
 		// Add sessions if expanded
 		if group.Expanded {
-			for _, sess := range group.Sessions {
+			sessionCount := len(group.Sessions)
+			for i, sess := range group.Sessions {
 				items = append(items, Item{
-					Type:    ItemTypeSession,
-					Session: sess,
-					Level:   groupLevel + 1,
-					Path:    group.Path,
+					Type:          ItemTypeSession,
+					Session:       sess,
+					Level:         groupLevel + 1,
+					Path:          group.Path,
+					IsLastInGroup: i == sessionCount-1, // Mark last session for tree rendering
 				})
 			}
 		}
