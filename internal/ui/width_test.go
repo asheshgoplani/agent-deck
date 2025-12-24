@@ -263,3 +263,47 @@ func TestView_PanelWidthConstraints(t *testing.T) {
 	// View should have exactly h.height lines (accounting for ensureExactHeight)
 	assertExactHeight(t, output, 30, "Full View")
 }
+
+func TestRenderPanelTitle_RespectsWidth(t *testing.T) {
+	h := ui.NewTestHome()
+
+	testCases := []struct {
+		title string
+		width int
+	}{
+		{title: "SESSIONS", width: 30},
+		{title: "PREVIEW", width: 50},
+		{title: "VERY_LONG_TITLE_THAT_EXCEEDS_WIDTH", width: 20},
+		{title: "SHORT", width: 100},
+	}
+
+	for _, tc := range testCases {
+		t.Run(fmt.Sprintf("%s_width=%d", tc.title, tc.width), func(t *testing.T) {
+			output := h.RenderPanelTitleForTest(tc.title, tc.width)
+
+			// Panel title is 2 lines (title + underline)
+			assertExactHeight(t, output, 2, "renderPanelTitle")
+
+			// CRITICAL: Every line must respect maxWidth
+			assertMaxWidth(t, output, tc.width, "renderPanelTitle")
+
+			// Verify structure: should be title\nunderline
+			lines := strings.Split(output, "\n")
+			if len(lines) != 2 {
+				t.Fatalf("Expected 2 lines, got %d", len(lines))
+			}
+
+			// Check that title line exists and has content
+			titleLine := stripANSIForTest(lines[0])
+			if titleLine == "" {
+				t.Error("Title line is empty")
+			}
+
+			// Check that underline exists and uses dash character
+			underline := stripANSIForTest(lines[1])
+			if !strings.Contains(underline, "─") {
+				t.Errorf("Underline should contain '─' character, got: %q", underline)
+			}
+		})
+	}
+}

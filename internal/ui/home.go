@@ -318,22 +318,24 @@ func NewHomeWithProfile(profile string) *Home {
 		}
 	}
 
+	// DISABLED: Auto-reload was causing cursor jumping issues
+	// TODO: Fix state restoration before re-enabling
 	// Initialize storage watcher for auto-reload
-	if storage != nil {
-		storagePath, err := session.GetStoragePathForProfile(actualProfile)
-		if err != nil {
-			log.Printf("Warning: failed to get storage path for watcher: %v", err)
-		} else {
-			watcher, err := NewStorageWatcher(storagePath)
-			if err != nil {
-				// Log warning but continue (fallback to manual refresh)
-				log.Printf("Warning: failed to initialize storage watcher: %v", err)
-			} else {
-				h.storageWatcher = watcher
-				watcher.Start()
-			}
-		}
-	}
+	// if storage != nil {
+	// 	storagePath, err := session.GetStoragePathForProfile(actualProfile)
+	// 	if err != nil {
+	// 		log.Printf("Warning: failed to get storage path for watcher: %v", err)
+	// 	} else {
+	// 		watcher, err := NewStorageWatcher(storagePath)
+	// 		if err != nil {
+	// 			// Log warning but continue (fallback to manual refresh)
+	// 			log.Printf("Warning: failed to initialize storage watcher: %v", err)
+	// 		} else {
+	// 			h.storageWatcher = watcher
+	// 			watcher.Start()
+	// 		}
+	// 	}
+	// }
 
 	// Run log maintenance at startup (non-blocking)
 	// This truncates large log files and removes orphaned logs based on user config
@@ -2776,17 +2778,26 @@ func (h *Home) View() string {
 
 // renderPanelTitle creates a styled section title with underline
 func (h *Home) renderPanelTitle(title string, width int) string {
+	// Truncate title if it exceeds width
+	if len(title) > width {
+		if width > 3 {
+			title = title[:width-3] + "..."
+		} else {
+			title = title[:width]
+		}
+	}
+
 	titleStyle := lipgloss.NewStyle().
 		Foreground(ColorCyan).
-		Bold(true)
+		Bold(true).
+		Width(width)
 
-	// Create underline that extends to panel width (spacingNormal margin on each side)
-	underlineStyle := lipgloss.NewStyle().Foreground(ColorBorder)
-	titleLen := len(title)
-	underlineLen := width - spacingNormal // Leave margin
-	if underlineLen < titleLen {
-		underlineLen = titleLen
-	}
+	underlineStyle := lipgloss.NewStyle().
+		Foreground(ColorBorder).
+		Width(width)
+
+	// Create underline that extends to panel width
+	underlineLen := width
 	underline := underlineStyle.Render(strings.Repeat("─", underlineLen))
 
 	return titleStyle.Render(title) + "\n" + underline

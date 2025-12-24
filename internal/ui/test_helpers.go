@@ -55,3 +55,8 @@ func (h *Home) SetSizeForTest(width, height int) {
 	h.width = width
 	h.height = height
 }
+
+// RenderPanelTitleForTest exposes renderPanelTitle for testing
+func (h *Home) RenderPanelTitleForTest(title string, width int) string {
+	return h.renderPanelTitle(title, width)
+}
