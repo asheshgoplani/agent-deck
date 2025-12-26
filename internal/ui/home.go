@@ -996,7 +996,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(msg.err)
 		} else {
 			h.instancesMu.Lock()
+			oldCount := len(h.instances)
 			h.instances = msg.instances
+			newCount := len(msg.instances)
+			log.Printf("[RELOAD-DEBUG] loadSessionsMsg: replacing %d instances with %d instances (profile=%s)", oldCount, newCount, h.profile)
 			// Rebuild instanceByID map for O(1) lookup
 			h.instanceByID = make(map[string]*session.Instance, len(h.instances))
 			for _, inst := range h.instances {
@@ -1207,6 +1210,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, h.loadSessions
 
 	case storageChangedMsg:
+		log.Printf("[RELOAD-DEBUG] storageChangedMsg received (profile=%s, current instances=%d)", h.profile, len(h.instances))
+
 		// Show reload indicator
 		h.isReloading = true
 
@@ -1216,6 +1221,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reload from disk
 		cmd := func() tea.Msg {
 			instances, groups, err := h.storage.LoadWithGroups()
+			log.Printf("[RELOAD-DEBUG] LoadWithGroups returned %d instances, err=%v", len(instances), err)
 			return loadSessionsMsg{
 				instances:    instances,
 				groups:       groups,
@@ -1779,12 +1785,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "M", "shift+m":
-		// MCP Manager - only for Claude sessions
+		// MCP Manager - for Claude and Gemini sessions
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Tool == "claude" {
+			if item.Type == session.ItemTypeSession && item.Session != nil &&
+				(item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
 				h.mcpDialog.SetSize(h.width, h.height)
-				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID); err != nil {
+				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
 				}
 			}

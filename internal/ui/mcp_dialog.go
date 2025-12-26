@@ -32,13 +32,14 @@ type MCPItem struct {
 	IsPooled    bool // True if this MCP uses socket pool
 }
 
-// MCPDialog handles MCP management for Claude sessions
+// MCPDialog handles MCP management for Claude and Gemini sessions
 type MCPDialog struct {
 	visible     bool
 	width       int
 	height      int
 	projectPath string
 	sessionID   string // ID of the session being managed (for restart)
+	tool        string // "claude" or "gemini"
 
 	// Current scope and column
 	scope  MCPScope
@@ -69,12 +70,13 @@ func NewMCPDialog() *MCPDialog {
 }
 
 // Show displays the MCP dialog for a project
-func (m *MCPDialog) Show(projectPath string, sessionID string) error {
+func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) error {
 	// Reload config to pick up any changes to config.toml
 	_, _ = session.ReloadUserConfig()
 
-	// Store session ID for restart
+	// Store session ID and tool for restart
 	m.sessionID = sessionID
+	m.tool = tool
 
 	// Get all available MCPs from config.toml (the pool)
 	availableMCPs := session.GetAvailableMCPs()
@@ -92,80 +94,117 @@ func (m *MCPDialog) Show(projectPath string, sessionID string) error {
 		itemsMap[name] = MCPItem{Name: name, Description: desc, IsPooled: isPooled}
 	}
 
-	// Load LOCAL attached from .mcp.json
-	localAttachedNames := make(map[string]bool)
-	mcpInfo := session.GetMCPInfo(projectPath)
-	for _, name := range mcpInfo.Local() {
-		localAttachedNames[name] = true
-	}
-
-	// Load GLOBAL attached from Claude config (includes both global and project-specific MCPs)
-	globalAttachedNames := make(map[string]bool)
-	for _, name := range session.GetGlobalMCPNames() {
-		globalAttachedNames[name] = true
-	}
-	// Also include project-specific MCPs from Claude's config (projects[path].mcpServers)
-	for _, name := range session.GetProjectMCPNames(projectPath) {
-		globalAttachedNames[name] = true
-	}
-
 	// Track which MCPs are in the config.toml pool
 	poolNames := make(map[string]bool)
 	for _, name := range allNames {
 		poolNames[name] = true
 	}
 
-	// Build attached/available lists for LOCAL
+	// Reset lists
 	m.localAttached = nil
 	m.localAvailable = nil
-	for _, name := range allNames {
-		item := itemsMap[name]
-		if localAttachedNames[name] {
-			m.localAttached = append(m.localAttached, item)
-		} else if !globalAttachedNames[name] {
-			// Only show in LOCAL Available if not already attached globally
-			m.localAvailable = append(m.localAvailable, item)
-		}
-	}
-
-	// Add orphan LOCAL MCPs (attached in .mcp.json but not in config.toml pool)
-	// These are "ghost" MCPs that Claude loads but agent-deck couldn't previously manage
-	for name := range localAttachedNames {
-		if !poolNames[name] {
-			m.localAttached = append(m.localAttached, MCPItem{
-				Name:        name,
-				Description: "(not in config.toml)",
-				IsOrphan:    true,
-			})
-		}
-	}
-
-	// Build attached/available lists for GLOBAL
 	m.globalAttached = nil
 	m.globalAvailable = nil
-	for _, name := range allNames {
-		item := itemsMap[name]
-		if globalAttachedNames[name] {
-			m.globalAttached = append(m.globalAttached, item)
-		} else {
-			m.globalAvailable = append(m.globalAvailable, item)
-		}
-	}
 
-	// Add orphan GLOBAL MCPs (attached in Claude config but not in config.toml pool)
-	for name := range globalAttachedNames {
-		if !poolNames[name] {
-			m.globalAttached = append(m.globalAttached, MCPItem{
-				Name:        name,
-				Description: "(not in config.toml)",
-				IsOrphan:    true,
-			})
+	if tool == "gemini" {
+		// Gemini: Only global MCPs from settings.json
+		mcpInfo := session.GetGeminiMCPInfo(projectPath)
+		globalAttachedNames := make(map[string]bool)
+		for _, name := range mcpInfo.Global {
+			globalAttachedNames[name] = true
+		}
+
+		// Build attached/available lists for GLOBAL only
+		for _, name := range allNames {
+			item := itemsMap[name]
+			if globalAttachedNames[name] {
+				m.globalAttached = append(m.globalAttached, item)
+			} else {
+				m.globalAvailable = append(m.globalAvailable, item)
+			}
+		}
+
+		// Add orphan GLOBAL MCPs (attached in settings.json but not in config.toml pool)
+		for name := range globalAttachedNames {
+			if !poolNames[name] {
+				m.globalAttached = append(m.globalAttached, MCPItem{
+					Name:        name,
+					Description: "(not in config.toml)",
+					IsOrphan:    true,
+				})
+			}
+		}
+	} else {
+		// Claude: Load LOCAL attached from .mcp.json
+		localAttachedNames := make(map[string]bool)
+		mcpInfo := session.GetMCPInfo(projectPath)
+		for _, name := range mcpInfo.Local() {
+			localAttachedNames[name] = true
+		}
+
+		// Load GLOBAL attached from Claude config (includes both global and project-specific MCPs)
+		globalAttachedNames := make(map[string]bool)
+		for _, name := range session.GetGlobalMCPNames() {
+			globalAttachedNames[name] = true
+		}
+		// Also include project-specific MCPs from Claude's config (projects[path].mcpServers)
+		for _, name := range session.GetProjectMCPNames(projectPath) {
+			globalAttachedNames[name] = true
+		}
+
+		// Build attached/available lists for LOCAL
+		for _, name := range allNames {
+			item := itemsMap[name]
+			if localAttachedNames[name] {
+				m.localAttached = append(m.localAttached, item)
+			} else if !globalAttachedNames[name] {
+				// Only show in LOCAL Available if not already attached globally
+				m.localAvailable = append(m.localAvailable, item)
+			}
+		}
+
+		// Add orphan LOCAL MCPs (attached in .mcp.json but not in config.toml pool)
+		// These are "ghost" MCPs that Claude loads but agent-deck couldn't previously manage
+		for name := range localAttachedNames {
+			if !poolNames[name] {
+				m.localAttached = append(m.localAttached, MCPItem{
+					Name:        name,
+					Description: "(not in config.toml)",
+					IsOrphan:    true,
+				})
+			}
+		}
+
+		// Build attached/available lists for GLOBAL
+		for _, name := range allNames {
+			item := itemsMap[name]
+			if globalAttachedNames[name] {
+				m.globalAttached = append(m.globalAttached, item)
+			} else {
+				m.globalAvailable = append(m.globalAvailable, item)
+			}
+		}
+
+		// Add orphan GLOBAL MCPs (attached in Claude config but not in config.toml pool)
+		for name := range globalAttachedNames {
+			if !poolNames[name] {
+				m.globalAttached = append(m.globalAttached, MCPItem{
+					Name:        name,
+					Description: "(not in config.toml)",
+					IsOrphan:    true,
+				})
+			}
 		}
 	}
 
 	m.visible = true
 	m.projectPath = projectPath
-	m.scope = MCPScopeLocal
+	// Gemini only has global scope, Claude starts with local
+	if tool == "gemini" {
+		m.scope = MCPScopeGlobal
+	} else {
+		m.scope = MCPScopeLocal
+	}
 	m.column = MCPColumnAttached
 	m.localAttachedIdx = 0
 	m.localAvailableIdx = 0
@@ -290,12 +329,30 @@ func (m *MCPDialog) Move() {
 	}
 }
 
-// Apply saves the changes to LOCAL (.mcp.json) and GLOBAL (Claude config)
+// Apply saves the changes to LOCAL (.mcp.json) and GLOBAL (Claude/Gemini config)
 func (m *MCPDialog) Apply() error {
-	log.Printf("[MCP-DEBUG] Apply() called - localChanged=%v, globalChanged=%v, projectPath=%q",
-		m.localChanged, m.globalChanged, m.projectPath)
+	log.Printf("[MCP-DEBUG] Apply() called - tool=%q, localChanged=%v, globalChanged=%v, projectPath=%q",
+		m.tool, m.localChanged, m.globalChanged, m.projectPath)
 
-	// Apply LOCAL changes
+	if m.tool == "gemini" {
+		// Gemini: Only global scope, write to settings.json
+		if m.globalChanged {
+			enabledNames := make([]string, len(m.globalAttached))
+			for i, item := range m.globalAttached {
+				enabledNames[i] = item.Name
+			}
+
+			if err := session.WriteGeminiMCPSettings(enabledNames); err != nil {
+				m.err = err
+				return err
+			}
+
+			session.ClearMCPCache(m.projectPath)
+		}
+		return nil
+	}
+
+	// Claude: Apply LOCAL changes
 	if m.localChanged {
 		// Get names of attached MCPs
 		enabledNames := make([]string, len(m.localAttached))
@@ -313,7 +370,7 @@ func (m *MCPDialog) Apply() error {
 		session.ClearMCPCache(m.projectPath)
 	}
 
-	// Apply GLOBAL changes
+	// Claude: Apply GLOBAL changes
 	if m.globalChanged {
 		// Get names of attached MCPs
 		enabledNames := make([]string, len(m.globalAttached))
@@ -347,11 +404,14 @@ func (m *MCPDialog) Update(msg tea.KeyMsg) (*MCPDialog, tea.Cmd) {
 
 	switch msg.String() {
 	case "tab":
-		// Switch scope: LOCAL <-> GLOBAL
-		if m.scope == MCPScopeLocal {
-			m.scope = MCPScopeGlobal
-		} else {
-			m.scope = MCPScopeLocal
+		// Switch scope: LOCAL <-> GLOBAL (Claude only)
+		// Gemini only has global scope, so Tab does nothing
+		if m.tool != "gemini" {
+			if m.scope == MCPScopeLocal {
+				m.scope = MCPScopeGlobal
+			} else {
+				m.scope = MCPScopeLocal
+			}
 		}
 
 	case "left", "h":
@@ -385,20 +445,31 @@ func (m *MCPDialog) View() string {
 		return ""
 	}
 
-	// Title
+	// Title varies by tool
 	title := "MCP Manager"
-
-	// Scope tabs
-	localTab := "LOCAL"
-	globalTab := "GLOBAL"
-	if m.scope == MCPScopeLocal {
-		localTab = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[" + localTab + "]")
-		globalTab = lipgloss.NewStyle().Foreground(ColorTextDim).Render(" " + globalTab + " ")
-	} else {
-		localTab = lipgloss.NewStyle().Foreground(ColorTextDim).Render(" " + localTab + " ")
-		globalTab = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[" + globalTab + "]")
+	if m.tool == "gemini" {
+		title = "MCP Manager (Gemini)"
 	}
-	tabs := localTab + " ───────────────────── " + globalTab
+
+	// Scope tabs - Gemini only has global
+	var tabs string
+	if m.tool == "gemini" {
+		// Gemini: Only show GLOBAL (centered)
+		globalTab := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[GLOBAL]")
+		tabs = "──────────────── " + globalTab + " ────────────────"
+	} else {
+		// Claude: Show LOCAL/GLOBAL tabs
+		localTab := "LOCAL"
+		globalTab := "GLOBAL"
+		if m.scope == MCPScopeLocal {
+			localTab = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[" + localTab + "]")
+			globalTab = lipgloss.NewStyle().Foreground(ColorTextDim).Render(" " + globalTab + " ")
+		} else {
+			localTab = lipgloss.NewStyle().Foreground(ColorTextDim).Render(" " + localTab + " ")
+			globalTab = lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[" + globalTab + "]")
+		}
+		tabs = localTab + " ───────────────────── " + globalTab
+	}
 
 	// Get current scope's lists
 	var attached, available []MCPItem
@@ -423,7 +494,9 @@ func (m *MCPDialog) View() string {
 
 	// Scope description
 	var scopeDesc string
-	if m.scope == MCPScopeLocal {
+	if m.tool == "gemini" {
+		scopeDesc = DimStyle.Render("Writes to: ~/.gemini/settings.json")
+	} else if m.scope == MCPScopeLocal {
 		scopeDesc = DimStyle.Render("Writes to: .mcp.json (this project only)")
 	} else {
 		scopeDesc = DimStyle.Render("Writes to: Claude config (global + project-specific)")
@@ -437,7 +510,12 @@ func (m *MCPDialog) View() string {
 
 	// Hint with consistent styling
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	hint := hintStyle.Render("Tab scope │ ←→ column │ Space move │ Enter apply │ Esc cancel")
+	var hint string
+	if m.tool == "gemini" {
+		hint = hintStyle.Render("←→ column │ Space move │ Enter apply │ Esc cancel")
+	} else {
+		hint = hintStyle.Render("Tab scope │ ←→ column │ Space move │ Enter apply │ Esc cancel")
+	}
 
 	// Legend for orphan MCPs
 	orphanLegend := ""
