@@ -69,7 +69,7 @@ func TestStorageWatcher_Debouncing(t *testing.T) {
 	// Rapid writes (simulate CLI making multiple changes)
 	for i := 0; i < 5; i++ {
 		time.Sleep(10 * time.Millisecond)
-		os.WriteFile(testFile, []byte(`{"count": `+string(rune('0'+i))+`}`), 0644)
+		_ = os.WriteFile(testFile, []byte(`{"count": `+string(rune('0'+i))+`}`), 0644)
 	}
 
 	// Should only get ONE reload signal (debounced)
