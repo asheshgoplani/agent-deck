@@ -492,6 +492,35 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	}
 }
 
+// UpdateGeminiSession updates the Gemini session ID using detection
+// Priority: 1) tmux environment (we set it manually), 2) file scanning
+func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
+	if i.Tool != "gemini" {
+		return
+	}
+
+	// If we already have a recent session ID, skip
+	if i.GeminiSessionID != "" && time.Since(i.GeminiDetectedAt) < 5*time.Minute {
+		return
+	}
+
+	// PRIMARY: Try tmux environment first (we set this manually during session start)
+	if i.tmuxSession != nil {
+		if sessionID, err := i.tmuxSession.GetEnvironment("GEMINI_SESSION_ID"); err == nil && sessionID != "" {
+			i.GeminiSessionID = sessionID
+			i.GeminiDetectedAt = time.Now()
+			return
+		}
+	}
+
+	// FALLBACK: File scanning
+	sessionID := FindGeminiSessionForInstance(i.ProjectPath, i.CreatedAt, excludeIDs)
+	if sessionID != "" {
+		i.GeminiSessionID = sessionID
+		i.GeminiDetectedAt = time.Now()
+	}
+}
+
 // WaitForClaudeSession waits for Claude to create a session file (for forked sessions)
 // Returns the detected session ID or empty string after timeout
 // Uses FindSessionForInstance with timestamp filtering to ensure we only detect

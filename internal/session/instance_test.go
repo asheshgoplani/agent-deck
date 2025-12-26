@@ -488,3 +488,29 @@ func TestInstance_GeminiSessionFields(t *testing.T) {
 		t.Error("Claude session should not have GeminiSessionID")
 	}
 }
+
+func TestInstance_UpdateGeminiSession(t *testing.T) {
+	inst := NewInstanceWithTool("test", "/tmp/test", "gemini")
+	inst.CreatedAt = time.Now()
+
+	// For non-Gemini tools, should do nothing
+	shellInst := NewInstanceWithTool("shell", "/tmp/test", "shell")
+	shellInst.UpdateGeminiSession(nil)
+	if shellInst.GeminiSessionID != "" {
+		t.Error("Shell session should not have GeminiSessionID")
+	}
+
+	// For Gemini without sessions, should remain empty
+	inst.UpdateGeminiSession(nil)
+	// (No real sessions exist, so ID remains empty)
+
+	// With existing recent ID, should not redetect
+	inst.GeminiSessionID = "existing-id"
+	inst.GeminiDetectedAt = time.Now()
+	oldID := inst.GeminiSessionID
+
+	inst.UpdateGeminiSession(nil)
+	if inst.GeminiSessionID != oldID {
+		t.Error("Should not redetect when ID is recent")
+	}
+}
