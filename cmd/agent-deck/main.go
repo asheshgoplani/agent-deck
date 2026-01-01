@@ -325,6 +325,8 @@ func handleAdd(profile string, args []string) {
 	commandShort := fs.String("c", "", "Command to run (short)")
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
+	force := fs.Bool("force", false, "Allow multiple sessions with the same path")
+	forceShort := fs.Bool("f", false, "Allow multiple sessions with the same path (short)")
 
 	// MCP flag - can be specified multiple times
 	var mcpFlags []string
@@ -352,6 +354,7 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck -p work add               # Add to 'work' profile")
 		fmt.Println("  agent-deck add -t \"Sub-task\" --parent \"Main Project\"  # Create sub-session")
 		fmt.Println("  agent-deck add -t \"Research\" -c claude --mcp memory --mcp sequential-thinking /tmp/x")
+		fmt.Println("  agent-deck add -t \"Task 2\" --force .  # Allow duplicate path")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -392,6 +395,7 @@ func handleAdd(profile string, args []string) {
 	sessionGroup := mergeFlags(*group, *groupShort)
 	sessionCommand := mergeFlags(*command, *commandShort)
 	sessionParent := mergeFlags(*parent, *parentShort)
+	forceAdd := *force || *forceShort
 
 	// Default title to folder name
 	if sessionTitle == "" {
@@ -429,11 +433,14 @@ func handleAdd(profile string, args []string) {
 		sessionGroup = parentInstance.GroupPath
 	}
 
-	// Check for duplicate (same path)
-	for _, inst := range instances {
-		if inst.ProjectPath == path {
-			fmt.Printf("Session already exists: %s (%s)\n", inst.Title, inst.ID)
-			os.Exit(0)
+	// Check for duplicate (same path) - skip if --force is set
+	if !forceAdd {
+		for _, inst := range instances {
+			if inst.ProjectPath == path {
+				fmt.Printf("Session already exists: %s (%s)\n", inst.Title, inst.ID)
+				fmt.Println("Use --force to create another session with the same path")
+				os.Exit(0)
+			}
 		}
 	}
 
