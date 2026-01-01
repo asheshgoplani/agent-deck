@@ -1144,18 +1144,28 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 	workDir := i.ProjectPath
 	configDir := GetClaudeConfigDir()
 
+	// Check if dangerous mode is enabled in user config
+	dangerousMode := false
+	if userConfig, err := LoadUserConfig(); err == nil && userConfig != nil {
+		dangerousMode = userConfig.Claude.DangerousMode
+	}
+
 	// Capture-resume pattern for fork:
 	// 1. Fork in print mode to get new session ID
 	// 2. Store in tmux environment (if capture succeeded)
 	// 3. Resume the forked session interactively
 	// Note: For fork, we need the session ID to resume - without it, fork is incomplete
 	// We add jq stderr suppression and validation, but fail if capture fails entirely
+	dangerousFlag := ""
+	if dangerousMode {
+		dangerousFlag = " --dangerously-skip-permissions"
+	}
 	cmd := fmt.Sprintf(
 		`cd %s && session_id=$(CLAUDE_CONFIG_DIR=%s claude -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r '.session_id' 2>/dev/null); `+
 			`if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then echo "Fork failed: could not capture session ID. Check if Claude CLI is authenticated and jq is installed."; exit 1; fi; `+
 			`tmux set-environment CLAUDE_SESSION_ID "$session_id" && `+
-			`CLAUDE_CONFIG_DIR=%s claude --resume "$session_id" --dangerously-skip-permissions`,
-		workDir, configDir, i.ClaudeSessionID, configDir)
+			`CLAUDE_CONFIG_DIR=%s claude --resume "$session_id"%s`,
+		workDir, configDir, i.ClaudeSessionID, configDir, dangerousFlag)
 
 	return cmd, nil
 }
