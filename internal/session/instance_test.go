@@ -127,6 +127,40 @@ func TestInstance_Fork(t *testing.T) {
 	}
 }
 
+// TestInstance_Fork_DangerousMode tests that Fork() respects dangerous_mode config
+func TestInstance_Fork_DangerousMode(t *testing.T) {
+	inst := NewInstance("test", "/tmp/test")
+	inst.ClaudeSessionID = "abc-123"
+	inst.ClaudeDetectedAt = time.Now()
+
+	// Test with dangerous_mode = false (default)
+	userConfigOverride = &UserConfig{
+		Claude: ClaudeSettings{DangerousMode: false},
+	}
+	defer func() { userConfigOverride = nil }()
+
+	cmd, err := inst.Fork("forked-test", "")
+	if err != nil {
+		t.Fatalf("Fork() failed: %v", err)
+	}
+	if strings.Contains(cmd, "--dangerously-skip-permissions") {
+		t.Errorf("Fork() should NOT include --dangerously-skip-permissions when dangerous_mode=false, got: %s", cmd)
+	}
+
+	// Test with dangerous_mode = true
+	userConfigOverride = &UserConfig{
+		Claude: ClaudeSettings{DangerousMode: true},
+	}
+
+	cmd, err = inst.Fork("forked-test", "")
+	if err != nil {
+		t.Fatalf("Fork() failed: %v", err)
+	}
+	if !strings.Contains(cmd, "--dangerously-skip-permissions") {
+		t.Errorf("Fork() should include --dangerously-skip-permissions when dangerous_mode=true, got: %s", cmd)
+	}
+}
+
 // TestInstance_CreateForkedInstance tests the CreateForkedInstance method
 func TestInstance_CreateForkedInstance(t *testing.T) {
 	inst := NewInstance("original", "/tmp/test")

@@ -194,8 +194,9 @@ var defaultUserConfig = UserConfig{
 
 // Cache for user config (loaded once per session)
 var (
-	userConfigCache   *UserConfig
-	userConfigCacheMu sync.RWMutex
+	userConfigCache    *UserConfig
+	userConfigCacheMu  sync.RWMutex
+	userConfigOverride *UserConfig // Test override - if set, LoadUserConfig returns this
 )
 
 // GetUserConfigPath returns the path to the user config file
@@ -210,6 +211,11 @@ func GetUserConfigPath() (string, error) {
 // LoadUserConfig loads the user configuration from TOML file
 // Returns cached config after first load
 func LoadUserConfig() (*UserConfig, error) {
+	// Test override takes priority
+	if userConfigOverride != nil {
+		return userConfigOverride, nil
+	}
+
 	userConfigCacheMu.RLock()
 	if userConfigCache != nil {
 		defer userConfigCacheMu.RUnlock()
