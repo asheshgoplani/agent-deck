@@ -140,7 +140,8 @@ func (d *NewDialog) IsVisible() bool {
 // GetValues returns the current dialog values with expanded paths
 func (d *NewDialog) GetValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
-	path = strings.TrimSpace(d.pathInput.Value())
+	// Fix: sanitize input to remove surrounding quotes that cause path issues
+	path = strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
 	// Fix malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
 	// This can happen when textinput suggestion appends instead of replaces
@@ -176,7 +177,8 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 // Validate checks if the dialog values are valid and returns an error message if not
 func (d *NewDialog) Validate() string {
 	name := strings.TrimSpace(d.nameInput.Value())
-	path := strings.TrimSpace(d.pathInput.Value())
+	// Fix: sanitize input to remove surrounding quotes that cause path issues
+	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
 	// Check for empty name
 	if name == "" {
