@@ -1147,7 +1147,7 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 	// 2. Store in tmux environment
 	// 3. Resume the forked session interactively
 	cmd := fmt.Sprintf(
-		`cd "%s" && session_id=$(CLAUDE_CONFIG_DIR=%s claude -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r '.session_id') && `+
+		`cd '%s' && session_id=$(CLAUDE_CONFIG_DIR=%s claude -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r '.session_id') && `+
 			`tmux set-environment CLAUDE_SESSION_ID "$session_id" && `+
 			`CLAUDE_CONFIG_DIR=%s claude --resume "$session_id" --dangerously-skip-permissions`,
 		workDir, configDir, i.ClaudeSessionID, configDir)
