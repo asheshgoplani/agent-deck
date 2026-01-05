@@ -163,6 +163,10 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 			return p, nil
 
 		case " ":
+			// Don't intercept space when focused on a text input
+			if p.isResumeInputFocused() || p.isSystemPromptInputFocused() {
+				break // Let it fall through to text input handling
+			}
 			// Toggle checkbox or radio at current focus
 			p.handleSpaceKey()
 			return p, nil
