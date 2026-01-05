@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -8,13 +9,14 @@ import (
 
 // ForkDialog handles the fork session dialog
 type ForkDialog struct {
-	visible     bool
-	nameInput   textinput.Model
-	groupInput  textinput.Model
-	focusIndex  int
-	width       int
-	height      int
-	projectPath string
+	visible      bool
+	nameInput    textinput.Model
+	groupInput   textinput.Model
+	optionsPanel *ClaudeOptionsPanel
+	focusIndex   int // 0=name, 1=group, 2+=options
+	width        int
+	height       int
+	projectPath  string
 }
 
 // NewForkDialog creates a new fork dialog
@@ -30,8 +32,9 @@ func NewForkDialog() *ForkDialog {
 	groupInput.Width = 40
 
 	return &ForkDialog{
-		nameInput:  nameInput,
-		groupInput: groupInput,
+		nameInput:    nameInput,
+		groupInput:   groupInput,
+		optionsPanel: NewClaudeOptionsPanelForFork(),
 	}
 }
 
@@ -43,6 +46,13 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	d.groupInput.SetValue(groupPath)
 	d.focusIndex = 0
 	d.nameInput.Focus()
+	d.groupInput.Blur()
+	d.optionsPanel.Blur()
+
+	// Initialize options with defaults from config
+	if config, err := session.LoadUserConfig(); err == nil {
+		d.optionsPanel.SetDefaults(config)
+	}
 }
 
 // Hide hides the dialog
@@ -50,6 +60,7 @@ func (d *ForkDialog) Hide() {
 	d.visible = false
 	d.nameInput.Blur()
 	d.groupInput.Blur()
+	d.optionsPanel.Blur()
 }
 
 // IsVisible returns whether the dialog is visible
@@ -60,6 +71,11 @@ func (d *ForkDialog) IsVisible() bool {
 // GetValues returns the current input values
 func (d *ForkDialog) GetValues() (name, group string) {
 	return d.nameInput.Value(), d.groupInput.Value()
+}
+
+// GetOptions returns the current Claude options
+func (d *ForkDialog) GetOptions() *session.ClaudeOptions {
+	return d.optionsPanel.GetOptions()
 }
 
 // SetSize sets the dialog dimensions
@@ -78,41 +94,83 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "down":
-			d.focusIndex = (d.focusIndex + 1) % 2
-			d.updateFocus()
-		case "shift+tab", "up":
-			d.focusIndex = (d.focusIndex - 1)
-			if d.focusIndex < 0 {
-				d.focusIndex = 1
+			if d.focusIndex < 2 {
+				// Move from name/group to next field or options
+				d.focusIndex++
+				d.updateFocus()
+			} else {
+				// Inside options panel - delegate
+				var cmd tea.Cmd
+				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
+				return d, cmd
 			}
-			d.updateFocus()
+			return d, nil
+
+		case "shift+tab", "up":
+			if d.focusIndex == 2 && d.optionsPanel.focusIndex == 0 {
+				// At first option item, move back to group
+				d.focusIndex = 1
+				d.updateFocus()
+			} else if d.focusIndex < 2 {
+				d.focusIndex--
+				if d.focusIndex < 0 {
+					d.focusIndex = 0
+				}
+				d.updateFocus()
+			} else {
+				// Inside options panel - delegate
+				var cmd tea.Cmd
+				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
+				return d, cmd
+			}
+			return d, nil
+
 		case "esc":
 			d.Hide()
 			return d, nil
+
 		case "enter":
 			if d.nameInput.Value() != "" {
 				return d, nil // Signal completion
 			}
+
+		case " ", "left", "right":
+			// Delegate space/arrow keys to options panel if focused there
+			if d.focusIndex >= 2 {
+				var cmd tea.Cmd
+				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
+				return d, cmd
+			}
 		}
 	}
 
+	// Update focused input
 	var cmd tea.Cmd
-	if d.focusIndex == 0 {
+	switch d.focusIndex {
+	case 0:
 		d.nameInput, cmd = d.nameInput.Update(msg)
-	} else {
+	case 1:
 		d.groupInput, cmd = d.groupInput.Update(msg)
+	default:
+		// Options panel handles its own inputs
+		d.optionsPanel, cmd = d.optionsPanel.Update(msg)
 	}
 
 	return d, cmd
 }
 
 func (d *ForkDialog) updateFocus() {
-	if d.focusIndex == 0 {
+	d.nameInput.Blur()
+	d.groupInput.Blur()
+	d.optionsPanel.Blur()
+
+	switch d.focusIndex {
+	case 0:
 		d.nameInput.Focus()
-		d.groupInput.Blur()
-	} else {
-		d.nameInput.Blur()
+	case 1:
 		d.groupInput.Focus()
+	default:
+		d.optionsPanel.Focus()
 	}
 }
 
@@ -153,18 +211,22 @@ func (d *ForkDialog) View() string {
 	if d.focusIndex == 0 {
 		nameLabel = activeLabelStyle.Render("▶ Name:")
 		groupLabel = labelStyle.Render("  Group:")
-	} else {
+	} else if d.focusIndex == 1 {
 		nameLabel = labelStyle.Render("  Name:")
 		groupLabel = activeLabelStyle.Render("▶ Group:")
+	} else {
+		nameLabel = labelStyle.Render("  Name:")
+		groupLabel = labelStyle.Render("  Group:")
 	}
 
 	content := titleStyle.Render("Fork Session") + "\n\n" +
 		nameLabel + "\n" +
-		d.nameInput.View() + "\n\n" +
+		"  " + d.nameInput.View() + "\n\n" +
 		groupLabel + "\n" +
-		d.groupInput.View() + "\n\n" +
+		"  " + d.groupInput.View() + "\n\n" +
+		d.optionsPanel.View() + "\n" +
 		lipgloss.NewStyle().Foreground(ColorComment).
-			Render("Enter create │ Esc cancel │ Tab next")
+			Render("Enter create │ Esc cancel │ Tab next │ Space toggle")
 
 	dialog := boxStyle.Render(content)
 

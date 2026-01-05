@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,7 +17,8 @@ type NewDialog struct {
 	nameInput            textinput.Model
 	pathInput            textinput.Model
 	commandInput         textinput.Model
-	focusIndex           int
+	claudeOptions        *ClaudeOptionsPanel // Claude-specific options
+	focusIndex           int                 // 0=name, 1=path, 2=command, 3+=options
 	width                int
 	height               int
 	visible              bool
@@ -61,6 +63,7 @@ func NewNewDialog() *NewDialog {
 		nameInput:       nameInput,
 		pathInput:       pathInput,
 		commandInput:    commandInput,
+		claudeOptions:   NewClaudeOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  []string{"", "claude", "gemini", "opencode", "codex"},
@@ -84,7 +87,14 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName string) {
 	d.nameInput.Focus()
 	d.suggestionNavigated = false  // reset on show
 	d.pathSuggestionCursor = 0     // reset cursor too
+	d.pathInput.Blur()
+	d.claudeOptions.Blur()
 	// Keep commandCursor at previously set default (don't reset to 0)
+
+	// Initialize Claude options with defaults from config
+	if config, err := session.LoadUserConfig(); err == nil {
+		d.claudeOptions.SetDefaults(config)
+	}
 }
 
 // SetDefaultTool sets the pre-selected command based on tool name
@@ -177,6 +187,19 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 	return name, path, command
 }
 
+// GetClaudeOptions returns the Claude-specific options (only relevant if command is "claude")
+func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
+	if !d.isClaudeSelected() {
+		return nil
+	}
+	return d.claudeOptions.GetOptions()
+}
+
+// isClaudeSelected returns true if "claude" is the selected command
+func (d *NewDialog) isClaudeSelected() bool {
+	return d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == "claude"
+}
+
 // Validate checks if the dialog values are valid and returns an error message if not
 func (d *NewDialog) Validate() string {
 	name := strings.TrimSpace(d.nameInput.Value())
@@ -206,6 +229,7 @@ func (d *NewDialog) updateFocus() {
 	d.nameInput.Blur()
 	d.pathInput.Blur()
 	d.commandInput.Blur()
+	d.claudeOptions.Blur()
 
 	switch d.focusIndex {
 	case 0:
@@ -214,7 +238,20 @@ func (d *NewDialog) updateFocus() {
 		d.pathInput.Focus()
 	case 2:
 		// Command selection (no text input focus needed for presets)
+	default:
+		// Claude options (focusIndex >= 3)
+		if d.isClaudeSelected() {
+			d.claudeOptions.Focus()
+		}
 	}
+}
+
+// getMaxFocusIndex returns the maximum focus index based on current state
+func (d *NewDialog) getMaxFocusIndex() int {
+	if d.isClaudeSelected() {
+		return 3 // 0=name, 1=path, 2=command, 3=claude options
+	}
+	return 2 // 0=name, 1=path, 2=command
 }
 
 // Update handles key messages
@@ -224,6 +261,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	maxIdx := d.getMaxFocusIndex()
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -235,9 +273,18 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
 				}
 			}
-			// Move to next field
-			d.focusIndex = (d.focusIndex + 1) % 3
-			d.updateFocus()
+			// Move to next field (with wrap)
+			if d.focusIndex < maxIdx {
+				d.focusIndex++
+				d.updateFocus()
+			} else if d.focusIndex >= 3 && d.isClaudeSelected() {
+				// Inside claude options - delegate
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			} else {
+				d.focusIndex = 0
+				d.updateFocus()
+			}
 			// Reset navigation flag when leaving path field
 			if d.focusIndex != 1 {
 				d.suggestionNavigated = false
@@ -264,15 +311,26 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
-			// Down always navigates fields
-			d.focusIndex = (d.focusIndex + 1) % 3
-			d.updateFocus()
+			// Down navigates fields or delegates to options
+			if d.focusIndex < maxIdx {
+				d.focusIndex++
+				d.updateFocus()
+			} else if d.focusIndex >= 3 && d.isClaudeSelected() {
+				// Inside claude options - delegate
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			}
 			return d, nil
 
 		case "shift+tab", "up":
+			if d.focusIndex >= 3 && d.isClaudeSelected() && d.claudeOptions.focusIndex > 0 {
+				// Inside claude options, not at first item - delegate
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			}
 			d.focusIndex--
 			if d.focusIndex < 0 {
-				d.focusIndex = 2
+				d.focusIndex = maxIdx
 			}
 			d.updateFocus()
 			return d, nil
@@ -294,12 +352,29 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				}
 				return d, nil
 			}
+			// Delegate to claude options if focused there
+			if d.focusIndex >= 3 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			}
 
 		case "right":
 			// Command selection
 			if d.focusIndex == 2 {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
 				return d, nil
+			}
+			// Delegate to claude options if focused there
+			if d.focusIndex >= 3 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			}
+
+		case " ":
+			// Space toggles checkboxes in claude options
+			if d.focusIndex >= 3 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
 			}
 		}
 	}
@@ -315,6 +390,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		if d.pathInput.Value() != oldValue {
 			d.suggestionNavigated = false
 			d.pathSuggestionCursor = 0
+		}
+	default:
+		if d.focusIndex >= 3 && d.isClaudeSelected() {
+			d.claudeOptions, cmd = d.claudeOptions.Update(msg)
 		}
 	}
 
@@ -491,11 +570,21 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n\n")
 	}
 
+	// Claude options (only if Claude is selected)
+	if d.isClaudeSelected() {
+		content.WriteString("\n")
+		content.WriteString(d.claudeOptions.View())
+	}
+
 	// Help text with better contrast
 	helpStyle := lipgloss.NewStyle().
 		Foreground(ColorComment). // Use consistent theme color
 		MarginTop(1)
-	content.WriteString(helpStyle.Render("Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"))
+	if d.isClaudeSelected() {
+		content.WriteString(helpStyle.Render("Tab next │ ↑↓ navigate │ Space toggle │ Enter create │ Esc cancel"))
+	} else {
+		content.WriteString(helpStyle.Render("Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"))
+	}
 
 	// Wrap in dialog box
 	dialog := dialogStyle.Render(content.String())

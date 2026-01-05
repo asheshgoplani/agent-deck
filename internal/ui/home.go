@@ -1821,9 +1821,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Create session (enter works from any field)
 		name, path, command := h.newDialog.GetValues()
 		groupPath := h.newDialog.GetSelectedGroup()
+		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable
 		h.newDialog.Hide()
 		h.clearError() // Clear any previous validation error
-		return h, h.createSessionInGroup(name, path, command, groupPath)
+		return h, h.createSessionInGroupWithOptions(name, path, command, groupPath, claudeOpts)
 
 	case "esc":
 		h.newDialog.Hide()
@@ -2467,6 +2468,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		// Get fork parameters from dialog
 		title, groupPath := h.forkDialog.GetValues()
+		opts := h.forkDialog.GetOptions()
 		if title == "" {
 			h.setError(fmt.Errorf("session name cannot be empty"))
 			return h, nil
@@ -2478,7 +2480,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmd(item.Session, title, groupPath)
+				return h, h.forkSessionCmdWithOptions(item.Session, title, groupPath, opts)
 			}
 		}
 		h.forkDialog.Hide()
@@ -2569,6 +2571,11 @@ func (h *Home) getUsedClaudeSessionIDs() map[string]bool {
 
 // createSessionInGroup creates a new session in a specific group
 func (h *Home) createSessionInGroup(name, path, command, groupPath string) tea.Cmd {
+	return h.createSessionInGroupWithOptions(name, path, command, groupPath, nil)
+}
+
+// createSessionInGroupWithOptions creates a session with optional Claude options
+func (h *Home) createSessionInGroupWithOptions(name, path, command, groupPath string, claudeOpts *session.ClaudeOptions) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
@@ -2596,6 +2603,12 @@ func (h *Home) createSessionInGroup(name, path, command, groupPath string) tea.C
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
+
+		// Apply Claude options if provided
+		if tool == "claude" && claudeOpts != nil {
+			inst.SetClaudeOptions(claudeOpts)
+		}
+
 		if err := inst.Start(); err != nil {
 			return sessionCreatedMsg{err: err}
 		}
@@ -2627,6 +2640,12 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string) tea.Cmd {
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil)
+}
+
+// forkSessionCmdWithOptions creates a forked session with the given title, group, and Claude options
+// Shows immediate UI feedback by tracking the source session in forkingSessions
+func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) tea.Cmd {
 	if source == nil {
 		return nil
 	}
@@ -2645,8 +2664,8 @@ func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string)
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
 		}
 
-		// Use CreateForkedInstance to get the proper fork command
-		inst, _, err := source.CreateForkedInstance(title, groupPath)
+		// Use CreateForkedInstanceWithOptions to get the proper fork command with options
+		inst, _, err := source.CreateForkedInstanceWithOptions(title, groupPath, opts)
 		if err != nil {
 			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
 		}
