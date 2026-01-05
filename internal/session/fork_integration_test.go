@@ -37,15 +37,18 @@ func TestForkFlow_Integration(t *testing.T) {
 		t.Fatalf("CreateForkedInstance failed: %v", err)
 	}
 
-	// Verify fork command structure
-	if strings.Contains(cmd, "--session-id") {
-		t.Errorf("Fork command should NOT have --session-id: %s", cmd)
+	// Verify fork command structure - uses --session-id to avoid capture-resume with "." prompt
+	if !strings.Contains(cmd, "--session-id") {
+		t.Errorf("Fork command should have --session-id: %s", cmd)
 	}
 	if !strings.Contains(cmd, "--resume "+parentID) {
 		t.Errorf("Fork command should have --resume %s: %s", parentID, cmd)
 	}
 	if !strings.Contains(cmd, "--fork-session") {
 		t.Errorf("Fork command should have --fork-session: %s", cmd)
+	}
+	if !strings.Contains(cmd, "uuidgen") {
+		t.Errorf("Fork command should generate UUID with uuidgen: %s", cmd)
 	}
 
 	// Verify forked instance state
