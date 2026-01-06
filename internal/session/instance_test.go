@@ -802,3 +802,98 @@ func TestInstance_CanRestart_Gemini(t *testing.T) {
 		t.Error("CanRestart() should work with stale session ID")
 	}
 }
+
+// TestInstance_Fork_PathWithSpaces tests that Fork() properly quotes paths with spaces
+// Issue #16: Fork command breaks for project paths with spaces
+func TestInstance_Fork_PathWithSpaces(t *testing.T) {
+	inst := &Instance{
+		ID:              "test-123",
+		Title:           "test-session",
+		ProjectPath:     "/tmp/Test Path With Spaces",
+		Tool:            "claude",
+		ClaudeSessionID: "session-abc-123",
+		ClaudeDetectedAt: time.Now(),
+	}
+
+	cmd, err := inst.Fork("forked-session", "")
+	if err != nil {
+		t.Fatalf("Fork() error = %v", err)
+	}
+
+	// The cd command should have quoted path
+	if !strings.Contains(cmd, `cd '/tmp/Test Path With Spaces'`) {
+		t.Errorf("Fork command should quote path with spaces using single quotes.\nGot: %s", cmd)
+	}
+
+	// Should NOT contain unquoted path that would break
+	if strings.Contains(cmd, "cd /tmp/Test Path With Spaces &&") {
+		t.Errorf("Fork command should not have unquoted path.\nGot: %s", cmd)
+	}
+}
+
+// TestInstance_Fork_RespectsDangerousMode tests that Fork() respects dangerous_mode config
+// Issue #8: Fork command ignores dangerous_mode configuration
+func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
+	inst := &Instance{
+		ID:              "test-456",
+		Title:           "test-session",
+		ProjectPath:     "/tmp/test",
+		Tool:            "claude",
+		ClaudeSessionID: "session-xyz-789",
+		ClaudeDetectedAt: time.Now(),
+	}
+
+	// Test with dangerous_mode = false
+	t.Run("dangerous_mode=false", func(t *testing.T) {
+		// Set up config with dangerous_mode = false
+		userConfigCacheMu.Lock()
+		userConfigCache = &UserConfig{
+			Claude: ClaudeSettings{
+				DangerousMode: false,
+			},
+		}
+		userConfigCacheMu.Unlock()
+		defer func() {
+			userConfigCacheMu.Lock()
+			userConfigCache = nil
+			userConfigCacheMu.Unlock()
+		}()
+
+		cmd, err := inst.Fork("forked", "")
+		if err != nil {
+			t.Fatalf("Fork() error = %v", err)
+		}
+
+		// Should NOT have --dangerously-skip-permissions when config is false
+		if strings.Contains(cmd, "--dangerously-skip-permissions") {
+			t.Errorf("Fork command should NOT include --dangerously-skip-permissions when dangerous_mode=false.\nGot: %s", cmd)
+		}
+	})
+
+	// Test with dangerous_mode = true
+	t.Run("dangerous_mode=true", func(t *testing.T) {
+		// Set up config with dangerous_mode = true
+		userConfigCacheMu.Lock()
+		userConfigCache = &UserConfig{
+			Claude: ClaudeSettings{
+				DangerousMode: true,
+			},
+		}
+		userConfigCacheMu.Unlock()
+		defer func() {
+			userConfigCacheMu.Lock()
+			userConfigCache = nil
+			userConfigCacheMu.Unlock()
+		}()
+
+		cmd, err := inst.Fork("forked", "")
+		if err != nil {
+			t.Fatalf("Fork() error = %v", err)
+		}
+
+		// SHOULD have --dangerously-skip-permissions when config is true
+		if !strings.Contains(cmd, "--dangerously-skip-permissions") {
+			t.Errorf("Fork command should include --dangerously-skip-permissions when dangerous_mode=true.\nGot: %s", cmd)
+		}
+	})
+}
