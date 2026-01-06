@@ -45,3 +45,5 @@ Thumbs.db
 .mcp.json
 .playwright-mcp/
 *.screenstudio/
+
+.worktrees

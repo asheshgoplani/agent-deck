@@ -36,7 +36,8 @@ type Instance struct {
 	Title          string    `json:"title"`
 	ProjectPath    string    `json:"project_path"`
 	GroupPath      string    `json:"group_path"` // e.g., "projects/devops"
-	ParentSessionID string   `json:"parent_session_id,omitempty"` // Links to parent session (makes this a sub-session)
+	ParentSessionID   string `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
+	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
 
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
@@ -112,9 +113,17 @@ func (inst *Instance) SetParent(parentID string) {
 	inst.ParentSessionID = parentID
 }
 
+// SetParentWithPath sets both parent session ID and parent's project path
+// The project path is used to grant subagent access via --add-dir
+func (inst *Instance) SetParentWithPath(parentID, parentProjectPath string) {
+	inst.ParentSessionID = parentID
+	inst.ParentProjectPath = parentProjectPath
+}
+
 // ClearParent removes the parent session link
 func (inst *Instance) ClearParent() {
 	inst.ParentSessionID = ""
+	inst.ParentProjectPath = ""
 }
 
 // NewInstance creates a new session instance
@@ -221,6 +230,19 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		dangerousMode = userConfig.Claude.DangerousMode
 	}
 
+	// Build optional flags
+	// --add-dir: Grant subagent access to parent's project directory (for worktrees, etc.)
+	// --dangerously-skip-permissions: Skip all permission dialogs (if enabled)
+	addDirFlag := ""
+	if i.ParentProjectPath != "" {
+		addDirFlag = fmt.Sprintf(" --add-dir %s", i.ParentProjectPath)
+	}
+
+	dangerousFlag := ""
+	if dangerousMode {
+		dangerousFlag = " --dangerously-skip-permissions"
+	}
+
 	// If baseCommand is just "claude", build the capture-resume command
 	// This command:
 	// 1. Runs Claude with a minimal prompt "." to completion (creates session)
@@ -231,22 +253,17 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// The --session-id flag only works for RESUMING existing sessions.
 	// Fallback: If capture fails (jq not installed, etc.), start Claude fresh
 	if baseCommand == "claude" {
-		dangerousFlag := ""
-		if dangerousMode {
-			dangerousFlag = " --dangerously-skip-permissions"
-		}
-
 		// Build the capture-resume command
 		// Uses --output-format json to get session ID, then resumes
 		baseCmd := fmt.Sprintf(
 			`session_id=$(%s%s -p "." --output-format json 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
 				`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
 				`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
-				`%s%s --resume "$session_id"%s; `+
-				`else %s%s%s; fi`,
+				`%s%s --resume "$session_id"%s%s; `+
+				`else %s%s%s%s; fi`,
 			configDirPrefix, claudeCmd,
-			configDirPrefix, claudeCmd, dangerousFlag,
-			configDirPrefix, claudeCmd, dangerousFlag)
+			configDirPrefix, claudeCmd, addDirFlag, dangerousFlag,
+			configDirPrefix, claudeCmd, addDirFlag, dangerousFlag)
 
 		// If message provided, append wait-and-send logic
 		if message != "" {
@@ -263,12 +280,12 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					`(sleep 2; SESSION_NAME=$(tmux display-message -p '#S'); `+
 					`while ! tmux capture-pane -p -t "$SESSION_NAME" | tail -5 | grep -qE "^>"; do sleep 0.2; done; `+
 					`tmux send-keys -l -t "$SESSION_NAME" '%s'; tmux send-keys -t "$SESSION_NAME" Enter) & `+
-					`%s%s --resume "$session_id"%s; `+
-					`else %s%s%s; fi`,
+					`%s%s --resume "$session_id"%s%s; `+
+					`else %s%s%s%s; fi`,
 				configDirPrefix, claudeCmd,
 				escapedMsg,
-				configDirPrefix, claudeCmd, dangerousFlag,
-				configDirPrefix, claudeCmd, dangerousFlag)
+				configDirPrefix, claudeCmd, addDirFlag, dangerousFlag,
+				configDirPrefix, claudeCmd, addDirFlag, dangerousFlag)
 		}
 
 		return baseCmd
