@@ -291,6 +291,29 @@ func TestBuildClaudeCommand(t *testing.T) {
 	}
 }
 
+// TestBuildClaudeCommand_SubagentAddDir tests that subagents get --add-dir
+// for access to parent's project directory (for worktrees, etc.)
+func TestBuildClaudeCommand_SubagentAddDir(t *testing.T) {
+	// Create a subagent with parent project path
+	inst := NewInstanceWithTool("subagent", "/tmp/subagent-workdir", "claude")
+	inst.SetParentWithPath("parent-id-123", "/home/user/projects/main-project")
+
+	cmd := inst.buildClaudeCommand("claude")
+
+	// Should contain --add-dir with parent's project path
+	if !strings.Contains(cmd, "--add-dir /home/user/projects/main-project") {
+		t.Errorf("Subagent command should contain --add-dir with parent path, got: %s", cmd)
+	}
+
+	// Without parent, should NOT have --add-dir
+	instNoParent := NewInstanceWithTool("standalone", "/tmp/standalone", "claude")
+	cmdNoParent := instNoParent.buildClaudeCommand("claude")
+
+	if strings.Contains(cmdNoParent, "--add-dir") {
+		t.Errorf("Standalone agent should NOT have --add-dir, got: %s", cmdNoParent)
+	}
+}
+
 // TestCreateForkedInstance_CaptureResumePattern tests that forked sessions
 // use the capture-resume pattern to reliably get the new session ID
 func TestCreateForkedInstance_CaptureResumePattern(t *testing.T) {
