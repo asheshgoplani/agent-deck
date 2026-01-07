@@ -17,10 +17,6 @@ type ClaudeOptionsPanel struct {
 	// Checkbox states
 	skipPermissions bool
 	useChrome       bool
-	// System prompt input
-	systemPromptInput   textinput.Model
-	showSystemPrompt    bool // Whether to show the input field
-	systemPromptEnabled bool // Checkbox state
 	// Focus tracking
 	focusIndex int
 	// Whether this panel is for fork dialog (fewer options)
@@ -34,14 +30,10 @@ type ClaudeOptionsPanel struct {
 // 1: Resume ID input (only when mode=resume)
 // 2: Skip permissions checkbox
 // 3: Chrome checkbox
-// 4: System prompt checkbox
-// 5: System prompt input (only when enabled)
 
 // Focus indices for ForkDialog mode:
 // 0: Skip permissions checkbox
 // 1: Chrome checkbox
-// 2: System prompt checkbox
-// 3: System prompt input (only when enabled)
 
 // NewClaudeOptionsPanel creates a new panel for NewDialog
 func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
@@ -50,33 +42,21 @@ func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
 	resumeInput.CharLimit = 64
 	resumeInput.Width = 30
 
-	promptInput := textinput.New()
-	promptInput.Placeholder = "Additional system prompt..."
-	promptInput.CharLimit = 500
-	promptInput.Width = 40
-
 	return &ClaudeOptionsPanel{
-		sessionMode:       0, // new
-		resumeIDInput:     resumeInput,
-		systemPromptInput: promptInput,
-		isForkMode:        false,
-		focusCount:        5, // Will adjust dynamically
+		sessionMode:   0, // new
+		resumeIDInput: resumeInput,
+		isForkMode:    false,
+		focusCount:    4, // Will adjust dynamically
 	}
 }
 
 // NewClaudeOptionsPanelForFork creates a panel for ForkDialog (fewer options)
 func NewClaudeOptionsPanelForFork() *ClaudeOptionsPanel {
-	promptInput := textinput.New()
-	promptInput.Placeholder = "Additional system prompt..."
-	promptInput.CharLimit = 500
-	promptInput.Width = 40
-
 	return &ClaudeOptionsPanel{
-		sessionMode:       0,
-		resumeIDInput:     textinput.New(), // Not used in fork mode
-		systemPromptInput: promptInput,
-		isForkMode:        true,
-		focusCount:        3, // skip, chrome, prompt checkbox
+		sessionMode:   0,
+		resumeIDInput: textinput.New(), // Not used in fork mode
+		isForkMode:    true,
+		focusCount:    2, // skip, chrome
 	}
 }
 
@@ -96,7 +76,6 @@ func (p *ClaudeOptionsPanel) Focus() {
 // Blur removes focus from this panel
 func (p *ClaudeOptionsPanel) Blur() {
 	p.resumeIDInput.Blur()
-	p.systemPromptInput.Blur()
 }
 
 // IsFocused returns true if any element in the panel has focus
@@ -107,13 +86,8 @@ func (p *ClaudeOptionsPanel) IsFocused() bool {
 // GetOptions returns current options as ClaudeOptions
 func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 	opts := &session.ClaudeOptions{
-		SkipPermissions:    p.skipPermissions,
-		UseChrome:          p.useChrome,
-		AppendSystemPrompt: "",
-	}
-
-	if p.systemPromptEnabled {
-		opts.AppendSystemPrompt = p.systemPromptInput.Value()
+		SkipPermissions: p.skipPermissions,
+		UseChrome:       p.useChrome,
 	}
 
 	if !p.isForkMode {
@@ -164,7 +138,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 
 		case " ":
 			// Don't intercept space when focused on a text input
-			if p.isResumeInputFocused() || p.isSystemPromptInputFocused() {
+			if p.isResumeInputFocused() {
 				break // Let it fall through to text input handling
 			}
 			// Toggle checkbox or radio at current focus
@@ -193,11 +167,6 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 		return p, cmd
 	}
 
-	if p.isSystemPromptInputFocused() {
-		p.systemPromptInput, cmd = p.systemPromptInput.Update(msg)
-		return p, cmd
-	}
-
 	return p, nil
 }
 
@@ -209,9 +178,6 @@ func (p *ClaudeOptionsPanel) handleSpaceKey() {
 			p.skipPermissions = !p.skipPermissions
 		case 1:
 			p.useChrome = !p.useChrome
-		case 2:
-			p.systemPromptEnabled = !p.systemPromptEnabled
-			p.showSystemPrompt = p.systemPromptEnabled
 		}
 	} else {
 		// NewDialog mode
@@ -223,9 +189,6 @@ func (p *ClaudeOptionsPanel) handleSpaceKey() {
 			p.skipPermissions = !p.skipPermissions
 		case "chrome":
 			p.useChrome = !p.useChrome
-		case "promptCheckbox":
-			p.systemPromptEnabled = !p.systemPromptEnabled
-			p.showSystemPrompt = p.systemPromptEnabled
 		}
 	}
 }
@@ -238,10 +201,6 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 			return "skipPermissions"
 		case 1:
 			return "chrome"
-		case 2:
-			return "promptCheckbox"
-		case 3:
-			return "promptInput"
 		}
 	} else {
 		idx := p.focusIndex
@@ -264,14 +223,6 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 		if idx == 2 {
 			return "chrome"
 		}
-		// 4: prompt checkbox
-		if idx == 3 {
-			return "promptCheckbox"
-		}
-		// 5: prompt input (only if enabled)
-		if idx == 4 && p.systemPromptEnabled {
-			return "promptInput"
-		}
 	}
 	return ""
 }
@@ -279,19 +230,12 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 // getFocusCount returns the number of focusable elements
 func (p *ClaudeOptionsPanel) getFocusCount() int {
 	if p.isForkMode {
-		count := 3 // skip, chrome, prompt checkbox
-		if p.systemPromptEnabled {
-			count++ // prompt input
-		}
-		return count
+		return 2 // skip, chrome
 	}
 
-	count := 4 // session mode, skip, chrome, prompt checkbox
+	count := 3 // session mode, skip, chrome
 	if p.sessionMode == 2 {
 		count++ // resume input
-	}
-	if p.systemPromptEnabled {
-		count++ // prompt input
 	}
 	return count
 }
@@ -301,32 +245,12 @@ func (p *ClaudeOptionsPanel) isResumeInputFocused() bool {
 	return !p.isForkMode && p.sessionMode == 2 && p.focusIndex == 1
 }
 
-// isSystemPromptInputFocused returns true if system prompt input is focused
-func (p *ClaudeOptionsPanel) isSystemPromptInputFocused() bool {
-	if !p.systemPromptEnabled {
-		return false
-	}
-	if p.isForkMode {
-		return p.focusIndex == 3
-	}
-	// NewDialog: prompt input is last
-	expectedIdx := 4
-	if p.sessionMode == 2 {
-		expectedIdx = 5
-	}
-	return p.focusIndex == expectedIdx
-}
-
 // updateInputFocus updates which text input has focus
 func (p *ClaudeOptionsPanel) updateInputFocus() {
 	p.resumeIDInput.Blur()
-	p.systemPromptInput.Blur()
 
 	if p.isResumeInputFocused() {
 		p.resumeIDInput.Focus()
-	}
-	if p.isSystemPromptInputFocused() {
-		p.systemPromptInput.Focus()
 	}
 }
 
@@ -367,23 +291,6 @@ func (p *ClaudeOptionsPanel) viewForkMode(labelStyle, activeStyle, dimStyle, hea
 		content += activeStyle.Render("▶ ") + checkbox + " Chrome mode\n"
 	} else {
 		content += "  " + checkbox + " " + labelStyle.Render("Chrome mode") + "\n"
-	}
-
-	// System prompt checkbox
-	checkbox = p.renderCheckbox(p.systemPromptEnabled, p.focusIndex == 2)
-	if p.focusIndex == 2 {
-		content += activeStyle.Render("▶ ") + checkbox + " System prompt:\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("System prompt:") + "\n"
-	}
-
-	// System prompt input (only if enabled)
-	if p.systemPromptEnabled {
-		if p.focusIndex == 3 {
-			content += activeStyle.Render("    ▶ ") + p.systemPromptInput.View() + "\n"
-		} else {
-			content += "      " + p.systemPromptInput.View() + "\n"
-		}
 	}
 
 	return content
@@ -431,25 +338,6 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 		content += activeStyle.Render("▶ ") + checkbox + " Chrome mode\n"
 	} else {
 		content += "  " + checkbox + " " + labelStyle.Render("Chrome mode") + "\n"
-	}
-	focusIdx++
-
-	// System prompt checkbox
-	checkbox = p.renderCheckbox(p.systemPromptEnabled, p.focusIndex == focusIdx)
-	if p.focusIndex == focusIdx {
-		content += activeStyle.Render("▶ ") + checkbox + " System prompt:\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("System prompt:") + "\n"
-	}
-	focusIdx++
-
-	// System prompt input (only if enabled)
-	if p.systemPromptEnabled {
-		if p.focusIndex == focusIdx {
-			content += activeStyle.Render("    ▶ ") + p.systemPromptInput.View() + "\n"
-		} else {
-			content += "      " + p.systemPromptInput.View() + "\n"
-		}
 	}
 
 	return content

@@ -24,8 +24,6 @@ type ClaudeOptions struct {
 	SkipPermissions bool `json:"skip_permissions,omitempty"`
 	// UseChrome adds --chrome flag
 	UseChrome bool `json:"use_chrome,omitempty"`
-	// AppendSystemPrompt adds --append-system-prompt flag with value
-	AppendSystemPrompt string `json:"append_system_prompt,omitempty"`
 }
 
 // ToolName returns "claude"
@@ -56,11 +54,6 @@ func (o *ClaudeOptions) ToArgs() []string {
 		args = append(args, "--chrome")
 	}
 
-	// String flags
-	if o.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", o.AppendSystemPrompt)
-	}
-
 	return args
 }
 
@@ -74,9 +67,6 @@ func (o *ClaudeOptions) ToArgsForFork() []string {
 	}
 	if o.UseChrome {
 		args = append(args, "--chrome")
-	}
-	if o.AppendSystemPrompt != "" {
-		args = append(args, "--append-system-prompt", o.AppendSystemPrompt)
 	}
 
 	return args
