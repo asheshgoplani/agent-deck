@@ -66,8 +66,8 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 
 		group, exists := tree.Groups[groupPath]
 		if !exists {
-			// Use proper name for default group, otherwise use path as name
-			name := groupPath
+			// Use proper name for default group, otherwise extract name from path
+			name := extractGroupName(groupPath)
 			if groupPath == DefaultGroupPath {
 				name = DefaultGroupName
 			}
@@ -706,8 +706,8 @@ func (t *GroupTree) AddSession(inst *Instance) {
 
 	group, exists := t.Groups[groupPath]
 	if !exists {
-		// Use proper name for default group, otherwise use path as name
-		name := groupPath
+		// Use proper name for default group, otherwise extract name from path
+		name := extractGroupName(groupPath)
 		if groupPath == DefaultGroupPath {
 			name = DefaultGroupName
 		}

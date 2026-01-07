@@ -702,3 +702,28 @@ func TestExtractGroupName(t *testing.T) {
 		}
 	}
 }
+
+func TestNewGroupTreeWithHierarchicalPath(t *testing.T) {
+	// Simulate session created with hierarchical group path
+	instances := []*Instance{
+		{ID: "1", Title: "session-1", GroupPath: "parent/child"},
+	}
+
+	tree := NewGroupTree(instances)
+
+	// Group should exist with correct name
+	group := tree.Groups["parent/child"]
+	if group == nil {
+		t.Fatal("parent/child group not found")
+	}
+
+	// Name should be just "child", not "parent/child"
+	if group.Name != "child" {
+		t.Errorf("Expected name 'child', got '%s'", group.Name)
+	}
+
+	// Path should be full path
+	if group.Path != "parent/child" {
+		t.Errorf("Expected path 'parent/child', got '%s'", group.Path)
+	}
+}
