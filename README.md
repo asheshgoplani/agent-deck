@@ -19,7 +19,23 @@
 
 ---
 
-> **💡 Need help?** Using an AI assistant? Copy [`llms-full.txt`](./llms-full.txt) into your conversation for complete, accurate answers about agent-deck.
+<details>
+<summary><b>💡 Ask AI about Agent Deck</b></summary>
+
+**Option 1: Claude Code Skill** (recommended for Claude Code users)
+```bash
+/plugin marketplace add asheshgoplani/agent-deck
+/plugin install agent-deck@agent-deck-help
+```
+Then ask: *"How do I set up MCP pooling?"*
+
+**Option 2: Any LLM** (ChatGPT, Claude, Gemini, etc.)
+```
+Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt
+and answer: How do I fork a session?
+```
+
+</details>
 
 ---
 
@@ -591,6 +607,20 @@ Claude and Gemini get full integration with session management, MCP configuratio
 
 Agent Deck runs inside WSL and works exactly like it does on macOS/Linux.
 
+**WSL Version Differences:**
+
+| Feature | WSL1 | WSL2 |
+|---------|------|------|
+| Core functionality | ✅ | ✅ |
+| MCP management | ✅ | ✅ |
+| Session forking | ✅ | ✅ |
+| MCP socket pooling | ❌ Auto-disabled | ✅ |
+| Clipboard (via clip.exe) | ✅ | ✅ |
+
+**WSL2 is recommended** for the best experience. Check your version with `wsl --list --verbose`. Upgrade with `wsl --set-version <distro> 2`.
+
+On WSL1, MCP socket pooling is automatically disabled (Unix sockets don't work reliably), but everything else works fine. MCPs run in stdio mode instead.
+
 ### Will it interfere with my existing tmux setup?
 
 **No.** Agent Deck creates its own tmux sessions with the prefix `agentdeck_*`. Your existing sessions are untouched.
@@ -627,7 +657,7 @@ Then press `M` in Agent Deck to toggle it on/off for any session. [See MCP examp
 
 If you're running many Claude sessions (10+), each spawns its own MCP processes. This adds up fast.
 
-**Enable MCP Socket Pool** to share processes across sessions:
+**Enable MCP Socket Pool** to share processes across sessions (macOS, Linux, WSL2 only):
 
 ```toml
 # ~/.agent-deck/config.toml
@@ -637,6 +667,8 @@ pool_all = true
 ```
 
 Restart Agent Deck. All sessions now share MCP processes via Unix sockets. Memory usage drops 85-90% for MCP-related processes.
+
+> **Note:** On WSL1 and Windows, socket pooling is automatically disabled. MCPs work in stdio mode instead, which uses more memory but is fully functional.
 
 ### What if a session crashes?
 

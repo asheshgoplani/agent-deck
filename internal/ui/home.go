@@ -126,6 +126,8 @@ type Home struct {
 	confirmDialog *ConfirmDialog // For confirming destructive actions
 	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
 	mcpDialog     *MCPDialog     // For managing MCPs
+	setupWizard   *SetupWizard   // For first-run setup
+	settingsPanel *SettingsPanel // For editing settings
 
 	// State
 	cursor        int            // Selected item index in flatItems
@@ -315,6 +317,8 @@ func NewHomeWithProfile(profile string) *Home {
 		confirmDialog:     NewConfirmDialog(),
 		helpOverlay:       NewHelpOverlay(),
 		mcpDialog:         NewMCPDialog(),
+		setupWizard:       NewSetupWizard(),
+		settingsPanel:     NewSettingsPanel(),
 		cursor:            0,
 		initialLoading:    true, // Show splash until sessions load
 		ctx:               ctx,
@@ -674,9 +678,16 @@ func (h *Home) jumpToRootGroup(n int) {
 
 // Init initializes the model
 func (h *Home) Init() tea.Cmd {
+	// Check for first run (no config.toml exists)
+	configPath, _ := session.GetUserConfigPath()
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		h.setupWizard.Show()
+		h.setupWizard.SetSize(h.width, h.height)
+	}
+
 	cmds := []tea.Cmd{
 		h.loadSessions,
-		
+
 		h.tick(),
 		h.checkForUpdate(),
 	}
@@ -1077,6 +1088,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.height = msg.Height
 		h.updateSizes()
 		h.syncViewport() // Recalculate viewport when window size changes
+		h.setupWizard.SetSize(msg.Width, msg.Height)
+		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		return h, nil
 
 	case loadSessionsMsg:
@@ -1524,6 +1537,50 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
+
+		// Handle setup wizard first (modal, blocks everything)
+		if h.setupWizard.IsVisible() {
+			var cmd tea.Cmd
+			h.setupWizard, cmd = h.setupWizard.Update(msg)
+			// Check if user pressed Enter on final step
+			if msg.String() == "enter" && h.setupWizard.IsComplete() {
+				// Save config and close wizard
+				config := h.setupWizard.GetConfig()
+				if err := session.SaveUserConfig(config); err != nil {
+					h.err = err
+					h.errTime = time.Now()
+				}
+				h.setupWizard.Hide()
+				// Reload config cache
+				session.ReloadUserConfig()
+				// Apply default tool to new dialog
+				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
+					h.newDialog.SetDefaultTool(defaultTool)
+				}
+			}
+			return h, cmd
+		}
+
+		// Handle settings panel
+		if h.settingsPanel.IsVisible() {
+			var cmd tea.Cmd
+			var shouldSave bool
+			h.settingsPanel, cmd, shouldSave = h.settingsPanel.Update(msg)
+			if shouldSave {
+				// Auto-save on every change
+				config := h.settingsPanel.GetConfig()
+				if err := session.SaveUserConfig(config); err != nil {
+					h.err = err
+					h.errTime = time.Now()
+				}
+				session.ReloadUserConfig()
+				// Apply default tool to new dialog
+				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
+					h.newDialog.SetDefaultTool(defaultTool)
+				}
+			}
+			return h, cmd
+		}
 
 		// Handle overlays first
 		// Help overlay takes priority (any key closes it)
@@ -1987,6 +2044,12 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		h.helpOverlay.SetSize(h.width, h.height)
 		h.helpOverlay.Show()
+		return h, nil
+
+	case "S":
+		// Open settings panel
+		h.settingsPanel.Show()
+		h.settingsPanel.SetSize(h.width, h.height)
 		return h, nil
 
 	case "n":
@@ -2899,6 +2962,16 @@ func (h *Home) View() string {
 	// Show loading splash during initial session load
 	if h.initialLoading {
 		return renderLoadingSplash(h.width, h.height, h.animationFrame)
+	}
+
+	// Setup wizard takes over entire screen
+	if h.setupWizard.IsVisible() {
+		return h.setupWizard.View()
+	}
+
+	// Settings panel is modal
+	if h.settingsPanel.IsVisible() {
+		return h.settingsPanel.View()
 	}
 
 	// Overlays take full screen

@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
+	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
 
 // UserConfigFileName is the TOML config file for user preferences
@@ -473,6 +474,58 @@ func GetUpdateSettings() UpdateSettings {
 	return settings
 }
 
+// getMCPPoolConfigSection returns the MCP pool config section based on platform
+// On unsupported platforms (WSL1, Windows), it's commented out with explanation
+func getMCPPoolConfigSection() string {
+	header := `
+# ============================================================================
+# MCP Socket Pool (Advanced)
+# ============================================================================
+# The MCP pool shares MCP processes across multiple Claude sessions via Unix
+# domain sockets. This reduces memory usage when running many sessions.
+#
+# PLATFORM SUPPORT:
+#   macOS/Linux: Full support
+#   WSL2: Full support
+#   WSL1: NOT SUPPORTED (Unix sockets unreliable)
+#   Windows: NOT SUPPORTED
+#
+# When pooling is disabled or unsupported, MCPs use stdio mode (default).
+# Both modes work identically - pooling is just a memory optimization.
+
+`
+	if platform.SupportsUnixSockets() {
+		// Platform supports pooling - show enabled example
+		return header + `# Uncomment to enable MCP socket pooling:
+# [mcp_pool]
+# enabled = true
+# pool_all = true           # Pool all MCPs defined above
+# fallback_to_stdio = true  # Fall back to stdio if socket fails
+# exclude_mcps = []         # MCPs to exclude from pooling
+`
+	}
+
+	// Platform doesn't support pooling - explain why it's disabled
+	p := platform.Detect()
+	reason := "Unix sockets not supported"
+	tip := ""
+
+	switch p {
+	case platform.PlatformWSL1:
+		reason = "WSL1 detected - Unix sockets unreliable"
+		tip = "\n# TIP: Upgrade to WSL2 for socket pooling support:\n#      wsl --set-version <distro> 2\n"
+	case platform.PlatformWindows:
+		reason = "Windows detected - Unix sockets not available"
+	}
+
+	return header + fmt.Sprintf(`# MCP pool is DISABLED on this platform: %s
+# MCPs will use stdio mode (works fine, just uses more memory with many sessions).
+%s
+# [mcp_pool]
+# enabled = false  # Cannot be enabled on this platform
+`, reason, tip)
+}
+
 // CreateExampleConfig creates an example config file if none exists
 func CreateExampleConfig() error {
 	configPath, err := GetUserConfigPath()
@@ -603,6 +656,9 @@ notify_in_cli = true
 # icon = "🤖"
 # busy_patterns = ["Generating..."]
 `
+
+	// Add platform-aware MCP pool section
+	exampleConfig += getMCPPoolConfigSection()
 
 	// Ensure directory exists
 	dir := filepath.Dir(configPath)

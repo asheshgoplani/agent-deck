@@ -1,0 +1,708 @@
+# Agent Deck - Complete Documentation for AI Assistants
+
+> Agent Deck is a terminal session manager for AI coding agents. It manages Claude Code, Gemini CLI, and other AI sessions using tmux, with features like session forking, MCP server management, and hierarchical organization.
+
+This file contains complete documentation optimized for AI/LLM consumption. Each section is self-contained and can be understood independently.
+
+---
+
+## What is Agent Deck?
+
+Agent Deck is a TUI (Terminal User Interface) application that helps developers manage multiple AI coding agent sessions from a single interface.
+
+**Key capabilities:**
+- Manage multiple Claude Code, Gemini CLI, and other AI sessions
+- Fork Claude conversations to explore different approaches
+- Attach/detach MCP (Model Context Protocol) servers per project or globally
+- Organize sessions into hierarchical groups
+- Search across all sessions and conversations
+- Real-time status detection (running, waiting, idle, error)
+
+**Built with:** Go, Bubble Tea (TUI framework), tmux (session persistence)
+
+**Platforms:** macOS, Linux, Windows (via WSL)
+
+---
+
+## Installation
+
+### Quick Install (Recommended)
+```bash
+curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
+```
+
+### Alternative Methods
+
+**Homebrew (macOS/Linux):**
+```bash
+brew install asheshgoplani/tap/agent-deck
+```
+
+**Go Install:**
+```bash
+go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest
+```
+
+**From Source:**
+```bash
+git clone https://github.com/asheshgoplani/agent-deck.git
+cd agent-deck
+make install
+```
+
+### Requirements
+- tmux (installed automatically by the installer)
+- macOS, Linux, or Windows with WSL
+
+### Uninstall
+```bash
+agent-deck uninstall              # Interactive uninstall
+agent-deck uninstall --dry-run    # Preview what would be removed
+agent-deck uninstall --keep-data  # Remove binary only, keep sessions and config
+```
+
+---
+
+## Quick Start
+
+```bash
+# Launch the TUI
+agent-deck
+
+# Add a session for current directory with Claude
+agent-deck add -c claude .
+
+# Add a session with a custom title
+agent-deck add -t "My Project" -c claude /path/to/project
+
+# List all sessions
+agent-deck list
+
+# Check status without launching TUI
+agent-deck status
+```
+
+---
+
+## CLI Commands Reference
+
+### Main Commands
+
+| Command | Description |
+|---------|-------------|
+| `agent-deck` | Launch interactive TUI |
+| `agent-deck add <path>` | Add new session |
+| `agent-deck list` | List all sessions |
+| `agent-deck remove <id>` | Remove a session |
+| `agent-deck status` | Show status summary |
+| `agent-deck update` | Check for and install updates |
+| `agent-deck uninstall` | Uninstall agent-deck |
+| `agent-deck version` | Show version |
+| `agent-deck help` | Show help |
+
+### Add Command Flags
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `-t, --title` | Session title | `-t "My Project"` |
+| `-g, --group` | Target group | `-g "work/frontend"` |
+| `-c, --cmd` | Command/tool | `-c claude` or `-c gemini` |
+
+**Supported tools for `-c` flag:** `claude`, `gemini`, `opencode`, `codex`, `cursor`, or any custom command.
+
+### Session Commands
+
+All session commands: `agent-deck session <subcommand> [args]`
+
+| Command | Description |
+|---------|-------------|
+| `session start <id>` | Start a stopped session |
+| `session stop <id>` | Stop a running session |
+| `session restart <id>` | Restart session (Claude/Gemini: reloads MCPs and resumes conversation) |
+| `session fork <id>` | Fork Claude session with full conversation history (Claude only) |
+| `session attach <id>` | Attach to session interactively |
+| `session show <id>` | Show session details |
+| `session show` | Show current session (when inside tmux) |
+| `session current` | Auto-detect current session and profile |
+| `session current -q` | Just session name (for scripting) |
+| `session current --json` | JSON output (for automation) |
+| `session set <id> <field> <value>` | Update session property |
+| `session send <id> <message>` | Send message to running session |
+| `session output <id>` | Get last response from session |
+
+**Session identification:** Commands accept session ID, title (exact or fuzzy), ID prefix, or path.
+
+**Fork flags:**
+| Flag | Description |
+|------|-------------|
+| `-t, --title` | Custom title for forked session |
+| `-g, --group` | Target group for forked session |
+
+### MCP Commands
+
+All MCP commands: `agent-deck mcp <subcommand> [args]`
+
+| Command | Description |
+|---------|-------------|
+| `mcp list` | List all available MCPs from config.toml |
+| `mcp list --json` | List MCPs as JSON |
+| `mcp attached <id>` | List MCPs attached to a session |
+| `mcp attached` | List MCPs for current session (in tmux) |
+| `mcp attach <id> <mcp>` | Attach MCP to session (LOCAL scope) |
+| `mcp attach <id> <mcp> --global` | Attach MCP to session (GLOBAL scope) |
+| `mcp attach <id> <mcp> --restart` | Attach and restart session to load MCP |
+| `mcp detach <id> <mcp>` | Detach MCP from session |
+| `mcp detach <id> <mcp> --global` | Detach from GLOBAL scope |
+
+**MCP Scopes (Claude only):**
+| Scope | Config Location | Effect |
+|-------|-----------------|--------|
+| LOCAL | `.mcp.json` in project directory | MCP available only in that project |
+| GLOBAL | `~/.claude/.claude.json` or custom config | MCP available in all projects |
+
+**Note:** Gemini CLI only supports global MCPs (writes to `~/.gemini/settings.json`).
+
+### Group Commands
+
+All group commands: `agent-deck group <subcommand> [args]`
+
+| Command | Description |
+|---------|-------------|
+| `group list` | List all groups |
+| `group list --json` | List groups as JSON |
+| `group create <name>` | Create a new group |
+| `group create <name> --parent <parent>` | Create a subgroup |
+| `group delete <name>` | Delete empty group |
+| `group delete <name> --force` | Delete group and move sessions to default |
+| `group move <session-id> <group>` | Move session to a group |
+
+### Global Flags
+
+These flags work with all commands:
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON (for automation/scripting) |
+| `-q, --quiet` | Minimal output, rely on exit codes |
+| `-p, --profile <name>` | Use specific profile |
+
+---
+
+## TUI Keyboard Shortcuts
+
+### Navigation
+| Key | Action |
+|-----|--------|
+| `j` or `↓` | Move down |
+| `k` or `↑` | Move up |
+| `h` or `←` | Collapse group or go to parent |
+| `l` or `→` or `Tab` | Expand/collapse group |
+
+### Session Actions
+| Key | Action |
+|-----|--------|
+| `Enter` | Attach to session (or toggle group) |
+| `n` | Create new session (inherits current group) |
+| `r` or `R` | Restart session |
+| `f` | Quick fork Claude session |
+| `F` | Fork with dialog (custom title/group) |
+| `M` | Open MCP Manager |
+| `e` | Rename session or group |
+| `m` | Move session to different group |
+| `d` | Delete session or group |
+| `u` | Mark as unread (idle → waiting) |
+| `K` | Move item up in order |
+| `J` | Move item down in order |
+
+### Group Actions
+| Key | Action |
+|-----|--------|
+| `g` | Create new group (subgroup if on a group) |
+
+### Search and Filter
+| Key | Action |
+|-----|--------|
+| `/` | Search sessions (fuzzy search) |
+| `G` | Global search (all Claude conversations) |
+| `0` | Show all sessions |
+| `!` | Filter: running only |
+| `@` | Filter: waiting only |
+| `#` | Filter: idle only |
+| `$` | Filter: error only |
+
+### Other
+| Key | Action |
+|-----|--------|
+| `?` | Show help overlay |
+| `i` | Import existing tmux sessions |
+| `Ctrl+Q` | Detach from session (return to TUI) |
+| `q` or `Ctrl+C` | Quit agent-deck |
+
+---
+
+## Status Indicators
+
+| Status | Symbol | Color | Meaning |
+|--------|--------|-------|---------|
+| Running | `●` | Green | Agent is actively working or content changed recently |
+| Waiting | `◐` | Yellow | Session stopped, needs attention (unacknowledged) |
+| Idle | `○` | Gray | Session stopped, acknowledged by user |
+| Error | `✕` | Red | Session doesn't exist or crashed |
+
+---
+
+## Configuration
+
+Configuration file location: `~/.agent-deck/config.toml`
+
+### Claude Configuration
+
+```toml
+[claude]
+# Custom Claude config directory (for multiple Claude profiles)
+config_dir = "~/.claude-work"
+
+# Enable dangerous mode (--dangerously-skip-permissions flag)
+dangerous_mode = true
+```
+
+### MCP Server Configuration
+
+Define MCP servers to make them available in the MCP Manager:
+
+```toml
+# Standard MCP (stdio-based, runs locally)
+[mcps.exa]
+command = "npx"
+args = ["-y", "exa-mcp-server"]
+env = { EXA_API_KEY = "your-api-key" }
+description = "Web search via Exa AI"
+
+[mcps.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_your_token" }
+description = "GitHub repos, issues, PRs"
+
+[mcps.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+description = "Browser automation and testing"
+
+[mcps.memory]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+description = "Persistent memory via knowledge graph"
+
+# HTTP/SSE-based MCP (remote server)
+[mcps.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+transport = "http"
+description = "GitHub repo documentation"
+```
+
+### MCP Socket Pool Configuration
+
+For users running many Claude sessions, enable socket pooling to share MCP processes:
+
+```toml
+[mcp_pool]
+# Enable socket pooling (reduces memory usage)
+enabled = true
+
+# Pool all available MCPs at startup
+pool_all = true
+
+# Exclude specific MCPs from pooling
+exclude_mcps = ["chrome-devtools"]
+
+# Fall back to stdio if pool fails
+fallback_to_stdio = true
+```
+
+**How it works:** Instead of each session spawning its own MCP processes, all sessions share MCP processes via Unix sockets. This reduces memory usage by 85-90% for MCP-related processes.
+
+**Platform Support:**
+
+| Platform | Socket Pool | Notes |
+|----------|-------------|-------|
+| macOS | ✅ Full support | Works out of the box |
+| Linux | ✅ Full support | Works out of the box |
+| WSL2 | ✅ Full support | Works out of the box |
+| WSL1 | ❌ Auto-disabled | Uses stdio mode (MCPs still work) |
+| Windows | ❌ Not supported | Use WSL instead |
+
+**WSL1 users:** MCP pooling is automatically disabled because Unix sockets don't work reliably. MCPs still work perfectly in stdio mode - you just use more memory with many sessions. Upgrade to WSL2 for socket pooling: `wsl --set-version <distro> 2`
+
+**Indicators:**
+- 🔌 in MCP Manager = MCP is pooled and running
+- Socket files: `/tmp/agentdeck-mcp-{name}.sock`
+
+### Log Configuration
+
+```toml
+[logs]
+# Max log file size before truncation (MB)
+max_size_mb = 10
+
+# Lines to keep after truncation
+max_lines = 10000
+
+# Remove logs for deleted sessions
+remove_orphans = true
+```
+
+### Global Search Configuration
+
+```toml
+[global_search]
+# Enable global search feature
+enabled = true
+
+# Only search conversations from last N days
+recent_days = 30
+
+# Search tier: "instant" (<100MB), "balanced", or "auto"
+tier = "auto"
+```
+
+### Update Configuration
+
+```toml
+[updates]
+# Auto-install updates without prompting
+auto_update = false
+
+# Enable update checks on startup
+check_enabled = true
+
+# Check interval in hours
+check_interval_hours = 24
+
+# Show update notification in CLI commands
+notify_in_cli = true
+```
+
+### Custom Tool Configuration
+
+```toml
+[tools.my-ai]
+command = "my-ai-assistant"
+icon = "🧠"
+busy_patterns = ["thinking...", "processing..."]
+```
+
+---
+
+## MCP Manager
+
+Press `M` in the TUI to open the MCP Manager.
+
+### Controls
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch between LOCAL and GLOBAL scope |
+| `←` / `→` | Switch columns |
+| `↑` / `↓` | Navigate MCPs |
+| `Space` | Toggle MCP on/off |
+| `Enter` | Apply changes |
+| `Esc` | Cancel |
+
+### Scopes (Claude only)
+
+| Scope | Config File | Effect |
+|-------|-------------|--------|
+| LOCAL | `.mcp.json` in project directory | MCP available only in that project |
+| GLOBAL | Claude config directory | MCP available in all projects |
+
+### Preview Indicators
+- `(l)` = LOCAL scope
+- `(g)` = GLOBAL scope
+- `(p)` = PROJECT (from .mcp.json)
+- Yellow `⟳` = Pending restart to apply changes
+- Dim `✕` = Stale (needs restart)
+
+### Adding MCP Servers
+
+1. Edit `~/.agent-deck/config.toml`
+2. Add MCP configuration under `[mcps.name]`
+3. Restart agent-deck
+4. Press `M` to toggle the new MCP
+
+---
+
+## Session Forking (Claude Only)
+
+Forking creates a new Claude session that inherits the full conversation history.
+
+### Requirements
+- Running Claude session
+- Valid Claude session ID detected
+
+### How to Fork
+
+**TUI:**
+- Press `f` for quick fork
+- Press `F` for fork dialog (custom title/group)
+
+**CLI:**
+```bash
+agent-deck session fork <session-id>
+agent-deck session fork <session-id> -t "Exploration"
+agent-deck session fork <session-id> -g "experiments"
+```
+
+### Configuration for Fork
+
+```toml
+[claude]
+config_dir = "~/.claude-work"  # Optional: custom Claude profile
+dangerous_mode = true          # Required for --dangerously-skip-permissions
+```
+
+---
+
+## Gemini CLI Integration
+
+Agent Deck fully supports Google's Gemini CLI.
+
+### Features
+- Automatic session detection from `~/.gemini/tmp/<project-hash>/chats/`
+- Session resume with `gemini --resume <id>`
+- MCP management via MCP Manager (global scope only)
+- Response extraction via `session output`
+
+### Limitations
+- No fork support (use sub-sessions instead)
+- Global MCPs only (no project-level MCPs)
+
+### Resume a Gemini Session
+Press `r` on a Gemini session in the TUI, or:
+```bash
+agent-deck session restart <gemini-session-id>
+```
+
+---
+
+## Global Search
+
+Press `G` in the TUI to search all Claude conversations in `~/.claude/projects/`.
+
+### Features
+- Full content search across all conversations
+- Auto-scroll to matching content
+- Keyword highlighting
+- Match count display
+- Recency ranking
+- Fuzzy fallback
+
+### Controls
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate results |
+| `[` / `]` | Scroll preview |
+| `Enter` | Open conversation |
+| `Tab` | Switch to local search |
+| `Esc` | Close search |
+
+---
+
+## File Locations
+
+| Path | Purpose |
+|------|---------|
+| `~/.agent-deck/` | Main data directory |
+| `~/.agent-deck/config.toml` | User configuration |
+| `~/.agent-deck/profiles/default/sessions.json` | Session data |
+| `~/.agent-deck/profiles/default/sessions.json.bak` | Backup (3 generations) |
+| `~/.agent-deck/logs/` | Session logs |
+| `/tmp/agentdeck-mcp-*.sock` | MCP socket pool files |
+
+---
+
+## Troubleshooting FAQ
+
+### Q: Why do my sessions show "error" status?
+**A:** The tmux session doesn't exist. This happens when:
+- The session was killed externally
+- tmux server was restarted
+- The session crashed
+
+**Solution:** Start the session with `agent-deck session start <id>` or delete and recreate it.
+
+### Q: How do I attach an MCP to all projects?
+**A:** Use the `--global` flag:
+```bash
+agent-deck mcp attach <session-id> <mcp-name> --global --restart
+```
+Or in the TUI: Press `M`, press `Tab` to switch to GLOBAL scope, toggle the MCP, press `Enter`.
+
+### Q: Fork isn't working. What's wrong?
+**A:** Fork requires:
+1. A running Claude session
+2. Valid Claude session ID (detected from tmux environment or file scanning)
+
+**Check session ID:**
+```bash
+agent-deck session show <id> --json | jq '.claude_session_id'
+```
+
+If empty, restart the session to capture the ID.
+
+### Q: Why is agent-deck using so much memory?
+**A:** If running many Claude sessions, each spawns separate MCP processes.
+
+**Solution:** Enable MCP Socket Pool:
+```toml
+# ~/.agent-deck/config.toml
+[mcp_pool]
+enabled = true
+pool_all = true
+```
+
+This shares MCP processes across sessions, reducing memory by 85-90%.
+
+### Q: How do I use a custom Claude profile?
+**A:** Set `config_dir` in your config:
+```toml
+[claude]
+config_dir = "~/.claude-work"
+```
+
+### Q: Sessions disappear when using multiple profiles
+**A:** Make sure you're using the correct profile flag:
+```bash
+agent-deck -p work        # Work profile
+agent-deck -p default     # Default profile
+agent-deck                # Uses default profile
+```
+
+### Q: How do I recover lost sessions?
+**A:** Session metadata has rolling backups:
+```bash
+# Check backups
+ls ~/.agent-deck/profiles/default/sessions.json.bak*
+
+# Restore from backup
+cp ~/.agent-deck/profiles/default/sessions.json.bak ~/.agent-deck/profiles/default/sessions.json
+```
+
+Session logs are preserved in `~/.agent-deck/logs/`.
+
+### Q: How do I add a new MCP server?
+**A:** Edit `~/.agent-deck/config.toml`:
+```toml
+[mcps.your-mcp]
+command = "npx"
+args = ["-y", "your-mcp-package"]
+env = { API_KEY = "your-key" }
+description = "What this MCP does"
+```
+
+Then restart agent-deck and press `M` to toggle it.
+
+### Q: How do I use agent-deck on Windows?
+**A:** Install WSL (Windows Subsystem for Linux) first:
+1. Install WSL: https://learn.microsoft.com/en-us/windows/wsl/install
+2. Open WSL terminal
+3. Run the installer: `curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash`
+
+**WSL Version Differences:**
+
+| Feature | WSL1 | WSL2 |
+|---------|------|------|
+| Core functionality | ✅ | ✅ |
+| MCP management | ✅ | ✅ |
+| Session forking | ✅ | ✅ |
+| MCP socket pooling | ❌ Auto-disabled | ✅ |
+
+WSL2 is recommended. Check version: `wsl --list --verbose`. Upgrade: `wsl --set-version <distro> 2`
+
+### Q: Will agent-deck interfere with my existing tmux setup?
+**A:** No. Agent Deck creates its own sessions with `agentdeck_*` prefix. Your existing tmux sessions are untouched.
+
+### Q: How do I update agent-deck?
+**A:**
+```bash
+agent-deck update              # Check and install update
+agent-deck update --check      # Just check, don't install
+```
+
+Or reinstall:
+```bash
+curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
+```
+
+### Q: How do I detach from a session without closing it?
+**A:** Press `Ctrl+Q` while attached to a session. The session continues running in tmux.
+
+### Q: How do I get the output of a Claude/Gemini session programmatically?
+**A:**
+```bash
+agent-deck session output <id>
+```
+Returns the last response (Claude: JSONL format, Gemini: JSON format).
+
+---
+
+## Scripting Examples
+
+### Get all running sessions as JSON
+```bash
+agent-deck list --json | jq '.[] | select(.status == "running")'
+```
+
+### Count waiting sessions
+```bash
+agent-deck status -q
+```
+
+### Start all sessions in a group
+```bash
+agent-deck list --json | jq -r '.[] | select(.group == "work") | .id' | \
+  xargs -I{} agent-deck session start {}
+```
+
+### Attach MCP to all Claude sessions
+```bash
+agent-deck list --json | jq -r '.[] | select(.tool == "claude") | .id' | \
+  xargs -I{} agent-deck mcp attach {} memory --restart
+```
+
+### Auto-detect current session in scripts
+```bash
+PARENT=$(agent-deck session current -q)
+PROFILE=$(agent-deck session current --json | jq -r '.profile')
+agent-deck -p "$PROFILE" add -t "Subtask" --parent "$PARENT" -c claude /tmp/subtask
+```
+
+---
+
+## Version and Updates
+
+**Current version:** Check with `agent-deck version`
+
+**Update notification:** When a new version is available, you'll see:
+- Yellow banner in TUI: `⬆ Update available: v0.8.1 → v0.8.2 (run: agent-deck update)`
+- CLI notification: `💡 Update available: v0.8.1 → v0.8.2 (run: agent-deck update)`
+
+**Update command:**
+```bash
+agent-deck update              # Check and install
+agent-deck update --check      # Check only
+agent-deck update --force      # Force check (bypass 24h cache)
+```
+
+---
+
+## Support
+
+- **GitHub Issues:** https://github.com/asheshgoplani/agent-deck/issues
+- **Discussions:** https://github.com/asheshgoplani/agent-deck/discussions
+- **Documentation:** https://github.com/asheshgoplani/agent-deck
+
+---
+
+## License
+
+MIT License - https://github.com/asheshgoplani/agent-deck/blob/main/LICENSE
