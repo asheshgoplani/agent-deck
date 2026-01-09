@@ -563,9 +563,9 @@ func handleAdd(profile string, args []string) {
 		newInstance = session.NewInstance(sessionTitle, path)
 	}
 
-	// Set parent if specified
+	// Set parent if specified (includes parent's project path for --add-dir access)
 	if parentInstance != nil {
-		newInstance.SetParent(parentInstance.ID)
+		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
 	}
 
 	// Set command if provided

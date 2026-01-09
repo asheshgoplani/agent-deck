@@ -1038,8 +1038,8 @@ func handleSessionSetParent(profile string, args []string) {
 		}
 	}
 
-	// Set parent and inherit group
-	inst.SetParent(parentInst.ID)
+	// Set parent (with project path for --add-dir access) and inherit group
+	inst.SetParentWithPath(parentInst.ID, parentInst.ProjectPath)
 	inst.GroupPath = parentInst.GroupPath
 
 	// Save
