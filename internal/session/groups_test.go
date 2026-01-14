@@ -711,6 +711,31 @@ func TestUpdateDefaultPathForGroup_MostRecent(t *testing.T) {
 	}
 }
 
+func TestUpdateDefaultPathForGroup_WorktreePrefersRepoRoot(t *testing.T) {
+	now := time.Now()
+	instances := []*Instance{
+		{
+			ID:               "1",
+			Title:            "worktree",
+			GroupPath:        "work",
+			ProjectPath:      "/tmp/repo/.worktrees/feature",
+			WorktreePath:     "/tmp/repo/.worktrees/feature",
+			WorktreeRepoRoot: "/tmp/repo",
+			CreatedAt:        now.Add(-1 * time.Hour),
+			LastAccessedAt:   now.Add(-30 * time.Minute),
+		},
+	}
+
+	tree := NewGroupTree(instances)
+	group := tree.Groups["work"]
+	if group == nil {
+		t.Fatal("work group should exist")
+	}
+	if group.DefaultPath != "/tmp/repo" {
+		t.Errorf("DefaultPath = %q, want %q", group.DefaultPath, "/tmp/repo")
+	}
+}
+
 func TestGetParentPath(t *testing.T) {
 	tests := []struct {
 		path     string

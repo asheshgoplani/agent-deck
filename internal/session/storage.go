@@ -58,17 +58,20 @@ type StorageData struct {
 
 // InstanceData represents the serializable session data
 type InstanceData struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	ProjectPath     string    `json:"project_path"`
-	GroupPath       string    `json:"group_path"`
-	ParentSessionID string    `json:"parent_session_id,omitempty"` // Links to parent session (sub-session support)
-	Command         string    `json:"command"`
-	Tool            string    `json:"tool"`
-	Status          Status    `json:"status"`
-	CreatedAt       time.Time `json:"created_at"`
-	LastAccessedAt  time.Time `json:"last_accessed_at,omitempty"`
-	TmuxSession     string    `json:"tmux_session"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	ProjectPath      string    `json:"project_path"`
+	GroupPath        string    `json:"group_path"`
+	ParentSessionID  string    `json:"parent_session_id,omitempty"` // Links to parent session (sub-session support)
+	WorktreePath     string    `json:"worktree_path,omitempty"`
+	WorktreeRepoRoot string    `json:"worktree_repo_root,omitempty"`
+	WorktreeBranch   string    `json:"worktree_branch,omitempty"`
+	Command          string    `json:"command"`
+	Tool             string    `json:"tool"`
+	Status           Status    `json:"status"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastAccessedAt   time.Time `json:"last_accessed_at,omitempty"`
+	TmuxSession      string    `json:"tmux_session"`
 
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
@@ -205,6 +208,9 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			ProjectPath:      inst.ProjectPath,
 			GroupPath:        inst.GroupPath,
 			ParentSessionID:  inst.ParentSessionID,
+			WorktreePath:     inst.WorktreePath,
+			WorktreeRepoRoot: inst.WorktreeRepoRoot,
+			WorktreeBranch:   inst.WorktreeBranch,
 			Command:          inst.Command,
 			Tool:             inst.Tool,
 			Status:           inst.Status,
@@ -510,6 +516,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ProjectPath:      projectPath,
 			GroupPath:        groupPath,
 			ParentSessionID:  instData.ParentSessionID,
+			WorktreePath:     instData.WorktreePath,
+			WorktreeRepoRoot: instData.WorktreeRepoRoot,
+			WorktreeBranch:   instData.WorktreeBranch,
 			Command:          instData.Command,
 			Tool:             instData.Tool,
 			Status:           instData.Status,

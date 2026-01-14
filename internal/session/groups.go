@@ -50,15 +50,23 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 	var mostRecentTime time.Time
 
 	for _, inst := range sessions {
-		if inst == nil || inst.ProjectPath == "" {
+		if inst == nil {
 			continue
 		}
+		path := inst.ProjectPath
+		if inst.IsWorktree() && inst.WorktreeRepoRoot != "" {
+			path = inst.WorktreeRepoRoot
+		}
+		if path == "" {
+			continue
+		}
+
 		accessTime := inst.LastAccessedAt
 		if accessTime.IsZero() {
 			accessTime = inst.CreatedAt
 		}
 		if mostRecentPath == "" || accessTime.After(mostRecentTime) {
-			mostRecentPath = inst.ProjectPath
+			mostRecentPath = path
 			mostRecentTime = accessTime
 		}
 	}

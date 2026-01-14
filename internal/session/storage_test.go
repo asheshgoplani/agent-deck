@@ -163,3 +163,52 @@ func TestStoragePersistsGroupDefaultPath(t *testing.T) {
 		t.Errorf("DefaultPath = %q, want %q", workGroup.DefaultPath, "/tmp/new")
 	}
 }
+
+func TestStoragePersistsWorktreeFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	storagePath := filepath.Join(tmpDir, "sessions.json")
+
+	s := &Storage{
+		path:    storagePath,
+		profile: "_test",
+	}
+
+	instances := []*Instance{
+		{
+			ID:               "1",
+			Title:            "worktree-session",
+			ProjectPath:      "/tmp/repo/.worktrees/feature",
+			GroupPath:        "work",
+			WorktreePath:     "/tmp/repo/.worktrees/feature",
+			WorktreeRepoRoot: "/tmp/repo",
+			WorktreeBranch:   "feature",
+			Command:          "claude",
+			Tool:             "claude",
+			Status:           StatusIdle,
+			CreatedAt:        time.Now(),
+		},
+	}
+
+	groupTree := NewGroupTree(instances)
+	if err := s.SaveWithGroups(instances, groupTree); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	loadedInstances, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+	if len(loadedInstances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(loadedInstances))
+	}
+	loaded := loadedInstances[0]
+	if loaded.WorktreePath != "/tmp/repo/.worktrees/feature" {
+		t.Errorf("WorktreePath = %q, want %q", loaded.WorktreePath, "/tmp/repo/.worktrees/feature")
+	}
+	if loaded.WorktreeRepoRoot != "/tmp/repo" {
+		t.Errorf("WorktreeRepoRoot = %q, want %q", loaded.WorktreeRepoRoot, "/tmp/repo")
+	}
+	if loaded.WorktreeBranch != "feature" {
+		t.Errorf("WorktreeBranch = %q, want %q", loaded.WorktreeBranch, "feature")
+	}
+}
