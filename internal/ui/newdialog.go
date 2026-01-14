@@ -82,8 +82,8 @@ func NewNewDialog() *NewDialog {
 	}
 }
 
-// ShowInGroup shows the dialog with a pre-selected parent group
-func (d *NewDialog) ShowInGroup(groupPath, groupName string) {
+// ShowInGroup shows the dialog with a pre-selected parent group and optional default path
+func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	if groupPath == "" {
 		groupPath = "default"
 		groupName = "default"
@@ -94,6 +94,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName string) {
 	d.focusIndex = 0
 	d.nameInput.SetValue("")
 	d.nameInput.Focus()
+	if defaultPath != "" {
+		d.pathInput.SetValue(defaultPath)
+	}
 	d.suggestionNavigated = false // reset on show
 	d.pathSuggestionCursor = 0    // reset cursor too
 	// Keep commandCursor at previously set default (don't reset to 0)
@@ -142,7 +145,7 @@ func (d *NewDialog) SetPathSuggestions(paths []string) {
 
 // Show makes the dialog visible (uses default group)
 func (d *NewDialog) Show() {
-	d.ShowInGroup("default", "default")
+	d.ShowInGroup("default", "default", "")
 }
 
 // Hide hides the dialog

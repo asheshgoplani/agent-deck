@@ -479,13 +479,35 @@ func TestNewDialog_ShowInGroup_ResetsWorktree(t *testing.T) {
 	dialog.worktreeEnabled = true
 	dialog.branchInput.SetValue("feature/old-branch")
 
-	dialog.ShowInGroup("projects", "Projects")
+	dialog.ShowInGroup("projects", "Projects", "")
 
 	if dialog.worktreeEnabled {
 		t.Error("worktreeEnabled should be reset to false on ShowInGroup")
 	}
 	if dialog.branchInput.Value() != "" {
 		t.Errorf("branchInput should be reset, got: %q", dialog.branchInput.Value())
+	}
+}
+
+func TestNewDialog_ShowInGroup_DefaultPathApplied(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.pathInput.SetValue("/old/path")
+
+	dialog.ShowInGroup("projects", "Projects", "/new/path")
+
+	if dialog.pathInput.Value() != "/new/path" {
+		t.Errorf("pathInput should be set to default path, got: %q", dialog.pathInput.Value())
+	}
+}
+
+func TestNewDialog_ShowInGroup_DefaultPathEmpty_DoesNotOverride(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.pathInput.SetValue("/old/path")
+
+	dialog.ShowInGroup("projects", "Projects", "")
+
+	if dialog.pathInput.Value() != "/old/path" {
+		t.Errorf("pathInput should remain unchanged, got: %q", dialog.pathInput.Value())
 	}
 }
 

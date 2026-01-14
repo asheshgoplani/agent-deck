@@ -103,3 +103,63 @@ func TestGetUpdatedAtNoFile(t *testing.T) {
 		t.Errorf("Expected IsNotExist error, got: %v", err)
 	}
 }
+
+func TestStoragePersistsGroupDefaultPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	storagePath := filepath.Join(tmpDir, "sessions.json")
+
+	s := &Storage{
+		path:    storagePath,
+		profile: "_test",
+	}
+
+	now := time.Now()
+	instances := []*Instance{
+		{
+			ID:             "1",
+			Title:          "old",
+			ProjectPath:    "/tmp/old",
+			GroupPath:      "work",
+			Command:        "claude",
+			Tool:           "claude",
+			Status:         StatusIdle,
+			CreatedAt:      now.Add(-2 * time.Hour),
+			LastAccessedAt: now.Add(-90 * time.Minute),
+		},
+		{
+			ID:             "2",
+			Title:          "new",
+			ProjectPath:    "/tmp/new",
+			GroupPath:      "work",
+			Command:        "claude",
+			Tool:           "claude",
+			Status:         StatusIdle,
+			CreatedAt:      now.Add(-1 * time.Hour),
+			LastAccessedAt: now.Add(-30 * time.Minute),
+		},
+	}
+
+	groupTree := NewGroupTree(instances)
+	if err := s.SaveWithGroups(instances, groupTree); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	_, groups, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+
+	var workGroup *GroupData
+	for _, g := range groups {
+		if g.Path == "work" {
+			workGroup = g
+			break
+		}
+	}
+	if workGroup == nil {
+		t.Fatal("work group not found in stored groups")
+	}
+	if workGroup.DefaultPath != "/tmp/new" {
+		t.Errorf("DefaultPath = %q, want %q", workGroup.DefaultPath, "/tmp/new")
+	}
+}

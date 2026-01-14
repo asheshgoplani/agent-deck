@@ -84,10 +84,11 @@ type InstanceData struct {
 
 // GroupData represents serializable group data
 type GroupData struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Expanded bool   `json:"expanded"`
-	Order    int    `json:"order"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	DefaultPath string `json:"default_path,omitempty"`
+	Expanded    bool   `json:"expanded"`
+	Order       int    `json:"order"`
 }
 
 // Storage handles persistence of session data
@@ -223,10 +224,11 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 		data.Groups = make([]*GroupData, 0, len(groupTree.GroupList))
 		for _, g := range groupTree.GroupList {
 			data.Groups = append(data.Groups, &GroupData{
-				Name:     g.Name,
-				Path:     g.Path,
-				Expanded: g.Expanded,
-				Order:    g.Order,
+				Name:        g.Name,
+				Path:        g.Path,
+				DefaultPath: g.DefaultPath,
+				Expanded:    g.Expanded,
+				Order:       g.Order,
 			})
 		}
 	}

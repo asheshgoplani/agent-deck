@@ -2,6 +2,7 @@ package session
 
 import (
 	"testing"
+	"time"
 )
 
 func TestNewGroupTree(t *testing.T) {
@@ -660,6 +661,53 @@ func TestNewGroupTreeWithGroups(t *testing.T) {
 	// Expanded state should be preserved
 	if tree.Groups["empty-group"].Expanded {
 		t.Error("empty-group should be collapsed (as stored)")
+	}
+}
+
+func TestNewGroupTreeWithGroups_PreservesDefaultPathForEmptyGroup(t *testing.T) {
+	storedGroups := []*GroupData{
+		{Name: "empty-group", Path: "empty-group", DefaultPath: "/tmp/empty", Expanded: false, Order: 0},
+	}
+
+	tree := NewGroupTreeWithGroups(nil, storedGroups)
+
+	group := tree.Groups["empty-group"]
+	if group == nil {
+		t.Fatal("empty-group should exist")
+	}
+	if group.DefaultPath != "/tmp/empty" {
+		t.Errorf("DefaultPath = %q, want %q", group.DefaultPath, "/tmp/empty")
+	}
+}
+
+func TestUpdateDefaultPathForGroup_MostRecent(t *testing.T) {
+	now := time.Now()
+	instances := []*Instance{
+		{
+			ID:             "1",
+			Title:          "old",
+			GroupPath:      "work",
+			ProjectPath:    "/tmp/old",
+			CreatedAt:      now.Add(-2 * time.Hour),
+			LastAccessedAt: now.Add(-90 * time.Minute),
+		},
+		{
+			ID:             "2",
+			Title:          "new",
+			GroupPath:      "work",
+			ProjectPath:    "/tmp/new",
+			CreatedAt:      now.Add(-1 * time.Hour),
+			LastAccessedAt: now.Add(-30 * time.Minute),
+		},
+	}
+
+	tree := NewGroupTree(instances)
+	group := tree.Groups["work"]
+	if group == nil {
+		t.Fatal("work group should exist")
+	}
+	if group.DefaultPath != "/tmp/new" {
+		t.Errorf("DefaultPath = %q, want %q", group.DefaultPath, "/tmp/new")
 	}
 }
 

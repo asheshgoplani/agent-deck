@@ -3,6 +3,7 @@ package session
 import (
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -22,25 +23,56 @@ const (
 
 // Item represents a single item in the flattened group tree view
 type Item struct {
-	Type               ItemType
-	Group              *Group
-	Session            *Instance
-	Level              int    // Indentation level (0 for root groups, 1 for sessions)
-	Path               string // Group path for this item
-	IsLastInGroup      bool   // True if this is the last session in its group (for tree rendering)
-	RootGroupNum       int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
-	IsSubSession       bool   // True if this session has a parent session
-	IsLastSubSession   bool   // True if this is the last sub-session of its parent (for tree rendering)
-	ParentIsLastInGroup bool  // True if parent session is last top-level item (for tree line rendering)
+	Type                ItemType
+	Group               *Group
+	Session             *Instance
+	Level               int    // Indentation level (0 for root groups, 1 for sessions)
+	Path                string // Group path for this item
+	IsLastInGroup       bool   // True if this is the last session in its group (for tree rendering)
+	RootGroupNum        int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
+	IsSubSession        bool   // True if this session has a parent session
+	IsLastSubSession    bool   // True if this is the last sub-session of its parent (for tree rendering)
+	ParentIsLastInGroup bool   // True if parent session is last top-level item (for tree line rendering)
 }
 
 // Group represents a group of sessions
 type Group struct {
-	Name     string
-	Path     string // Full path like "projects" or "projects/devops"
-	Expanded bool
-	Sessions []*Instance
-	Order    int
+	Name        string
+	Path        string // Full path like "projects" or "projects/devops"
+	DefaultPath string // Last-used project path for this group
+	Expanded    bool
+	Sessions    []*Instance
+	Order       int
+}
+
+func mostRecentPathForSessions(sessions []*Instance) string {
+	var mostRecentPath string
+	var mostRecentTime time.Time
+
+	for _, inst := range sessions {
+		if inst == nil || inst.ProjectPath == "" {
+			continue
+		}
+		accessTime := inst.LastAccessedAt
+		if accessTime.IsZero() {
+			accessTime = inst.CreatedAt
+		}
+		if mostRecentPath == "" || accessTime.After(mostRecentTime) {
+			mostRecentPath = inst.ProjectPath
+			mostRecentTime = accessTime
+		}
+	}
+
+	return mostRecentPath
+}
+
+func updateGroupDefaultPath(group *Group) {
+	if group == nil || len(group.Sessions) == 0 {
+		return
+	}
+	if defaultPath := mostRecentPathForSessions(group.Sessions); defaultPath != "" {
+		group.DefaultPath = defaultPath
+	}
 }
 
 // GroupTree manages hierarchical session organization
@@ -85,6 +117,10 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 		group.Sessions = append(group.Sessions, inst)
 	}
 
+	for _, group := range tree.Groups {
+		updateGroupDefaultPath(group)
+	}
+
 	// Sort groups alphabetically and assign order
 	tree.rebuildGroupList()
 
@@ -101,11 +137,12 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 	// First, create groups from stored data (preserves empty groups)
 	for _, gd := range storedGroups {
 		group := &Group{
-			Name:     gd.Name,
-			Path:     gd.Path,
-			Expanded: gd.Expanded,
-			Sessions: []*Instance{},
-			Order:    gd.Order,
+			Name:        gd.Name,
+			Path:        gd.Path,
+			DefaultPath: gd.DefaultPath,
+			Expanded:    gd.Expanded,
+			Sessions:    []*Instance{},
+			Order:       gd.Order,
 		}
 		tree.Groups[gd.Path] = group
 		tree.Expanded[gd.Path] = gd.Expanded
@@ -138,6 +175,10 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 			tree.Expanded[groupPath] = true
 		}
 		group.Sessions = append(group.Sessions, inst)
+	}
+
+	for _, group := range tree.Groups {
+		updateGroupDefaultPath(group)
 	}
 
 	// Rebuild group list maintaining stored order
@@ -488,6 +529,7 @@ func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 				break
 			}
 		}
+		updateGroupDefaultPath(oldGroup)
 		// NOTE: We do NOT delete empty groups here - user-created groups should persist
 	}
 
@@ -505,6 +547,7 @@ func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 		t.rebuildGroupList()
 	}
 	newGroup.Sessions = append(newGroup.Sessions, inst)
+	updateGroupDefaultPath(newGroup)
 }
 
 // sanitizeGroupName removes dangerous characters from group names
@@ -691,6 +734,7 @@ func (t *GroupTree) DeleteGroup(path string) []*Instance {
 		t.Groups[DefaultGroupPath] = defaultGroup
 	}
 	defaultGroup.Sessions = append(defaultGroup.Sessions, allMovedSessions...)
+	updateGroupDefaultPath(defaultGroup)
 
 	// Remove the main group
 	delete(t.Groups, path)
@@ -761,6 +805,7 @@ func (t *GroupTree) AddSession(inst *Instance) {
 		t.rebuildGroupList()
 	}
 	group.Sessions = append(group.Sessions, inst)
+	updateGroupDefaultPath(group)
 }
 
 // RemoveSession removes a session from its group
@@ -777,6 +822,7 @@ func (t *GroupTree) RemoveSession(inst *Instance) {
 				break
 			}
 		}
+		updateGroupDefaultPath(group)
 		// NOTE: We do NOT delete empty groups - they persist until explicitly deleted
 	}
 }
@@ -830,11 +876,25 @@ func (t *GroupTree) SyncWithInstances(instances []*Instance) {
 		group.Sessions = append(group.Sessions, inst)
 	}
 
+	for _, group := range t.Groups {
+		updateGroupDefaultPath(group)
+	}
+
 	// Always rebuild GroupList at the end to ensure consistency between
 	// Groups map and GroupList slice. This fixes the bug where flatItems
 	// could be empty while instances has data (filter bar shows counts
 	// but main panel shows "No Sessions Yet").
 	t.rebuildGroupList()
+}
+
+// UpdateDefaultPathForGroup refreshes the stored default path for a group.
+func (t *GroupTree) UpdateDefaultPathForGroup(groupPath string) {
+	if groupPath == "" || groupPath == DefaultGroupName {
+		groupPath = DefaultGroupPath
+	}
+	if group, exists := t.Groups[groupPath]; exists {
+		updateGroupDefaultPath(group)
+	}
 }
 
 // ShallowCopyForSave creates a copy of the GroupTree that's safe to use
@@ -852,10 +912,11 @@ func (t *GroupTree) ShallowCopyForSave() *GroupTree {
 	groupListCopy := make([]*Group, len(t.GroupList))
 	for i, g := range t.GroupList {
 		groupListCopy[i] = &Group{
-			Name:     g.Name,
-			Path:     g.Path,
-			Expanded: g.Expanded,
-			Order:    g.Order,
+			Name:        g.Name,
+			Path:        g.Path,
+			DefaultPath: g.DefaultPath,
+			Expanded:    g.Expanded,
+			Order:       g.Order,
 			// Don't copy Sessions - not needed for save, only metadata is saved
 		}
 	}
