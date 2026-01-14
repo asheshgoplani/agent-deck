@@ -325,42 +325,82 @@ func (d *PromptDetector) hasShellPrompt(content string) bool {
 // ANSI Stripping Utility
 // =============================================================================
 
-// StripANSI removes ANSI escape codes from content
-// This is important because terminal output contains color codes
+// StripANSI removes ANSI escape codes from content using O(n) single-pass algorithm.
+// This is important because terminal output contains color codes.
+//
+// PERFORMANCE: Uses strings.Builder with pre-allocation for O(n) time complexity.
+// Previous implementation used string concatenation in loops which was O(n²)
+// and caused 2-11 second UI freezes on large terminal output (Issue #39).
+//
+// NOTE: We intentionally avoid regex here because complex ANSI regex patterns
+// can cause catastrophic backtracking on malformed escape sequences.
 func StripANSI(content string) string {
-	// Simple but effective ANSI stripping
-	result := content
+	// Fast path: if no escape chars, return as-is
+	if !strings.ContainsAny(content, "\x1b\x9B") {
+		return content
+	}
 
-	// Remove CSI sequences (most common): ESC [ ... letter
-	for {
-		start := strings.Index(result, "\x1b[")
-		if start == -1 {
-			break
-		}
-		end := start + 2
-		for end < len(result) {
-			c := result[end]
-			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
-				end++
-				break
+	var b strings.Builder
+	b.Grow(len(content)) // Pre-allocate to avoid reallocations
+
+	i := 0
+	for i < len(content) {
+		// Check for ESC character
+		if content[i] == '\x1b' {
+			// CSI sequence: ESC [ ... letter
+			if i+1 < len(content) && content[i+1] == '[' {
+				j := i + 2
+				// Skip until we find the terminating letter
+				for j < len(content) {
+					c := content[j]
+					if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+						j++
+						break
+					}
+					j++
+				}
+				i = j
+				continue
 			}
-			end++
+			// OSC sequence: ESC ] ... BEL
+			if i+1 < len(content) && content[i+1] == ']' {
+				// Find BEL terminator
+				bellPos := strings.Index(content[i:], "\x07")
+				if bellPos != -1 {
+					i += bellPos + 1
+					continue
+				}
+				// No BEL found - find ST (ESC \) as alternative terminator
+				stPos := strings.Index(content[i:], "\x1b\\")
+				if stPos != -1 {
+					i += stPos + 2
+					continue
+				}
+			}
+			// Other escape sequence: ESC followed by single char
+			if i+1 < len(content) {
+				i += 2
+				continue
+			}
 		}
-		result = result[:start] + result[end:]
+		// Check for CSI without ESC (8-bit CSI: 0x9B)
+		if content[i] == '\x9B' {
+			j := i + 1
+			for j < len(content) {
+				c := content[j]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+		// Regular character - copy to output
+		b.WriteByte(content[i])
+		i++
 	}
 
-	// Remove OSC sequences: ESC ] ... BEL
-	for {
-		start := strings.Index(result, "\x1b]")
-		if start == -1 {
-			break
-		}
-		end := strings.Index(result[start:], "\x07")
-		if end == -1 {
-			break
-		}
-		result = result[:start] + result[start+end+1:]
-	}
-
-	return result
+	return b.String()
 }
