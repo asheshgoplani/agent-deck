@@ -126,9 +126,15 @@ type Home struct {
 	forkDialog    *ForkDialog    // For forking sessions
 	confirmDialog *ConfirmDialog // For confirming destructive actions
 	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
-	mcpDialog     *MCPDialog     // For managing MCPs
-	setupWizard   *SetupWizard   // For first-run setup
-	settingsPanel *SettingsPanel // For editing settings
+	mcpDialog      *MCPDialog      // For managing MCPs
+	setupWizard    *SetupWizard    // For first-run setup
+	settingsPanel  *SettingsPanel  // For editing settings
+	analyticsPanel *AnalyticsPanel // For displaying session analytics
+
+	// Analytics cache (async fetching)
+	currentAnalytics    *session.SessionAnalytics // Cached analytics for selected session
+	analyticsSessionID  string                    // Session ID for cached analytics
+	analyticsFetchingID string                    // ID currently being fetched (prevents duplicates)
 
 	// State
 	cursor        int            // Selected item index in flatItems
@@ -276,6 +282,13 @@ type previewDebounceMsg struct {
 	sessionID string
 }
 
+// analyticsFetchedMsg is sent when async analytics parsing is complete
+type analyticsFetchedMsg struct {
+	sessionID string
+	analytics *session.SessionAnalytics
+	err       error
+}
+
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
 	viewOffset    int   // Current scroll position
@@ -320,6 +333,7 @@ func NewHomeWithProfile(profile string) *Home {
 		mcpDialog:         NewMCPDialog(),
 		setupWizard:       NewSetupWizard(),
 		settingsPanel:     NewSettingsPanel(),
+		analyticsPanel:    NewAnalyticsPanel(),
 		cursor:            0,
 		initialLoading:    true, // Show splash until sessions load
 		ctx:               ctx,
@@ -951,6 +965,46 @@ func (h *Home) fetchPreviewDebounced(sessionID string) tea.Cmd {
 	}
 }
 
+// fetchAnalytics returns a command that asynchronously parses session analytics
+// This keeps View() pure (no blocking I/O) as per Bubble Tea best practices
+func (h *Home) fetchAnalytics(inst *session.Instance) tea.Cmd {
+	if inst == nil || inst.Tool != "claude" {
+		return nil
+	}
+	sessionID := inst.ID
+	claudeSessionID := inst.ClaudeSessionID
+
+	return func() tea.Msg {
+		// Get JSONL path for this session
+		jsonlPath := inst.GetJSONLPath()
+		if jsonlPath == "" {
+			// No JSONL path available - return empty analytics
+			return analyticsFetchedMsg{
+				sessionID: sessionID,
+				analytics: nil,
+				err:       nil,
+			}
+		}
+
+		// Parse the JSONL file
+		analytics, err := session.ParseSessionJSONL(jsonlPath)
+		if err != nil {
+			log.Printf("Failed to parse analytics for session %s (claude session %s): %v", sessionID, claudeSessionID, err)
+			return analyticsFetchedMsg{
+				sessionID: sessionID,
+				analytics: nil,
+				err:       err,
+			}
+		}
+
+		return analyticsFetchedMsg{
+			sessionID: sessionID,
+			analytics: analytics,
+			err:       nil,
+		}
+	}
+}
+
 // getSelectedSession returns the currently selected session, or nil if a group is selected
 func (h *Home) getSelectedSession() *session.Instance {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
@@ -1034,6 +1088,11 @@ func (h *Home) triggerStatusUpdate() {
 // With batching (3 visible + 2 non-visible per tick), we keep each tick under 100ms.
 func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	const batchSize = 2 // Reduced from 5 to 2 - fewer CapturePane() calls per tick
+
+	// CRITICAL FIX: Refresh session cache in background worker, NOT main goroutine
+	// This prevents UI freezing when subprocess spawning is slow (high system load)
+	// The cache refresh spawns `tmux list-sessions` which can block for 50-200ms
+	tmux.RefreshExistingSessions()
 
 	// Take a snapshot of instances under read lock (thread-safe)
 	h.instancesMu.RLock()
@@ -1446,14 +1505,30 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.RUnlock()
 
 		if inst != nil {
+			var cmds []tea.Cmd
+
+			// Preview fetch
 			h.previewCacheMu.Lock()
-			needsFetch := h.previewFetchingID != inst.ID
-			if needsFetch {
+			needsPreviewFetch := h.previewFetchingID != inst.ID
+			if needsPreviewFetch {
 				h.previewFetchingID = inst.ID
 			}
 			h.previewCacheMu.Unlock()
-			if needsFetch {
-				return h, h.fetchPreview(inst)
+			if needsPreviewFetch {
+				cmds = append(cmds, h.fetchPreview(inst))
+			}
+
+			// Analytics fetch (for Claude sessions with analytics enabled)
+			if inst.Tool == "claude" && h.analyticsSessionID != inst.ID && h.analyticsFetchingID != inst.ID {
+				config, _ := session.LoadUserConfig()
+				if config != nil && config.GetShowAnalytics() {
+					h.analyticsFetchingID = inst.ID
+					cmds = append(cmds, h.fetchAnalytics(inst))
+				}
+			}
+
+			if len(cmds) > 0 {
+				return h, tea.Batch(cmds...)
 			}
 		}
 		return h, nil
@@ -1468,6 +1543,17 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.previewCacheTime[msg.sessionID] = time.Now()
 		}
 		h.previewCacheMu.Unlock()
+		return h, nil
+
+	case analyticsFetchedMsg:
+		// Async analytics parsing complete - update cache
+		h.analyticsFetchingID = ""
+		if msg.err == nil && msg.analytics != nil {
+			h.currentAnalytics = msg.analytics
+			h.analyticsSessionID = msg.sessionID
+			// Update analytics panel with new data
+			h.analyticsPanel.SetAnalytics(msg.analytics)
+		}
 		return h, nil
 
 	case tickMsg:
@@ -1492,12 +1578,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			const userActivityWindow = 2 * time.Second
 			if !h.lastUserInputTime.IsZero() && time.Since(h.lastUserInputTime) < userActivityWindow {
 				// User is active - trigger status updates
-				tmux.RefreshExistingSessions()
+				// NOTE: RefreshExistingSessions() moved to background worker (processStatusUpdate)
+				// to avoid blocking the main goroutine with subprocess calls
 				h.triggerStatusUpdate()
-			} else {
-				// User idle - only refresh cache lightly (no status updates)
-				tmux.RefreshExistingSessions()
 			}
+			// User idle - no updates needed (cache refresh happens in background worker)
 		}
 
 		// Update animation frame for launching spinner (8 frames, cycles every tick)
@@ -4773,6 +4858,49 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			content = content[:len(content)-1]
 		}
 
+		return content
+	}
+
+	// Check preview settings for what to show
+	config, _ := session.LoadUserConfig()
+	showAnalytics := config != nil && config.GetShowAnalytics() && selected.Tool == "claude"
+	showOutput := config == nil || config.GetShowOutput() // Default to true if config fails
+
+	// Analytics panel (for Claude sessions with analytics enabled)
+	if showAnalytics {
+		analyticsHeader := renderSectionDivider("Analytics", width-4)
+		b.WriteString(analyticsHeader)
+		b.WriteString("\n")
+
+		// Check if we have analytics for this session
+		if h.analyticsSessionID == selected.ID && h.currentAnalytics != nil {
+			h.analyticsPanel.SetSize(width-4, height/2)
+			b.WriteString(h.analyticsPanel.View())
+			b.WriteString("\n")
+		} else {
+			// Analytics not yet loaded
+			loadingStyle := lipgloss.NewStyle().
+				Foreground(ColorText).
+				Italic(true)
+			b.WriteString(loadingStyle.Render("Loading analytics..."))
+			b.WriteString("\n\n")
+		}
+	}
+
+	// If output is disabled and we already showed analytics, return early
+	if !showOutput {
+		// Pad output to exact height to prevent layout shifts
+		content := b.String()
+		lines := strings.Split(content, "\n")
+		lineCount := len(lines)
+		if lineCount < height {
+			for i := lineCount; i < height; i++ {
+				content += "\n"
+			}
+		}
+		if len(content) > 0 && content[len(content)-1] == '\n' {
+			content = content[:len(content)-1]
+		}
 		return content
 	}
 

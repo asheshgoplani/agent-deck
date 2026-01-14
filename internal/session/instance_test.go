@@ -1208,3 +1208,112 @@ func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 		}
 	})
 }
+
+func TestInstance_GetJSONLPath(t *testing.T) {
+	t.Run("non-claude session returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "shell"
+		inst.ClaudeSessionID = "abc123"
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() for non-claude should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session without session ID returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = ""
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() without session ID should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session with missing file returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = "nonexistent-session-id"
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() with missing file should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session with existing file returns path", func(t *testing.T) {
+		// Create a temp directory structure that mimics Claude's layout
+		tempDir := t.TempDir()
+		projectPath := filepath.Join(tempDir, "myproject")
+		if err := os.MkdirAll(projectPath, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		// Resolve symlinks in project path (same as GetJSONLPath does)
+		resolvedPath := projectPath
+		if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+			resolvedPath = resolved
+		}
+
+		// Create mock Claude config structure using the RESOLVED path
+		claudeDir := filepath.Join(tempDir, ".claude")
+		projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+		claudeProjectDir := filepath.Join(claudeDir, "projects", projectDirName)
+		if err := os.MkdirAll(claudeProjectDir, 0755); err != nil {
+			t.Fatalf("Failed to create claude project dir: %v", err)
+		}
+
+		// Create a mock JSONL file
+		sessionID := "test-session-123"
+		jsonlFile := filepath.Join(claudeProjectDir, sessionID+".jsonl")
+		if err := os.WriteFile(jsonlFile, []byte(`{"type":"assistant"}`), 0644); err != nil {
+			t.Fatalf("Failed to create jsonl file: %v", err)
+		}
+
+		// Resolve claudeDir too for comparison
+		resolvedClaudeDir := claudeDir
+		if resolved, err := filepath.EvalSymlinks(claudeDir); err == nil {
+			resolvedClaudeDir = resolved
+		}
+
+		// Override claude config dir for test - must be done BEFORE clearing cache
+		oldClaudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("CLAUDE_CONFIG_DIR", resolvedClaudeDir)
+		defer os.Setenv("CLAUDE_CONFIG_DIR", oldClaudeConfigDir)
+
+		// Clear cached config so GetClaudeConfigDir picks up the new env var
+		userConfigCacheMu.Lock()
+		userConfigCache = nil
+		userConfigCacheMu.Unlock()
+		defer func() {
+			userConfigCacheMu.Lock()
+			userConfigCache = nil
+			userConfigCacheMu.Unlock()
+		}()
+
+		// Verify GetClaudeConfigDir returns the right path
+		configDir := GetClaudeConfigDir()
+		t.Logf("GetClaudeConfigDir() = %s (expected: %s)", configDir, resolvedClaudeDir)
+
+		inst := NewInstance("test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		path := inst.GetJSONLPath()
+		t.Logf("GetJSONLPath() = %s", path)
+		t.Logf("Expected jsonlFile = %s", jsonlFile)
+		if path == "" {
+			t.Errorf("GetJSONLPath() with existing file should return path")
+		}
+		// Compare resolved paths since EvalSymlinks might differ
+		expectedResolved := jsonlFile
+		if r, err := filepath.EvalSymlinks(jsonlFile); err == nil {
+			expectedResolved = r
+		}
+		if path != expectedResolved {
+			t.Errorf("GetJSONLPath() = %s, want %s", path, expectedResolved)
+		}
+	})
+}

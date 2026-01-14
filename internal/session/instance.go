@@ -302,13 +302,142 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 	return baseCommand
 }
 
+// buildGenericCommand builds command for user-defined tools from config.toml
+// If the tool has session resume config, builds capture-resume command similar to Claude/Gemini
+// Otherwise returns the base command as-is
+//
+// Config fields used:
+//   - resume_flag: CLI flag to resume (e.g., "--resume")
+//   - session_id_env: tmux env var name (e.g., "VIBE_SESSION_ID")
+//   - session_id_json_path: jq path to extract ID (e.g., ".session_id")
+//   - output_format_flag: flag to get JSON output (e.g., "--output-format json")
+//   - dangerous_flag: flag to skip confirmations (e.g., "--auto-approve")
+//   - dangerous_mode: whether to enable dangerous flag by default
+func (i *Instance) buildGenericCommand(baseCommand string) string {
+	toolDef := GetToolDef(i.Tool)
+	if toolDef == nil {
+		return baseCommand // No custom config, return as-is
+	}
+
+	// Check if tool supports session resume (needs both resume_flag and session_id_env)
+	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+		// No session resume support, just add dangerous flag if configured
+		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
+			return fmt.Sprintf("%s %s", baseCommand, toolDef.DangerousFlag)
+		}
+		return baseCommand
+	}
+
+	// Get existing session ID from tmux environment (for restart/resume)
+	existingSessionID := ""
+	if i.tmuxSession != nil {
+		if sid, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv); err == nil && sid != "" {
+			existingSessionID = sid
+		}
+	}
+
+	// Build dangerous flag if enabled
+	dangerousFlag := ""
+	if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
+		dangerousFlag = " " + toolDef.DangerousFlag
+	}
+
+	// If we have an existing session ID, just resume
+	if existingSessionID != "" {
+		return fmt.Sprintf("tmux set-environment %s %s && %s %s %s%s",
+			toolDef.SessionIDEnv, existingSessionID,
+			baseCommand, toolDef.ResumeFlag, existingSessionID, dangerousFlag)
+	}
+
+	// No existing session ID - need to capture it on first run
+	// This requires output_format_flag and session_id_json_path
+	if toolDef.OutputFormatFlag == "" || toolDef.SessionIDJsonPath == "" {
+		// Can't capture session ID, just start normally
+		if dangerousFlag != "" {
+			return baseCommand + dangerousFlag
+		}
+		return baseCommand
+	}
+
+	// Build capture-resume command similar to Claude/Gemini
+	// Pattern:
+	// 1. Run tool with minimal prompt to get session ID
+	// 2. Extract ID using jq
+	// 3. Store in tmux environment
+	// 4. Resume that session
+	// Fallback: If capture fails, start tool fresh
+	return fmt.Sprintf(
+		`session_id=$(%s %s "." 2>/dev/null | jq -r '%s' 2>/dev/null) || session_id=""; `+
+			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
+			`tmux set-environment %s "$session_id"; `+
+			`%s %s "$session_id"%s; `+
+			`else %s%s; fi`,
+		baseCommand, toolDef.OutputFormatFlag, toolDef.SessionIDJsonPath,
+		toolDef.SessionIDEnv,
+		baseCommand, toolDef.ResumeFlag, dangerousFlag,
+		baseCommand, dangerousFlag)
+}
+
+// GetGenericSessionID gets session ID from tmux environment for a custom tool
+// Uses the session_id_env field from tool config
+func (i *Instance) GetGenericSessionID() string {
+	toolDef := GetToolDef(i.Tool)
+	if toolDef == nil || toolDef.SessionIDEnv == "" {
+		return ""
+	}
+	if i.tmuxSession == nil {
+		return ""
+	}
+	sessionID, err := i.tmuxSession.GetEnvironment(toolDef.SessionIDEnv)
+	if err != nil {
+		return ""
+	}
+	return sessionID
+}
+
+// CanRestartGeneric returns true if a custom tool can be restarted with session resume
+func (i *Instance) CanRestartGeneric() bool {
+	toolDef := GetToolDef(i.Tool)
+	if toolDef == nil {
+		return false
+	}
+	// Can restart if we have resume support AND an existing session ID
+	if toolDef.ResumeFlag == "" || toolDef.SessionIDEnv == "" {
+		return false
+	}
+	return i.GetGenericSessionID() != ""
+}
+
+// loadCustomPatternsFromConfig loads custom detection patterns from config.toml
+// and sets them on the tmux session for status detection and tool auto-detection
+func (i *Instance) loadCustomPatternsFromConfig() {
+	if i.tmuxSession == nil {
+		return
+	}
+
+	toolDef := GetToolDef(i.Tool)
+	if toolDef == nil {
+		return // No custom config for this tool
+	}
+
+	// Set custom patterns on the tmux session
+	// The tool name is passed so DetectTool() knows what to return when patterns match
+	i.tmuxSession.SetCustomPatterns(
+		i.Tool, // Tool name (e.g., "vibe", "aider")
+		toolDef.BusyPatterns,
+		toolDef.PromptPatterns,
+		toolDef.DetectPatterns,
+	)
+}
+
 // Start starts the session in tmux
 func (i *Instance) Start() error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
-	// Build command (adds config dir for claude, capture-resume for gemini)
+	// Build command based on tool type
+	// Priority: built-in tools (claude, gemini) → custom tools from config.toml → raw command
 	var command string
 	switch i.Tool {
 	case "claude":
@@ -316,8 +445,16 @@ func (i *Instance) Start() error {
 	case "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	default:
-		command = i.Command
+		// Check if this is a custom tool with session resume config
+		if toolDef := GetToolDef(i.Tool); toolDef != nil {
+			command = i.buildGenericCommand(i.Command)
+		} else {
+			command = i.Command
+		}
 	}
+
+	// Load custom patterns for status detection
+	i.loadCustomPatternsFromConfig()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -349,6 +486,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	}
 
 	// Start session normally (no embedded message logic)
+	// Priority: built-in tools (claude, gemini) → custom tools from config.toml → raw command
 	var command string
 	switch i.Tool {
 	case "claude":
@@ -356,8 +494,16 @@ func (i *Instance) StartWithMessage(message string) error {
 	case "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	default:
-		command = i.Command
+		// Check if this is a custom tool with session resume config
+		if toolDef := GetToolDef(i.Tool); toolDef != nil {
+			command = i.buildGenericCommand(i.Command)
+		} else {
+			command = i.Command
+		}
 	}
+
+	// Load custom patterns for status detection
+	i.loadCustomPatternsFromConfig()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -668,6 +814,37 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 		return i.getGeminiLastResponse()
 	}
 	return i.getTerminalLastResponse()
+}
+
+// GetJSONLPath returns the path to the Claude session JSONL file for analytics
+// Returns empty string if this is not a Claude session or no session ID is available
+func (i *Instance) GetJSONLPath() string {
+	if i.Tool != "claude" || i.ClaudeSessionID == "" {
+		return ""
+	}
+
+	configDir := GetClaudeConfigDir()
+
+	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
+	resolvedPath := i.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
+		resolvedPath = resolved
+	}
+
+	// Convert project path to Claude's directory format
+	// /Users/ashesh/claude-deck -> -Users-ashesh-claude-deck
+	projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+
+	// Build the JSONL file path
+	sessionFile := filepath.Join(projectDir, i.ClaudeSessionID+".jsonl")
+
+	// Verify file exists before returning
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		return ""
+	}
+
+	return sessionFile
 }
 
 // getClaudeLastResponse extracts the last assistant message from Claude's JSONL file
@@ -1064,6 +1241,53 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
+	// If Gemini session with known ID AND tmux session exists, use respawn-pane
+	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		// Build Gemini resume command with tmux env update
+		resumeCmd := fmt.Sprintf("tmux set-environment GEMINI_SESSION_ID %s && gemini --resume %s",
+			i.GeminiSessionID, i.GeminiSessionID)
+		log.Printf("[RESTART-DEBUG] Gemini using respawn-pane with command: %s", resumeCmd)
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			log.Printf("[RESTART-DEBUG] Gemini RespawnPane failed: %v", err)
+			return fmt.Errorf("failed to restart Gemini session: %w", err)
+		}
+
+		log.Printf("[RESTART-DEBUG] Gemini RespawnPane succeeded")
+		i.Status = StatusWaiting
+		return nil
+	}
+
+	// If custom tool with session resume support AND tmux session exists, use respawn-pane
+	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		toolDef := GetToolDef(i.Tool)
+		sessionID := i.GetGenericSessionID()
+
+		// Build resume command for custom tool
+		var resumeCmd string
+		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
+			resumeCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s %s",
+				toolDef.SessionIDEnv, sessionID,
+				i.Command, toolDef.ResumeFlag, sessionID, toolDef.DangerousFlag)
+		} else {
+			resumeCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s",
+				toolDef.SessionIDEnv, sessionID,
+				i.Command, toolDef.ResumeFlag, sessionID)
+		}
+
+		log.Printf("[RESTART-DEBUG] Generic tool '%s' using respawn-pane with command: %s", i.Tool, resumeCmd)
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			log.Printf("[RESTART-DEBUG] Generic tool RespawnPane failed: %v", err)
+			return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
+		}
+
+		log.Printf("[RESTART-DEBUG] Generic tool RespawnPane succeeded")
+		i.loadCustomPatternsFromConfig() // Reload custom patterns
+		i.Status = StatusWaiting
+		return nil
+	}
+
 	log.Printf("[MCP-DEBUG] Using fallback: recreate tmux session")
 
 	// Fallback: recreate tmux session (for dead sessions or unknown ID)
@@ -1084,9 +1308,18 @@ func (i *Instance) Restart() error {
 		case "gemini":
 			command = i.buildGeminiCommand(i.Command)
 		default:
-			command = i.Command
+			// Check if this is a custom tool with session resume config
+			if toolDef := GetToolDef(i.Tool); toolDef != nil {
+				command = i.buildGenericCommand(i.Command)
+			} else {
+				command = i.Command
+			}
 		}
 	}
+
+	// Load custom patterns for status detection (for custom tools)
+	i.loadCustomPatternsFromConfig()
+
 	log.Printf("[MCP-DEBUG] Starting new tmux session with command: %s", command)
 
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -1142,6 +1375,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 // CanRestart returns true if the session can be restarted
 // For Claude sessions with known ID: can always restart (interrupt and resume)
 // For Gemini sessions with known ID: can always restart (interrupt and resume)
+// For custom tools with session resume config: can restart if session ID available
 // For other sessions: only if dead/error state
 func (i *Instance) CanRestart() bool {
 	// Gemini sessions with known session ID can always be restarted
@@ -1151,6 +1385,11 @@ func (i *Instance) CanRestart() bool {
 
 	// Claude sessions with known session ID can always be restarted
 	if i.Tool == "claude" && i.ClaudeSessionID != "" {
+		return true
+	}
+
+	// Custom tools: check if they have session resume support
+	if i.CanRestartGeneric() {
 		return true
 	}
 
