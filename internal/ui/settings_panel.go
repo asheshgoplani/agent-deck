@@ -84,7 +84,7 @@ func NewSettingsPanel() *SettingsPanel {
 		logMaxSizeMB:        10,
 		logMaxLines:         10000,
 		removeOrphans:       true,
-		checkForUpdates:     true,
+		checkForUpdates:     false, // Disabled by default - run your own update implementation
 		globalSearchEnabled: true,
 		recentDays:          90,
 		showOutput:          true, // Default: output ON (shows launch animation)

@@ -239,7 +239,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Build the capture-resume command
 		// Uses --output-format json to get session ID, then resumes
 		baseCmd := fmt.Sprintf(
-			`session_id=$(%s%s -p "." --output-format json 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
+			`session_id=$(%s%s -p "." --output-format json 2>/dev/null | jq -r 'if type == "array" then .[0].session_id else .session_id end' 2>/dev/null) || session_id=""; `+
 				`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
 				`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
 				`%s%s --resume "$session_id"%s; `+
@@ -257,7 +257,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// The wait loop runs in a subshell that polls for ">" prompt (Claude's input prompt)
 			// Once detected, sends the message via tmux send-keys (text + Enter separately)
 			baseCmd = fmt.Sprintf(
-				`session_id=$(%s%s -p "." --output-format json 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
+				`session_id=$(%s%s -p "." --output-format json 2>/dev/null | jq -r 'if type == "array" then .[0].session_id else .session_id end' 2>/dev/null) || session_id=""; `+
 					`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
 					`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
 					`(sleep 2; SESSION_NAME=$(tmux display-message -p '#S'); `+
@@ -305,7 +305,7 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		// NOTE: Using --output-format json (not stream-json with head -1) because:
 		// - head -1 sends SIGPIPE which kills Gemini before it saves the session
 		// - json mode runs to completion, ensuring session file is written
-		return `session_id=$(gemini --output-format json "." 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; ` +
+		return `session_id=$(gemini --output-format json "." 2>/dev/null | jq -r 'if type == "array" then .[0].session_id else .session_id end' 2>/dev/null) || session_id=""; ` +
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then ` +
 			`tmux set-environment GEMINI_SESSION_ID "$session_id"; ` +
 			`gemini --resume "$session_id"; ` +
@@ -1474,7 +1474,7 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 	// Note: Path is single-quoted to handle spaces and special characters
 	// Note: We add jq stderr suppression and validation, but fail if capture fails entirely
 	cmd := fmt.Sprintf(
-		`cd '%s' && session_id=$(%s%s -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r '.session_id' 2>/dev/null); `+
+		`cd '%s' && session_id=$(%s%s -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r 'if type == "array" then .[0].session_id else .session_id end' 2>/dev/null); `+
 			`if [ -z "$session_id" ] || [ "$session_id" = "null" ]; then echo "Fork failed: could not capture session ID. Check if Claude CLI is authenticated and jq is installed."; exit 1; fi; `+
 			`tmux set-environment CLAUDE_SESSION_ID "$session_id" && `+
 			`%s%s --resume "$session_id"%s`,

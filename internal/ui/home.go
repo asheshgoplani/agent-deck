@@ -748,6 +748,11 @@ func (h *Home) Init() tea.Cmd {
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
+		// Respect config setting - updates disabled by default
+		settings := session.GetUpdateSettings()
+		if !settings.CheckEnabled {
+			return updateCheckMsg{info: nil}
+		}
 		info, _ := update.CheckForUpdate(Version, false)
 		return updateCheckMsg{info: info}
 	}

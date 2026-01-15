@@ -297,12 +297,29 @@ func GetClaudeSessionID(projectPath string) (string, error) {
 	return "", fmt.Errorf("no session found for project: %s", projectPath)
 }
 
+// sanitizePathForClaude converts a project path to Claude's directory name format
+// Claude sanitizes paths by replacing special characters with dashes
+func sanitizePathForClaude(path string) string {
+	// Replace / with -
+	result := strings.ReplaceAll(path, "/", "-")
+	// Replace other special chars that Claude sanitizes
+	result = strings.ReplaceAll(result, "@", "-")
+	result = strings.ReplaceAll(result, ".", "-")
+	result = strings.ReplaceAll(result, " ", "-")
+	result = strings.ReplaceAll(result, ":", "-")
+	// Collapse multiple dashes into one
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return result
+}
+
 // findActiveSessionID looks for the most recently modified session file
 // This finds the CURRENTLY RUNNING session, not the last completed one
 func findActiveSessionID(configDir, projectPath string) string {
 	// Convert project path to Claude's directory format
-	// /Users/ashesh/claude-deck -> -Users-ashesh-claude-deck
-	projectDirName := strings.ReplaceAll(projectPath, "/", "-")
+	// /Users/user@domain.io/project -> -Users-user-domain-io-project
+	projectDirName := sanitizePathForClaude(projectPath)
 	projectDir := filepath.Join(configDir, "projects", projectDirName)
 
 	// Check if project directory exists

@@ -163,9 +163,9 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 	}
 
 	config.Updates = session.UpdateSettings{
-		CheckEnabled:       true,
+		CheckEnabled:       false, // Disabled by default - run your own update implementation
 		CheckIntervalHours: 24,
-		NotifyInCLI:        true,
+		NotifyInCLI:        false,
 	}
 
 	// Set MCP pool settings based on platform

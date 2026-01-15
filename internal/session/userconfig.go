@@ -577,22 +577,23 @@ func GetWorktreeSettings() WorktreeSettings {
 func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
+		// Defaults: updates disabled globally
 		return UpdateSettings{
 			AutoUpdate:         false,
-			CheckEnabled:       true,
+			CheckEnabled:       false,
 			CheckIntervalHours: 24,
-			NotifyInCLI:        true,
+			NotifyInCLI:        false,
 		}
 	}
 
 	settings := config.Updates
 
 	// Apply defaults for unset values
-	// CheckEnabled defaults to true (need to detect if section exists)
+	// CheckEnabled defaults to false (disabled globally)
 	if config.Updates.CheckIntervalHours == 0 {
-		settings.CheckEnabled = true
+		settings.CheckEnabled = false
 		settings.CheckIntervalHours = 24
-		settings.NotifyInCLI = true
+		settings.NotifyInCLI = false
 	}
 	if settings.CheckIntervalHours <= 0 {
 		settings.CheckIntervalHours = 24
@@ -710,7 +711,7 @@ remove_orphans = true
 # Automatically install updates without prompting (default: false)
 # auto_update = true
 # Enable update checks on startup (default: true)
-check_enabled = true
+check_enabled = false
 # How often to check for updates in hours (default: 24)
 check_interval_hours = 24
 # Show update notification in CLI commands, not just TUI (default: true)
