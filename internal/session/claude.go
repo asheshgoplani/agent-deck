@@ -251,6 +251,18 @@ func IsClaudeConfigDirExplicit() bool {
 	return false
 }
 
+// GetClaudeCommand returns the configured Claude command/alias
+// Priority: 1) UserConfig setting, 2) Default "claude"
+// This allows users to configure an alias like "cdw" or "cdp" that sets
+// CLAUDE_CONFIG_DIR automatically, avoiding the need for config_dir setting
+func GetClaudeCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.Claude.Command != "" {
+		return userConfig.Claude.Command
+	}
+	return "claude"
+}
+
 // GetClaudeSessionID returns the ACTIVE session ID for a project path
 // It first tries to find the currently running session by checking recently
 // modified .jsonl files, then falls back to lastSessionId from config

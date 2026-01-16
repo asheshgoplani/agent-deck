@@ -498,11 +498,11 @@ func TestSettingsPanel_View_Visible(t *testing.T) {
 
 func TestSettingsPanel_View_HighlightsCursor(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.SetSize(80, 40)
+	panel.SetSize(80, 50) // Increased height for new settings
 	panel.Show()
 
 	// Just verify no crash with various cursor positions
-	for i := 0; i < 12; i++ {
+	for i := 0; i < settingsCount; i++ {
 		panel.cursor = i
 		view := panel.View()
 		if view == "" {
@@ -594,5 +594,135 @@ func TestSettingsPanel_GetConfig_Theme(t *testing.T) {
 				t.Errorf("Theme: got %q, want %q", config.Theme, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSettingsPanelPreviewSettings(t *testing.T) {
+	sp := NewSettingsPanel()
+
+	// Find Show Output setting
+	foundOutput := false
+	foundAnalytics := false
+	for i := 0; i < settingsCount; i++ {
+		sp.cursor = i
+		setting := SettingType(i)
+		switch setting {
+		case SettingShowOutput:
+			foundOutput = true
+		case SettingShowAnalytics:
+			foundAnalytics = true
+		}
+	}
+
+	if !foundOutput {
+		t.Error("Show Output setting should exist (SettingShowOutput constant)")
+	}
+	if !foundAnalytics {
+		t.Error("Show Analytics setting should exist (SettingShowAnalytics constant)")
+	}
+}
+
+func TestSettingsPanel_PreviewSettings_Toggle(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+
+	// Test Show Output toggle
+	panel.cursor = int(SettingShowOutput)
+	initialOutput := panel.showOutput
+
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Error("Show Output toggle should report changed=true")
+	}
+	if panel.showOutput == initialOutput {
+		t.Error("Show Output should have toggled")
+	}
+
+	// Test Show Analytics toggle
+	panel.cursor = int(SettingShowAnalytics)
+	initialAnalytics := panel.showAnalytics
+
+	_, _, changed = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Error("Show Analytics toggle should report changed=true")
+	}
+	if panel.showAnalytics == initialAnalytics {
+		t.Error("Show Analytics should have toggled")
+	}
+}
+
+func TestSettingsPanel_PreviewSettings_LoadConfig(t *testing.T) {
+	panel := NewSettingsPanel()
+
+	// Test loading with explicit values
+	showOutputTrue := true
+	showAnalyticsFalse := false
+	config := &session.UserConfig{
+		Preview: session.PreviewSettings{
+			ShowOutput:    &showOutputTrue,
+			ShowAnalytics: &showAnalyticsFalse,
+		},
+	}
+	panel.LoadConfig(config)
+
+	if !panel.showOutput {
+		t.Error("showOutput should be true after loading config")
+	}
+	if panel.showAnalytics {
+		t.Error("showAnalytics should be false after loading config")
+	}
+
+	// Test loading with nil ShowAnalytics (should default to true)
+	showOutputFalse := false
+	config2 := &session.UserConfig{
+		Preview: session.PreviewSettings{
+			ShowOutput:    &showOutputFalse,
+			ShowAnalytics: nil,
+		},
+	}
+	panel.LoadConfig(config2)
+
+	if panel.showOutput {
+		t.Error("showOutput should be false after loading config2")
+	}
+	if !panel.showAnalytics {
+		t.Error("showAnalytics should default to true when nil")
+	}
+}
+
+func TestSettingsPanel_PreviewSettings_GetConfig(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.showOutput = true
+	panel.showAnalytics = false
+
+	config := panel.GetConfig()
+
+	if config.Preview.ShowOutput == nil || !*config.Preview.ShowOutput {
+		t.Error("Preview.ShowOutput should be true")
+	}
+	if config.Preview.ShowAnalytics == nil {
+		t.Error("Preview.ShowAnalytics should not be nil")
+	} else if *config.Preview.ShowAnalytics {
+		t.Error("Preview.ShowAnalytics should be false")
+	}
+}
+
+func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.SetSize(80, 50)
+	panel.Show()
+
+	view := panel.View()
+
+	expectedElements := []string{
+		"PREVIEW",
+		"Show Output",
+		"Show Analytics",
+	}
+
+	for _, elem := range expectedElements {
+		if !containsString(view, elem) {
+			t.Errorf("View() should contain %q", elem)
+		}
 	}
 }

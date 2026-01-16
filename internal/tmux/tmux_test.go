@@ -192,21 +192,128 @@ func TestBusyIndicatorDetection(t *testing.T) {
 
 func TestStripANSI(t *testing.T) {
 	tests := []struct {
+		name     string
 		input    string
 		expected string
 	}{
-		{"\x1b[32mGreen\x1b[0m", "Green"},
-		{"\x1b[1;31mBold Red\x1b[0m", "Bold Red"},
-		{"No ANSI here", "No ANSI here"},
-		{"\x1b]0;Title\x07Content", "Content"},
+		{"simple green", "\x1b[32mGreen\x1b[0m", "Green"},
+		{"bold red", "\x1b[1;31mBold Red\x1b[0m", "Bold Red"},
+		{"no ansi", "No ANSI here", "No ANSI here"},
+		{"osc title", "\x1b]0;Title\x07Content", "Content"},
+		{"empty string", "", ""},
+		{"256 color", "\x1b[38;5;140mPurple\x1b[0m", "Purple"},
+		{"true color", "\x1b[38;2;255;128;0mOrange\x1b[0m", "Orange"},
+		{"cursor movement", "\x1b[2Aup\x1b[2Bdown", "updown"},
+		{"multiline", "\x1b[32mline1\x1b[0m\n\x1b[33mline2\x1b[0m", "line1\nline2"},
+		{"mixed content", "Hello \x1b[1mworld\x1b[0m!", "Hello world!"},
+		{"nested codes", "\x1b[1m\x1b[31m\x1b[4mtext\x1b[0m", "text"},
+		{"8-bit csi", "\x9Bmtest\x9Bm", "test"}, // 8-bit CSI (0x9B)
+		// Edge cases - malformed sequences (rare in real terminal output)
+		// These match behavior of the original O(n²) implementation
+		{"esc at end", "hello\x1b", "hello\x1b"},             // trailing ESC kept (same as old)
+		{"osc without terminator", "\x1b]0;Title", "0;Title"}, // ESC] stripped, rest kept
+		{"csi without letter", "\x1b[123", ""},                // CSI params stripped
+		{"just esc", "\x1b", "\x1b"},                          // lone ESC kept (same as old)
+		{"esc followed by char", "\x1bXtext", "text"},         // ESC+char stripped
+		{"8-bit csi at end", "test\x9B", "test"},              // 8-bit CSI stripped
+		{"csi at end no params", "test\x1b[", "test"},         // CSI stripped
 	}
 
 	for _, tt := range tests {
-		result := StripANSI(tt.input)
-		if result != tt.expected {
-			t.Errorf("StripANSI(%q) = %q, want %q", tt.input, result, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			result := StripANSI(tt.input)
+			if result != tt.expected {
+				t.Errorf("StripANSI(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
 	}
+}
+
+// generateANSIContent creates test content with many ANSI codes
+func generateANSIContent(lineCount int) string {
+	var b strings.Builder
+	for i := 0; i < lineCount; i++ {
+		b.WriteString("\x1b[38;5;140m")
+		b.WriteString("Line ")
+		b.WriteString("\x1b[1m")
+		b.WriteString("content")
+		b.WriteString("\x1b[0m")
+		b.WriteString(" with ")
+		b.WriteString("\x1b[32m")
+		b.WriteString("colorized")
+		b.WriteString("\x1b[0m")
+		b.WriteString(" text\n")
+	}
+	return b.String()
+}
+
+// BenchmarkStripANSI_Large tests performance on Issue #39 scenario (2000 lines)
+func BenchmarkStripANSI_Large(b *testing.B) {
+	content := generateANSIContent(2000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = StripANSI(content)
+	}
+}
+
+// BenchmarkStripANSI_NoANSI tests fast path for content without ANSI codes
+func BenchmarkStripANSI_NoANSI(b *testing.B) {
+	content := strings.Repeat("Plain text without any ANSI codes here\n", 2000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = StripANSI(content)
+	}
+}
+
+// stripANSIOld is the OLD O(n²) implementation for benchmark comparison
+// DO NOT USE - this is only for performance testing
+func stripANSIOld(content string) string {
+	result := content
+	for {
+		start := strings.Index(result, "\x1b[")
+		if start == -1 {
+			break
+		}
+		end := start + 2
+		for end < len(result) {
+			c := result[end]
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				end++
+				break
+			}
+			end++
+		}
+		result = result[:start] + result[end:]
+	}
+	for {
+		start := strings.Index(result, "\x1b]")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(result[start:], "\x07")
+		if end == -1 {
+			break
+		}
+		result = result[:start] + result[start+end+1:]
+	}
+	return result
+}
+
+// BenchmarkStripANSI_OldVsNew compares O(n²) old vs O(n) new implementation
+func BenchmarkStripANSI_OldVsNew(b *testing.B) {
+	content := generateANSIContent(2000) // Issue #39 scenario
+
+	b.Run("New_O(n)", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = StripANSI(content)
+		}
+	})
+
+	b.Run("Old_O(n²)", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_ = stripANSIOld(content)
+		}
+	})
 }
 
 func TestDetectTool(t *testing.T) {

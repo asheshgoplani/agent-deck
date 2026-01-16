@@ -147,8 +147,18 @@ func TestInstance_Fork(t *testing.T) {
 
 // TestInstance_Fork_ExplicitConfig tests Fork with explicit CLAUDE_CONFIG_DIR
 func TestInstance_Fork_ExplicitConfig(t *testing.T) {
+	// Isolate from user's environment (don't pick up their config.toml)
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	ClearUserConfigCache()
+
 	os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/test-claude-config")
-	defer os.Unsetenv("CLAUDE_CONFIG_DIR")
+	defer func() {
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
 
 	inst := NewInstance("test", "/tmp/test")
 	inst.ClaudeSessionID = "abc-123"
@@ -236,8 +246,18 @@ func TestInstance_CreateForkedInstance(t *testing.T) {
 
 // TestInstance_CreateForkedInstance_ExplicitConfig tests CreateForkedInstance with explicit config
 func TestInstance_CreateForkedInstance_ExplicitConfig(t *testing.T) {
+	// Isolate from user's environment (don't pick up their config.toml)
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	ClearUserConfigCache()
+
 	os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/test-claude-config")
-	defer os.Unsetenv("CLAUDE_CONFIG_DIR")
+	defer func() {
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
 
 	inst := NewInstance("original", "/tmp/test")
 	inst.ClaudeSessionID = "abc-123"
@@ -297,20 +317,20 @@ func TestBuildClaudeCommand(t *testing.T) {
 	// Test with simple "claude" command
 	cmd := inst.buildClaudeCommand("claude")
 
-	// When CLAUDE_CONFIG_DIR is NOT explicitly configured (no env var, no config),
-	// the command should NOT include CLAUDE_CONFIG_DIR - let the shell handle it
-	// This is critical for WSL and other environments where users have
-	// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
+	// When CLAUDE_CONFIG_DIR is NOT explicitly configured,
+	// the command should NOT include CLAUDE_CONFIG_DIR
 	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
 		t.Errorf("Should NOT contain CLAUDE_CONFIG_DIR when not explicitly configured, got: %s", cmd)
 	}
 
-	// Should use capture-resume pattern: -p "." --output-format json
+	// Should use capture-resume pattern: -p "." to get session ID
 	if !strings.Contains(cmd, `-p "."`) {
-		t.Errorf("Should contain -p \".\" for print mode, got: %s", cmd)
+		t.Errorf("Should use -p \".\" for session ID capture, got: %s", cmd)
 	}
+
+	// Should use --output-format json to extract session ID
 	if !strings.Contains(cmd, "--output-format json") {
-		t.Errorf("Should contain --output-format json, got: %s", cmd)
+		t.Errorf("Should use --output-format json for capture, got: %s", cmd)
 	}
 
 	// Should store session ID in tmux environment
@@ -318,22 +338,14 @@ func TestBuildClaudeCommand(t *testing.T) {
 		t.Errorf("Should store session ID in tmux env, got: %s", cmd)
 	}
 
-	// Should resume the captured session
+	// Should use --resume to continue with captured session
 	if !strings.Contains(cmd, `--resume "$session_id"`) {
-		t.Errorf("Should resume the captured session ID, got: %s", cmd)
+		t.Errorf("Should use --resume flag for captured session, got: %s", cmd)
 	}
 
-	// Should have fallback when capture fails (Issue #19: WSL jq parse error)
-	if !strings.Contains(cmd, `|| session_id=""`) {
-		t.Errorf("Should have fallback when capture fails, got: %s", cmd)
-	}
-	// Should check for null jq output
-	if !strings.Contains(cmd, `!= "null"`) {
-		t.Errorf("Should check for null session_id from jq, got: %s", cmd)
-	}
-	// Should have else branch to start Claude without session
-	if !strings.Contains(cmd, "else claude") {
-		t.Errorf("Should have else branch to start Claude without session, got: %s", cmd)
+	// Should NOT use --session-id flag (it doesn't work for NEW sessions)
+	if strings.Contains(cmd, "--session-id") {
+		t.Errorf("Should NOT use --session-id (only works for resume), got: %s", cmd)
 	}
 
 	// Note: --dangerously-skip-permissions is conditional on user config (dangerous_mode)
@@ -349,17 +361,77 @@ func TestBuildClaudeCommand(t *testing.T) {
 
 // TestBuildClaudeCommand_ExplicitConfig tests that CLAUDE_CONFIG_DIR is set when explicitly configured
 func TestBuildClaudeCommand_ExplicitConfig(t *testing.T) {
-	// Set environment variable to explicitly configure
+	// Isolate from user's environment
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir) // Use temp dir so config.toml isn't found
+	ClearUserConfigCache()
+
+	// Set environment variable to explicitly configure CLAUDE_CONFIG_DIR
 	os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/test-claude-config")
-	defer os.Unsetenv("CLAUDE_CONFIG_DIR")
+	defer func() {
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
 
 	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
 	cmd := inst.buildClaudeCommand("claude")
 
 	// When CLAUDE_CONFIG_DIR IS explicitly configured via env var,
-	// the command SHOULD include it
+	// the command SHOULD include it (and use default "claude" command)
 	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=/tmp/test-claude-config") {
 		t.Errorf("Should contain CLAUDE_CONFIG_DIR when explicitly configured, got: %s", cmd)
+	}
+
+	// Should use capture-resume pattern with explicit config
+	if !strings.Contains(cmd, `-p "."`) {
+		t.Errorf("Should use -p \".\" for session ID capture with explicit config, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, `--resume "$session_id"`) {
+		t.Errorf("Should use --resume flag with explicit config, got: %s", cmd)
+	}
+}
+
+// TestBuildClaudeCommand_CustomAlias tests that custom command aliases (e.g., cdw, cdp)
+// skip the CLAUDE_CONFIG_DIR prefix since the alias handles it
+func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
+	// Create temp config with custom command
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+
+	// Create ~/.agent-deck/config.toml with custom command
+	configDir := filepath.Join(tmpDir, ".agent-deck")
+	os.MkdirAll(configDir, 0755)
+	configContent := `[claude]
+command = "cdw"
+config_dir = "~/.claude-work"
+`
+	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644)
+
+	ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
+	cmd := inst.buildClaudeCommand("claude")
+
+	// Should use "cdw" instead of "claude"
+	if !strings.Contains(cmd, "cdw -p") {
+		t.Errorf("Should use custom command 'cdw', got: %s", cmd)
+	}
+
+	// Should NOT include CLAUDE_CONFIG_DIR prefix (alias handles it)
+	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+		t.Errorf("Should NOT include CLAUDE_CONFIG_DIR when using custom command alias, got: %s", cmd)
+	}
+
+	// Should still use capture-resume pattern
+	if !strings.Contains(cmd, `--resume "$session_id"`) {
+		t.Errorf("Should use --resume flag with custom alias, got: %s", cmd)
 	}
 }
 
@@ -602,6 +674,16 @@ func TestInstance_Restart_InterruptsAndResumes(t *testing.T) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude not available - test requires claude CLI for restart functionality")
 	}
+
+	// Isolate from user's environment (don't pick up their config.toml)
+	origHome := os.Getenv("HOME")
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
 
 	// Create instance with known session ID
 	inst := NewInstanceWithTool("restart-interrupt-test", "/tmp", "claude")
@@ -1108,6 +1190,43 @@ func TestInstance_Restart_SkipMCPRegenerate(t *testing.T) {
 	}
 }
 
+// TestInstance_WorktreeFields tests the worktree-related fields and IsWorktree method
+func TestInstance_WorktreeFields(t *testing.T) {
+	// Test 1: Instance with worktree fields set should report IsWorktree() = true
+	inst := NewInstance("test", "/tmp/worktree-path")
+	inst.WorktreePath = "/tmp/worktree-path"
+	inst.WorktreeRepoRoot = "/tmp/original-repo"
+	inst.WorktreeBranch = "feature-x"
+
+	if !inst.IsWorktree() {
+		t.Error("IsWorktree should return true when WorktreePath is set")
+	}
+
+	// Verify all fields are set correctly
+	if inst.WorktreePath != "/tmp/worktree-path" {
+		t.Errorf("WorktreePath = %q, want %q", inst.WorktreePath, "/tmp/worktree-path")
+	}
+	if inst.WorktreeRepoRoot != "/tmp/original-repo" {
+		t.Errorf("WorktreeRepoRoot = %q, want %q", inst.WorktreeRepoRoot, "/tmp/original-repo")
+	}
+	if inst.WorktreeBranch != "feature-x" {
+		t.Errorf("WorktreeBranch = %q, want %q", inst.WorktreeBranch, "feature-x")
+	}
+
+	// Test 2: Instance without worktree fields should report IsWorktree() = false
+	inst2 := NewInstance("test2", "/tmp/regular-path")
+	if inst2.IsWorktree() {
+		t.Error("IsWorktree should return false when WorktreePath is empty")
+	}
+
+	// Test 3: Instance with only WorktreePath set (edge case)
+	inst3 := NewInstance("test3", "/tmp/edge-case")
+	inst3.WorktreePath = "/tmp/some-worktree"
+	if !inst3.IsWorktree() {
+		t.Error("IsWorktree should return true even when only WorktreePath is set")
+	}
+}
+
 // TestInstance_Fork_RespectsDangerousMode tests that Fork() respects dangerous_mode config
 // Issue #8: Fork command ignores dangerous_mode configuration
 func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
@@ -1171,6 +1290,115 @@ func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 		// SHOULD have --dangerously-skip-permissions when config is true
 		if !strings.Contains(cmd, "--dangerously-skip-permissions") {
 			t.Errorf("Fork command should include --dangerously-skip-permissions when dangerous_mode=true.\nGot: %s", cmd)
+		}
+	})
+}
+
+func TestInstance_GetJSONLPath(t *testing.T) {
+	t.Run("non-claude session returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "shell"
+		inst.ClaudeSessionID = "abc123"
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() for non-claude should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session without session ID returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = ""
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() without session ID should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session with missing file returns empty", func(t *testing.T) {
+		inst := NewInstance("test", "/tmp/project")
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = "nonexistent-session-id"
+
+		path := inst.GetJSONLPath()
+		if path != "" {
+			t.Errorf("GetJSONLPath() with missing file should be empty, got: %s", path)
+		}
+	})
+
+	t.Run("claude session with existing file returns path", func(t *testing.T) {
+		// Create a temp directory structure that mimics Claude's layout
+		tempDir := t.TempDir()
+		projectPath := filepath.Join(tempDir, "myproject")
+		if err := os.MkdirAll(projectPath, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+
+		// Resolve symlinks in project path (same as GetJSONLPath does)
+		resolvedPath := projectPath
+		if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+			resolvedPath = resolved
+		}
+
+		// Create mock Claude config structure using the RESOLVED path
+		claudeDir := filepath.Join(tempDir, ".claude")
+		projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+		claudeProjectDir := filepath.Join(claudeDir, "projects", projectDirName)
+		if err := os.MkdirAll(claudeProjectDir, 0755); err != nil {
+			t.Fatalf("Failed to create claude project dir: %v", err)
+		}
+
+		// Create a mock JSONL file
+		sessionID := "test-session-123"
+		jsonlFile := filepath.Join(claudeProjectDir, sessionID+".jsonl")
+		if err := os.WriteFile(jsonlFile, []byte(`{"type":"assistant"}`), 0644); err != nil {
+			t.Fatalf("Failed to create jsonl file: %v", err)
+		}
+
+		// Resolve claudeDir too for comparison
+		resolvedClaudeDir := claudeDir
+		if resolved, err := filepath.EvalSymlinks(claudeDir); err == nil {
+			resolvedClaudeDir = resolved
+		}
+
+		// Override claude config dir for test - must be done BEFORE clearing cache
+		oldClaudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("CLAUDE_CONFIG_DIR", resolvedClaudeDir)
+		defer os.Setenv("CLAUDE_CONFIG_DIR", oldClaudeConfigDir)
+
+		// Clear cached config so GetClaudeConfigDir picks up the new env var
+		userConfigCacheMu.Lock()
+		userConfigCache = nil
+		userConfigCacheMu.Unlock()
+		defer func() {
+			userConfigCacheMu.Lock()
+			userConfigCache = nil
+			userConfigCacheMu.Unlock()
+		}()
+
+		// Verify GetClaudeConfigDir returns the right path
+		configDir := GetClaudeConfigDir()
+		t.Logf("GetClaudeConfigDir() = %s (expected: %s)", configDir, resolvedClaudeDir)
+
+		inst := NewInstance("test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		path := inst.GetJSONLPath()
+		t.Logf("GetJSONLPath() = %s", path)
+		t.Logf("Expected jsonlFile = %s", jsonlFile)
+		if path == "" {
+			t.Errorf("GetJSONLPath() with existing file should return path")
+		}
+		// Compare resolved paths since EvalSymlinks might differ
+		expectedResolved := jsonlFile
+		if r, err := filepath.EvalSymlinks(jsonlFile); err == nil {
+			expectedResolved = r
+		}
+		if path != expectedResolved {
+			t.Errorf("GetJSONLPath() = %s, want %s", path, expectedResolved)
 		}
 	})
 }

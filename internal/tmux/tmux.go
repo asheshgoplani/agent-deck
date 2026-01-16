@@ -369,6 +369,12 @@ type Session struct {
 
 	// Last status returned (for debugging)
 	lastStableStatus string
+
+	// Custom patterns for generic tool support
+	customToolName       string
+	customBusyPatterns   []string
+	customPromptPatterns []string
+	customDetectPatterns []string
 }
 
 // ensureStateTrackerLocked lazily allocates the tracker so callers can safely
@@ -382,6 +388,17 @@ func (s *Session) ensureStateTrackerLocked() {
 			acknowledged:   false,
 		}
 	}
+}
+
+// SetCustomPatterns sets custom patterns for generic tool support
+// These patterns enable custom tools defined in config.toml to have proper status detection
+func (s *Session) SetCustomPatterns(toolName string, busyPatterns, promptPatterns, detectPatterns []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.customToolName = toolName
+	s.customBusyPatterns = busyPatterns
+	s.customPromptPatterns = promptPatterns
+	s.customDetectPatterns = detectPatterns
 }
 
 // LogFile returns the path to this session's pipe-pane log file

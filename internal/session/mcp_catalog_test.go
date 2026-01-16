@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestWriteMCPJsonFromConfig(t *testing.T) {
@@ -230,12 +229,3 @@ func TestGetProjectMCPNames(t *testing.T) {
 	}
 }
 
-func TestGetSocketWaitTimeout_Default(t *testing.T) {
-	// Clear cache to ensure fresh load
-	ClearUserConfigCache()
-
-	timeout := GetSocketWaitTimeout()
-	if timeout != 5*time.Second {
-		t.Errorf("expected default 5s timeout, got %v", timeout)
-	}
-}

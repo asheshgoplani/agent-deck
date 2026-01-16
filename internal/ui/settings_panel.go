@@ -25,10 +25,12 @@ const (
 	SettingGlobalSearchEnabled
 	SettingSearchTier
 	SettingRecentDays
+	SettingShowOutput
+	SettingShowAnalytics
 )
 
 // Total number of navigable settings
-const settingsCount = 12
+const settingsCount = 14
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -50,6 +52,8 @@ type SettingsPanel struct {
 	globalSearchEnabled bool
 	searchTier          int // 0=auto, 1=instant, 2=balanced
 	recentDays          int
+	showOutput          bool
+	showAnalytics       bool
 
 	// Text input state
 	editingText bool
@@ -83,6 +87,8 @@ func NewSettingsPanel() *SettingsPanel {
 		checkForUpdates:     true,
 		globalSearchEnabled: true,
 		recentDays:          90,
+		showOutput:          true, // Default: output ON (shows launch animation)
+		showAnalytics:       true, // Default: analytics ON
 	}
 }
 
@@ -174,6 +180,10 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	if s.recentDays < 0 {
 		s.recentDays = 90
 	}
+
+	// Preview settings
+	s.showOutput = config.GetShowOutput()
+	s.showAnalytics = config.GetShowAnalytics()
 }
 
 // GetConfig returns a UserConfig with current panel values
@@ -213,6 +223,12 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.GlobalSearch.Tier = tierValues[s.searchTier]
 	}
 	config.GlobalSearch.RecentDays = s.recentDays
+
+	// Preview settings
+	showOutput := s.showOutput
+	config.Preview.ShowOutput = &showOutput
+	showAnalytics := s.showAnalytics
+	config.Preview.ShowAnalytics = &showAnalytics
 
 	// Preserve original MCPs and Tools if we have them
 	if s.originalConfig != nil {
@@ -354,6 +370,14 @@ func (s *SettingsPanel) toggleValue() bool {
 	case SettingGlobalSearchEnabled:
 		s.globalSearchEnabled = !s.globalSearchEnabled
 		s.needsRestart = true
+		return true
+
+	case SettingShowOutput:
+		s.showOutput = !s.showOutput
+		return true
+
+	case SettingShowAnalytics:
+		s.showAnalytics = !s.showAnalytics
 		return true
 	}
 
@@ -559,6 +583,22 @@ func (s *SettingsPanel) View() string {
 
 	line = s.renderNumber("Recent days:", s.recentDays, "(0 = all)")
 	if s.cursor == int(SettingRecentDays) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// PREVIEW
+	content.WriteString(sectionStyle.Render("PREVIEW"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Show Output", s.showOutput) + " - Terminal output in preview"
+	if s.cursor == int(SettingShowOutput) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Show Analytics", s.showAnalytics) + " - Claude analytics panel"
+	if s.cursor == int(SettingShowAnalytics) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")

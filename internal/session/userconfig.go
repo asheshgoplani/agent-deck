@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
@@ -36,6 +35,9 @@ type UserConfig struct {
 	// Claude defines Claude Code integration settings
 	Claude ClaudeSettings `toml:"claude"`
 
+	// Worktree defines git worktree preferences
+	Worktree WorktreeSettings `toml:"worktree"`
+
 	// GlobalSearch defines global conversation search settings
 	GlobalSearch GlobalSearchSettings `toml:"global_search"`
 
@@ -47,6 +49,9 @@ type UserConfig struct {
 
 	// Updates defines auto-update settings
 	Updates UpdateSettings `toml:"updates"`
+
+	// Preview defines preview pane display settings
+	Preview PreviewSettings `toml:"preview"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -124,8 +129,50 @@ type UpdateSettings struct {
 	NotifyInCLI bool `toml:"notify_in_cli"`
 }
 
+// PreviewSettings defines preview pane configuration
+type PreviewSettings struct {
+	// ShowOutput shows terminal output in preview pane (including launch animation)
+	// Default: true (pointer to distinguish "not set" from "explicitly false")
+	ShowOutput *bool `toml:"show_output"`
+
+	// ShowAnalytics shows session analytics panel for Claude sessions
+	// Default: true (pointer to distinguish "not set" from "explicitly false")
+	ShowAnalytics *bool `toml:"show_analytics"`
+}
+
+// GetShowAnalytics returns whether to show analytics, defaulting to true
+func (p *PreviewSettings) GetShowAnalytics() bool {
+	if p.ShowAnalytics == nil {
+		return true // Default: analytics ON
+	}
+	return *p.ShowAnalytics
+}
+
+// GetShowOutput returns whether to show terminal output, defaulting to true
+func (p *PreviewSettings) GetShowOutput() bool {
+	if p.ShowOutput == nil {
+		return true // Default: output ON (shows launch animation)
+	}
+	return *p.ShowOutput
+}
+
+// GetShowOutput returns whether to show terminal output in preview
+func (c *UserConfig) GetShowOutput() bool {
+	return c.Preview.GetShowOutput()
+}
+
+// GetShowAnalytics returns whether to show analytics panel, defaulting to true
+func (c *UserConfig) GetShowAnalytics() bool {
+	return c.Preview.GetShowAnalytics()
+}
+
 // ClaudeSettings defines Claude Code configuration
 type ClaudeSettings struct {
+	// Command is the Claude CLI command or alias to use (e.g., "claude", "cdw", "cdp")
+	// Default: "claude"
+	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
+	Command string `toml:"command"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -133,6 +180,14 @@ type ClaudeSettings struct {
 	// DangerousMode enables --dangerously-skip-permissions flag for Claude sessions
 	// Default: false
 	DangerousMode bool `toml:"dangerous_mode"`
+}
+
+// WorktreeSettings contains git worktree preferences
+type WorktreeSettings struct {
+	// DefaultLocation: "sibling" (next to repo) or "subdirectory" (inside .worktrees/)
+	DefaultLocation string `toml:"default_location"`
+	// AutoCleanup: remove worktree when session is deleted
+	AutoCleanup bool `toml:"auto_cleanup"`
 }
 
 // GlobalSearchSettings defines global conversation search configuration
@@ -170,6 +225,30 @@ type ToolDef struct {
 
 	// BusyPatterns are strings that indicate the tool is busy
 	BusyPatterns []string `toml:"busy_patterns"`
+
+	// PromptPatterns are strings that indicate the tool is waiting for input
+	PromptPatterns []string `toml:"prompt_patterns"`
+
+	// DetectPatterns are regex patterns to auto-detect this tool from terminal content
+	DetectPatterns []string `toml:"detect_patterns"`
+
+	// ResumeFlag is the CLI flag to resume a session (e.g., "--resume")
+	ResumeFlag string `toml:"resume_flag"`
+
+	// SessionIDEnv is the tmux environment variable name storing the session ID
+	SessionIDEnv string `toml:"session_id_env"`
+
+	// DangerousMode enables dangerous mode flag for this tool
+	DangerousMode bool `toml:"dangerous_mode"`
+
+	// DangerousFlag is the CLI flag for dangerous mode (e.g., "--dangerously-skip-permissions")
+	DangerousFlag string `toml:"dangerous_flag"`
+
+	// OutputFormatFlag is the CLI flag for JSON output format (e.g., "--output-format json")
+	OutputFormatFlag string `toml:"output_format_flag"`
+
+	// SessionIDJsonPath is the jq path to extract session ID from JSON output
+	SessionIDJsonPath string `toml:"session_id_json_path"`
 }
 
 // MCPDef defines an MCP server configuration for the MCP Manager
@@ -194,6 +273,10 @@ type MCPDef struct {
 	// Transport specifies the MCP transport type: "stdio" (default), "http", or "sse"
 	// Only needed when URL is set; defaults to "http" if URL is present
 	Transport string `toml:"transport"`
+
+	// Headers is optional HTTP headers for HTTP/SSE MCPs (e.g., for authentication)
+	// Example: { Authorization = "Bearer token123" }
+	Headers map[string]string `toml:"headers"`
 }
 
 // Default user config (empty maps)
@@ -465,6 +548,31 @@ func GetLogSettings() LogSettings {
 	return settings
 }
 
+// GetWorktreeSettings returns worktree settings with defaults applied
+func GetWorktreeSettings() WorktreeSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return WorktreeSettings{
+			DefaultLocation: "sibling",
+			AutoCleanup:     true,
+		}
+	}
+
+	settings := config.Worktree
+
+	// Apply defaults for unset values
+	if settings.DefaultLocation == "" {
+		settings.DefaultLocation = "sibling"
+	}
+	// AutoCleanup defaults to true (Go zero value is false)
+	// We detect if section was not present by checking if DefaultLocation is empty
+	if config.Worktree.DefaultLocation == "" {
+		settings.AutoCleanup = true
+	}
+
+	return settings
+}
+
 // GetUpdateSettings returns update settings with defaults applied
 func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
@@ -493,16 +601,17 @@ func GetUpdateSettings() UpdateSettings {
 	return settings
 }
 
-// GetSocketWaitTimeout returns the configured socket wait timeout (default 5 seconds)
-func GetSocketWaitTimeout() time.Duration {
+// GetPreviewSettings returns preview settings with defaults applied
+func GetPreviewSettings() PreviewSettings {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		return 5 * time.Second // Default
+		return PreviewSettings{
+			ShowOutput:    nil, // nil means "default to true"
+			ShowAnalytics: nil, // nil means "default to true"
+		}
 	}
-	if config.MCPPool.SocketWaitTimeout <= 0 {
-		return 5 * time.Second // Default
-	}
-	return time.Duration(config.MCPPool.SocketWaitTimeout) * time.Second
+
+	return config.Preview
 }
 
 // getMCPPoolConfigSection returns the MCP pool config section based on platform
@@ -660,6 +769,13 @@ notify_in_cli = true
 # url = "http://localhost:8000/mcp"
 # transport = "http"
 # description = "My custom HTTP MCP server"
+
+# Example: HTTP MCP with authentication headers
+# [mcps.authenticated-api]
+# url = "https://api.example.com/mcp"
+# transport = "http"
+# headers = { Authorization = "Bearer your-token-here", "X-API-Key" = "your-api-key" }
+# description = "HTTP MCP with auth headers"
 
 # Example: SSE MCP server
 # [mcps.remote-sse]
