@@ -113,13 +113,13 @@ func (c *ConfirmDialog) View() string {
 		details = "• All sessions will be MOVED to 'default' group\n• Sessions will NOT be killed\n• The group structure will be lost"
 
 	case ConfirmYoloRestart:
-		modeStr := "ENABLED"
+		modeStr := "ENABLE"
 		if !c.yoloEnabled {
-			modeStr = "DISABLED"
+			modeStr = "DISABLE"
 		}
-		title = "🚀 YOLO Mode Toggle"
-		warning = fmt.Sprintf("YOLO mode has been %s for:\n\n  \"%s\"", modeStr, c.targetName)
-		details = "• Session must RESTART to apply this change\n• Resume command will be used\n• Context will be preserved"
+		title = "🚀 Toggle YOLO Mode?"
+		warning = fmt.Sprintf("Do you want to %s YOLO mode for:\n\n  \"%s\"", modeStr, c.targetName)
+		details = "• Session will RESTART to apply this change\n• Resume command will be used\n• Context will be preserved"
 	}
 
 	// Styles
@@ -174,7 +174,7 @@ func (c *ConfirmDialog) View() string {
 			Background(ColorRed).
 			Padding(0, 2).
 			Bold(true).
-			Render("n Later")
+			Render("n Cancel")
 	}
 
 	escHint := lipgloss.NewStyle().
