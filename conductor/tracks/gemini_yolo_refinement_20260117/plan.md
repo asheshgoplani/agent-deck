@@ -9,11 +9,11 @@
 - [ ] Task: Conductor - User Manual Verification 'Foundation and State Synchronization' (Protocol in workflow.md)
 
 ## Phase 2: Command Building and Persistence
-- [ ] Task: Refine `buildGeminiCommand` for consistent flag application [TDD]
-    - [ ] Task: Write failing tests in `internal/session/gemini_yolo_test.go` verifying the `--yolo` flag and `GEMINI_YOLO_MODE` env var injection
-    - [ ] Task: Update `buildGeminiCommand` in `internal/session/instance.go` to handle environment injection and flag persistence across restarts
-- [ ] Task: Ensure YOLO state persistence in storage
-    - [ ] Task: Verify/Update `internal/session/storage.go` to correctly map the `GeminiYoloMode` field during save/load operations
+- [x] Task: Refine `buildGeminiCommand` for consistent flag application [TDD] [502598]
+    - [x] Task: Write failing tests in `internal/session/gemini_yolo_test.go` verifying the `--yolo` flag and `GEMINI_YOLO_MODE` env var injection
+    - [x] Task: Update `buildGeminiCommand` in `internal/session/instance.go` to handle environment injection and flag persistence across restarts
+- [x] Task: Ensure YOLO state persistence in storage [504367]
+    - [x] Task: Verify/Update `internal/session/storage.go` to correctly map the `GeminiYoloMode` field during save/load operations
 - [ ] Task: Conductor - User Manual Verification 'Command Building and Persistence' (Protocol in workflow.md)
 
 ## Phase 3: UI Polish and Interactions
