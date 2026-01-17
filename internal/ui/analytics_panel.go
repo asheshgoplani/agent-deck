@@ -6,15 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // AnalyticsPanel displays session analytics in a formatted panel
 type AnalyticsPanel struct {
-	analytics *session.SessionAnalytics
-	width     int
-	height    int
+	analytics       *session.SessionAnalytics
+	geminiAnalytics *session.GeminiSessionAnalytics
+	width           int
+	height          int
 }
 
 // NewAnalyticsPanel creates a new analytics panel
@@ -25,6 +26,118 @@ func NewAnalyticsPanel() *AnalyticsPanel {
 // SetAnalytics sets the analytics data to display
 func (p *AnalyticsPanel) SetAnalytics(a *session.SessionAnalytics) {
 	p.analytics = a
+	p.geminiAnalytics = nil
+}
+
+// SetGeminiAnalytics sets the Gemini analytics data to display
+func (p *AnalyticsPanel) SetGeminiAnalytics(a *session.GeminiSessionAnalytics) {
+	p.geminiAnalytics = a
+	p.analytics = nil
+}
+
+func (p *AnalyticsPanel) getInputTokens() int {
+	if p.analytics != nil {
+		return p.analytics.InputTokens
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.InputTokens
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getOutputTokens() int {
+	if p.analytics != nil {
+		return p.analytics.OutputTokens
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.OutputTokens
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getCacheReadTokens() int {
+	if p.analytics != nil {
+		return p.analytics.CacheReadTokens
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getCacheWriteTokens() int {
+	if p.analytics != nil {
+		return p.analytics.CacheWriteTokens
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getTotalTokens() int {
+	if p.analytics != nil {
+		return p.analytics.TotalTokens()
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.TotalTokens()
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getDuration() time.Duration {
+	if p.analytics != nil {
+		return p.analytics.Duration
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.Duration
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getTotalTurns() int {
+	if p.analytics != nil {
+		return p.analytics.TotalTurns
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.TotalTurns
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getStartTime() time.Time {
+	if p.analytics != nil {
+		return p.analytics.StartTime
+	}
+	if p.geminiAnalytics != nil {
+		return p.geminiAnalytics.StartTime
+	}
+	return time.Time{}
+}
+
+func (p *AnalyticsPanel) getEstimatedCost() float64 {
+	if p.analytics != nil {
+		cost := p.analytics.EstimatedCost
+		if cost == 0 && p.analytics.TotalTokens() > 0 {
+			cost = p.analytics.CalculateCost("default")
+		}
+		return cost
+	}
+	if p.geminiAnalytics != nil {
+		cost := p.geminiAnalytics.EstimatedCost
+		if cost == 0 && p.geminiAnalytics.TotalTokens() > 0 {
+			cost = p.geminiAnalytics.CalculateCost("gemini-1.5-flash")
+		}
+		return cost
+	}
+	return 0
+}
+
+func (p *AnalyticsPanel) getContextPercent() float64 {
+	if p.analytics != nil {
+		return p.analytics.ContextPercent(0)
+	}
+	if p.geminiAnalytics != nil {
+		// For Gemini, we'll show usage relative to 1M tokens by default
+		// (Gemini 1.5 Flash/Pro both support at least 1M)
+		limit := 1_000_000
+		return float64(p.geminiAnalytics.InputTokens) / float64(limit) * 100
+	}
+	return 0
 }
 
 // SetSize sets the panel dimensions
@@ -35,7 +148,7 @@ func (p *AnalyticsPanel) SetSize(width, height int) {
 
 // View renders the analytics panel
 func (p *AnalyticsPanel) View() string {
-	if p.analytics == nil {
+	if p.analytics == nil && p.geminiAnalytics == nil {
 		return p.renderEmpty()
 	}
 
@@ -57,14 +170,14 @@ func (p *AnalyticsPanel) View() string {
 	b.WriteString(p.renderSessionInfo())
 	b.WriteString("\n")
 
-	// Tool calls
-	if len(p.analytics.ToolCalls) > 0 {
+	// Tool calls (Claude only for now)
+	if p.analytics != nil && len(p.analytics.ToolCalls) > 0 {
 		b.WriteString(p.renderToolCalls())
 		b.WriteString("\n")
 	}
 
 	// Cost estimate
-	if p.analytics.EstimatedCost > 0 || p.analytics.TotalTokens() > 0 {
+	if p.getEstimatedCost() > 0 || p.getTotalTokens() > 0 {
 		b.WriteString(p.renderCost())
 	}
 
@@ -80,7 +193,7 @@ func (p *AnalyticsPanel) renderEmpty() string {
 	b.WriteString("\n\n")
 	b.WriteString(dimStyle.Render("No analytics available"))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("(Claude sessions only)"))
+	b.WriteString(dimStyle.Render("(Claude or Gemini sessions only)"))
 
 	return b.String()
 }
@@ -106,7 +219,7 @@ func (p *AnalyticsPanel) renderContextBar() string {
 	labelStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 
-	percent := p.analytics.ContextPercent(0) // Use default 200k limit
+	percent := p.getContextPercent()
 	if percent > 100 {
 		percent = 100
 	}
@@ -163,11 +276,11 @@ func (p *AnalyticsPanel) renderTokens() string {
 	b.WriteString("\n")
 
 	// Format token counts with commas
-	inputStr := formatNumber(p.analytics.InputTokens)
-	outputStr := formatNumber(p.analytics.OutputTokens)
-	cacheReadStr := formatNumber(p.analytics.CacheReadTokens)
-	cacheWriteStr := formatNumber(p.analytics.CacheWriteTokens)
-	totalStr := formatNumber(p.analytics.TotalTokens())
+	inputStr := formatNumber(p.getInputTokens())
+	outputStr := formatNumber(p.getOutputTokens())
+	cacheReadStr := formatNumber(p.getCacheReadTokens())
+	cacheWriteStr := formatNumber(p.getCacheWriteTokens())
+	totalStr := formatNumber(p.getTotalTokens())
 
 	// Input/Output row
 	b.WriteString(fmt.Sprintf("  %s %s  %s %s\n",
@@ -178,7 +291,7 @@ func (p *AnalyticsPanel) renderTokens() string {
 	))
 
 	// Cache row (if any cache activity)
-	if p.analytics.CacheReadTokens > 0 || p.analytics.CacheWriteTokens > 0 {
+	if cacheReadTokens := p.getCacheReadTokens(); cacheReadTokens > 0 || p.getCacheWriteTokens() > 0 {
 		b.WriteString(fmt.Sprintf("  %s %s  %s %s\n",
 			dimStyle.Render("Cache Read:"),
 			valueStyle.Render(cacheReadStr),
@@ -208,7 +321,7 @@ func (p *AnalyticsPanel) renderSessionInfo() string {
 	b.WriteString("\n")
 
 	// Duration
-	durationStr := formatDuration(p.analytics.Duration)
+	durationStr := formatDuration(p.getDuration())
 	b.WriteString(fmt.Sprintf("  %s %s",
 		dimStyle.Render("Duration:"),
 		valueStyle.Render(durationStr),
@@ -217,12 +330,12 @@ func (p *AnalyticsPanel) renderSessionInfo() string {
 	// Turns
 	b.WriteString(fmt.Sprintf("  %s %s\n",
 		dimStyle.Render("Turns:"),
-		valueStyle.Render(fmt.Sprintf("%d", p.analytics.TotalTurns)),
+		valueStyle.Render(fmt.Sprintf("%d", p.getTotalTurns())),
 	))
 
 	// Start time if available
-	if !p.analytics.StartTime.IsZero() {
-		timeStr := p.analytics.StartTime.Format("Jan 2 15:04")
+	if startTime := p.getStartTime(); !startTime.IsZero() {
+		timeStr := startTime.Format("Jan 2 15:04")
 		b.WriteString(fmt.Sprintf("  %s %s\n",
 			dimStyle.Render("Started:"),
 			valueStyle.Render(timeStr),
@@ -282,11 +395,7 @@ func (p *AnalyticsPanel) renderCost() string {
 	b.WriteString("\n")
 
 	// Calculate cost if not already set
-	cost := p.analytics.EstimatedCost
-	if cost == 0 && p.analytics.TotalTokens() > 0 {
-		// Use default Sonnet pricing
-		cost = p.analytics.CalculateCost("default")
-	}
+	cost := p.getEstimatedCost()
 
 	if cost > 0 {
 		costStr := fmt.Sprintf("$%.4f", cost)
