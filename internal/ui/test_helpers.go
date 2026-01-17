@@ -27,6 +27,7 @@ func NewTestHome() *Home {
 		mcpLoadingSessions: make(map[string]time.Time),
 		forkingSessions:    make(map[string]time.Time),
 		instanceByID:       make(map[string]*session.Instance),
+		globalYoloMode:     false,
 	}
 }
 

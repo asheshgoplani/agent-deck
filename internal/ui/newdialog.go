@@ -215,6 +215,16 @@ func (d *NewDialog) IsWorktreeEnabled() bool {
 	return d.worktreeEnabled
 }
 
+// ToggleYolo toggles the YOLO mode checkbox (Gemini only)
+func (d *NewDialog) ToggleYolo() {
+	d.yoloEnabled = !d.yoloEnabled
+}
+
+// IsYoloEnabled returns whether YOLO mode is enabled
+func (d *NewDialog) IsYoloEnabled() bool {
+	return d.yoloEnabled
+}
+
 // GetValuesWithWorktree returns all values including worktree settings
 func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
 	name, path, command = d.GetValues()
@@ -226,11 +236,6 @@ func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string,
 // ToggleYolo toggles the YOLO mode checkbox (Gemini only)
 func (d *NewDialog) ToggleYolo() {
 	d.yoloEnabled = !d.yoloEnabled
-}
-
-// IsYoloEnabled returns whether YOLO mode is enabled
-func (d *NewDialog) IsYoloEnabled() bool {
-	return d.yoloEnabled
 }
 
 // GetValuesWithYolo returns all values including YOLO mode setting
@@ -420,7 +425,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		case "y":
 			// Toggle YOLO mode when on command field and Gemini is selected
-			if d.focusIndex == 2 && d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == "gemini" {
+			if d.focusIndex == 2 && d.commandCursor == 2 { // 2 is Gemini
 				d.ToggleYolo()
 				return d, nil
 			}
@@ -638,8 +643,9 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString("\n")
 
-	// YOLO mode checkbox (only show when Gemini is selected)
-	if d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == "gemini" {
+	// YOLO toggle (Gemini only)
+	if d.commandCursor == 2 { // Gemini
+		content.WriteString("\n")
 		yoloCheckbox := "[ ]"
 		if d.yoloEnabled {
 			yoloCheckbox = "[x]"

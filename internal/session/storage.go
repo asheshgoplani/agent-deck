@@ -70,6 +70,11 @@ type InstanceData struct {
 	LastAccessedAt  time.Time `json:"last_accessed_at,omitempty"`
 	TmuxSession     string    `json:"tmux_session"`
 
+	// Git worktree support
+	WorktreePath     string `json:"worktree_path,omitempty"`
+	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"`
+	WorktreeBranch   string `json:"worktree_branch,omitempty"`
+
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -215,12 +220,16 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			CreatedAt:        inst.CreatedAt,
 			LastAccessedAt:   inst.LastAccessedAt,
 			TmuxSession:      tmuxName,
+			WorktreePath:     inst.WorktreePath,
+			WorktreeRepoRoot: inst.WorktreeRepoRoot,
+			WorktreeBranch:   inst.WorktreeBranch,
 			ClaudeSessionID:  inst.ClaudeSessionID,
 			ClaudeDetectedAt: inst.ClaudeDetectedAt,
 			GeminiSessionID:  inst.GeminiSessionID,
 			GeminiDetectedAt: inst.GeminiDetectedAt,
 			GeminiYoloMode:   inst.GeminiYoloMode,
 			GeminiAnalytics:  inst.GeminiAnalytics,
+			LatestPrompt:     inst.LatestPrompt,
 			LoadedMCPNames:   inst.LoadedMCPNames,
 		}
 	}
@@ -515,6 +524,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ProjectPath:      projectPath,
 			GroupPath:        groupPath,
 			ParentSessionID:  instData.ParentSessionID,
+			WorktreePath:     instData.WorktreePath,
+			WorktreeRepoRoot: instData.WorktreeRepoRoot,
+			WorktreeBranch:   instData.WorktreeBranch,
 			Command:          instData.Command,
 			Tool:             instData.Tool,
 			Status:           instData.Status,
@@ -526,6 +538,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GeminiDetectedAt: instData.GeminiDetectedAt,
 			GeminiYoloMode:   instData.GeminiYoloMode,
 			GeminiAnalytics:  instData.GeminiAnalytics,
+			LatestPrompt:     instData.LatestPrompt,
 			LoadedMCPNames:   instData.LoadedMCPNames,
 			tmuxSession:      tmuxSess,
 		}

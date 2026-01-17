@@ -1139,6 +1139,9 @@ func parseClaudeLatestUserPrompt(data []byte) (string, error) {
 		}
 
 		if extractedText != "" {
+			// Sanitize: strip newlines and extra spaces for single-line display
+			extractedText = strings.ReplaceAll(extractedText, "\n", " ")
+			extractedText = strings.Join(strings.Fields(extractedText), " ")
 			latestPrompt = extractedText
 		}
 	}
@@ -1229,7 +1232,9 @@ func parseGeminiLatestUserPrompt(data []byte) (string, error) {
 	for i := len(session.Messages) - 1; i >= 0; i-- {
 		msg := session.Messages[i]
 		if msg.Type == "user" {
-			latestPrompt = msg.Content
+			// Sanitize: strip newlines and extra spaces for single-line display
+			content := strings.ReplaceAll(msg.Content, "\n", " ")
+			latestPrompt = strings.Join(strings.Fields(content), " ")
 			break
 		}
 	}
