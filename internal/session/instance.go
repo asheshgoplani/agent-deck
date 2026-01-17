@@ -1466,9 +1466,8 @@ func (i *Instance) Restart() error {
 
 	// If Gemini session with known ID AND tmux session exists, use respawn-pane
 	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		// Build Gemini resume command with tmux env update
-		resumeCmd := fmt.Sprintf("tmux set-environment GEMINI_SESSION_ID %s && gemini --resume %s",
-			i.GeminiSessionID, i.GeminiSessionID)
+		// Build Gemini resume command using the standard builder (handles YOLO flag)
+		resumeCmd := i.buildGeminiCommand("gemini")
 		log.Printf("[RESTART-DEBUG] Gemini using respawn-pane with command: %s", resumeCmd)
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
@@ -1520,9 +1519,7 @@ func (i *Instance) Restart() error {
 	if i.Tool == "claude" && i.ClaudeSessionID != "" {
 		command = i.buildClaudeResumeCommand()
 	} else if i.Tool == "gemini" && i.GeminiSessionID != "" {
-		// Set GEMINI_SESSION_ID in tmux env so detection works after restart
-		command = fmt.Sprintf("tmux set-environment GEMINI_SESSION_ID %s && gemini --resume %s",
-			i.GeminiSessionID, i.GeminiSessionID)
+		command = i.buildGeminiCommand("gemini")
 	} else {
 		// Route to appropriate command builder based on tool
 		switch i.Tool {
