@@ -22,7 +22,7 @@
 - [x] Task: Ensure analytics data is persisted to `sessions.json` [b3b9586]
     - [ ] Sub-task: Write integration tests to verify that analytics data survives a session save/load cycle
     - [ ] Sub-task: Verify and adjust `internal/session/storage.go` to include analytics fields in the JSON serialization
-- [ ] Task: Final Polish and Refactoring
-    - [ ] Sub-task: Run full test suite and ensure >80% coverage
-    - [ ] Sub-task: Refactor code for readability and consistency with Claude implementation
-- [ ] Task: Conductor - User Manual Verification 'Persistence and Polish' (Protocol in workflow.md)
+- [x] Task: Final Polish and Refactoring [6575588]
+    - [x] Run full test suite and ensure >80% coverage
+    - [x] Refactor code for readability and consistency with Claude implementation
+- [x] Task: Conductor - User Manual Verification 'Persistence and Polish' (Protocol in workflow.md)
