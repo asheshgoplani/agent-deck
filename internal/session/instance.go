@@ -749,6 +749,15 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 			i.GeminiDetectedAt = time.Now()
 		}
 	}
+
+	// Update analytics if we have a session ID
+	if i.GeminiSessionID != "" {
+		if i.GeminiAnalytics == nil {
+			i.GeminiAnalytics = &GeminiSessionAnalytics{}
+		}
+		// Non-blocking update (ignore errors, best effort)
+		_ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
+	}
 }
 
 // WaitForClaudeSession waits for the tmux environment variable to be set.

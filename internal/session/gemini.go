@@ -132,3 +132,36 @@ func ListGeminiSessions(projectPath string) ([]GeminiSessionInfo, error) {
 	return sessions, nil
 }
 
+// UpdateGeminiAnalyticsFromDisk updates the analytics struct from the session file on disk
+func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *GeminiSessionAnalytics) error {
+	if sessionID == "" || len(sessionID) < 8 {
+		return fmt.Errorf("invalid session ID")
+	}
+
+	sessionsDir := GetGeminiSessionsDir(projectPath)
+	// Find file matching session ID prefix (first 8 chars)
+	// Filename format: session-YYYY-MM-DDTHH-MM-<uuid8>.json
+	pattern := filepath.Join(sessionsDir, "session-*-"+sessionID[:8]+".json")
+	files, _ := filepath.Glob(pattern)
+	if len(files) == 0 {
+		return fmt.Errorf("session file not found")
+	}
+
+	info, err := parseGeminiSessionFile(files[0])
+	if err != nil {
+		return err
+	}
+
+	analytics.StartTime = info.StartTime
+	analytics.LastActive = info.LastUpdated
+	if !info.StartTime.IsZero() && !info.LastUpdated.IsZero() {
+		analytics.Duration = info.LastUpdated.Sub(info.StartTime)
+	}
+	// Message count is total messages. Turns are typically pairs.
+	// We'll estimate turns as count / 2
+	analytics.TotalTurns = info.MessageCount / 2
+
+	return nil
+}
+
+
