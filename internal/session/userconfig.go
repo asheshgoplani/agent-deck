@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/BurntSushi/toml"
@@ -55,6 +56,9 @@ type UserConfig struct {
 
 	// Preview defines preview pane display settings
 	Preview PreviewSettings `toml:"preview"`
+
+	// Experiments defines experiment folder settings for 'try' command
+	Experiments ExperimentsSettings `toml:"experiments"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -141,6 +145,21 @@ type PreviewSettings struct {
 	// ShowAnalytics shows session analytics panel for Claude sessions
 	// Default: true (pointer to distinguish "not set" from "explicitly false")
 	ShowAnalytics *bool `toml:"show_analytics"`
+}
+
+// ExperimentsSettings defines experiment folder configuration
+type ExperimentsSettings struct {
+	// Directory is the base directory for experiments
+	// Default: ~/src/tries
+	Directory string `toml:"directory"`
+
+	// DatePrefix adds YYYY-MM-DD- prefix to new experiment folders
+	// Default: true
+	DatePrefix bool `toml:"date_prefix"`
+
+	// DefaultTool is the AI tool to use for experiment sessions
+	// Default: "claude"
+	DefaultTool string `toml:"default_tool"`
 }
 
 // GetShowAnalytics returns whether to show analytics, defaulting to true
@@ -624,6 +643,45 @@ func GetPreviewSettings() PreviewSettings {
 	return config.Preview
 }
 
+// GetExperimentsSettings returns experiments settings with defaults applied
+func GetExperimentsSettings() ExperimentsSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		homeDir, _ := os.UserHomeDir()
+		return ExperimentsSettings{
+			Directory:   filepath.Join(homeDir, "src", "tries"),
+			DatePrefix:  true,
+			DefaultTool: "claude",
+		}
+	}
+
+	settings := config.Experiments
+
+	// Apply defaults for unset values
+	if settings.Directory == "" {
+		homeDir, _ := os.UserHomeDir()
+		settings.Directory = filepath.Join(homeDir, "src", "tries")
+	} else {
+		// Expand ~ in path
+		if strings.HasPrefix(settings.Directory, "~/") {
+			homeDir, _ := os.UserHomeDir()
+			settings.Directory = filepath.Join(homeDir, settings.Directory[2:])
+		}
+	}
+
+	// DatePrefix defaults to true (Go zero value is false, need explicit check)
+	// If directory is default, assume DatePrefix should be true
+	if config.Experiments.Directory == "" {
+		settings.DatePrefix = true
+	}
+
+	if settings.DefaultTool == "" {
+		settings.DefaultTool = "claude"
+	}
+
+	return settings
+}
+
 // getMCPPoolConfigSection returns the MCP pool config section based on platform
 // On unsupported platforms (WSL1, Windows), it's commented out with explanation
 func getMCPPoolConfigSection() string {
@@ -698,10 +756,17 @@ func CreateExampleConfig() error {
 # default_tool = "claude"
 
 # Claude Code integration
-# Set this if you use a custom Claude profile (e.g., dual account setup)
-# Default: ~/.claude (or CLAUDE_CONFIG_DIR env var takes priority)
 # [claude]
+# Custom config directory (for dual account setups)
+# Default: ~/.claude (or CLAUDE_CONFIG_DIR env var takes priority)
 # config_dir = "~/.claude-work"
+# Enable --dangerously-skip-permissions by default (default: false)
+# dangerous_mode = true
+
+# Gemini CLI integration
+# [gemini]
+# Enable --yolo (auto-approve all actions) by default (default: false)
+# yolo_mode = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
