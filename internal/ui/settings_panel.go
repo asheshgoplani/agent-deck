@@ -40,8 +40,8 @@ type SettingsPanel struct {
 	cursor  int // Current setting index
 
 	// Setting values
-	selectedTheme       int    // 0=dark, 1=light
-	selectedTool        int    // 0=claude, 1=gemini, 2=opencode, 3=codex, 4=none
+	selectedTheme       int // 0=dark, 1=light
+	selectedTool        int // 0=claude, 1=gemini, 2=opencode, 3=codex, 4=none
 	dangerousMode       bool
 	claudeConfigDir     string
 	checkForUpdates     bool

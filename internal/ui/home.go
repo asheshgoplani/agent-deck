@@ -4985,6 +4985,48 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString("\n")
 		}
 	}
+
+	// Gemini-specific info (session ID and MCPs)
+	if selected.Tool == "gemini" {
+		// Section divider for Gemini info
+		geminiHeader := renderSectionDivider("Gemini", width-4)
+		b.WriteString(geminiHeader)
+		b.WriteString("\n")
+
+		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+		// Status line
+		if selected.GeminiSessionID != "" {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("● Connected"))
+			b.WriteString("\n")
+
+			// Full session ID on its own line
+			b.WriteString(labelStyle.Render("Session: "))
+			b.WriteString(valueStyle.Render(selected.GeminiSessionID))
+			b.WriteString("\n")
+		} else {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("○ Not connected"))
+			b.WriteString("\n")
+		}
+
+		// MCP servers for Gemini (only global for now)
+		mcpInfo := selected.GetMCPInfo()
+		if mcpInfo != nil && len(mcpInfo.Global) > 0 {
+			b.WriteString(labelStyle.Render("MCPs:    "))
+			var mcpParts []string
+			for _, name := range mcpInfo.Global {
+				mcpParts = append(mcpParts, valueStyle.Render(name+" (g)"))
+			}
+			b.WriteString(strings.Join(mcpParts, ", "))
+			b.WriteString("\n")
+		}
+	}
+
 	b.WriteString("\n")
 
 	// Special handling for error state - show guidance instead of output

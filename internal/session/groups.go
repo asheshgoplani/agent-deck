@@ -22,16 +22,16 @@ const (
 
 // Item represents a single item in the flattened group tree view
 type Item struct {
-	Type               ItemType
-	Group              *Group
-	Session            *Instance
-	Level              int    // Indentation level (0 for root groups, 1 for sessions)
-	Path               string // Group path for this item
-	IsLastInGroup      bool   // True if this is the last session in its group (for tree rendering)
-	RootGroupNum       int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
-	IsSubSession       bool   // True if this session has a parent session
-	IsLastSubSession   bool   // True if this is the last sub-session of its parent (for tree rendering)
-	ParentIsLastInGroup bool  // True if parent session is last top-level item (for tree line rendering)
+	Type                ItemType
+	Group               *Group
+	Session             *Instance
+	Level               int    // Indentation level (0 for root groups, 1 for sessions)
+	Path                string // Group path for this item
+	IsLastInGroup       bool   // True if this is the last session in its group (for tree rendering)
+	RootGroupNum        int    // Pre-computed root group number for hotkey display (1-9, 0 if not a root group)
+	IsSubSession        bool   // True if this session has a parent session
+	IsLastSubSession    bool   // True if this is the last sub-session of its parent (for tree rendering)
+	ParentIsLastInGroup bool   // True if parent session is last top-level item (for tree line rendering)
 }
 
 // Group represents a group of sessions

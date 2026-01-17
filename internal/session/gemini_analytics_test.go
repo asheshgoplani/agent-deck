@@ -55,11 +55,11 @@ func TestGeminiSessionAnalytics_CalculateCost(t *testing.T) {
 	// Assuming pricing (USD per 1M tokens):
 	// Flash: Input $0.075, Output $0.30
 	// Pro:   Input $3.50,  Output $10.50
-	
+
 	cost := analytics.CalculateCost("gemini-1.5-flash")
 	// 0.075 + 0.30 = 0.375
 	expected := 0.375
-	
+
 	if cost != expected {
 		t.Errorf("CalculateCost('gemini-1.5-flash') = %f, want %f", cost, expected)
 	}

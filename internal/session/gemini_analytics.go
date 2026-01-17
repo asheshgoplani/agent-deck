@@ -10,6 +10,9 @@ type GeminiSessionAnalytics struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 
+	// Current context size (last turn's input + cache read tokens)
+	CurrentContextTokens int `json:"current_context_tokens"`
+
 	// Session metrics
 	TotalTurns int           `json:"total_turns"`
 	Duration   time.Duration `json:"duration"`
