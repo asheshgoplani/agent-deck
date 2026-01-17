@@ -1774,11 +1774,14 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				h.setupWizard.Hide()
 				// Reload config cache
-				_, _ = session.ReloadUserConfig()
+				if config, err := session.ReloadUserConfig(); err == nil {
+					h.globalYoloMode = config.Gemini.YoloMode
+				}
 				// Apply default tool to new dialog
 				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
-					h.newDialog.SetDefaultTool(defaultTool)
+					h.newDialog.SetDefaultTool(defaultTool, h.globalYoloMode)
 				}
+				return h, h.loadSessions
 			}
 			return h, cmd
 		}
@@ -1788,17 +1791,19 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			var shouldSave bool
 			h.settingsPanel, cmd, shouldSave = h.settingsPanel.Update(msg)
-			if shouldSave {
+				if shouldSave {
 				// Auto-save on every change
 				config := h.settingsPanel.GetConfig()
 				if err := session.SaveUserConfig(config); err != nil {
 					h.err = err
 					h.errTime = time.Now()
 				}
-				_, _ = session.ReloadUserConfig()
+				if config, err := session.ReloadUserConfig(); err == nil {
+					h.globalYoloMode = config.Gemini.YoloMode
+				}
 				// Apply default tool to new dialog
 				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
-					h.newDialog.SetDefaultTool(defaultTool)
+					h.newDialog.SetDefaultTool(defaultTool, h.globalYoloMode)
 				}
 			}
 			return h, cmd
@@ -2385,7 +2390,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog.SetPathSuggestions(paths)
 
 		// Apply user's preferred default tool from config
-		h.newDialog.SetDefaultTool(session.GetDefaultTool())
+		h.newDialog.SetDefaultTool(session.GetDefaultTool(), h.globalYoloMode)
 
 		// Auto-select parent group from current cursor position
 		groupPath := session.DefaultGroupName
@@ -4444,8 +4449,12 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		}
 
 		if isYolo {
-			yoloStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
-			tool += yoloStyle.Render(" [YOLO]")
+			yoloStyle := lipgloss.NewStyle().
+				Foreground(ColorBg).
+				Background(ColorYellow).
+				Bold(true).
+				Padding(0, 1)
+			tool += " " + yoloStyle.Render("YOLO")
 		}
 	}
 
