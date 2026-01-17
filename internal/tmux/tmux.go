@@ -355,6 +355,11 @@ type Session struct {
 	// mu protects all mutable fields below from concurrent access
 	mu sync.Mutex
 
+	// PERFORMANCE: Cache CapturePane content for short duration (100ms)
+	// Reduces subprocess spawns during rapid status checks/log events
+	lastCaptureContent string
+	lastCaptureTime    time.Time
+
 	// Content tracking for HasUpdated (separate from StateTracker)
 	lastHash    string
 	lastContent string
@@ -852,11 +857,32 @@ func (s *Session) GetWindowActivity() (int64, error) {
 
 // CapturePane captures the visible pane content
 func (s *Session) CapturePane() (string, error) {
+	s.mu.Lock()
+	// Return cached content if it's less than 100ms old
+	if s.lastCaptureContent != "" && time.Since(s.lastCaptureTime) < 100*time.Millisecond {
+		content := s.lastCaptureContent
+		s.mu.Unlock()
+		return content, nil
+	}
+	s.mu.Unlock()
+
 	// -J joins wrapped lines and trims trailing spaces so hashes don't change on resize
 	cmd := exec.Command("tmux", "capture-pane", "-t", s.Name, "-p", "-J")
 	startTime := time.Now()
 	output, err := cmd.Output()
 	elapsed := time.Since(startTime)
+
+	if err != nil {
+		return "", fmt.Errorf("failed to capture pane: %w", err)
+	}
+
+	content := string(output)
+
+	s.mu.Lock()
+	s.lastCaptureContent = content
+	s.lastCaptureTime = time.Now()
+	s.mu.Unlock()
+
 	if elapsed > 100*time.Millisecond {
 		shortName := s.DisplayName
 		if len(shortName) > 12 {
@@ -864,10 +890,8 @@ func (s *Session) CapturePane() (string, error) {
 		}
 		debugLog("SLOW CapturePane for %s: %v (>%v sessions may cause lag)", shortName, elapsed, elapsed)
 	}
-	if err != nil {
-		return "", fmt.Errorf("failed to capture pane: %w", err)
-	}
-	return string(output), nil
+
+	return content, nil
 }
 
 // CaptureFullHistory captures the scrollback history (limited to last 2000 lines for performance)

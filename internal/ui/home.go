@@ -178,6 +178,10 @@ type Home struct {
 	// Event-driven status detection (Priority 2)
 	logWatcher *tmux.LogWatcher
 
+	// PERFORMANCE: Debounce log activity status updates
+	lastLogActivity map[string]time.Time // sessionID -> last update time
+	logActivityMu   sync.Mutex           // Protects lastLogActivity map
+
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
 
@@ -356,6 +360,7 @@ func NewHomeWithProfile(profile string) *Home {
 		resumingSessions:   make(map[string]time.Time),
 		mcpLoadingSessions: make(map[string]time.Time),
 		forkingSessions:    make(map[string]time.Time),
+		lastLogActivity:    make(map[string]time.Time),
 		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:  make(chan struct{}),
 	}
@@ -366,6 +371,17 @@ func NewHomeWithProfile(profile string) *Home {
 		h.instancesMu.RLock()
 		for _, inst := range h.instances {
 			if inst.GetTmuxSession() != nil && inst.GetTmuxSession().Name == sessionName {
+				// PERFORMANCE: Debounce status updates from log events
+				// Only trigger update if it's been >500ms since last log-triggered update
+				h.logActivityMu.Lock()
+				lastUpdate := h.lastLogActivity[inst.ID]
+				if time.Since(lastUpdate) < 500*time.Millisecond {
+					h.logActivityMu.Unlock()
+					break // Too soon, skip this event
+				}
+				h.lastLogActivity[inst.ID] = time.Now()
+				h.logActivityMu.Unlock()
+
 				// Signal file activity (triggers GREEN) then update status
 				go func(i *session.Instance) {
 					if tmuxSess := i.GetTmuxSession(); tmuxSess != nil {
