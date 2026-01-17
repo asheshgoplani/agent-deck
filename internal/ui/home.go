@@ -114,16 +114,16 @@ type Home struct {
 	profile string // The profile this Home is displaying
 
 	// Data (protected by instancesMu for background worker access)
-	instances    []*session.Instance
-	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
-	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
-		storage        *session.Storage
-		groupTree      *session.GroupTree
-		flatItems      []session.Item // Flattened view for cursor navigation
-		globalYoloMode bool           // Cached global YOLO mode setting
-	
-		// Components
-		search            *Search
+	instances      []*session.Instance
+	instanceByID   map[string]*session.Instance // O(1) instance lookup by ID
+	instancesMu    sync.RWMutex                 // Protects instances slice for thread-safe background access
+	storage        *session.Storage
+	groupTree      *session.GroupTree
+	flatItems      []session.Item // Flattened view for cursor navigation
+	globalYoloMode bool           // Cached global YOLO mode setting
+
+	// Components
+	search            *Search
 	globalSearch      *GlobalSearch              // Global session search across all Claude conversations
 	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
 	newDialog         *NewDialog
@@ -1720,7 +1720,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			var shouldSave bool
 			h.settingsPanel, cmd, shouldSave = h.settingsPanel.Update(msg)
-				if shouldSave {
+			if shouldSave {
 				// Auto-save on every change
 				config := h.settingsPanel.GetConfig()
 				if err := session.SaveUserConfig(config); err != nil {

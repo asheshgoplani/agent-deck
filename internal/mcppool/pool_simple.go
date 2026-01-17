@@ -21,11 +21,11 @@ type Pool struct {
 }
 
 type PoolConfig struct {
-	Enabled        bool
-	PoolAll        bool
-	ExcludeMCPs    []string
-	PoolMCPs       []string
-	FallbackStdio  bool
+	Enabled       bool
+	PoolAll       bool
+	ExcludeMCPs   []string
+	PoolMCPs      []string
+	FallbackStdio bool
 }
 
 func NewPool(ctx context.Context, config *PoolConfig) (*Pool, error) {
@@ -271,10 +271,10 @@ func (p *Pool) ListServers() []ProxyInfo {
 	list := []ProxyInfo{}
 	for _, proxy := range p.proxies {
 		list = append(list, ProxyInfo{
-			Name:        proxy.name,
-			SocketPath:  proxy.socketPath,
-			Status:      proxy.GetStatus().String(),
-			Clients:     proxy.GetClientCount(),
+			Name:       proxy.name,
+			SocketPath: proxy.socketPath,
+			Status:     proxy.GetStatus().String(),
+			Clients:    proxy.GetClientCount(),
 		})
 	}
 	return list
