@@ -1,13 +1,45 @@
 package ui
 
 import (
+	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // Test helpers for width_test.go
 // These are only compiled in test builds
+
+// testKeyMsg creates a tea.KeyMsg from a string for testing
+func testKeyMsg(s string) tea.KeyMsg {
+	switch s {
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "left":
+		return tea.KeyMsg{Type: tea.KeyLeft}
+	case "right":
+		return tea.KeyMsg{Type: tea.KeyRight}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
+	default:
+		if len(s) == 1 {
+			return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		}
+		return tea.KeyMsg{}
+	}
+}
+
+// containsString checks if a string contains another string (helper for tests)
+func containsString(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 // NewTestHome creates a minimal Home instance for testing
 func NewTestHome() *Home {
