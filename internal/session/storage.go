@@ -78,6 +78,9 @@ type InstanceData struct {
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
 
+	// Latest user input for context
+	LatestPrompt string `json:"latest_prompt,omitempty"`
+
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 }
