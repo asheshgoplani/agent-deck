@@ -85,11 +85,11 @@ dangerous_mode = true
 // TestInstance_buildGeminiCommand_YoloFlag tests that buildGeminiCommand() adds --yolo flag correctly
 func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 	tests := []struct {
-		name              string
-		globalYoloMode    bool
-		perSessionYolo    *bool
-		sessionID         string
-		expectedContains  []string
+		name               string
+		globalYoloMode     bool
+		perSessionYolo     *bool
+		sessionID          string
+		expectedContains   []string
 		expectedNotContain []string
 	}{
 		{
@@ -222,23 +222,23 @@ func TestInstance_GeminiYoloMode_Persistence(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		yoloMode       *bool
+		name              string
+		yoloMode          *bool
 		expectedAfterLoad *bool
 	}{
 		{
-			name:           "yolo=true persists",
-			yoloMode:       boolPtr(true),
+			name:              "yolo=true persists",
+			yoloMode:          boolPtr(true),
 			expectedAfterLoad: boolPtr(true),
 		},
 		{
-			name:           "yolo=false persists",
-			yoloMode:       boolPtr(false),
+			name:              "yolo=false persists",
+			yoloMode:          boolPtr(false),
 			expectedAfterLoad: boolPtr(false),
 		},
 		{
-			name:           "yolo=nil persists",
-			yoloMode:       nil,
+			name:              "yolo=nil persists",
+			yoloMode:          nil,
 			expectedAfterLoad: nil,
 		},
 	}
