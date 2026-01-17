@@ -46,6 +46,7 @@ make run        # Run directly
 
 - `feature/description` - New features
 - `fix/description` - Bug fixes
+- `perf/description` - Performance optimizations
 - `docs/description` - Documentation changes
 - `refactor/description` - Code refactoring
 
