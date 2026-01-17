@@ -122,43 +122,45 @@ type Home struct {
 	flatItems    []session.Item // Flattened view for cursor navigation
 
 	// Components
-	search        *Search
-	globalSearch  *GlobalSearch              // Global session search across all Claude conversations
+	search            *Search
+	globalSearch      *GlobalSearch              // Global session search across all Claude conversations
 	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
-	newDialog     *NewDialog
-	groupDialog   *GroupDialog   // For creating/renaming groups
-	forkDialog    *ForkDialog    // For forking sessions
-	confirmDialog *ConfirmDialog // For confirming destructive actions
-	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
-	mcpDialog      *MCPDialog      // For managing MCPs
-	setupWizard    *SetupWizard    // For first-run setup
-	settingsPanel  *SettingsPanel  // For editing settings
-	analyticsPanel *AnalyticsPanel // For displaying session analytics
+	newDialog         *NewDialog
+	groupDialog       *GroupDialog    // For creating/renaming groups
+	forkDialog        *ForkDialog     // For forking sessions
+	confirmDialog     *ConfirmDialog  // For confirming destructive actions
+	helpOverlay       *HelpOverlay    // For showing keyboard shortcuts
+	mcpDialog         *MCPDialog      // For managing MCPs
+	setupWizard       *SetupWizard    // For first-run setup
+	settingsPanel     *SettingsPanel  // For editing settings
+	analyticsPanel    *AnalyticsPanel // For displaying session analytics
 
 	// Analytics cache (async fetching with TTL)
-	currentAnalytics     *session.SessionAnalytics    // Current analytics for selected session
-	analyticsSessionID   string                       // Session ID for current analytics
-	analyticsFetchingID  string                       // ID currently being fetched (prevents duplicates)
-	analyticsCache       map[string]*session.SessionAnalytics // TTL cache: sessionID -> analytics
-	analyticsCacheTime   map[string]time.Time                 // TTL cache: sessionID -> cache timestamp
+	currentAnalytics       *session.SessionAnalytics                   // Current analytics for selected session
+	currentGeminiAnalytics *session.GeminiSessionAnalytics             // Current Gemini analytics for selected session
+	analyticsSessionID     string                                      // Session ID for current analytics
+	analyticsFetchingID    string                                      // ID currently being fetched (prevents duplicates)
+	analyticsCache         map[string]*session.SessionAnalytics        // TTL cache: sessionID -> analytics
+	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics  // TTL cache: sessionID -> Gemini analytics
+	analyticsCacheTime     map[string]time.Time                        // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor        int            // Selected item index in flatItems
-	viewOffset    int            // First visible item index (for scrolling)
-	isAttaching   atomic.Bool   // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter  session.Status // Filter sessions by status ("" = all, or specific status)
-	err           error
-	errTime       time.Time // When error occurred (for auto-dismiss)
-	isReloading    bool      // Visual feedback during auto-reload
-	initialLoading bool      // True until first loadSessionsMsg received (shows splash screen)
-	reloadVersion  uint64    // Incremented on each reload to prevent stale background saves
+	cursor         int            // Selected item index in flatItems
+	viewOffset     int            // First visible item index (for scrolling)
+	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
+	err            error
+	errTime        time.Time  // When error occurred (for auto-dismiss)
+	isReloading    bool       // Visual feedback during auto-reload
+	initialLoading bool       // True until first loadSessionsMsg received (shows splash screen)
+	reloadVersion  uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
-	previewCache       map[string]string    // sessionID -> cached preview content
-	previewCacheTime   map[string]time.Time // sessionID -> when cached (for expiration)
-	previewCacheMu     sync.RWMutex         // Protects previewCache for thread-safety
-	previewFetchingID  string               // ID currently being fetched (prevents duplicate fetches)
+	previewCache      map[string]string    // sessionID -> cached preview content
+	previewCacheTime  map[string]time.Time // sessionID -> when cached (for expiration)
+	previewCacheMu    sync.RWMutex         // Protects previewCache for thread-safety
+	previewFetchingID string               // ID currently being fetched (prevents duplicate fetches)
 
 	// Preview debouncing (PERFORMANCE: prevents subprocess spawn on every keystroke)
 	// During rapid navigation, we delay preview fetch by 150ms to let navigation settle
@@ -290,15 +292,16 @@ type previewDebounceMsg struct {
 
 // analyticsFetchedMsg is sent when async analytics parsing is complete
 type analyticsFetchedMsg struct {
-	sessionID string
-	analytics *session.SessionAnalytics
-	err       error
+	sessionID       string
+	analytics       *session.SessionAnalytics
+	geminiAnalytics *session.GeminiSessionAnalytics
+	err             error
 }
 
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
-	viewOffset    int   // Current scroll position
-	visibleHeight int   // How many items fit on screen
+	viewOffset    int      // Current scroll position
+	visibleHeight int      // How many items fit on screen
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
@@ -327,37 +330,38 @@ func NewHomeWithProfile(profile string) *Home {
 	}
 
 	h := &Home{
-		profile:           actualProfile,
-		storage:           storage,
-		storageWarning:    storageWarning,
-		search:            NewSearch(),
-		newDialog:         NewNewDialog(),
-		groupDialog:       NewGroupDialog(),
-		forkDialog:        NewForkDialog(),
-		confirmDialog:     NewConfirmDialog(),
-		helpOverlay:       NewHelpOverlay(),
-		mcpDialog:         NewMCPDialog(),
-		setupWizard:       NewSetupWizard(),
-		settingsPanel:     NewSettingsPanel(),
-		analyticsPanel:    NewAnalyticsPanel(),
-		cursor:            0,
-		initialLoading:    true, // Show splash until sessions load
-		ctx:               ctx,
-		cancel:            cancel,
-		instances:         []*session.Instance{},
-		instanceByID:      make(map[string]*session.Instance),
-		groupTree:         session.NewGroupTree([]*session.Instance{}),
-		flatItems:         []session.Item{},
+		profile:            actualProfile,
+		storage:            storage,
+		storageWarning:     storageWarning,
+		search:             NewSearch(),
+		newDialog:          NewNewDialog(),
+		groupDialog:        NewGroupDialog(),
+		forkDialog:         NewForkDialog(),
+		confirmDialog:      NewConfirmDialog(),
+		helpOverlay:        NewHelpOverlay(),
+		mcpDialog:          NewMCPDialog(),
+		setupWizard:        NewSetupWizard(),
+		settingsPanel:      NewSettingsPanel(),
+		analyticsPanel:     NewAnalyticsPanel(),
+		cursor:             0,
+		initialLoading:     true, // Show splash until sessions load
+		ctx:                ctx,
+		cancel:             cancel,
+		instances:          []*session.Instance{},
+		instanceByID:       make(map[string]*session.Instance),
+		groupTree:          session.NewGroupTree([]*session.Instance{}),
+		flatItems:          []session.Item{},
 		previewCache:       make(map[string]string),
 		previewCacheTime:   make(map[string]time.Time),
 		analyticsCache:     make(map[string]*session.SessionAnalytics),
+		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime: make(map[string]time.Time),
 		launchingSessions:  make(map[string]time.Time),
 		resumingSessions:   make(map[string]time.Time),
 		mcpLoadingSessions: make(map[string]time.Time),
 		forkingSessions:    make(map[string]time.Time),
-		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:  make(chan struct{}),
+		statusTrigger:      make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:   make(chan struct{}),
 	}
 
 	// Initialize event-driven log watcher
@@ -744,7 +748,6 @@ func (h *Home) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -993,41 +996,59 @@ func (h *Home) getAnalyticsForSession(inst *session.Instance) *session.SessionAn
 // fetchAnalytics returns a command that asynchronously parses session analytics
 // This keeps View() pure (no blocking I/O) as per Bubble Tea best practices
 func (h *Home) fetchAnalytics(inst *session.Instance) tea.Cmd {
-	if inst == nil || inst.Tool != "claude" {
+	if inst == nil {
 		return nil
 	}
-	sessionID := inst.ID
-	claudeSessionID := inst.ClaudeSessionID
+	if inst.Tool != "claude" && inst.Tool != "gemini" {
+		return nil
+	}
 
-	return func() tea.Msg {
-		// Get JSONL path for this session
-		jsonlPath := inst.GetJSONLPath()
-		if jsonlPath == "" {
-			// No JSONL path available - return empty analytics
+	sessionID := inst.ID
+
+	if inst.Tool == "claude" {
+		claudeSessionID := inst.ClaudeSessionID
+		return func() tea.Msg {
+			// Get JSONL path for this session
+			jsonlPath := inst.GetJSONLPath()
+			if jsonlPath == "" {
+				// No JSONL path available - return empty analytics
+				return analyticsFetchedMsg{
+					sessionID: sessionID,
+					analytics: nil,
+					err:       nil,
+				}
+			}
+
+			// Parse the JSONL file
+			analytics, err := session.ParseSessionJSONL(jsonlPath)
+			if err != nil {
+				log.Printf("Failed to parse analytics for session %s (claude session %s): %v", sessionID, claudeSessionID, err)
+				return analyticsFetchedMsg{
+					sessionID: sessionID,
+					analytics: nil,
+					err:       err,
+				}
+			}
+
 			return analyticsFetchedMsg{
 				sessionID: sessionID,
-				analytics: nil,
+				analytics: analytics,
 				err:       nil,
 			}
 		}
-
-		// Parse the JSONL file
-		analytics, err := session.ParseSessionJSONL(jsonlPath)
-		if err != nil {
-			log.Printf("Failed to parse analytics for session %s (claude session %s): %v", sessionID, claudeSessionID, err)
+	} else if inst.Tool == "gemini" {
+		return func() tea.Msg {
+			// Gemini analytics are updated via UpdateGeminiSession which is called in background
+			// during UpdateStatus(). We just return the current snapshot.
 			return analyticsFetchedMsg{
-				sessionID: sessionID,
-				analytics: nil,
-				err:       err,
+				sessionID:       sessionID,
+				geminiAnalytics: inst.GeminiAnalytics,
+				err:             nil,
 			}
 		}
-
-		return analyticsFetchedMsg{
-			sessionID: sessionID,
-			analytics: analytics,
-			err:       nil,
-		}
 	}
+
+	return nil
 }
 
 // getSelectedSession returns the currently selected session, or nil if a group is selected
@@ -1543,23 +1564,51 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, h.fetchPreview(inst))
 			}
 
-			// Analytics fetch (for Claude sessions with analytics enabled)
+			// Analytics fetch (for Claude/Gemini sessions with analytics enabled)
 			// Use TTL cache - only fetch if cache miss/expired and not already fetching
-			if inst.Tool == "claude" && h.analyticsFetchingID != inst.ID {
-				cached := h.getAnalyticsForSession(inst)
-				if cached != nil {
-					// Use cached analytics
-					if h.analyticsSessionID != inst.ID {
-						h.currentAnalytics = cached
-						h.analyticsSessionID = inst.ID
-						h.analyticsPanel.SetAnalytics(cached)
+			if (inst.Tool == "claude" || inst.Tool == "gemini") && h.analyticsFetchingID != inst.ID {
+				if inst.Tool == "claude" {
+					cached := h.getAnalyticsForSession(inst)
+					if cached != nil {
+						// Use cached analytics
+						if h.analyticsSessionID != inst.ID {
+							h.currentAnalytics = cached
+							h.currentGeminiAnalytics = nil
+							h.analyticsSessionID = inst.ID
+							h.analyticsPanel.SetAnalytics(cached)
+						}
+					} else {
+						// Cache miss or expired - fetch new analytics
+						config, _ := session.LoadUserConfig()
+						if config != nil && config.GetShowAnalytics() {
+							h.analyticsFetchingID = inst.ID
+							cmds = append(cmds, h.fetchAnalytics(inst))
+						}
 					}
-				} else {
-					// Cache miss or expired - fetch new analytics
-					config, _ := session.LoadUserConfig()
-					if config != nil && config.GetShowAnalytics() {
-						h.analyticsFetchingID = inst.ID
-						cmds = append(cmds, h.fetchAnalytics(inst))
+				} else if inst.Tool == "gemini" {
+					// Check Gemini cache
+					var cached *session.GeminiSessionAnalytics
+					if c, ok := h.geminiAnalyticsCache[inst.ID]; ok {
+						if time.Since(h.analyticsCacheTime[inst.ID]) < analyticsCacheTTL {
+							cached = c
+						}
+					}
+
+					if cached != nil {
+						// Use cached analytics
+						if h.analyticsSessionID != inst.ID {
+							h.currentGeminiAnalytics = cached
+							h.currentAnalytics = nil
+							h.analyticsSessionID = inst.ID
+							h.analyticsPanel.SetGeminiAnalytics(cached)
+						}
+					} else {
+						// Cache miss or expired - fetch new analytics
+						config, _ := session.LoadUserConfig()
+						if config != nil && config.GetShowAnalytics() {
+							h.analyticsFetchingID = inst.ID
+							cmds = append(cmds, h.fetchAnalytics(inst))
+						}
 					}
 				}
 			}
@@ -1585,15 +1634,36 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case analyticsFetchedMsg:
 		// Async analytics parsing complete - update TTL cache
 		h.analyticsFetchingID = ""
-		if msg.err == nil && msg.analytics != nil && msg.sessionID != "" {
-			// Store in TTL cache
-			h.analyticsCache[msg.sessionID] = msg.analytics
+		if msg.err == nil && msg.sessionID != "" {
+			// Update cache timestamp
 			h.analyticsCacheTime[msg.sessionID] = time.Now()
-			// Update current analytics for display
-			h.currentAnalytics = msg.analytics
-			h.analyticsSessionID = msg.sessionID
-			// Update analytics panel with new data
-			h.analyticsPanel.SetAnalytics(msg.analytics)
+
+			if msg.analytics != nil {
+				// Store in TTL cache
+				h.analyticsCache[msg.sessionID] = msg.analytics
+				// Update current analytics for display
+				h.currentAnalytics = msg.analytics
+				h.currentGeminiAnalytics = nil
+				h.analyticsSessionID = msg.sessionID
+				// Update analytics panel with new data
+				h.analyticsPanel.SetAnalytics(msg.analytics)
+			} else if msg.geminiAnalytics != nil {
+				// Store in TTL cache
+				h.geminiAnalyticsCache[msg.sessionID] = msg.geminiAnalytics
+				// Update current analytics for display
+				h.currentGeminiAnalytics = msg.geminiAnalytics
+				h.currentAnalytics = nil
+				h.analyticsSessionID = msg.sessionID
+				// Update analytics panel with new data
+				h.analyticsPanel.SetGeminiAnalytics(msg.geminiAnalytics)
+			} else {
+				// Both nil - clear display if it's the current session
+				if h.analyticsSessionID == msg.sessionID {
+					h.currentAnalytics = nil
+					h.currentGeminiAnalytics = nil
+					h.analyticsPanel.SetAnalytics(nil)
+				}
+			}
 		}
 		return h, nil
 
@@ -4910,6 +4980,48 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString("\n")
 		}
 	}
+
+	// Gemini-specific info (session ID and MCPs)
+	if selected.Tool == "gemini" {
+		// Section divider for Gemini info
+		geminiHeader := renderSectionDivider("Gemini", width-4)
+		b.WriteString(geminiHeader)
+		b.WriteString("\n")
+
+		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+		// Status line
+		if selected.GeminiSessionID != "" {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("● Connected"))
+			b.WriteString("\n")
+
+			// Full session ID on its own line
+			b.WriteString(labelStyle.Render("Session: "))
+			b.WriteString(valueStyle.Render(selected.GeminiSessionID))
+			b.WriteString("\n")
+		} else {
+			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
+			b.WriteString(labelStyle.Render("Status:  "))
+			b.WriteString(statusStyle.Render("○ Not connected"))
+			b.WriteString("\n")
+		}
+
+		// MCP servers for Gemini (only global for now)
+		mcpInfo := selected.GetMCPInfo()
+		if mcpInfo != nil && len(mcpInfo.Global) > 0 {
+			b.WriteString(labelStyle.Render("MCPs:    "))
+			var mcpParts []string
+			for _, name := range mcpInfo.Global {
+				mcpParts = append(mcpParts, valueStyle.Render(name+" (g)"))
+			}
+			b.WriteString(strings.Join(mcpParts, ", "))
+			b.WriteString("\n")
+		}
+	}
+
 	b.WriteString("\n")
 
 	// Special handling for error state - show guidance instead of output
@@ -4968,7 +5080,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Check preview settings for what to show
 	config, _ := session.LoadUserConfig()
-	showAnalytics := config != nil && config.GetShowAnalytics() && selected.Tool == "claude"
+	showAnalytics := config != nil && config.GetShowAnalytics() && (selected.Tool == "claude" || selected.Tool == "gemini")
 	showOutput := config == nil || config.GetShowOutput() // Default to true if config fails
 
 	// Check if session is launching/resuming (for animation priority)
@@ -4977,7 +5089,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	_, isSessionForking := h.forkingSessions[selected.ID]
 	isStartingUp := isSessionLaunching || isSessionResuming || isSessionForking
 
-	// Analytics panel (for Claude sessions with analytics enabled)
+	// Analytics panel (for Claude/Gemini sessions with analytics enabled)
 	// Skip showing "Loading analytics..." during startup - let the launch animation take focus
 	if showAnalytics && !isStartingUp {
 		analyticsHeader := renderSectionDivider("Analytics", width-4)
@@ -4985,7 +5097,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString("\n")
 
 		// Check if we have analytics for this session
-		if h.analyticsSessionID == selected.ID && h.currentAnalytics != nil {
+		if h.analyticsSessionID == selected.ID && (h.currentAnalytics != nil || h.currentGeminiAnalytics != nil) {
 			h.analyticsPanel.SetSize(width-4, height/2)
 			b.WriteString(h.analyticsPanel.View())
 			b.WriteString("\n")

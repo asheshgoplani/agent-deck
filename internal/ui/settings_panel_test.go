@@ -162,7 +162,7 @@ func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
 
 func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.selectedTool = 2     // opencode
+	panel.selectedTool = 2 // opencode
 	panel.dangerousMode = true
 	panel.claudeConfigDir = "~/.claude-custom"
 	panel.checkForUpdates = false
@@ -655,10 +655,11 @@ func TestSettingsPanel_PreviewSettings_LoadConfig(t *testing.T) {
 	panel := NewSettingsPanel()
 
 	// Test loading with explicit values
+	showOutputTrue := true
 	showAnalyticsFalse := false
 	config := &session.UserConfig{
 		Preview: session.PreviewSettings{
-			ShowOutput:    true,
+			ShowOutput:    &showOutputTrue,
 			ShowAnalytics: &showAnalyticsFalse,
 		},
 	}
@@ -672,9 +673,10 @@ func TestSettingsPanel_PreviewSettings_LoadConfig(t *testing.T) {
 	}
 
 	// Test loading with nil ShowAnalytics (should default to true)
+	showOutputFalse := false
 	config2 := &session.UserConfig{
 		Preview: session.PreviewSettings{
-			ShowOutput:    false,
+			ShowOutput:    &showOutputFalse,
 			ShowAnalytics: nil,
 		},
 	}
@@ -695,7 +697,9 @@ func TestSettingsPanel_PreviewSettings_GetConfig(t *testing.T) {
 
 	config := panel.GetConfig()
 
-	if !config.Preview.ShowOutput {
+	if config.Preview.ShowOutput == nil {
+		t.Error("Preview.ShowOutput should not be nil")
+	} else if !*config.Preview.ShowOutput {
 		t.Error("Preview.ShowOutput should be true")
 	}
 	if config.Preview.ShowAnalytics == nil {

@@ -210,7 +210,7 @@ func TestStripANSI(t *testing.T) {
 		{"8-bit csi", "\x9Bmtest\x9Bm", "test"}, // 8-bit CSI (0x9B)
 		// Edge cases - malformed sequences (rare in real terminal output)
 		// These match behavior of the original O(n²) implementation
-		{"esc at end", "hello\x1b", "hello\x1b"},             // trailing ESC kept (same as old)
+		{"esc at end", "hello\x1b", "hello\x1b"},              // trailing ESC kept (same as old)
 		{"osc without terminator", "\x1b]0;Title", "0;Title"}, // ESC] stripped, rest kept
 		{"csi without letter", "\x1b[123", ""},                // CSI params stripped
 		{"just esc", "\x1b", "\x1b"},                          // lone ESC kept (same as old)

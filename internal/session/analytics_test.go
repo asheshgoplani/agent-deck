@@ -476,7 +476,7 @@ func TestCalculateBillingBlocks_JustUnderWindowBoundary(t *testing.T) {
 	now := time.Now()
 	entries := []time.Time{
 		now.Add(-4*time.Hour - 59*time.Minute), // Just under 5h
-		now,                                     // Should be in same block
+		now,                                    // Should be in same block
 	}
 
 	blocks := CalculateBillingBlocks(entries, 5*time.Hour)
