@@ -4426,11 +4426,9 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 
 		if isYolo {
 			yoloStyle := lipgloss.NewStyle().
-				Foreground(ColorBg).
-				Background(ColorYellow).
-				Bold(true).
-				Padding(0, 1)
-			tool += " " + yoloStyle.Render("YOLO")
+				Foreground(ColorYellow).
+				Bold(true)
+			tool += " " + yoloStyle.Render("[YOLO]")
 		}
 	}
 
@@ -4810,11 +4808,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 		if isYolo {
 			yoloBadge := lipgloss.NewStyle().
-				Foreground(ColorBg).
-				Background(ColorYellow).
-				Padding(0, 1).
+				Foreground(ColorYellow).
 				Bold(true).
-				Render("YOLO")
+				Render("[YOLO]")
 			toolBadge = toolBadge + " " + yoloBadge
 		}
 	}
