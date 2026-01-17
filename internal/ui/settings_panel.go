@@ -27,10 +27,11 @@ const (
 	SettingRecentDays
 	SettingShowOutput
 	SettingShowAnalytics
+	SettingGeminiYoloMode
 )
 
 // Total number of navigable settings
-const settingsCount = 14
+const settingsCount = 15
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -44,6 +45,7 @@ type SettingsPanel struct {
 	selectedTool        int    // 0=claude, 1=gemini, 2=opencode, 3=codex, 4=none
 	dangerousMode       bool
 	claudeConfigDir     string
+	geminiYoloMode      bool
 	checkForUpdates     bool
 	autoUpdate          bool
 	logMaxSizeMB        int
@@ -152,6 +154,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.dangerousMode = config.Claude.DangerousMode
 	s.claudeConfigDir = config.Claude.ConfigDir
 
+	// Gemini settings
+	s.geminiYoloMode = config.Gemini.YoloMode
+
 	// Update settings
 	s.checkForUpdates = config.Updates.CheckEnabled
 	s.autoUpdate = config.Updates.AutoUpdate
@@ -188,10 +193,14 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 // GetConfig returns a UserConfig with current panel values
 func (s *SettingsPanel) GetConfig() *session.UserConfig {
-	config := &session.UserConfig{
-		DefaultTool: "",
-		Tools:       make(map[string]session.ToolDef),
-		MCPs:        make(map[string]session.MCPDef),
+	var config session.UserConfig
+	if s.originalConfig != nil {
+		config = *s.originalConfig
+	} else {
+		config = session.UserConfig{
+			Tools: make(map[string]session.ToolDef),
+			MCPs:  make(map[string]session.MCPDef),
+		}
 	}
 
 	// Theme
@@ -207,6 +216,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Claude settings
 	config.Claude.DangerousMode = s.dangerousMode
 	config.Claude.ConfigDir = s.claudeConfigDir
+
+	// Gemini settings
+	config.Gemini.YoloMode = s.geminiYoloMode
 
 	// Update settings
 	config.Updates.CheckEnabled = s.checkForUpdates
@@ -230,14 +242,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	showAnalytics := s.showAnalytics
 	config.Preview.ShowAnalytics = &showAnalytics
 
-	// Preserve original MCPs and Tools if we have them
-	if s.originalConfig != nil {
-		config.MCPs = s.originalConfig.MCPs
-		config.Tools = s.originalConfig.Tools
-		config.MCPPool = s.originalConfig.MCPPool
-	}
-
-	return config
+	return &config
 }
 
 // Update handles input and returns (panel, cmd, valueChanged)
@@ -353,6 +358,10 @@ func (s *SettingsPanel) toggleValue() bool {
 	switch setting {
 	case SettingDangerousMode:
 		s.dangerousMode = !s.dangerousMode
+		return true
+
+	case SettingGeminiYoloMode:
+		s.geminiYoloMode = !s.geminiYoloMode
 		return true
 
 	case SettingCheckForUpdates:
@@ -520,6 +529,17 @@ func (s *SettingsPanel) View() string {
 		line += s.claudeConfigDir
 	}
 	if s.cursor == int(SettingClaudeConfigDir) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// GEMINI
+	content.WriteString(sectionStyle.Render("GEMINI"))
+	content.WriteString("\n")
+
+	// YOLO mode checkbox
+	line = s.renderCheckbox("YOLO mode", s.geminiYoloMode) + " - Auto-approve all tool actions"
+	if s.cursor == int(SettingGeminiYoloMode) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")

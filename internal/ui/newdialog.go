@@ -32,7 +32,8 @@ type NewDialog struct {
 	worktreeEnabled bool
 	branchInput     textinput.Model
 	// YOLO mode support (Gemini only)
-	yoloEnabled bool
+	yoloEnabled    bool
+	globalYoloMode bool
 }
 
 // NewNewDialog creates a new NewDialog instance
@@ -103,16 +104,23 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName string) {
 	// Reset worktree fields
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
-	// Reset YOLO mode
-	d.yoloEnabled = false
 }
 
 // SetDefaultTool sets the pre-selected command based on tool name
 // Call this before Show/ShowInGroup to apply user's preferred default
-func (d *NewDialog) SetDefaultTool(tool string) {
+func (d *NewDialog) SetDefaultTool(tool string, globalYoloMode bool) {
+	d.globalYoloMode = globalYoloMode
 	if tool == "" {
 		d.commandCursor = 0 // Default to shell
+		d.yoloEnabled = false
 		return
+	}
+
+	// Set YOLO mode if tool is gemini
+	if tool == "gemini" {
+		d.yoloEnabled = globalYoloMode
+	} else {
+		d.yoloEnabled = false
 	}
 
 	// Find the tool in preset commands
@@ -376,6 +384,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				if d.commandCursor < 0 {
 					d.commandCursor = len(d.presetCommands) - 1
 				}
+				// Auto-set YOLO based on global setting when switching to Gemini
+				if d.presetCommands[d.commandCursor] == "gemini" {
+					d.yoloEnabled = d.globalYoloMode
+				} else {
+					d.yoloEnabled = false
+				}
 				return d, nil
 			}
 
@@ -383,6 +397,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			// Command selection
 			if d.focusIndex == 2 {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
+				// Auto-set YOLO based on global setting when switching to Gemini
+				if d.presetCommands[d.commandCursor] == "gemini" {
+					d.yoloEnabled = d.globalYoloMode
+				} else {
+					d.yoloEnabled = false
+				}
 				return d, nil
 			}
 
