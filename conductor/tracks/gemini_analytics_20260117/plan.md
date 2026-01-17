@@ -13,7 +13,7 @@
 - [ ] Task: Conductor - User Manual Verification 'Core Analytics Tracking' (Protocol in workflow.md)
 
 ## Phase 2: TUI Integration
-- [ ] Task: Update Analytics Panel to support Gemini sessions
+- [x] Task: Update Analytics Panel to support Gemini sessions [24a6a64]
     - [ ] Sub-task: Write tests for `AnalyticsPanel` view model to ensure it can render Gemini analytics data
     - [ ] Sub-task: Update `internal/ui/analytics_panel.go` to fetch and display data from `GeminiSessionAnalytics`
 - [ ] Task: Conductor - User Manual Verification 'TUI Integration' (Protocol in workflow.md)
