@@ -2,10 +2,10 @@
 
 ## Phase 1: Foundation and State Synchronization
 - [x] Task: Create feature branch `feature/gemini-yolo-refinement` from `main` [488235]
-- [ ] Task: Implement `SetGeminiYoloMode` logic and state synchronization [TDD]
-    - [ ] Task: Write failing unit tests in `internal/session/instance_test.go` to verify `SetGeminiYoloMode` updates the struct and the tmux environment (`GEMINI_YOLO_MODE`)
-    - [ ] Task: Implement `SetGeminiYoloMode(enabled bool)` in `internal/session/instance.go`
-    - [ ] Task: Update `UpdateGeminiSession` in `internal/session/instance.go` to detect YOLO mode from the tmux environment variable or process command line
+- [x] Task: Implement `SetGeminiYoloMode` logic and state synchronization [TDD] [496558]
+    - [x] Task: Write failing unit tests in `internal/session/instance_test.go` to verify `SetGeminiYoloMode` updates the struct and the tmux environment (`GEMINI_YOLO_MODE`)
+    - [x] Task: Implement `SetGeminiYoloMode(enabled bool)` in `internal/session/instance.go`
+    - [x] Task: Update `UpdateGeminiSession` in `internal/session/instance.go` to detect YOLO mode from the tmux environment variable or process command line
 - [ ] Task: Conductor - User Manual Verification 'Foundation and State Synchronization' (Protocol in workflow.md)
 
 ## Phase 2: Command Building and Persistence
