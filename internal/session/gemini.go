@@ -57,8 +57,8 @@ func GetGeminiSessionsDir(projectPath string) string {
 
 // GeminiSessionInfo holds parsed session metadata
 type GeminiSessionInfo struct {
-	SessionID    string    // Full UUID
-	Filename     string    // session-2025-12-26T15-09-4d8fcb4d.json
+	SessionID    string // Full UUID
+	Filename     string // session-2025-12-26T15-09-4d8fcb4d.json
 	StartTime    time.Time
 	LastUpdated  time.Time
 	MessageCount int
@@ -132,3 +132,74 @@ func ListGeminiSessions(projectPath string) ([]GeminiSessionInfo, error) {
 	return sessions, nil
 }
 
+// UpdateGeminiAnalyticsFromDisk updates the analytics struct from the session file on disk
+func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *GeminiSessionAnalytics) error {
+	if sessionID == "" || len(sessionID) < 8 {
+		return fmt.Errorf("invalid session ID")
+	}
+
+	sessionsDir := GetGeminiSessionsDir(projectPath)
+	// Find file matching session ID prefix (first 8 chars)
+	// Filename format: session-YYYY-MM-DDTHH-MM-<uuid8>.json
+	pattern := filepath.Join(sessionsDir, "session-*-"+sessionID[:8]+".json")
+	files, _ := filepath.Glob(pattern)
+	if len(files) == 0 {
+		return fmt.Errorf("session file not found")
+	}
+
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		return fmt.Errorf("failed to read session file: %w", err)
+	}
+
+	var session struct {
+		SessionID   string `json:"sessionId"`
+		StartTime   string `json:"startTime"`
+		LastUpdated string `json:"lastUpdated"`
+		Messages    []struct {
+			Type   string `json:"type"`
+			Tokens struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+			} `json:"tokens"`
+		} `json:"messages"`
+	}
+
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("failed to parse session for analytics: %w", err)
+	}
+
+	// Parse timestamps
+	startTime, _ := time.Parse(time.RFC3339, session.StartTime)
+	if startTime.IsZero() {
+		startTime, _ = time.Parse("2006-01-02T15:04:05.999Z", session.StartTime)
+	}
+	lastUpdated, _ := time.Parse(time.RFC3339, session.LastUpdated)
+	if lastUpdated.IsZero() {
+		lastUpdated, _ = time.Parse("2006-01-02T15:04:05.999Z", session.LastUpdated)
+	}
+
+	analytics.StartTime = startTime
+	analytics.LastActive = lastUpdated
+	if !startTime.IsZero() && !lastUpdated.IsZero() {
+		analytics.Duration = lastUpdated.Sub(startTime)
+	}
+
+	// Reset and accumulate tokens
+	analytics.InputTokens = 0
+	analytics.OutputTokens = 0
+	analytics.TotalTurns = 0
+	for _, msg := range session.Messages {
+		if msg.Type == "gemini" {
+			analytics.InputTokens += msg.Tokens.Input
+			analytics.OutputTokens += msg.Tokens.Output
+			analytics.TotalTurns++
+
+			// For Gemini, the input tokens of the last message represent the total context size
+			// including history and current prompt.
+			analytics.CurrentContextTokens = msg.Tokens.Input
+		}
+	}
+
+	return nil
+}

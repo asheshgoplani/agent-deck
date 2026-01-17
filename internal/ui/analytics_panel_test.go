@@ -30,6 +30,53 @@ func TestAnalyticsPanel_SetAnalytics(t *testing.T) {
 	if panel.analytics != analytics {
 		t.Error("SetAnalytics should set the analytics pointer")
 	}
+	if panel.geminiAnalytics != nil {
+		t.Error("SetAnalytics should clear Gemini analytics pointer")
+	}
+}
+
+func TestAnalyticsPanel_SetGeminiAnalytics(t *testing.T) {
+	panel := NewAnalyticsPanel()
+	analytics := &session.GeminiSessionAnalytics{
+		InputTokens:  2000,
+		OutputTokens: 1000,
+	}
+
+	panel.SetGeminiAnalytics(analytics)
+
+	if panel.geminiAnalytics != analytics {
+		t.Error("SetGeminiAnalytics should set the geminiAnalytics pointer")
+	}
+	if panel.analytics != nil {
+		t.Error("SetGeminiAnalytics should clear Claude analytics pointer")
+	}
+}
+
+func TestAnalyticsPanel_View_WithGeminiAnalytics(t *testing.T) {
+	panel := NewAnalyticsPanel()
+
+	analytics := &session.GeminiSessionAnalytics{
+		InputTokens:  10000,
+		OutputTokens: 5000,
+		TotalTurns:   10,
+		Duration:     30 * time.Minute,
+	}
+
+	panel.SetGeminiAnalytics(analytics)
+	panel.SetSize(60, 20)
+
+	view := panel.View()
+
+	// Check for expected sections
+	if !strings.Contains(view, "Context") {
+		t.Error("View should contain context bar")
+	}
+	if !strings.Contains(view, "Tokens") {
+		t.Error("View should contain tokens section")
+	}
+	if !strings.Contains(view, "Session") {
+		t.Error("View should contain session info")
+	}
 }
 
 func TestAnalyticsPanel_SetSize(t *testing.T) {
@@ -147,9 +194,9 @@ func TestAnalyticsPanel_View_TokenBreakdown(t *testing.T) {
 	panel := NewAnalyticsPanel()
 
 	analytics := &session.SessionAnalytics{
-		InputTokens:     10000,
-		OutputTokens:    5000,
-		CacheReadTokens: 2000,
+		InputTokens:      10000,
+		OutputTokens:     5000,
+		CacheReadTokens:  2000,
 		CacheWriteTokens: 1000,
 	}
 
