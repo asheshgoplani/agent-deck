@@ -54,9 +54,10 @@ type Instance struct {
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
 
 	// Gemini CLI integration
-	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
-	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
-	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"` // Per-session override for YOLO mode (nil = use global config)
+	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
+	GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
+	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"` // Per-session override for YOLO mode (nil = use global config)
+	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
