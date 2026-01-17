@@ -7,7 +7,7 @@
 - [x] Task: Integrate analytics tracking into Gemini session lifecycle [e1b535a]
     - [ ] Sub-task: Write tests for `Start`, `End`, and `Update` methods in `GeminiSession` to ensure they call analytics methods
     - [ ] Sub-task: Implement `Start`, `End`, and `Update` hooks in `internal/session/gemini.go` to capture start time, duration, and token usage
-- [ ] Task: Implement cost calculation logic
+- [x] Task: Implement cost calculation logic [f4f5922]
     - [ ] Sub-task: Write tests for `CalculateCost` function with various model types and token counts
     - [ ] Sub-task: Implement `CalculateCost` function based on current Gemini pricing
 - [ ] Task: Conductor - User Manual Verification 'Core Analytics Tracking' (Protocol in workflow.md)
