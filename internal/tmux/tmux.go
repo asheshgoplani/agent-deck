@@ -541,6 +541,40 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	return "", fmt.Errorf("variable not found: %s", key)
 }
 
+// GetPaneCommandLine returns the command line of the process running in the active pane
+// This is useful for detecting flags like --yolo in already running sessions
+func (s *Session) GetPaneCommandLine() (string, error) {
+	// 1. Get the PID of the process in the active pane
+	cmd := exec.Command("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_pid}")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get pane PID: %w", err)
+	}
+
+	pid := strings.TrimSpace(string(output))
+	if pid == "" {
+		return "", fmt.Errorf("no process running in pane")
+	}
+
+	// 2. Read the command line from /proc/[pid]/cmdline (linux only)
+	// For other OSs, we might need a different approach, but this is tailored for the user's system
+	cmdlinePath := fmt.Sprintf("/proc/%s/cmdline", pid)
+	data, err := os.ReadFile(cmdlinePath)
+	if err != nil {
+		// Fallback: try ps command
+		psCmd := exec.Command("ps", "-p", pid, "-o", "command=")
+		psOutput, psErr := psCmd.Output()
+		if psErr != nil {
+			return "", fmt.Errorf("failed to read cmdline for PID %s: %w", pid, err)
+		}
+		return strings.TrimSpace(string(psOutput)), nil
+	}
+
+	// cmdline is null-separated, replace with spaces for easier matching
+	cmdline := strings.ReplaceAll(string(data), "\x00", " ")
+	return strings.TrimSpace(cmdline), nil
+}
+
 // sanitizeName converts a display name to a valid tmux session name
 func sanitizeName(name string) string {
 	// Replace spaces and special characters with hyphens
