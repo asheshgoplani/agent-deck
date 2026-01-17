@@ -14,6 +14,7 @@ type ConfirmType int
 const (
 	ConfirmDeleteSession ConfirmType = iota
 	ConfirmDeleteGroup
+	ConfirmYoloRestart
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -24,6 +25,7 @@ type ConfirmDialog struct {
 	targetName  string // Display name
 	width       int
 	height      int
+	yoloEnabled bool // For ConfirmYoloRestart
 }
 
 // NewConfirmDialog creates a new confirmation dialog
@@ -45,6 +47,15 @@ func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
 	c.confirmType = ConfirmDeleteGroup
 	c.targetID = groupPath
 	c.targetName = groupName
+}
+
+// ShowYoloRestart shows confirmation for YOLO mode toggle and restart
+func (c *ConfirmDialog) ShowYoloRestart(sessionID, sessionName string, yoloEnabled bool) {
+	c.visible = true
+	c.confirmType = ConfirmYoloRestart
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.yoloEnabled = yoloEnabled
 }
 
 // Hide hides the dialog
@@ -100,6 +111,15 @@ func (c *ConfirmDialog) View() string {
 		title = "⚠️  Delete Group?"
 		warning = fmt.Sprintf("This will delete the group:\n\n  \"%s\"", c.targetName)
 		details = "• All sessions will be MOVED to 'default' group\n• Sessions will NOT be killed\n• The group structure will be lost"
+
+	case ConfirmYoloRestart:
+		modeStr := "ENABLED"
+		if !c.yoloEnabled {
+			modeStr = "DISABLED"
+		}
+		title = "🚀 YOLO Mode Toggle"
+		warning = fmt.Sprintf("YOLO mode has been %s for:\n\n  \"%s\"", modeStr, c.targetName)
+		details = "• Session must RESTART to apply this change\n• Resume command will be used\n• Context will be preserved"
 	}
 
 	// Styles
@@ -107,6 +127,10 @@ func (c *ConfirmDialog) View() string {
 		Bold(true).
 		Foreground(ColorRed).
 		MarginBottom(1)
+
+	if c.confirmType == ConfirmYoloRestart {
+		titleStyle = titleStyle.Foreground(ColorAccent)
+	}
 
 	warningStyle := lipgloss.NewStyle().
 		Foreground(ColorYellow).
@@ -116,12 +140,26 @@ func (c *ConfirmDialog) View() string {
 		Foreground(ColorTextDim).
 		MarginBottom(1)
 
+	yesText := "y Delete"
+	if c.confirmType == ConfirmYoloRestart {
+		yesText = "y Restart"
+	}
+
 	buttonYes := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorRed).
 		Padding(0, 2).
 		Bold(true).
-		Render("y Delete")
+		Render(yesText)
+
+	if c.confirmType == ConfirmYoloRestart {
+		buttonYes = lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorAccent).
+			Padding(0, 2).
+			Bold(true).
+			Render(yesText)
+	}
 
 	buttonNo := lipgloss.NewStyle().
 		Foreground(ColorBg).
@@ -129,6 +167,15 @@ func (c *ConfirmDialog) View() string {
 		Padding(0, 2).
 		Bold(true).
 		Render("n Cancel")
+
+	if c.confirmType == ConfirmYoloRestart {
+		buttonNo = lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorRed).
+			Padding(0, 2).
+			Bold(true).
+			Render("n Later")
+	}
 
 	escHint := lipgloss.NewStyle().
 		Foreground(ColorTextDim).
