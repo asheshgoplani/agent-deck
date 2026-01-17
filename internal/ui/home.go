@@ -177,6 +177,10 @@ type Home struct {
 
 	// Event-driven status detection (Priority 2)
 	logWatcher *tmux.LogWatcher
+	
+	// PERFORMANCE: Debounce log activity status updates
+	lastLogActivity map[string]time.Time // sessionID -> last update time
+	logActivityMu   sync.Mutex           // Protects lastLogActivity map
 
 	// PERFORMANCE: Debounce log activity status updates
 	lastLogActivity map[string]time.Time // sessionID -> last update time

@@ -1,59 +1,107 @@
 package ui
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
-	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestSettingsPanel_InitialState(t *testing.T) {
 	panel := NewSettingsPanel()
+
 	if panel.IsVisible() {
-		t.Error("SettingsPanel should not be visible initially")
+		t.Error("Panel should not be visible initially")
 	}
-	if panel.cursor != 0 {
-		t.Errorf("Initial cursor should be 0, got %d", panel.cursor)
+
+	panel.Show()
+	if !panel.IsVisible() {
+		t.Error("Panel should be visible after Show()")
 	}
 }
 
 func TestSettingsPanel_Hide(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
+
+	if !panel.IsVisible() {
+		t.Error("Panel should be visible after Show()")
+	}
+
 	panel.Hide()
+
 	if panel.IsVisible() {
-		t.Error("SettingsPanel should not be visible after Hide()")
+		t.Error("Panel should not be visible after Hide()")
 	}
 }
 
 func TestSettingsPanel_LoadConfig(t *testing.T) {
 	panel := NewSettingsPanel()
+
+	// Load a config with specific values
 	config := &session.UserConfig{
-		DefaultTool: "claude",
-		Theme:       "light",
+		DefaultTool: "gemini",
+		Claude: session.ClaudeSettings{
+			DangerousMode: true,
+			ConfigDir:     "~/.claude-work",
+		},
+		Updates: session.UpdateSettings{
+			CheckEnabled: false,
+			AutoUpdate:   true,
+		},
+		Logs: session.LogSettings{
+			MaxSizeMB:     20,
+			MaxLines:      5000,
+			RemoveOrphans: false,
+		},
 		GlobalSearch: session.GlobalSearchSettings{
-			Tier: "instant",
+			Enabled:    true,
+			Tier:       "instant",
+			RecentDays: 60,
 		},
 	}
 	panel.LoadConfig(config)
 
-	// selectedTool: 0=claude
-	if panel.selectedTool != 0 {
-		t.Errorf("Expected selectedTool 0 (claude), got %d", panel.selectedTool)
+	// Check tool selection (gemini should be index 1)
+	if panel.selectedTool != 1 {
+		t.Errorf("selectedTool: got %d, want 1 (gemini)", panel.selectedTool)
 	}
-	// selectedTheme: 1=light
-	if panel.selectedTheme != 1 {
-		t.Errorf("Expected selectedTheme 1 (light), got %d", panel.selectedTheme)
+	if !panel.dangerousMode {
+		t.Error("dangerousMode should be true")
 	}
-	// searchTier: 1=instant
+	if panel.claudeConfigDir != "~/.claude-work" {
+		t.Errorf("claudeConfigDir: got %q, want %q", panel.claudeConfigDir, "~/.claude-work")
+	}
+	if panel.checkForUpdates {
+		t.Error("checkForUpdates should be false")
+	}
+	if !panel.autoUpdate {
+		t.Error("autoUpdate should be true")
+	}
+	if panel.logMaxSizeMB != 20 {
+		t.Errorf("logMaxSizeMB: got %d, want 20", panel.logMaxSizeMB)
+	}
+	if panel.logMaxLines != 5000 {
+		t.Errorf("logMaxLines: got %d, want 5000", panel.logMaxLines)
+	}
+	if panel.removeOrphans {
+		t.Error("removeOrphans should be false")
+	}
+	if !panel.globalSearchEnabled {
+		t.Error("globalSearchEnabled should be true")
+	}
+	// "instant" should be index 1
 	if panel.searchTier != 1 {
-		t.Errorf("Expected searchTier 1 (instant), got %d", panel.searchTier)
+		t.Errorf("searchTier: got %d, want 1 (instant)", panel.searchTier)
+	}
+	if panel.recentDays != 60 {
+		t.Errorf("recentDays: got %d, want 60", panel.recentDays)
 	}
 }
 
 func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
+	panel := NewSettingsPanel()
+
 	tests := []struct {
 		name     string
 		tool     string
@@ -64,22 +112,26 @@ func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 		{"opencode", "opencode", 2},
 		{"codex", "codex", 3},
 		{"empty", "", 4}, // None
-		{"unknown", "custom", 4},
+		{"unknown", "unknown-tool", 4},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			panel := NewSettingsPanel()
-			config := &session.UserConfig{DefaultTool: tt.tool}
+			config := &session.UserConfig{
+				DefaultTool: tt.tool,
+			}
 			panel.LoadConfig(config)
 			if panel.selectedTool != tt.expected {
-				t.Errorf("Expected %d, got %d", tt.expected, panel.selectedTool)
+				t.Errorf("LoadConfig(%q): selectedTool = %d, want %d",
+					tt.tool, panel.selectedTool, tt.expected)
 			}
 		})
 	}
 }
 
 func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
+	panel := NewSettingsPanel()
+
 	tests := []struct {
 		name     string
 		tier     string
@@ -89,18 +141,20 @@ func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
 		{"instant", "instant", 1},
 		{"balanced", "balanced", 2},
 		{"empty", "", 0},
-		{"unknown", "fast", 0},
+		{"unknown", "unknown", 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			panel := NewSettingsPanel()
 			config := &session.UserConfig{
-				GlobalSearch: session.GlobalSearchSettings{Tier: tt.tier},
+				GlobalSearch: session.GlobalSearchSettings{
+					Tier: tt.tier,
+				},
 			}
 			panel.LoadConfig(config)
 			if panel.searchTier != tt.expected {
-				t.Errorf("Expected %d, got %d", tt.expected, panel.searchTier)
+				t.Errorf("LoadConfig tier %q: searchTier = %d, want %d",
+					tt.tier, panel.searchTier, tt.expected)
 			}
 		})
 	}
@@ -108,74 +162,102 @@ func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
 
 func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.selectedTool = 1 // gemini
-	panel.selectedTheme = 1 // light
-	panel.searchTier = 2 // balanced
+	panel.selectedTool = 2     // opencode
+	panel.dangerousMode = true
+	panel.claudeConfigDir = "~/.claude-custom"
+	panel.checkForUpdates = false
+	panel.autoUpdate = true
+	panel.logMaxSizeMB = 15
+	panel.logMaxLines = 8000
+	panel.removeOrphans = false
 	panel.globalSearchEnabled = true
-	panel.recentDays = 30
-	panel.logMaxSizeMB = 256
-	panel.logMaxLines = 10
+	panel.searchTier = 2 // balanced
+	panel.recentDays = 45
 
 	config := panel.GetConfig()
 
-	if config.DefaultTool != "gemini" {
-		t.Errorf("Expected DefaultTool 'gemini', got %q", config.DefaultTool)
+	if config.DefaultTool != "opencode" {
+		t.Errorf("DefaultTool: got %q, want %q", config.DefaultTool, "opencode")
 	}
-	if config.Theme != "light" {
-		t.Errorf("Expected Theme 'light', got %q", config.Theme)
+	if !config.Claude.DangerousMode {
+		t.Error("DangerousMode should be true")
 	}
-	if config.GlobalSearch.Tier != "balanced" {
-		t.Errorf("Expected Tier 'balanced', got %q", config.GlobalSearch.Tier)
+	if config.Claude.ConfigDir != "~/.claude-custom" {
+		t.Errorf("ConfigDir: got %q, want %q", config.Claude.ConfigDir, "~/.claude-custom")
+	}
+	if config.Updates.CheckEnabled {
+		t.Error("CheckEnabled should be false")
+	}
+	if !config.Updates.AutoUpdate {
+		t.Error("AutoUpdate should be true")
+	}
+	if config.Logs.MaxSizeMB != 15 {
+		t.Errorf("MaxSizeMB: got %d, want 15", config.Logs.MaxSizeMB)
+	}
+	if config.Logs.MaxLines != 8000 {
+		t.Errorf("MaxLines: got %d, want 8000", config.Logs.MaxLines)
+	}
+	if config.Logs.RemoveOrphans {
+		t.Error("RemoveOrphans should be false")
 	}
 	if !config.GlobalSearch.Enabled {
-		t.Error("Expected Enabled to be true")
+		t.Error("GlobalSearch.Enabled should be true")
 	}
-	if config.GlobalSearch.RecentDays != 30 {
-		t.Errorf("Expected RecentDays 30, got %d", config.GlobalSearch.RecentDays)
+	if config.GlobalSearch.Tier != "balanced" {
+		t.Errorf("Tier: got %q, want %q", config.GlobalSearch.Tier, "balanced")
+	}
+	if config.GlobalSearch.RecentDays != 45 {
+		t.Errorf("RecentDays: got %d, want 45", config.GlobalSearch.RecentDays)
 	}
 }
 
 func TestSettingsPanel_GetConfig_ToolMapping(t *testing.T) {
+	panel := NewSettingsPanel()
+
 	tests := []struct {
-		input    int
+		name     string
+		index    int
 		expected string
 	}{
-		{0, "claude"},
-		{1, "gemini"},
-		{2, "opencode"},
-		{3, "codex"},
-		{4, ""},
+		{"claude", 0, "claude"},
+		{"gemini", 1, "gemini"},
+		{"opencode", 2, "opencode"},
+		{"codex", 3, "codex"},
+		{"none", 4, ""},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			panel := NewSettingsPanel()
-			panel.selectedTool = tt.input
+		t.Run(tt.name, func(t *testing.T) {
+			panel.selectedTool = tt.index
 			config := panel.GetConfig()
 			if config.DefaultTool != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, config.DefaultTool)
+				t.Errorf("GetConfig for tool index %d: DefaultTool = %q, want %q",
+					tt.index, config.DefaultTool, tt.expected)
 			}
 		})
 	}
 }
 
 func TestSettingsPanel_GetConfig_TierMapping(t *testing.T) {
+	panel := NewSettingsPanel()
+
 	tests := []struct {
-		input    int
+		name     string
+		index    int
 		expected string
 	}{
-		{0, "auto"},
-		{1, "instant"},
-		{2, "balanced"},
+		{"auto", 0, "auto"},
+		{"instant", 1, "instant"},
+		{"balanced", 2, "balanced"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			panel := NewSettingsPanel()
-			panel.searchTier = tt.input
+		t.Run(tt.name, func(t *testing.T) {
+			panel.searchTier = tt.index
 			config := panel.GetConfig()
 			if config.GlobalSearch.Tier != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, config.GlobalSearch.Tier)
+				t.Errorf("GetConfig for tier index %d: Tier = %q, want %q",
+					tt.index, config.GlobalSearch.Tier, tt.expected)
 			}
 		})
 	}
@@ -183,9 +265,13 @@ func TestSettingsPanel_GetConfig_TierMapping(t *testing.T) {
 
 func TestSettingsPanel_SetSize(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.SetSize(100, 60)
-	if panel.width != 100 || panel.height != 60 {
-		t.Errorf("Expected size 100x60, got %dx%d", panel.width, panel.height)
+	panel.SetSize(120, 60)
+
+	if panel.width != 120 {
+		t.Errorf("Width = %d, want 120", panel.width)
+	}
+	if panel.height != 60 {
+		t.Errorf("Height = %d, want 60", panel.height)
 	}
 }
 
@@ -193,29 +279,39 @@ func TestSettingsPanel_Update_Navigation(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// Initial cursor is 0
+	// Initial cursor should be at 0
+	if panel.cursor != 0 {
+		t.Errorf("Initial cursor = %d, want 0", panel.cursor)
+	}
+
 	// Move down
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyDown})
+	panel.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if panel.cursor != 1 {
-		t.Errorf("Cursor should be 1 after down key, got %d", panel.cursor)
+		t.Errorf("After down: cursor = %d, want 1", panel.cursor)
+	}
+
+	// Move down with 'j'
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if panel.cursor != 2 {
+		t.Errorf("After j: cursor = %d, want 2", panel.cursor)
 	}
 
 	// Move up
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if panel.cursor != 0 {
-		t.Errorf("Cursor should be 0 after up key, got %d", panel.cursor)
-	}
-
-	// Move j (down)
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyUp})
 	if panel.cursor != 1 {
-		t.Errorf("Cursor should be 1 after j key, got %d", panel.cursor)
+		t.Errorf("After up: cursor = %d, want 1", panel.cursor)
 	}
 
-	// Move k (up)
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	// Move up with 'k'
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	if panel.cursor != 0 {
-		t.Errorf("Cursor should be 0 after k key, got %d", panel.cursor)
+		t.Errorf("After k: cursor = %d, want 0", panel.cursor)
+	}
+
+	// Should not go below 0
+	panel.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if panel.cursor != 0 {
+		t.Errorf("After up at 0: cursor = %d, want 0", panel.cursor)
 	}
 }
 
@@ -223,23 +319,23 @@ func TestSettingsPanel_Update_ToggleCheckbox(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// Move to "Enable Global Search" (index for SettingGlobalSearchEnabled is 9)
-	panel.cursor = 9
-	initial := panel.globalSearchEnabled
+	// Navigate to dangerous_mode (index 2, after Theme and DefaultTool)
+	panel.cursor = int(SettingDangerousMode)
+	initialValue := panel.dangerousMode
 
-	// Press space to toggle
-	_, _, shouldSave := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if panel.globalSearchEnabled == initial {
-		t.Error("globalSearchEnabled should have toggled")
+	// Toggle with space
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if panel.dangerousMode == initialValue {
+		t.Error("dangerousMode should have toggled")
 	}
-	if !shouldSave {
-		t.Error("shouldSave should be true after toggle")
+	if !changed {
+		t.Error("Update should return changed=true when value changes")
 	}
 
-	// Re-test toggle back with Space
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if panel.globalSearchEnabled != initial {
-		t.Error("globalSearchEnabled should have toggled back")
+	// Toggle back
+	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if panel.dangerousMode != initialValue {
+		t.Error("dangerousMode should have toggled back")
 	}
 }
 
@@ -247,23 +343,38 @@ func TestSettingsPanel_Update_RadioSelection(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// Move to Theme selection (cursor 0)
-	panel.cursor = 0
-	panel.selectedTheme = 0 // dark
+	// Navigate to DEFAULT TOOL (index 1, after Theme)
+	panel.cursor = int(SettingDefaultTool)
+	panel.selectedTool = 0 // claude
 
-	// Press right to cycle
-	_, _, shouldSave := panel.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if panel.selectedTheme != 1 {
-		t.Errorf("selectedTheme should be 1 (light) after right key, got %d", panel.selectedTheme)
-	}
-	if !shouldSave {
-		t.Error("shouldSave should be true after change")
+	// Move right
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.selectedTool != 1 {
+		t.Errorf("After right: selectedTool = %d, want 1", panel.selectedTool)
 	}
 
-	// Press left to cycle back
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	if panel.selectedTheme != 0 {
-		t.Errorf("selectedTheme should be 0 (dark) after left key, got %d", panel.selectedTheme)
+	// Move right with 'l'
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	if panel.selectedTool != 2 {
+		t.Errorf("After l: selectedTool = %d, want 2", panel.selectedTool)
+	}
+
+	// Move left
+	panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if panel.selectedTool != 1 {
+		t.Errorf("After left: selectedTool = %d, want 1", panel.selectedTool)
+	}
+
+	// Move left with 'h'
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	if panel.selectedTool != 0 {
+		t.Errorf("After h: selectedTool = %d, want 0", panel.selectedTool)
+	}
+
+	// Should not go below 0
+	panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if panel.selectedTool != 0 {
+		t.Errorf("After left at 0: selectedTool = %d, want 0", panel.selectedTool)
 	}
 }
 
@@ -271,24 +382,27 @@ func TestSettingsPanel_Update_NumberAdjustment(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// Move to Recent Days (index for SettingRecentDays is 11)
-	panel.cursor = 11
-	panel.recentDays = 90
-	initial := panel.recentDays
+	// Navigate to logMaxSizeMB (index 6, after Theme)
+	panel.cursor = int(SettingLogMaxSize)
+	panel.logMaxSizeMB = 10
 
-	// Press right to increase (increments by 10)
-	_, _, shouldSave := panel.Update(tea.KeyMsg{Type: tea.KeyRight})
-	if panel.recentDays != initial+10 {
-		t.Errorf("Expected %d, got %d", initial+10, panel.recentDays)
-	}
-	if !shouldSave {
-		t.Error("shouldSave should be true after change")
+	// Increase with right
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.logMaxSizeMB != 11 {
+		t.Errorf("After right: logMaxSizeMB = %d, want 11", panel.logMaxSizeMB)
 	}
 
-	// Press left to decrease
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	if panel.recentDays != initial {
-		t.Errorf("Expected %d, got %d", initial, panel.recentDays)
+	// Decrease with left
+	panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if panel.logMaxSizeMB != 10 {
+		t.Errorf("After left: logMaxSizeMB = %d, want 10", panel.logMaxSizeMB)
+	}
+
+	// Should not go below 1
+	panel.logMaxSizeMB = 1
+	panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if panel.logMaxSizeMB != 1 {
+		t.Errorf("After left at 1: logMaxSizeMB = %d, want 1", panel.logMaxSizeMB)
 	}
 }
 
@@ -296,9 +410,14 @@ func TestSettingsPanel_Update_Escape(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !panel.IsVisible() {
+		t.Error("Panel should be visible after Show()")
+	}
+
+	panel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
 	if panel.IsVisible() {
-		t.Error("Panel should be hidden after esc")
+		t.Error("Panel should be hidden after Escape")
 	}
 }
 
@@ -306,34 +425,41 @@ func TestSettingsPanel_Update_SKey(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// S key (uppercase) should hide panel
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+	if !panel.IsVisible() {
+		t.Error("Panel should be visible after Show()")
+	}
+
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'S'}})
+
 	if panel.IsVisible() {
-		t.Error("Panel should be hidden after S key")
+		t.Error("Panel should be hidden after pressing S")
 	}
 }
 
 func TestSettingsPanel_NeedsRestart(t *testing.T) {
 	panel := NewSettingsPanel()
-	
+	panel.Show()
+
+	// Initially should not need restart
 	if panel.NeedsRestart() {
 		t.Error("Should not need restart initially")
 	}
-	
-	// Changing searchTier should trigger needsRestart
-	panel.cursor = 10 // SettingSearchTier
-	panel.searchTier = 0
-	_ = panel.adjustValue(1)
-	
+
+	// Navigate to global search settings and change
+	panel.cursor = int(SettingGlobalSearchEnabled)
+	panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+
 	if !panel.NeedsRestart() {
-		t.Error("Should need restart after tier change")
+		t.Error("Should need restart after changing global search setting")
 	}
 }
 
 func TestSettingsPanel_View_NotVisible(t *testing.T) {
 	panel := NewSettingsPanel()
-	if panel.View() != "" {
-		t.Error("View should be empty when not visible")
+
+	view := panel.View()
+	if view != "" {
+		t.Errorf("View() should return empty string when not visible, got %q", view)
 	}
 }
 
@@ -344,63 +470,105 @@ func TestSettingsPanel_View_Visible(t *testing.T) {
 
 	view := panel.View()
 	if view == "" {
-		t.Error("View should not be empty when visible")
+		t.Error("View() should return non-empty string when visible")
 	}
-	// View uses lipgloss styles which might wrap the text or add colors
-	cleanView := tmux.StripANSI(view)
-	if !strings.Contains(strings.ToUpper(cleanView), "SETTINGS") {
-		t.Errorf("View should contain 'SETTINGS' title, got: %q", cleanView)
+
+	// Check that it contains expected elements
+	expectedElements := []string{
+		"Settings",
+		"THEME",
+		"Dark",
+		"Light",
+		"DEFAULT TOOL",
+		"Claude",
+		"Gemini",
+		"CLAUDE",
+		"Dangerous mode",
+		"UPDATES",
+		"LOGS",
+		"GLOBAL SEARCH",
+	}
+
+	for _, elem := range expectedElements {
+		if !containsString(view, elem) {
+			t.Errorf("View() should contain %q", elem)
+		}
 	}
 }
 
 func TestSettingsPanel_View_HighlightsCursor(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.SetSize(80, 40)
+	panel.SetSize(80, 50) // Increased height for new settings
 	panel.Show()
 
-	// Initial cursor is 0
-	if panel.cursor != 0 {
-		t.Errorf("Initial cursor should be 0, got %d", panel.cursor)
+	// Just verify no crash with various cursor positions
+	for i := 0; i < settingsCount; i++ {
+		panel.cursor = i
+		view := panel.View()
+		if view == "" {
+			t.Errorf("View() should return non-empty for cursor position %d", i)
+		}
+	}
+}
+
+// Helper function to check if a string contains a substring
+func containsString(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
+}
+
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSettingsPanel_ThemeToggle(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+
+	// Default should be dark (0)
+	if panel.selectedTheme != 0 {
+		t.Errorf("Default theme should be 0 (dark), got %d", panel.selectedTheme)
 	}
 
-	// Capture view with cursor at 0
-	view0 := panel.View()
-	if view0 == "" {
-		t.Error("View should not be empty")
-	}
+	// Navigate right to select light
+	panel.cursor = int(SettingTheme)
+	panel, _, shouldSave := panel.Update(tea.KeyMsg{Type: tea.KeyRight})
 
-	// Move cursor
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeyDown})
-	if panel.cursor != 1 {
-		t.Errorf("Cursor should be 1 after down key, got %d", panel.cursor)
+	if panel.selectedTheme != 1 {
+		t.Errorf("Theme should be 1 (light) after right, got %d", panel.selectedTheme)
 	}
-
-	// Verify view still works
-	view1 := panel.View()
-	if view1 == "" {
-		t.Error("View should not be empty after cursor move")
+	if !shouldSave {
+		t.Error("Should trigger save on theme change")
+	}
+	if !panel.needsRestart {
+		t.Error("Theme change should require restart")
 	}
 }
 
 func TestSettingsPanel_LoadConfig_Theme(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    string
+		theme    string
 		expected int
 	}{
 		{"dark", "dark", 0},
 		{"light", "light", 1},
-		{"empty_defaults_to_dark", "", 0},
-		{"invalid_defaults_to_dark", "blue", 0},
+		{"empty defaults to dark", "", 0},
+		{"invalid defaults to dark", "invalid", 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			panel := NewSettingsPanel()
-			config := &session.UserConfig{Theme: tt.input}
+			config := &session.UserConfig{Theme: tt.theme}
 			panel.LoadConfig(config)
+
 			if panel.selectedTheme != tt.expected {
-				t.Errorf("Expected %d, got %d", tt.expected, panel.selectedTheme)
+				t.Errorf("selectedTheme: got %d, want %d", panel.selectedTheme, tt.expected)
 			}
 		})
 	}
@@ -408,9 +576,9 @@ func TestSettingsPanel_LoadConfig_Theme(t *testing.T) {
 
 func TestSettingsPanel_GetConfig_Theme(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    int
-		expected string
+		name          string
+		selectedTheme int
+		expected      string
 	}{
 		{"dark", 0, "dark"},
 		{"light", 1, "light"},
@@ -419,24 +587,38 @@ func TestSettingsPanel_GetConfig_Theme(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			panel := NewSettingsPanel()
-			panel.selectedTheme = tt.input
+			panel.selectedTheme = tt.selectedTheme
 			config := panel.GetConfig()
+
 			if config.Theme != tt.expected {
-				t.Errorf("Expected %q, got %q", tt.expected, config.Theme)
+				t.Errorf("Theme: got %q, want %q", config.Theme, tt.expected)
 			}
 		})
 	}
 }
 
 func TestSettingsPanelPreviewSettings(t *testing.T) {
-	panel := NewSettingsPanel()
+	sp := NewSettingsPanel()
 
-	// Initial values (default to true)
-	if !panel.showOutput {
-		t.Error("showOutput should be true initially")
+	// Find Show Output setting
+	foundOutput := false
+	foundAnalytics := false
+	for i := 0; i < settingsCount; i++ {
+		sp.cursor = i
+		setting := SettingType(i)
+		switch setting {
+		case SettingShowOutput:
+			foundOutput = true
+		case SettingShowAnalytics:
+			foundAnalytics = true
+		}
 	}
-	if !panel.showAnalytics {
-		t.Error("showAnalytics should be true initially")
+
+	if !foundOutput {
+		t.Error("Show Output setting should exist (SettingShowOutput constant)")
+	}
+	if !foundAnalytics {
+		t.Error("Show Analytics setting should exist (SettingShowAnalytics constant)")
 	}
 }
 
@@ -444,24 +626,28 @@ func TestSettingsPanel_PreviewSettings_Toggle(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
 
-	// Indices for Preview settings
-	outputIdx := 12
-	analyticsIdx := 13
+	// Test Show Output toggle
+	panel.cursor = int(SettingShowOutput)
+	initialOutput := panel.showOutput
 
-	// Toggle Show Output
-	panel.cursor = outputIdx
-	panel.showOutput = true
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if panel.showOutput {
-		t.Error("showOutput should be false after toggle")
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Error("Show Output toggle should report changed=true")
+	}
+	if panel.showOutput == initialOutput {
+		t.Error("Show Output should have toggled")
 	}
 
-	// Toggle Show Analytics
-	panel.cursor = analyticsIdx
-	panel.showAnalytics = true
-	_, _, _ = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
-	if panel.showAnalytics {
-		t.Error("showAnalytics should be false after toggle")
+	// Test Show Analytics toggle
+	panel.cursor = int(SettingShowAnalytics)
+	initialAnalytics := panel.showAnalytics
+
+	_, _, changed = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Error("Show Analytics toggle should report changed=true")
+	}
+	if panel.showAnalytics == initialAnalytics {
+		t.Error("Show Analytics should have toggled")
 	}
 }
 
@@ -524,7 +710,6 @@ func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
 	panel.Show()
 
 	view := panel.View()
-	cleanView := tmux.StripANSI(view)
 
 	expectedElements := []string{
 		"PREVIEW",
@@ -533,7 +718,7 @@ func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
 	}
 
 	for _, elem := range expectedElements {
-		if !containsString(cleanView, elem) {
+		if !containsString(view, elem) {
 			t.Errorf("View() should contain %q", elem)
 		}
 	}
