@@ -657,6 +657,7 @@ func TestSettingsPanel_PreviewSettings_LoadConfig(t *testing.T) {
 	// Test loading with explicit values
 	showOutputTrue := true
 	showAnalyticsFalse := false
+	showOutputTrue := true
 	config := &session.UserConfig{
 		Preview: session.PreviewSettings{
 			ShowOutput:    &showOutputTrue,

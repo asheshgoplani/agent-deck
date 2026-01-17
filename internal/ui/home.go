@@ -117,12 +117,13 @@ type Home struct {
 	instances    []*session.Instance
 	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
 	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
-	storage      *session.Storage
-	groupTree    *session.GroupTree
-	flatItems    []session.Item // Flattened view for cursor navigation
-
-	// Components
-	search            *Search
+		storage        *session.Storage
+		groupTree      *session.GroupTree
+		flatItems      []session.Item // Flattened view for cursor navigation
+		globalYoloMode bool           // Cached global YOLO mode setting
+	
+		// Components
+		search            *Search
 	globalSearch      *GlobalSearch              // Global session search across all Claude conversations
 	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
 	newDialog         *NewDialog
@@ -778,15 +779,18 @@ func (h *Home) loadSessions() tea.Msg {
 
 	// Initialize pool AFTER sessions are loaded
 	userConfig, configErr := session.LoadUserConfig()
-	if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
-		pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
-		if poolErr != nil {
-			log.Printf("Warning: failed to initialize MCP pool: %v", poolErr)
-			msg.poolError = poolErr
-		} else if pool != nil {
-			proxies := pool.ListServers()
-			log.Printf("✓ MCP Socket Pool initialized (%d proxies)", len(proxies))
-			msg.poolProxies = len(proxies)
+	if configErr == nil && userConfig != nil {
+		h.globalYoloMode = userConfig.Gemini.YoloMode
+		if userConfig.MCPPool.Enabled {
+			pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
+			if poolErr != nil {
+				log.Printf("Warning: failed to initialize MCP pool: %v", poolErr)
+				msg.poolError = poolErr
+			} else if pool != nil {
+				proxies := pool.ListServers()
+				log.Printf("✓ MCP Socket Pool initialized (%d proxies)", len(proxies))
+				msg.poolProxies = len(proxies)
+			}
 		}
 	}
 
@@ -4430,6 +4434,21 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 	title := titleStyle.Render(inst.Title)
 	tool := toolStyle.Render(" " + inst.Tool)
 
+	// Add YOLO badge if enabled (Gemini only)
+	if inst.Tool == "gemini" {
+		isYolo := false
+		if inst.GeminiYoloMode != nil {
+			isYolo = *inst.GeminiYoloMode
+		} else {
+			isYolo = h.globalYoloMode
+		}
+
+		if isYolo {
+			yoloStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
+			tool += yoloStyle.Render(" [YOLO]")
+		}
+	}
+
 	// Build row: [baseIndent][selection][tree][status] [title] [tool]
 	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
 	// Sub-sessions get extra indent: "   ├─◐ sub-session tool"
@@ -4794,6 +4813,27 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Background(ColorPurple).
 		Padding(0, 1).
 		Render(selected.Tool)
+
+	// Add YOLO badge next to tool badge (Gemini only)
+	if selected.Tool == "gemini" {
+		isYolo := false
+		if selected.GeminiYoloMode != nil {
+			isYolo = *selected.GeminiYoloMode
+		} else {
+			isYolo = h.globalYoloMode
+		}
+
+		if isYolo {
+			yoloBadge := lipgloss.NewStyle().
+				Foreground(ColorBg).
+				Background(ColorYellow).
+				Padding(0, 1).
+				Bold(true).
+				Render("YOLO")
+			toolBadge = toolBadge + " " + yoloBadge
+		}
+	}
+
 	groupBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorCyan).
