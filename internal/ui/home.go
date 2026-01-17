@@ -2500,9 +2500,8 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case ConfirmYoloRestart:
 			sessionID := h.confirmDialog.GetTargetID()
 			if inst := h.getInstanceByID(sessionID); inst != nil {
-				// Apply the change now that user confirmed
-				newVal := h.confirmDialog.yoloEnabled
-				inst.GeminiYoloMode = &newVal
+				// Apply the change now that user confirmed (syncs to tmux env to prevent revert race)
+				inst.SetGeminiYoloMode(h.confirmDialog.yoloEnabled)
 
 				// Save changes
 				h.saveInstances()
