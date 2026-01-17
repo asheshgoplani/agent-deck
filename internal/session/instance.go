@@ -302,15 +302,17 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 	}
 
 	yoloFlag := ""
+	yoloEnv := "false"
 	if yoloMode {
 		yoloFlag = " --yolo"
+		yoloEnv = "true"
 	}
 
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
-			return fmt.Sprintf("gemini --resume %s%s", i.GeminiSessionID, yoloFlag)
+			return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s", yoloEnv, i.GeminiSessionID, yoloFlag)
 		}
 
 		// Build the capture-resume command for new sessions with fallback
@@ -323,11 +325,12 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		// NOTE: Using --output-format json (not stream-json with head -1) because:
 		// - head -1 sends SIGPIPE which kills Gemini before it saves the session
 		// - json mode runs to completion, ensuring session file is written
-		return `session_id=$(gemini --output-format json "." 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; ` +
-			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then ` +
-			`tmux set-environment GEMINI_SESSION_ID "$session_id"; ` +
-			fmt.Sprintf(`gemini --resume "$session_id"%s; `, yoloFlag) +
-			fmt.Sprintf(`else gemini%s; fi`, yoloFlag)
+		return fmt.Sprintf(`session_id=$(gemini --output-format json "." 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
+			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
+			`tmux set-environment GEMINI_SESSION_ID "$session_id"; `+
+			`tmux set-environment GEMINI_YOLO_MODE %s; `+
+			`gemini --resume "$session_id"%s; `+
+			`else tmux set-environment GEMINI_YOLO_MODE %s; gemini%s; fi`, yoloEnv, yoloFlag, yoloEnv, yoloFlag)
 	}
 
 	// For custom commands (e.g., resume commands), return as-is
@@ -729,7 +732,7 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	}
 }
 
-// UpdateGeminiSession updates the Gemini session ID from tmux environment.
+// UpdateGeminiSession updates the Gemini session ID and YOLO mode from tmux environment.
 // The capture-resume pattern (used in Start/Restart) sets GEMINI_SESSION_ID
 // in the tmux environment, making this the single authoritative source.
 //
@@ -740,12 +743,20 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 	}
 
 	// Read from tmux environment (set by capture-resume pattern)
+	if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
+		if i.GeminiSessionID != sessionID {
+			i.GeminiSessionID = sessionID
+		}
+		i.GeminiDetectedAt = time.Now()
+	}
+
+	// Detect YOLO mode from tmux environment GEMINI_YOLO_MODE=true
 	if i.tmuxSession != nil {
-		if sessionID, err := i.tmuxSession.GetEnvironment("GEMINI_SESSION_ID"); err == nil && sessionID != "" {
-			if i.GeminiSessionID != sessionID {
-				i.GeminiSessionID = sessionID
+		if yoloVal, err := i.tmuxSession.GetEnvironment("GEMINI_YOLO_MODE"); err == nil {
+			isYolo := yoloVal == "true"
+			if i.GeminiYoloMode == nil || *i.GeminiYoloMode != isYolo {
+				i.GeminiYoloMode = &isYolo
 			}
-			i.GeminiDetectedAt = time.Now()
 		}
 	}
 }
