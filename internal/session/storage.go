@@ -80,6 +80,9 @@ type InstanceData struct {
 	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"` // Per-session YOLO mode override
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`
 
+	// Latest user input for context
+	LatestPrompt string `json:"latest_prompt,omitempty"`
+
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 }

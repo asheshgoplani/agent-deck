@@ -3533,6 +3533,33 @@ func (h *Home) renderPanelTitle(title string, width int) string {
 	return titleStyle.Render(title) + "\n" + underline
 }
 
+// renderPromptField renders a "Prompt:" field with truncation
+func (h *Home) renderPromptField(b *strings.Builder, prompt string, width int) {
+	if prompt == "" {
+		return
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	valueStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+	b.WriteString(labelStyle.Render("Prompt:  "))
+
+	// Truncate prompt to fit on one line
+	// Label "Prompt:  " is 9 chars.
+	availableWidth := width - 4 - 9
+	if availableWidth < 10 {
+		availableWidth = 10
+	}
+
+	displayPrompt := prompt
+	if runewidth.StringWidth(prompt) > availableWidth {
+		displayPrompt = runewidth.Truncate(prompt, availableWidth-3, "...")
+	}
+
+	b.WriteString(valueStyle.Render(displayPrompt))
+	b.WriteString("\n")
+}
+
 // renderLoadingSplash creates a simple centered loading splash screen
 // Shows the three status indicators (running/waiting/idle) cycling
 func renderLoadingSplash(width, height int, frame int) string {
@@ -4924,6 +4951,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString("\n")
 		}
 
+		// Prompt field
+		h.renderPromptField(&b, selected.LatestPrompt, width)
+
 		// MCP servers - compact format with source indicators and sync status
 		mcpInfo := selected.GetMCPInfo()
 		hasLoadedMCPs := len(selected.LoadedMCPNames) > 0
@@ -5078,7 +5108,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		}
 	}
 
-	// Gemini-specific info (session ID and MCPs)
+	// Gemini-specific info (session ID, MCPs, and prompt)
 	if selected.Tool == "gemini" {
 		// Section divider for Gemini info
 		geminiHeader := renderSectionDivider("Gemini", width-4)
@@ -5117,6 +5147,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(strings.Join(mcpParts, ", "))
 			b.WriteString("\n")
 		}
+
+		// Prompt field
+		h.renderPromptField(&b, selected.LatestPrompt, width)
 	}
 
 	b.WriteString("\n")
