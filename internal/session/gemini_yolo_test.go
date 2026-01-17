@@ -100,6 +100,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			expectedContains: []string{
 				"--yolo",
 				"gemini --resume",
+				"GEMINI_YOLO_MODE true",
 			},
 			expectedNotContain: []string{},
 		},
@@ -110,6 +111,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			sessionID:      "",
 			expectedContains: []string{
 				"gemini --resume",
+				"GEMINI_YOLO_MODE false",
 			},
 			expectedNotContain: []string{
 				"--yolo",
@@ -122,6 +124,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			sessionID:      "session-abc-123",
 			expectedContains: []string{
 				"gemini --resume session-abc-123 --yolo",
+				"GEMINI_YOLO_MODE true",
 			},
 			expectedNotContain: []string{},
 		},
@@ -132,6 +135,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			sessionID:      "session-abc-123",
 			expectedContains: []string{
 				"gemini --resume session-abc-123",
+				"GEMINI_YOLO_MODE false",
 			},
 			expectedNotContain: []string{
 				"--yolo",
@@ -144,6 +148,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			sessionID:      "session-xyz-789",
 			expectedContains: []string{
 				"gemini --resume session-xyz-789 --yolo",
+				"GEMINI_YOLO_MODE true",
 			},
 			expectedNotContain: []string{},
 		},
@@ -154,6 +159,7 @@ func TestInstance_buildGeminiCommand_YoloFlag(t *testing.T) {
 			sessionID:      "session-xyz-789",
 			expectedContains: []string{
 				"gemini --resume session-xyz-789",
+				"GEMINI_YOLO_MODE false",
 			},
 			expectedNotContain: []string{
 				"--yolo",

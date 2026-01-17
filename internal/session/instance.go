@@ -323,15 +323,17 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 	}
 
 	yoloFlag := ""
+	yoloEnv := "false"
 	if yoloMode {
 		yoloFlag = " --yolo"
+		yoloEnv = "true"
 	}
 
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
-			return fmt.Sprintf("gemini --resume %s%s", i.GeminiSessionID, yoloFlag)
+			return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s", yoloEnv, i.GeminiSessionID, yoloFlag)
 		}
 
 		// Build the capture-resume command for new sessions with fallback
@@ -347,8 +349,9 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		return fmt.Sprintf(`session_id=$(gemini --output-format json "." 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
 			`tmux set-environment GEMINI_SESSION_ID "$session_id"; `+
+			`tmux set-environment GEMINI_YOLO_MODE %s; `+
 			`gemini --resume "$session_id"%s; `+
-			`else gemini%s; fi`, yoloFlag, yoloFlag)
+			`else tmux set-environment GEMINI_YOLO_MODE %s; gemini%s; fi`, yoloEnv, yoloFlag, yoloEnv, yoloFlag)
 	}
 
 	// For custom commands (e.g., resume commands), return as-is
