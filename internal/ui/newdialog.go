@@ -233,11 +233,6 @@ func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string,
 	return
 }
 
-// ToggleYolo toggles the YOLO mode checkbox (Gemini only)
-func (d *NewDialog) ToggleYolo() {
-	d.yoloEnabled = !d.yoloEnabled
-}
-
 // GetValuesWithYolo returns all values including YOLO mode setting
 func (d *NewDialog) GetValuesWithYolo() (name, path, command, branch string, worktreeEnabled, yoloEnabled bool) {
 	name, path, command, branch, worktreeEnabled = d.GetValuesWithWorktree()
