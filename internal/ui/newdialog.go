@@ -31,6 +31,8 @@ type NewDialog struct {
 	// Worktree support
 	worktreeEnabled bool
 	branchInput     textinput.Model
+	// YOLO mode support (Gemini only)
+	yoloEnabled bool
 }
 
 // NewNewDialog creates a new NewDialog instance
@@ -79,6 +81,7 @@ func NewNewDialog() *NewDialog {
 		parentGroupPath: "default",
 		parentGroupName: "default",
 		worktreeEnabled: false,
+		yoloEnabled:     false,
 	}
 }
 
@@ -202,11 +205,28 @@ func (d *NewDialog) IsWorktreeEnabled() bool {
 	return d.worktreeEnabled
 }
 
+// ToggleYolo toggles the YOLO mode checkbox (Gemini only)
+func (d *NewDialog) ToggleYolo() {
+	d.yoloEnabled = !d.yoloEnabled
+}
+
+// IsYoloEnabled returns whether YOLO mode is enabled
+func (d *NewDialog) IsYoloEnabled() bool {
+	return d.yoloEnabled
+}
+
 // GetValuesWithWorktree returns all values including worktree settings
 func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
 	name, path, command = d.GetValues()
 	branch = strings.TrimSpace(d.branchInput.Value())
 	worktreeEnabled = d.worktreeEnabled
+	return
+}
+
+// GetValuesWithYolo returns all values including YOLO mode setting
+func (d *NewDialog) GetValuesWithYolo() (name, path, command, branch string, worktreeEnabled, yoloEnabled bool) {
+	name, path, command, branch, worktreeEnabled = d.GetValuesWithWorktree()
+	yoloEnabled = d.yoloEnabled
 	return
 }
 
@@ -373,6 +393,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.focusIndex = 3
 					d.updateFocus()
 				}
+				return d, nil
+			}
+
+		case "y":
+			// Toggle YOLO mode when on command field and Gemini is selected
+			if d.focusIndex == 2 && d.commandCursor == 2 { // 2 is Gemini
+				d.ToggleYolo()
 				return d, nil
 			}
 		}
@@ -588,6 +615,21 @@ func (d *NewDialog) View() string {
 		content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox)))
 	}
 	content.WriteString("\n")
+
+	// YOLO mode checkbox (only show when Gemini is selected)
+	if d.commandCursor == 2 { // 2 is Gemini
+		yoloCheckbox := "[ ]"
+		if d.yoloEnabled {
+			yoloCheckbox = "[x]"
+		}
+
+		if d.focusIndex == 2 {
+			content.WriteString(checkboxActiveStyle.Render(fmt.Sprintf("  %s YOLO mode - auto-approve all (press y)", yoloCheckbox)))
+		} else {
+			content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s YOLO mode - auto-approve all", yoloCheckbox)))
+		}
+		content.WriteString("\n")
+	}
 
 	// Branch input (only visible when worktree is enabled)
 	if d.worktreeEnabled {
