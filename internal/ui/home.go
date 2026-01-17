@@ -2174,21 +2174,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Tool == "gemini" {
-				// Toggle
+				// Determine target value (toggle current)
 				current := false
 				if item.Session.GeminiYoloMode != nil {
 					current = *item.Session.GeminiYoloMode
 				} else {
 					current = h.globalYoloMode
 				}
-				newVal := !current
-				item.Session.GeminiYoloMode = &newVal
+				targetVal := !current
 
-				// Save changes
-				h.saveInstances()
-
-				// Show confirmation to restart
-				h.confirmDialog.ShowYoloRestart(item.Session.ID, item.Session.Title, newVal)
+				// Show confirmation BEFORE applying change
+				h.confirmDialog.ShowYoloRestart(item.Session.ID, item.Session.Title, targetVal)
 				return h, nil
 			}
 		}
@@ -2504,6 +2500,13 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case ConfirmYoloRestart:
 			sessionID := h.confirmDialog.GetTargetID()
 			if inst := h.getInstanceByID(sessionID); inst != nil {
+				// Apply the change now that user confirmed
+				newVal := h.confirmDialog.yoloEnabled
+				inst.GeminiYoloMode = &newVal
+
+				// Save changes
+				h.saveInstances()
+
 				if inst.CanRestart() {
 					h.resumingSessions[inst.ID] = time.Now()
 					h.confirmDialog.Hide()
