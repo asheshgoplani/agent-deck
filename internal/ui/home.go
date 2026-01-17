@@ -114,52 +114,52 @@ type Home struct {
 	profile string // The profile this Home is displaying
 
 	// Data (protected by instancesMu for background worker access)
-	instances    []*session.Instance
-	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
-	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
-		storage        *session.Storage
-		groupTree      *session.GroupTree
-		flatItems      []session.Item // Flattened view for cursor navigation
-		globalYoloMode bool           // Cached global YOLO mode setting
-	
-		// Components
-		search            *Search
-	globalSearch  *GlobalSearch              // Global session search across all Claude conversations
+	instances      []*session.Instance
+	instanceByID   map[string]*session.Instance // O(1) instance lookup by ID
+	instancesMu    sync.RWMutex                 // Protects instances slice for thread-safe background access
+	storage        *session.Storage
+	groupTree      *session.GroupTree
+	flatItems      []session.Item // Flattened view for cursor navigation
+	globalYoloMode bool           // Cached global YOLO mode setting
+
+	// Components
+	search            *Search
+	globalSearch      *GlobalSearch              // Global session search across all Claude conversations
 	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
-	newDialog     *NewDialog
-	groupDialog   *GroupDialog   // For creating/renaming groups
-	forkDialog    *ForkDialog    // For forking sessions
-	confirmDialog *ConfirmDialog // For confirming destructive actions
-	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
-	mcpDialog      *MCPDialog      // For managing MCPs
-	setupWizard    *SetupWizard    // For first-run setup
-	settingsPanel  *SettingsPanel  // For editing settings
-	analyticsPanel *AnalyticsPanel // For displaying session analytics
+	newDialog         *NewDialog
+	groupDialog       *GroupDialog    // For creating/renaming groups
+	forkDialog        *ForkDialog     // For forking sessions
+	confirmDialog     *ConfirmDialog  // For confirming destructive actions
+	helpOverlay       *HelpOverlay    // For showing keyboard shortcuts
+	mcpDialog         *MCPDialog      // For managing MCPs
+	setupWizard       *SetupWizard    // For first-run setup
+	settingsPanel     *SettingsPanel  // For editing settings
+	analyticsPanel    *AnalyticsPanel // For displaying session analytics
 
 	// Analytics cache (async fetching with TTL)
-	currentAnalytics     *session.SessionAnalytics    // Current analytics for selected session
-	analyticsSessionID   string                       // Session ID for current analytics
-	analyticsFetchingID  string                       // ID currently being fetched (prevents duplicates)
-	analyticsCache       map[string]*session.SessionAnalytics // TTL cache: sessionID -> analytics
-	analyticsCacheTime   map[string]time.Time                 // TTL cache: sessionID -> cache timestamp
+	currentAnalytics    *session.SessionAnalytics            // Current analytics for selected session
+	analyticsSessionID  string                               // Session ID for current analytics
+	analyticsFetchingID string                               // ID currently being fetched (prevents duplicates)
+	analyticsCache      map[string]*session.SessionAnalytics // TTL cache: sessionID -> analytics
+	analyticsCacheTime  map[string]time.Time                 // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor        int            // Selected item index in flatItems
-	viewOffset    int            // First visible item index (for scrolling)
-	isAttaching   atomic.Bool   // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter  session.Status // Filter sessions by status ("" = all, or specific status)
-	err           error
-	errTime       time.Time // When error occurred (for auto-dismiss)
-	isReloading    bool      // Visual feedback during auto-reload
-	initialLoading bool      // True until first loadSessionsMsg received (shows splash screen)
-	reloadVersion  uint64    // Incremented on each reload to prevent stale background saves
+	cursor         int            // Selected item index in flatItems
+	viewOffset     int            // First visible item index (for scrolling)
+	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
+	err            error
+	errTime        time.Time  // When error occurred (for auto-dismiss)
+	isReloading    bool       // Visual feedback during auto-reload
+	initialLoading bool       // True until first loadSessionsMsg received (shows splash screen)
+	reloadVersion  uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
-	previewCache       map[string]string    // sessionID -> cached preview content
-	previewCacheTime   map[string]time.Time // sessionID -> when cached (for expiration)
-	previewCacheMu     sync.RWMutex         // Protects previewCache for thread-safety
-	previewFetchingID  string               // ID currently being fetched (prevents duplicate fetches)
+	previewCache      map[string]string    // sessionID -> cached preview content
+	previewCacheTime  map[string]time.Time // sessionID -> when cached (for expiration)
+	previewCacheMu    sync.RWMutex         // Protects previewCache for thread-safety
+	previewFetchingID string               // ID currently being fetched (prevents duplicate fetches)
 
 	// Preview debouncing (PERFORMANCE: prevents subprocess spawn on every keystroke)
 	// During rapid navigation, we delay preview fetch by 150ms to let navigation settle
@@ -298,8 +298,8 @@ type analyticsFetchedMsg struct {
 
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
-	viewOffset    int   // Current scroll position
-	visibleHeight int   // How many items fit on screen
+	viewOffset    int      // Current scroll position
+	visibleHeight int      // How many items fit on screen
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
@@ -328,27 +328,27 @@ func NewHomeWithProfile(profile string) *Home {
 	}
 
 	h := &Home{
-		profile:           actualProfile,
-		storage:           storage,
-		storageWarning:    storageWarning,
-		search:            NewSearch(),
-		newDialog:         NewNewDialog(),
-		groupDialog:       NewGroupDialog(),
-		forkDialog:        NewForkDialog(),
-		confirmDialog:     NewConfirmDialog(),
-		helpOverlay:       NewHelpOverlay(),
-		mcpDialog:         NewMCPDialog(),
-		setupWizard:       NewSetupWizard(),
-		settingsPanel:     NewSettingsPanel(),
-		analyticsPanel:    NewAnalyticsPanel(),
-		cursor:            0,
-		initialLoading:    true, // Show splash until sessions load
-		ctx:               ctx,
-		cancel:            cancel,
-		instances:         []*session.Instance{},
-		instanceByID:      make(map[string]*session.Instance),
-		groupTree:         session.NewGroupTree([]*session.Instance{}),
-		flatItems:         []session.Item{},
+		profile:            actualProfile,
+		storage:            storage,
+		storageWarning:     storageWarning,
+		search:             NewSearch(),
+		newDialog:          NewNewDialog(),
+		groupDialog:        NewGroupDialog(),
+		forkDialog:         NewForkDialog(),
+		confirmDialog:      NewConfirmDialog(),
+		helpOverlay:        NewHelpOverlay(),
+		mcpDialog:          NewMCPDialog(),
+		setupWizard:        NewSetupWizard(),
+		settingsPanel:      NewSettingsPanel(),
+		analyticsPanel:     NewAnalyticsPanel(),
+		cursor:             0,
+		initialLoading:     true, // Show splash until sessions load
+		ctx:                ctx,
+		cancel:             cancel,
+		instances:          []*session.Instance{},
+		instanceByID:       make(map[string]*session.Instance),
+		groupTree:          session.NewGroupTree([]*session.Instance{}),
+		flatItems:          []session.Item{},
 		previewCache:       make(map[string]string),
 		previewCacheTime:   make(map[string]time.Time),
 		analyticsCache:     make(map[string]*session.SessionAnalytics),
@@ -357,8 +357,8 @@ func NewHomeWithProfile(profile string) *Home {
 		resumingSessions:   make(map[string]time.Time),
 		mcpLoadingSessions: make(map[string]time.Time),
 		forkingSessions:    make(map[string]time.Time),
-		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:  make(chan struct{}),
+		statusTrigger:      make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:   make(chan struct{}),
 	}
 
 	// Initialize event-driven log watcher
@@ -744,7 +744,6 @@ func (h *Home) Init() tea.Cmd {
 
 	return tea.Batch(cmds...)
 }
-
 
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
@@ -2726,11 +2725,6 @@ func (h *Home) getUsedClaudeSessionIDs() map[string]bool {
 		}
 	}
 	return usedIDs
-}
-
-// createSessionInGroup creates a new session in a specific group
-func (h *Home) createSessionInGroup(name, path, command, groupPath string) tea.Cmd {
-	return h.createSessionInGroupWithWorktree(name, path, command, groupPath, "", "", "", false)
 }
 
 // createSessionInGroupWithWorktree creates a new session in a specific group with optional worktree settings

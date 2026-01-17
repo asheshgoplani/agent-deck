@@ -23,34 +23,34 @@ func TestDetectCurrentProfile(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name              string
-		agentdeckProfile  string
-		claudeConfigDir   string
-		expectedContains  string // Expected profile (or substring for default case)
+		name             string
+		agentdeckProfile string
+		claudeConfigDir  string
+		expectedContains string // Expected profile (or substring for default case)
 	}{
 		{
-			name:              "explicit AGENTDECK_PROFILE takes priority",
-			agentdeckProfile:  "work",
-			claudeConfigDir:   "/Users/test/.claude-personal",
-			expectedContains:  "work",
+			name:             "explicit AGENTDECK_PROFILE takes priority",
+			agentdeckProfile: "work",
+			claudeConfigDir:  "/Users/test/.claude-personal",
+			expectedContains: "work",
 		},
 		{
-			name:              "CLAUDE_CONFIG_DIR .claude-work suffix",
-			agentdeckProfile:  "",
-			claudeConfigDir:   "/Users/test/.claude-work",
-			expectedContains:  "work",
+			name:             "CLAUDE_CONFIG_DIR .claude-work suffix",
+			agentdeckProfile: "",
+			claudeConfigDir:  "/Users/test/.claude-work",
+			expectedContains: "work",
 		},
 		{
-			name:              "CLAUDE_CONFIG_DIR .claude-personal suffix",
-			agentdeckProfile:  "",
-			claudeConfigDir:   "/Users/test/.claude-personal",
-			expectedContains:  "personal",
+			name:             "CLAUDE_CONFIG_DIR .claude-personal suffix",
+			agentdeckProfile: "",
+			claudeConfigDir:  "/Users/test/.claude-personal",
+			expectedContains: "personal",
 		},
 		{
-			name:              "CLAUDE_CONFIG_DIR with hyphen pattern",
-			agentdeckProfile:  "",
-			claudeConfigDir:   "/opt/claude-production",
-			expectedContains:  "production",
+			name:             "CLAUDE_CONFIG_DIR with hyphen pattern",
+			agentdeckProfile: "",
+			claudeConfigDir:  "/opt/claude-production",
+			expectedContains: "production",
 		},
 	}
 

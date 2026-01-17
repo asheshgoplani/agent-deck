@@ -147,9 +147,9 @@ func TestAnalyticsPanel_View_TokenBreakdown(t *testing.T) {
 	panel := NewAnalyticsPanel()
 
 	analytics := &session.SessionAnalytics{
-		InputTokens:     10000,
-		OutputTokens:    5000,
-		CacheReadTokens: 2000,
+		InputTokens:      10000,
+		OutputTokens:     5000,
+		CacheReadTokens:  2000,
 		CacheWriteTokens: 1000,
 	}
 

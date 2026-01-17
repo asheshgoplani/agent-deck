@@ -5,7 +5,7 @@ type ServerStatus int
 
 const (
 	StatusStopped ServerStatus = iota
-	StatusStarting  
+	StatusStarting
 	StatusRunning
 	StatusFailed
 )

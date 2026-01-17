@@ -403,12 +403,16 @@ func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
 
 	// Create ~/.agent-deck/config.toml with custom command
 	configDir := filepath.Join(tmpDir, ".agent-deck")
-	os.MkdirAll(configDir, 0755)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
 	configContent := `[claude]
 command = "cdw"
 config_dir = "~/.claude-work"
 `
-	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644)
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
 
 	ClearUserConfigCache()
 	defer func() {
@@ -1116,11 +1120,11 @@ func TestInstance_CanRestart_Gemini(t *testing.T) {
 // Issue #16: Fork command breaks for project paths with spaces
 func TestInstance_Fork_PathWithSpaces(t *testing.T) {
 	inst := &Instance{
-		ID:              "test-123",
-		Title:           "test-session",
-		ProjectPath:     "/tmp/Test Path With Spaces",
-		Tool:            "claude",
-		ClaudeSessionID: "session-abc-123",
+		ID:               "test-123",
+		Title:            "test-session",
+		ProjectPath:      "/tmp/Test Path With Spaces",
+		Tool:             "claude",
+		ClaudeSessionID:  "session-abc-123",
 		ClaudeDetectedAt: time.Now(),
 	}
 
@@ -1228,11 +1232,11 @@ func TestInstance_WorktreeFields(t *testing.T) {
 // Issue #8: Fork command ignores dangerous_mode configuration
 func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 	inst := &Instance{
-		ID:              "test-456",
-		Title:           "test-session",
-		ProjectPath:     "/tmp/test",
-		Tool:            "claude",
-		ClaudeSessionID: "session-xyz-789",
+		ID:               "test-456",
+		Title:            "test-session",
+		ProjectPath:      "/tmp/test",
+		Tool:             "claude",
+		ClaudeSessionID:  "session-xyz-789",
 		ClaudeDetectedAt: time.Now(),
 	}
 

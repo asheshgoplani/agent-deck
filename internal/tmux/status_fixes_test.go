@@ -283,11 +283,11 @@ func TestValidate_ThinkingPatternRegex_CurrentCoverage(t *testing.T) {
 	currentPattern := regexp.MustCompile(`(Thinking|Connecting)[^(]*\([^)]*\)`)
 
 	testWords := []string{
-		"Thinking",         // Should match
-		"Connecting",       // Should match
+		"Thinking",           // Should match
+		"Connecting",         // Should match
 		"Flibbertigibbeting", // Should match but doesn't
-		"Wibbling",         // Should match but doesn't
-		"Puttering",        // Should match but doesn't
+		"Wibbling",           // Should match but doesn't
+		"Puttering",          // Should match but doesn't
 	}
 
 	for _, word := range testWords {
@@ -311,8 +311,8 @@ func TestValidate_ThinkingPatternRegex_ProposedFix(t *testing.T) {
 		"Flibbertigibbeting... (25s · 340 tokens)",
 		"Wibbling... (10s · 100 tokens)",
 		"Thinking... (5s · 50 tokens)",
-		"Some random text (with parentheses)",  // Should NOT match
-		"Running tests... (3s · 20 tokens)",    // Tricky - "Running" ends in "ing"
+		"Some random text (with parentheses)", // Should NOT match
+		"Running tests... (3s · 20 tokens)",   // Tricky - "Running" ends in "ing"
 	}
 
 	t.Log("Option 1: Generic [a-z]+ing pattern")

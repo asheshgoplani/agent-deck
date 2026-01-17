@@ -162,7 +162,7 @@ func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
 
 func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.selectedTool = 2     // opencode
+	panel.selectedTool = 2 // opencode
 	panel.dangerousMode = true
 	panel.claudeConfigDir = "~/.claude-custom"
 	panel.checkForUpdates = false
