@@ -4,7 +4,7 @@
 - [x] Task: Create `GeminiSessionAnalytics` struct and storage logic [a71922a]
     - [ ] Sub-task: Write tests for `GeminiSessionAnalytics` struct initialization and JSON marshaling/unmarshaling
     - [ ] Sub-task: Implement `GeminiSessionAnalytics` struct and `Save`/`Load` methods in `internal/session/analytics.go` (or similar)
-- [ ] Task: Integrate analytics tracking into Gemini session lifecycle
+- [x] Task: Integrate analytics tracking into Gemini session lifecycle [e1b535a]
     - [ ] Sub-task: Write tests for `Start`, `End`, and `Update` methods in `GeminiSession` to ensure they call analytics methods
     - [ ] Sub-task: Implement `Start`, `End`, and `Update` hooks in `internal/session/gemini.go` to capture start time, duration, and token usage
 - [ ] Task: Implement cost calculation logic
