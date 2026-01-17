@@ -757,6 +757,15 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 			if i.GeminiYoloMode == nil || *i.GeminiYoloMode != isYolo {
 				i.GeminiYoloMode = &isYolo
 			}
+		} else {
+			// Fallback: Check command line of running process for --yolo flag
+			if cmdline, err := i.tmuxSession.GetPaneCommandLine(); err == nil && cmdline != "" {
+				// Search for --yolo flag in command line
+				isYolo := strings.Contains(cmdline, "--yolo")
+				if i.GeminiYoloMode == nil || *i.GeminiYoloMode != isYolo {
+					i.GeminiYoloMode = &isYolo
+				}
+			}
 		}
 	}
 }
