@@ -135,7 +135,7 @@ func (p *AnalyticsPanel) getContextPercent() float64 {
 		// For Gemini, we'll show usage relative to 1M tokens by default
 		// (Gemini 1.5 Flash/Pro both support at least 1M)
 		limit := 1_000_000
-		return float64(p.geminiAnalytics.InputTokens) / float64(limit) * 100
+		return float64(p.geminiAnalytics.CurrentContextTokens) / float64(limit) * 100
 	}
 	return 0
 }

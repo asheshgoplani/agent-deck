@@ -57,8 +57,8 @@ func GetGeminiSessionsDir(projectPath string) string {
 
 // GeminiSessionInfo holds parsed session metadata
 type GeminiSessionInfo struct {
-	SessionID    string    // Full UUID
-	Filename     string    // session-2025-12-26T15-09-4d8fcb4d.json
+	SessionID    string // Full UUID
+	Filename     string // session-2025-12-26T15-09-4d8fcb4d.json
 	StartTime    time.Time
 	LastUpdated  time.Time
 	MessageCount int
@@ -147,21 +147,59 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 		return fmt.Errorf("session file not found")
 	}
 
-	info, err := parseGeminiSessionFile(files[0])
+	data, err := os.ReadFile(files[0])
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read session file: %w", err)
 	}
 
-	analytics.StartTime = info.StartTime
-	analytics.LastActive = info.LastUpdated
-	if !info.StartTime.IsZero() && !info.LastUpdated.IsZero() {
-		analytics.Duration = info.LastUpdated.Sub(info.StartTime)
+	var session struct {
+		SessionID   string `json:"sessionId"`
+		StartTime   string `json:"startTime"`
+		LastUpdated string `json:"lastUpdated"`
+		Messages    []struct {
+			Type   string `json:"type"`
+			Tokens struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+			} `json:"tokens"`
+		} `json:"messages"`
 	}
-	// Message count is total messages. Turns are typically pairs.
-	// We'll estimate turns as count / 2
-	analytics.TotalTurns = info.MessageCount / 2
+
+	if err := json.Unmarshal(data, &session); err != nil {
+		return fmt.Errorf("failed to parse session for analytics: %w", err)
+	}
+
+	// Parse timestamps
+	startTime, _ := time.Parse(time.RFC3339, session.StartTime)
+	if startTime.IsZero() {
+		startTime, _ = time.Parse("2006-01-02T15:04:05.999Z", session.StartTime)
+	}
+	lastUpdated, _ := time.Parse(time.RFC3339, session.LastUpdated)
+	if lastUpdated.IsZero() {
+		lastUpdated, _ = time.Parse("2006-01-02T15:04:05.999Z", session.LastUpdated)
+	}
+
+	analytics.StartTime = startTime
+	analytics.LastActive = lastUpdated
+	if !startTime.IsZero() && !lastUpdated.IsZero() {
+		analytics.Duration = lastUpdated.Sub(startTime)
+	}
+
+	// Reset and accumulate tokens
+	analytics.InputTokens = 0
+	analytics.OutputTokens = 0
+	analytics.TotalTurns = 0
+	for _, msg := range session.Messages {
+		if msg.Type == "gemini" {
+			analytics.InputTokens += msg.Tokens.Input
+			analytics.OutputTokens += msg.Tokens.Output
+			analytics.TotalTurns++
+
+			// For Gemini, the input tokens of the last message represent the total context size
+			// including history and current prompt.
+			analytics.CurrentContextTokens = msg.Tokens.Input
+		}
+	}
 
 	return nil
 }
-
-
