@@ -56,6 +56,7 @@ type Instance struct {
 	// Gemini CLI integration
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
+	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"` // Per-session override for YOLO mode (nil = use global config)
 
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
@@ -288,11 +289,28 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		return baseCommand
 	}
 
+	// Check if YOLO mode is enabled (per-session override takes precedence over global config)
+	yoloMode := false
+	if i.GeminiYoloMode != nil {
+		// Per-session override
+		yoloMode = *i.GeminiYoloMode
+	} else {
+		// Check global config
+		if userConfig, err := LoadUserConfig(); err == nil && userConfig != nil {
+			yoloMode = userConfig.Gemini.YoloMode
+		}
+	}
+
+	yoloFlag := ""
+	if yoloMode {
+		yoloFlag = " --yolo"
+	}
+
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
-			return fmt.Sprintf("gemini --resume %s", i.GeminiSessionID)
+			return fmt.Sprintf("gemini --resume %s%s", i.GeminiSessionID, yoloFlag)
 		}
 
 		// Build the capture-resume command for new sessions with fallback
@@ -308,8 +326,8 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		return `session_id=$(gemini --output-format json "." 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; ` +
 			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then ` +
 			`tmux set-environment GEMINI_SESSION_ID "$session_id"; ` +
-			`gemini --resume "$session_id"; ` +
-			`else gemini; fi`
+			fmt.Sprintf(`gemini --resume "$session_id"%s; `, yoloFlag) +
+			fmt.Sprintf(`else gemini%s; fi`, yoloFlag)
 	}
 
 	// For custom commands (e.g., resume commands), return as-is

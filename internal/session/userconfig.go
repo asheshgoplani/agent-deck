@@ -35,6 +35,9 @@ type UserConfig struct {
 	// Claude defines Claude Code integration settings
 	Claude ClaudeSettings `toml:"claude"`
 
+	// Gemini defines Gemini CLI integration settings
+	Gemini GeminiSettings `toml:"gemini"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -180,6 +183,13 @@ type ClaudeSettings struct {
 	// DangerousMode enables --dangerously-skip-permissions flag for Claude sessions
 	// Default: false
 	DangerousMode bool `toml:"dangerous_mode"`
+}
+
+// GeminiSettings defines Gemini CLI configuration
+type GeminiSettings struct {
+	// YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
+	// Default: false
+	YoloMode bool `toml:"yolo_mode"`
 }
 
 // WorktreeSettings contains git worktree preferences

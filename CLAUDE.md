@@ -441,7 +441,8 @@ internal/
 │   ├── groups.go             # GroupTree, hierarchy
 │   ├── storage.go            # JSON persistence
 │   ├── config.go             # Profile management
-│   ├── userconfig.go         # TOML config, getMCPPoolConfigSection()
+│   ├── userconfig.go         # TOML config, GeminiSettings, getMCPPoolConfigSection()
+│   ├── gemini_yolo_test.go   # YOLO mode tests (config, command building, persistence)
 │   └── discovery.go          # Import tmux sessions
 └── tmux/                     # tmux integration
     ├── tmux.go               # Session management, status detection
@@ -464,7 +465,7 @@ internal/
 | Key | Action |
 |-----|--------|
 | `Enter` | Attach to session OR toggle group |
-| `n` | New session (inherits current group) |
+| `n` | New session (inherits current group). In dialog: `y` toggles YOLO for Gemini |
 | `r`/`R` | Restart session (Claude/Gemini: resumes with updated MCPs) |
 | `M` | MCP Manager (Claude and Gemini) |
 | `e` | Rename session/group |
@@ -540,6 +541,7 @@ Agent-deck supports Google's Gemini CLI with full session management:
 
 - **Session Detection**: Automatic from `~/.gemini/tmp/<hash>/chats/`
 - **Session Resume**: Press `r` on Gemini session to resume with `gemini --resume <id>`
+- **YOLO Mode**: Auto-approve all actions with `--yolo` flag (configurable globally or per-session)
 - **MCP Management**: Press `M` to configure MCP servers (global scope only)
 - **Response Extraction**: `agent-deck session output <id>` extracts last response
 
@@ -561,6 +563,32 @@ gemini --resume "$session_id"
 **Key files:** `internal/session/gemini.go`, `internal/session/gemini_mcp.go`
 
 See `GEMINI_INTEGRATION.md` for comprehensive guide.
+
+### YOLO Mode Configuration
+
+YOLO mode enables the `--yolo` flag for Gemini sessions, which auto-approves all tool actions without confirmation.
+
+**Global Configuration** (`~/.agent-deck/config.toml`):
+```toml
+[gemini]
+yolo_mode = true  # All new Gemini sessions use --yolo by default
+```
+
+**Per-Session Configuration** (TUI):
+1. Press `n` to create new session
+2. Select "gemini" tool using arrow keys
+3. YOLO checkbox appears: `[ ] YOLO mode - auto-approve all (press y)`
+4. Press `y` to toggle: `[x] YOLO mode - auto-approve all (press y)`
+5. Press Enter to create session
+
+**Per-session overrides global config.** If global is `false`, you can enable YOLO for specific sessions. If global is `true`, the checkbox starts checked.
+
+**Implementation:**
+- Config: `internal/session/userconfig.go` - `GeminiSettings` struct
+- Command building: `internal/session/instance.go` - `buildGeminiCommand()`
+- Persistence: `internal/session/storage.go` - `GeminiYoloMode` field
+- UI: `internal/ui/newdialog.go` - YOLO checkbox and toggle logic
+- Tests: `internal/session/gemini_yolo_test.go` - Comprehensive test suite
 
 ---
 
@@ -659,6 +687,9 @@ Path-based hierarchy: `"parent/child/grandchild"`
 [claude]
 config_dir = "~/.claude-work"  # Custom Claude profile
 dangerous_mode = true          # --dangerously-skip-permissions (default: false)
+
+[gemini]
+yolo_mode = true               # --yolo flag for auto-approve all actions (default: false)
 
 # Custom CLI tools (Issue #42) - Configure ANY coding assistant
 # All fields except 'command' are optional. See "Custom CLI Tools" section below.
