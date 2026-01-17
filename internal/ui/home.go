@@ -1945,8 +1945,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Get values including worktree settings
-		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
+		// Get values including worktree and YOLO settings
+		name, path, command, branchName, worktreeEnabled, yoloEnabled := h.newDialog.GetValuesWithYolo()
 		groupPath := h.newDialog.GetSelectedGroup()
 
 		// Handle worktree creation if enabled
@@ -1982,8 +1982,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog.Hide()
 		h.clearError() // Clear any previous validation error
 
-		// Create session with worktree info
-		return h, h.createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName)
+		// Create session with worktree and YOLO info
+		return h, h.createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, yoloEnabled)
 
 	case "esc":
 		h.newDialog.Hide()
@@ -2729,11 +2729,11 @@ func (h *Home) getUsedClaudeSessionIDs() map[string]bool {
 
 // createSessionInGroup creates a new session in a specific group
 func (h *Home) createSessionInGroup(name, path, command, groupPath string) tea.Cmd {
-	return h.createSessionInGroupWithWorktree(name, path, command, groupPath, "", "", "")
+	return h.createSessionInGroupWithWorktree(name, path, command, groupPath, "", "", "", false)
 }
 
 // createSessionInGroupWithWorktree creates a new session in a specific group with optional worktree settings
-func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string) tea.Cmd {
+func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, yoloEnabled bool) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
@@ -2767,6 +2767,11 @@ func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, 
 			inst.WorktreePath = worktreePath
 			inst.WorktreeRepoRoot = worktreeRepoRoot
 			inst.WorktreeBranch = worktreeBranch
+		}
+
+		// Set YOLO mode for Gemini sessions
+		if tool == "gemini" && yoloEnabled {
+			inst.GeminiYoloMode = &yoloEnabled
 		}
 
 		if err := inst.Start(); err != nil {

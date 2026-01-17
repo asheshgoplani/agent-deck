@@ -77,6 +77,7 @@ type InstanceData struct {
 	// Gemini session (persisted for resume after app restart)
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
+	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"` // Per-session YOLO mode override
 
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
@@ -214,6 +215,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			ClaudeDetectedAt: inst.ClaudeDetectedAt,
 			GeminiSessionID:  inst.GeminiSessionID,
 			GeminiDetectedAt: inst.GeminiDetectedAt,
+			GeminiYoloMode:   inst.GeminiYoloMode,
 			LoadedMCPNames:   inst.LoadedMCPNames,
 		}
 	}
@@ -517,6 +519,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ClaudeDetectedAt: instData.ClaudeDetectedAt,
 			GeminiSessionID:  instData.GeminiSessionID,
 			GeminiDetectedAt: instData.GeminiDetectedAt,
+			GeminiYoloMode:   instData.GeminiYoloMode,
 			LoadedMCPNames:   instData.LoadedMCPNames,
 			tmuxSession:      tmuxSess,
 		}
