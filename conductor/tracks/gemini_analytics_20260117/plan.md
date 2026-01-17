@@ -19,7 +19,7 @@
 - [ ] Task: Conductor - User Manual Verification 'TUI Integration' (Protocol in workflow.md)
 
 ## Phase 3: Persistence and Polish
-- [ ] Task: Ensure analytics data is persisted to `sessions.json`
+- [x] Task: Ensure analytics data is persisted to `sessions.json` [b3b9586]
     - [ ] Sub-task: Write integration tests to verify that analytics data survives a session save/load cycle
     - [ ] Sub-task: Verify and adjust `internal/session/storage.go` to include analytics fields in the JSON serialization
 - [ ] Task: Final Polish and Refactoring
