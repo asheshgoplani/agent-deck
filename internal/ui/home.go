@@ -2240,6 +2240,31 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "y":
+		// Toggle YOLO mode for Gemini sessions
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Tool == "gemini" {
+				// Toggle
+				current := false
+				if item.Session.GeminiYoloMode != nil {
+					current = *item.Session.GeminiYoloMode
+				} else {
+					current = h.globalYoloMode
+				}
+				newVal := !current
+				item.Session.GeminiYoloMode = &newVal
+
+				// Save changes
+				h.saveInstances()
+
+				// Show confirmation to restart
+				h.confirmDialog.ShowYoloRestart(item.Session.ID, item.Session.Title, newVal)
+				return h, nil
+			}
+		}
+		return h, nil
+
 	case "F", "shift+f":
 		// Fork with dialog (customize title and group)
 		// Only available when session has a valid Claude session ID
@@ -2547,6 +2572,15 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.instancesMu.Unlock()
 			h.rebuildFlatItems()
 			h.saveInstances()
+		case ConfirmYoloRestart:
+			sessionID := h.confirmDialog.GetTargetID()
+			if inst := h.getInstanceByID(sessionID); inst != nil {
+				if inst.CanRestart() {
+					h.resumingSessions[inst.ID] = time.Now()
+					h.confirmDialog.Hide()
+					return h, h.restartSession(inst)
+				}
+			}
 		}
 		h.confirmDialog.Hide()
 		return h, nil
@@ -3982,6 +4016,9 @@ func (h *Home) renderHelpBarMinimal() string {
 			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
 				contextKeys += " " + keyStyle.Render("M")
 			}
+			if item.Session != nil && item.Session.Tool == "gemini" {
+				contextKeys += " " + keyStyle.Render("y")
+			}
 		}
 	}
 
@@ -4036,6 +4073,9 @@ func (h *Home) renderHelpBarCompact() string {
 			}
 			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
 				contextHints = append(contextHints, h.helpKeyShort("M", "MCP"))
+			}
+			if item.Session != nil && item.Session.Tool == "gemini" {
+				contextHints = append(contextHints, h.helpKeyShort("y", "YOLO"))
 			}
 		}
 	}
@@ -4115,6 +4155,10 @@ func (h *Home) renderHelpBarFull() string {
 			// Show MCP Manager hint for Claude and Gemini sessions
 			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
 				primaryHints = append(primaryHints, h.helpKey("M", "MCP"))
+			}
+			// Show YOLO mode toggle for Gemini sessions
+			if item.Session != nil && item.Session.Tool == "gemini" {
+				primaryHints = append(primaryHints, h.helpKey("y", "YOLO"))
 			}
 			secondaryHints = []string{
 				h.helpKey("r", "Rename"),
