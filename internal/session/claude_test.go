@@ -428,3 +428,61 @@ func TestClearMCPCache_ClearsParentDirectories(t *testing.T) {
 		t.Error("parent directory cache should be cleared but wasn't")
 	}
 }
+
+func TestConvertToClaudeDirName(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple path",
+			input:    "/Users/test/project",
+			expected: "-Users-test-project",
+		},
+		{
+			name:     "path with space",
+			input:    "/Users/test/My Project",
+			expected: "-Users-test-My-Project",
+		},
+		{
+			name:     "path with exclamation mark",
+			input:    "/Users/test/!Contributions",
+			expected: "-Users-test--Contributions",
+		},
+		{
+			name:     "path with multiple special chars",
+			input:    "/Users/test/Code cloud/!Dir",
+			expected: "-Users-test-Code-cloud--Dir",
+		},
+		{
+			name:     "real world example",
+			input:    "/Users/master/Dropbox/LLM x AWST/project",
+			expected: "-Users-master-Dropbox-LLM-x-AWST-project",
+		},
+		{
+			name:     "path with dots",
+			input:    "/Users/test/.hidden/file.txt",
+			expected: "-Users-test--hidden-file-txt",
+		},
+		{
+			name:     "path with parentheses",
+			input:    "/Users/test/(backup)/data",
+			expected: "-Users-test--backup--data",
+		},
+		{
+			name:     "preserves existing hyphens",
+			input:    "/Users/test/my-project-name",
+			expected: "-Users-test-my-project-name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ConvertToClaudeDirName(tt.input)
+			if got != tt.expected {
+				t.Errorf("ConvertToClaudeDirName(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}

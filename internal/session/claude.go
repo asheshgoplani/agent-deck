@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// claudeDirNameRegex matches any character that's not alphanumeric or hyphen
+// Claude Code replaces all such characters with hyphens in project directory names
+var claudeDirNameRegex = regexp.MustCompile(`[^a-zA-Z0-9-]`)
+
+// ConvertToClaudeDirName converts a filesystem path to Claude's directory naming format.
+// Claude Code replaces all non-alphanumeric characters (except hyphens) with hyphens.
+// Example: /Users/master/Code cloud/!Project → -Users-master-Code-cloud--Project
+func ConvertToClaudeDirName(path string) string {
+	return claudeDirNameRegex.ReplaceAllString(path, "-")
+}
+
 // ClaudeProject represents a project entry in Claude's config
 type ClaudeProject struct {
 	LastSessionId string `json:"lastSessionId"`
@@ -301,8 +312,9 @@ func GetClaudeSessionID(projectPath string) (string, error) {
 // This finds the CURRENTLY RUNNING session, not the last completed one
 func findActiveSessionID(configDir, projectPath string) string {
 	// Convert project path to Claude's directory format
-	// /Users/ashesh/claude-deck -> -Users-ashesh-claude-deck
-	projectDirName := strings.ReplaceAll(projectPath, "/", "-")
+	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
+	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
+	projectDirName := ConvertToClaudeDirName(projectPath)
 	projectDir := filepath.Join(configDir, "projects", projectDirName)
 
 	// Check if project directory exists
