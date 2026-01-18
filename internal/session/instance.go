@@ -1909,3 +1909,4 @@ func UpdateClaudeSessionsWithDedup(instances []*Instance) {
 	// No re-detection step - tmux env is the authoritative source
 	// Sessions will get their IDs from UpdateClaudeSession() during normal status updates
 }
+// Session tagging feature test
