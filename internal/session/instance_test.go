@@ -125,23 +125,31 @@ func TestInstance_Fork(t *testing.T) {
 		t.Errorf("Fork() failed: %v", err)
 	}
 
-	// Command should use capture-resume pattern with fork
+	// Command should use capture-resume pattern
 	// When not explicitly configured, CLAUDE_CONFIG_DIR should NOT be set
 	// (allows shell environment to take precedence)
 	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
 		t.Errorf("Fork() should NOT set CLAUDE_CONFIG_DIR when not explicitly configured, got: %s", cmd)
 	}
+	// Step 1: Capture session ID via fork with -p "." --output-format json
 	if !strings.Contains(cmd, "--resume abc-123 --fork-session") {
 		t.Errorf("Fork() should include resume and fork-session flags for capture, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, `--output-format json`) {
+	if !strings.Contains(cmd, `-p "."`) {
+		t.Errorf("Fork() should use -p \".\" for minimal capture prompt, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--output-format json") {
 		t.Errorf("Fork() should use --output-format json for capture, got: %s", cmd)
 	}
+	if !strings.Contains(cmd, "jq -r '.session_id'") {
+		t.Errorf("Fork() should extract session ID with jq, got: %s", cmd)
+	}
+	// Step 2: Store in tmux and resume
 	if !strings.Contains(cmd, "tmux set-environment CLAUDE_SESSION_ID") {
 		t.Errorf("Fork() should store session ID in tmux env, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, `--resume "$session_id"`) {
-		t.Errorf("Fork() should resume the captured session, got: %s", cmd)
+		t.Errorf("Fork() should resume with captured session ID, got: %s", cmd)
 	}
 }
 
@@ -393,8 +401,8 @@ func TestBuildClaudeCommand_ExplicitConfig(t *testing.T) {
 	}
 }
 
-// TestBuildClaudeCommand_CustomAlias tests that custom command aliases (e.g., cdw, cdp)
-// skip the CLAUDE_CONFIG_DIR prefix since the alias handles it
+// TestBuildClaudeCommand_CustomAlias tests that capture-resume commands always use
+// "claude" binary + CLAUDE_CONFIG_DIR, NOT the custom alias (aliases don't work in bash -c)
 func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
 	// Create temp config with custom command
 	origHome := os.Getenv("HOME")
@@ -403,16 +411,12 @@ func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
 
 	// Create ~/.agent-deck/config.toml with custom command
 	configDir := filepath.Join(tmpDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatalf("failed to create config dir: %v", err)
-	}
+	os.MkdirAll(configDir, 0755)
 	configContent := `[claude]
 command = "cdw"
 config_dir = "~/.claude-work"
 `
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644); err != nil {
-		t.Fatalf("failed to write config file: %v", err)
-	}
+	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644)
 
 	ClearUserConfigCache()
 	defer func() {
@@ -423,19 +427,21 @@ config_dir = "~/.claude-work"
 	inst := NewInstanceWithTool("test", "/tmp/test", "claude")
 	cmd := inst.buildClaudeCommand("claude")
 
-	// Should use "cdw" instead of "claude"
-	if !strings.Contains(cmd, "cdw -p") {
-		t.Errorf("Should use custom command 'cdw', got: %s", cmd)
+	// Should use "claude" binary (NOT "cdw" alias) for capture-resume commands
+	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
+	// and shell aliases are not available in non-interactive bash shells
+	if strings.Contains(cmd, "cdw") {
+		t.Errorf("Should NOT use alias 'cdw' in capture-resume command (aliases don't work in bash -c), got: %s", cmd)
 	}
 
-	// Should NOT include CLAUDE_CONFIG_DIR prefix (alias handles it)
-	if strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
-		t.Errorf("Should NOT include CLAUDE_CONFIG_DIR when using custom command alias, got: %s", cmd)
+	// Should include CLAUDE_CONFIG_DIR since config_dir is explicitly set
+	if !strings.Contains(cmd, "CLAUDE_CONFIG_DIR=") {
+		t.Errorf("Should include CLAUDE_CONFIG_DIR for capture-resume commands, got: %s", cmd)
 	}
 
 	// Should still use capture-resume pattern
 	if !strings.Contains(cmd, `--resume "$session_id"`) {
-		t.Errorf("Should use --resume flag with custom alias, got: %s", cmd)
+		t.Errorf("Should use --resume flag in capture-resume pattern, got: %s", cmd)
 	}
 }
 
@@ -476,9 +482,9 @@ func TestBuildClaudeCommand_SubagentAddDir(t *testing.T) {
 	}
 }
 
-// TestCreateForkedInstance_CaptureResumePattern tests that forked sessions
-// use the capture-resume pattern to reliably get the new session ID
-func TestCreateForkedInstance_CaptureResumePattern(t *testing.T) {
+// TestCreateForkedInstance_SessionIDPattern tests that forked sessions
+// use capture-resume pattern to get the session ID
+func TestCreateForkedInstance_SessionIDPattern(t *testing.T) {
 	inst := NewInstance("original", "/tmp/test")
 	inst.ClaudeSessionID = "parent-abc-123"
 	inst.ClaudeDetectedAt = time.Now()
@@ -489,14 +495,25 @@ func TestCreateForkedInstance_CaptureResumePattern(t *testing.T) {
 	}
 
 	// Command SHOULD use capture-resume pattern
-	if !strings.Contains(cmd, "--output-format json") {
-		t.Errorf("Fork command should use --output-format json for capture, got: %s", cmd)
-	}
+	// Step 1: Capture via -p "." --output-format json
 	if !strings.Contains(cmd, "--resume parent-abc-123 --fork-session") {
 		t.Errorf("Fork command should contain --resume with parent ID and --fork-session, got: %s", cmd)
 	}
+	if !strings.Contains(cmd, `-p "."`) {
+		t.Errorf("Fork command should use -p \".\" for capture, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--output-format json") {
+		t.Errorf("Fork command should use --output-format json, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "jq -r '.session_id'") {
+		t.Errorf("Fork command should extract session ID with jq, got: %s", cmd)
+	}
+	// Step 2: Store and resume
 	if !strings.Contains(cmd, "tmux set-environment CLAUDE_SESSION_ID") {
 		t.Errorf("Fork command should store session ID in tmux env, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, `--resume "$session_id"`) {
+		t.Errorf("Fork command should resume with captured session ID, got: %s", cmd)
 	}
 
 	// Forked instance should have empty ClaudeSessionID initially
@@ -836,19 +853,18 @@ func TestBuildGeminiCommand(t *testing.T) {
 	if !strings.Contains(cmd, `!= "null"`) {
 		t.Error("Should check for null session_id from jq")
 	}
-	// Should start Gemini even without session ID (fallback path)
-	if !strings.Contains(cmd, "else tmux set-environment GEMINI_YOLO_MODE false; gemini; fi") {
-		t.Error("Should have else branch to start Gemini fresh")
-	}
-
-	// With session ID, should use simple resume
-	inst.GeminiSessionID = "abc-123-def"
-	cmd = inst.buildGeminiCommand("gemini")
-	expected := "tmux set-environment GEMINI_YOLO_MODE false; gemini --resume abc-123-def"
-	if cmd != expected {
-		t.Errorf("buildGeminiCommand('gemini') = %q, want %q", cmd, expected)
-	}
-
+		// Should start Gemini even without session ID (fallback path)
+		if !strings.Contains(cmd, "else tmux set-environment GEMINI_YOLO_MODE false; gemini; fi") {
+			t.Error("Should have else branch to start Gemini fresh")
+		}
+	
+		// With session ID, should use simple resume
+		inst.GeminiSessionID = "abc-123-def"
+		cmd = inst.buildGeminiCommand("gemini")
+		expected := "tmux set-environment GEMINI_YOLO_MODE false; gemini --resume abc-123-def"
+		if cmd != expected {
+			t.Errorf("buildGeminiCommand('gemini') = %q, want %q", cmd, expected)
+		}
 	// Custom commands should pass through
 	customCmd := "gemini --some-flag"
 	cmd = inst.buildGeminiCommand(customCmd)
@@ -1157,11 +1173,11 @@ func TestInstance_CanRestart_Gemini(t *testing.T) {
 // Issue #16: Fork command breaks for project paths with spaces
 func TestInstance_Fork_PathWithSpaces(t *testing.T) {
 	inst := &Instance{
-		ID:               "test-123",
-		Title:            "test-session",
-		ProjectPath:      "/tmp/Test Path With Spaces",
-		Tool:             "claude",
-		ClaudeSessionID:  "session-abc-123",
+		ID:              "test-123",
+		Title:           "test-session",
+		ProjectPath:     "/tmp/Test Path With Spaces",
+		Tool:            "claude",
+		ClaudeSessionID: "session-abc-123",
 		ClaudeDetectedAt: time.Now(),
 	}
 
@@ -1269,11 +1285,11 @@ func TestInstance_WorktreeFields(t *testing.T) {
 // Issue #8: Fork command ignores dangerous_mode configuration
 func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 	inst := &Instance{
-		ID:               "test-456",
-		Title:            "test-session",
-		ProjectPath:      "/tmp/test",
-		Tool:             "claude",
-		ClaudeSessionID:  "session-xyz-789",
+		ID:              "test-456",
+		Title:           "test-session",
+		ProjectPath:     "/tmp/test",
+		Tool:            "claude",
+		ClaudeSessionID: "session-xyz-789",
 		ClaudeDetectedAt: time.Now(),
 	}
 

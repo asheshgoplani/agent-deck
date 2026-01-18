@@ -139,10 +139,10 @@ func IsTmuxAvailable() error {
 
 // TerminalInfo contains detected terminal information
 type TerminalInfo struct {
-	Name              string // Terminal name (warp, iterm2, kitty, alacritty, etc.)
-	SupportsOSC8      bool   // Supports OSC 8 hyperlinks
-	SupportsOSC52     bool   // Supports OSC 52 clipboard
-	SupportsTrueColor bool   // Supports 24-bit color
+	Name           string // Terminal name (warp, iterm2, kitty, alacritty, etc.)
+	SupportsOSC8   bool   // Supports OSC 8 hyperlinks
+	SupportsOSC52  bool   // Supports OSC 52 clipboard
+	SupportsTrueColor bool // Supports 24-bit color
 }
 
 // DetectTerminal identifies the current terminal emulator from environment variables
@@ -208,9 +208,9 @@ func GetTerminalInfo() TerminalInfo {
 	terminal := DetectTerminal()
 
 	info := TerminalInfo{
-		Name:              terminal,
-		SupportsOSC8:      false,
-		SupportsOSC52:     false,
+		Name:           terminal,
+		SupportsOSC8:   false,
+		SupportsOSC52:  false,
 		SupportsTrueColor: false,
 	}
 
@@ -225,8 +225,8 @@ func GetTerminalInfo() TerminalInfo {
 	switch terminal {
 	case "warp":
 		// Warp: Full modern terminal support
-		info.SupportsOSC8 = true  // Native clickable paths
-		info.SupportsOSC52 = true // Clipboard integration
+		info.SupportsOSC8 = true   // Native clickable paths
+		info.SupportsOSC52 = true  // Clipboard integration
 		info.SupportsTrueColor = true
 
 	case "iterm2":
@@ -280,7 +280,7 @@ func GetTerminalInfo() TerminalInfo {
 	default:
 		// Unknown terminal - assume basic support
 		// Most modern terminals support these features
-		info.SupportsOSC8 = true // Optimistic default
+		info.SupportsOSC8 = true  // Optimistic default
 		info.SupportsOSC52 = true
 	}
 
@@ -628,7 +628,16 @@ func (s *Session) Start(command string) error {
 
 	// Send the command to the session
 	if command != "" {
-		if err := s.SendKeys(command); err != nil {
+		cmdToSend := command
+		// IMPORTANT: Commands containing bash-specific syntax (like `session_id=$(...)`)
+		// must be wrapped in `bash -c` for fish shell compatibility (#47).
+		// Fish uses different syntax: `set var (...)` instead of `var=$(...)`.
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			// Escape single quotes in the command for bash -c wrapper
+			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
+			cmdToSend = fmt.Sprintf("bash -c '%s'", escapedCmd)
+		}
+		if err := s.SendKeys(cmdToSend); err != nil {
 			return fmt.Errorf("failed to send command: %w", err)
 		}
 		if err := s.SendEnter(); err != nil {
@@ -814,7 +823,7 @@ func (s *Session) RespawnPane(command string) error {
 	// -k: Kill current process
 	// -t: Target pane (session:window.pane format, use session: for active pane)
 	// command: New command to run
-	target := s.Name + ":" // Append colon to target the active pane
+	target := s.Name + ":"  // Append colon to target the active pane
 	args := []string{"respawn-pane", "-k", "-t", target}
 	if command != "" {
 		// Wrap command in interactive shell to ensure aliases and shell configs are available
@@ -824,6 +833,15 @@ func (s *Session) RespawnPane(command string) error {
 		if shell == "" {
 			shell = "/bin/bash"
 		}
+
+		// IMPORTANT: Commands containing bash-specific syntax (like `session_id=$(...)`)
+		// must use bash, regardless of user's shell. This fixes fish shell compatibility (#47).
+		// Fish uses different syntax: `set var (...)` instead of `var=$(...)`.
+		// We detect bash-specific constructs and force bash for those commands.
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			shell = "/bin/bash"
+		}
+
 		// Use -i for interactive (loads aliases) and -c for command
 		wrappedCmd := fmt.Sprintf("%s -ic %q", shell, command)
 		args = append(args, wrappedCmd)
@@ -1073,7 +1091,6 @@ func (s *Session) AcknowledgeWithSnapshot() {
 // 3. If timestamp changed → check if sustained or spike
 //   - Sustained (1+ more changes in 1s) → GREEN
 //   - Spike (no more changes) → filtered (no state change)
-//
 // 4. Check cooldown → GREEN if within
 // 5. Cooldown expired → YELLOW or GRAY based on acknowledged
 func (s *Session) GetStatus() (string, error) {
@@ -1517,9 +1534,9 @@ var (
 
 	// Progress bar patterns for normalization (Fix 2.1)
 	// These cause hash changes when progress updates
-	progressBarPattern = regexp.MustCompile(`\[=*>?\s*\]\s*\d+%`)                  // [====>   ] 45%
+	progressBarPattern = regexp.MustCompile(`\[=*>?\s*\]\s*\d+%`)           // [====>   ] 45%
 	downloadPattern    = regexp.MustCompile(`\d+\.?\d*[KMGT]?B/\d+\.?\d*[KMGT]?B`) // 1.2MB/5.6MB
-	percentagePattern  = regexp.MustCompile(`\b\d{1,3}%`)                          // 45% (word boundary to avoid false matches)
+	percentagePattern  = regexp.MustCompile(`\b\d{1,3}%`)                   // 45% (word boundary to avoid false matches)
 )
 
 // claudeWhimsicalWords contains all 90 whimsical "thinking" words used by Claude Code
@@ -1580,9 +1597,9 @@ func (s *Session) normalizeContent(content string) string {
 
 	// Strip progress indicators that change frequently (Fix 2.1)
 	// These cause hash changes during downloads, builds, etc.
-	result = progressBarPattern.ReplaceAllString(result, "[PROGRESS]") // [====>   ] 45%
-	result = downloadPattern.ReplaceAllString(result, "X.XMB/Y.YMB")   // 1.2MB/5.6MB
-	result = percentagePattern.ReplaceAllString(result, "N%")          // 45%
+	result = progressBarPattern.ReplaceAllString(result, "[PROGRESS]")  // [====>   ] 45%
+	result = downloadPattern.ReplaceAllString(result, "X.XMB/Y.YMB")    // 1.2MB/5.6MB
+	result = percentagePattern.ReplaceAllString(result, "N%")           // 45%
 
 	// Normalize trailing whitespace per line (fixes resize false positives)
 	// tmux capture-pane -J can add trailing spaces when terminal is resized
@@ -1835,6 +1852,91 @@ func (s *Session) GetWorkDir() string {
 	return strings.TrimSpace(string(output))
 }
 
+// GetPaneCommandLines returns the command lines of all processes running in the active pane
+// This is useful for detecting flags like --yolo in already running sessions,
+// even if they are children of a shell.
+func (s *Session) GetPaneCommandLines() ([]string, error) {
+	// 1. Get the TTY of the active pane
+	cmd := exec.Command("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_tty}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pane TTY: %w", err)
+	}
+
+	tty := strings.TrimSpace(string(output))
+	if tty == "" {
+		return nil, fmt.Errorf("no TTY for pane")
+	}
+
+	// 2. Use ps to get all commands running on this TTY
+	// -t: filter by TTY
+	// -o command=: output only the command line, no header
+	psCmd := exec.Command("ps", "-t", tty, "-o", "command=")
+	psOutput, err := psCmd.Output()
+	if err != nil {
+		// If ps -t fails (some platforms/configurations), fall back to pane PID
+		return s.getPaneCommandLinesLegacy()
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(psOutput)), "\n")
+	var result []string
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result, nil
+}
+
+// getPaneCommandLinesLegacy is a fallback that only checks the main pane PID and its children
+func (s *Session) getPaneCommandLinesLegacy() ([]string, error) {
+	cmd := exec.Command("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_pid}")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pane PID: %w", err)
+	}
+
+	pid := strings.TrimSpace(string(output))
+	if pid == "" {
+		return nil, fmt.Errorf("no process running in pane")
+	}
+
+	var result []string
+
+	// Check the main PID
+	if cmdline, err := s.getProcessCmdline(pid); err == nil {
+		result = append(result, cmdline)
+	}
+
+	// Try to get children PIDs (Linux specific)
+	psCmd := exec.Command("pgrep", "-P", pid)
+	if pids, err := psCmd.Output(); err == nil {
+		for _, childPid := range strings.Split(strings.TrimSpace(string(pids)), "\n") {
+			if childPid = strings.TrimSpace(childPid); childPid != "" {
+				if cmdline, err := s.getProcessCmdline(childPid); err == nil {
+					result = append(result, cmdline)
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func (s *Session) getProcessCmdline(pid string) (string, error) {
+	cmdlinePath := fmt.Sprintf("/proc/%s/cmdline", pid)
+	data, err := os.ReadFile(cmdlinePath)
+	if err != nil {
+		psCmd := exec.Command("ps", "-p", pid, "-o", "command=")
+		psOutput, psErr := psCmd.Output()
+		if psErr != nil {
+			return "", psErr
+		}
+		return strings.TrimSpace(string(psOutput)), nil
+	}
+	return strings.ReplaceAll(string(data), "\x00", " "), nil
+}
+
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
 	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
@@ -1999,99 +2101,16 @@ func CleanupOrphanedLogs() (removed int, freedBytes int64, err error) {
 		// Remove orphaned log
 		size := info.Size()
 		if err := os.Remove(logPath); err != nil {
-			debugLog("Failed to remove orphan log %s: %v", entry.Name(), err)
+			debugLog("Failed to remove orphaned log %s: %v", entry.Name(), err)
 			continue
 		}
+
 		removed++
 		freedBytes += size
+		debugLog("Removed orphaned log: %s (%.1f KB)", entry.Name(), float64(size)/1024)
 	}
 
 	return removed, freedBytes, nil
-}
-
-// GetPaneCommandLines returns the command lines of all processes running in the active pane
-// This is useful for detecting flags like --yolo in already running sessions,
-// even if they are children of a shell.
-func (s *Session) GetPaneCommandLines() ([]string, error) {
-	// 1. Get the TTY of the active pane
-	cmd := exec.Command("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_tty}")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pane TTY: %w", err)
-	}
-
-	tty := strings.TrimSpace(string(output))
-	if tty == "" {
-		return nil, fmt.Errorf("no TTY for pane")
-	}
-
-	// 2. Use ps to get all commands running on this TTY
-	// -t: filter by TTY
-	// -o command=: output only the command line, no header
-	psCmd := exec.Command("ps", "-t", tty, "-o", "command=")
-	psOutput, err := psCmd.Output()
-	if err != nil {
-		// If ps -t fails (some platforms/configurations), fall back to pane PID
-		return s.getPaneCommandLinesLegacy()
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(psOutput)), "\n")
-	var result []string
-	for _, line := range lines {
-		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result, nil
-}
-
-// getPaneCommandLinesLegacy is a fallback that only checks the main pane PID and its children
-func (s *Session) getPaneCommandLinesLegacy() ([]string, error) {
-	cmd := exec.Command("tmux", "list-panes", "-t", s.Name, "-F", "#{pane_pid}")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pane PID: %w", err)
-	}
-
-	pid := strings.TrimSpace(string(output))
-	if pid == "" {
-		return nil, fmt.Errorf("no process running in pane")
-	}
-
-	var result []string
-
-	// Check the main PID
-	if cmdline, err := s.getProcessCmdline(pid); err == nil {
-		result = append(result, cmdline)
-	}
-
-	// Try to get children PIDs (Linux specific)
-	psCmd := exec.Command("pgrep", "-P", pid)
-	if pids, err := psCmd.Output(); err == nil {
-		for _, childPid := range strings.Split(strings.TrimSpace(string(pids)), "\n") {
-			if childPid = strings.TrimSpace(childPid); childPid != "" {
-				if cmdline, err := s.getProcessCmdline(childPid); err == nil {
-					result = append(result, cmdline)
-				}
-			}
-		}
-	}
-
-	return result, nil
-}
-
-func (s *Session) getProcessCmdline(pid string) (string, error) {
-	cmdlinePath := fmt.Sprintf("/proc/%s/cmdline", pid)
-	data, err := os.ReadFile(cmdlinePath)
-	if err != nil {
-		psCmd := exec.Command("ps", "-p", pid, "-o", "command=")
-		psOutput, psErr := psCmd.Output()
-		if psErr != nil {
-			return "", psErr
-		}
-		return strings.TrimSpace(string(psOutput)), nil
-	}
-	return strings.ReplaceAll(string(data), "\x00", " "), nil
 }
 
 // RunLogMaintenance performs all log maintenance tasks based on settings

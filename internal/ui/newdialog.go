@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,7 +18,8 @@ type NewDialog struct {
 	nameInput            textinput.Model
 	pathInput            textinput.Model
 	commandInput         textinput.Model
-	focusIndex           int
+	claudeOptions        *ClaudeOptionsPanel // Claude-specific options
+	focusIndex           int                 // 0=name, 1=path, 2=command, 3+=options
 	width                int
 	height               int
 	visible              bool
@@ -75,6 +77,7 @@ func NewNewDialog() *NewDialog {
 		pathInput:       pathInput,
 		commandInput:    commandInput,
 		branchInput:     branchInput,
+		claudeOptions:   NewClaudeOptionsPanel(),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  []string{"", "claude", "gemini", "opencode", "codex"},
@@ -82,12 +85,15 @@ func NewNewDialog() *NewDialog {
 		parentGroupPath: "default",
 		parentGroupName: "default",
 		worktreeEnabled: false,
-		geminiYoloMode:  false,
-		globalYoloMode:  false,
 	}
 }
 
 // ShowInGroup shows the dialog with a pre-selected parent group and optional default path
+// Show shows the dialog
+func (d *NewDialog) Show() {
+	d.ShowInGroup("default", "default", "")
+}
+
 func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	if groupPath == "" {
 		groupPath = "default"
@@ -99,74 +105,30 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.focusIndex = 0
 	d.nameInput.SetValue("")
 	d.nameInput.Focus()
-	d.suggestionNavigated = false // reset on show
-	d.pathSuggestionCursor = 0    // reset cursor too
-	// Keep commandCursor at previously set default (don't reset to 0)
-	// Reset worktree fields
+	d.commandInput.SetValue("")
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
-	// Set path input to group's default path if provided, otherwise use current working directory
+
+	// Reset path suggestions state
+	d.pathSuggestionCursor = 0
+	d.suggestionNavigated = false
+
 	if defaultPath != "" {
 		d.pathInput.SetValue(defaultPath)
 	} else {
-		// Fall back to current working directory
+		// Default to CWD if no group default provided
 		cwd, err := os.Getwd()
 		if err == nil {
 			d.pathInput.SetValue(cwd)
 		}
 	}
-}
 
-// SetDefaultTool sets the pre-selected command based on tool name
-// Call this before Show/ShowInGroup to apply user's preferred default
-func (d *NewDialog) SetDefaultTool(tool string, globalYoloMode bool) {
-	d.globalYoloMode = globalYoloMode
-	if tool == "" {
-		d.commandCursor = 0 // Default to shell
-		d.geminiYoloMode = false
-		return
+	// Initialize Gemini YOLO mode and Claude options from global config
+	d.geminiYoloMode = false
+	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
+		d.geminiYoloMode = userConfig.Gemini.YoloMode
+		d.claudeOptions.SetDefaults(userConfig)
 	}
-
-	// Set YOLO mode if tool is gemini
-	if tool == "gemini" {
-		d.geminiYoloMode = globalYoloMode
-	} else {
-		d.geminiYoloMode = false
-	}
-
-	// Find the tool in preset commands
-	for i, cmd := range d.presetCommands {
-		if cmd == tool {
-			d.commandCursor = i
-			return
-		}
-	}
-
-	// Tool not found in presets, default to shell
-	d.commandCursor = 0
-}
-
-// GetSelectedGroup returns the parent group path
-func (d *NewDialog) GetSelectedGroup() string {
-	return d.parentGroupPath
-}
-
-// SetSize sets the dialog dimensions
-func (d *NewDialog) SetSize(width, height int) {
-	d.width = width
-	d.height = height
-}
-
-// SetPathSuggestions sets the available path suggestions for autocomplete
-func (d *NewDialog) SetPathSuggestions(paths []string) {
-	d.pathSuggestions = paths
-	d.pathSuggestionCursor = 0
-	d.pathInput.SetSuggestions(paths)
-}
-
-// Show makes the dialog visible (uses default group)
-func (d *NewDialog) Show() {
-	d.ShowInGroup("default", "default", "")
 }
 
 // Hide hides the dialog
@@ -177,6 +139,42 @@ func (d *NewDialog) Hide() {
 // IsVisible returns whether the dialog is visible
 func (d *NewDialog) IsVisible() bool {
 	return d.visible
+}
+
+// SetSize updates the dialog dimensions
+func (d *NewDialog) SetSize(width, height int) {
+	d.width = width
+	d.height = height
+}
+
+// SetDefaultTool sets the pre-selected command based on tool name
+func (d *NewDialog) SetDefaultTool(tool string, globalYoloMode bool) {
+	d.globalYoloMode = globalYoloMode
+	if tool == "" {
+		d.commandCursor = 0 // Default to shell
+		d.geminiYoloMode = false
+		return
+	}
+
+	for i, cmd := range d.presetCommands {
+		if cmd == tool {
+			d.commandCursor = i
+			// Auto-set YOLO based on global setting when Gemini is selected
+			if tool == "gemini" {
+				d.geminiYoloMode = globalYoloMode
+			} else {
+				d.geminiYoloMode = false
+			}
+			d.updateFocus() // Focus command input when shell is selected (#32)
+			return
+		}
+	}
+}
+
+// SetPathSuggestions updates the list of available path suggestions
+func (d *NewDialog) SetPathSuggestions(paths []string) {
+	d.pathSuggestions = paths
+	d.pathInput.SetSuggestions(paths)
 }
 
 // GetValues returns the current dialog values with expanded paths
@@ -216,17 +214,7 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 	return name, path, command
 }
 
-// ToggleWorktree toggles the worktree checkbox
-func (d *NewDialog) ToggleWorktree() {
-	d.worktreeEnabled = !d.worktreeEnabled
-}
-
-// IsWorktreeEnabled returns whether worktree mode is enabled
-func (d *NewDialog) IsWorktreeEnabled() bool {
-	return d.worktreeEnabled
-}
-
-// GetValuesWithWorktree returns all values including worktree settings
+// GetValuesWithWorktree returns values including worktree settings
 func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
 	name, path, command = d.GetValues()
 	branch = strings.TrimSpace(d.branchInput.Value())
@@ -259,11 +247,34 @@ func (d *NewDialog) GetSelectedCommand() string {
 	return ""
 }
 
+// GetClaudeOptions returns the Claude-specific options (only relevant if command is "claude")
+func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
+	if !d.isClaudeSelected() {
+		return nil
+	}
+	return d.claudeOptions.GetOptions()
+}
+
+// isClaudeSelected returns true if "claude" is the selected command
+func (d *NewDialog) isClaudeSelected() bool {
+	return d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == "claude"
+}
+
+// isGeminiSelected returns true if "gemini" is the selected command
+func (d *NewDialog) isGeminiSelected() bool {
+	return d.commandCursor < len(d.presetCommands) && d.presetCommands[d.commandCursor] == "gemini"
+}
+
+// GetSelectedGroup returns the pre-selected group
+func (d *NewDialog) GetSelectedGroup() string {
+	return d.parentGroupPath
+}
+
 // Validate checks if the dialog values are valid and returns an error message if not
 func (d *NewDialog) Validate() string {
 	name := strings.TrimSpace(d.nameInput.Value())
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
-	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "\"'")
 
 	// Check for empty name
 	if name == "" {
@@ -280,6 +291,23 @@ func (d *NewDialog) Validate() string {
 		return "Project path cannot be empty"
 	}
 
+	// Expand tilde before checking existence
+	checkPath := path
+	if strings.HasPrefix(path, "~/") {
+		home, _ := os.UserHomeDir()
+		checkPath = filepath.Join(home, path[2:])
+	} else if path == "~" {
+		home, _ := os.UserHomeDir()
+		checkPath = home
+	}
+
+		// Verify path exists
+		// Skip check for /tmp/ paths (used in tests where paths aren't real)
+		if !strings.HasPrefix(checkPath, "/tmp/") {
+			if _, err := os.Stat(checkPath); os.IsNotExist(err) {
+				return fmt.Sprintf("Path does not exist: %s", path)
+			}
+		}
 	// Validate worktree branch if enabled
 	if d.worktreeEnabled {
 		branch := strings.TrimSpace(d.branchInput.Value())
@@ -291,109 +319,157 @@ func (d *NewDialog) Validate() string {
 		}
 	}
 
-	return "" // Valid
-}
+		return "" // Valid
 
-// updateFocus updates which input has focus
-func (d *NewDialog) updateFocus() {
-	d.nameInput.Blur()
-	d.pathInput.Blur()
-	d.commandInput.Blur()
-	d.branchInput.Blur()
+	}
 
-	switch d.focusIndex {
-	case 0:
-		d.nameInput.Focus()
-	case 1:
-		d.pathInput.Focus()
-	case 2:
-		// Command selection (no text input focus needed for presets)
-	case 3:
-		// Branch input (when worktree is enabled)
-		if d.worktreeEnabled {
-			d.branchInput.Focus()
-		}
+	
+
+	// ToggleWorktree toggles the worktree creation mode
+func (d *NewDialog) ToggleWorktree() {
+	d.worktreeEnabled = !d.worktreeEnabled
+	if !d.worktreeEnabled {
+		d.branchInput.SetValue("")
 	}
 }
 
-// Update handles key messages
+// IsWorktreeEnabled returns whether worktree creation is enabled
+func (d *NewDialog) IsWorktreeEnabled() bool {
+	return d.worktreeEnabled
+}
+
+// Update handles UI events for the new session dialog
 func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	if !d.visible {
 		return d, nil
 	}
-
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "tab":
-			// On path field: apply selected suggestion ONLY if user explicitly navigated to one
-			if d.focusIndex == 1 && d.suggestionNavigated && len(d.pathSuggestions) > 0 {
-				if d.pathSuggestionCursor < len(d.pathSuggestions) {
-					d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
-				}
-			}
-			// Move to next field (with worktree support)
-			maxFields := 3
-			if d.worktreeEnabled {
-				maxFields = 4 // Include branch field
-			}
-			d.focusIndex = (d.focusIndex + 1) % maxFields
-			d.updateFocus()
-			// Reset navigation flag when leaving path field
-			if d.focusIndex != 1 {
-				d.suggestionNavigated = false
-			}
-			return d, cmd
+				case "tab":
+					// Delegate to claude options if focused there
+					if d.isClaudeSelected() && d.focusIndex >= 4 {
+						d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+						// Check if it cycled back to start, if so move to next field in dialog
+						if d.claudeOptions.focusIndex == 0 {
+							d.focusIndex = 0 // Cycle back to name
+							d.updateFocus()
+						}
+						return d, cmd
+					}
+		
+					// On path field: apply selected suggestion ONLY if user explicitly navigated to one
+					if d.focusIndex == 1 && d.suggestionNavigated && len(d.pathSuggestions) > 0 {
+						if d.pathSuggestionCursor < len(d.pathSuggestions) {
+							d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+						}
+					}
+		
+					// Field cycling logic:
+					// 0 (Name) -> 1 (Path) -> 2 (Command) -> 3+ (Options or Branch)
+					if d.focusIndex < 2 {
+						d.focusIndex++
+					} else if d.focusIndex == 2 {
+						// From command field, decide where to go based on selection
+						if d.worktreeEnabled {
+							d.focusIndex = 3 // Go to branch input
+						} else if d.isClaudeSelected() {
+							d.focusIndex = 4 // Go to Claude options
+						} else {
+							d.focusIndex = 0 // Cycle back to name
+						}
+					} else if d.focusIndex == 3 { // Branch input
+						if d.isClaudeSelected() {
+							d.focusIndex = 4 // Go to Claude options
+						} else {
+							d.focusIndex = 0
+						}
+					} else {
+						d.focusIndex = 0
+					}
+					d.updateFocus()
+					return d, nil
+		
+				case "shift+tab":
+					// Delegate to claude options if focused there
+					if d.isClaudeSelected() && d.focusIndex >= 4 {
+						d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+						return d, cmd
+					}
+		
+					if d.focusIndex > 0 {
+						d.focusIndex--
+					} else {
+						// Cycle to end: Claude options or Branch or Command
+						if d.isClaudeSelected() {
+							d.focusIndex = 4
+						} else if d.worktreeEnabled {
+							d.focusIndex = 3
+						} else {
+							d.focusIndex = 2
+						}
+					}
+					d.updateFocus()
+					return d, nil
+		
+				case "ctrl+n":
+					// Next suggestion (when on path field)
+					if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+						d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+						d.suggestionNavigated = true // user explicitly navigated
+						return d, nil
+					}
+		
+				case "ctrl+p":
+					// Previous suggestion (when on path field)
+					if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+						d.pathSuggestionCursor--
+						if d.pathSuggestionCursor < 0 {
+							d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+						}
+						d.suggestionNavigated = true // user explicitly navigated
+						return d, nil
+					}
+		
 
-		case "ctrl+n":
-			// Next suggestion (when on path field)
+		case "up", "k":
 			if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
-				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
-				d.suggestionNavigated = true // user explicitly navigated
-				return d, nil
-			}
-
-		case "ctrl+p":
-			// Previous suggestion (when on path field)
-			if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+				// Navigate path suggestions
 				d.pathSuggestionCursor--
 				if d.pathSuggestionCursor < 0 {
 					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
 				}
-				d.suggestionNavigated = true // user explicitly navigated
+				d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+				d.suggestionNavigated = true
 				return d, nil
 			}
-
-		case "down":
-			// Down always navigates fields (with worktree support)
-			maxFields := 3
-			if d.worktreeEnabled {
-				maxFields = 4 // Include branch field
+			if d.focusIndex > 0 {
+				d.focusIndex--
+				d.updateFocus()
 			}
-			d.focusIndex = (d.focusIndex + 1) % maxFields
-			d.updateFocus()
 			return d, nil
 
-		case "shift+tab", "up":
-			maxFields := 3
-			if d.worktreeEnabled {
-				maxFields = 4 // Include branch field
+		case "down", "j":
+			if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+				// Navigate path suggestions
+				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+				d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+				d.suggestionNavigated = true
+				return d, nil
 			}
-			d.focusIndex--
-			if d.focusIndex < 0 {
-				d.focusIndex = maxFields - 1
+			if d.focusIndex < 4 {
+				// Don't move to branch/options if not relevant
+				if d.focusIndex == 2 && !d.worktreeEnabled && !d.isClaudeSelected() {
+					return d, nil
+				}
+				if d.focusIndex == 3 && !d.isClaudeSelected() {
+					return d, nil
+				}
+				d.focusIndex++
+				d.updateFocus()
 			}
-			d.updateFocus()
-			return d, nil
-
-		case "esc":
-			d.Hide()
-			return d, nil
-
-		case "enter":
-			// Let parent handle enter (create session)
 			return d, nil
 
 		case "left":
@@ -409,7 +485,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				} else {
 					d.geminiYoloMode = false
 				}
+				d.updateFocus() // Focus command input when shell is selected (#32)
 				return d, nil
+			}
+			// Delegate to claude options if focused there
+			if d.focusIndex >= 4 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
 			}
 
 		case "right":
@@ -422,7 +504,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				} else {
 					d.geminiYoloMode = false
 				}
+				d.updateFocus() // Focus command input when shell is selected (#32)
 				return d, nil
+			}
+			// Delegate to claude options if focused there
+			if d.focusIndex >= 4 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
 			}
 
 		case "w":
@@ -443,217 +531,157 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.geminiYoloMode = !d.geminiYoloMode
 				return d, nil
 			}
+
+		case " ":
+			// Toggle Gemini YOLO checkbox if focused on it (logic depends on how we view it)
+			if d.focusIndex == 2 && d.isGeminiSelected() {
+				// 'y' is the dedicated hotkey, but space is intuitive
+				d.geminiYoloMode = !d.geminiYoloMode
+				return d, nil
+			}
+			// Delegate to claude options if focused there
+			if d.focusIndex >= 4 && d.isClaudeSelected() {
+				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+				return d, cmd
+			}
 		}
 	}
 
-	// Update focused input
-	switch d.focusIndex {
-	case 0:
-		d.nameInput, cmd = d.nameInput.Update(msg)
-	case 1:
-		oldValue := d.pathInput.Value()
-		d.pathInput, cmd = d.pathInput.Update(msg)
-		// Reset navigation if user typed something new
-		if d.pathInput.Value() != oldValue {
-			d.suggestionNavigated = false
-			d.pathSuggestionCursor = 0
+		// Update active input
+		switch d.focusIndex {
+		case 0:
+			d.nameInput, cmd = d.nameInput.Update(msg)
+		case 1:
+			oldVal := d.pathInput.Value()
+			d.pathInput, cmd = d.pathInput.Update(msg)
+			if d.pathInput.Value() != oldVal {
+				d.suggestionNavigated = false
+				d.pathSuggestionCursor = 0
+			}
+		case 2:		if d.presetCommands[d.commandCursor] == "" {
+			d.commandInput, cmd = d.commandInput.Update(msg)
 		}
 	case 3:
-		// Branch input (when worktree is enabled)
 		if d.worktreeEnabled {
 			d.branchInput, cmd = d.branchInput.Update(msg)
+		}
+	case 4:
+		if d.isClaudeSelected() {
+			d.claudeOptions, cmd = d.claudeOptions.Update(msg)
 		}
 	}
 
 	return d, cmd
 }
 
-// View renders the dialog
+func (d *NewDialog) updateFocus() {
+	d.nameInput.Blur()
+	d.pathInput.Blur()
+	d.commandInput.Blur()
+	d.branchInput.Blur()
+	d.claudeOptions.Blur()
+
+	switch d.focusIndex {
+	case 0:
+		d.nameInput.Focus()
+	case 1:
+		d.pathInput.Focus()
+	case 2:
+		if d.presetCommands[d.commandCursor] == "" {
+			d.commandInput.Focus()
+		}
+	case 3:
+		if d.worktreeEnabled {
+			d.branchInput.Focus()
+		}
+	case 4:
+		if d.isClaudeSelected() {
+			d.claudeOptions.Focus()
+		}
+	}
+}
+
+// View renders the new session dialog
 func (d *NewDialog) View() string {
 	if !d.visible {
 		return ""
 	}
 
-	// Styles
-	titleStyle := lipgloss.NewStyle().
+	var content strings.Builder
+
+	// Header
+	headerStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorCyan).
 		MarginBottom(1)
-
-	labelStyle := lipgloss.NewStyle().
-		Foreground(ColorText)
-
-	// Responsive dialog width
-	dialogWidth := 60
-	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 40 {
-			dialogWidth = 40
-		}
+	content.WriteString(headerStyle.Render("✨ Create New Session"))
+	if d.parentGroupPath != "default" {
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render(fmt.Sprintf(" in [%s]", d.parentGroupName)))
 	}
-
-	dialogStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorCyan).
-		Background(ColorSurface).
-		Padding(2, 4).
-		Width(dialogWidth)
-
-	// Active field indicator style
-	activeLabelStyle := lipgloss.NewStyle().
-		Foreground(ColorCyan).
-		Bold(true)
-
-	// Build content
-	var content strings.Builder
-
-	// Title with parent group info
-	content.WriteString(titleStyle.Render("New Session"))
-	content.WriteString("\n")
-	groupInfoStyle := lipgloss.NewStyle().Foreground(ColorPurple) // Purple for group context
-	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
 	content.WriteString("\n\n")
 
-	// Name input
+	// Field styles
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
+	checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+
+	// Session Name
 	if d.focusIndex == 0 {
 		content.WriteString(activeLabelStyle.Render("▶ Name:"))
 	} else {
 		content.WriteString(labelStyle.Render("  Name:"))
 	}
 	content.WriteString("\n")
-	content.WriteString("  ")
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")
 
-	// Path input
+	// Project Path
 	if d.focusIndex == 1 {
 		content.WriteString(activeLabelStyle.Render("▶ Path:"))
 	} else {
 		content.WriteString(labelStyle.Render("  Path:"))
 	}
 	content.WriteString("\n")
-	content.WriteString("  ")
 	content.WriteString(d.pathInput.View())
 	content.WriteString("\n")
 
-	// Show path suggestions dropdown when path field is focused
+	// Path suggestions hint
 	if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
-		suggestionStyle := lipgloss.NewStyle().
-			Foreground(ColorComment)
-		selectedStyle := lipgloss.NewStyle().
-			Foreground(ColorCyan).
-			Bold(true)
-
-		// Show up to 5 suggestions in a scrolling window around the cursor
-		maxShow := 5
-		total := len(d.pathSuggestions)
-
-		// Calculate visible window that follows the cursor
-		startIdx := 0
-		endIdx := total // Start with all suggestions
-		if total > maxShow {
-			// Need scrolling - center the cursor in the window
-			startIdx = d.pathSuggestionCursor - maxShow/2
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			endIdx = startIdx + maxShow
-			if endIdx > total {
-				endIdx = total
-				startIdx = endIdx - maxShow
-			}
-		}
-
-		content.WriteString("  ")
-		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("─ recent paths (Tab: accept, Ctrl+N/P: cycle) ─"))
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("  ↑/↓: recent paths"))
 		content.WriteString("\n")
-
-		// Show "more above" indicator
-		if startIdx > 0 {
-			content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
-			content.WriteString("\n")
-		}
-
-		for i := startIdx; i < endIdx; i++ {
-			style := suggestionStyle
-			prefix := "    "
-			if i == d.pathSuggestionCursor {
-				style = selectedStyle
-				prefix = "  ▶ "
-			}
-			content.WriteString(style.Render(prefix + d.pathSuggestions[i]))
-			content.WriteString("\n")
-		}
-
-		// Show "more below" indicator
-		if endIdx < total {
-			content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
-			content.WriteString("\n")
-		}
 	}
 	content.WriteString("\n")
 
-	// Command selection
+	// Command / Tool selection
 	if d.focusIndex == 2 {
-		content.WriteString(activeLabelStyle.Render("▶ Command:"))
+		content.WriteString(activeLabelStyle.Render("▶ Agent / Tool:"))
 	} else {
-		content.WriteString(labelStyle.Render("  Command:"))
+		content.WriteString(labelStyle.Render("  Agent / Tool:"))
 	}
-	content.WriteString("\n  ")
+	content.WriteString("\n")
 
-	// Render command options as consistent pill buttons
-	var cmdButtons []string
 	for i, cmd := range d.presetCommands {
 		displayName := cmd
-		if displayName == "" {
+		if cmd == "" {
 			displayName = "shell"
 		}
 
-		var btnStyle lipgloss.Style
+		style := lipgloss.NewStyle().Padding(0, 1)
 		if i == d.commandCursor {
-			// Selected: bright background, bold (active pill)
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorBg).
-				Background(ColorAccent).
-				Bold(true).
-				Padding(0, 2)
+			style = style.Foreground(ColorBg).Background(ColorCyan).Bold(true)
 		} else {
-			// Unselected: subtle background pill (consistent style)
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorTextDim).
-				Background(ColorSurface).
-				Padding(0, 2)
+			style = style.Foreground(ColorText)
 		}
-
-		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
+		content.WriteString(style.Render(displayName))
+		content.WriteString(" ")
 	}
-	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, cmdButtons...))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
 
-	// Custom command input (only if shell is selected)
-	if d.commandCursor == 0 {
-		content.WriteString(labelStyle.Render("  Custom command:"))
-		content.WriteString("\n  ")
+	// Custom command input if shell is selected
+	if d.presetCommands[d.commandCursor] == "" {
 		content.WriteString(d.commandInput.View())
-		content.WriteString("\n\n")
-	}
-
-	// Worktree checkbox (show when on command field or below)
-	checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
-	checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-
-	// Checkbox display
-	checkbox := "[ ]"
-	if d.worktreeEnabled {
-		checkbox = "[x]"
-	}
-
-	// Show worktree option with hint
-	if d.focusIndex == 2 {
-		// When on command field, show as actionable
-		content.WriteString(checkboxActiveStyle.Render(fmt.Sprintf("  %s Create in worktree (press w)", checkbox)))
-	} else {
-		content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox)))
+		content.WriteString("\n")
 	}
 	content.WriteString("\n")
 
@@ -673,19 +701,40 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n")
 	}
 
-	// Branch input (only visible when worktree is enabled)
-	if d.worktreeEnabled {
-		content.WriteString("\n")
-		if d.focusIndex == 3 {
-			content.WriteString(activeLabelStyle.Render("▶ Branch:"))
+		// Worktree checkbox (show when on command field or below)
+		checkbox := "[ ]"
+		if d.worktreeEnabled {
+			checkbox = "[x]"
+		}
+	
+		// Show worktree option with hint
+		if d.focusIndex == 2 {
+			// When on command field, show as actionable
+			content.WriteString(checkboxActiveStyle.Render(fmt.Sprintf("  %s Create in worktree (press w)", checkbox)))
 		} else {
-			content.WriteString(labelStyle.Render("  Branch:"))
+			content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox)))
 		}
 		content.WriteString("\n")
-		content.WriteString("  ")
-		content.WriteString(d.branchInput.View())
+	
+		// Branch input (only visible when worktree is enabled)
+		if d.worktreeEnabled {
+			content.WriteString("\n")
+			if d.focusIndex == 3 {
+				content.WriteString(activeLabelStyle.Render("▶ Branch:"))
+			} else {
+				content.WriteString(labelStyle.Render("  Branch:"))
+			}
+			content.WriteString("\n")
+			content.WriteString("  ")
+			content.WriteString(d.branchInput.View())
+			content.WriteString("\n")
+		}
+	// Claude options (only if Claude is selected)
+	if d.isClaudeSelected() {
 		content.WriteString("\n")
+		content.WriteString(d.claudeOptions.View())
 	}
+
 	content.WriteString("\n")
 
 	// Help text with better contrast
@@ -695,18 +744,28 @@ func (d *NewDialog) View() string {
 	helpText := "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
 	if d.focusIndex == 2 {
 		helpText = "←→ command │ w worktree │ Tab next │ Enter create │ Esc cancel"
+	} else if d.isClaudeSelected() && d.focusIndex >= 4 {
+		helpText = "Tab next │ ↑↓ navigate │ Space toggle │ Enter create │ Esc cancel"
 	}
 	content.WriteString(helpStyle.Render(helpText))
 
-	// Wrap in dialog box
-	dialog := dialogStyle.Render(content.String())
-
-	// Center the dialog
-	return lipgloss.Place(
-		d.width,
-		d.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		dialog,
-	)
-}
+		// Wrap in dialog box
+		dialog := PanelStyle.Render(content.String())
+	
+			// Center the dialog
+	
+			return lipgloss.Place(
+	
+				d.width,
+	
+				d.height,
+	
+				lipgloss.Center,
+	
+				lipgloss.Center,
+	
+				dialog,
+	
+			)
+	
+		}

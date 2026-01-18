@@ -69,6 +69,9 @@ func (h *HelpOverlay) View() string {
 			items: [][2]string{
 				{"j / Down", "Move down"},
 				{"k / Up", "Move up"},
+				{"Ctrl+u/d", "Half page up/down"},
+				{"Ctrl+f/b", "Full page up/down"},
+				{"gg / G", "Jump to top/bottom"},
 				{"h / Left", "Collapse / parent"},
 				{"l / Right", "Expand / toggle"},
 				{"1-9", "Jump to group"},

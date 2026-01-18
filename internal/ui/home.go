@@ -114,54 +114,53 @@ type Home struct {
 	profile string // The profile this Home is displaying
 
 	// Data (protected by instancesMu for background worker access)
-	instances      []*session.Instance
-	instanceByID   map[string]*session.Instance // O(1) instance lookup by ID
-	instancesMu    sync.RWMutex                 // Protects instances slice for thread-safe background access
-	storage        *session.Storage
-	groupTree      *session.GroupTree
-	flatItems      []session.Item // Flattened view for cursor navigation
-	globalYoloMode bool           // Cached global YOLO mode setting
+	instances    []*session.Instance
+	instanceByID map[string]*session.Instance // O(1) instance lookup by ID
+	instancesMu  sync.RWMutex                 // Protects instances slice for thread-safe background access
+	storage      *session.Storage
+	groupTree    *session.GroupTree
+	flatItems    []session.Item // Flattened view for cursor navigation
 
 	// Components
-	search            *Search
-	globalSearch      *GlobalSearch              // Global session search across all Claude conversations
+	search        *Search
+	globalSearch  *GlobalSearch              // Global session search across all Claude conversations
 	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
-	newDialog         *NewDialog
-	groupDialog       *GroupDialog    // For creating/renaming groups
-	forkDialog        *ForkDialog     // For forking sessions
-	confirmDialog     *ConfirmDialog  // For confirming destructive actions
-	helpOverlay       *HelpOverlay    // For showing keyboard shortcuts
-	mcpDialog         *MCPDialog      // For managing MCPs
-	setupWizard       *SetupWizard    // For first-run setup
-	settingsPanel     *SettingsPanel  // For editing settings
-	analyticsPanel    *AnalyticsPanel // For displaying session analytics
+	newDialog     *NewDialog
+	groupDialog   *GroupDialog   // For creating/renaming groups
+	forkDialog    *ForkDialog    // For forking sessions
+	confirmDialog *ConfirmDialog // For confirming destructive actions
+	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
+	mcpDialog      *MCPDialog      // For managing MCPs
+	setupWizard    *SetupWizard    // For first-run setup
+	settingsPanel  *SettingsPanel  // For editing settings
+	analyticsPanel *AnalyticsPanel // For displaying session analytics
 
 	// Analytics cache (async fetching with TTL)
-	currentAnalytics       *session.SessionAnalytics                  // Current analytics for selected session (Claude)
-	currentGeminiAnalytics *session.GeminiSessionAnalytics            // Current analytics for selected session (Gemini)
-	analyticsSessionID     string                                     // Session ID for current analytics
-	analyticsFetchingID    string                                     // ID currently being fetched (prevents duplicates)
-	analyticsCache         map[string]*session.SessionAnalytics       // TTL cache: sessionID -> analytics (Claude)
+	currentAnalytics       *session.SessionAnalytics             // Current analytics for selected session (Claude)
+	currentGeminiAnalytics *session.GeminiSessionAnalytics       // Current analytics for selected session (Gemini)
+	analyticsSessionID     string                                // Session ID for current analytics
+	analyticsFetchingID    string                                // ID currently being fetched (prevents duplicates)
+	analyticsCache         map[string]*session.SessionAnalytics  // TTL cache: sessionID -> analytics (Claude)
 	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics // TTL cache: sessionID -> analytics (Gemini)
-	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
+	analyticsCacheTime     map[string]time.Time                  // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor         int            // Selected item index in flatItems
-	viewOffset     int            // First visible item index (for scrolling)
-	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
-	err            error
-	errTime        time.Time  // When error occurred (for auto-dismiss)
-	isReloading    bool       // Visual feedback during auto-reload
-	initialLoading bool       // True until first loadSessionsMsg received (shows splash screen)
-	reloadVersion  uint64     // Incremented on each reload to prevent stale background saves
+	cursor        int            // Selected item index in flatItems
+	viewOffset    int            // First visible item index (for scrolling)
+	isAttaching   atomic.Bool   // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter  session.Status // Filter sessions by status ("" = all, or specific status)
+	err           error
+	errTime       time.Time // When error occurred (for auto-dismiss)
+	isReloading    bool      // Visual feedback during auto-reload
+	initialLoading bool      // True until first loadSessionsMsg received (shows splash screen)
+	reloadVersion  uint64    // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
-	previewCache      map[string]string    // sessionID -> cached preview content
-	previewCacheTime  map[string]time.Time // sessionID -> when cached (for expiration)
-	previewCacheMu    sync.RWMutex         // Protects previewCache for thread-safety
-	previewFetchingID string               // ID currently being fetched (prevents duplicate fetches)
+	previewCache       map[string]string    // sessionID -> cached preview content
+	previewCacheTime   map[string]time.Time // sessionID -> when cached (for expiration)
+	previewCacheMu     sync.RWMutex         // Protects previewCache for thread-safety
+	previewFetchingID  string               // ID currently being fetched (prevents duplicate fetches)
 
 	// Preview debouncing (PERFORMANCE: prevents subprocess spawn on every keystroke)
 	// During rapid navigation, we delay preview fetch by 150ms to let navigation settle
@@ -212,6 +211,12 @@ type Home struct {
 	// User activity tracking for adaptive status updates
 	// PERFORMANCE: Only update statuses when user is actively interacting
 	lastUserInputTime time.Time // When user last pressed a key
+
+	// Double ESC to quit (#28) - for non-English keyboard users
+	lastEscTime time.Time // When ESC was last pressed (double-tap within 500ms quits)
+
+	// Vi-style gg to jump to top (#38)
+	lastGTime time.Time // When 'g' was last pressed (double-tap within 500ms jumps to top)
 
 	// Navigation tracking (PERFORMANCE: suspend background updates during rapid navigation)
 	lastNavigationTime time.Time // When user last navigated (up/down/j/k)
@@ -305,8 +310,8 @@ type analyticsFetchedMsg struct {
 
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
-	viewOffset    int      // Current scroll position
-	visibleHeight int      // How many items fit on screen
+	viewOffset    int   // Current scroll position
+	visibleHeight int   // How many items fit on screen
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
@@ -335,39 +340,39 @@ func NewHomeWithProfile(profile string) *Home {
 	}
 
 	h := &Home{
-		profile:              actualProfile,
-		storage:              storage,
-		storageWarning:       storageWarning,
-		search:               NewSearch(),
-		newDialog:            NewNewDialog(),
-		groupDialog:          NewGroupDialog(),
-		forkDialog:           NewForkDialog(),
-		confirmDialog:        NewConfirmDialog(),
-		helpOverlay:          NewHelpOverlay(),
-		mcpDialog:            NewMCPDialog(),
-		setupWizard:          NewSetupWizard(),
-		settingsPanel:        NewSettingsPanel(),
-		analyticsPanel:       NewAnalyticsPanel(),
-		cursor:               0,
-		initialLoading:       true, // Show splash until sessions load
-		ctx:                  ctx,
-		cancel:               cancel,
-		instances:            []*session.Instance{},
-		instanceByID:         make(map[string]*session.Instance),
-		groupTree:            session.NewGroupTree([]*session.Instance{}),
-		flatItems:            []session.Item{},
+		profile:           actualProfile,
+		storage:           storage,
+		storageWarning:    storageWarning,
+		search:            NewSearch(),
+		newDialog:         NewNewDialog(),
+		groupDialog:       NewGroupDialog(),
+		forkDialog:        NewForkDialog(),
+		confirmDialog:     NewConfirmDialog(),
+		helpOverlay:       NewHelpOverlay(),
+		mcpDialog:         NewMCPDialog(),
+		setupWizard:       NewSetupWizard(),
+		settingsPanel:     NewSettingsPanel(),
+		analyticsPanel:    NewAnalyticsPanel(),
+		cursor:            0,
+		initialLoading:    true, // Show splash until sessions load
+		ctx:               ctx,
+		cancel:            cancel,
+		instances:         []*session.Instance{},
+		instanceByID:      make(map[string]*session.Instance),
+		groupTree:         session.NewGroupTree([]*session.Instance{}),
+		flatItems:         []session.Item{},
 		previewCache:         make(map[string]string),
 		previewCacheTime:     make(map[string]time.Time),
 		analyticsCache:       make(map[string]*session.SessionAnalytics),
 		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:   make(map[string]time.Time),
 		launchingSessions:    make(map[string]time.Time),
-		resumingSessions:     make(map[string]time.Time),
-		mcpLoadingSessions:   make(map[string]time.Time),
-		forkingSessions:      make(map[string]time.Time),
-		lastLogActivity:      make(map[string]time.Time),
-		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:     make(chan struct{}),
+		resumingSessions:   make(map[string]time.Time),
+		mcpLoadingSessions: make(map[string]time.Time),
+		forkingSessions:    make(map[string]time.Time),
+		lastLogActivity:    make(map[string]time.Time),
+		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:  make(chan struct{}),
 	}
 
 	// Initialize event-driven log watcher
@@ -719,6 +724,41 @@ func (h *Home) syncViewport() {
 	}
 }
 
+// getVisibleHeight returns the number of visible items in the session list
+// Used for vi-style pagination (Ctrl+u/d/f/b)
+func (h *Home) getVisibleHeight() int {
+	helpBarHeight := 2
+	panelTitleLines := 2
+	filterBarHeight := 1
+	updateBannerHeight := 0
+	if h.updateInfo != nil && h.updateInfo.Available {
+		updateBannerHeight = 1
+	}
+
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - filterBarHeight
+
+	var panelContentHeight int
+	layoutMode := h.getLayoutMode()
+	switch layoutMode {
+	case LayoutModeStacked:
+		listHeight := (contentHeight * 60) / 100
+		if listHeight < 5 {
+			listHeight = 5
+		}
+		panelContentHeight = listHeight - panelTitleLines
+	case LayoutModeSingle:
+		panelContentHeight = contentHeight - panelTitleLines
+	default: // LayoutModeDual
+		panelContentHeight = contentHeight - panelTitleLines
+	}
+
+	maxVisible := panelContentHeight - 1
+	if maxVisible < 1 {
+		maxVisible = 1
+	}
+	return maxVisible
+}
+
 // jumpToRootGroup jumps the cursor to the Nth root-level group (1-indexed)
 // Root groups are those at Level 0 (no "/" in path)
 func (h *Home) jumpToRootGroup(n int) {
@@ -765,6 +805,7 @@ func (h *Home) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -795,18 +836,15 @@ func (h *Home) loadSessions() tea.Msg {
 
 	// Initialize pool AFTER sessions are loaded
 	userConfig, configErr := session.LoadUserConfig()
-	if configErr == nil && userConfig != nil {
-		h.globalYoloMode = userConfig.Gemini.YoloMode
-		if userConfig.MCPPool.Enabled {
-			pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
-			if poolErr != nil {
-				log.Printf("Warning: failed to initialize MCP pool: %v", poolErr)
-				msg.poolError = poolErr
-			} else if pool != nil {
-				proxies := pool.ListServers()
-				log.Printf("✓ MCP Socket Pool initialized (%d proxies)", len(proxies))
-				msg.poolProxies = len(proxies)
-			}
+	if configErr == nil && userConfig != nil && userConfig.MCPPool.Enabled {
+		pool, poolErr := session.InitializeGlobalPool(h.ctx, userConfig, instances)
+		if poolErr != nil {
+			log.Printf("Warning: failed to initialize MCP pool: %v", poolErr)
+			msg.poolError = poolErr
+		} else if pool != nil {
+			proxies := pool.ListServers()
+			log.Printf("✓ MCP Socket Pool initialized (%d proxies)", len(proxies))
+			msg.poolProxies = len(proxies)
 		}
 	}
 
@@ -1083,6 +1121,18 @@ func (h *Home) getSelectedSession() *session.Instance {
 // Returns nil if not found. Caller must hold instancesMu if accessing from background goroutine.
 func (h *Home) getInstanceByID(id string) *session.Instance {
 	return h.instanceByID[id]
+}
+
+// getDefaultPathForGroup returns the default path for a group
+// Returns empty string if group not found or no default path set
+func (h *Home) getDefaultPathForGroup(groupPath string) string {
+	if h.groupTree == nil {
+		return ""
+	}
+	if group, exists := h.groupTree.Groups[groupPath]; exists {
+		return group.DefaultPath
+	}
+	return ""
 }
 
 // statusWorker runs in a background goroutine (Priority 1C)
@@ -1786,12 +1836,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				h.setupWizard.Hide()
 				// Reload config cache
-				if config, err := session.ReloadUserConfig(); err == nil {
-					h.globalYoloMode = config.Gemini.YoloMode
-				}
+				_, _ = session.ReloadUserConfig()
 				// Apply default tool to new dialog
 				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
-					h.newDialog.SetDefaultTool(defaultTool, h.globalYoloMode)
+					h.newDialog.SetDefaultTool(defaultTool, false)
 				}
 			}
 			return h, cmd
@@ -1809,12 +1857,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.err = err
 					h.errTime = time.Now()
 				}
-				if config, err := session.ReloadUserConfig(); err == nil {
-					h.globalYoloMode = config.Gemini.YoloMode
-				}
+				_, _ = session.ReloadUserConfig()
 				// Apply default tool to new dialog
 				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
-					h.newDialog.SetDefaultTool(defaultTool, h.globalYoloMode)
+					h.newDialog.SetDefaultTool(defaultTool, false)
 				}
 			}
 			return h, cmd
@@ -2035,8 +2081,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Get values including worktree and YOLO settings
-		name, path, command, branchName, worktreeEnabled, yoloEnabled := h.newDialog.GetValuesWithYolo()
+		// Get values including worktree settings
+		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
 
 		// Handle worktree creation if enabled
@@ -2069,12 +2115,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			path = worktreePath
 		}
 
-		h.newDialog.Hide()
-		h.clearError() // Clear any previous validation error
-
-		// Create session with worktree and YOLO info
-		return h, h.createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, yoloEnabled)
-
+				h.newDialog.Hide()
+				h.clearError() // Clear any previous validation error
+		
+				// Get Gemini YOLO mode and Claude options from dialog
+				geminiYoloMode := h.newDialog.IsGeminiYoloMode()
+				claudeOpts := h.newDialog.GetClaudeOptions()
+		
+				// Create session with worktree info and options
+				return h, h.createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, geminiYoloMode, claudeOpts)
 	case "esc":
 		h.newDialog.Hide()
 		h.clearError() // Clear any validation error
@@ -2112,6 +2161,32 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.saveInstances()
 		return h, tea.Quit
 
+	case "esc":
+		// Double ESC to quit (#28) - for non-English keyboard users
+		// If ESC pressed twice within 500ms, quit the application
+		if time.Since(h.lastEscTime) < 500*time.Millisecond {
+			// Same quit logic as "q"
+			h.cancel()
+			<-h.statusWorkerDone
+			if h.logWatcher != nil {
+				h.logWatcher.Close()
+			}
+			if h.storageWatcher != nil {
+				h.storageWatcher.Close()
+			}
+			if h.globalSearchIndex != nil {
+				h.globalSearchIndex.Close()
+			}
+			if err := session.ShutdownGlobalPool(); err != nil {
+				log.Printf("Warning: error shutting down MCP pool: %v", err)
+			}
+			h.saveInstances()
+			return h, tea.Quit
+		}
+		// First ESC - record time, show hint in status bar
+		h.lastEscTime = time.Now()
+		return h, nil
+
 	case "up", "k":
 		if h.cursor > 0 {
 			h.cursor--
@@ -2136,6 +2211,93 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.isNavigating = true
 			// PERFORMANCE: Debounced preview fetch - waits 150ms for navigation to settle
 			// This prevents spawning tmux subprocess on every keystroke
+			if selected := h.getSelectedSession(); selected != nil {
+				return h, h.fetchPreviewDebounced(selected.ID)
+			}
+		}
+		return h, nil
+
+	// Vi-style pagination (#38) - half/full page scrolling
+	case "ctrl+u": // Half page up
+		pageSize := h.getVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		h.cursor -= pageSize
+		if h.cursor < 0 {
+			h.cursor = 0
+		}
+		h.syncViewport()
+		h.lastNavigationTime = time.Now()
+		h.isNavigating = true
+		if selected := h.getSelectedSession(); selected != nil {
+			return h, h.fetchPreviewDebounced(selected.ID)
+		}
+		return h, nil
+
+	case "ctrl+d": // Half page down
+		pageSize := h.getVisibleHeight() / 2
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		h.cursor += pageSize
+		if h.cursor >= len(h.flatItems) {
+			h.cursor = len(h.flatItems) - 1
+		}
+		if h.cursor < 0 {
+			h.cursor = 0
+		}
+		h.syncViewport()
+		h.lastNavigationTime = time.Now()
+		h.isNavigating = true
+		if selected := h.getSelectedSession(); selected != nil {
+			return h, h.fetchPreviewDebounced(selected.ID)
+		}
+		return h, nil
+
+	case "ctrl+b": // Full page up (backward)
+		pageSize := h.getVisibleHeight()
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		h.cursor -= pageSize
+		if h.cursor < 0 {
+			h.cursor = 0
+		}
+		h.syncViewport()
+		h.lastNavigationTime = time.Now()
+		h.isNavigating = true
+		if selected := h.getSelectedSession(); selected != nil {
+			return h, h.fetchPreviewDebounced(selected.ID)
+		}
+		return h, nil
+
+	case "ctrl+f": // Full page down (forward)
+		pageSize := h.getVisibleHeight()
+		if pageSize < 1 {
+			pageSize = 1
+		}
+		h.cursor += pageSize
+		if h.cursor >= len(h.flatItems) {
+			h.cursor = len(h.flatItems) - 1
+		}
+		if h.cursor < 0 {
+			h.cursor = 0
+		}
+		h.syncViewport()
+		h.lastNavigationTime = time.Now()
+		h.isNavigating = true
+		if selected := h.getSelectedSession(); selected != nil {
+			return h, h.fetchPreviewDebounced(selected.ID)
+		}
+		return h, nil
+
+	case "G": // Jump to bottom
+		if len(h.flatItems) > 0 {
+			h.cursor = len(h.flatItems) - 1
+			h.syncViewport()
+			h.lastNavigationTime = time.Now()
+			h.isNavigating = true
 			if selected := h.getSelectedSession(); selected != nil {
 				return h, h.fetchPreviewDebounced(selected.ID)
 			}
@@ -2262,27 +2424,6 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "y":
-		// Toggle YOLO mode for Gemini sessions
-		if h.cursor < len(h.flatItems) {
-			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Tool == "gemini" {
-				// Determine target value (toggle current)
-				current := false
-				if item.Session.GeminiYoloMode != nil {
-					current = *item.Session.GeminiYoloMode
-				} else {
-					current = h.globalYoloMode
-				}
-				targetVal := !current
-
-				// Show confirmation BEFORE applying change
-				h.confirmDialog.ShowYoloRestart(item.Session.ID, item.Session.Title, targetVal)
-				return h, nil
-			}
-		}
-		return h, nil
-
 	case "M", "shift+m":
 		// MCP Manager - for Claude and Gemini sessions
 		if h.cursor < len(h.flatItems) {
@@ -2298,6 +2439,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "g":
+		// Vi-style gg to jump to top (#38) - check for double-tap first
+		if time.Since(h.lastGTime) < 500*time.Millisecond {
+			// Double g - jump to top
+			if len(h.flatItems) > 0 {
+				h.cursor = 0
+				h.syncViewport()
+				h.lastNavigationTime = time.Now()
+				h.isNavigating = true
+				if selected := h.getSelectedSession(); selected != nil {
+					return h, h.fetchPreviewDebounced(selected.ID)
+				}
+			}
+			return h, nil
+		}
+		// Record time for potential gg detection
+		h.lastGTime = time.Now()
+
 		// Create new group based on context:
 		// - Session in a group → create subgroup in session's group
 		// - Group selected → create peer group (sibling at same level)
@@ -2347,6 +2505,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.groupDialog.ShowRenameSession(item.Session.ID, item.Session.Title)
 			}
+		}
+		return h, nil
+
+	case "y":
+		// Gemini YOLO mode toggle (requires restart)
+		if inst := h.getSelectedSession(); inst != nil && inst.Tool == "gemini" {
+			currentYolo := false
+			if inst.GeminiYoloMode != nil {
+				currentYolo = *inst.GeminiYoloMode
+			} else {
+				userConfig, _ := session.LoadUserConfig()
+				if userConfig != nil {
+					currentYolo = userConfig.Gemini.YoloMode
+				}
+			}
+			h.confirmDialog.ShowYoloRestart(inst.ID, inst.Title, !currentYolo)
 		}
 		return h, nil
 
@@ -2421,8 +2595,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.newDialog.SetPathSuggestions(paths)
 
+		globalYolo := false
+		if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
+			globalYolo = userConfig.Gemini.YoloMode
+		}
+
+
 		// Apply user's preferred default tool from config
-		h.newDialog.SetDefaultTool(session.GetDefaultTool(), h.globalYoloMode)
+		h.newDialog.SetDefaultTool(session.GetDefaultTool(), globalYolo)
 
 		// Auto-select parent group from current cursor position
 		groupPath := session.DefaultGroupName
@@ -2440,7 +2620,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		h.newDialog.ShowInGroup(groupPath, groupName, "")
+		defaultPath := h.getDefaultPathForGroup(groupPath)
+		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath)
 		return h, nil
 
 	case "d":
@@ -2473,21 +2654,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "R":
-		// Restart session (Shift+R - recreate tmux session with resume)
-		if h.cursor < len(h.flatItems) {
-			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.CanRestart() {
-					// Track as resuming for animation (before async call starts)
-					h.resumingSessions[item.Session.ID] = time.Now()
-					return h, h.restartSession(item.Session)
+		case "R":
+			// Restart session (Shift+R - recreate tmux session with resume)
+			if h.cursor < len(h.flatItems) {
+				item := h.flatItems[h.cursor]
+				if item.Type == session.ItemTypeSession && item.Session != nil {
+					if item.Session.CanRestart() {
+						h.confirmDialog.ShowRestart(item.Session.ID, item.Session.Title)
+					}
 				}
 			}
-		}
-		return h, nil
-
-	case "ctrl+r":
+			return h, nil
+	
 		// Manual refresh (useful if watcher fails or for user preference)
 		state := h.preserveState()
 
@@ -2563,7 +2741,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		// User confirmed - perform the action
+		// User confirmed - perform the deletion
 		switch h.confirmDialog.GetConfirmType() {
 		case ConfirmDeleteSession:
 			sessionID := h.confirmDialog.GetTargetID()
@@ -2579,20 +2757,18 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.instancesMu.Unlock()
 			h.rebuildFlatItems()
 			h.saveInstances()
+		case ConfirmRestart:
+			sessionID := h.confirmDialog.GetTargetID()
+			if inst := h.getInstanceByID(sessionID); inst != nil {
+				h.resumingSessions[inst.ID] = time.Now()
+				return h, h.restartSession(inst)
+			}
 		case ConfirmYoloRestart:
 			sessionID := h.confirmDialog.GetTargetID()
 			if inst := h.getInstanceByID(sessionID); inst != nil {
-				// Apply the change now that user confirmed (syncs to tmux env to prevent revert race)
-				inst.SetGeminiYoloMode(h.confirmDialog.yoloEnabled)
-
-				// Save changes
-				h.saveInstances()
-
-				if inst.CanRestart() {
-					h.resumingSessions[inst.ID] = time.Now()
-					h.confirmDialog.Hide()
-					return h, h.restartSession(inst)
-				}
+				inst.SetGeminiYoloMode(h.confirmDialog.IsYoloEnabled())
+				h.resumingSessions[inst.ID] = time.Now()
+				return h, h.restartSession(inst)
 			}
 		}
 		h.confirmDialog.Hide()
@@ -2753,6 +2929,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		// Get fork parameters from dialog
 		title, groupPath := h.forkDialog.GetValues()
+		opts := h.forkDialog.GetOptions()
 		if title == "" {
 			h.setError(fmt.Errorf("session name cannot be empty"))
 			return h, nil
@@ -2764,7 +2941,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmd(item.Session, title, groupPath)
+				return h, h.forkSessionCmdWithOptions(item.Session, title, groupPath, opts)
 			}
 		}
 		h.forkDialog.Hide()
@@ -2853,8 +3030,12 @@ func (h *Home) getUsedClaudeSessionIDs() map[string]bool {
 	return usedIDs
 }
 
-// createSessionInGroupWithWorktree creates a new session in a specific group with optional worktree settings
-func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, yoloEnabled bool) tea.Cmd {
+// createSessionInGroup creates a new session in a specific group
+func (h *Home) createSessionInGroup(name, path, command, groupPath string) tea.Cmd {
+	return h.createSessionInGroupWithWorktree(name, path, command, groupPath, "", "", "", false, nil)
+}
+
+func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, geminiYoloMode bool, claudeOpts *session.ClaudeOptions) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
@@ -2890,9 +3071,14 @@ func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, 
 			inst.WorktreeBranch = worktreeBranch
 		}
 
-		// Set YOLO mode for Gemini sessions
-		if tool == "gemini" && yoloEnabled {
-			inst.GeminiYoloMode = &yoloEnabled
+		// Set Gemini YOLO mode if enabled (per-session override)
+		if geminiYoloMode && tool == "gemini" {
+			inst.GeminiYoloMode = &geminiYoloMode
+		}
+
+		// Apply Claude options if provided
+		if tool == "claude" && claudeOpts != nil {
+			inst.SetClaudeOptions(claudeOpts)
 		}
 
 		if err := inst.Start(); err != nil {
@@ -2901,7 +3087,6 @@ func (h *Home) createSessionInGroupWithWorktree(name, path, command, groupPath, 
 		return sessionCreatedMsg{instance: inst}
 	}
 }
-
 // quickForkSession performs a quick fork with default title suffix " (fork)"
 func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if source == nil {
@@ -2926,6 +3111,12 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string) tea.Cmd {
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil)
+}
+
+// forkSessionCmdWithOptions creates a forked session with the given title, group, and Claude options
+// Shows immediate UI feedback by tracking the source session in forkingSessions
+func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) tea.Cmd {
 	if source == nil {
 		return nil
 	}
@@ -2944,8 +3135,8 @@ func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string)
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
 		}
 
-		// Use CreateForkedInstance to get the proper fork command
-		inst, _, err := source.CreateForkedInstance(title, groupPath)
+		// Use CreateForkedInstanceWithOptions to get the proper fork command with options
+		inst, _, err := source.CreateForkedInstanceWithOptions(title, groupPath, opts)
 		if err != nil {
 			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
 		}
@@ -4484,28 +4675,27 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
-	tool := toolStyle.Render(" " + inst.Tool)
-
-	// Add YOLO badge if enabled (Gemini only)
-	if inst.Tool == "gemini" {
-		isYolo := false
-		if inst.GeminiYoloMode != nil {
-			isYolo = *inst.GeminiYoloMode
-		} else {
-			isYolo = h.globalYoloMode
+		title := titleStyle.Render(inst.Title)
+		tool := toolStyle.Render(" " + inst.Tool)
+	
+		// YOLO badge for Gemini
+		if inst.Tool == "gemini" {
+			isYolo := false
+			if inst.GeminiYoloMode != nil {
+				isYolo = *inst.GeminiYoloMode
+			} else {
+				userConfig, _ := session.LoadUserConfig()
+				if userConfig != nil {
+					isYolo = userConfig.Gemini.YoloMode
+				}
+			}
+			if isYolo {
+				yoloStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+				tool += " " + yoloStyle.Render("[YOLO]")
+			}
 		}
-
-		if isYolo {
-			yoloStyle := lipgloss.NewStyle().
-				Foreground(ColorYellow).
-				Bold(true)
-			tool += " " + yoloStyle.Render("[YOLO]")
-		}
-	}
-
-	// Build row: [baseIndent][selection][tree][status] [title] [tool]
-	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
+	
+		// Build row: [baseIndent][selection][tree][status] [title] [tool]	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
 	// Sub-sessions get extra indent: "   ├─◐ sub-session tool"
 	row := fmt.Sprintf("%s%s%s %s %s%s", baseIndent, selectionPrefix, treeStyle.Render(treeConnector), status, title, tool)
 	b.WriteString(row)
@@ -4868,35 +5058,38 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Background(ColorPurple).
 		Padding(0, 1).
 		Render(selected.Tool)
-
-	// Add YOLO badge next to tool badge (Gemini only)
-	if selected.Tool == "gemini" {
-		isYolo := false
-		if selected.GeminiYoloMode != nil {
-			isYolo = *selected.GeminiYoloMode
-		} else {
-			isYolo = h.globalYoloMode
-		}
-
-		if isYolo {
-			yoloBadge := lipgloss.NewStyle().
-				Foreground(ColorYellow).
-				Bold(true).
-				Render("[YOLO]")
-			toolBadge = toolBadge + " " + yoloBadge
-		}
-	}
-
 	groupBadge := lipgloss.NewStyle().
 		Foreground(ColorBg).
 		Background(ColorCyan).
 		Padding(0, 1).
 		Render(selected.GroupPath)
-	b.WriteString(toolBadge)
-	b.WriteString(" ")
-	b.WriteString(groupBadge)
-	b.WriteString("\n")
-
+		b.WriteString(toolBadge)
+		b.WriteString(" ")
+		b.WriteString(groupBadge)
+	
+		// YOLO badge for Gemini
+		if selected.Tool == "gemini" {
+			isYolo := false
+			if selected.GeminiYoloMode != nil {
+				isYolo = *selected.GeminiYoloMode
+			} else {
+				userConfig, _ := session.LoadUserConfig()
+				if userConfig != nil {
+					isYolo = userConfig.Gemini.YoloMode
+				}
+			}
+			if isYolo {
+				yoloBadge := lipgloss.NewStyle().
+					Foreground(ColorBg).
+					Background(ColorCyan).
+					Padding(0, 1).
+					Bold(true).
+					Render("YOLO")
+				b.WriteString(" ")
+				b.WriteString(yoloBadge)
+			}
+		}
+		b.WriteString("\n")
 	// Claude-specific info (session ID and MCPs)
 	if selected.Tool == "claude" {
 		// Section divider for Claude info
@@ -5031,10 +5224,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 				// For non-last MCPs: reserve space for "+N more" indicator
 				// For last MCP: just check if it fits without indicator
 				var wouldExceed bool
-				if i == 0 && addedWidth > mcpMaxWidth {
-					// Even the first one doesn't fit - will show count below
-					wouldExceed = true
-				} else if isLast {
+				if isLast {
 					// Last MCP - just check if it fits
 					wouldExceed = currentWidth+addedWidth > mcpMaxWidth
 				} else {
@@ -5078,47 +5268,6 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(hintStyle.Render(" quick fork, "))
 			b.WriteString(keyStyle.Render("F"))
 			b.WriteString(hintStyle.Render(" fork with options"))
-			b.WriteString("\n")
-		}
-	}
-
-	// Gemini-specific info (session ID and MCPs)
-	if selected.Tool == "gemini" {
-		// Section divider for Gemini info
-		geminiHeader := renderSectionDivider("Gemini", width-4)
-		b.WriteString(geminiHeader)
-		b.WriteString("\n")
-
-		labelStyle := lipgloss.NewStyle().Foreground(ColorText)
-		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
-
-		// Status line
-		if selected.GeminiSessionID != "" {
-			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
-			b.WriteString(labelStyle.Render("Status:  "))
-			b.WriteString(statusStyle.Render("● Connected"))
-			b.WriteString("\n")
-
-			// Full session ID on its own line
-			b.WriteString(labelStyle.Render("Session: "))
-			b.WriteString(valueStyle.Render(selected.GeminiSessionID))
-			b.WriteString("\n")
-		} else {
-			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
-			b.WriteString(labelStyle.Render("Status:  "))
-			b.WriteString(statusStyle.Render("○ Not connected"))
-			b.WriteString("\n")
-		}
-
-		// MCP servers for Gemini (only global for now)
-		mcpInfo := selected.GetMCPInfo()
-		if mcpInfo != nil && len(mcpInfo.Global) > 0 {
-			b.WriteString(labelStyle.Render("MCPs:    "))
-			var mcpParts []string
-			for _, name := range mcpInfo.Global {
-				mcpParts = append(mcpParts, valueStyle.Render(name+" (g)"))
-			}
-			b.WriteString(strings.Join(mcpParts, ", "))
 			b.WriteString("\n")
 		}
 	}
