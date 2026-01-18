@@ -965,8 +965,9 @@ func (i *Instance) GetJSONLPath() string {
 	}
 
 	// Convert project path to Claude's directory format
-	// /Users/ashesh/claude-deck -> -Users-ashesh-claude-deck
-	projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
+	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
+	projectDirName := ConvertToClaudeDirName(resolvedPath)
 	projectDir := filepath.Join(configDir, "projects", projectDirName)
 
 	// Build the JSONL file path
@@ -996,8 +997,9 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	}
 
 	// Convert project path to Claude's directory format
-	// /Users/ashesh/claude-deck -> -Users-ashesh-claude-deck
-	projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
+	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
+	projectDirName := ConvertToClaudeDirName(resolvedPath)
 	projectDir := filepath.Join(configDir, "projects", projectDirName)
 
 	// Use stored session ID directly

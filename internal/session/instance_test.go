@@ -1399,7 +1399,7 @@ func TestInstance_GetJSONLPath(t *testing.T) {
 
 		// Create mock Claude config structure using the RESOLVED path
 		claudeDir := filepath.Join(tempDir, ".claude")
-		projectDirName := strings.ReplaceAll(resolvedPath, "/", "-")
+		projectDirName := ConvertToClaudeDirName(resolvedPath)
 		claudeProjectDir := filepath.Join(claudeDir, "projects", projectDirName)
 		if err := os.MkdirAll(claudeProjectDir, 0755); err != nil {
 			t.Fatalf("Failed to create claude project dir: %v", err)
