@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/google/uuid"
 )
 
 // Status represents the current state of a session
@@ -57,8 +58,8 @@ type Instance struct {
 	// Gemini CLI integration
 	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
-	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
-	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`   // Per-session analytics
+	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"` // Per-session override (nil = use global config)
+	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
 	// Latest user input for context (extracted from session files)
 	LatestPrompt string `json:"latest_prompt,omitempty"`
@@ -292,37 +293,30 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		}
 
 		var baseCmd string
+		// Generate UUID in Go and pass via --session-id flag
+		sessionID := uuid.New().String()
 		baseCmd = fmt.Sprintf(
-			`session_id=$(%sclaude -p "." --output-format json 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
-				`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-				`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
-				`%sclaude --resume "$session_id"%s; `+
-				`else %sclaude%s; fi`,
-			bashConfigPrefix,
-			bashConfigPrefix, extraFlags,
-			bashConfigPrefix, extraFlags)
+			`tmux set-environment CLAUDE_SESSION_ID "%s" && %sclaude --session-id "%s"%s`,
+			sessionID,
+			bashConfigPrefix, sessionID, extraFlags)
 
 		// If message provided, append wait-and-send logic
 		if message != "" {
 			// Escape single quotes in message for bash
 			escapedMsg := strings.ReplaceAll(message, "'", "'\"'\"'")
 
-			// Capture-resume with wait-and-send in background
+			// Start with session ID, then send message when ready
 			// The wait loop runs in a subshell that polls for ">" prompt (Claude's input prompt)
 			// Once detected, sends the message via tmux send-keys (text + Enter separately)
 			baseCmd = fmt.Sprintf(
-				`session_id=$(%sclaude -p "." --output-format json 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
-					`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-					`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
+				`tmux set-environment CLAUDE_SESSION_ID "%s" && `+
 					`(sleep 2; SESSION_NAME=$(tmux display-message -p '#S'); `+
 					`while ! tmux capture-pane -p -t "$SESSION_NAME" | tail -5 | grep -qE "^>"; do sleep 0.2; done; `+
 					`tmux send-keys -l -t "$SESSION_NAME" '%s'; tmux send-keys -t "$SESSION_NAME" Enter) & `+
-					`%sclaude --resume "$session_id"%s; `+
-					`else %sclaude%s; fi`,
-				bashConfigPrefix,
+					`%sclaude --session-id "%s"%s`,
+				sessionID,
 				escapedMsg,
-				bashConfigPrefix, extraFlags,
-				bashConfigPrefix, extraFlags)
+				bashConfigPrefix, sessionID, extraFlags)
 		}
 
 		return baseCmd
@@ -1737,22 +1731,16 @@ func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOp
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
 	extraFlags := i.buildClaudeExtraFlags(opts)
 
-	// Use capture-resume pattern for fork:
-	// 1. Run claude with --fork-session -p "." --output-format json to create fork and capture session ID
-	// 2. Store captured session ID in tmux environment
-	// 3. Resume the forked session interactively
-	// Note: --session-id flag does NOT work for creating new sessions (Claude ignores it)
+	// Generate UUID for forked session and pass via --session-id flag
 	// Note: Path is single-quoted to handle spaces and special characters
+	forkedSessionID := uuid.New().String()
 	cmd := fmt.Sprintf(
 		`cd '%s' && `+
-			`session_id=$(%sclaude -p "." --output-format json --resume %s --fork-session 2>/dev/null | jq -r '.session_id' 2>/dev/null) || session_id=""; `+
-			`if [ -n "$session_id" ] && [ "$session_id" != "null" ]; then `+
-			`tmux set-environment CLAUDE_SESSION_ID "$session_id"; `+
-			`%sclaude --resume "$session_id"%s; `+
-			`else echo "Fork failed: could not capture session ID"; fi`,
+			`tmux set-environment CLAUDE_SESSION_ID "%s" && `+
+			`%sclaude --session-id "%s" --resume %s --fork-session%s`,
 		workDir,
-		bashConfigPrefix, i.ClaudeSessionID,
-		bashConfigPrefix, extraFlags)
+		forkedSessionID,
+		bashConfigPrefix, forkedSessionID, i.ClaudeSessionID, extraFlags)
 
 	return cmd, nil
 }

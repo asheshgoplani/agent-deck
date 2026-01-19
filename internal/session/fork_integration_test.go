@@ -37,13 +37,10 @@ func TestForkFlow_Integration(t *testing.T) {
 		t.Fatalf("CreateForkedInstance failed: %v", err)
 	}
 
-	// Verify fork command structure - uses capture-resume pattern
-	// Step 1: Capture session ID using -p "." --output-format json
-	if !strings.Contains(cmd, `-p "."`) {
-		t.Errorf("Fork command should have -p \".\" for capture: %s", cmd)
-	}
-	if !strings.Contains(cmd, "--output-format json") {
-		t.Errorf("Fork command should have --output-format json: %s", cmd)
+	// Verify fork command structure - uses UUID generation + --session-id pattern
+	// Should use --session-id to specify forked session ID upfront
+	if !strings.Contains(cmd, "--session-id") {
+		t.Errorf("Fork command should have --session-id flag: %s", cmd)
 	}
 	if !strings.Contains(cmd, "--resume "+parentID) {
 		t.Errorf("Fork command should have --resume %s: %s", parentID, cmd)
@@ -51,15 +48,19 @@ func TestForkFlow_Integration(t *testing.T) {
 	if !strings.Contains(cmd, "--fork-session") {
 		t.Errorf("Fork command should have --fork-session: %s", cmd)
 	}
-	if !strings.Contains(cmd, "jq -r '.session_id'") {
-		t.Errorf("Fork command should extract session ID with jq: %s", cmd)
+	// Uses --session-id, not -p "." capture pattern
+	if strings.Contains(cmd, `-p "."`) {
+		t.Errorf("Fork command uses --session-id, not -p \".\" capture pattern: %s", cmd)
 	}
-	// Step 2: Store in tmux env and resume
+	if strings.Contains(cmd, "--output-format json") {
+		t.Errorf("Fork command does not use --output-format json: %s", cmd)
+	}
+	if strings.Contains(cmd, "jq") {
+		t.Errorf("Fork command does not use jq: %s", cmd)
+	}
+	// Should store in tmux env
 	if !strings.Contains(cmd, "tmux set-environment CLAUDE_SESSION_ID") {
 		t.Errorf("Fork command should store session ID in tmux env: %s", cmd)
-	}
-	if !strings.Contains(cmd, `--resume "$session_id"`) {
-		t.Errorf("Fork command should resume with captured session ID: %s", cmd)
 	}
 
 	// Verify forked instance state
