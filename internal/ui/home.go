@@ -5105,10 +5105,23 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
-	tool := toolStyle.Render(" " + inst.Tool)
+	        title := titleStyle.Render(inst.Title)
 
-	// YOLO badge for Gemini sessions with YOLO mode enabled
+	        toolLabel := inst.Tool
+
+	        if inst.Tool == "gemini" && inst.GeminiModel != "" {
+
+	                toolLabel = fmt.Sprintf("gemini(%s)", inst.GeminiModel)
+
+	        }
+
+	        tool := toolStyle.Render(" " + toolLabel)
+
+	
+
+	        // YOLO badge for Gemini sessions with YOLO mode enabled
+
+	
 	yoloBadge := ""
 	if inst.Tool == "gemini" && inst.GeminiYoloMode != nil && *inst.GeminiYoloMode {
 		yoloStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
