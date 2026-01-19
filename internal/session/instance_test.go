@@ -1461,3 +1461,51 @@ func TestInstance_GetJSONLPath(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionHasConversationData(t *testing.T) {
+	// Create temp directory structure
+	tmpDir := t.TempDir()
+	projectPath := "/test/project"
+	encodedPath := "-test-project"
+
+	projectsDir := filepath.Join(tmpDir, "projects", encodedPath)
+	os.MkdirAll(projectsDir, 0755)
+
+	// Override config dir for test
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+	defer os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	t.Run("file with sessionId returns true", func(t *testing.T) {
+		sessionID := "has-session-id"
+		filePath := filepath.Join(projectsDir, sessionID+".jsonl")
+		content := `{"type":"summary","leafUuid":"abc"}
+{"type":"queue-operation","sessionId":"has-session-id","timestamp":"2026-01-01"}
+{"type":"user","sessionId":"has-session-id","text":"hello"}`
+		os.WriteFile(filePath, []byte(content), 0644)
+
+		if !sessionHasConversationData(sessionID, projectPath) {
+			t.Error("Expected true for file with sessionId")
+		}
+	})
+
+	t.Run("file without sessionId returns false", func(t *testing.T) {
+		sessionID := "no-session-id"
+		filePath := filepath.Join(projectsDir, sessionID+".jsonl")
+		content := `{"type":"summary","leafUuid":"abc"}
+{"type":"summary","leafUuid":"def"}`
+		os.WriteFile(filePath, []byte(content), 0644)
+
+		if sessionHasConversationData(sessionID, projectPath) {
+			t.Error("Expected false for file without sessionId")
+		}
+	})
+
+	t.Run("missing file returns true (safe fallback)", func(t *testing.T) {
+		if !sessionHasConversationData("nonexistent-file", projectPath) {
+			t.Error("Expected true (safe fallback) for missing file")
+		}
+	})
+}

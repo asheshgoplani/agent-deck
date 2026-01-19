@@ -269,8 +269,22 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		case "resume":
 			// Resume specific session by ID
 			if opts.ResumeSessionID != "" {
-				return fmt.Sprintf(`%s%s --resume %s%s`,
-					configDirPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+				// Check if session has actual conversation data
+				if sessionHasConversationData(opts.ResumeSessionID, i.ProjectPath) {
+					// Session has conversation history - use normal --resume
+					return fmt.Sprintf(`%s%s --resume %s%s`,
+						configDirPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+				}
+				// Session was never interacted with - use --session-id with same UUID
+				// This handles the case where session was started but no message was sent
+				bashExportPrefix := ""
+				if IsClaudeConfigDirExplicit() {
+					configDir := GetClaudeConfigDir()
+					bashExportPrefix = fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
+				}
+				return fmt.Sprintf(
+					`tmux set-environment CLAUDE_SESSION_ID "%s"; %sexec claude --session-id "%s"%s`,
+					opts.ResumeSessionID, bashExportPrefix, opts.ResumeSessionID, extraFlags)
 			}
 			// Fall through to default if no ID provided
 		}
@@ -1909,6 +1923,75 @@ func (i *Instance) regenerateMCPConfig() error {
 
 	log.Printf("[MCP-DEBUG] Regenerated .mcp.json for %s with %d MCPs", i.Title, len(localMCPs))
 	return nil
+}
+
+// sessionHasConversationData checks if a Claude session file contains actual
+// conversation data (has "sessionId" field in records).
+//
+// Returns true if:
+// - File has any "sessionId" field (user interacted with session)
+// - File doesn't exist (safe fallback - let --resume handle it)
+// - Any error occurs (safe fallback - don't risk losing sessions)
+//
+// Returns false only if:
+// - File exists AND has zero "sessionId" occurrences (never interacted)
+func sessionHasConversationData(sessionID string, projectPath string) bool {
+	// Build the session file path
+	// Format: {config_dir}/projects/{encoded_path}/{sessionID}.jsonl
+	configDir := GetClaudeConfigDir()
+	if configDir == "" {
+		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+
+	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+
+	// Encode project path using Claude's directory format
+	encodedPath := ConvertToClaudeDirName(resolvedPath)
+	if encodedPath == "" {
+		encodedPath = "-"
+	}
+
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+
+	// Check if file exists
+	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		// File doesn't exist - safe fallback to --resume
+		return true
+	}
+
+	// Read file and search for "sessionId" field
+	file, err := os.Open(sessionFile)
+	if err != nil {
+		// Error opening - safe fallback to --resume
+		return true
+	}
+	defer file.Close()
+
+	// Use scanner to read line by line (memory efficient for large files)
+	scanner := bufio.NewScanner(file)
+	// Increase buffer size for long lines
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Simple string search - faster than JSON parsing
+		if strings.Contains(line, `"sessionId"`) {
+			return true // Found conversation data
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		// Error reading - safe fallback to --resume
+		return true
+	}
+
+	// No sessionId found - session was never interacted with
+	return false
 }
 
 // generateID generates a unique session ID
