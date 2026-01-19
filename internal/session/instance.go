@@ -54,10 +54,17 @@ type Instance struct {
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
 
-	// Gemini CLI integration
-	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
-	GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
-	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
+	        // Gemini CLI integration
+
+	        GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
+
+	        GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
+
+	        GeminiModel      string                  `json:"gemini_model,omitempty"`       // Active model for this session
+
+	        GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
+
+	
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`   // Per-session analytics
 
 	// OpenCode CLI integration
@@ -404,27 +411,64 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		}
 	}
 
-	yoloFlag := ""
-	yoloEnv := "false"
-	if yoloMode {
-		yoloFlag = " --yolo"
-		yoloEnv = "true"
-	}
+	                yoloFlag := ""
 
-	// If baseCommand is just "gemini", handle specially
-	if baseCommand == "gemini" {
-		// If we already have a session ID, use simple resume
-		if i.GeminiSessionID != "" {
-			return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s", yoloEnv, i.GeminiSessionID, yoloFlag)
-		}
+	                yoloEnv := "false"
 
-		// Start Gemini fresh - session ID will be captured when user interacts
-		// The previous capture-resume approach (gemini --output-format json ".") would hang
-		// because Gemini processes the "." prompt which takes too long
-		return fmt.Sprintf(`tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s`, yoloEnv, yoloFlag)
-	}
+	                if yoloMode {
 
-	// For custom commands (e.g., resume commands), return as-is
+	                        yoloFlag = " --yolo"
+
+	                        yoloEnv = "true"
+
+	                }
+
+	        
+
+	                modelFlag := ""
+
+	                if i.GeminiModel != "" {
+
+	                        modelFlag = fmt.Sprintf(" --model %s", i.GeminiModel)
+
+	                } else {
+
+	                        // Check global config for default model
+
+	                        userConfig, _ := LoadUserConfig()
+
+	                        if userConfig != nil && userConfig.Gemini.DefaultModel != "" {
+
+	                                modelFlag = fmt.Sprintf(" --model %s", userConfig.Gemini.DefaultModel)
+
+	                        }
+
+	                }
+
+	        
+
+	                // If baseCommand is just "gemini", handle specially
+
+	                if baseCommand == "gemini" {
+
+	                        // If we already have a session ID, use simple resume
+
+	                        if i.GeminiSessionID != "" {
+
+	                                return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s%s", yoloEnv, i.GeminiSessionID, yoloFlag, modelFlag)
+
+	                        }
+
+	        
+
+	                        // Start Gemini fresh
+
+	                        return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s%s", yoloEnv, yoloFlag, modelFlag)
+
+	                }
+
+	        
+		// For custom commands (e.g., resume commands), return as-is
 	return baseCommand
 }
 
@@ -1038,23 +1082,38 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 // SetGeminiYoloMode sets the YOLO mode for Gemini and syncs it to the tmux environment.
 // This ensures the background status worker sees the correct state during restarts.
 func (i *Instance) SetGeminiYoloMode(enabled bool) {
-	if i.Tool != "gemini" {
-		return
-	}
+        if i.Tool != "gemini" {
+                return
+        }
 
-	i.GeminiYoloMode = &enabled
+        i.GeminiYoloMode = &enabled
 
-	// Sync to tmux environment immediately if session exists
-	// This ensures background detection (UpdateGeminiSession) sees the new value
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		val := "false"
-		if enabled {
-			val = "true"
-		}
-		_ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", val)
-	}
+        // Sync to tmux environment immediately if session exists
+        // This ensures background detection (UpdateGeminiSession) sees the new value
+        if i.tmuxSession != nil && i.tmuxSession.Exists() {
+                val := "false"
+                if enabled {
+                        val = "true"
+                }
+                _ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", val)
+        }
 }
 
+// SetGeminiModel sets the model for Gemini and restarts the session to apply it.
+func (i *Instance) SetGeminiModel(model string) error {
+        if i.Tool != "gemini" {
+                return fmt.Errorf("not a gemini session")
+        }
+
+        i.GeminiModel = model
+
+        // If session is running, restart it to apply the new model
+        if i.tmuxSession != nil && i.tmuxSession.Exists() {
+                return i.Restart()
+        }
+
+        return nil
+}
 // UpdateGeminiSession updates the Gemini session ID and YOLO mode from tmux environment.
 // The capture-resume pattern (used in Start/Restart) sets GEMINI_SESSION_ID
 // in the tmux environment, making this the single authoritative source.
@@ -1087,11 +1146,15 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 		if i.GeminiAnalytics == nil {
 			i.GeminiAnalytics = &GeminiSessionAnalytics{}
 		}
-		// Non-blocking update (ignore errors, best effort)
-		_ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
-	}
-
-	// Update latest prompt from session file
+		                // Non-blocking update (ignore errors, best effort)
+		                _ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
+		
+		                // Sync model from analytics if not explicitly set on instance
+		                if i.GeminiModel == "" && i.GeminiAnalytics.Model != "" {
+		                        i.GeminiModel = i.GeminiAnalytics.Model
+		                }
+		        }
+			// Update latest prompt from session file
 	if i.GeminiSessionID != "" && len(i.GeminiSessionID) >= 8 {
 		sessionsDir := GetGeminiSessionsDir(i.ProjectPath)
 		pattern := filepath.Join(sessionsDir, "session-*-"+i.GeminiSessionID[:8]+".json")
