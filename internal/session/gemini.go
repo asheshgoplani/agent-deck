@@ -28,6 +28,16 @@ func GetAvailableGeminiModels() ([]string, error) {
         geminiModelsCacheMu.Lock()
         defer geminiModelsCacheMu.Unlock()
 
+        // Support environment variable override for testing
+        if override := os.Getenv("GEMINI_MODELS_OVERRIDE"); override != "" {
+                models := strings.Split(override, ",")
+                for i := range models {
+                        models[i] = strings.TrimSpace(models[i])
+                }
+                sort.Strings(models)
+                return models, nil
+        }
+
         // Return cached results if fresh (1 hour)
         if len(geminiModelsCache) > 0 && time.Since(geminiModelsLast) < time.Hour {
                 return geminiModelsCache, nil
