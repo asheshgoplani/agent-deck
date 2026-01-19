@@ -1,16 +1,98 @@
 package session
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"time"
+        "crypto/sha256"
+        "encoding/hex"
+        "encoding/json"
+        "fmt"
+        "io"
+        "net/http"
+        "os"
+        "path/filepath"
+        "sort"
+        "strings"
+        "sync"
+        "time"
 )
 
+var (
+        geminiModelsCache   []string
+        geminiModelsCacheMu sync.Mutex
+        geminiModelsLast    time.Time
+)
+
+// GetAvailableGeminiModels returns a list of available Gemini models.
+// It uses the Gemini API to fetch models if GOOGLE_API_KEY is present.
+// Results are cached for 1 hour.
+func GetAvailableGeminiModels() ([]string, error) {
+        geminiModelsCacheMu.Lock()
+        defer geminiModelsCacheMu.Unlock()
+
+        // Return cached results if fresh (1 hour)
+        if len(geminiModelsCache) > 0 && time.Since(geminiModelsLast) < time.Hour {
+                return geminiModelsCache, nil
+        }
+
+        apiKey := os.Getenv("GOOGLE_API_KEY")
+        if apiKey == "" {
+                // Return common defaults if no API key
+                return []string{"gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"}, nil
+        }
+
+        url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s", apiKey)
+        resp, err := http.Get(url)
+        if err != nil {
+                return nil, fmt.Errorf("failed to fetch models: %w", err)
+        }
+        defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK {
+                return nil, fmt.Errorf("api returned status: %s", resp.Status)
+        }
+
+        body, err := io.ReadAll(resp.Body)
+        if err != nil {
+                return nil, fmt.Errorf("failed to read response: %w", err)
+        }
+
+        var result struct {
+                Models []struct {
+                        Name             string   `json:"name"`
+                        SupportedMethods []string `json:"supportedGenerationMethods"`
+                } `json:"models"`
+        }
+
+        if err := json.Unmarshal(body, &result); err != nil {
+                return nil, fmt.Errorf("failed to parse models: %w", err)
+        }
+
+        var models []string
+        for _, m := range result.Models {
+                // Filter for models that support content generation
+                canGenerate := false
+                for _, method := range m.SupportedMethods {
+                        if method == "generateContent" {
+                                canGenerate = true
+                                break
+                        }
+                }
+
+                if canGenerate {
+                        // Extract short name: models/gemini-pro -> gemini-pro
+                        name := m.Name
+                        if strings.HasPrefix(name, "models/") {
+                                name = name[7:]
+                        }
+                        models = append(models, name)
+                }
+        }
+
+        sort.Strings(models)
+        geminiModelsCache = models
+        geminiModelsLast = time.Now()
+
+        return models, nil
+}
 // geminiConfigDirOverride allows tests to override config directory
 var geminiConfigDirOverride string
 
@@ -197,50 +279,109 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 		return fmt.Errorf("failed to read session file: %w", err)
 	}
 
-	var session struct {
-		SessionID   string `json:"sessionId"`
-		StartTime   string `json:"startTime"`
-		LastUpdated string `json:"lastUpdated"`
-		Messages    []struct {
-			Type   string `json:"type"`
-			Tokens struct {
-				Input  int `json:"input"`
-				Output int `json:"output"`
-			} `json:"tokens"`
-		} `json:"messages"`
-	}
+	        var session struct {
 
-	if err := json.Unmarshal(data, &session); err != nil {
-		return fmt.Errorf("failed to parse session for analytics: %w", err)
-	}
+	                SessionID   string `json:"sessionId"`
 
-	// Parse timestamps
-	startTime, _ := time.Parse(time.RFC3339, session.StartTime)
-	if startTime.IsZero() {
-		startTime, _ = time.Parse("2006-01-02T15:04:05.999Z", session.StartTime)
-	}
-	lastUpdated, _ := time.Parse(time.RFC3339, session.LastUpdated)
-	if lastUpdated.IsZero() {
-		lastUpdated, _ = time.Parse("2006-01-02T15:04:05.999Z", session.LastUpdated)
-	}
+	                StartTime   string `json:"startTime"`
 
-	analytics.StartTime = startTime
-	analytics.LastActive = lastUpdated
-	if !startTime.IsZero() && !lastUpdated.IsZero() {
-		analytics.Duration = lastUpdated.Sub(startTime)
-	}
+	                LastUpdated string `json:"lastUpdated"`
 
-	// Reset and accumulate tokens
-	analytics.InputTokens = 0
-	analytics.OutputTokens = 0
-	analytics.TotalTurns = 0
-	for _, msg := range session.Messages {
-		if msg.Type == "gemini" {
-			analytics.InputTokens += msg.Tokens.Input
-			analytics.OutputTokens += msg.Tokens.Output
-			analytics.TotalTurns++
+	                Messages    []struct {
 
-			// For Gemini, the input tokens of the last message represent the total context size
+	                        Type   string `json:"type"`
+
+	                        Model  string `json:"model,omitempty"`
+
+	                        Tokens struct {
+
+	                                Input  int `json:"input"`
+
+	                                Output int `json:"output"`
+
+	                        } `json:"tokens"`
+
+	                } `json:"messages"`
+
+	        }
+
+	
+
+	        if err := json.Unmarshal(data, &session); err != nil {
+
+	                return fmt.Errorf("failed to parse session for analytics: %w", err)
+
+	        }
+
+	
+
+	        // Parse timestamps
+
+	        startTime, _ := time.Parse(time.RFC3339, session.StartTime)
+
+	        if startTime.IsZero() {
+
+	                startTime, _ = time.Parse("2006-01-02T15:04:05.999Z", session.StartTime)
+
+	        }
+
+	        lastUpdated, _ := time.Parse(time.RFC3339, session.LastUpdated)
+
+	        if lastUpdated.IsZero() {
+
+	                lastUpdated, _ = time.Parse("2006-01-02T15:04:05.999Z", session.LastUpdated)
+
+	        }
+
+	
+
+	        analytics.StartTime = startTime
+
+	        analytics.LastActive = lastUpdated
+
+	        if !startTime.IsZero() && !lastUpdated.IsZero() {
+
+	                analytics.Duration = lastUpdated.Sub(startTime)
+
+	        }
+
+	
+
+	        // Reset and accumulate tokens
+
+	        analytics.InputTokens = 0
+
+	        analytics.OutputTokens = 0
+
+	        analytics.TotalTurns = 0
+
+	        analytics.Model = "" // Reset model
+
+	        for _, msg := range session.Messages {
+
+	                if msg.Type == "gemini" {
+
+	                        analytics.InputTokens += msg.Tokens.Input
+
+	                        analytics.OutputTokens += msg.Tokens.Output
+
+	                        analytics.TotalTurns++
+
+	
+
+	                        // Capture model from the last gemini message
+
+	                        if msg.Model != "" {
+
+	                                analytics.Model = msg.Model
+
+	                        }
+
+	
+
+	                        // For Gemini, the input tokens of the last message represent the total context size
+
+	
 			// including history and current prompt.
 			analytics.CurrentContextTokens = msg.Tokens.Input
 		}

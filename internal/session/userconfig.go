@@ -338,9 +338,12 @@ func (c *ClaudeSettings) GetDangerousMode() bool {
 	return *c.DangerousMode
 }
 
-// GeminiSettings defines Gemini CLI configuration
+// GeminiSettings defines Gemini CLI integration settings
 type GeminiSettings struct {
-	// YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
+        // DefaultModel is the default model to use for new Gemini sessions
+        DefaultModel string `toml:"default_model"`
+
+        // YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
 

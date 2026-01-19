@@ -5,8 +5,18 @@ import (
 )
 
 // GeminiSessionAnalytics holds metrics for a Gemini session
+
 type GeminiSessionAnalytics struct {
-	// Token usage
+
+        // Model name
+
+        Model string `json:"model"`
+
+
+
+        // Token usage
+
+
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 

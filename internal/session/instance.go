@@ -57,6 +57,7 @@ type Instance struct {
 	// Gemini CLI integration
 	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
+	GeminiModel      string                  `json:"gemini_model,omitempty"`      // Active model for this session
 	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
 	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`   // Per-session analytics
 
@@ -421,17 +422,26 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		yoloEnv = "true"
 	}
 
+	modelFlag := ""
+	if i.GeminiModel != "" && i.GeminiModel != "auto" {
+		modelFlag = fmt.Sprintf(" --model %s", i.GeminiModel)
+	} else {
+		// Check global config for default model
+		userConfig, _ := LoadUserConfig()
+		if userConfig != nil && userConfig.Gemini.DefaultModel != "" {
+			modelFlag = fmt.Sprintf(" --model %s", userConfig.Gemini.DefaultModel)
+		}
+	}
+
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
-			return envPrefix + fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s", yoloEnv, i.GeminiSessionID, yoloFlag)
+			return envPrefix + fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s%s", yoloEnv, i.GeminiSessionID, yoloFlag, modelFlag)
 		}
 
-		// Start Gemini fresh - session ID will be captured when user interacts
-		// The previous capture-resume approach (gemini --output-format json ".") would hang
-		// because Gemini processes the "." prompt which takes too long
-		return envPrefix + fmt.Sprintf(`tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s`, yoloEnv, yoloFlag)
+		// Start Gemini fresh
+		return envPrefix + fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s%s", yoloEnv, yoloFlag, modelFlag)
 	}
 
 	// For custom commands (e.g., resume commands), return as-is
@@ -1259,6 +1269,22 @@ func (i *Instance) SetGeminiYoloMode(enabled bool) {
 	}
 }
 
+// SetGeminiModel sets the model for Gemini and restarts the session to apply it.
+func (i *Instance) SetGeminiModel(model string) error {
+	if i.Tool != "gemini" {
+		return fmt.Errorf("not a gemini session")
+	}
+
+	i.GeminiModel = model
+
+	// If session is running, restart it to apply the new model
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		return i.Restart()
+	}
+
+	return nil
+}
+
 // UpdateGeminiSession updates the Gemini session ID and YOLO mode.
 // Primary source: tmux environment (set by capture-resume pattern)
 // Fallback: filesystem scan for most recent session (handles agent-deck restarts)
@@ -1311,6 +1337,40 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 		// Non-blocking update (ignore errors, best effort)
 		// Note: UpdateGeminiAnalyticsFromDisk already has cross-project fallback
 		_ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
+
+		// Sync model from analytics if not explicitly set on instance
+		if i.GeminiModel == "" && i.GeminiAnalytics.Model != "" {
+			i.GeminiModel = i.GeminiAnalytics.Model
+		}
+	}
+
+	// Real-time model detection from output stream
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		content, err := i.tmuxSession.CapturePane()
+		if err == nil {
+			// Strip ANSI codes before matching (fixes #E2E failure)
+			cleanContent := tmux.StripANSI(content)
+
+			// Pattern: "Now using gemini-X.Y-..."
+			re := regexp.MustCompile(`Now using (gemini-[\w.-]+)`)
+			matches := re.FindAllStringSubmatch(cleanContent, -1)
+			if len(matches) > 0 {
+				// Use the LAST match (most recent output)
+				// tmux capture-pane returns content from top to bottom
+				lastMatch := matches[len(matches)-1]
+				if len(lastMatch) > 1 {
+					detected := lastMatch[1]
+					if i.GeminiAnalytics == nil {
+						i.GeminiAnalytics = &GeminiSessionAnalytics{}
+					}
+					// Update analytics model (real-time source)
+					i.GeminiAnalytics.Model = detected
+
+					// Update instance model (authoritative source for UI)
+					i.GeminiModel = detected
+				}
+			}
+		}
 	}
 
 	// Update latest prompt from session file
