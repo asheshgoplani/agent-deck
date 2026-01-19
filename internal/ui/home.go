@@ -246,6 +246,7 @@ type Home struct {
 	notificationsEnabled bool
 	boundKeys            map[string]string // Track which session ID each key is bound to
 	lastBarText          string            // Cache to avoid updating all sessions every tick
+	lastBarTextMu        sync.Mutex        // Protects lastBarText for background worker access
 }
 
 // reloadState preserves UI state during storage reload
@@ -837,14 +838,18 @@ func (h *Home) updateTmuxNotifications() {
 
 	// Only update status bars if the content changed
 	// PERFORMANCE: Use global option - ONE tmux call instead of 100+
+	h.lastBarTextMu.Lock()
 	if barText != h.lastBarText {
 		h.lastBarText = barText
+		h.lastBarTextMu.Unlock()
 
 		if barText == "" {
 			_ = tmux.ClearStatusLeftGlobal()
 		} else {
 			_ = tmux.SetStatusLeftGlobal(barText)
 		}
+	} else {
+		h.lastBarTextMu.Unlock()
 	}
 
 	// Update key bindings
@@ -1305,16 +1310,28 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 	return ""
 }
 
-// statusWorker runs in a background goroutine (Priority 1C)
-// It receives status update requests and processes them without blocking the UI
+// statusWorker runs in a background goroutine with its own ticker
+// This ensures status updates continue even when TUI is paused (tea.Exec)
 func (h *Home) statusWorker() {
 	defer close(h.statusWorkerDone)
+
+	// Internal ticker - independent of Bubble Tea event loop
+	// This is the key insight: when tea.Exec suspends the TUI (user attaches to session),
+	// the Bubble Tea tick messages stop firing, but this goroutine keeps running
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
+
+		case <-ticker.C:
+			// Self-triggered update - runs even when TUI is paused
+			h.backgroundStatusUpdate()
+
 		case req := <-h.statusTrigger:
+			// Explicit trigger from TUI (for immediate updates)
 			// Panic recovery to prevent worker death from killing status updates
 			func() {
 				defer func() {
@@ -1325,6 +1342,92 @@ func (h *Home) statusWorker() {
 				h.processStatusUpdate(req)
 			}()
 		}
+	}
+}
+
+// backgroundStatusUpdate runs independently of the TUI
+// Updates session statuses and syncs notification bar directly to tmux
+// This is called by the internal ticker even when TUI is paused (tea.Exec)
+func (h *Home) backgroundStatusUpdate() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Warning: background update recovered from panic: %v", r)
+		}
+	}()
+
+	// Refresh tmux session cache
+	tmux.RefreshExistingSessions()
+
+	// Get instances snapshot
+	h.instancesMu.RLock()
+	if len(h.instances) == 0 {
+		h.instancesMu.RUnlock()
+		return
+	}
+	instances := make([]*session.Instance, len(h.instances))
+	copy(instances, h.instances)
+	h.instancesMu.RUnlock()
+
+	// Update status for all instances (background can be more thorough)
+	statusChanged := false
+	for _, inst := range instances {
+		oldStatus := inst.Status
+		_ = inst.UpdateStatus()
+		if inst.Status != oldStatus {
+			statusChanged = true
+			log.Printf("[BACKGROUND] Status changed: %s %s -> %s", inst.Title, oldStatus, inst.Status)
+		}
+	}
+
+	// If any status changed, invalidate cache and sync notification bar directly to tmux
+	if statusChanged {
+		h.cachedStatusCounts.valid.Store(false)
+		h.syncNotificationsBackground()
+	}
+}
+
+// syncNotificationsBackground updates the tmux notification bar directly
+// Called from background worker - does NOT depend on Bubble Tea
+func (h *Home) syncNotificationsBackground() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Warning: syncNotificationsBackground recovered from panic: %v", r)
+		}
+	}()
+
+	if !h.notificationsEnabled || h.notificationManager == nil {
+		return
+	}
+
+	// Get current instances (copy to avoid race with main goroutine)
+	h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(h.instances))
+	copy(instances, h.instances)
+	h.instancesMu.RUnlock()
+
+	// Detect currently attached session (may be the user's session during tea.Exec)
+	currentSessionID := h.getAttachedSessionID()
+
+	// Sync notification manager with current states
+	h.notificationManager.SyncFromInstances(instances, currentSessionID)
+
+	// Update tmux status bar directly
+	barText := h.notificationManager.FormatBar()
+
+	// Only update if changed (avoid unnecessary tmux calls)
+	h.lastBarTextMu.Lock()
+	if barText != h.lastBarText {
+		h.lastBarText = barText
+		h.lastBarTextMu.Unlock()
+
+		if barText == "" {
+			_ = tmux.ClearStatusLeftGlobal()
+		} else {
+			_ = tmux.SetStatusLeftGlobal(barText)
+		}
+		log.Printf("[BACKGROUND] Notification bar updated: %s", barText)
+	} else {
+		h.lastBarTextMu.Unlock()
 	}
 }
 
