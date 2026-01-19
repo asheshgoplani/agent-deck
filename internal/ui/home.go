@@ -135,9 +135,11 @@ type Home struct {
 	groupDialog   *GroupDialog   // For creating/renaming groups
 	forkDialog    *ForkDialog    // For forking sessions
 	confirmDialog *ConfirmDialog // For confirming destructive actions
-	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
-	mcpDialog      *MCPDialog      // For managing MCPs
-	setupWizard    *SetupWizard    // For first-run setup
+	        helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
+	        mcpDialog      *MCPDialog      // For managing MCPs
+	        geminiModelDialog *GeminiModelDialog // For changing Gemini models
+	        setupWizard    *SetupWizard    // For first-run setup
+	
 	settingsPanel  *SettingsPanel  // For editing settings
 	analyticsPanel *AnalyticsPanel // For displaying session analytics
 
@@ -363,9 +365,11 @@ func NewHomeWithProfile(profile string) *Home {
 		groupDialog:       NewGroupDialog(),
 		forkDialog:        NewForkDialog(),
 		confirmDialog:     NewConfirmDialog(),
-		helpOverlay:       NewHelpOverlay(),
-		mcpDialog:         NewMCPDialog(),
-		setupWizard:       NewSetupWizard(),
+		                helpOverlay:       NewHelpOverlay(),
+		                mcpDialog:         NewMCPDialog(),
+		                geminiModelDialog: NewGeminiModelDialog(),
+		                setupWizard:       NewSetupWizard(),
+		
 		settingsPanel:     NewSettingsPanel(),
 		analyticsPanel:    NewAnalyticsPanel(),
 		cursor:            0,
@@ -2071,43 +2075,101 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.previewCacheMu.Unlock()
 		return h, nil
 
-	case analyticsFetchedMsg:
-		// Async analytics parsing complete - update TTL cache
-		h.analyticsFetchingID = ""
-		if msg.err == nil && msg.sessionID != "" {
-			// Update cache timestamp
-			h.analyticsCacheTime[msg.sessionID] = time.Now()
+	        case analyticsFetchedMsg:
 
-			if msg.analytics != nil {
-				// Store Claude analytics in TTL cache
-				h.analyticsCache[msg.sessionID] = msg.analytics
-				// Update current analytics for display
-				h.currentAnalytics = msg.analytics
-				h.currentGeminiAnalytics = nil
-				h.analyticsSessionID = msg.sessionID
-				// Update analytics panel with new data
-				h.analyticsPanel.SetAnalytics(msg.analytics)
-			} else if msg.geminiAnalytics != nil {
-				// Store Gemini analytics in TTL cache
-				h.geminiAnalyticsCache[msg.sessionID] = msg.geminiAnalytics
-				// Update current analytics for display
-				h.currentGeminiAnalytics = msg.geminiAnalytics
-				h.currentAnalytics = nil
-				h.analyticsSessionID = msg.sessionID
-				// Update analytics panel with new data
-				h.analyticsPanel.SetGeminiAnalytics(msg.geminiAnalytics)
-			} else {
-				// Both nil - clear display if it's the current session
-				if h.analyticsSessionID == msg.sessionID {
-					h.currentAnalytics = nil
-					h.currentGeminiAnalytics = nil
-					h.analyticsPanel.SetAnalytics(nil)
-				}
-			}
-		}
-		return h, nil
+	                // Async analytics parsing complete - update TTL cache
 
-	case tickMsg:
+	                h.analyticsFetchingID = ""
+
+	                if msg.err == nil && msg.sessionID != "" {
+
+	                        // Update cache timestamp
+
+	                        h.analyticsCacheTime[msg.sessionID] = time.Now()
+
+	
+
+	                        if msg.analytics != nil {
+
+	                                // Store Claude analytics in TTL cache
+
+	                                h.analyticsCache[msg.sessionID] = msg.analytics
+
+	                                // Update current analytics for display
+
+	                                h.currentAnalytics = msg.analytics
+
+	                                h.currentGeminiAnalytics = nil
+
+	                                h.analyticsSessionID = msg.sessionID
+
+	                                // Update analytics panel with new data
+
+	                                h.analyticsPanel.SetAnalytics(msg.analytics)
+
+	                        } else if msg.geminiAnalytics != nil {
+
+	                                // Store Gemini analytics in TTL cache
+
+	                                h.geminiAnalyticsCache[msg.sessionID] = msg.geminiAnalytics
+
+	                                // Update current analytics for display
+
+	                                h.currentGeminiAnalytics = msg.geminiAnalytics
+
+	                                h.currentAnalytics = nil
+
+	                                h.analyticsSessionID = msg.sessionID
+
+	                                // Update analytics panel with new data
+
+	                                h.analyticsPanel.SetGeminiAnalytics(msg.geminiAnalytics)
+
+	                        } else {
+
+	                                // Both nil - clear display if it's the current session
+
+	                                if h.analyticsSessionID == msg.sessionID {
+
+	                                        h.currentAnalytics = nil
+
+	                                        h.currentGeminiAnalytics = nil
+
+	                                        h.analyticsPanel.SetAnalytics(nil)
+
+	                                }
+
+	                        }
+
+	                }
+
+	                return h, nil
+
+	
+
+	        case modelSelectedMsg:
+
+	                if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+
+	                        h.resumingSessions[inst.ID] = time.Now()
+
+	                        return h, func() tea.Msg {
+
+	                                err := inst.SetGeminiModel(msg.model)
+
+	                                return sessionRestartedMsg{sessionID: msg.sessionID, err: err}
+
+	                        }
+
+	                }
+
+	                return h, nil
+
+	
+
+	        case tickMsg:
+
+	
 		// Auto-dismiss errors after 5 seconds
 		if h.err != nil && !h.errTime.IsZero() && time.Since(h.errTime) > 5*time.Second {
 			h.clearError()
@@ -2264,14 +2326,18 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.forkDialog.IsVisible() {
 			return h.handleForkDialogKey(msg)
 		}
-		if h.confirmDialog.IsVisible() {
-			return h.handleConfirmDialogKey(msg)
-		}
-		if h.mcpDialog.IsVisible() {
-			return h.handleMCPDialogKey(msg)
-		}
-
-		// Main view keys
+		                if h.confirmDialog.IsVisible() {
+		                        return h.handleConfirmDialogKey(msg)
+		                }
+		                if h.geminiModelDialog.IsVisible() {
+		                        var cmd tea.Cmd
+		                        h.geminiModelDialog, cmd = h.geminiModelDialog.Update(msg)
+		                        return h, cmd
+		                }
+		                if h.mcpDialog.IsVisible() {
+		                        return h.handleMCPDialogKey(msg)
+		                }
+				// Main view keys
 		return h.handleMainKey(msg)
 	}
 
@@ -2766,21 +2832,31 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "M", "shift+m":
-		// MCP Manager - for Claude and Gemini sessions
-		if h.cursor < len(h.flatItems) {
-			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				(item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
-				h.mcpDialog.SetSize(h.width, h.height)
-				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
-					h.setError(err)
-				}
-			}
-		}
-		return h, nil
-
-	case "g":
+	        case "M", "shift+m":
+	                // MCP Manager - for Claude and Gemini sessions
+	                if h.cursor < len(h.flatItems) {
+	                        item := h.flatItems[h.cursor]
+	                        if item.Type == session.ItemTypeSession && item.Session != nil &&
+	                                (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
+	                                h.mcpDialog.SetSize(h.width, h.height)
+	                                if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
+	                                        h.setError(err)
+	                                }
+	                        }
+	                }
+	                return h, nil
+	
+	        case "ctrl+g":
+	                // Gemini Model Manager
+	                if h.cursor < len(h.flatItems) {
+	                        item := h.flatItems[h.cursor]
+	                        if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Tool == "gemini" {
+	                                h.geminiModelDialog.SetSize(h.width, h.height)
+	                                return h, h.geminiModelDialog.Show(item.Session.ID)
+	                        }
+	                }
+	                return h, nil
+		case "g":
 		// Vi-style gg to jump to top (#38) - check for double-tap first
 		if time.Since(h.lastGTime) < 500*time.Millisecond {
 			// Double g - jump to top
@@ -3883,12 +3959,12 @@ func (h *Home) renderFilterBar() string {
 // updateSizes updates component sizes
 func (h *Home) updateSizes() {
 	h.search.SetSize(h.width, h.height)
-	h.newDialog.SetSize(h.width, h.height)
-	h.groupDialog.SetSize(h.width, h.height)
-	h.confirmDialog.SetSize(h.width, h.height)
-}
-
-// View renders the UI
+	        h.newDialog.SetSize(h.width, h.height)
+	        h.groupDialog.SetSize(h.width, h.height)
+	        h.geminiModelDialog.SetSize(h.width, h.height)
+	        h.confirmDialog.SetSize(h.width, h.height)
+	}
+	// View renders the UI
 func (h *Home) View() string {
 	// CRITICAL: Return empty during attach to prevent View() output leakage
 	// (Bubble Tea Issue #431 - View gets printed to stdout during tea.Exec)
@@ -3949,14 +4025,16 @@ func (h *Home) View() string {
 	if h.forkDialog.IsVisible() {
 		return h.forkDialog.View()
 	}
-	if h.confirmDialog.IsVisible() {
-		return h.confirmDialog.View()
-	}
-	if h.mcpDialog.IsVisible() {
-		return h.mcpDialog.View()
-	}
-
-	// Reuse viewBuilder to reduce allocations (reset and pre-allocate)
+	                if h.confirmDialog.IsVisible() {
+	                        return h.confirmDialog.View()
+	                }
+	                if h.geminiModelDialog.IsVisible() {
+	                        return h.geminiModelDialog.View()
+	                }
+	                if h.mcpDialog.IsVisible() {
+	                        return h.mcpDialog.View()
+	                }
+		// Reuse viewBuilder to reduce allocations (reset and pre-allocate)
 	h.viewBuilder.Reset()
 	h.viewBuilder.Grow(32768) // Pre-allocate 32KB for typical view size
 	b := &h.viewBuilder
@@ -4774,11 +4852,15 @@ func (h *Home) renderHelpBarFull() string {
 			if item.Session != nil && item.Session.CanFork() {
 				primaryHints = append(primaryHints, h.helpKey("f/F", "Fork"))
 			}
-			// Show MCP Manager and preview mode toggle for Claude and Gemini sessions
-			if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
-				primaryHints = append(primaryHints, h.helpKey("M", "MCP"))
-				primaryHints = append(primaryHints, h.helpKey("v", h.previewModeShort()))
-			}
+			                        // Show MCP Manager and preview mode toggle for Claude and Gemini sessions
+			                        if item.Session != nil && (item.Session.Tool == "claude" || item.Session.Tool == "gemini") {
+			                                primaryHints = append(primaryHints, h.helpKey("M", "MCP"))
+			                                if item.Session.Tool == "gemini" {
+			                                        primaryHints = append(primaryHints, h.helpKey("Ctrl+G", "Model"))
+			                                }
+			                                primaryHints = append(primaryHints, h.helpKey("v", h.previewModeShort()))
+			                        }
+			
 			secondaryHints = []string{
 				h.helpKey("r", "Rename"),
 				h.helpKey("m", "Move"),
