@@ -215,6 +215,23 @@ cat ~/.agent-deck/config.toml | grep -v "KEY\|TOKEN\|SECRET"  # Sanitized config
 
 See [troubleshooting.md](references/troubleshooting.md) for detailed diagnostics.
 
+## Session Sharing
+
+Share Claude sessions between developers for collaboration or handoff.
+
+**Use when:** User says "share session", "export session", "send to colleague", "import session"
+
+```bash
+# Export current session to file
+skills/session-share/scripts/export.sh
+# Output: ~/session-shares/session-<date>-<title>.json
+
+# Import received session
+skills/session-share/scripts/import.sh ~/Downloads/session-file.json
+```
+
+**See:** [session-share skill](../session-share/SKILL.md) for full documentation.
+
 ## Critical Rules
 
 1. **Flags before arguments:** `session start -m "Hello" name` (not `name -m "Hello"`)
@@ -227,3 +244,4 @@ See [troubleshooting.md](references/troubleshooting.md) for detailed diagnostics
 - [config-reference.md](references/config-reference.md) - All config.toml options
 - [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
+- [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
