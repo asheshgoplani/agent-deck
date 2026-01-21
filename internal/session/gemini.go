@@ -25,10 +25,7 @@ var (
 // It uses the Gemini API to fetch models if GOOGLE_API_KEY is present.
 // Results are cached for 1 hour.
 func GetAvailableGeminiModels() ([]string, error) {
-        geminiModelsCacheMu.Lock()
-        defer geminiModelsCacheMu.Unlock()
-
-        // Support environment variable override for testing
+        // Support environment variable override for testing (priority 1)
         if override := os.Getenv("GEMINI_MODELS_OVERRIDE"); override != "" {
                 models := strings.Split(override, ",")
                 for i := range models {
@@ -37,6 +34,9 @@ func GetAvailableGeminiModels() ([]string, error) {
                 sort.Strings(models)
                 return models, nil
         }
+
+        geminiModelsCacheMu.Lock()
+        defer geminiModelsCacheMu.Unlock()
 
         // Return cached results if fresh (1 hour)
         if len(geminiModelsCache) > 0 && time.Since(geminiModelsLast) < time.Hour {

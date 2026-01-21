@@ -38,11 +38,6 @@ func (d *GeminiModelDialog) Show(sessionID string) tea.Cmd {
 	}
 }
 
-type modelsFetchedMsg struct {
-	models []string
-	err    error
-}
-
 func (d *GeminiModelDialog) Hide() {
 	d.visible = false
 }
@@ -94,11 +89,6 @@ func (d *GeminiModelDialog) Update(msg tea.Msg) (*GeminiModelDialog, tea.Cmd) {
 	}
 
 	return d, nil
-}
-
-type modelSelectedMsg struct {
-	sessionID string
-	model     string
 }
 
 func (d *GeminiModelDialog) View() string {
