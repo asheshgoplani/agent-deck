@@ -717,12 +717,12 @@ func handleSessionSet(profile string, args []string) {
 
 	// Validate field name
 	validFields := map[string]bool{
-		"title":              true,
-		"path":               true,
-		"command":            true,
-		"tool":               true,
-		"claude-session-id":  true,
-		"gemini-session-id":  true,
+		"title":             true,
+		"path":              true,
+		"command":           true,
+		"tool":              true,
+		"claude-session-id": true,
+		"gemini-session-id": true,
 	}
 
 	if !validFields[field] {
@@ -1050,12 +1050,12 @@ func handleSessionSetParent(profile string, args []string) {
 	}
 
 	out.Success(fmt.Sprintf("Linked '%s' as sub-session of '%s'", inst.Title, parentInst.Title), map[string]interface{}{
-		"success":           true,
-		"session_id":        inst.ID,
-		"session_title":     inst.Title,
-		"parent_id":         parentInst.ID,
-		"parent_title":      parentInst.Title,
-		"inherited_group":   inst.GroupPath,
+		"success":         true,
+		"session_id":      inst.ID,
+		"session_title":   inst.Title,
+		"parent_id":       parentInst.ID,
+		"parent_title":    parentInst.Title,
+		"inherited_group": inst.GroupPath,
 	})
 }
 
@@ -1129,10 +1129,10 @@ func handleSessionUnsetParent(profile string, args []string) {
 	}
 
 	out.Success(fmt.Sprintf("Removed sub-session link from '%s' (was linked to '%s')", inst.Title, parentTitle), map[string]interface{}{
-		"success":        true,
-		"session_id":     inst.ID,
-		"session_title":  inst.Title,
-		"former_parent":  parentTitle,
+		"success":       true,
+		"session_id":    inst.ID,
+		"session_title": inst.Title,
+		"former_parent": parentTitle,
 	})
 }
 

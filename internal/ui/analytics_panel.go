@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // AnalyticsPanel displays session analytics in a formatted panel

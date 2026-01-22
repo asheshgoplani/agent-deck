@@ -14,26 +14,26 @@ import (
 
 var (
 	globalSearchBoxStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorCyan).
-		Padding(0, 1)
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorCyan).
+				Padding(0, 1)
 
 	globalResultStyle = lipgloss.NewStyle().
-		Padding(0, 2)
+				Padding(0, 2)
 
 	globalSelectedStyle = lipgloss.NewStyle().
-		Padding(0, 2).
-		Background(ColorCyan).
-		Foreground(ColorBg)
+				Padding(0, 2).
+				Background(ColorCyan).
+				Foreground(ColorBg)
 
 	globalSearchHeaderStyle = lipgloss.NewStyle().
-		Foreground(ColorCyan).
-		Bold(true)
+				Foreground(ColorCyan).
+				Bold(true)
 
 	highlightStyle = lipgloss.NewStyle().
-		Background(ColorYellow).
-		Foreground(ColorBg).
-		Bold(true)
+			Background(ColorYellow).
+			Foreground(ColorBg).
+			Bold(true)
 )
 
 // GlobalSearchResult wraps a search result for UI display
@@ -41,7 +41,7 @@ type GlobalSearchResult struct {
 	SessionID   string
 	Summary     string
 	Snippet     string
-	Content     string    // Full conversation content for preview
+	Content     string // Full conversation content for preview
 	CWD         string
 	ModTime     time.Time // Last modified time
 	Score       int       // Fuzzy match score (higher = better match)
@@ -61,8 +61,8 @@ type GlobalSearch struct {
 	loading       bool
 	tierName      string
 	entryCount    int
-	switchToLocal bool  // Flag to signal switch to local search
-	previewScroll int   // Scroll offset for preview pane
+	switchToLocal bool   // Flag to signal switch to local search
+	previewScroll int    // Scroll offset for preview pane
 	query         string // Current search query for highlighting
 
 	// Index reference (set by Home)
@@ -301,7 +301,7 @@ func (gs *GlobalSearch) View() string {
 	if totalWidth < 100 {
 		totalWidth = 100
 	}
-	leftWidth := totalWidth * 35 / 100  // 35% for results
+	leftWidth := totalWidth * 35 / 100       // 35% for results
 	rightWidth := totalWidth - leftWidth - 3 // Rest for preview (minus border)
 
 	previewHeight := gs.height - 12 // Leave room for header, input, hints
@@ -472,14 +472,14 @@ func (gs *GlobalSearch) View() string {
 	// Style the panes
 	leftStyle := lipgloss.NewStyle().
 		Width(leftWidth).
-		Height(previewHeight + 6).
+		Height(previewHeight+6).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(ColorAccent).
 		Padding(0, 1)
 
 	rightStyle := lipgloss.NewStyle().
 		Width(rightWidth).
-		Height(previewHeight + 6).
+		Height(previewHeight+6).
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(ColorCyan).
 		Padding(0, 1)

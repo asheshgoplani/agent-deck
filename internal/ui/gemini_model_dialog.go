@@ -115,7 +115,7 @@ func (d *GeminiModelDialog) View() string {
 				prefix = "> "
 				style = lipgloss.NewStyle().Background(ColorAccent).Foreground(ColorBg).Bold(true)
 			}
-			content.WriteString(style.Width(38).Render(prefix + model) + "\n")
+			content.WriteString(style.Width(38).Render(prefix+model) + "\n")
 		}
 	}
 

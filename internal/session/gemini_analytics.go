@@ -8,14 +8,11 @@ import (
 
 type GeminiSessionAnalytics struct {
 
-        // Model name
+	// Model name
 
-        Model string `json:"model"`
+	Model string `json:"model"`
 
-
-
-        // Token usage
-
+	// Token usage
 
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`

@@ -149,10 +149,10 @@ func IsTmuxAvailable() error {
 
 // TerminalInfo contains detected terminal information
 type TerminalInfo struct {
-	Name           string // Terminal name (warp, iterm2, kitty, alacritty, etc.)
-	SupportsOSC8   bool   // Supports OSC 8 hyperlinks
-	SupportsOSC52  bool   // Supports OSC 52 clipboard
-	SupportsTrueColor bool // Supports 24-bit color
+	Name              string // Terminal name (warp, iterm2, kitty, alacritty, etc.)
+	SupportsOSC8      bool   // Supports OSC 8 hyperlinks
+	SupportsOSC52     bool   // Supports OSC 52 clipboard
+	SupportsTrueColor bool   // Supports 24-bit color
 }
 
 // DetectTerminal identifies the current terminal emulator from environment variables
@@ -218,9 +218,9 @@ func GetTerminalInfo() TerminalInfo {
 	terminal := DetectTerminal()
 
 	info := TerminalInfo{
-		Name:           terminal,
-		SupportsOSC8:   false,
-		SupportsOSC52:  false,
+		Name:              terminal,
+		SupportsOSC8:      false,
+		SupportsOSC52:     false,
 		SupportsTrueColor: false,
 	}
 
@@ -235,8 +235,8 @@ func GetTerminalInfo() TerminalInfo {
 	switch terminal {
 	case "warp":
 		// Warp: Full modern terminal support
-		info.SupportsOSC8 = true   // Native clickable paths
-		info.SupportsOSC52 = true  // Clipboard integration
+		info.SupportsOSC8 = true  // Native clickable paths
+		info.SupportsOSC52 = true // Clipboard integration
 		info.SupportsTrueColor = true
 
 	case "iterm2":
@@ -290,7 +290,7 @@ func GetTerminalInfo() TerminalInfo {
 	default:
 		// Unknown terminal - assume basic support
 		// Most modern terminals support these features
-		info.SupportsOSC8 = true  // Optimistic default
+		info.SupportsOSC8 = true // Optimistic default
 		info.SupportsOSC52 = true
 	}
 
@@ -831,7 +831,7 @@ func (s *Session) RespawnPane(command string) error {
 	// -k: Kill current process
 	// -t: Target pane (session:window.pane format, use session: for active pane)
 	// command: New command to run
-	target := s.Name + ":"  // Append colon to target the active pane
+	target := s.Name + ":" // Append colon to target the active pane
 	args := []string{"respawn-pane", "-k", "-t", target}
 	if command != "" {
 		// Wrap command in interactive shell to ensure aliases and shell configs are available
@@ -1099,6 +1099,7 @@ func (s *Session) AcknowledgeWithSnapshot() {
 // 3. If timestamp changed → check if sustained or spike
 //   - Sustained (1+ more changes in 1s) → GREEN
 //   - Spike (no more changes) → filtered (no state change)
+//
 // 4. Check cooldown → GREEN if within
 // 5. Cooldown expired → YELLOW or GRAY based on acknowledged
 func (s *Session) GetStatus() (string, error) {
@@ -1630,9 +1631,9 @@ var (
 
 	// Progress bar patterns for normalization (Fix 2.1)
 	// These cause hash changes when progress updates
-	progressBarPattern = regexp.MustCompile(`\[=*>?\s*\]\s*\d+%`)           // [====>   ] 45%
+	progressBarPattern = regexp.MustCompile(`\[=*>?\s*\]\s*\d+%`)                  // [====>   ] 45%
 	downloadPattern    = regexp.MustCompile(`\d+\.?\d*[KMGT]?B/\d+\.?\d*[KMGT]?B`) // 1.2MB/5.6MB
-	percentagePattern  = regexp.MustCompile(`\b\d{1,3}%`)                   // 45% (word boundary to avoid false matches)
+	percentagePattern  = regexp.MustCompile(`\b\d{1,3}%`)                          // 45% (word boundary to avoid false matches)
 )
 
 // claudeWhimsicalWords contains all 90 whimsical "thinking" words used by Claude Code
@@ -1693,9 +1694,9 @@ func (s *Session) normalizeContent(content string) string {
 
 	// Strip progress indicators that change frequently (Fix 2.1)
 	// These cause hash changes during downloads, builds, etc.
-	result = progressBarPattern.ReplaceAllString(result, "[PROGRESS]")  // [====>   ] 45%
-	result = downloadPattern.ReplaceAllString(result, "X.XMB/Y.YMB")    // 1.2MB/5.6MB
-	result = percentagePattern.ReplaceAllString(result, "N%")           // 45%
+	result = progressBarPattern.ReplaceAllString(result, "[PROGRESS]") // [====>   ] 45%
+	result = downloadPattern.ReplaceAllString(result, "X.XMB/Y.YMB")   // 1.2MB/5.6MB
+	result = percentagePattern.ReplaceAllString(result, "N%")          // 45%
 
 	// Normalize trailing whitespace per line (fixes resize false positives)
 	// tmux capture-pane -J can add trailing spaces when terminal is resized

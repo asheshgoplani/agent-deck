@@ -32,11 +32,11 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	ProjectPath    string    `json:"project_path"`
-	GroupPath      string    `json:"group_path"` // e.g., "projects/devops"
-	ParentSessionID   string `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	ProjectPath       string `json:"project_path"`
+	GroupPath         string `json:"group_path"`                    // e.g., "projects/devops"
+	ParentSessionID   string `json:"parent_session_id,omitempty"`   // Links to parent session (makes this a sub-session)
 	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
 
 	// Git worktree support
@@ -54,18 +54,17 @@ type Instance struct {
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
 
-	        // Gemini CLI integration
+	// Gemini CLI integration
 
-	        GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
+	GeminiSessionID string `json:"gemini_session_id,omitempty"`
 
-	        GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
+	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
 
-	        GeminiModel      string                  `json:"gemini_model,omitempty"`       // Active model for this session
+	GeminiModel string `json:"gemini_model,omitempty"` // Active model for this session
 
-	        GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
+	GeminiYoloMode *bool `json:"gemini_yolo_mode,omitempty"` // Per-session override (nil = use global config)
 
-	
-	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`   // Per-session analytics
+	GeminiAnalytics *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
@@ -411,64 +410,57 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		}
 	}
 
-	                yoloFlag := ""
+	yoloFlag := ""
 
-	                yoloEnv := "false"
+	yoloEnv := "false"
 
-	                if yoloMode {
+	if yoloMode {
 
-	                        yoloFlag = " --yolo"
+		yoloFlag = " --yolo"
 
-	                        yoloEnv = "true"
+		yoloEnv = "true"
 
-	                }
+	}
 
-	        
+	modelFlag := ""
 
-	                modelFlag := ""
+	if i.GeminiModel != "" {
 
-	                if i.GeminiModel != "" {
+		modelFlag = fmt.Sprintf(" --model %s", i.GeminiModel)
 
-	                        modelFlag = fmt.Sprintf(" --model %s", i.GeminiModel)
+	} else {
 
-	                } else {
+		// Check global config for default model
 
-	                        // Check global config for default model
+		userConfig, _ := LoadUserConfig()
 
-	                        userConfig, _ := LoadUserConfig()
+		if userConfig != nil && userConfig.Gemini.DefaultModel != "" {
 
-	                        if userConfig != nil && userConfig.Gemini.DefaultModel != "" {
+			modelFlag = fmt.Sprintf(" --model %s", userConfig.Gemini.DefaultModel)
 
-	                                modelFlag = fmt.Sprintf(" --model %s", userConfig.Gemini.DefaultModel)
+		}
 
-	                        }
+	}
 
-	                }
+	// If baseCommand is just "gemini", handle specially
 
-	        
+	if baseCommand == "gemini" {
 
-	                // If baseCommand is just "gemini", handle specially
+		// If we already have a session ID, use simple resume
 
-	                if baseCommand == "gemini" {
+		if i.GeminiSessionID != "" {
 
-	                        // If we already have a session ID, use simple resume
+			return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s%s", yoloEnv, i.GeminiSessionID, yoloFlag, modelFlag)
 
-	                        if i.GeminiSessionID != "" {
+		}
 
-	                                return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; gemini --resume %s%s%s", yoloEnv, i.GeminiSessionID, yoloFlag, modelFlag)
+		// Start Gemini fresh
 
-	                        }
+		return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s%s", yoloEnv, yoloFlag, modelFlag)
 
-	        
+	}
 
-	                        // Start Gemini fresh
-
-	                        return fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; exec gemini%s%s", yoloEnv, yoloFlag, modelFlag)
-
-	                }
-
-	        
-		// For custom commands (e.g., resume commands), return as-is
+	// For custom commands (e.g., resume commands), return as-is
 	return baseCommand
 }
 
@@ -910,7 +902,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// Track state transitions: we need to see "active" before accepting "waiting"
 	// This ensures we don't send the message during initial startup (false "waiting")
 	sawActive := false
-	waitingCount := 0 // Track consecutive "waiting" states to detect already-ready sessions
+	waitingCount := 0  // Track consecutive "waiting" states to detect already-ready sessions
 	maxAttempts := 300 // 60 seconds max (300 * 200ms) - Claude with MCPs can take 40-60s
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -1082,38 +1074,39 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 // SetGeminiYoloMode sets the YOLO mode for Gemini and syncs it to the tmux environment.
 // This ensures the background status worker sees the correct state during restarts.
 func (i *Instance) SetGeminiYoloMode(enabled bool) {
-        if i.Tool != "gemini" {
-                return
-        }
+	if i.Tool != "gemini" {
+		return
+	}
 
-        i.GeminiYoloMode = &enabled
+	i.GeminiYoloMode = &enabled
 
-        // Sync to tmux environment immediately if session exists
-        // This ensures background detection (UpdateGeminiSession) sees the new value
-        if i.tmuxSession != nil && i.tmuxSession.Exists() {
-                val := "false"
-                if enabled {
-                        val = "true"
-                }
-                _ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", val)
-        }
+	// Sync to tmux environment immediately if session exists
+	// This ensures background detection (UpdateGeminiSession) sees the new value
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		val := "false"
+		if enabled {
+			val = "true"
+		}
+		_ = i.tmuxSession.SetEnvironment("GEMINI_YOLO_MODE", val)
+	}
 }
 
 // SetGeminiModel sets the model for Gemini and restarts the session to apply it.
 func (i *Instance) SetGeminiModel(model string) error {
-        if i.Tool != "gemini" {
-                return fmt.Errorf("not a gemini session")
-        }
+	if i.Tool != "gemini" {
+		return fmt.Errorf("not a gemini session")
+	}
 
-        i.GeminiModel = model
+	i.GeminiModel = model
 
-        // If session is running, restart it to apply the new model
-        if i.tmuxSession != nil && i.tmuxSession.Exists() {
-                return i.Restart()
-        }
+	// If session is running, restart it to apply the new model
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		return i.Restart()
+	}
 
-        return nil
+	return nil
 }
+
 // UpdateGeminiSession updates the Gemini session ID and YOLO mode from tmux environment.
 // The capture-resume pattern (used in Start/Restart) sets GEMINI_SESSION_ID
 // in the tmux environment, making this the single authoritative source.
@@ -1178,7 +1171,7 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 			}
 		}
 	}
-			// Update latest prompt from session file
+	// Update latest prompt from session file
 	if i.GeminiSessionID != "" && len(i.GeminiSessionID) >= 8 {
 		sessionsDir := GetGeminiSessionsDir(i.ProjectPath)
 		pattern := filepath.Join(sessionsDir, "session-*-"+i.GeminiSessionID[:8]+".json")
@@ -1595,14 +1588,14 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	var session struct {
 		SessionID string `json:"sessionId"` // VERIFIED: camelCase
 		Messages  []struct {
-			ID        string          `json:"id"`
-			Timestamp string          `json:"timestamp"`
-			Type      string          `json:"type"` // VERIFIED: "user" or "gemini"
-			Content   string          `json:"content"`
+			ID        string            `json:"id"`
+			Timestamp string            `json:"timestamp"`
+			Type      string            `json:"type"` // VERIFIED: "user" or "gemini"
+			Content   string            `json:"content"`
 			ToolCalls []json.RawMessage `json:"toolCalls,omitempty"`
 			Thoughts  []json.RawMessage `json:"thoughts,omitempty"`
-			Model     string          `json:"model,omitempty"`
-			Tokens    json.RawMessage `json:"tokens,omitempty"`
+			Model     string            `json:"model,omitempty"`
+			Tokens    json.RawMessage   `json:"tokens,omitempty"`
 		} `json:"messages"`
 	}
 
