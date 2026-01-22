@@ -22,25 +22,48 @@ import (
 
 // SSHExecutor executes tmux commands on a remote host via SSH
 type SSHExecutor struct {
-	conn   *ssh.Connection
-	hostID string
+	conn    *ssh.Connection
+	hostID  string
+	tmuxCmd string // Path to tmux binary (default: "tmux")
 }
 
 // NewSSHExecutor creates a new SSH executor for the given connection
 func NewSSHExecutor(conn *ssh.Connection, hostID string) *SSHExecutor {
 	return &SSHExecutor{
-		conn:   conn,
-		hostID: hostID,
+		conn:    conn,
+		hostID:  hostID,
+		tmuxCmd: "tmux",
+	}
+}
+
+// NewSSHExecutorWithTmuxPath creates a new SSH executor with a custom tmux path
+func NewSSHExecutorWithTmuxPath(conn *ssh.Connection, hostID, tmuxPath string) *SSHExecutor {
+	cmd := "tmux"
+	if tmuxPath != "" {
+		cmd = tmuxPath
+	}
+	return &SSHExecutor{
+		conn:    conn,
+		hostID:  hostID,
+		tmuxCmd: cmd,
 	}
 }
 
 // NewSSHExecutorFromPool creates an SSH executor using the connection pool
 func NewSSHExecutorFromPool(hostID string) (*SSHExecutor, error) {
-	conn, err := ssh.DefaultPool().Get(hostID)
+	pool := ssh.DefaultPool()
+	conn, err := pool.Get(hostID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get SSH connection for %s: %w", hostID, err)
 	}
-	return NewSSHExecutor(conn, hostID), nil
+
+	// Look up tmux path from config
+	tmuxPath := "tmux"
+	if cfg, exists := pool.GetConfig(hostID); exists && cfg.TmuxPath != "" {
+		tmuxPath = cfg.TmuxPath
+	}
+
+	return NewSSHExecutorWithTmuxPath(conn, hostID, tmuxPath), nil
 }
 
 // runRemote executes a command on the remote host and returns the output
@@ -58,7 +81,7 @@ func (e *SSHExecutor) NewSession(name, workDir string) error {
 	if workDir == "" {
 		workDir = "~"
 	}
-	cmd := fmt.Sprintf("tmux new-session -d -s %q -c %q", name, workDir)
+	cmd := fmt.Sprintf("%s new-session -d -s %q -c %q", e.tmuxCmd, name, workDir)
 	_, err := e.runRemote(cmd)
 	if err != nil {
 		return fmt.Errorf("failed to create remote tmux session: %w", err)
@@ -68,14 +91,14 @@ func (e *SSHExecutor) NewSession(name, workDir string) error {
 
 // KillSession terminates a tmux session on the remote host
 func (e *SSHExecutor) KillSession(name string) error {
-	cmd := fmt.Sprintf("tmux kill-session -t %q", name)
+	cmd := fmt.Sprintf("%s kill-session -t %q", e.tmuxCmd, name)
 	_, err := e.runRemote(cmd)
 	return err
 }
 
 // SessionExists checks if a session exists on the remote host
 func (e *SSHExecutor) SessionExists(name string) (bool, error) {
-	cmd := fmt.Sprintf("tmux has-session -t %q 2>/dev/null && echo exists || echo notfound", name)
+	cmd := fmt.Sprintf("%s has-session -t %q 2>/dev/null && echo exists || echo notfound", e.tmuxCmd, name)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return false, err
@@ -85,7 +108,7 @@ func (e *SSHExecutor) SessionExists(name string) (bool, error) {
 
 // ListSessions returns all sessions with their window activity timestamps
 func (e *SSHExecutor) ListSessions() (map[string]int64, error) {
-	cmd := "tmux list-windows -a -F '#{session_name}\t#{window_activity}' 2>/dev/null || echo ''"
+	cmd := fmt.Sprintf("%s list-windows -a -F '#{session_name}\t#{window_activity}' 2>/dev/null || echo ''", e.tmuxCmd)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return nil, err
@@ -116,9 +139,9 @@ func (e *SSHExecutor) SendKeys(session, keys string, literal bool) error {
 	if literal {
 		// Escape the keys for shell and tmux
 		escaped := strings.ReplaceAll(keys, "'", "'\\''")
-		cmd = fmt.Sprintf("tmux send-keys -l -t %q '%s'", session, escaped)
+		cmd = fmt.Sprintf("%s send-keys -l -t %q '%s'", e.tmuxCmd, session, escaped)
 	} else {
-		cmd = fmt.Sprintf("tmux send-keys -t %q %s", session, keys)
+		cmd = fmt.Sprintf("%s send-keys -t %q %s", e.tmuxCmd, session, keys)
 	}
 	_, err := e.runRemote(cmd)
 	return err
@@ -130,7 +153,7 @@ func (e *SSHExecutor) CapturePane(session string, joinWrapped bool) (string, err
 	if joinWrapped {
 		joinFlag = " -J"
 	}
-	cmd := fmt.Sprintf("tmux capture-pane -t %q -p%s", session, joinFlag)
+	cmd := fmt.Sprintf("%s capture-pane -t %q -p%s", e.tmuxCmd, session, joinFlag)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture remote pane: %w", err)
@@ -140,7 +163,7 @@ func (e *SSHExecutor) CapturePane(session string, joinWrapped bool) (string, err
 
 // CapturePaneHistory captures scrollback history from the remote host
 func (e *SSHExecutor) CapturePaneHistory(session string, lines int) (string, error) {
-	cmd := fmt.Sprintf("tmux capture-pane -t %q -p -J -S -%d", session, lines)
+	cmd := fmt.Sprintf("%s capture-pane -t %q -p -J -S -%d", e.tmuxCmd, session, lines)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture remote history: %w", err)
@@ -155,9 +178,9 @@ func (e *SSHExecutor) RespawnPane(session, command string) error {
 	if command != "" {
 		// Escape command for remote shell
 		escaped := strings.ReplaceAll(command, "'", "'\\''")
-		cmd = fmt.Sprintf("tmux respawn-pane -k -t %q 'bash -ic %q'", target, escaped)
+		cmd = fmt.Sprintf("%s respawn-pane -k -t %q 'bash -ic %q'", e.tmuxCmd, target, escaped)
 	} else {
-		cmd = fmt.Sprintf("tmux respawn-pane -k -t %q", target)
+		cmd = fmt.Sprintf("%s respawn-pane -k -t %q", e.tmuxCmd, target)
 	}
 	_, err := e.runRemote(cmd)
 	if err != nil {
@@ -168,28 +191,28 @@ func (e *SSHExecutor) RespawnPane(session, command string) error {
 
 // SetOption sets a tmux option for a session on the remote host
 func (e *SSHExecutor) SetOption(session, option, value string) error {
-	cmd := fmt.Sprintf("tmux set-option -t %q %s %q 2>/dev/null || true", session, option, value)
+	cmd := fmt.Sprintf("%s set-option -t %q %s %q 2>/dev/null || true", e.tmuxCmd, session, option, value)
 	e.runRemoteIgnoreError(cmd)
 	return nil
 }
 
 // SetServerOption sets a server-wide tmux option on the remote host
 func (e *SSHExecutor) SetServerOption(option, value string) error {
-	cmd := fmt.Sprintf("tmux set -asq %s %q 2>/dev/null || true", option, value)
+	cmd := fmt.Sprintf("%s set -asq %s %q 2>/dev/null || true", e.tmuxCmd, option, value)
 	e.runRemoteIgnoreError(cmd)
 	return nil
 }
 
 // SetEnvironment sets an environment variable for a session on the remote host
 func (e *SSHExecutor) SetEnvironment(session, key, value string) error {
-	cmd := fmt.Sprintf("tmux set-environment -t %q %s %q", session, key, value)
+	cmd := fmt.Sprintf("%s set-environment -t %q %s %q", e.tmuxCmd, session, key, value)
 	_, err := e.runRemote(cmd)
 	return err
 }
 
 // GetEnvironment gets an environment variable from a session on the remote host
 func (e *SSHExecutor) GetEnvironment(session, key string) (string, error) {
-	cmd := fmt.Sprintf("tmux show-environment -t %q %s 2>/dev/null", session, key)
+	cmd := fmt.Sprintf("%s show-environment -t %q %s 2>/dev/null", e.tmuxCmd, session, key)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return "", fmt.Errorf("variable not found: %s", key)
@@ -204,7 +227,7 @@ func (e *SSHExecutor) GetEnvironment(session, key string) (string, error) {
 
 // DisplayMessage runs tmux display-message on the remote host
 func (e *SSHExecutor) DisplayMessage(session, format string) (string, error) {
-	cmd := fmt.Sprintf("tmux display-message -t %q -p %q", session, format)
+	cmd := fmt.Sprintf("%s display-message -t %q -p %q", e.tmuxCmd, session, format)
 	output, err := e.runRemote(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to display message: %w", err)
@@ -219,14 +242,14 @@ func (e *SSHExecutor) EnablePipePane(session, outputFile string) error {
 	logDir := "~/.agent-deck/logs"
 	e.runRemoteIgnoreError(fmt.Sprintf("mkdir -p %s", logDir))
 
-	cmd := fmt.Sprintf("tmux pipe-pane -t %q -o \"cat >> '%s'\"", session, outputFile)
+	cmd := fmt.Sprintf("%s pipe-pane -t %q -o \"cat >> '%s'\"", e.tmuxCmd, session, outputFile)
 	_, err := e.runRemote(cmd)
 	return err
 }
 
 // DisablePipePane disables pipe-pane on the remote host
 func (e *SSHExecutor) DisablePipePane(session string) error {
-	cmd := fmt.Sprintf("tmux pipe-pane -t %q", session)
+	cmd := fmt.Sprintf("%s pipe-pane -t %q", e.tmuxCmd, session)
 	_, err := e.runRemote(cmd)
 	return err
 }
@@ -238,7 +261,7 @@ func (e *SSHExecutor) Attach(ctx context.Context, session string, stdin io.Reade
 
 	// Build SSH command for interactive attach
 	// ssh -t user@host tmux attach-session -t session
-	sshCmd, err := e.conn.StartInteractiveSession(fmt.Sprintf("tmux attach-session -t %q", session))
+	sshCmd, err := e.conn.StartInteractiveSession(fmt.Sprintf("%s attach-session -t %q", e.tmuxCmd, session))
 	if err != nil {
 		return fmt.Errorf("failed to start SSH session: %w", err)
 	}
@@ -394,4 +417,51 @@ func (e *SSHExecutor) IsRemote() bool {
 // HostID returns the host identifier for this executor
 func (e *SSHExecutor) HostID() string {
 	return e.hostID
+}
+
+// SessionInfo contains extended information about a tmux session
+type SessionInfo struct {
+	WorkingDir string // Working directory of the session's first window
+	Activity   int64  // Last activity timestamp
+}
+
+// ListSessionsWithInfo returns all sessions with their working directories and activity timestamps
+// This is used for remote session discovery to get additional context about each session
+func (e *SSHExecutor) ListSessionsWithInfo() (map[string]SessionInfo, error) {
+	// Query session name, working directory, and activity for each session
+	// We use the first window (index 0) for working directory as sessions are typically single-window
+	cmd := fmt.Sprintf("%s list-sessions -F '#{session_name}\t#{session_path}\t#{session_activity}' 2>/dev/null || echo ''", e.tmuxCmd)
+	output, err := e.runRemote(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make(map[string]SessionInfo)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 1 {
+			continue
+		}
+
+		name := parts[0]
+		var workDir string
+		var activity int64
+
+		if len(parts) >= 2 {
+			workDir = parts[1]
+		}
+		if len(parts) >= 3 {
+			_, _ = fmt.Sscanf(parts[2], "%d", &activity)
+		}
+
+		sessions[name] = SessionInfo{
+			WorkingDir: workDir,
+			Activity:   activity,
+		}
+	}
+
+	return sessions, nil
 }

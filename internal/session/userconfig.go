@@ -67,6 +67,9 @@ type UserConfig struct {
 
 	// Notifications defines waiting session notification bar settings
 	Notifications NotificationsConfig `toml:"notifications"`
+
+	// RemoteDiscovery defines settings for automatic remote session discovery
+	RemoteDiscovery RemoteDiscoverySettings `toml:"remote_discovery"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -412,6 +415,29 @@ type SSHHostDef struct {
 
 	// Description is optional help text shown in the host selector
 	Description string `toml:"description"`
+
+	// AutoDiscover enables automatic discovery of agentdeck_* sessions on this host
+	// Discovered sessions appear in the local session list under remote/<hostID> group
+	// Default: false
+	AutoDiscover bool `toml:"auto_discover"`
+
+	// TmuxPath is the full path to the tmux binary on the remote host
+	// Use this for non-standard installations (e.g., Homebrew on macOS: /opt/homebrew/bin/tmux)
+	// Default: "tmux" (uses PATH)
+	TmuxPath string `toml:"tmux_path"`
+}
+
+// RemoteDiscoverySettings defines settings for automatic remote session discovery
+type RemoteDiscoverySettings struct {
+	// Enabled enables/disables remote discovery globally (default: true when any host has auto_discover)
+	Enabled bool `toml:"enabled"`
+
+	// IntervalSeconds is how often to scan for remote sessions (default: 60)
+	IntervalSeconds int `toml:"interval_seconds"`
+
+	// GroupPrefix is the prefix for auto-discovered session groups (default: "remote")
+	// Sessions are placed in groups like "remote/host-195"
+	GroupPrefix string `toml:"group_prefix"`
 }
 
 // Default user config (empty maps)
@@ -810,6 +836,42 @@ func GetNotificationsSettings() NotificationsConfig {
 	return settings
 }
 
+// GetRemoteDiscoverySettings returns remote discovery settings with defaults applied
+// Discovery is enabled by default if any SSH host has auto_discover = true
+func GetRemoteDiscoverySettings() RemoteDiscoverySettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return RemoteDiscoverySettings{
+			Enabled:         false,
+			IntervalSeconds: 60,
+			GroupPrefix:     "remote",
+		}
+	}
+
+	settings := config.RemoteDiscovery
+
+	// Apply defaults for unset values
+	if settings.IntervalSeconds <= 0 {
+		settings.IntervalSeconds = 60
+	}
+	if settings.GroupPrefix == "" {
+		settings.GroupPrefix = "remote"
+	}
+
+	// Auto-enable if any host has auto_discover = true and not explicitly disabled
+	// We detect "not explicitly set" by checking if the entire section is empty
+	if !settings.Enabled {
+		for _, host := range config.SSHHosts {
+			if host.AutoDiscover {
+				settings.Enabled = true
+				break
+			}
+		}
+	}
+
+	return settings
+}
+
 // getMCPPoolConfigSection returns the MCP pool config section based on platform
 // On unsupported platforms (WSL1, Windows), it's commented out with explanation
 func getMCPPoolConfigSection() string {
@@ -918,6 +980,60 @@ check_enabled = true
 check_interval_hours = 24
 # Show update notification in CLI commands, not just TUI (default: true)
 notify_in_cli = true
+
+# ============================================================================
+# SSH Remote Hosts
+# ============================================================================
+# Define SSH hosts for remote session management. Sessions can be created on
+# remote machines and managed from the local TUI.
+#
+# SSH authentication uses your ~/.ssh/config and ssh-agent by default.
+#
+# Enable auto_discover = true to automatically discover agent-deck sessions
+# on the remote host. Discovered sessions will appear in the TUI under a
+# "remote/{host-id}" group.
+
+# Example: Development server with auto-discovery
+# [ssh_hosts.dev-server]
+# host = "192.168.1.100"
+# user = "developer"
+# port = 22
+# auto_discover = true
+# description = "Dev server - sessions auto-discovered"
+
+# Example: macOS server with Homebrew tmux
+# [ssh_hosts.mac-mini]
+# host = "192.168.1.50"
+# user = "admin"
+# auto_discover = true
+# tmux_path = "/opt/homebrew/bin/tmux"  # Required for Homebrew on Apple Silicon
+# description = "Mac Mini with Homebrew"
+
+# Example: Production server (manual only, no auto-discovery)
+# [ssh_hosts.prod]
+# host = "prod.example.com"
+# user = "deploy"
+# auto_discover = false
+# description = "Production server"
+
+# Example: Bastion/jump host setup
+# [ssh_hosts.bastion]
+# host = "bastion.example.com"
+# user = "admin"
+# description = "Bastion host"
+#
+# [ssh_hosts.internal]
+# host = "10.0.0.50"
+# user = "developer"
+# jump_host = "bastion"
+# auto_discover = true
+# description = "Internal server via bastion"
+
+# Remote discovery settings (optional - defaults shown)
+# [remote_discovery]
+# enabled = true                    # Master switch for auto-discovery
+# interval_seconds = 60             # How often to scan remote hosts
+# group_prefix = "remote"           # Group prefix for discovered sessions
 
 # Experiments (for 'agent-deck try' command)
 # Quick experiment folder management with auto-dated directories
@@ -1106,6 +1222,7 @@ func InitSSHPool() {
 			Port:         def.Port,
 			IdentityFile: def.IdentityFile,
 			JumpHost:     def.JumpHost,
+			TmuxPath:     def.TmuxPath,
 		}
 		pool.Register(hostID, cfg)
 	}

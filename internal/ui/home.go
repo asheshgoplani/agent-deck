@@ -246,6 +246,11 @@ type Home struct {
 	boundKeysMu          sync.Mutex        // Protects boundKeys for background worker access
 	lastBarText          string            // Cache to avoid updating all sessions every tick
 	lastBarTextMu        sync.Mutex        // Protects lastBarText for background worker access
+
+	// Remote session discovery
+	remoteDiscoveryTrigger chan struct{}    // Triggers manual discovery (e.g., on 'r' refresh)
+	lastRemoteDiscovery    time.Time        // When discovery last ran
+	remoteDiscoveryRunning atomic.Bool      // Prevents concurrent discoveries
 }
 
 // reloadState preserves UI state during storage reload
@@ -330,6 +335,13 @@ type statusUpdateRequest struct {
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
+// remoteDiscoveryMsg signals that remote session discovery has completed
+type remoteDiscoveryMsg struct {
+	discovered []*session.Instance   // Newly discovered sessions
+	errors     map[string]error      // Errors per host
+	staleIDs   []string              // IDs of sessions that no longer exist on remote
+}
+
 // NewHome creates a new home model with the default profile
 func NewHome() *Home {
 	return NewHomeWithProfile("")
@@ -385,10 +397,11 @@ func NewHomeWithProfile(profile string) *Home {
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
-		lastLogActivity:      make(map[string]time.Time),
-		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:     make(chan struct{}),
-		boundKeys:            make(map[string]string),
+		lastLogActivity:           make(map[string]time.Time),
+		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:          make(chan struct{}),
+		boundKeys:                 make(map[string]string),
+		remoteDiscoveryTrigger:    make(chan struct{}, 1), // Buffered to avoid blocking
 	}
 
 	// Initialize notification manager if enabled in config
@@ -439,6 +452,9 @@ func NewHomeWithProfile(profile string) *Home {
 
 	// Start background status worker (Priority 1C)
 	go h.statusWorker()
+
+	// Start remote session discovery worker (if any hosts have auto_discover enabled)
+	go h.remoteDiscoveryWorker()
 
 	// Initialize global search
 	h.globalSearch = NewGlobalSearch()
@@ -1330,6 +1346,146 @@ func (h *Home) statusWorker() {
 	}
 }
 
+// remoteDiscoveryWorker runs periodic remote session discovery in the background
+// This discovers agentdeck_* sessions on configured SSH hosts with auto_discover=true
+func (h *Home) remoteDiscoveryWorker() {
+	settings := session.GetRemoteDiscoverySettings()
+	if !settings.Enabled {
+		log.Printf("[REMOTE-DISCOVERY] Disabled (no hosts with auto_discover=true)")
+		return
+	}
+
+	interval := time.Duration(settings.IntervalSeconds) * time.Second
+	log.Printf("[REMOTE-DISCOVERY] Worker started (interval=%s)", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run initial discovery after a short delay (let startup complete)
+	time.Sleep(3 * time.Second)
+	h.runRemoteDiscovery()
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			log.Printf("[REMOTE-DISCOVERY] Worker stopped")
+			return
+
+		case <-ticker.C:
+			h.runRemoteDiscovery()
+
+		case <-h.remoteDiscoveryTrigger:
+			// Manual trigger (e.g., from 'r' key refresh)
+			h.runRemoteDiscovery()
+		}
+	}
+}
+
+// runRemoteDiscovery performs remote session discovery and sends results to TUI
+func (h *Home) runRemoteDiscovery() {
+	// Prevent concurrent discoveries
+	if !h.remoteDiscoveryRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer h.remoteDiscoveryRunning.Store(false)
+
+	h.lastRemoteDiscovery = time.Now()
+
+	// Get current instances snapshot
+	h.instancesMu.RLock()
+	existing := make([]*session.Instance, len(h.instances))
+	copy(existing, h.instances)
+	h.instancesMu.RUnlock()
+
+	// Discover remote sessions
+	discovered, staleIDs, errors := session.DiscoverRemoteTmuxSessions(existing)
+
+	// Note: We don't send a message to the TUI here because that would require
+	// access to the tea.Program which we don't have in the background worker.
+	// Instead, we directly merge the results and trigger a save.
+
+	if len(discovered) == 0 && len(staleIDs) == 0 && len(errors) == 0 {
+		return // Nothing to do
+	}
+
+	// Log errors
+	for hostID, err := range errors {
+		log.Printf("[REMOTE-DISCOVERY] Error on %s: %v", hostID, err)
+	}
+
+	needsSave := false
+
+	// Remove stale sessions (sessions that no longer exist on remote)
+	if len(staleIDs) > 0 {
+		staleSet := make(map[string]bool)
+		for _, id := range staleIDs {
+			staleSet[id] = true
+		}
+
+		h.instancesMu.Lock()
+		var filtered []*session.Instance
+		for _, inst := range h.instances {
+			if !staleSet[inst.ID] {
+				filtered = append(filtered, inst)
+			}
+		}
+		if len(filtered) < len(h.instances) {
+			h.instances = filtered
+			// Rebuild instanceByID map
+			h.instanceByID = make(map[string]*session.Instance, len(h.instances))
+			for _, inst := range h.instances {
+				h.instanceByID[inst.ID] = inst
+			}
+			log.Printf("[REMOTE-DISCOVERY] Removed %d stale sessions", len(staleIDs))
+			needsSave = true
+		}
+		h.instancesMu.Unlock()
+	}
+
+	// Merge discovered sessions
+	if len(discovered) > 0 {
+		h.instancesMu.Lock()
+		merged, newCount := session.MergeDiscoveredSessions(h.instances, discovered)
+		if newCount > 0 {
+			h.instances = merged
+			// Rebuild instanceByID map
+			h.instanceByID = make(map[string]*session.Instance, len(h.instances))
+			for _, inst := range h.instances {
+				h.instanceByID[inst.ID] = inst
+			}
+			log.Printf("[REMOTE-DISCOVERY] Added %d new sessions", newCount)
+			needsSave = true
+		}
+		h.instancesMu.Unlock()
+	}
+
+	// Save to storage if anything changed
+	if needsSave && h.storage != nil {
+		h.instancesMu.RLock()
+		instances := make([]*session.Instance, len(h.instances))
+		copy(instances, h.instances)
+		h.instancesMu.RUnlock()
+
+		if err := h.storage.SaveWithGroups(instances, h.groupTree); err != nil {
+			log.Printf("[REMOTE-DISCOVERY] Failed to save: %v", err)
+		}
+	}
+
+	// Invalidate status cache to force UI refresh
+	if needsSave {
+		h.cachedStatusCounts.valid.Store(false)
+	}
+}
+
+// triggerRemoteDiscovery signals the remote discovery worker to run immediately
+func (h *Home) triggerRemoteDiscovery() {
+	select {
+	case h.remoteDiscoveryTrigger <- struct{}{}:
+	default:
+		// Channel full, discovery already pending
+	}
+}
+
 // backgroundStatusUpdate runs independently of the TUI
 // Updates session statuses and syncs notification bar directly to tmux
 // This is called by the internal ticker even when TUI is paused (tea.Exec)
@@ -1917,6 +2073,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case refreshMsg:
+		// Also trigger remote discovery on manual refresh
+		h.triggerRemoteDiscovery()
 		return h, h.loadSessions
 
 	case storageChangedMsg:

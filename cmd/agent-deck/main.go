@@ -228,6 +228,9 @@ func main() {
 		case "uninstall":
 			handleUninstall(args[1:])
 			return
+		case "debug":
+			handleDebug(profile, args[1:])
+			return
 		}
 	}
 
@@ -1968,4 +1971,80 @@ func formatSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// handleDebug handles debug subcommands for development testing
+func handleDebug(profile string, args []string) {
+	if len(args) == 0 {
+		fmt.Println("Usage: agent-deck debug <subcommand>")
+		fmt.Println()
+		fmt.Println("Subcommands:")
+		fmt.Println("  discover    Test remote session discovery")
+		return
+	}
+
+	switch args[0] {
+	case "discover":
+		handleDebugDiscover()
+	default:
+		fmt.Printf("Unknown debug subcommand: %s\n", args[0])
+	}
+}
+
+// handleDebugDiscover tests remote session discovery and optionally saves results
+func handleDebugDiscover() {
+	// Initialize SSH pool
+	session.InitSSHPool()
+
+	// Get and display settings
+	settings := session.GetRemoteDiscoverySettings()
+	fmt.Println("Remote Discovery Settings:")
+	fmt.Printf("  Enabled: %v\n", settings.Enabled)
+	fmt.Printf("  Interval: %ds\n", settings.IntervalSeconds)
+	fmt.Printf("  GroupPrefix: %s\n", settings.GroupPrefix)
+
+	if !settings.Enabled {
+		fmt.Println("\nDiscovery is disabled (no hosts with auto_discover=true)")
+		return
+	}
+
+	// Load existing sessions
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		fmt.Printf("Error creating storage: %v\n", err)
+		return
+	}
+	existing, _ := storage.Load()
+
+	// Run discovery
+	fmt.Println("\nRunning discovery...")
+	discovered, staleIDs, errors := session.DiscoverRemoteTmuxSessions(existing)
+
+	fmt.Println("\nResults:")
+	fmt.Printf("  Discovered: %d sessions\n", len(discovered))
+	for _, inst := range discovered {
+		fmt.Printf("    - %s (%s) on %s at %s\n", inst.Title, inst.ID, inst.RemoteHost, inst.ProjectPath)
+	}
+
+	fmt.Printf("  Stale: %d sessions\n", len(staleIDs))
+	for _, id := range staleIDs {
+		fmt.Printf("    - %s\n", id)
+	}
+
+	fmt.Printf("  Errors: %d\n", len(errors))
+	for host, err := range errors {
+		fmt.Printf("    - %s: %v\n", host, err)
+	}
+
+	// Save discovered sessions
+	if len(discovered) > 0 {
+		merged, newCount := session.MergeDiscoveredSessions(existing, discovered)
+		if newCount > 0 {
+			if err := storage.Save(merged); err != nil {
+				fmt.Printf("\nError saving sessions: %v\n", err)
+			} else {
+				fmt.Printf("\nSaved %d new sessions to storage\n", newCount)
+			}
+		}
+	}
 }

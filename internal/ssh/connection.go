@@ -37,6 +37,7 @@ type Config struct {
 	Port         int
 	IdentityFile string
 	JumpHost     string // Reference to another host definition
+	TmuxPath     string // Path to tmux binary on remote (default: "tmux")
 }
 
 // NewConnection creates a new SSH connection with the given configuration

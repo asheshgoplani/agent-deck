@@ -2180,6 +2180,12 @@ func (i *Instance) GetTmuxSession() *tmux.Session {
 	return i.tmuxSession
 }
 
+// SetTmuxSession sets the tmux session object
+// Used for remote session discovery where the tmux session is created externally
+func (i *Instance) SetTmuxSession(ts *tmux.Session) {
+	i.tmuxSession = ts
+}
+
 // GetClaudeOptions returns Claude-specific options, or nil if not set
 func (i *Instance) GetClaudeOptions() *ClaudeOptions {
 	if len(i.ToolOptionsJSON) == 0 {
