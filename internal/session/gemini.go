@@ -46,7 +46,16 @@ func GetAvailableGeminiModels() ([]string, error) {
         apiKey := os.Getenv("GOOGLE_API_KEY")
         if apiKey == "" {
                 // Return common defaults if no API key
-                return []string{"gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"}, nil
+                return []string{
+					"gemini-3-pro-preview",
+					"gemini-3-flash-preview",
+					"gemini-2.5-pro",
+					"gemini-2.5-flash",
+					"gemini-2.5-flash-lite",
+					"gemini-2.0-flash", 
+					"gemini-1.5-flash", 
+					"gemini-1.5-pro",
+				}, nil
         }
 
         url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s", apiKey)

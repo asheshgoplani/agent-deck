@@ -209,5 +209,47 @@ func TestListGeminiSessions(t *testing.T) {
 	}
 }
 
+func TestGetAvailableGeminiModels_Fallback(t *testing.T) {
+	// Ensure no env vars are set that would override fallback
+	oldKey := os.Getenv("GOOGLE_API_KEY")
+	oldOverride := os.Getenv("GEMINI_MODELS_OVERRIDE")
+	os.Unsetenv("GOOGLE_API_KEY")
+	os.Unsetenv("GEMINI_MODELS_OVERRIDE")
+	defer func() {
+		os.Setenv("GOOGLE_API_KEY", oldKey)
+		os.Setenv("GEMINI_MODELS_OVERRIDE", oldOverride)
+	}()
+
+	models, err := GetAvailableGeminiModels()
+	if err != nil {
+		t.Fatalf("GetAvailableGeminiModels() error = %v", err)
+	}
+
+	expectedModels := []string{
+		"gemini-3-pro-preview",
+		"gemini-3-flash-preview",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.0-flash",
+		"gemini-1.5-flash",
+		"gemini-1.5-pro",
+	}
+
+	// The function might sort the models, let's check for inclusion
+	for _, expected := range expectedModels {
+		found := false
+		for _, m := range models {
+			if m == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected model %q not found in fallback list: %v", expected, models)
+		}
+	}
+}
+
 // TestFindGeminiSessionForInstance was removed - file scanning is no longer used.
 // Session ID detection now uses tmux environment variables exclusively.
