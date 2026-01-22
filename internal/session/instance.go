@@ -1146,14 +1146,38 @@ func (i *Instance) UpdateGeminiSession(excludeIDs map[string]bool) {
 		if i.GeminiAnalytics == nil {
 			i.GeminiAnalytics = &GeminiSessionAnalytics{}
 		}
-		                // Non-blocking update (ignore errors, best effort)
-		                _ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
-		
-		                // Sync model from analytics if not explicitly set on instance
-		                if i.GeminiModel == "" && i.GeminiAnalytics.Model != "" {
-		                        i.GeminiModel = i.GeminiAnalytics.Model
-		                }
-		        }
+		// Non-blocking update (ignore errors, best effort)
+		_ = UpdateGeminiAnalyticsFromDisk(i.ProjectPath, i.GeminiSessionID, i.GeminiAnalytics)
+
+		// Sync model from analytics if not explicitly set on instance
+		if i.GeminiModel == "" && i.GeminiAnalytics.Model != "" {
+			i.GeminiModel = i.GeminiAnalytics.Model
+		}
+	}
+
+	// Real-time model detection from output stream
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		content, err := i.tmuxSession.CapturePane()
+		if err == nil {
+			// Strip ANSI codes before matching (fixes #E2E failure)
+			cleanContent := tmux.StripANSI(content)
+
+			// Pattern: "Now using gemini-X.Y-..."
+			re := regexp.MustCompile(`Now using (gemini-[\w.-]+)`)
+			matches := re.FindStringSubmatch(cleanContent)
+			if len(matches) > 1 {
+				detected := matches[1]
+				if i.GeminiAnalytics == nil {
+					i.GeminiAnalytics = &GeminiSessionAnalytics{}
+				}
+				// Update analytics model (real-time source)
+				i.GeminiAnalytics.Model = detected
+
+				// Update instance model (authoritative source for UI)
+				i.GeminiModel = detected
+			}
+		}
+	}
 			// Update latest prompt from session file
 	if i.GeminiSessionID != "" && len(i.GeminiSessionID) >= 8 {
 		sessionsDir := GetGeminiSessionsDir(i.ProjectPath)

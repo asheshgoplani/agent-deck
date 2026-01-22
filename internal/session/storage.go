@@ -82,6 +82,7 @@ type InstanceData struct {
 	// Gemini session (persisted for resume after app restart)
 	GeminiSessionID  string    `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
+	GeminiModel      string    `json:"gemini_model,omitempty"`
 	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"`
 
 	// Latest user input for context
@@ -227,6 +228,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			ClaudeDetectedAt: inst.ClaudeDetectedAt,
 			GeminiSessionID:  inst.GeminiSessionID,
 			GeminiDetectedAt: inst.GeminiDetectedAt,
+			GeminiModel:      inst.GeminiModel,
 			GeminiYoloMode:   inst.GeminiYoloMode,
 			LatestPrompt:     inst.LatestPrompt,
 			LoadedMCPNames:   inst.LoadedMCPNames,
@@ -538,6 +540,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ClaudeDetectedAt: instData.ClaudeDetectedAt,
 			GeminiSessionID:  instData.GeminiSessionID,
 			GeminiDetectedAt: instData.GeminiDetectedAt,
+			GeminiModel:      instData.GeminiModel,
 			GeminiYoloMode:   instData.GeminiYoloMode,
 			LatestPrompt:     instData.LatestPrompt,
 			LoadedMCPNames:   instData.LoadedMCPNames,
