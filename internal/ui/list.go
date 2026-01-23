@@ -124,12 +124,8 @@ func (l *List) View() string {
 
 				status := StatusIndicator(string(inst.Status))
 				icon := ToolIcon(inst.Tool)
-				remoteIndicator := ""
-				if inst.IsRemote() {
-					remoteIndicator = "[" + inst.GetSessionPrefix() + "] "
-				}
 
-				line := style.Render(prefix + icon + " " + remoteIndicator + inst.Title + " " + status)
+				line := style.Render(prefix + icon + " " + inst.Title + " " + status)
 				b.WriteString(line)
 				b.WriteString("\n")
 				itemIndex++

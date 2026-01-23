@@ -5404,12 +5404,7 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		}
 	}
 
-	// Remote indicator for sessions on remote hosts
-	displayTitle := inst.Title
-	if inst.IsRemote() {
-		displayTitle = "[" + inst.GetSessionPrefix() + "] " + inst.Title
-	}
-	title := titleStyle.Render(displayTitle)
+	title := titleStyle.Render(inst.Title)
 	tool := toolStyle.Render(" " + inst.Tool)
 
 	// YOLO badge for Gemini sessions with YOLO mode enabled
@@ -5656,14 +5651,10 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 
 	// Header with tool icon
 	icon := ToolIcon(inst.Tool)
-	displayTitle := inst.Title
-	if inst.IsRemote() {
-		displayTitle = "[" + inst.GetSessionPrefix() + "] " + inst.Title
-	}
 	header := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(ColorAccent).
-		Render(fmt.Sprintf("%s %s", icon, displayTitle))
+		Render(fmt.Sprintf("%s %s", icon, inst.Title))
 	b.WriteString(header)
 	b.WriteString("\n")
 	b.WriteString(strings.Repeat("─", max(0, min(width-4, 40))))
