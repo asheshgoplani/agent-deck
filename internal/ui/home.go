@@ -173,6 +173,11 @@ type Home struct {
 	reloadVersion  uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
+	// Remote session attach request (from Ctrl+b N shortcut)
+	// Background worker sets this when it detects "attach:" signal, main loop processes it
+	pendingRemoteAttach   string     // Session ID to attach to (set by background)
+	pendingRemoteAttachMu sync.Mutex // Protects pendingRemoteAttach
+
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
 	previewCache      map[string]string    // sessionID -> cached preview content
 	previewCacheTime  map[string]time.Time // sessionID -> when cached (for expiration)
@@ -1638,10 +1643,30 @@ func (h *Home) syncNotificationsBackground() {
 	// CRITICAL: This must be done in background sync too, because the foreground
 	// sync might not run when user is attached to a session (tea.Exec pauses TUI)
 	var sessionToAcknowledgeID string
+	var remoteAttachSessionID string // For remote sessions that need attach flow
 	if signalSessionID := tmux.ReadAndClearAckSignal(); signalSessionID != "" {
-		sessionToAcknowledgeID = signalSessionID
 		if debug {
 			log.Printf("[NOTIF-BG] Signal file found: %s", signalSessionID)
+		}
+
+		// Check for attach: prefix (remote session attach request)
+		if strings.HasPrefix(signalSessionID, "attach:") {
+			remoteAttachSessionID = strings.TrimPrefix(signalSessionID, "attach:")
+			if debug {
+				log.Printf("[NOTIF-BG] Remote attach request for: %s", remoteAttachSessionID)
+			}
+		} else {
+			sessionToAcknowledgeID = signalSessionID
+		}
+	}
+
+	// Handle remote attach request - set pendingRemoteAttach for main loop to process
+	if remoteAttachSessionID != "" {
+		h.pendingRemoteAttachMu.Lock()
+		h.pendingRemoteAttach = remoteAttachSessionID
+		h.pendingRemoteAttachMu.Unlock()
+		if debug {
+			log.Printf("[NOTIF-BG] Set pendingRemoteAttach: %s", remoteAttachSessionID)
 		}
 	}
 
@@ -1718,7 +1743,8 @@ func (h *Home) updateKeyBindings() {
 		key        string
 		sessionID  string
 		tmuxName   string
-		bindingKey string // "sessionID:tmuxName"
+		bindingKey string // "sessionID:tmuxName" or "remote:sessionID" for remote sessions
+		isRemote   bool   // True for remote sessions (need attach: signal instead of switch-client)
 	}
 	bindings := make([]bindingInfo, 0, len(entries))
 	currentKeys := make(map[string]string) // key -> sessionID
@@ -1729,17 +1755,26 @@ func (h *Home) updateKeyBindings() {
 
 		// Look up CURRENT TmuxName from instance (cached entry may be stale)
 		currentTmuxName := e.TmuxName
+		isRemote := false
 		if inst, ok := h.instanceByID[e.SessionID]; ok {
 			if ts := inst.GetTmuxSession(); ts != nil {
 				currentTmuxName = ts.Name
 			}
+			isRemote = inst.IsRemote()
+		}
+
+		// For remote sessions, use "remote:" prefix in binding key to differentiate
+		bindingKey := e.SessionID + ":" + currentTmuxName
+		if isRemote {
+			bindingKey = "remote:" + e.SessionID
 		}
 
 		bindings = append(bindings, bindingInfo{
 			key:        e.AssignedKey,
 			sessionID:  e.SessionID,
 			tmuxName:   currentTmuxName,
-			bindingKey: e.SessionID + ":" + currentTmuxName,
+			bindingKey: bindingKey,
+			isRemote:   isRemote,
 		})
 	}
 	h.instancesMu.RUnlock()
@@ -1749,7 +1784,13 @@ func (h *Home) updateKeyBindings() {
 	for _, b := range bindings {
 		existingBinding, isBound := h.boundKeys[b.key]
 		if !isBound || existingBinding != b.bindingKey {
-			_ = tmux.BindSwitchKeyWithAck(b.key, b.tmuxName, b.sessionID)
+			if b.isRemote {
+				// Remote session: use attach signal (can't switch-client to non-local session)
+				_ = tmux.BindAttachKeyWithAck(b.key, b.sessionID)
+			} else {
+				// Local session: use standard switch-client with ack
+				_ = tmux.BindSwitchKeyWithAck(b.key, b.tmuxName, b.sessionID)
+			}
 			h.boundKeys[b.key] = b.bindingKey
 		}
 	}
@@ -2399,6 +2440,17 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-dismiss errors after 5 seconds
 		if h.err != nil && !h.errTime.IsZero() && time.Since(h.errTime) > 5*time.Second {
 			h.clearError()
+		}
+
+		// Check for pending remote attach request (from Ctrl+b N shortcut on remote session)
+		h.pendingRemoteAttachMu.Lock()
+		attachID := h.pendingRemoteAttach
+		h.pendingRemoteAttach = ""
+		h.pendingRemoteAttachMu.Unlock()
+		if attachID != "" {
+			if inst, ok := h.instanceByID[attachID]; ok {
+				return h, h.attachSession(inst)
+			}
 		}
 
 		// PERFORMANCE: Detect when navigation has settled (300ms since last up/down)

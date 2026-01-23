@@ -2279,6 +2279,21 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 	return cmd.Run()
 }
 
+// BindAttachKeyWithAck binds a key to request attachment to a remote session.
+// Instead of switch-client (which fails for remote sessions that don't exist locally),
+// it writes a signal file with "attach:" prefix that agent-deck processes to trigger
+// the actual attach flow via SSH.
+func BindAttachKeyWithAck(key, sessionID string) error {
+	signalFile, err := GetAckSignalPath()
+	if err != nil {
+		return err
+	}
+	// Write "attach:<sessionID>" to signal an attach request
+	script := fmt.Sprintf("echo 'attach:%s' > '%s'", sessionID, signalFile)
+	cmd := exec.Command("tmux", "bind-key", key, "run-shell", script)
+	return cmd.Run()
+}
+
 // GetAckSignalPath returns the path to the acknowledgment signal file
 func GetAckSignalPath() (string, error) {
 	homeDir, err := os.UserHomeDir()
