@@ -159,7 +159,8 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		}
 
 		// Set up tmux session with SSH executor
-		tmuxSess := tmux.NewSessionWithExecutor(rs.Name, rs.WorkingDir, sshExec)
+		// Use ReconnectSessionWithExecutor to preserve the original tmux name (don't add prefix again)
+		tmuxSess := tmux.ReconnectSessionWithExecutor(rs.Name, title, rs.WorkingDir, "", sshExec)
 		tmuxSess.InstanceID = remoteID
 		inst.SetTmuxSession(tmuxSess)
 
