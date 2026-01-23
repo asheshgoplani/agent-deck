@@ -28,8 +28,8 @@ func (m *Menu) View() string {
 		MenuKey("n", "New"),
 		MenuKey("Tab", "Fold"),
 		MenuKey("d", "Delete"),
-		MenuKey("i", "Import"),
-		MenuKey("r", "Refresh"),
+		MenuKey("r", "Rename"),
+		MenuKey("D", "Discover"),
 		MenuKey("q", "Quit"),
 	}
 

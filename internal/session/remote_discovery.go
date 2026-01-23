@@ -31,6 +31,13 @@ type DiscoveryResult struct {
 	StaleCount int // Number of sessions removed (no longer on remote)
 }
 
+// UpdatedInstance tracks an instance whose metadata was updated during discovery
+type UpdatedInstance struct {
+	Instance     *Instance
+	OldGroupPath string
+	NewGroupPath string
+}
+
 // RemoteStorageSnapshot contains data fetched from remote sessions.json
 type RemoteStorageSnapshot struct {
 	Groups            []*GroupData      // Remote's group definitions
@@ -113,21 +120,22 @@ func TransformRemoteGroups(remoteGroups []*GroupData, groupPrefix, groupName str
 }
 
 // DiscoverRemoteTmuxSessions discovers agentdeck_* sessions from all configured SSH hosts
-// that have auto_discover enabled. It returns newly discovered instances, stale instance IDs,
-// remote groups (transformed to local paths), and any errors per host.
-// Existing sessions (matched by deterministic ID) are skipped.
-func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, []*GroupData, map[string]error) {
+// that have auto_discover enabled. It returns newly discovered instances, updated instances
+// (existing sessions whose group paths changed), stale instance IDs, remote groups
+// (transformed to local paths), and any errors per host.
+func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []*UpdatedInstance, []string, []*GroupData, map[string]error) {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		return nil, nil, nil, map[string]error{"config": err}
+		return nil, nil, nil, nil, map[string]error{"config": err}
 	}
 
 	settings := GetRemoteDiscoverySettings()
 	if !settings.Enabled {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 
 	var discovered []*Instance
+	var allUpdated []*UpdatedInstance
 	var allStaleIDs []string
 	var allGroups []*GroupData
 	errors := make(map[string]error)
@@ -144,7 +152,7 @@ func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, []
 		go func(hID string, hDef SSHHostDef) {
 			defer wg.Done()
 
-			sessions, staleIDs, groups, err := DiscoverRemoteSessionsForHost(hID, existing)
+			sessions, updated, staleIDs, groups, err := DiscoverRemoteSessionsForHost(hID, existing)
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -155,10 +163,14 @@ func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, []
 			}
 
 			discovered = append(discovered, sessions...)
+			allUpdated = append(allUpdated, updated...)
 			allStaleIDs = append(allStaleIDs, staleIDs...)
 			allGroups = append(allGroups, groups...)
 			if len(sessions) > 0 {
 				log.Printf("[REMOTE-DISCOVERY] Discovered %d sessions on %s", len(sessions), hID)
+			}
+			if len(updated) > 0 {
+				log.Printf("[REMOTE-DISCOVERY] Updated %d session group paths on %s", len(updated), hID)
 			}
 			if len(staleIDs) > 0 {
 				log.Printf("[REMOTE-DISCOVERY] Found %d stale sessions on %s", len(staleIDs), hID)
@@ -170,22 +182,23 @@ func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, []
 	}
 
 	wg.Wait()
-	return discovered, allStaleIDs, allGroups, errors
+	return discovered, allUpdated, allStaleIDs, allGroups, errors
 }
 
 // DiscoverRemoteSessionsForHost discovers agentdeck_* sessions from a specific SSH host
-// Returns discovered instances, stale instance IDs (sessions that no longer exist), transformed groups, and error
-func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Instance, []string, []*GroupData, error) {
+// Returns discovered instances, updated instances (group paths changed), stale instance IDs
+// (sessions that no longer exist), transformed groups, and error
+func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Instance, []*UpdatedInstance, []string, []*GroupData, error) {
 	// Get SSH executor
 	sshExec, err := tmux.NewSSHExecutorFromPool(hostID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// List remote tmux sessions with working directory info
 	remoteSessions, err := listRemoteTmuxSessions(sshExec)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	// Find stale sessions (ones we have locally but no longer exist on remote)
@@ -222,6 +235,7 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 	}
 
 	var discovered []*Instance
+	var updated []*UpdatedInstance
 
 	for _, rs := range remoteSessions {
 		// Only process agentdeck_* sessions
@@ -232,8 +246,26 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		// Generate deterministic ID
 		remoteID := GenerateRemoteInstanceID(hostID, rs.Name)
 
-		// Skip if already exists
-		if _, exists := existingByRemoteID[remoteID]; exists {
+		// Check if this session already exists locally
+		if existingInst, exists := existingByRemoteID[remoteID]; exists {
+			// Session exists - check if group path needs updating based on remote's current state
+			if remoteSnapshot != nil {
+				remoteGroupPath := remoteSnapshot.SessionGroupPaths[rs.Name]
+				newLocalPath := TransformRemoteGroupPath(remoteGroupPath, groupPrefix, groupName)
+
+				// Update if the local group path differs from what the remote says it should be
+				if existingInst.GroupPath != newLocalPath {
+					oldPath := existingInst.GroupPath
+					existingInst.GroupPath = newLocalPath
+					updated = append(updated, &UpdatedInstance{
+						Instance:     existingInst,
+						OldGroupPath: oldPath,
+						NewGroupPath: newLocalPath,
+					})
+					log.Printf("[REMOTE-DISCOVERY] Updated group path: %s on %s: %s -> %s",
+						rs.Name, hostID, oldPath, newLocalPath)
+				}
+			}
 			continue
 		}
 
@@ -270,7 +302,7 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		log.Printf("[REMOTE-DISCOVERY] Discovered: %s on %s -> %s (group: %s)", rs.Name, hostID, title, localGroupPath)
 	}
 
-	return discovered, staleIDs, transformedGroups, nil
+	return discovered, updated, staleIDs, transformedGroups, nil
 }
 
 // listRemoteTmuxSessions lists tmux sessions on a remote host with working directory info

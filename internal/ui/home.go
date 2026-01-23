@@ -1478,13 +1478,13 @@ func (h *Home) runRemoteDiscovery() {
 	h.instancesMu.RUnlock()
 
 	// Discover remote sessions
-	discovered, staleIDs, remoteGroups, errors := session.DiscoverRemoteTmuxSessions(existing)
+	discovered, updated, staleIDs, remoteGroups, errors := session.DiscoverRemoteTmuxSessions(existing)
 
 	// Note: We don't send a message to the TUI here because that would require
 	// access to the tea.Program which we don't have in the background worker.
 	// Instead, we directly merge the results and trigger a save.
 
-	if len(discovered) == 0 && len(staleIDs) == 0 && len(remoteGroups) == 0 && len(errors) == 0 {
+	if len(discovered) == 0 && len(updated) == 0 && len(staleIDs) == 0 && len(remoteGroups) == 0 && len(errors) == 0 {
 		return // Nothing to do
 	}
 
@@ -1534,6 +1534,19 @@ func (h *Home) runRemoteDiscovery() {
 			needsSave = true
 		}
 		h.instancesMu.Unlock()
+	}
+
+	// Handle updated sessions (group paths changed)
+	if len(updated) > 0 && h.groupTree != nil {
+		for _, upd := range updated {
+			// Remove from old group and add to new group in tree
+			h.groupTree.RemoveSession(upd.Instance)
+			h.groupTree.AddSession(upd.Instance)
+			log.Printf("[REMOTE-DISCOVERY] Moved session %s: %s -> %s",
+				upd.Instance.Title, upd.OldGroupPath, upd.NewGroupPath)
+		}
+		h.groupTree.RebuildGroupList()
+		needsSave = true
 	}
 
 	// Merge discovered sessions

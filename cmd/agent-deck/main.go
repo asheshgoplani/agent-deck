@@ -2041,12 +2041,17 @@ func handleDebugDiscover() {
 
 	// Run discovery
 	fmt.Println("\nRunning discovery...")
-	discovered, staleIDs, groups, errors := session.DiscoverRemoteTmuxSessions(existing)
+	discovered, updated, staleIDs, groups, errors := session.DiscoverRemoteTmuxSessions(existing)
 
 	fmt.Println("\nResults:")
 	fmt.Printf("  Discovered: %d sessions\n", len(discovered))
 	for _, inst := range discovered {
 		fmt.Printf("    - %s (%s) on %s at %s (group: %s)\n", inst.Title, inst.ID, inst.RemoteHost, inst.ProjectPath, inst.GroupPath)
+	}
+
+	fmt.Printf("  Updated: %d sessions\n", len(updated))
+	for _, upd := range updated {
+		fmt.Printf("    - %s: %s -> %s\n", upd.Instance.Title, upd.OldGroupPath, upd.NewGroupPath)
 	}
 
 	fmt.Printf("  Groups: %d\n", len(groups))
@@ -2064,15 +2069,26 @@ func handleDebugDiscover() {
 		fmt.Printf("    - %s: %v\n", host, err)
 	}
 
-	// Save discovered sessions
+	// Save discovered and updated sessions
+	needsSave := false
+	merged := existing
 	if len(discovered) > 0 {
-		merged, newCount := session.MergeDiscoveredSessions(existing, discovered)
+		var newCount int
+		merged, newCount = session.MergeDiscoveredSessions(existing, discovered)
 		if newCount > 0 {
-			if err := storage.Save(merged); err != nil {
-				fmt.Printf("\nError saving sessions: %v\n", err)
-			} else {
-				fmt.Printf("\nSaved %d new sessions to storage\n", newCount)
-			}
+			needsSave = true
+			fmt.Printf("\nDiscovered %d new sessions\n", newCount)
+		}
+	}
+	if len(updated) > 0 {
+		needsSave = true
+		fmt.Printf("Updated %d session group paths\n", len(updated))
+	}
+	if needsSave {
+		if err := storage.Save(merged); err != nil {
+			fmt.Printf("Error saving sessions: %v\n", err)
+		} else {
+			fmt.Println("Saved changes to storage")
 		}
 	}
 }
