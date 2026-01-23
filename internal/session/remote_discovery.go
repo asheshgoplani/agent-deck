@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"log"
 	"regexp"
 	"strings"
@@ -24,30 +25,111 @@ type RemoteTmuxSession struct {
 type DiscoveryResult struct {
 	HostID     string
 	Sessions   []*Instance
+	Groups     []*GroupData // Groups discovered from remote
 	Error      error
 	NewCount   int // Number of newly discovered sessions
 	StaleCount int // Number of sessions removed (no longer on remote)
 }
 
+// RemoteStorageSnapshot contains data fetched from remote sessions.json
+type RemoteStorageSnapshot struct {
+	Groups            []*GroupData      // Remote's group definitions
+	SessionGroupPaths map[string]string // tmux_session name -> group_path mapping
+}
+
 // agentDeckSessionPattern matches agentdeck_<title>_<8-hex-chars> tmux session names
 var agentDeckSessionPattern = regexp.MustCompile(`^agentdeck_(.+)_([0-9a-f]{8})$`)
 
+// FetchRemoteStorageSnapshot reads the remote's sessions.json to get group structure
+// Returns nil on errors (gracefully degrades to flat structure)
+func FetchRemoteStorageSnapshot(sshExec *tmux.SSHExecutor) *RemoteStorageSnapshot {
+	// Read remote sessions.json
+	output, err := sshExec.RunCommand("cat ~/.agent-deck/profiles/default/sessions.json 2>/dev/null || echo '{}'")
+	if err != nil {
+		log.Printf("[REMOTE-DISCOVERY] Failed to read remote sessions.json: %v", err)
+		return nil
+	}
+
+	output = strings.TrimSpace(output)
+	if output == "" || output == "{}" {
+		return nil
+	}
+
+	// Parse JSON
+	var data StorageData
+	if err := json.Unmarshal([]byte(output), &data); err != nil {
+		log.Printf("[REMOTE-DISCOVERY] Failed to parse remote sessions.json: %v", err)
+		return nil
+	}
+
+	// Build session-to-group mapping
+	sessionGroupPaths := make(map[string]string)
+	for _, inst := range data.Instances {
+		if inst.TmuxSession != "" && inst.GroupPath != "" {
+			sessionGroupPaths[inst.TmuxSession] = inst.GroupPath
+		}
+	}
+
+	return &RemoteStorageSnapshot{
+		Groups:            data.Groups,
+		SessionGroupPaths: sessionGroupPaths,
+	}
+}
+
+// TransformRemoteGroupPath converts a remote group path to local path
+// Example: "jeeves/workers" with prefix="remote" and hostname="jeeves" -> "remote/jeeves/jeeves/workers"
+// Empty remote path maps to just "{prefix}/{hostname}"
+func TransformRemoteGroupPath(remoteGroupPath, groupPrefix, groupName string) string {
+	if remoteGroupPath == "" || remoteGroupPath == DefaultGroupPath {
+		// Remote's default group maps to host's root group
+		return groupPrefix + "/" + groupName
+	}
+	return groupPrefix + "/" + groupName + "/" + remoteGroupPath
+}
+
+// TransformRemoteGroups converts remote groups to local groups with transformed paths
+func TransformRemoteGroups(remoteGroups []*GroupData, groupPrefix, groupName string) []*GroupData {
+	if len(remoteGroups) == 0 {
+		return nil
+	}
+
+	transformed := make([]*GroupData, 0, len(remoteGroups))
+	for _, rg := range remoteGroups {
+		// Skip the default group - we don't need to create it locally
+		if rg.Path == DefaultGroupPath {
+			continue
+		}
+
+		newPath := TransformRemoteGroupPath(rg.Path, groupPrefix, groupName)
+		transformed = append(transformed, &GroupData{
+			Name:     rg.Name,
+			Path:     newPath,
+			Expanded: rg.Expanded,
+			Order:    rg.Order,
+		})
+	}
+
+	return transformed
+}
+
 // DiscoverRemoteTmuxSessions discovers agentdeck_* sessions from all configured SSH hosts
 // that have auto_discover enabled. It returns newly discovered instances, stale instance IDs,
-// and any errors per host. Existing sessions (matched by deterministic ID) are skipped.
-func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, map[string]error) {
+// remote groups (transformed to local paths), and any errors per host.
+// Existing sessions (matched by deterministic ID) are skipped.
+func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, []*GroupData, map[string]error) {
 	config, err := LoadUserConfig()
 	if err != nil || config == nil {
-		return nil, nil, map[string]error{"config": err}
+		return nil, nil, nil, map[string]error{"config": err}
 	}
 
 	settings := GetRemoteDiscoverySettings()
 	if !settings.Enabled {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	var discovered []*Instance
 	var allStaleIDs []string
+	var allGroups []*GroupData
 	errors := make(map[string]error)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -62,7 +144,7 @@ func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, ma
 		go func(hID string, hDef SSHHostDef) {
 			defer wg.Done()
 
-			sessions, staleIDs, err := DiscoverRemoteSessionsForHost(hID, existing)
+			sessions, staleIDs, groups, err := DiscoverRemoteSessionsForHost(hID, existing)
 			mu.Lock()
 			defer mu.Unlock()
 
@@ -74,32 +156,36 @@ func DiscoverRemoteTmuxSessions(existing []*Instance) ([]*Instance, []string, ma
 
 			discovered = append(discovered, sessions...)
 			allStaleIDs = append(allStaleIDs, staleIDs...)
+			allGroups = append(allGroups, groups...)
 			if len(sessions) > 0 {
 				log.Printf("[REMOTE-DISCOVERY] Discovered %d sessions on %s", len(sessions), hID)
 			}
 			if len(staleIDs) > 0 {
 				log.Printf("[REMOTE-DISCOVERY] Found %d stale sessions on %s", len(staleIDs), hID)
 			}
+			if len(groups) > 0 {
+				log.Printf("[REMOTE-DISCOVERY] Discovered %d groups on %s", len(groups), hID)
+			}
 		}(hostID, hostDef)
 	}
 
 	wg.Wait()
-	return discovered, allStaleIDs, errors
+	return discovered, allStaleIDs, allGroups, errors
 }
 
 // DiscoverRemoteSessionsForHost discovers agentdeck_* sessions from a specific SSH host
-// Returns discovered instances, stale instance IDs (sessions that no longer exist), and error
-func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Instance, []string, error) {
+// Returns discovered instances, stale instance IDs (sessions that no longer exist), transformed groups, and error
+func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Instance, []string, []*GroupData, error) {
 	// Get SSH executor
 	sshExec, err := tmux.NewSSHExecutorFromPool(hostID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// List remote tmux sessions with working directory info
 	remoteSessions, err := listRemoteTmuxSessions(sshExec)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Find stale sessions (ones we have locally but no longer exist on remote)
@@ -126,6 +212,15 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		groupName = hostDef.GetGroupName(hostID)
 	}
 
+	// Fetch remote storage snapshot to get group structure
+	remoteSnapshot := FetchRemoteStorageSnapshot(sshExec)
+
+	// Transform remote groups to local paths
+	var transformedGroups []*GroupData
+	if remoteSnapshot != nil {
+		transformedGroups = TransformRemoteGroups(remoteSnapshot.Groups, groupPrefix, groupName)
+	}
+
 	var discovered []*Instance
 
 	for _, rs := range remoteSessions {
@@ -145,12 +240,19 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		// Parse title from tmux session name
 		title := ParseTitleFromTmuxName(rs.Name)
 
+		// Determine group path - use remote's group if available, otherwise default to host's root
+		remoteGroupPath := ""
+		if remoteSnapshot != nil {
+			remoteGroupPath = remoteSnapshot.SessionGroupPaths[rs.Name]
+		}
+		localGroupPath := TransformRemoteGroupPath(remoteGroupPath, groupPrefix, groupName)
+
 		// Create new instance for discovered session
 		inst := &Instance{
 			ID:             remoteID,
 			Title:          title,
 			ProjectPath:    rs.WorkingDir,
-			GroupPath:      groupPrefix + "/" + groupName,
+			GroupPath:      localGroupPath,
 			Tool:           "claude", // Assume Claude since it's agentdeck_*
 			Status:         StatusIdle,
 			CreatedAt:      time.Now(),
@@ -165,10 +267,10 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		inst.SetTmuxSession(tmuxSess)
 
 		discovered = append(discovered, inst)
-		log.Printf("[REMOTE-DISCOVERY] Discovered: %s on %s -> %s", rs.Name, hostID, title)
+		log.Printf("[REMOTE-DISCOVERY] Discovered: %s on %s -> %s (group: %s)", rs.Name, hostID, title, localGroupPath)
 	}
 
-	return discovered, staleIDs, nil
+	return discovered, staleIDs, transformedGroups, nil
 }
 
 // listRemoteTmuxSessions lists tmux sessions on a remote host with working directory info

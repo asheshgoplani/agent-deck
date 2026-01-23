@@ -1407,13 +1407,13 @@ func (h *Home) runRemoteDiscovery() {
 	h.instancesMu.RUnlock()
 
 	// Discover remote sessions
-	discovered, staleIDs, errors := session.DiscoverRemoteTmuxSessions(existing)
+	discovered, staleIDs, remoteGroups, errors := session.DiscoverRemoteTmuxSessions(existing)
 
 	// Note: We don't send a message to the TUI here because that would require
 	// access to the tea.Program which we don't have in the background worker.
 	// Instead, we directly merge the results and trigger a save.
 
-	if len(discovered) == 0 && len(staleIDs) == 0 && len(errors) == 0 {
+	if len(discovered) == 0 && len(staleIDs) == 0 && len(remoteGroups) == 0 && len(errors) == 0 {
 		return // Nothing to do
 	}
 
@@ -1423,6 +1423,20 @@ func (h *Home) runRemoteDiscovery() {
 	}
 
 	needsSave := false
+
+	// Merge remote groups into local group tree
+	if len(remoteGroups) > 0 && h.groupTree != nil {
+		for _, rg := range remoteGroups {
+			if _, exists := h.groupTree.Groups[rg.Path]; !exists {
+				h.groupTree.EnsureGroupExists(rg.Path, rg.Name, rg.Order, rg.Expanded)
+				log.Printf("[REMOTE-DISCOVERY] Created group: %s", rg.Path)
+				needsSave = true
+			}
+		}
+		if needsSave {
+			h.groupTree.RebuildGroupList()
+		}
+	}
 
 	// Remove stale sessions (sessions that no longer exist on remote)
 	if len(staleIDs) > 0 {

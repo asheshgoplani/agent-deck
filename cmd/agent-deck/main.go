@@ -2018,12 +2018,17 @@ func handleDebugDiscover() {
 
 	// Run discovery
 	fmt.Println("\nRunning discovery...")
-	discovered, staleIDs, errors := session.DiscoverRemoteTmuxSessions(existing)
+	discovered, staleIDs, groups, errors := session.DiscoverRemoteTmuxSessions(existing)
 
 	fmt.Println("\nResults:")
 	fmt.Printf("  Discovered: %d sessions\n", len(discovered))
 	for _, inst := range discovered {
-		fmt.Printf("    - %s (%s) on %s at %s\n", inst.Title, inst.ID, inst.RemoteHost, inst.ProjectPath)
+		fmt.Printf("    - %s (%s) on %s at %s (group: %s)\n", inst.Title, inst.ID, inst.RemoteHost, inst.ProjectPath, inst.GroupPath)
+	}
+
+	fmt.Printf("  Groups: %d\n", len(groups))
+	for _, g := range groups {
+		fmt.Printf("    - %s (%s)\n", g.Name, g.Path)
 	}
 
 	fmt.Printf("  Stale: %d sessions\n", len(staleIDs))

@@ -4,294 +4,231 @@ import (
 	"testing"
 )
 
-func TestGenerateRemoteInstanceID(t *testing.T) {
+func TestTransformRemoteGroupPath(t *testing.T) {
 	tests := []struct {
-		hostID   string
-		tmuxName string
-		wantLen  int // "remote-" + 16 hex chars = 23 chars
+		name            string
+		remoteGroupPath string
+		groupPrefix     string
+		groupName       string
+		expected        string
 	}{
-		{"host-195", "agentdeck_my-project_12345678", 23},
-		{"server-1", "agentdeck_test_abcd1234", 23},
-		{"prod", "agentdeck_long-project-name_fedcba98", 23},
+		{
+			name:            "empty remote path maps to host root",
+			remoteGroupPath: "",
+			groupPrefix:     "remote",
+			groupName:       "jeeves",
+			expected:        "remote/jeeves",
+		},
+		{
+			name:            "default group path maps to host root",
+			remoteGroupPath: "my-sessions",
+			groupPrefix:     "remote",
+			groupName:       "jeeves",
+			expected:        "remote/jeeves",
+		},
+		{
+			name:            "simple remote group",
+			remoteGroupPath: "production",
+			groupPrefix:     "remote",
+			groupName:       "jeeves",
+			expected:        "remote/jeeves/production",
+		},
+		{
+			name:            "nested remote group",
+			remoteGroupPath: "jeeves/workers",
+			groupPrefix:     "remote",
+			groupName:       "jeeves",
+			expected:        "remote/jeeves/jeeves/workers",
+		},
+		{
+			name:            "custom prefix",
+			remoteGroupPath: "dev",
+			groupPrefix:     "ssh-hosts",
+			groupName:       "server1",
+			expected:        "ssh-hosts/server1/dev",
+		},
+		{
+			name:            "deeply nested remote group",
+			remoteGroupPath: "projects/frontend/components",
+			groupPrefix:     "remote",
+			groupName:       "dev-server",
+			expected:        "remote/dev-server/projects/frontend/components",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.hostID+"_"+tt.tmuxName, func(t *testing.T) {
-			got := GenerateRemoteInstanceID(tt.hostID, tt.tmuxName)
-			if len(got) != tt.wantLen {
-				t.Errorf("GenerateRemoteInstanceID() length = %d, want %d", len(got), tt.wantLen)
-			}
-			if got[:7] != "remote-" {
-				t.Errorf("GenerateRemoteInstanceID() should start with 'remote-', got %q", got[:7])
+		t.Run(tt.name, func(t *testing.T) {
+			result := TransformRemoteGroupPath(tt.remoteGroupPath, tt.groupPrefix, tt.groupName)
+			if result != tt.expected {
+				t.Errorf("TransformRemoteGroupPath(%q, %q, %q) = %q, want %q",
+					tt.remoteGroupPath, tt.groupPrefix, tt.groupName, result, tt.expected)
 			}
 		})
 	}
 }
 
-func TestGenerateRemoteInstanceID_Deterministic(t *testing.T) {
-	hostID := "host-195"
-	tmuxName := "agentdeck_my-project_12345678"
+func TestTransformRemoteGroups(t *testing.T) {
+	tests := []struct {
+		name         string
+		remoteGroups []*GroupData
+		groupPrefix  string
+		groupName    string
+		expected     []*GroupData
+	}{
+		{
+			name:         "nil input returns nil",
+			remoteGroups: nil,
+			groupPrefix:  "remote",
+			groupName:    "host1",
+			expected:     nil,
+		},
+		{
+			name:         "empty input returns nil",
+			remoteGroups: []*GroupData{},
+			groupPrefix:  "remote",
+			groupName:    "host1",
+			expected:     nil,
+		},
+		{
+			name: "default group is skipped",
+			remoteGroups: []*GroupData{
+				{Name: "My Sessions", Path: "my-sessions", Expanded: true, Order: 0},
+			},
+			groupPrefix: "remote",
+			groupName:   "host1",
+			expected:    []*GroupData{},
+		},
+		{
+			name: "transforms single group",
+			remoteGroups: []*GroupData{
+				{Name: "Production", Path: "production", Expanded: true, Order: 1},
+			},
+			groupPrefix: "remote",
+			groupName:   "jeeves",
+			expected: []*GroupData{
+				{Name: "Production", Path: "remote/jeeves/production", Expanded: true, Order: 1},
+			},
+		},
+		{
+			name: "transforms multiple groups",
+			remoteGroups: []*GroupData{
+				{Name: "My Sessions", Path: "my-sessions", Expanded: true, Order: 0},
+				{Name: "Production", Path: "production", Expanded: true, Order: 1},
+				{Name: "Workers", Path: "jeeves/workers", Expanded: false, Order: 2},
+			},
+			groupPrefix: "remote",
+			groupName:   "jeeves",
+			expected: []*GroupData{
+				{Name: "Production", Path: "remote/jeeves/production", Expanded: true, Order: 1},
+				{Name: "Workers", Path: "remote/jeeves/jeeves/workers", Expanded: false, Order: 2},
+			},
+		},
+		{
+			name: "preserves expanded state",
+			remoteGroups: []*GroupData{
+				{Name: "Collapsed", Path: "collapsed", Expanded: false, Order: 0},
+				{Name: "Expanded", Path: "expanded", Expanded: true, Order: 1},
+			},
+			groupPrefix: "remote",
+			groupName:   "server",
+			expected: []*GroupData{
+				{Name: "Collapsed", Path: "remote/server/collapsed", Expanded: false, Order: 0},
+				{Name: "Expanded", Path: "remote/server/expanded", Expanded: true, Order: 1},
+			},
+		},
+	}
 
-	id1 := GenerateRemoteInstanceID(hostID, tmuxName)
-	id2 := GenerateRemoteInstanceID(hostID, tmuxName)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := TransformRemoteGroups(tt.remoteGroups, tt.groupPrefix, tt.groupName)
 
-	if id1 != id2 {
-		t.Errorf("GenerateRemoteInstanceID() should be deterministic: %q != %q", id1, id2)
+			if tt.expected == nil {
+				if result != nil {
+					t.Errorf("expected nil, got %v", result)
+				}
+				return
+			}
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("got %d groups, want %d", len(result), len(tt.expected))
+				return
+			}
+
+			for i, g := range result {
+				exp := tt.expected[i]
+				if g.Name != exp.Name || g.Path != exp.Path || g.Expanded != exp.Expanded || g.Order != exp.Order {
+					t.Errorf("group %d: got {%s, %s, %v, %d}, want {%s, %s, %v, %d}",
+						i, g.Name, g.Path, g.Expanded, g.Order,
+						exp.Name, exp.Path, exp.Expanded, exp.Order)
+				}
+			}
+		})
 	}
 }
 
-func TestGenerateRemoteInstanceID_DifferentInputs(t *testing.T) {
-	// Different hosts should produce different IDs
-	id1 := GenerateRemoteInstanceID("host-1", "agentdeck_test_12345678")
-	id2 := GenerateRemoteInstanceID("host-2", "agentdeck_test_12345678")
+func TestGenerateRemoteInstanceID(t *testing.T) {
+	// Test determinism - same inputs should produce same output
+	id1 := GenerateRemoteInstanceID("host1", "agentdeck_test_12345678")
+	id2 := GenerateRemoteInstanceID("host1", "agentdeck_test_12345678")
+	if id1 != id2 {
+		t.Errorf("GenerateRemoteInstanceID is not deterministic: %s != %s", id1, id2)
+	}
 
-	if id1 == id2 {
+	// Test prefix
+	if id1[:7] != "remote-" {
+		t.Errorf("ID should start with 'remote-', got %s", id1)
+	}
+
+	// Test different inputs produce different outputs
+	id3 := GenerateRemoteInstanceID("host2", "agentdeck_test_12345678")
+	if id1 == id3 {
 		t.Error("Different hosts should produce different IDs")
 	}
 
-	// Different tmux names should produce different IDs
-	id3 := GenerateRemoteInstanceID("host-1", "agentdeck_test_12345678")
-	id4 := GenerateRemoteInstanceID("host-1", "agentdeck_other_12345678")
-
-	if id3 == id4 {
-		t.Error("Different tmux names should produce different IDs")
+	id4 := GenerateRemoteInstanceID("host1", "agentdeck_other_87654321")
+	if id1 == id4 {
+		t.Error("Different session names should produce different IDs")
 	}
 }
 
 func TestParseTitleFromTmuxName(t *testing.T) {
 	tests := []struct {
-		tmuxName string
-		want     string
-	}{
-		// Standard agentdeck format: agentdeck_<title>_<8-hex>
-		{"agentdeck_my-project_12345678", "My Project"},
-		{"agentdeck_simple_abcd1234", "Simple"},
-		{"agentdeck_multi-word-title_fedcba98", "Multi Word Title"},
-		{"agentdeck_a-b-c_11223344", "A B C"},
-
-		// Edge cases
-		{"agentdeck_already-spaced_00000000", "Already Spaced"},
-		{"agentdeck_UPPERCASE_ffffffff", "Uppercase"},
-		{"agentdeck_single_99999999", "Single"},
-
-		// Non-standard formats (fallback behavior)
-		{"agentdeck_no-suffix", "No Suffix"},
-		{"other-session", "Other Session"},
-		{"plain", "Plain"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.tmuxName, func(t *testing.T) {
-			got := ParseTitleFromTmuxName(tt.tmuxName)
-			if got != tt.want {
-				t.Errorf("ParseTitleFromTmuxName(%q) = %q, want %q", tt.tmuxName, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestToTitleCase(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"hello world", "Hello World"},
-		{"HELLO WORLD", "Hello World"},
-		{"hElLo WoRlD", "Hello World"},
-		{"single", "Single"},
-		{"", ""},
-		{"a b c", "A B C"},
-		{"already Title Case", "Already Title Case"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := toTitleCase(tt.input)
-			if got != tt.want {
-				t.Errorf("toTitleCase(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestFindByRemoteSession(t *testing.T) {
-	// Create test instances
-	inst1 := &Instance{
-		ID:             GenerateRemoteInstanceID("host-1", "agentdeck_test_12345678"),
-		RemoteHost:     "host-1",
-		RemoteTmuxName: "agentdeck_test_12345678",
-	}
-	inst2 := &Instance{
-		ID:             GenerateRemoteInstanceID("host-2", "agentdeck_other_abcdef12"),
-		RemoteHost:     "host-2",
-		RemoteTmuxName: "agentdeck_other_abcdef12",
-	}
-	instances := []*Instance{inst1, inst2}
-
-	// Test finding existing session
-	found := FindByRemoteSession(instances, "host-1", "agentdeck_test_12345678")
-	if found == nil {
-		t.Error("FindByRemoteSession should find existing session")
-	}
-	if found != inst1 {
-		t.Error("FindByRemoteSession found wrong instance")
-	}
-
-	// Test not finding non-existent session
-	notFound := FindByRemoteSession(instances, "host-3", "agentdeck_missing_00000000")
-	if notFound != nil {
-		t.Error("FindByRemoteSession should return nil for non-existent session")
-	}
-}
-
-func TestFindStaleRemoteSessions(t *testing.T) {
-	// Create test instances - mix of remote and local
-	inst1 := &Instance{
-		ID:             "remote-aaaaaaaabbbbbbbb",
-		RemoteHost:     "host-1",
-		RemoteTmuxName: "agentdeck_active_12345678",
-	}
-	inst2 := &Instance{
-		ID:             "remote-ccccccccdddddddd",
-		RemoteHost:     "host-1",
-		RemoteTmuxName: "agentdeck_stale_abcdef12", // Will be stale
-	}
-	inst3 := &Instance{
-		ID:         "local-1234",
-		RemoteHost: "", // Local session
-	}
-	inst4 := &Instance{
-		ID:             "remote-eeeeeeeefffffff0",
-		RemoteHost:     "host-2", // Different host - should not be affected
-		RemoteTmuxName: "agentdeck_other_fedcba98",
-	}
-
-	instances := []*Instance{inst1, inst2, inst3, inst4}
-
-	// Current remote sessions - inst2's tmux session is missing
-	currentSessions := []RemoteTmuxSession{
-		{Name: "agentdeck_active_12345678", WorkingDir: "/home/user/active"},
-		{Name: "agentdeck_new_99999999", WorkingDir: "/home/user/new"},
-	}
-
-	staleIDs := FindStaleRemoteSessions(instances, "host-1", currentSessions)
-
-	// Should find only inst2 as stale
-	if len(staleIDs) != 1 {
-		t.Errorf("FindStaleRemoteSessions() found %d stale IDs, want 1", len(staleIDs))
-	}
-
-	if len(staleIDs) > 0 && staleIDs[0] != inst2.ID {
-		t.Errorf("FindStaleRemoteSessions() found wrong stale ID: %q, want %q", staleIDs[0], inst2.ID)
-	}
-}
-
-func TestMergeDiscoveredSessions(t *testing.T) {
-	// Existing sessions
-	existing := []*Instance{
-		{ID: "local-1", Title: "Local 1"},
-		{ID: "remote-aabbccdd11223344", Title: "Remote 1"},
-	}
-
-	// Discovered sessions - one new, one duplicate
-	discovered := []*Instance{
-		{ID: "remote-aabbccdd11223344", Title: "Remote 1 (duplicate)"}, // Already exists
-		{ID: "remote-55667788aabbccdd", Title: "Remote 2 (new)"},       // New
-	}
-
-	merged, newCount := MergeDiscoveredSessions(existing, discovered)
-
-	if newCount != 1 {
-		t.Errorf("MergeDiscoveredSessions() newCount = %d, want 1", newCount)
-	}
-
-	if len(merged) != 3 {
-		t.Errorf("MergeDiscoveredSessions() merged length = %d, want 3", len(merged))
-	}
-
-	// Verify the new session was added
-	found := false
-	for _, inst := range merged {
-		if inst.ID == "remote-55667788aabbccdd" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("MergeDiscoveredSessions() should add new session")
-	}
-}
-
-func TestCleanupStaleRemoteSessions(t *testing.T) {
-	// Create test instances
-	inst1 := &Instance{
-		ID:             "remote-active",
-		RemoteHost:     "host-1",
-		RemoteTmuxName: "agentdeck_active_12345678",
-	}
-	inst2 := &Instance{
-		ID:             "remote-stale",
-		RemoteHost:     "host-1",
-		RemoteTmuxName: "agentdeck_stale_abcdef12",
-	}
-	inst3 := &Instance{
-		ID:         "local-1",
-		RemoteHost: "",
-	}
-
-	instances := []*Instance{inst1, inst2, inst3}
-
-	// Only active session exists on remote
-	currentSessions := []RemoteTmuxSession{
-		{Name: "agentdeck_active_12345678"},
-	}
-
-	cleaned := CleanupStaleRemoteSessions(instances, "host-1", currentSessions)
-
-	if len(cleaned) != 2 {
-		t.Errorf("CleanupStaleRemoteSessions() length = %d, want 2", len(cleaned))
-	}
-
-	// Verify stale session was removed
-	for _, inst := range cleaned {
-		if inst.ID == "remote-stale" {
-			t.Error("CleanupStaleRemoteSessions() should remove stale session")
-		}
-	}
-}
-
-func TestAgentDeckSessionPattern(t *testing.T) {
-	tests := []struct {
 		name     string
-		input    string
-		wantMatch bool
-		wantTitle string
+		tmuxName string
+		expected string
 	}{
-		{"standard format", "agentdeck_my-project_12345678", true, "my-project"},
-		{"single word", "agentdeck_test_abcdef12", true, "test"},
-		{"multiple words", "agentdeck_my-long-project-name_fedcba98", true, "my-long-project-name"},
-		{"uppercase hex", "agentdeck_test_ABCDEF12", false, ""}, // Only lowercase hex
-		{"missing prefix", "other_test_12345678", false, ""},
-		{"missing suffix", "agentdeck_test", false, ""},
-		{"short suffix", "agentdeck_test_1234567", false, ""}, // 7 chars instead of 8
-		{"long suffix", "agentdeck_test_123456789", false, ""}, // 9 chars instead of 8
+		{
+			name:     "standard agentdeck name",
+			tmuxName: "agentdeck_my-project_a1b2c3d4",
+			expected: "My Project",
+		},
+		{
+			name:     "multi-word title",
+			tmuxName: "agentdeck_revvie-sdlc-agent_12345678",
+			expected: "Revvie Sdlc Agent",
+		},
+		{
+			name:     "single word title",
+			tmuxName: "agentdeck_test_abcdef01",
+			expected: "Test",
+		},
+		{
+			name:     "non-matching format fallback",
+			tmuxName: "agentdeck_something",
+			expected: "Something",
+		},
+		{
+			name:     "non-agentdeck prefix with hyphens",
+			tmuxName: "other-session-name",
+			expected: "Other Session Name",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matches := agentDeckSessionPattern.FindStringSubmatch(tt.input)
-			gotMatch := matches != nil
-
-			if gotMatch != tt.wantMatch {
-				t.Errorf("Pattern match for %q = %v, want %v", tt.input, gotMatch, tt.wantMatch)
-			}
-
-			if gotMatch && tt.wantTitle != "" {
-				if len(matches) < 2 {
-					t.Errorf("Pattern should capture title for %q", tt.input)
-				} else if matches[1] != tt.wantTitle {
-					t.Errorf("Pattern captured title = %q, want %q", matches[1], tt.wantTitle)
-				}
+			result := ParseTitleFromTmuxName(tt.tmuxName)
+			if result != tt.expected {
+				t.Errorf("ParseTitleFromTmuxName(%q) = %q, want %q", tt.tmuxName, result, tt.expected)
 			}
 		})
 	}

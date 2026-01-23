@@ -71,6 +71,12 @@ func (e *SSHExecutor) runRemote(command string) (string, error) {
 	return e.conn.RunCommand(command)
 }
 
+// RunCommand executes an arbitrary command on the remote host
+// This is a public wrapper for runRemote for use by external packages
+func (e *SSHExecutor) RunCommand(command string) (string, error) {
+	return e.runRemote(command)
+}
+
 // runRemoteIgnoreError executes a command and ignores errors (for optional operations)
 func (e *SSHExecutor) runRemoteIgnoreError(command string) {
 	_, _ = e.conn.RunCommand(command)

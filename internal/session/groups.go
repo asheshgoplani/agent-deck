@@ -160,6 +160,11 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 
 // Note: GroupData is defined in storage.go in the same package
 
+// RebuildGroupList rebuilds the ordered group list (public wrapper)
+func (t *GroupTree) RebuildGroupList() {
+	t.rebuildGroupList()
+}
+
 // rebuildGroupList rebuilds the ordered group list
 func (t *GroupTree) rebuildGroupList() {
 	t.GroupList = make([]*Group, 0, len(t.Groups))
@@ -250,6 +255,41 @@ func extractGroupName(path string) string {
 		return path[idx+1:]
 	}
 	return path // root level - path is the name
+}
+
+// EnsureParentGroupsExist creates all parent groups for a given path if they don't exist (public wrapper)
+// e.g., for path "a/b/c", it creates groups "a" and "a/b" (but not "a/b/c")
+func (t *GroupTree) EnsureParentGroupsExist(path string) {
+	t.ensureParentGroupsExist(path)
+}
+
+// EnsureGroupExists creates a group at the given path if it doesn't exist, including parents
+// This is used by remote discovery to create remote group hierarchy
+func (t *GroupTree) EnsureGroupExists(path, name string, order int, expanded bool) *Group {
+	if path == "" {
+		return nil
+	}
+
+	// Check if group already exists
+	if group, exists := t.Groups[path]; exists {
+		return group
+	}
+
+	// Ensure parent groups exist first
+	t.ensureParentGroupsExist(path)
+
+	// Create the group
+	group := &Group{
+		Name:     name,
+		Path:     path,
+		Expanded: expanded,
+		Sessions: []*Instance{},
+		Order:    order,
+	}
+	t.Groups[path] = group
+	t.Expanded[path] = expanded
+
+	return group
 }
 
 // ensureParentGroupsExist creates all parent groups for a given path if they don't exist
