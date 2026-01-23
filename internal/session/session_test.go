@@ -78,6 +78,52 @@ func TestStorageSaveLoad(t *testing.T) {
 	}
 }
 
+func TestOpenCodeFieldsSerialization(t *testing.T) {
+	// Create temp directory for test
+	tmpDir, err := os.MkdirTemp("", "agent-deck-opencode-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	storage := &Storage{
+		path: filepath.Join(tmpDir, "sessions.json"),
+	}
+
+	// Create test instance with OpenCode fields populated
+	inst := NewInstance("opencode-test", "/tmp/opencode-project")
+	inst.Tool = "opencode"
+	inst.OpenCodeSessionID = "ses_test123abc"
+
+	instances := []*Instance{inst}
+
+	// Save
+	err = storage.Save(instances)
+	if err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Load
+	loaded, err := storage.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if len(loaded) != 1 {
+		t.Fatalf("Expected 1 instance, got %d", len(loaded))
+	}
+
+	// Verify OpenCode fields are preserved
+	if loaded[0].OpenCodeSessionID != "ses_test123abc" {
+		t.Errorf("OpenCodeSessionID = %q, want %q", loaded[0].OpenCodeSessionID, "ses_test123abc")
+	}
+	if loaded[0].Tool != "opencode" {
+		t.Errorf("Tool = %q, want %q", loaded[0].Tool, "opencode")
+	}
+
+	t.Logf("✅ OpenCode fields correctly serialized and deserialized")
+}
+
 func TestFilterByQuery(t *testing.T) {
 	instances := []*Instance{
 		{Title: "devops-claude", ProjectPath: "/home/user/devops", Tool: "claude"},

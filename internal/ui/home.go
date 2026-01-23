@@ -246,6 +246,11 @@ type Home struct {
 	boundKeysMu          sync.Mutex        // Protects boundKeys for background worker access
 	lastBarText          string            // Cache to avoid updating all sessions every tick
 	lastBarTextMu        sync.Mutex        // Protects lastBarText for background worker access
+
+	// Multi-instance support
+	// When AllowMultiple is enabled, only the primary instance (first to start) manages
+	// the notification bar and key bindings. Secondary instances are read-only for those.
+	isPrimaryInstance bool
 }
 
 // reloadState preserves UI state during storage reload
@@ -342,8 +347,17 @@ func NewHome() *Home {
 	return NewHomeWithProfile("")
 }
 
-// NewHomeWithProfile creates a new home model with the specified profile
+// NewHomeWithProfile creates a new home model with the specified profile as the primary instance.
+// This is the default constructor for backward compatibility.
 func NewHomeWithProfile(profile string) *Home {
+	return NewHomeWithProfileAndMode(profile, true)
+}
+
+// NewHomeWithProfileAndMode creates a new Home with the specified profile and instance mode.
+// isPrimary controls whether this instance manages the notification bar:
+//   - true: Primary instance - manages notification bar, key bindings, signal file
+//   - false: Secondary instance - read-only for notifications, full functionality otherwise
+func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var storageWarning string
@@ -396,11 +410,13 @@ func NewHomeWithProfile(profile string) *Home {
 		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:  make(chan struct{}),
 		boundKeys:         make(map[string]string),
+		isPrimaryInstance: isPrimary,
 	}
 
 	// Initialize notification manager if enabled in config
+	// Only primary instance manages the notification bar (prevents conflicts in multi-instance mode)
 	notifSettings := session.GetNotificationsSettings()
-	if notifSettings.Enabled {
+	if notifSettings.Enabled && isPrimary {
 		h.notificationsEnabled = true
 		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown)
 
@@ -1938,6 +1954,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			log.Printf("[OPENCODE] Detection complete for instance %s: no session found",
 				msg.instanceID)
+			// Mark detection as completed even when no session found
+			// This allows UI to show "No session found" instead of "Detecting..."
+			if inst := h.getInstanceByID(msg.instanceID); inst != nil {
+				inst.OpenCodeDetectedAt = time.Now()
+				log.Printf("[OPENCODE] Marked detection complete for %s (no session found)",
+					msg.instanceID)
+			}
 		}
 		// CRITICAL: Force save to persist the detected session ID to storage
 		// This uses forceSaveInstances() to bypass isReloading check, preventing
@@ -5816,16 +5839,18 @@ func (h *Home) renderPreviewPane(width, height int) string {
 				b.WriteString("\n")
 			}
 		} else {
-			// Check if detection is in progress
-			if selected.Status == session.StatusRunning || selected.Status == session.StatusWaiting {
+			// Check if detection has completed (OpenCodeDetectedAt is set even when no session found)
+			if selected.OpenCodeDetectedAt.IsZero() {
+				// Detection not yet completed - show detecting state
 				statusStyle := lipgloss.NewStyle().Foreground(ColorYellow)
 				b.WriteString(labelStyle.Render("Status:  "))
 				b.WriteString(statusStyle.Render("◐ Detecting session..."))
 				b.WriteString("\n")
 			} else {
+				// Detection completed but no session found
 				statusStyle := lipgloss.NewStyle().Foreground(ColorText)
 				b.WriteString(labelStyle.Render("Status:  "))
-				b.WriteString(statusStyle.Render("○ Not connected"))
+				b.WriteString(statusStyle.Render("○ No session found"))
 				b.WriteString("\n")
 			}
 		}

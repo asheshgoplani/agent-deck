@@ -84,6 +84,10 @@ type InstanceData struct {
 	GeminiDetectedAt time.Time `json:"gemini_detected_at,omitempty"`
 	GeminiYoloMode   *bool     `json:"gemini_yolo_mode,omitempty"`
 
+	// OpenCode session (persisted for resume after app restart)
+	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
+	OpenCodeDetectedAt time.Time `json:"opencode_detected_at,omitempty"`
+
 	// Latest user input for context
 	LatestPrompt string `json:"latest_prompt,omitempty"`
 
@@ -209,27 +213,29 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			tmuxName = inst.tmuxSession.Name
 		}
 		data.Instances[i] = &InstanceData{
-			ID:               inst.ID,
-			Title:            inst.Title,
-			ProjectPath:      inst.ProjectPath,
-			GroupPath:        inst.GroupPath,
-			ParentSessionID:  inst.ParentSessionID,
-			Command:          inst.Command,
-			Tool:             inst.Tool,
-			Status:           inst.Status,
-			CreatedAt:        inst.CreatedAt,
-			LastAccessedAt:   inst.LastAccessedAt,
-			TmuxSession:      tmuxName,
-			WorktreePath:     inst.WorktreePath,
-			WorktreeRepoRoot: inst.WorktreeRepoRoot,
-			WorktreeBranch:   inst.WorktreeBranch,
-			ClaudeSessionID:  inst.ClaudeSessionID,
-			ClaudeDetectedAt: inst.ClaudeDetectedAt,
-			GeminiSessionID:  inst.GeminiSessionID,
-			GeminiDetectedAt: inst.GeminiDetectedAt,
-			GeminiYoloMode:   inst.GeminiYoloMode,
-			LatestPrompt:     inst.LatestPrompt,
-			LoadedMCPNames:   inst.LoadedMCPNames,
+			ID:                 inst.ID,
+			Title:              inst.Title,
+			ProjectPath:        inst.ProjectPath,
+			GroupPath:          inst.GroupPath,
+			ParentSessionID:    inst.ParentSessionID,
+			Command:            inst.Command,
+			Tool:               inst.Tool,
+			Status:             inst.Status,
+			CreatedAt:          inst.CreatedAt,
+			LastAccessedAt:     inst.LastAccessedAt,
+			TmuxSession:        tmuxName,
+			WorktreePath:       inst.WorktreePath,
+			WorktreeRepoRoot:   inst.WorktreeRepoRoot,
+			WorktreeBranch:     inst.WorktreeBranch,
+			ClaudeSessionID:    inst.ClaudeSessionID,
+			ClaudeDetectedAt:   inst.ClaudeDetectedAt,
+			GeminiSessionID:    inst.GeminiSessionID,
+			GeminiDetectedAt:   inst.GeminiDetectedAt,
+			GeminiYoloMode:     inst.GeminiYoloMode,
+			OpenCodeSessionID:  inst.OpenCodeSessionID,
+			OpenCodeDetectedAt: inst.OpenCodeDetectedAt,
+			LatestPrompt:       inst.LatestPrompt,
+			LoadedMCPNames:     inst.LoadedMCPNames,
 		}
 	}
 
@@ -521,27 +527,29 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		projectPath := expandTilde(instData.ProjectPath)
 
 		inst := &Instance{
-			ID:               instData.ID,
-			Title:            instData.Title,
-			ProjectPath:      projectPath,
-			GroupPath:        groupPath,
-			ParentSessionID:  instData.ParentSessionID,
-			Command:          instData.Command,
-			Tool:             instData.Tool,
-			Status:           instData.Status,
-			CreatedAt:        instData.CreatedAt,
-			LastAccessedAt:   instData.LastAccessedAt,
-			WorktreePath:     instData.WorktreePath,
-			WorktreeRepoRoot: instData.WorktreeRepoRoot,
-			WorktreeBranch:   instData.WorktreeBranch,
-			ClaudeSessionID:  instData.ClaudeSessionID,
-			ClaudeDetectedAt: instData.ClaudeDetectedAt,
-			GeminiSessionID:  instData.GeminiSessionID,
-			GeminiDetectedAt: instData.GeminiDetectedAt,
-			GeminiYoloMode:   instData.GeminiYoloMode,
-			LatestPrompt:     instData.LatestPrompt,
-			LoadedMCPNames:   instData.LoadedMCPNames,
-			tmuxSession:      tmuxSess,
+			ID:                 instData.ID,
+			Title:              instData.Title,
+			ProjectPath:        projectPath,
+			GroupPath:          groupPath,
+			ParentSessionID:    instData.ParentSessionID,
+			Command:            instData.Command,
+			Tool:               instData.Tool,
+			Status:             instData.Status,
+			CreatedAt:          instData.CreatedAt,
+			LastAccessedAt:     instData.LastAccessedAt,
+			WorktreePath:       instData.WorktreePath,
+			WorktreeRepoRoot:   instData.WorktreeRepoRoot,
+			WorktreeBranch:     instData.WorktreeBranch,
+			ClaudeSessionID:    instData.ClaudeSessionID,
+			ClaudeDetectedAt:   instData.ClaudeDetectedAt,
+			GeminiSessionID:    instData.GeminiSessionID,
+			GeminiDetectedAt:   instData.GeminiDetectedAt,
+			GeminiYoloMode:     instData.GeminiYoloMode,
+			OpenCodeSessionID:  instData.OpenCodeSessionID,
+			OpenCodeDetectedAt: instData.OpenCodeDetectedAt,
+			LatestPrompt:       instData.LatestPrompt,
+			LoadedMCPNames:     instData.LoadedMCPNames,
+			tmuxSession:        tmuxSess,
 		}
 
 		// Update status immediately to prevent flickering on startup

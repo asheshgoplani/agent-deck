@@ -62,6 +62,9 @@ type UserConfig struct {
 
 	// Notifications defines waiting session notification bar settings
 	Notifications NotificationsConfig `toml:"notifications"`
+
+	// Instances defines multiple instance behavior settings
+	Instances InstanceSettings `toml:"instances"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -194,6 +197,14 @@ type NotificationsConfig struct {
 
 	// MaxShown is the maximum number of sessions shown in the bar (default: 6)
 	MaxShown int `toml:"max_shown"`
+}
+
+// InstanceSettings configures multiple agent-deck instance behavior
+type InstanceSettings struct {
+	// AllowMultiple allows running multiple agent-deck TUI instances for the same profile
+	// When false (default), only one instance can run per profile
+	// When true, multiple instances can run, but only the first (primary) manages the notification bar
+	AllowMultiple bool `toml:"allow_multiple"`
 }
 
 // GetShowAnalytics returns whether to show analytics, defaulting to true
@@ -785,6 +796,18 @@ func GetNotificationsSettings() NotificationsConfig {
 	}
 
 	return settings
+}
+
+// GetInstanceSettings returns instance behavior settings with defaults applied
+func GetInstanceSettings() InstanceSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return InstanceSettings{
+			AllowMultiple: false, // Default: single instance per profile (safe)
+		}
+	}
+
+	return config.Instances
 }
 
 // getMCPPoolConfigSection returns the MCP pool config section based on platform

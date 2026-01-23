@@ -24,7 +24,7 @@ import (
 	"github.com/muesli/termenv"
 )
 
-const Version = "0.8.73"
+const Version = "0.8.74"
 
 // Table column widths for list command output
 const (
@@ -248,12 +248,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Acquire lock to prevent duplicate instances
-	if err := acquireLock(profile); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+	// Check if multiple instances are allowed
+	instanceSettings := session.GetInstanceSettings()
+	isPrimaryInstance := true // Assume we're primary until we know otherwise
+
+	if !instanceSettings.AllowMultiple {
+		// Acquire lock to prevent duplicate instances (default behavior)
+		if err := acquireLock(profile); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			fmt.Println("\nTip: Set [instances] allow_multiple = true in config.toml to allow multiple instances")
+			os.Exit(1)
+		}
+		defer releaseLock(profile)
+	} else {
+		// Multiple instances allowed - try to acquire lock to determine if we're primary
+		// Primary instance manages the notification bar, secondary instances don't
+		if err := acquireLock(profile); err != nil {
+			// Another instance is running - we're secondary
+			isPrimaryInstance = false
+		} else {
+			// We got the lock - we're primary
+			defer releaseLock(profile)
+		}
 	}
-	defer releaseLock(profile)
 
 	// Set up signal handling for graceful lock cleanup
 	sigChan := make(chan os.Signal, 1)
@@ -266,14 +283,19 @@ func main() {
 
 	// Set up debug logging if AGENTDECK_DEBUG is set
 	// Logs go to ~/.agent-deck/debug.log to avoid interfering with TUI
+	// Uses O_APPEND for multi-instance safety (both instances can write to same log)
 	if os.Getenv("AGENTDECK_DEBUG") != "" {
 		if baseDir, err := session.GetAgentDeckDir(); err == nil {
 			logPath := filepath.Join(baseDir, "debug.log")
-			logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			if err == nil {
 				log.SetOutput(logFile)
 				log.SetFlags(log.Ltime | log.Lmicroseconds)
-				log.Printf("=== Agent Deck Debug Log Started ===")
+				instanceType := "primary"
+				if !isPrimaryInstance {
+					instanceType = "secondary"
+				}
+				log.Printf("=== Agent Deck Instance %d Started (%s) ===", os.Getpid(), instanceType)
 				defer logFile.Close()
 			}
 		}
@@ -283,8 +305,9 @@ func main() {
 	}
 
 	// Start TUI with the specified profile
+	// Pass isPrimaryInstance to control notification bar management
 	p := tea.NewProgram(
-		ui.NewHomeWithProfile(profile),
+		ui.NewHomeWithProfileAndMode(profile, isPrimaryInstance),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
