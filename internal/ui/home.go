@@ -3205,6 +3205,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		return h, cmd
 
+	case "D":
+		// Manual remote discovery (Shift+D - discover sessions on SSH hosts)
+		h.triggerRemoteDiscovery()
+		return h, nil
+
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		// Quick jump to Nth root group (1-indexed)
 		targetNum := int(msg.String()[0] - '0') // Convert "1" -> 1, "2" -> 2, etc.
@@ -3635,15 +3640,24 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, g
 		}
 
 		var inst *session.Instance
-		if groupPath != "" {
+		var err error
+
+		// Check if this is a remote group and create remote session if so
+		if hostID, isRemote := session.GetSSHHostIDFromGroupPath(groupPath); isRemote {
+			// Create remote session on the SSH host
+			inst, err = session.NewRemoteInstanceWithGroup(name, path, groupPath, tool, hostID)
+			if err != nil {
+				return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
+			}
+		} else if groupPath != "" {
 			inst = session.NewInstanceWithGroupAndTool(name, path, groupPath, tool)
 		} else {
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
 
-		// Set worktree fields if provided
-		if worktreePath != "" {
+		// Set worktree fields if provided (only for local sessions)
+		if worktreePath != "" && inst.RemoteHost == "" {
 			inst.WorktreePath = worktreePath
 			inst.WorktreeRepoRoot = worktreeRepoRoot
 			inst.WorktreeBranch = worktreeBranch

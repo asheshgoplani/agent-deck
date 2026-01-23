@@ -1240,6 +1240,45 @@ func GetSSHHostDef(name string) *SSHHostDef {
 	return nil
 }
 
+// GetSSHHostIDFromGroupPath extracts the SSH host ID from a remote group path.
+// Group paths look like "{prefix}/{groupName}" (e.g., "remote/MacBook").
+// Returns the hostID and true if found, empty string and false otherwise.
+func GetSSHHostIDFromGroupPath(groupPath string) (string, bool) {
+	settings := GetRemoteDiscoverySettings()
+	prefix := settings.GroupPrefix
+	if prefix == "" {
+		prefix = "remote"
+	}
+
+	// Check if this is a remote group path
+	if !strings.HasPrefix(groupPath, prefix+"/") {
+		return "", false
+	}
+
+	// Extract the group name after the prefix
+	groupName := strings.TrimPrefix(groupPath, prefix+"/")
+	// Handle nested paths - just get the first segment
+	if idx := strings.Index(groupName, "/"); idx != -1 {
+		groupName = groupName[:idx]
+	}
+
+	// Find the host with matching group name
+	hosts := GetAvailableSSHHosts()
+	for hostID, def := range hosts {
+		if def.GetGroupName(hostID) == groupName {
+			return hostID, true
+		}
+	}
+
+	return "", false
+}
+
+// IsRemoteGroupPath returns true if the given group path is a remote group
+func IsRemoteGroupPath(groupPath string) bool {
+	_, found := GetSSHHostIDFromGroupPath(groupPath)
+	return found
+}
+
 // InitSSHPool initializes the SSH connection pool with hosts from config
 // This should be called at application startup
 func InitSSHPool() {
