@@ -63,6 +63,10 @@ export default function KeyboardHelpModal({ onClose }) {
                                 <kbd>{modKey}-</kbd>
                                 <span>Decrease font size</span>
                             </div>
+                            <div className="help-row">
+                                <kbd>{modKey}0</kbd>
+                                <span>Reset font size</span>
+                            </div>
                         </div>
 
                         <div className="help-section">

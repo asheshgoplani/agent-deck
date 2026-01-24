@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
-import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
+import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
 import ToolIcon from './ToolIcon';
@@ -10,13 +10,12 @@ import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/ter
 
 const logger = createLogger('SettingsModal');
 
-export default function SettingsModal({ onClose }) {
+export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, onFontSizeChange }) {
     const [configs, setConfigs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
     const [softNewlineMode, setSoftNewlineMode] = useState('both');
-    const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
     const { themePreference, setTheme } = useTheme();
 
     // Load configs and terminal settings on mount
@@ -33,13 +32,7 @@ export default function SettingsModal({ onClose }) {
         } catch (err) {
             logger.error('Failed to load terminal settings:', err);
         }
-        try {
-            const size = await GetFontSize();
-            setFontSizeState(size || DEFAULT_FONT_SIZE);
-            logger.info('Loaded font size:', size);
-        } catch (err) {
-            logger.error('Failed to load font size:', err);
-        }
+        // Font size is passed as prop from App.jsx, no need to load here
     };
 
     const handleSoftNewlineModeChange = async (mode) => {
@@ -58,7 +51,7 @@ export default function SettingsModal({ onClose }) {
         if (newSize === fontSize) return;
         try {
             await SetFontSize(newSize);
-            setFontSizeState(newSize);
+            if (onFontSizeChange) onFontSizeChange(newSize);
             logger.info('Set font size:', newSize);
         } catch (err) {
             logger.error('Failed to set font size:', err);
@@ -69,7 +62,7 @@ export default function SettingsModal({ onClose }) {
     const handleFontSizeReset = async () => {
         try {
             await SetFontSize(DEFAULT_FONT_SIZE);
-            setFontSizeState(DEFAULT_FONT_SIZE);
+            if (onFontSizeChange) onFontSizeChange(DEFAULT_FONT_SIZE);
             logger.info('Reset font size to default');
         } catch (err) {
             logger.error('Failed to reset font size:', err);
