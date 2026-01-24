@@ -48,3 +48,10 @@ Thumbs.db
 *.screenstudio/
 
 .worktrees
+
+# Desktop app runtime files
+cmd/agent-deck-desktop/.desktop.pid
+cmd/agent-deck-desktop/desktop.log
+
+# Local scripts
+scripts/
