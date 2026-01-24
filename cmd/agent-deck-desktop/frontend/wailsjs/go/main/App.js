@@ -169,6 +169,10 @@ export function StartTmuxSession(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartTmuxSession'](arg1, arg2, arg3);
 }
 
+export function StartRemoteTmuxSession(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['StartRemoteTmuxSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function UpdateQuickLaunchFavoriteName(arg1, arg2) {
   return window['go']['main']['App']['UpdateQuickLaunchFavoriteName'](arg1, arg2);
 }

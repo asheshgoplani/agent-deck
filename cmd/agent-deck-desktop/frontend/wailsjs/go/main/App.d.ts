@@ -85,6 +85,8 @@ export function StartTerminal(arg1:number,arg2:number):Promise<void>;
 
 export function StartTmuxSession(arg1:string,arg2:number,arg3:number):Promise<void>;
 
+export function StartRemoteTmuxSession(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<void>;
+
 export function UpdateQuickLaunchFavoriteName(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateQuickLaunchShortcut(arg1:string,arg2:string):Promise<void>;
