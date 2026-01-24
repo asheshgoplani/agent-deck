@@ -1,0 +1,13 @@
+html {
+    background-color: #1a1a2e;
+    color: white;
+}
+
+body {
+    margin: 0;
+    font-family: "MesloLGS NF", Menlo, Monaco, "Courier New", monospace;
+}
+
+#app {
+    height: 100vh;
+}

@@ -1,0 +1,130 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body, #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+#App {
+    width: 100%;
+    height: 100%;
+    background-color: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+}
+
+.terminal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    background: #252540;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.back-button {
+    background: transparent;
+    border: 1px solid #444;
+    color: #eee;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.back-button:hover {
+    background: #333;
+    border-color: #4cc9f0;
+}
+
+.session-title-header {
+    color: #888;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.terminal-container {
+    flex: 1;
+    overflow: hidden;
+    width: 100%;
+}
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 400px;
+    width: 90%;
+}
+
+.modal-content h3 {
+    margin: 0 0 12px 0;
+    color: #eee;
+    font-size: 18px;
+    font-weight: 500;
+}
+
+.modal-content p {
+    margin: 0 0 24px 0;
+    color: #aaa;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.modal-buttons {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.modal-btn-cancel,
+.modal-btn-confirm {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.modal-btn-cancel {
+    background: transparent;
+    border: 1px solid #444;
+    color: #eee;
+}
+
+.modal-btn-cancel:hover {
+    background: #333;
+}
+
+.modal-btn-confirm {
+    background: #ff6b6b;
+    border: none;
+    color: #fff;
+    font-weight: 500;
+}
+
+.modal-btn-confirm:hover {
+    background: #ff8787;
+}
