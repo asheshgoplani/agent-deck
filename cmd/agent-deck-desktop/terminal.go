@@ -48,6 +48,18 @@ func (t *Terminal) debugLog(format string, args ...interface{}) {
 	}
 }
 
+// LogDiagnostic writes a diagnostic message from the frontend to the debug log file.
+// This allows diagnostic info from browser to be read by external tools.
+func (t *Terminal) LogDiagnostic(message string) {
+	timestamp := time.Now().Format("15:04:05.000")
+	logLine := fmt.Sprintf("[%s] [FRONTEND-DIAG] %s\n", timestamp, message)
+
+	if debugLogFile != nil {
+		debugLogFile.WriteString(logLine)
+		debugLogFile.Sync()
+	}
+}
+
 // stripTTSMarkers removes «tts» and «/tts» markers from output.
 func stripTTSMarkers(s string) string {
 	s = strings.ReplaceAll(s, "«tts»", "")

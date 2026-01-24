@@ -204,3 +204,9 @@ func (a *App) GetProjectRoots() []string {
 	settings := a.projectDiscovery.getSettings()
 	return settings.ScanPaths
 }
+
+// LogFrontendDiagnostic writes diagnostic info from frontend to the debug log file.
+// This allows Claude to read diagnostic info that would otherwise only be in browser console.
+func (a *App) LogFrontendDiagnostic(message string) {
+	a.terminal.LogDiagnostic(message)
+}

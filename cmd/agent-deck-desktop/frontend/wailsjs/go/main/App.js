@@ -54,6 +54,10 @@ export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
 
+export function LogFrontendDiagnostic(arg1) {
+  return window['go']['main']['App']['LogFrontendDiagnostic'](arg1);
+}
+
 export function MarkSessionAccessed(arg1) {
   return window['go']['main']['App']['MarkSessionAccessed'](arg1);
 }
