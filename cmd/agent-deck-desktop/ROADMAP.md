@@ -22,65 +22,52 @@
 
 ---
 
-## v0.2.0 - Core UX Fixes
-**Priority:** Critical
+## v0.2.0 - Core UX Fixes ✅
+**Status:** Complete
 **Goal:** Fix critical UX issues and add command palette
-**Estimated:** 2-3 weeks
 
-### Critical Fixes
+### Critical Fixes ✅
 
-**Scrollback Visual Artifacts Fix** 🔥
-**Priority:** Critical - Blocks professional appearance
+**Scrollback Visual Artifacts Fix** ✅
+- Fixed with polling approach instead of `tmux attach`
+- See `TECHNICAL_DEBT.md` for details
 
-See `TECHNICAL_DEBT.md` for full technical analysis.
+### Command Palette (Cmd+K) ✅
 
-**Current issue:** Visual chaos when attaching to tmux sessions with search enabled
-**Proper fix:** Polling approach instead of `tmux attach`
-**Implementation:** ~1-2 days
-**Status:** Documented, ready to implement
+**Implemented Features:**
+- [x] Fuzzy search via fuse.js
+- [x] Jump to sessions with keyboard navigation
+- [x] Quick actions (New Terminal, Refresh, Toggle Quick Launch)
+- [x] ESC to close, Enter to select
+- [x] Cmd+Enter for tool picker
 
-### Command Palette (Cmd+K) 🎯
-**Priority:** Critical - Core UX differentiator
+### Project-Aware Session Launching ✅
 
-**Design:**
-- Fuzzy search interface (like VSCode, Linear, Notion)
-- Global access via Cmd+K from anywhere
-- Categories: Sessions, Actions, Shortcuts
+**4-Phase Implementation Complete:**
 
-**Features:**
-1. **Jump to Session**
-   - Type session name to instantly switch
-   - Show recent sessions first
-   - Display session status (running/idle/waiting)
-   - Keyboard navigation (arrows, Enter)
+1. **Phase 1 - Command Palette:** Fuzzy search across sessions, projects, and actions
+2. **Phase 2 - Project Discovery:**
+   - Scans configured paths for projects (git, npm, go, rust, python, CLAUDE.md)
+   - Frecency scoring (use count × recency multiplier)
+   - Config via `[project_discovery]` in `~/.agent-deck/config.toml`
+3. **Phase 3 - Quick Launch Bar:**
+   - Horizontal bar with pinned favorite projects
+   - Right-click context menu for remove/edit shortcut
+   - Persists to `~/.agent-deck/quick-launch.toml`
+4. **Phase 4 - Custom Shortcuts:**
+   - Assign keyboard shortcuts to favorites (Cmd+Shift+letter)
+   - Conflict detection with reserved system keys
+   - Global shortcut handling
 
-2. **Quick Actions**
-   - "New Terminal"
-   - "Refresh Sessions"
-   - "Clear Terminal" (when in terminal view)
-   - "Close Terminal" (when in terminal view)
-   - "Toggle DevTools" (dev mode only)
-
-3. **Shortcut Discovery**
-   - List all keyboard shortcuts
-   - Show context-relevant shortcuts first
-   - Click or press Enter to execute
-
-**Implementation Notes:**
-- Component: `CommandPalette.jsx`
-- Fuzzy search: Use `fuse.js` or similar
-- Render as modal overlay
-- Auto-focus search input
-- ESC to close
-- Track usage for ranking
-
-**Acceptance Criteria:**
-- [ ] Cmd+K opens palette from anywhere
-- [ ] Fuzzy search works on session names
-- [ ] Can jump to session with Enter
-- [ ] Shows all available actions
-- [ ] ESC closes palette
-- [ ] Fast (<100ms to open)
+**Key Files Added:**
+- `frontend/src/CommandPalette.jsx` - Fuzzy search modal
+- `frontend/src/ToolPicker.jsx` - Tool selection (Claude/Gemini/OpenCode)
+- `frontend/src/QuickLaunchBar.jsx` - Pinned favorites bar
+- `frontend/src/ShortcutEditor.jsx` - Custom shortcut recording
+- `frontend/src/utils/shortcuts.js` - Shared shortcut formatting
+- `frontend/src/utils/tools.js` - Shared tool config
+- `project_discovery.go` - Project scanning + frecency
+- `quick_launch.go` - Favorites persistence
 
 ---
 

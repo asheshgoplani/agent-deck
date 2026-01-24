@@ -37,15 +37,23 @@ Synchronize resize: wait for PTY resize confirmation before fitting xterm. Requi
 
 ## Low Priority Issues
 
-### 3. No Command Palette (Feature Gap)
-**Status:** Cmd+K reserved but not implemented
-**Impact:** Can't quick-jump to sessions
-
-**Plan:** v0.2.0 priority feature (see ROADMAP.md)
+*No low priority issues at this time.*
 
 ---
 
 ## Resolved Issues
+
+### ~~No Command Palette~~ ✅
+**Fixed in:** v0.2.0
+**Commits:** 0f6c23a
+
+**The Feature:**
+Full command palette with Cmd+K, including:
+- Fuzzy search across sessions and projects (fuse.js)
+- Project discovery with frecency scoring
+- Quick Launch Bar with pinned favorites
+- Custom keyboard shortcuts for favorites
+- Tool picker (Claude/Gemini/OpenCode)
 
 ### ~~Scrollback Pre-loading Visual Artifacts~~ ✅
 **Fixed in:** v0.2.0
@@ -113,12 +121,13 @@ Pre-load scrollback into xterm buffer for Cmd+F search.
 1. ~~Fix scrollback visual artifacts (polling approach)~~ ✅
 2. ~~Fix scrollback reflow on resize~~ ✅
 3. ~~Fix Cmd+F refocus~~ ✅
-4. Implement command palette (Cmd+K) - **DEFERRED to v0.3.0**
+4. ~~Implement command palette (Cmd+K)~~ ✅
+5. ~~Project-aware session launching~~ ✅
 
 **For v0.3.0:**
 1. Remote sessions support
-2. Session management (create/delete from app)
-3. Command palette (Cmd+K)
+2. Session management (create/delete from app) - partially done (CreateSession exists)
+3. Add "Pin to Quick Launch" from Command Palette
 
 **Deferred:**
 - Split panes (v0.6.0+)
