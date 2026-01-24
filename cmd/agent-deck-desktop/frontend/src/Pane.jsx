@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Terminal from './Terminal';
+import PaneOverlay from './PaneOverlay';
 import { createLogger } from './logger';
 import { GetGitBranch, IsGitWorktree } from '../wailsjs/go/main/App';
 
@@ -13,6 +14,7 @@ const logger = createLogger('Pane');
  * - Empty state UI when no session assigned
  * - Focus management and visual indicators
  * - Pane header with session info
+ * - Move mode overlay with pane numbers
  */
 export default function Pane({
     paneId,
@@ -23,6 +25,8 @@ export default function Pane({
     terminalRefs,
     searchRefs,
     fontSize,
+    moveMode = false,
+    paneNumber = 0,
 }) {
     const paneRef = useRef(null);
     const [gitBranch, setGitBranch] = useState('');
@@ -107,6 +111,7 @@ export default function Pane({
                         </div>
                     </div>
                 </div>
+                {moveMode && <PaneOverlay number={paneNumber} isActive={isActive} />}
             </div>
         );
     }
@@ -146,6 +151,7 @@ export default function Pane({
                     fontSize={fontSize}
                 />
             </div>
+            {moveMode && <PaneOverlay number={paneNumber} isActive={isActive} />}
         </div>
     );
 }

@@ -12,6 +12,7 @@ import KeyboardHelpModal from './KeyboardHelpModal';
 import RenameDialog from './RenameDialog';
 import PaneLayout from './PaneLayout';
 import FocusModeOverlay from './FocusModeOverlay';
+import MoveModeOverlay from './MoveModeOverlay';
 import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
@@ -31,6 +32,7 @@ import {
     createPresetLayout,
     applyPreset,
     getFirstPaneId,
+    swapPaneSessions,
 } from './layoutUtils';
 
 const logger = createLogger('App');
@@ -66,6 +68,8 @@ function App() {
     const [openTabs, setOpenTabs] = useState([]);
     const [activeTabId, setActiveTabId] = useState(null);
     const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
+    // Move mode - when true, shows pane numbers for session swap
+    const [moveMode, setMoveMode] = useState(false);
     const sessionSelectorRef = useRef(null);
     const terminalRefs = useRef({});
     const searchRefs = useRef({});
@@ -227,6 +231,9 @@ function App() {
             case 'toggle-zoom':
                 handleToggleZoom();
                 break;
+            case 'move-to-pane':
+                handleEnterMoveMode();
+                break;
             case 'layout-single':
                 handleApplyPreset('single');
                 break;
@@ -242,7 +249,7 @@ function App() {
             default:
                 logger.warn('Unknown layout action:', actionId);
         }
-    }, [handleSplitPane, handleClosePane, handleBalancePanes, handleToggleZoom, handleApplyPreset]);
+    }, [handleSplitPane, handleClosePane, handleBalancePanes, handleToggleZoom, handleEnterMoveMode, handleApplyPreset]);
 
     // Get the current active tab
     const activeTab = openTabs.find(t => t.id === activeTabId);
@@ -538,6 +545,75 @@ function App() {
         setSelectedSession(firstPane?.session || null);
     }, [activeTab, activeTabId]);
 
+    // Build pane number map for move mode (paneId -> 1, 2, 3, ...)
+    const buildPaneNumberMap = useCallback((layout) => {
+        if (!layout) return {};
+        const panes = getPaneList(layout);
+        const map = {};
+        panes.forEach((pane, index) => {
+            map[pane.id] = index + 1; // 1-indexed for user display
+        });
+        return map;
+    }, []);
+
+    // Enter move mode
+    const handleEnterMoveMode = useCallback(() => {
+        if (!activeTab || countPanes(activeTab.layout) < 2) {
+            logger.info('Cannot enter move mode - need at least 2 panes');
+            return;
+        }
+        logger.info('Entering move mode');
+        setMoveMode(true);
+    }, [activeTab]);
+
+    // Exit move mode
+    const handleExitMoveMode = useCallback(() => {
+        logger.info('Exiting move mode');
+        setMoveMode(false);
+    }, []);
+
+    // Swap sessions by pane number (1-indexed)
+    const handleMoveToPane = useCallback((targetPaneNumber) => {
+        if (!activeTab || !moveMode) return;
+
+        const paneNumberMap = buildPaneNumberMap(activeTab.layout);
+
+        // Find target pane ID by number
+        const targetPaneId = Object.entries(paneNumberMap).find(
+            ([_, num]) => num === targetPaneNumber
+        )?.[0];
+
+        if (!targetPaneId) {
+            logger.warn('Invalid pane number', { targetPaneNumber });
+            handleExitMoveMode();
+            return;
+        }
+
+        // Don't swap with self
+        if (targetPaneId === activeTab.activePaneId) {
+            logger.info('Cannot swap pane with itself');
+            handleExitMoveMode();
+            return;
+        }
+
+        logger.info('Swapping sessions', {
+            from: activeTab.activePaneId,
+            to: targetPaneId,
+            targetNumber: targetPaneNumber
+        });
+
+        // Swap sessions
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            return {
+                ...tab,
+                layout: swapPaneSessions(tab.layout, tab.activePaneId, targetPaneId),
+            };
+        }));
+
+        // Exit move mode
+        handleExitMoveMode();
+    }, [activeTab, activeTabId, moveMode, buildPaneNumberMap, handleExitMoveMode]);
     // Open a session in the active pane (from command palette)
     const handlePaneSessionSelect = useCallback((paneId) => {
         // This is called when user clicks on an empty pane
@@ -836,6 +912,27 @@ function App() {
             return;
         }
 
+        // Move mode keyboard handling - intercept number keys and Escape
+        if (moveMode) {
+            // Number keys 1-9 to select target pane
+            if (e.key >= '1' && e.key <= '9' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                e.preventDefault();
+                e.stopPropagation();
+                const paneNumber = parseInt(e.key, 10);
+                handleMoveToPane(paneNumber);
+                return;
+            }
+            // Escape to cancel move mode
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                handleExitMoveMode();
+                return;
+            }
+            // Block other keys during move mode
+            return;
+        }
+
         // Check custom shortcuts first (user-defined)
         const shortcutKey = buildShortcutKey(e);
         if (shortcuts[shortcutKey]) {
@@ -1083,7 +1180,7 @@ function App() {
             e.preventDefault();
             handleFontSizeReset();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset]);
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -1189,6 +1286,9 @@ function App() {
             return null;
         }
 
+        // Build pane number map for move mode
+        const paneNumberMap = buildPaneNumberMap(activeTab.layout);
+
         return (
             <PaneLayout
                 node={layoutToRender}
@@ -1199,6 +1299,8 @@ function App() {
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
                 fontSize={fontSize}
+                moveMode={moveMode}
+                paneNumberMap={paneNumberMap}
             />
         );
     };
@@ -1300,6 +1402,10 @@ function App() {
             {/* Zoom mode overlay */}
             {activeTab?.zoomedPaneId && (
                 <FocusModeOverlay onExit={handleExitZoom} />
+            )}
+            {/* Move mode overlay */}
+            {moveMode && (
+                <MoveModeOverlay onExit={handleExitMoveMode} />
             )}
             {showCommandPalette && (
                 <CommandPalette

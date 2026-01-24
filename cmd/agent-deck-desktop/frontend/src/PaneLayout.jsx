@@ -19,6 +19,8 @@ export default function PaneLayout({
     terminalRefs,
     searchRefs,
     fontSize,
+    moveMode = false,
+    paneNumberMap = {},
 }) {
     // Handle ratio changes from the split handle
     const handleRatioChange = useCallback((newRatio) => {
@@ -45,6 +47,8 @@ export default function PaneLayout({
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
                 fontSize={fontSize}
+                moveMode={moveMode}
+                paneNumber={paneNumberMap[node.id] || 0}
             />
         );
     }
@@ -72,6 +76,8 @@ export default function PaneLayout({
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
                     fontSize={fontSize}
+                    moveMode={moveMode}
+                    paneNumberMap={paneNumberMap}
                 />
             </div>
 
@@ -94,6 +100,8 @@ export default function PaneLayout({
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
                     fontSize={fontSize}
+                    moveMode={moveMode}
+                    paneNumberMap={paneNumberMap}
                 />
             </div>
         </div>

@@ -116,6 +116,10 @@ export default function KeyboardHelpModal({ onClose }) {
                                 <kbd>{modKey}⌥=</kbd>
                                 <span>Balance sizes</span>
                             </div>
+                            <div className="help-row">
+                                <kbd>{modKey}K</kbd>
+                                <span>Move session (via palette)</span>
+                            </div>
                         </div>
 
                         <div className="help-section">

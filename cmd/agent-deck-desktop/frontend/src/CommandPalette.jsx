@@ -19,7 +19,8 @@ const QUICK_ACTIONS = [
 const LAYOUT_ACTIONS = [
     { id: 'split-right', type: 'layout', title: 'Split Right', description: 'Split pane vertically (Cmd+D)', shortcutHint: '⌘D' },
     { id: 'split-down', type: 'layout', title: 'Split Down', description: 'Split pane horizontally (Cmd+Shift+D)', shortcutHint: '⌘⇧D' },
-    { id: 'close-pane', type: 'layout', title: 'Close Pane', description: 'Close current pane (Cmd+Shift+W)', shortcutHint: '⌘⇧W' },
+    { id: 'close-pane', type: 'layout', title: 'Close Pane', description: 'Close current pane (Cmd+Option+W)', shortcutHint: '⌘⌥W' },
+    { id: 'move-to-pane', type: 'layout', title: 'Move Session to Pane...', description: 'Swap sessions between panes (press number)', shortcutHint: '1-9' },
     { id: 'balance-panes', type: 'layout', title: 'Balance Panes', description: 'Make all panes equal size (Cmd+Option+=)', shortcutHint: '⌘⌥=' },
     { id: 'toggle-zoom', type: 'layout', title: 'Toggle Zoom', description: 'Zoom/unzoom current pane (Cmd+Shift+Z)', shortcutHint: '⌘⇧Z' },
     { id: 'layout-single', type: 'layout', title: 'Layout: Single Pane', description: 'Single pane layout (Cmd+Option+1)', shortcutHint: '⌘⌥1' },

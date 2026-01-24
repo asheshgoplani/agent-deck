@@ -1,0 +1,32 @@
+/* PaneOverlay.css - Number overlay for move mode */
+
+.pane-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 100;
+    pointer-events: none;
+}
+
+.pane-overlay.active {
+    background: rgba(78, 205, 196, 0.3);
+    border: 3px solid var(--accent-color, #4ecdc4);
+}
+
+.pane-overlay-number {
+    font-size: 72px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.pane-overlay.active .pane-overlay-number {
+    color: var(--accent-color, #4ecdc4);
+}

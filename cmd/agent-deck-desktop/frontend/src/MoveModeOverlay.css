@@ -1,0 +1,64 @@
+/* MoveModeOverlay.css - Instructions overlay for move mode */
+
+.move-mode-overlay {
+    position: fixed;
+    bottom: 80px; /* Above the shortcut bar */
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    animation: slideUp 0.2s ease-out;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+.move-mode-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--bg-elevated, #1e1e1e);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 8px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.move-mode-icon {
+    font-size: 18px;
+    color: var(--accent-color, #4ecdc4);
+}
+
+.move-mode-text {
+    color: var(--text-primary, #fff);
+    font-size: 14px;
+}
+
+.move-mode-text strong {
+    color: var(--accent-color, #4ecdc4);
+    font-weight: 600;
+}
+
+.move-mode-cancel {
+    padding: 6px 12px;
+    background: transparent;
+    border: 1px solid var(--border-color, #444);
+    border-radius: 4px;
+    color: var(--text-muted, #888);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.move-mode-cancel:hover {
+    background: var(--bg-hover, #2a2a2a);
+    border-color: var(--text-muted, #666);
+    color: var(--text-primary, #fff);
+}
