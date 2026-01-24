@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -66,15 +68,150 @@ func NewTmuxManager() *TmuxManager {
 	return &TmuxManager{}
 }
 
+// getSessionsPath returns the path to sessions.json for the default profile.
+func (tm *TmuxManager) getSessionsPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".agent-deck", "profiles", "default", "sessions.json"), nil
+}
+
+// generateSessionID creates a unique session ID matching the TUI format: {8-char-hex}-{unix-timestamp}
+func generateSessionID() string {
+	bytes := make([]byte, 4) // 4 bytes = 8 hex chars
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to timestamp if random fails
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%d", hex.EncodeToString(bytes), time.Now().Unix())
+}
+
+// countSessionsAtPath returns the number of existing sessions at a given project path.
+func (tm *TmuxManager) countSessionsAtPath(projectPath string) int {
+	sessionsPath, err := tm.getSessionsPath()
+	if err != nil {
+		return 0
+	}
+
+	data, err := os.ReadFile(sessionsPath)
+	if err != nil {
+		return 0
+	}
+
+	var sessions sessionsJSON
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		return 0
+	}
+
+	// Normalize the path for comparison
+	normalizedPath := filepath.Clean(projectPath)
+
+	count := 0
+	for _, inst := range sessions.Instances {
+		if filepath.Clean(inst.ProjectPath) == normalizedPath {
+			count++
+		}
+	}
+	return count
+}
+
+// PersistSession adds a new session to sessions.json.
+func (tm *TmuxManager) PersistSession(s SessionInfo) error {
+	sessionsPath, err := tm.getSessionsPath()
+	if err != nil {
+		return err
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(sessionsPath), 0700); err != nil {
+		return fmt.Errorf("failed to create sessions directory: %w", err)
+	}
+
+	// Read current sessions (or create empty structure if file doesn't exist)
+	var raw map[string]json.RawMessage
+	data, err := os.ReadFile(sessionsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Initialize empty structure
+			raw = map[string]json.RawMessage{
+				"instances":  json.RawMessage("[]"),
+				"updated_at": json.RawMessage(`"` + time.Now().Format(time.RFC3339Nano) + `"`),
+			}
+		} else {
+			return fmt.Errorf("failed to read sessions file: %w", err)
+		}
+	} else {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("failed to parse sessions file: %w", err)
+		}
+	}
+
+	// Parse instances array using typed struct
+	var instances []instanceJSON
+	if rawInstances, ok := raw["instances"]; ok {
+		if err := json.Unmarshal(rawInstances, &instances); err != nil {
+			return fmt.Errorf("failed to parse instances: %w", err)
+		}
+	}
+
+	// Create new instance entry using typed struct (provides compile-time safety)
+	now := time.Now()
+	newInstance := instanceJSON{
+		ID:               s.ID,
+		Title:            s.Title,
+		CustomLabel:      s.CustomLabel,
+		ProjectPath:      s.ProjectPath,
+		GroupPath:        s.GroupPath,
+		Tool:             s.Tool,
+		Status:           s.Status,
+		TmuxSession:      s.TmuxSession,
+		CreatedAt:        now,
+		LastAccessedAt:   now,
+		LaunchConfigName: s.LaunchConfigName,
+		LoadedMCPNames:   s.LoadedMCPs,
+		DangerousMode:    s.DangerousMode,
+	}
+
+	// Append new instance
+	instances = append(instances, newInstance)
+
+	// Marshal instances back
+	instancesData, err := json.Marshal(instances)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+	raw["instances"] = instancesData
+
+	// Update timestamp
+	updatedAt, _ := json.Marshal(now.Format(time.RFC3339Nano))
+	raw["updated_at"] = updatedAt
+
+	// Write back with indentation (atomic write via temp file)
+	output, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	tmpPath := sessionsPath + ".tmp"
+	if err := os.WriteFile(tmpPath, output, 0600); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, sessionsPath); err != nil {
+		os.Remove(tmpPath) // Clean up temp file on failure
+		return fmt.Errorf("failed to finalize save: %w", err)
+	}
+
+	return nil
+}
+
 // ListSessions returns all Agent Deck sessions from sessions.json.
 func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
-	// Find sessions.json path
-	home, err := os.UserHomeDir()
+	sessionsPath, err := tm.getSessionsPath()
 	if err != nil {
 		return nil, err
 	}
-
-	sessionsPath := filepath.Join(home, ".agent-deck", "profiles", "default", "sessions.json")
 
 	// Read and parse sessions.json
 	data, err := os.ReadFile(sessionsPath)
@@ -255,8 +392,12 @@ func (tm *TmuxManager) SessionExists(tmuxSession string) bool {
 
 // CreateSession creates a new tmux session and launches an AI tool.
 // If configKey is non-empty, the launch config settings will be applied.
+// The session is persisted to sessions.json so it survives app restarts.
 func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string) (SessionInfo, error) {
-	// Generate unique session name
+	// Generate unique session ID (matches TUI format: {8-char-hex}-{unix-timestamp})
+	sessionID := generateSessionID()
+
+	// Generate unique tmux session name
 	sessionName := fmt.Sprintf("agentdeck_%d", time.Now().UnixNano())
 
 	// Create tmux session
@@ -334,9 +475,18 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string)
 		fmt.Printf("Warning: failed to send tool command: %v\n", err)
 	}
 
-	return SessionInfo{
-		ID:               sessionName,
+	// Count existing sessions at this path to auto-generate label for duplicates
+	count := tm.countSessionsAtPath(projectPath)
+	customLabel := ""
+	if count > 0 {
+		customLabel = fmt.Sprintf("#%d", count+1)
+	}
+
+	// Build session info
+	sessionInfo := SessionInfo{
+		ID:               sessionID, // Use proper ID, not tmux name
 		Title:            title,
+		CustomLabel:      customLabel,
 		ProjectPath:      projectPath,
 		Tool:             tool,
 		Status:           "running",
@@ -344,18 +494,25 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string)
 		LaunchConfigName: launchConfigName,
 		LoadedMCPs:       loadedMCPs,
 		DangerousMode:    dangerousMode,
-	}, nil
+		LastAccessedAt:   time.Now(),
+	}
+
+	// Persist to sessions.json so session survives app restarts
+	if err := tm.PersistSession(sessionInfo); err != nil {
+		// Log warning but don't fail - session is still usable
+		fmt.Printf("Warning: failed to persist session: %v\n", err)
+	}
+
+	return sessionInfo, nil
 }
 
 // MarkSessionAccessed updates the last_accessed_at timestamp for a session.
 // This keeps the session list sorted by most recently used.
 func (tm *TmuxManager) MarkSessionAccessed(sessionID string) error {
-	home, err := os.UserHomeDir()
+	sessionsPath, err := tm.getSessionsPath()
 	if err != nil {
 		return err
 	}
-
-	sessionsPath := filepath.Join(home, ".agent-deck", "profiles", "default", "sessions.json")
 
 	// Read current sessions
 	data, err := os.ReadFile(sessionsPath)
@@ -396,24 +553,32 @@ func (tm *TmuxManager) MarkSessionAccessed(sessionID string) error {
 	}
 	raw["instances"] = instancesData
 
-	// Write back with indentation
+	// Write back with indentation (atomic write via temp file)
 	output, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(sessionsPath, output, 0644)
+	tmpPath := sessionsPath + ".tmp"
+	if err := os.WriteFile(tmpPath, output, 0600); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, sessionsPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to finalize save: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateSessionCustomLabel updates the custom_label field for a session.
 // Pass an empty string to remove the custom label.
 func (tm *TmuxManager) UpdateSessionCustomLabel(sessionID, customLabel string) error {
-	home, err := os.UserHomeDir()
+	sessionsPath, err := tm.getSessionsPath()
 	if err != nil {
 		return err
 	}
-
-	sessionsPath := filepath.Join(home, ".agent-deck", "profiles", "default", "sessions.json")
 
 	// Read current sessions
 	data, err := os.ReadFile(sessionsPath)
@@ -459,11 +624,21 @@ func (tm *TmuxManager) UpdateSessionCustomLabel(sessionID, customLabel string) e
 	}
 	raw["instances"] = instancesData
 
-	// Write back with indentation
+	// Write back with indentation (atomic write via temp file)
 	output, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(sessionsPath, output, 0644)
+	tmpPath := sessionsPath + ".tmp"
+	if err := os.WriteFile(tmpPath, output, 0600); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, sessionsPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to finalize save: %w", err)
+	}
+
+	return nil
 }
