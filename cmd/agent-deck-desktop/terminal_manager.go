@@ -13,6 +13,7 @@ type TerminalManager struct {
 	terminals map[string]*Terminal
 	mu        sync.RWMutex
 	ctx       context.Context
+	sshBridge *SSHBridge
 }
 
 // NewTerminalManager creates a new TerminalManager instance.
@@ -34,6 +35,18 @@ func (tm *TerminalManager) SetContext(ctx context.Context) {
 	}
 }
 
+// SetSSHBridge sets the SSH bridge for all terminals.
+func (tm *TerminalManager) SetSSHBridge(bridge *SSHBridge) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.sshBridge = bridge
+
+	// Update SSH bridge for any existing terminals
+	for _, t := range tm.terminals {
+		t.SetSSHBridge(bridge)
+	}
+}
+
 // GetOrCreate returns an existing Terminal for the session ID, or creates a new one.
 func (tm *TerminalManager) GetOrCreate(sessionID string) *Terminal {
 	tm.mu.Lock()
@@ -46,6 +59,9 @@ func (tm *TerminalManager) GetOrCreate(sessionID string) *Terminal {
 	t := NewTerminal(sessionID)
 	if tm.ctx != nil {
 		t.SetContext(tm.ctx)
+	}
+	if tm.sshBridge != nil {
+		t.SetSSHBridge(tm.sshBridge)
 	}
 	tm.terminals[sessionID] = t
 	return t

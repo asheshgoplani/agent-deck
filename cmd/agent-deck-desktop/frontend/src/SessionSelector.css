@@ -252,6 +252,25 @@
     white-space: nowrap;
 }
 
+/* Remote Session Badge */
+.session-remote-badge {
+    display: inline-block;
+    margin-right: 8px;
+    padding: 2px 8px;
+    background: #3b82f6;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 10px;
+    vertical-align: middle;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
 /* Context Menu */
 .session-context-menu {
     position: fixed;

@@ -96,17 +96,21 @@ func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
 	// Convert to SessionInfo
 	result := make([]SessionInfo, 0, len(sessions.Instances))
 	for _, inst := range sessions.Instances {
-		// Check if tmux session actually exists
+		// Check if tmux session actually exists (for local sessions)
 		_, exists := runningTmux[inst.TmuxSession]
-
-		// Skip sessions without tmux or remote sessions (for now)
 		isRemote := inst.RemoteHost != ""
+
+		// Skip local sessions without a running tmux session
+		// Remote sessions are included even without local tmux verification
 		if !exists && !isRemote {
 			continue
 		}
 
-		// Get git info for the project path
-		gitInfo := tm.getGitInfo(inst.ProjectPath)
+		// Get git info for the project path (only for local sessions)
+		var gitInfo GitInfo
+		if !isRemote {
+			gitInfo = tm.getGitInfo(inst.ProjectPath)
+		}
 
 		// Use LastAccessedAt if set, otherwise fall back to CreatedAt
 		lastAccessed := inst.LastAccessedAt

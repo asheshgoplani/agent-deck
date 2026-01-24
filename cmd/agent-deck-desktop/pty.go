@@ -90,3 +90,50 @@ func (p *PTY) Close() error {
 	}
 	return p.file.Close()
 }
+
+// SpawnSSHPTY creates a PTY running an SSH session to a remote host.
+// The SSH connection handles PTY allocation on the remote side (-t flag).
+// The local PTY is used for terminal I/O (resize, raw mode).
+//
+// Parameters:
+//   - hostID: SSH host identifier for connection config lookup
+//   - tmuxSession: tmux session name to attach on the remote host
+//   - sshBridge: SSH bridge for connection management
+//
+// Returns a PTY wrapping the local ssh process.
+func SpawnSSHPTY(hostID, tmuxSession string, sshBridge *SSHBridge) (*PTY, error) {
+	// Get the SSH connection (establishes ControlMaster if not already)
+	conn, err := sshBridge.GetConnection(hostID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get remote tmux path
+	tmuxPath := sshBridge.GetTmuxPath(hostID)
+
+	// Build the attach command
+	attachCmd := tmuxPath + " attach-session -t " + tmuxSession
+
+	// Use StartInteractiveSession which builds the proper SSH command with -t for PTY
+	sshCmd, err := conn.StartInteractiveSession(attachCmd)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set terminal environment for the ssh command
+	sshCmd.Env = append(os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	)
+
+	// Start the SSH command with a local PTY
+	ptmx, err := pty.Start(sshCmd)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PTY{
+		cmd:  sshCmd,
+		file: ptmx,
+	}, nil
+}

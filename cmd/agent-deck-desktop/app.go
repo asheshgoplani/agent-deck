@@ -21,6 +21,7 @@ type App struct {
 	quickLaunch      *QuickLaunchManager
 	launchConfig     *LaunchConfigManager
 	desktopSettings  *DesktopSettingsManager
+	sshBridge        *SSHBridge
 }
 
 // NewApp creates a new App application struct.
@@ -32,6 +33,7 @@ func NewApp() *App {
 		quickLaunch:      NewQuickLaunchManager(),
 		launchConfig:     NewLaunchConfigManager(),
 		desktopSettings:  NewDesktopSettingsManager(),
+		sshBridge:        NewSSHBridge(),
 	}
 }
 
@@ -39,10 +41,15 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.terminals.SetContext(ctx)
+	a.terminals.SetSSHBridge(a.sshBridge)
 }
 
 // shutdown is called when the app is closing.
 func (a *App) shutdown(ctx context.Context) {
+	// Clean up SSH connections
+	if a.sshBridge != nil {
+		a.sshBridge.CloseAll()
+	}
 	a.terminals.CloseAll()
 }
 
@@ -102,6 +109,19 @@ func (a *App) AttachSession(sessionID, tmuxSession string, cols, rows int) error
 func (a *App) StartTmuxSession(sessionID, tmuxSession string, cols, rows int) error {
 	t := a.terminals.GetOrCreate(sessionID)
 	return t.StartTmuxSession(tmuxSession, cols, rows)
+}
+
+// StartRemoteTmuxSession connects to a tmux session on a remote host via SSH.
+// Uses SSH polling for display updates.
+//
+// Parameters:
+//   - sessionID: identifier for this terminal pane
+//   - hostID: SSH host identifier from config.toml [ssh_hosts.X]
+//   - tmuxSession: tmux session name on the remote host
+//   - cols, rows: initial terminal dimensions
+func (a *App) StartRemoteTmuxSession(sessionID, hostID, tmuxSession string, cols, rows int) error {
+	t := a.terminals.GetOrCreate(sessionID)
+	return t.StartRemoteTmuxSession(hostID, tmuxSession, cols, rows)
 }
 
 // GetScrollback returns the scrollback buffer for a tmux session.
@@ -348,4 +368,54 @@ func (a *App) GetFontSize() int {
 // SetFontSize sets the terminal font size (clamped to 8-32).
 func (a *App) SetFontSize(size int) error {
 	return a.desktopSettings.SetFontSize(size)
+}
+
+// ==================== SSH Remote Session Methods ====================
+
+// TestSSHConnection tests if a remote host is reachable.
+// hostID should match a configured [ssh_hosts.X] section in config.toml.
+func (a *App) TestSSHConnection(hostID string) error {
+	return a.sshBridge.TestConnection(hostID)
+}
+
+// GetSSHHostStatus returns connection status for all configured SSH hosts.
+func (a *App) GetSSHHostStatus() []SSHHostStatus {
+	statuses := a.sshBridge.GetHostStatus()
+	result := make([]SSHHostStatus, len(statuses))
+	for i, s := range statuses {
+		var lastError string
+		if s.LastError != nil {
+			lastError = s.LastError.Error()
+		}
+		result[i] = SSHHostStatus{
+			HostID:    s.HostID,
+			Connected: s.Connected,
+			LastError: lastError,
+		}
+	}
+	return result
+}
+
+// ListSSHHosts returns all configured SSH host IDs.
+func (a *App) ListSSHHosts() []string {
+	return a.sshBridge.ListConfiguredHosts()
+}
+
+// SSHHostStatus represents the connection status of an SSH host.
+type SSHHostStatus struct {
+	HostID    string `json:"hostId"`
+	Connected bool   `json:"connected"`
+	LastError string `json:"lastError,omitempty"`
+}
+
+// shutdown is called when the app is closing.
+func (a *App) shutdown(ctx context.Context) {
+	// Clean up SSH connections
+	if a.sshBridge != nil {
+		a.sshBridge.CloseAll()
+	}
+	// Close terminal
+	if a.terminal != nil {
+		a.terminal.Close()
+	}
 }

@@ -129,6 +129,10 @@ type Terminal struct {
 	tmuxStopChan   chan struct{}
 	tmuxLastState  string
 	historyTracker *HistoryTracker
+
+	// Remote session support (SSH)
+	remoteHostID string     // Empty for local, hostID for remote sessions
+	sshBridge    *SSHBridge // Reference to SSH bridge for remote commands
 }
 
 // NewTerminal creates a new Terminal instance for the given session ID.
@@ -252,6 +256,185 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 	return nil
 }
 
+// SetSSHBridge sets the SSH bridge reference for remote session support.
+func (t *Terminal) SetSSHBridge(bridge *SSHBridge) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.sshBridge = bridge
+}
+
+// StartRemoteTmuxSession connects to a tmux session on a remote host via SSH.
+// Uses SSH polling for display updates (read-only for now in Stage 3).
+//
+// Parameters:
+//   - hostID: SSH host identifier from config.toml [ssh_hosts.X]
+//   - tmuxSession: tmux session name on the remote host
+//   - cols, rows: initial terminal dimensions
+func (t *Terminal) StartRemoteTmuxSession(hostID, tmuxSession string, cols, rows int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.pty != nil {
+		return nil // Already started
+	}
+
+	if t.sshBridge == nil {
+		return fmt.Errorf("SSH bridge not initialized")
+	}
+
+	t.debugLog("[REMOTE] Starting remote session hostID=%s tmux=%s cols=%d rows=%d",
+		hostID, tmuxSession, cols, rows)
+
+	// Get tmux path for this host
+	tmuxPath := t.sshBridge.GetTmuxPath(hostID)
+
+	// 1. Resize tmux window on remote host
+	if cols > 0 && rows > 0 {
+		resizeCmd := fmt.Sprintf("%s resize-window -t %q -x %d -y %d",
+			tmuxPath, tmuxSession, cols, rows)
+		if _, err := t.sshBridge.RunCommand(hostID, resizeCmd); err != nil {
+			t.debugLog("[REMOTE] resize-window error: %v", err)
+		} else {
+			t.debugLog("[REMOTE] Resized tmux window to %dx%d", cols, rows)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// 2. Fetch full history from remote
+	historyCmd := fmt.Sprintf("%s capture-pane -t %q -p -e -S - -E -", tmuxPath, tmuxSession)
+	historyOutput, err := t.sshBridge.RunCommand(hostID, historyCmd)
+	if err != nil {
+		t.debugLog("[REMOTE] capture-pane error: %v", err)
+		// Continue anyway - history is optional
+	}
+
+	// 3. Sanitize and emit history
+	if len(historyOutput) > 0 {
+		history := sanitizeHistoryForXterm(historyOutput)
+		history = normalizeCRLF(history)
+		t.debugLog("[REMOTE] Emitting %d bytes of sanitized history", len(history))
+		if t.ctx != nil {
+			runtime.EventsEmit(t.ctx, "terminal:history", TerminalEvent{SessionID: t.sessionID, Data: history})
+		}
+	}
+
+	// 4. Short delay for frontend to process history
+	time.Sleep(50 * time.Millisecond)
+
+	// 5. Attach SSH PTY for interactive input
+	t.debugLog("[REMOTE] Attaching SSH PTY for interactive session")
+	pty, err := SpawnSSHPTY(hostID, tmuxSession, t.sshBridge)
+	if err != nil {
+		t.debugLog("[REMOTE] SSH PTY attach failed: %v", err)
+		// Fall back to read-only mode - continue without PTY
+	} else {
+		// Set PTY size
+		if cols > 0 && rows > 0 {
+			pty.Resize(uint16(cols), uint16(rows))
+		}
+		t.pty = pty
+
+		// Start PTY read loop (discard output - polling handles display)
+		go t.readLoopDiscard()
+		t.debugLog("[REMOTE] SSH PTY attached successfully")
+	}
+
+	// 6. Store remote context
+	t.remoteHostID = hostID
+	t.tmuxSession = tmuxSession
+	t.closed = false
+
+	// 7. Start remote polling mode for display updates (100ms for SSH latency)
+	t.startRemoteTmuxPolling(hostID, tmuxSession, rows)
+
+	if t.pty != nil {
+		t.debugLog("[REMOTE] Session started successfully (interactive mode)")
+	} else {
+		t.debugLog("[REMOTE] Session started successfully (read-only polling mode)")
+	}
+	return nil
+}
+
+// startRemoteTmuxPolling begins polling remote tmux for display updates.
+func (t *Terminal) startRemoteTmuxPolling(hostID, tmuxSession string, rows int) {
+	t.tmuxPolling = true
+	t.tmuxStopChan = make(chan struct{})
+	t.tmuxLastState = ""
+	t.historyTracker = NewRemoteHistoryTracker(hostID, tmuxSession, rows, t.sshBridge)
+
+	go t.pollRemoteTmuxLoop(hostID, tmuxSession)
+}
+
+// pollRemoteTmuxLoop continuously polls remote tmux for display updates.
+func (t *Terminal) pollRemoteTmuxLoop(hostID, tmuxSession string) {
+	ticker := time.NewTicker(100 * time.Millisecond) // Slightly slower for SSH latency
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-t.tmuxStopChan:
+			return
+		case <-ticker.C:
+			t.pollRemoteTmuxOnce(hostID, tmuxSession)
+		}
+	}
+}
+
+// pollRemoteTmuxOnce captures current remote tmux pane and emits any changes.
+func (t *Terminal) pollRemoteTmuxOnce(hostID, tmuxSession string) {
+	t.mu.Lock()
+	polling := t.tmuxPolling
+	sshBridge := t.sshBridge
+	tracker := t.historyTracker
+	t.mu.Unlock()
+
+	if !polling || sshBridge == nil || tracker == nil {
+		return
+	}
+
+	tmuxPath := sshBridge.GetTmuxPath(hostID)
+
+	// Capture current viewport from remote
+	captureCmd := fmt.Sprintf("%s capture-pane -t %q -p -e", tmuxPath, tmuxSession)
+	output, err := sshBridge.RunCommand(hostID, captureCmd)
+	if err != nil {
+		t.debugLog("[REMOTE-POLL] capture-pane error: %v", err)
+		// Session might have ended
+		if t.ctx != nil {
+			runtime.EventsEmit(t.ctx, "terminal:exit", TerminalEvent{SessionID: t.sessionID, Data: "remote tmux session ended"})
+		}
+		t.stopTmuxPolling()
+		return
+	}
+
+	currentState := output
+
+	// Only process if viewport changed
+	t.mu.Lock()
+	lastState := t.tmuxLastState
+	t.mu.Unlock()
+
+	if currentState != lastState {
+		t.mu.Lock()
+		t.tmuxLastState = currentState
+		t.mu.Unlock()
+
+		if t.ctx != nil {
+			content := stripTTSMarkers(currentState)
+
+			// Diff viewport and emit minimal updates
+			updateSequence := tracker.DiffViewport(content)
+
+			if len(updateSequence) > 0 {
+				lines := strings.Count(content, "\n")
+				t.debugLog("[REMOTE-POLL] Viewport diff: %d bytes update, %d content lines",
+					len(updateSequence), lines)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: updateSequence})
+			}
+		}
+	}
+}
+
 // readLoopDiscard reads from PTY but discards output.
 // This is used in polling mode where display is handled by polling tmux directly.
 // The PTY is kept open for user input and to maintain the tmux connection.
@@ -306,6 +489,7 @@ func (t *Terminal) stopTmuxPolling() {
 		t.tmuxSession = ""
 		t.tmuxLastState = ""
 		t.historyTracker = nil
+		t.remoteHostID = "" // Clear remote context
 	}
 }
 
@@ -578,22 +762,33 @@ func (t *Terminal) Resize(cols, rows int) error {
 	p := t.pty
 	session := t.tmuxSession
 	tracker := t.historyTracker
+	remoteHost := t.remoteHostID
+	sshBridge := t.sshBridge
 	t.mu.Unlock()
 
-	if p == nil {
-		return nil
-	}
-
-	// Resize the PTY
-	if err := p.Resize(uint16(cols), uint16(rows)); err != nil {
-		return err
+	// Resize the PTY if attached
+	if p != nil {
+		if err := p.Resize(uint16(cols), uint16(rows)); err != nil {
+			t.debugLog("[RESIZE] PTY resize error: %v", err)
+		}
 	}
 
 	// Also resize tmux window if we're attached to a session
 	if session != "" {
-		cmd := exec.Command("tmux", "resize-window", "-t", session, "-x", itoa(cols), "-y", itoa(rows))
-		if err := cmd.Run(); err != nil {
-			t.debugLog("[RESIZE] tmux resize-window error: %v", err)
+		if remoteHost != "" && sshBridge != nil {
+			// Remote session - use SSH to resize
+			tmuxPath := sshBridge.GetTmuxPath(remoteHost)
+			resizeCmd := fmt.Sprintf("%s resize-window -t %q -x %d -y %d",
+				tmuxPath, session, cols, rows)
+			if _, err := sshBridge.RunCommand(remoteHost, resizeCmd); err != nil {
+				t.debugLog("[RESIZE] Remote tmux resize-window error: %v", err)
+			}
+		} else {
+			// Local session - use local tmux
+			cmd := exec.Command("tmux", "resize-window", "-t", session, "-x", itoa(cols), "-y", itoa(rows))
+			if err := cmd.Run(); err != nil {
+				t.debugLog("[RESIZE] tmux resize-window error: %v", err)
+			}
 		}
 
 		// Reset history tracker on resize - content will reflow at new width

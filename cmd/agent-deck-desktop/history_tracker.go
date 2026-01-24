@@ -260,3 +260,25 @@ func (ht *HistoryTracker) SetAltScreen(inAltScreen bool) {
 	}
 	ht.inAltScreen = inAltScreen
 }
+
+// RemoteHistoryTracker is a version of HistoryTracker for remote SSH sessions.
+// It uses SSH bridge to run tmux commands instead of local exec.
+type RemoteHistoryTracker struct {
+	*HistoryTracker
+	hostID    string
+	sshBridge *SSHBridge
+	tmuxPath  string
+}
+
+// NewRemoteHistoryTracker creates a tracker for a remote tmux session.
+func NewRemoteHistoryTracker(hostID, session string, rows int, sshBridge *SSHBridge) *HistoryTracker {
+	// For now, we use the base HistoryTracker but return it wrapped.
+	// The remote polling methods use sshBridge directly.
+	return &HistoryTracker{
+		tmuxSession:       session,
+		lastHistoryIndex:  0,
+		lastViewportLines: []string{},
+		viewportRows:      rows,
+		inAltScreen:       false,
+	}
+}
