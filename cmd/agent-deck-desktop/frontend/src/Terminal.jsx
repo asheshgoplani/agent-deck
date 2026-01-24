@@ -174,38 +174,13 @@ export default function Terminal({ searchRef, session }) {
         // Try multiple scroll detection methods for xterm.js v6
         // (scrollSettleTimer declared above)
 
-        // Track scroll positions - we need to know the MINIMUM position during a scroll session
-        // because PTY data may reset scroll to bottom, but we want to know where user scrolled to
-        let lastKnownScrollPosition = -1;
-        let minScrollPositionDuringScroll = -1;
-        let isUserScrolling = false;
-
-        // Method 1: xterm.js onScroll API - THIS gives us the real scroll position!
-        const scrollDisposable = term.onScroll((newPosition) => {
-            lastKnownScrollPosition = newPosition;
-
-            // Track the minimum (most scrolled up) position during this scroll session
-            if (minScrollPositionDuringScroll < 0 || newPosition < minScrollPositionDuringScroll) {
-                minScrollPositionDuringScroll = newPosition;
-            }
-
+        // Method 1: xterm.js onScroll API - triggers scroll indicator update
+        const scrollDisposable = term.onScroll(() => {
             if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
             scrollSettleTimer = setTimeout(() => {
-                const scrolledUpTo = minScrollPositionDuringScroll;
-                console.log(`%c[SCROLL-SETTLE] settled at ${lastKnownScrollPosition}, user scrolled up to ${scrolledUpTo}`, 'color: lime; font-weight: bold');
-                LogFrontendDiagnostic(`[SCROLL-SETTLE] current=${lastKnownScrollPosition} minDuringScroll=${scrolledUpTo}`);
-
-                // Reset for next scroll session
-                minScrollPositionDuringScroll = -1;
-
-                // Trigger repaint using the minimum scroll position (where user actually scrolled to)
-                attemptRepaint(scrolledUpTo);
+                attemptRepaint();
             }, 200);
         });
-
-        // Expose scroll position getter for attemptRepaint
-        term._lastKnownScrollPosition = () => lastKnownScrollPosition;
-        term._getMinScrollPosition = () => minScrollPositionDuringScroll;
 
         // Method 2: Direct DOM scroll listener on viewport
         const viewportEl = terminalRef.current?.querySelector('.xterm-viewport');
@@ -218,142 +193,16 @@ export default function Terminal({ searchRef, session }) {
             console.log('%c[INIT] DOM scroll listener attached', 'color: green');
         }
 
-        // Method 3: Wheel event on terminal container with CAPTURE phase
-        // This is the ONLY scroll detection method that works reliably in WKWebView
-        let wheelSettleTimer = null;
-        let isScrolling = false;
-
-        const attemptRepaint = async () => {
+        const attemptRepaint = () => {
             if (!xtermRef.current) return;
 
             const term = xtermRef.current;
-            const buffer = term.buffer.active;
 
-            // Get scroll position from our captured onScroll event value
-            // This is more reliable than buffer.viewportY which may be stale
-            const lastScrollPos = term._lastKnownScrollPosition?.() ?? -1;
+            // Update scroll indicator state
+            handleScrollFix('scroll-settle');
 
-            // Also get internal values for comparison
-            const coreBuffer = term._core?.buffer;
-            const ydisp = coreBuffer?.ydisp ?? 0;
-            const ybase = coreBuffer?.ybase ?? 0;
-            const viewportY = buffer.viewportY;
-            const baseY = buffer.baseY;
-
-            // Use the captured scroll position if available, otherwise fall back to ydisp
-            const actualVisibleRow = lastScrollPos >= 0 ? lastScrollPos : ydisp;
-
-            // We're scrolled up if the visible row is less than the base (bottom)
-            const isScrolledUp = actualVisibleRow < baseY;
-
-            console.log('%c[REPAINT] Attempting repaint after scroll settle...', 'color: yellow; font-weight: bold');
-            LogFrontendDiagnostic(`[REPAINT] lastScrollPos=${lastScrollPos} actualVisibleRow=${actualVisibleRow}`);
-            LogFrontendDiagnostic(`[REPAINT] ydisp=${ydisp} ybase=${ybase} viewportY=${viewportY} baseY=${baseY}`);
-            LogFrontendDiagnostic(`[REPAINT] isScrolledUp=${isScrolledUp}`);
-            console.log(`%c[REPAINT] lastScrollPos=${lastScrollPos} isScrolledUp=${isScrolledUp}`, 'color: cyan; font-weight: bold');
-
-            // Strategy 1: Check buffer content of ACTUALLY visible rows
-            const viewportStart = actualVisibleRow;
-            for (let i = 0; i < Math.min(3, term.rows); i++) {
-                const line = buffer.getLine(viewportStart + i);
-                if (line) {
-                    const text = line.translateToString();
-                    // Check for box-drawing chars
-                    if (text.includes('─') || text.includes('│') || text.includes('┌')) {
-                        console.log(`%c[BUFFER-CHECK] Row ${viewportStart + i}: "${text.substring(0, 60)}..."`, 'color: cyan');
-                        LogFrontendDiagnostic(`[BUFFER-CHECK] Row ${viewportStart + i} has box chars, content OK`);
-                    }
-                }
-            }
-
-            // Strategy 2: Standard xterm.js refresh
+            // Standard xterm.js refresh - keep display in sync
             term.refresh(0, term.rows - 1);
-            console.log('%c[REPAINT] Strategy 2: term.refresh() done', 'color: yellow');
-
-            // Strategy 3: Force CSS layer invalidation via opacity toggle
-            const screenEl = terminalRef.current?.querySelector('.xterm-screen');
-            if (screenEl) {
-                screenEl.style.opacity = '0.999';
-                await new Promise(r => requestAnimationFrame(r));
-                screenEl.style.opacity = '1';
-                console.log('%c[REPAINT] Strategy 3: opacity toggle done', 'color: yellow');
-            }
-
-            // Strategy 4: Try to force xterm.js to re-render by briefly hiding rows
-            // This might force new glyph rendering rather than cached
-            if (screenEl) {
-                screenEl.style.visibility = 'hidden';
-                await new Promise(r => requestAnimationFrame(r));
-                screenEl.style.visibility = 'visible';
-                console.log('%c[REPAINT] Strategy 4: visibility toggle done', 'color: yellow');
-            }
-
-            // Strategy 5: Try to access xterm's internal render service for forced refresh
-            try {
-                const renderService = term._core?._renderService;
-                if (renderService) {
-                    // Try different internal methods that might force a clean render
-                    if (renderService.refreshRows) {
-                        renderService.refreshRows(0, term.rows - 1);
-                        console.log('%c[REPAINT] Strategy 5a: renderService.refreshRows() done', 'color: yellow');
-                    }
-                    if (renderService._renderer?.handleResize) {
-                        // Fake a resize event to force recalculation
-                        renderService._renderer.handleResize(term.cols, term.rows);
-                        console.log('%c[REPAINT] Strategy 5b: renderer.handleResize() done', 'color: yellow');
-                    }
-                    // Clear any cached dimensions
-                    if (renderService.clear) {
-                        renderService.clear();
-                        console.log('%c[REPAINT] Strategy 5c: renderService.clear() done', 'color: yellow');
-                    }
-                    LogFrontendDiagnostic('[REPAINT] Strategy 5: internal render service methods called');
-                }
-            } catch (e) {
-                console.log('%c[REPAINT] Strategy 5: internal API access failed:', e.message, 'color: red');
-            }
-
-            // Strategy 6: DISABLED - DOM rebuild breaks xterm.js internal references
-            // const rowContainer = terminalRef.current?.querySelector('.xterm-rows');
-            // if (rowContainer && isScrolledUp) {
-            //     const clone = rowContainer.cloneNode(true);
-            //     rowContainer.parentNode.replaceChild(clone, rowContainer);
-            // }
-
-            // Strategy 7: Verify buffer content (diagnostic)
-            if (isScrolledUp) {
-                console.log('%c[REPAINT] Strategy 7: In scrollback - checking buffer content...', 'color: orange; font-weight: bold');
-                LogFrontendDiagnostic('[REPAINT] Strategy 7: Checking scrollback content');
-
-                // Collect visible row content from ACTUAL visible position
-                const visibleContent = [];
-                for (let i = 0; i < term.rows; i++) {
-                    const line = buffer.getLine(actualVisibleRow + i);
-                    if (line) {
-                        visibleContent.push(line.translateToString(true)); // true = trim trailing whitespace
-                    }
-                }
-
-                console.log(`%c[REPAINT] Strategy 7: Collected ${visibleContent.length} rows from buffer (starting row ${actualVisibleRow})`, 'color: orange');
-
-                // Verify the content is correct
-                const hasBoxChars = visibleContent.some(line =>
-                    line.includes('─') || line.includes('│') || line.includes('┌') || line.includes('┐')
-                );
-                if (hasBoxChars) {
-                    LogFrontendDiagnostic(`[REPAINT] Buffer content has box chars - data is CORRECT, issue is visual only`);
-                    console.log('%c[REPAINT] Buffer data is CORRECT - corruption is visual rendering only!', 'color: lime; font-weight: bold');
-
-                    // Log the actual content of rows with box chars for verification
-                    visibleContent.forEach((line, i) => {
-                        if (line.includes('─') || line.includes('│')) {
-                            console.log(`%c[BUFFER] Row ${actualVisibleRow + i}: ${line}`, 'color: cyan; font-size: 10px');
-                        }
-                    });
-                }
-            }
-
-            LogFrontendDiagnostic('[REPAINT] All strategies applied');
         };
 
         // INTERCEPT wheel events and use programmatic scroll instead
@@ -573,7 +422,6 @@ export default function Terminal({ searchRef, session }) {
             if (viewportEl) viewportEl.removeEventListener('scroll', handleDOMScroll);
             if (terminalRef.current) terminalRef.current.removeEventListener('wheel', handleWheel);
             if (scrollSettleTimer) clearTimeout(scrollSettleTimer);
-            if (wheelSettleTimer) clearTimeout(wheelSettleTimer);
             term.dispose();
             xtermRef.current = null;
             fitAddonRef.current = null;

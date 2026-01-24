@@ -17,6 +17,45 @@ import (
 // Log file for debugging - can be read by the developer
 var debugLogFile *os.File
 
+// Pre-compiled regex patterns for sanitizing terminal output.
+// These are compiled once at package init time for performance.
+var (
+	// Cursor positioning patterns
+	cursorHomeRe    = regexp.MustCompile(`\x1b\[H`)
+	cursorPosRe     = regexp.MustCompile(`\x1b\[\d+;\d+H`)
+	cursorPosAltRe  = regexp.MustCompile(`\x1b\[\d+;\d+f`)
+	cursorMoveRe    = regexp.MustCompile(`\x1b\[\d*[ABCD]`) // Up/down/forward/back
+	cursorLineColRe = regexp.MustCompile(`\x1b\[\d*[EFG]`)  // Next/prev line, column absolute
+
+	// Cursor visibility and style patterns
+	cursorVisRe   = regexp.MustCompile(`\x1b\[\?25[hl]`) // Show/hide cursor
+	cursorStyleRe = regexp.MustCompile(`\x1b\[\d* ?q`)   // Cursor style (block, underline, bar)
+
+	// Screen clearing patterns
+	clearScreenRe    = regexp.MustCompile(`\x1b\[2J`)   // Clear screen
+	clearToEndRe     = regexp.MustCompile(`\x1b\[J`)    // Clear to end of screen
+	clearScreenVarRe = regexp.MustCompile(`\x1b\[\d*J`) // Clear screen variants
+	clearLineEndRe   = regexp.MustCompile(`\x1b\[K`)    // Clear to end of line
+	clearLineVarRe   = regexp.MustCompile(`\x1b\[\d*K`) // Clear line variants
+
+	// Alternate screen buffer patterns
+	altScreenXtermRe = regexp.MustCompile(`\x1b\[\?1049[hl]`) // xterm alt screen
+	altScreenDECRe   = regexp.MustCompile(`\x1b\[\?47[hl]`)   // DEC alt screen
+
+	// Cursor save/restore patterns
+	saveCursorANSIRe    = regexp.MustCompile(`\x1b\[s`) // Save cursor (ANSI)
+	restoreCursorANSIRe = regexp.MustCompile(`\x1b\[u`) // Restore cursor (ANSI)
+	saveCursorDECRe     = regexp.MustCompile(`\x1b7`)   // Save cursor (DEC)
+	restoreCursorDECRe  = regexp.MustCompile(`\x1b8`)   // Restore cursor (DEC)
+
+	// Scroll region pattern
+	scrollRegionRe = regexp.MustCompile(`\x1b\[\d*;\d*r`) // Set scroll region
+
+	// Seam-specific patterns (used during initial PTY attachment)
+	seamCursorPosRe       = regexp.MustCompile(`\x1b\[\d*;\d*[Hf]`) // Cursor positioning (H or f)
+	seamCursorPosSimpleRe = regexp.MustCompile(`\x1b\[\d+[Hf]`)     // Simple cursor positioning
+)
+
 func init() {
 	// Create log file in temp directory
 	logPath := filepath.Join(os.TempDir(), "agent-deck-desktop-debug.log")
@@ -195,36 +234,36 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 // with scrollback accumulation while preserving colors.
 func sanitizeHistoryForXterm(content string) string {
 	// Remove cursor positioning (conflicts with scrollback)
-	content = regexp.MustCompile(`\x1b\[H`).ReplaceAllString(content, "")                // Cursor home
-	content = regexp.MustCompile(`\x1b\[\d+;\d+H`).ReplaceAllString(content, "")         // Cursor position
-	content = regexp.MustCompile(`\x1b\[\d+;\d+f`).ReplaceAllString(content, "")         // Cursor position (alternate)
-	content = regexp.MustCompile(`\x1b\[\d*[ABCD]`).ReplaceAllString(content, "")        // Cursor movement (up/down/forward/back)
-	content = regexp.MustCompile(`\x1b\[\d*[EFG]`).ReplaceAllString(content, "")         // Cursor next/prev line, column absolute
+	content = cursorHomeRe.ReplaceAllString(content, "")    // Cursor home
+	content = cursorPosRe.ReplaceAllString(content, "")     // Cursor position
+	content = cursorPosAltRe.ReplaceAllString(content, "")  // Cursor position (alternate)
+	content = cursorMoveRe.ReplaceAllString(content, "")    // Cursor movement (up/down/forward/back)
+	content = cursorLineColRe.ReplaceAllString(content, "") // Cursor next/prev line, column absolute
 
 	// Remove cursor visibility and style (can cause rendering glitches on scroll)
-	content = regexp.MustCompile(`\x1b\[\?25[hl]`).ReplaceAllString(content, "")         // Show/hide cursor
-	content = regexp.MustCompile(`\x1b\[\d* ?q`).ReplaceAllString(content, "")           // Cursor style (block, underline, bar)
+	content = cursorVisRe.ReplaceAllString(content, "")   // Show/hide cursor
+	content = cursorStyleRe.ReplaceAllString(content, "") // Cursor style (block, underline, bar)
 
 	// Remove screen clearing
-	content = regexp.MustCompile(`\x1b\[2J`).ReplaceAllString(content, "")  // Clear screen
-	content = regexp.MustCompile(`\x1b\[J`).ReplaceAllString(content, "")   // Clear to end of screen
-	content = regexp.MustCompile(`\x1b\[\d*J`).ReplaceAllString(content, "")// Clear screen variants
-	content = regexp.MustCompile(`\x1b\[K`).ReplaceAllString(content, "")   // Clear to end of line
-	content = regexp.MustCompile(`\x1b\[\d*K`).ReplaceAllString(content, "")// Clear line variants
-	content = regexp.MustCompile(`\x1bc`).ReplaceAllString(content, "")     // Full reset
+	content = clearScreenRe.ReplaceAllString(content, "")    // Clear screen
+	content = clearToEndRe.ReplaceAllString(content, "")     // Clear to end of screen
+	content = clearScreenVarRe.ReplaceAllString(content, "") // Clear screen variants
+	content = clearLineEndRe.ReplaceAllString(content, "")   // Clear to end of line
+	content = clearLineVarRe.ReplaceAllString(content, "")   // Clear line variants
+	content = strings.ReplaceAll(content, "\x1bc", "")       // Full reset
 
 	// Remove alternate screen buffer switches
-	content = regexp.MustCompile(`\x1b\[\?1049[hl]`).ReplaceAllString(content, "")  // xterm alt screen
-	content = regexp.MustCompile(`\x1b\[\?47[hl]`).ReplaceAllString(content, "")    // DEC alt screen
+	content = altScreenXtermRe.ReplaceAllString(content, "") // xterm alt screen
+	content = altScreenDECRe.ReplaceAllString(content, "")   // DEC alt screen
 
 	// Remove cursor save/restore
-	content = regexp.MustCompile(`\x1b\[s`).ReplaceAllString(content, "")   // Save cursor (ANSI)
-	content = regexp.MustCompile(`\x1b\[u`).ReplaceAllString(content, "")   // Restore cursor (ANSI)
-	content = regexp.MustCompile(`\x1b7`).ReplaceAllString(content, "")     // Save cursor (DEC)
-	content = regexp.MustCompile(`\x1b8`).ReplaceAllString(content, "")     // Restore cursor (DEC)
+	content = saveCursorANSIRe.ReplaceAllString(content, "")    // Save cursor (ANSI)
+	content = restoreCursorANSIRe.ReplaceAllString(content, "") // Restore cursor (ANSI)
+	content = saveCursorDECRe.ReplaceAllString(content, "")     // Save cursor (DEC)
+	content = restoreCursorDECRe.ReplaceAllString(content, "")  // Restore cursor (DEC)
 
 	// Remove scroll region setting (can interfere with xterm buffer)
-	content = regexp.MustCompile(`\x1b\[\d*;\d*r`).ReplaceAllString(content, "")    // Set scroll region
+	content = scrollRegionRe.ReplaceAllString(content, "") // Set scroll region
 
 	// KEEP: SGR color codes (\x1b[...m) - users want colored history
 
@@ -305,8 +344,8 @@ func stripSeamSequences(s string) string {
 
 	// Remove any cursor positioning sequences (ESC [ row ; col H or f)
 	// These would cause content to overwrite wrong positions
-	s = regexp.MustCompile(`\x1b\[\d*;\d*[Hf]`).ReplaceAllString(s, "")
-	s = regexp.MustCompile(`\x1b\[\d+[Hf]`).ReplaceAllString(s, "")
+	s = seamCursorPosRe.ReplaceAllString(s, "")
+	s = seamCursorPosSimpleRe.ReplaceAllString(s, "")
 
 	return s
 }
