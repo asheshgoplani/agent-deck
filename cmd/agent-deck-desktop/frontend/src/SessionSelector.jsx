@@ -79,20 +79,10 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         });
     }, []);
 
-    // Build git status description for tooltip
-    const getGitStatusDescription = useCallback((session) => {
-        const parts = [];
-        if (session.gitDirty) parts.push('uncommitted changes');
-        if (session.gitAhead > 0) parts.push(`${session.gitAhead} ahead`);
-        if (session.gitBehind > 0) parts.push(`${session.gitBehind} behind`);
-        return parts.length > 0 ? parts.join(', ') : null;
-    }, []);
-
     // Tooltip content builder for sessions - returns JSX for rich formatting
     const getTooltipContent = useCallback((session) => {
         const relativeTime = formatRelativeTime(session.lastAccessedAt);
         const relativePath = getRelativeProjectPath(session.projectPath, projectRoots);
-        const gitStatus = getGitStatusDescription(session);
 
         return (
             <div className="session-tooltip">
@@ -114,10 +104,24 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                         <span>Git worktree</span>
                     </div>
                 )}
-                {gitStatus && (
+                {session.gitDirty && (
                     <div className="tooltip-row tooltip-git-status">
-                        <span className="tooltip-icon">⚡</span>
-                        <span>{gitStatus}</span>
+                        <span className="tooltip-icon git-dirty-indicator">●</span>
+                        <span>uncommitted changes</span>
+                    </div>
+                )}
+                {(session.gitAhead > 0 || session.gitBehind > 0) && (
+                    <div className="tooltip-row tooltip-git-status">
+                        <span className="tooltip-icon tooltip-sync-icon">
+                            {session.gitAhead > 0 && <span className="git-ahead">↑{session.gitAhead}</span>}
+                            {session.gitBehind > 0 && <span className="git-behind">↓{session.gitBehind}</span>}
+                        </span>
+                        <span>
+                            {[
+                                session.gitAhead > 0 && `${session.gitAhead} ahead`,
+                                session.gitBehind > 0 && `${session.gitBehind} behind`
+                            ].filter(Boolean).join(', ')}
+                        </span>
                     </div>
                 )}
                 {session.isRemote && (
@@ -128,7 +132,7 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                 )}
             </div>
         );
-    }, [projectRoots, getGitStatusDescription]);
+    }, [projectRoots]);
 
     const loadSessions = async () => {
         try {
