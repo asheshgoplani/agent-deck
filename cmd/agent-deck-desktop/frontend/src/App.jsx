@@ -503,6 +503,22 @@ function App() {
         }
     }, [fontSize]);
 
+    // Reset font size to default
+    const handleFontSizeReset = useCallback(async () => {
+        if (fontSize === DEFAULT_FONT_SIZE) return; // Already at default
+
+        try {
+            await SetFontSize(DEFAULT_FONT_SIZE);
+            setFontSizeState(DEFAULT_FONT_SIZE);
+            logger.info('Font size reset to default', { size: DEFAULT_FONT_SIZE });
+        } catch (err) {
+            logger.error('Failed to reset font size:', err);
+        }
+    }, [fontSize]);
+
+    // Calculate font scale for CSS custom property (14px is baseline)
+    const fontScale = fontSize / 14;
+
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
         // Don't handle shortcuts when help modal is open (it has its own handler)
@@ -622,17 +638,22 @@ function App() {
             e.preventDefault();
             handleOpenSettings();
         }
-        // Cmd++ (Cmd+=) to increase font size (works in terminal view)
-        if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+') && view === 'terminal') {
+        // Cmd++ (Cmd+=) to increase font size (works everywhere)
+        if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) {
             e.preventDefault();
             handleFontSizeChange(1);
         }
-        // Cmd+- to decrease font size (works in terminal view)
-        if ((e.metaKey || e.ctrlKey) && e.key === '-' && view === 'terminal') {
+        // Cmd+- to decrease font size (works everywhere)
+        if ((e.metaKey || e.ctrlKey) && e.key === '-') {
             e.preventDefault();
             handleFontSizeChange(-1);
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange]);
+        // Cmd+0 to reset font size to default (works everywhere)
+        if ((e.metaKey || e.ctrlKey) && e.key === '0') {
+            e.preventDefault();
+            handleFontSizeReset();
+        }
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -643,7 +664,7 @@ function App() {
     // Show session selector
     if (view === 'selector') {
         return (
-            <div id="App">
+            <div id="App" style={{ '--font-scale': fontScale }}>
                 {showQuickLaunch && (
                     <UnifiedTopBar
                         key={quickLaunchKey}
@@ -701,7 +722,11 @@ function App() {
                     />
                 )}
                 {showSettings && (
-                    <SettingsModal onClose={() => setShowSettings(false)} />
+                    <SettingsModal
+                        onClose={() => setShowSettings(false)}
+                        fontSize={fontSize}
+                        onFontSizeChange={(newSize) => setFontSizeState(newSize)}
+                    />
                 )}
                 {showHelpModal && (
                     <KeyboardHelpModal onClose={() => setShowHelpModal(false)} />
@@ -712,7 +737,7 @@ function App() {
 
     // Show terminal
     return (
-        <div id="App">
+        <div id="App" style={{ '--font-scale': fontScale }}>
             {showQuickLaunch && (
                 <UnifiedTopBar
                     key={quickLaunchKey}
@@ -830,7 +855,11 @@ function App() {
                 />
             )}
             {showSettings && (
-                <SettingsModal onClose={() => setShowSettings(false)} />
+                <SettingsModal
+                    onClose={() => setShowSettings(false)}
+                    fontSize={fontSize}
+                    onFontSizeChange={(newSize) => setFontSizeState(newSize)}
+                />
             )}
             {showHelpModal && (
                 <KeyboardHelpModal onClose={() => setShowHelpModal(false)} />

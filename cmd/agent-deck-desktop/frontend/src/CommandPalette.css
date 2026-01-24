@@ -32,7 +32,7 @@
     border: none;
     border-bottom: 1px solid var(--border-secondary);
     color: var(--text-primary);
-    font-size: 16px;
+    font-size: var(--font-2xl);
     outline: none;
 }
 
@@ -50,7 +50,7 @@
     padding: 32px 20px;
     text-align: center;
     color: var(--text-dimmed);
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 /* Palette Items */
@@ -86,7 +86,7 @@
     justify-content: center;
     border-radius: 5px;
     font-weight: bold;
-    font-size: 13px;
+    font-size: var(--font-lg);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -98,7 +98,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     color: var(--accent-primary);
     flex-shrink: 0;
 }
@@ -110,7 +110,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: var(--font-3xl);
     font-weight: bold;
     color: #6c8;
     background: rgba(102, 204, 136, 0.15);
@@ -124,7 +124,7 @@
 
 /* Project Hint */
 .palette-project-hint {
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--text-dimmed);
     padding: 2px 6px;
     background: var(--bg-tertiary);
@@ -134,7 +134,7 @@
 
 /* Shortcut Hint */
 .palette-shortcut-hint {
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--accent-primary);
     padding: 2px 6px;
     background: rgba(76, 201, 240, 0.15);
@@ -155,14 +155,14 @@
 
 .palette-item-title {
     font-weight: 500;
-    font-size: 14px;
+    font-size: var(--font-xl);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .palette-item-subtitle {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -172,7 +172,7 @@
 
 /* Status Badge */
 .palette-status {
-    font-size: 11px;
+    font-size: var(--font-md);
     text-transform: uppercase;
     flex-shrink: 0;
     font-weight: 500;
@@ -188,7 +188,7 @@
 }
 
 .palette-hint {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
@@ -199,7 +199,7 @@
     padding: 2px 6px;
     margin-right: 4px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--kbd-text);
 }
 

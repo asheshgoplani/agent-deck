@@ -35,7 +35,7 @@
     border-radius: 4px;
     color: var(--text-primary);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-base);
     transition: background 0.1s, border-color 0.1s;
     flex-shrink: 0;
 }
@@ -54,7 +54,7 @@
     justify-content: center;
     border-radius: 3px;
     font-weight: bold;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -69,7 +69,7 @@
 
 /* Shortcut Badge */
 .quick-launch-shortcut {
-    font-size: 9px;
+    font-size: var(--font-xs);
     color: var(--text-dimmed);
     background: var(--bg-primary);
     padding: 2px 4px;
@@ -89,7 +89,7 @@
     border-radius: 4px;
     color: var(--text-dimmed);
     cursor: pointer;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     transition: border-color 0.1s, color 0.1s;
     flex-shrink: 0;
 }
@@ -107,7 +107,7 @@
     border-radius: 4px;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 11px;
+    font-size: var(--font-md);
     font-family: inherit;
     transition: background 0.1s, border-color 0.1s;
     flex-shrink: 0;
@@ -139,7 +139,7 @@
     border: none;
     border-radius: 4px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--font-lg);
     text-align: left;
     cursor: pointer;
     transition: background 0.1s;

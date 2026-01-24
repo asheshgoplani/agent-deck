@@ -9,7 +9,7 @@
     border-radius: 4px;
     color: var(--text-primary);
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-base);
     transition: background 0.1s, border-color 0.1s;
     flex-shrink: 0;
     max-width: 180px;
@@ -36,7 +36,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 3px;
-    font-size: 9px;
+    font-size: var(--font-xs);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -62,7 +62,7 @@
     border-radius: 3px;
     color: var(--text-dimmed);
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--font-xl);
     line-height: 1;
     opacity: 0;
     transition: opacity 0.1s, background 0.1s, color 0.1s;
@@ -105,14 +105,14 @@
 
 .tooltip-shortcut-hint {
     color: var(--text-dimmed);
-    font-size: 11px;
+    font-size: var(--font-md);
     margin-top: 4px;
     padding-top: 4px;
     border-top: 1px solid var(--border-secondary);
 }
 
 .tab-status-dot {
-    font-size: 8px !important;
+    font-size: var(--font-2xs) !important;
 }
 
 .tooltip-status {

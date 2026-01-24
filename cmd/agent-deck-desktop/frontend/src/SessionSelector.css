@@ -20,7 +20,7 @@
 
 .session-header h2 {
     margin: 0;
-    font-size: 18px;
+    font-size: var(--font-3xl);
     font-weight: 500;
 }
 
@@ -40,7 +40,7 @@
     padding: 6px 10px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: var(--font-base);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     transition: background 0.15s, border-color 0.15s;
@@ -64,7 +64,7 @@
     padding: 6px 12px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 16px;
+    font-size: var(--font-2xl);
 }
 
 .refresh-btn:hover {
@@ -128,7 +128,7 @@
     justify-content: center;
     border-radius: 6px;
     font-weight: bold;
-    font-size: 14px;
+    font-size: var(--font-xl);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -149,7 +149,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -179,7 +179,7 @@
 }
 
 .session-branch .branch-icon {
-    font-size: 10px;
+    font-size: var(--font-sm);
     opacity: 0.8;
 }
 
@@ -190,7 +190,7 @@
 /* Git dirty indicator */
 .git-dirty-indicator {
     color: #ff9f43;
-    font-size: 8px;
+    font-size: var(--font-2xs);
     margin-right: 2px;
     vertical-align: middle;
 }
@@ -201,7 +201,7 @@
     align-items: center;
     gap: 3px;
     margin-left: 4px;
-    font-size: 10px;
+    font-size: var(--font-sm);
     font-family: monospace;
 }
 
@@ -214,7 +214,7 @@
 }
 
 .session-status {
-    font-size: 12px;
+    font-size: var(--font-base);
     text-transform: uppercase;
     flex-shrink: 0;
 }
@@ -242,7 +242,7 @@
     padding: 2px 8px;
     background: var(--accent-primary);
     color: var(--tool-icon-text);
-    font-size: 11px;
+    font-size: var(--font-md);
     font-weight: 500;
     border-radius: 10px;
     vertical-align: middle;
@@ -272,7 +272,7 @@
     border: none;
     border-radius: 4px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--font-lg);
     text-align: left;
     cursor: pointer;
     transition: background 0.1s;

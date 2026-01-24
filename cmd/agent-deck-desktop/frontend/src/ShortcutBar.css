@@ -16,7 +16,7 @@
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    font-size: 14px;
+    font-size: var(--font-xl);
     padding: 6px 12px;
     border-radius: 4px;
     transition: color 0.15s, background 0.15s;
@@ -34,7 +34,7 @@
     border-radius: 4px;
     padding: 3px 7px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--accent-primary);
 }
 

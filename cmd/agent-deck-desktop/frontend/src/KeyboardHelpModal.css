@@ -34,7 +34,7 @@
 
 .help-header h2 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
@@ -43,7 +43,7 @@
     background: transparent;
     border: none;
     color: var(--text-muted);
-    font-size: 24px;
+    font-size: var(--font-4xl);
     line-height: 1;
     cursor: pointer;
     padding: 0;
@@ -78,7 +78,7 @@
 /* Sections */
 .help-section h3 {
     margin: 0 0 10px 0;
-    font-size: 11px;
+    font-size: var(--font-md);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -91,7 +91,7 @@
     align-items: center;
     gap: 12px;
     padding: 4px 0;
-    font-size: 13px;
+    font-size: var(--font-lg);
     color: var(--text-secondary);
 }
 
@@ -102,7 +102,7 @@
     border-radius: 4px;
     padding: 4px 8px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--accent-primary);
     text-align: center;
 }
@@ -116,7 +116,7 @@
     display: inline-block;
     min-width: 28px;
     padding: 4px 8px;
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-muted);
     font-style: italic;
 }
@@ -127,7 +127,7 @@
 }
 
 .help-note {
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
     font-style: italic;
 }
@@ -138,7 +138,7 @@
     border-top: 1px solid var(--border-secondary);
     background: var(--bg-tertiary);
     text-align: center;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
