@@ -107,11 +107,11 @@ func (qlm *QuickLaunchManager) AddFavorite(name, path, tool string) error {
 	}
 
 	// Check if already exists
-	for _, fav := range config.Favorites {
-		if fav.Path == path {
+	for i := range config.Favorites {
+		if config.Favorites[i].Path == path {
 			// Already exists, update it
-			fav.Name = name
-			fav.Tool = tool
+			config.Favorites[i].Name = name
+			config.Favorites[i].Tool = tool
 			return qlm.saveConfig(config)
 		}
 	}

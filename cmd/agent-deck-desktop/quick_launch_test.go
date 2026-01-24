@@ -82,7 +82,15 @@ func TestQuickLaunchAddDuplicate(t *testing.T) {
 
 	favorites, _ := qlm.GetFavorites()
 	if len(favorites) != 1 {
-		t.Errorf("Expected 1 favorite (updated), got %d", len(favorites))
+		t.Fatalf("Expected 1 favorite (updated), got %d", len(favorites))
+	}
+
+	// Verify the name and tool were actually updated
+	if favorites[0].Name != "API Server" {
+		t.Errorf("Expected updated name 'API Server', got '%s'", favorites[0].Name)
+	}
+	if favorites[0].Tool != "gemini" {
+		t.Errorf("Expected updated tool 'gemini', got '%s'", favorites[0].Tool)
 	}
 }
 
