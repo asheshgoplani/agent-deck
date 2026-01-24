@@ -55,6 +55,14 @@ export default function KeyboardHelpModal({ onClose }) {
                                 <kbd>{modKey}F</kbd>
                                 <span>Find in terminal</span>
                             </div>
+                            <div className="help-row">
+                                <kbd>{modKey}+</kbd>
+                                <span>Increase font size</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}-</kbd>
+                                <span>Decrease font size</span>
+                            </div>
                         </div>
 
                         <div className="help-section">

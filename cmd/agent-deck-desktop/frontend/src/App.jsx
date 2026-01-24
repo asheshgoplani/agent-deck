@@ -13,6 +13,7 @@ import KeyboardHelpModal from './KeyboardHelpModal';
 import RenameDialog from './RenameDialog';
 import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
+import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
 
 const logger = createLogger('App');
 
@@ -44,7 +45,7 @@ function App() {
     const [showLabelDialog, setShowLabelDialog] = useState(false);
     const [openTabs, setOpenTabs] = useState([]); // Array of {id, session, openedAt}
     const [activeTabId, setActiveTabId] = useState(null);
-    const [fontSize, setFontSizeState] = useState(14); // Terminal font size (8-32)
+    const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
     const sessionSelectorRef = useRef(null);
 
     // Cycle through status filter modes: all -> active -> idle -> all
@@ -477,7 +478,7 @@ function App() {
 
     // Handle font size change (delta: +1 or -1)
     const handleFontSizeChange = useCallback(async (delta) => {
-        const newSize = Math.max(8, Math.min(32, fontSize + delta));
+        const newSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta));
         if (newSize === fontSize) return; // No change (at limit)
 
         try {

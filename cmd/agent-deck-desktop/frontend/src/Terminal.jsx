@@ -9,6 +9,7 @@ import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
 import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxSession, LogFrontendDiagnostic, GetTerminalSettings } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
+import { DEFAULT_FONT_SIZE } from './constants/terminal';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 import { useTheme } from './context/ThemeContext';
 import { getTerminalTheme } from './themes/terminal';
@@ -16,7 +17,7 @@ import { getTerminalTheme } from './themes/terminal';
 // Base terminal options (theme applied dynamically)
 const BASE_TERMINAL_OPTIONS = {
     fontFamily: '"MesloLGS NF", Menlo, Monaco, "Courier New", monospace',
-    fontSize: 14,
+    fontSize: DEFAULT_FONT_SIZE,
     lineHeight: 1.2,
     cursorBlink: true,
     cursorStyle: 'block',
@@ -45,7 +46,7 @@ function rafThrottle(fn) {
 
 const logger = createLogger('Terminal');
 
-export default function Terminal({ searchRef, session, fontSize = 14 }) {
+export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_SIZE }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);

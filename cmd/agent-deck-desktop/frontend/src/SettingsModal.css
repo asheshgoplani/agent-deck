@@ -350,3 +350,78 @@
     padding: 10px 12px;
     font-size: 12px;
 }
+
+/* Font Size Settings */
+.settings-input-description kbd {
+    display: inline-block;
+    background: var(--kbd-bg);
+    border-radius: 3px;
+    padding: 2px 5px;
+    margin: 0 2px;
+    font-family: inherit;
+    font-size: 10px;
+    color: var(--kbd-text);
+}
+
+.settings-font-size-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-font-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 2px solid var(--border-secondary);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 18px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.settings-font-btn:hover:not(:disabled) {
+    border-color: var(--accent-primary);
+    background: rgba(76, 201, 240, 0.1);
+}
+
+.settings-font-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.settings-font-size-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 50px;
+    text-align: center;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.settings-font-reset-btn {
+    padding: 8px 16px;
+    background: var(--btn-bg);
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-left: 8px;
+}
+
+.settings-font-reset-btn:hover:not(:disabled) {
+    background: var(--btn-bg-hover);
+    color: var(--text-primary);
+}
+
+.settings-font-reset-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
