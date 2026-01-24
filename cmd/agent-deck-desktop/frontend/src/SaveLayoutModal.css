@@ -1,0 +1,141 @@
+/* SaveLayoutModal.css - Modal for saving layout templates */
+
+.save-layout-modal {
+    width: 400px;
+    max-width: 90vw;
+    background: var(--bg-elevated, #1e1e1e);
+    border: 1px solid var(--border-color, #333);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.save-layout-modal .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-color, #333);
+}
+
+.save-layout-modal .modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary, #fff);
+}
+
+.save-layout-modal .modal-close {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-muted, #888);
+    font-size: 20px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.save-layout-modal .modal-close:hover {
+    background: var(--bg-hover, #2a2a2a);
+    color: var(--text-primary, #fff);
+}
+
+.save-layout-modal form {
+    padding: 20px;
+}
+
+.save-layout-modal .form-group {
+    margin-bottom: 16px;
+}
+
+.save-layout-modal .form-group:last-of-type {
+    margin-bottom: 24px;
+}
+
+.save-layout-modal label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary, #aaa);
+}
+
+.save-layout-modal label .optional {
+    font-weight: 400;
+    color: var(--text-muted, #666);
+}
+
+.save-layout-modal input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-input, #2a2a2a);
+    border: 1px solid var(--border-color, #444);
+    border-radius: 6px;
+    color: var(--text-primary, #fff);
+    font-size: 14px;
+    transition: border-color 0.15s ease;
+}
+
+.save-layout-modal input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent-color, #4ecdc4);
+}
+
+.save-layout-modal input[type="text"]::placeholder {
+    color: var(--text-muted, #666);
+}
+
+.save-layout-modal .form-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted, #666);
+}
+
+.save-layout-modal .form-error {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--error-color, #ff6b6b);
+}
+
+.save-layout-modal .modal-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+}
+
+.save-layout-modal .btn-secondary,
+.save-layout-modal .btn-primary {
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.save-layout-modal .btn-secondary {
+    background: transparent;
+    border: 1px solid var(--border-color, #444);
+    color: var(--text-secondary, #aaa);
+}
+
+.save-layout-modal .btn-secondary:hover {
+    background: var(--bg-hover, #2a2a2a);
+    border-color: var(--text-muted, #666);
+    color: var(--text-primary, #fff);
+}
+
+.save-layout-modal .btn-primary {
+    background: var(--accent-color, #4ecdc4);
+    border: none;
+    color: #000;
+}
+
+.save-layout-modal .btn-primary:hover {
+    background: var(--accent-hover, #5de0d7);
+}

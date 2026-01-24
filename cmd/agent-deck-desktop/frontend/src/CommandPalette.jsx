@@ -23,6 +23,7 @@ const LAYOUT_ACTIONS = [
     { id: 'move-to-pane', type: 'layout', title: 'Move Session to Pane...', description: 'Swap sessions between panes (press number)', shortcutHint: '1-9' },
     { id: 'balance-panes', type: 'layout', title: 'Balance Panes', description: 'Make all panes equal size (Cmd+Option+=)', shortcutHint: '⌘⌥=' },
     { id: 'toggle-zoom', type: 'layout', title: 'Toggle Zoom', description: 'Zoom/unzoom current pane (Cmd+Shift+Z)', shortcutHint: '⌘⇧Z' },
+    { id: 'save-layout', type: 'layout', title: 'Save Current Layout...', description: 'Save this layout as a template' },
     { id: 'layout-single', type: 'layout', title: 'Layout: Single Pane', description: 'Single pane layout (Cmd+Option+1)', shortcutHint: '⌘⌥1' },
     { id: 'layout-2-col', type: 'layout', title: 'Layout: 2 Columns', description: 'Two columns side by side (Cmd+Option+2)', shortcutHint: '⌘⌥2' },
     { id: 'layout-2-row', type: 'layout', title: 'Layout: 2 Rows', description: 'Two rows stacked (Cmd+Option+3)', shortcutHint: '⌘⌥3' },
@@ -40,6 +41,7 @@ export default function CommandPalette({
     sessions = [],
     projects = [],
     favorites = [], // Quick launch favorites for shortcut hints
+    savedLayouts = [], // Saved layout templates
     pinMode = false, // When true, selecting pins instead of launching
     showLayoutActions = false, // Show layout commands (when in terminal view)
     newTabMode = false, // When true, opened via Cmd+T for new tab
@@ -81,12 +83,23 @@ export default function CommandPalette({
             }));
     }, [projects, favoritesLookup]);
 
+    // Convert saved layouts to action format
+    const savedLayoutItems = useMemo(() => {
+        return savedLayouts.map(layout => ({
+            id: `saved-layout:${layout.id}`,
+            type: 'saved-layout',
+            title: `Layout: ${layout.name}`,
+            description: 'Apply saved layout',
+            shortcutHint: layout.shortcut || null,
+            layoutId: layout.id,
+        }));
+    }, [savedLayouts]);
+
     // Build list of all actions including layout actions if enabled
     const allActions = useMemo(() => {
-        return showLayoutActions
-            ? [...QUICK_ACTIONS, ...LAYOUT_ACTIONS]
-            : QUICK_ACTIONS;
-    }, [showLayoutActions]);
+        if (!showLayoutActions) return QUICK_ACTIONS;
+        return [...QUICK_ACTIONS, ...LAYOUT_ACTIONS, ...savedLayoutItems];
+    }, [showLayoutActions, savedLayoutItems]);
 
     // Fuse.js configuration for fuzzy search
     const fuse = useMemo(() => new Fuse([...sessions, ...projectItems, ...allActions], {
@@ -224,7 +237,7 @@ export default function CommandPalette({
         if (item.type === 'action') {
             logger.info('Executing action', { actionId: item.id });
             onAction?.(item.id);
-        } else if (item.type === 'layout') {
+        } else if (item.type === 'layout' || item.type === 'saved-layout') {
             logger.info('Executing layout action', { actionId: item.id });
             onLayoutAction?.(item.id);
         } else if (item.type === 'project') {
@@ -291,6 +304,17 @@ export default function CommandPalette({
                                 ) : item.type === 'layout' ? (
                                     <>
                                         <span className="palette-layout-icon">{'#'}</span>
+                                        <div className="palette-item-info">
+                                            <div className="palette-item-title">{item.title}</div>
+                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        </div>
+                                        {item.shortcutHint && (
+                                            <span className="palette-shortcut-hint">{item.shortcutHint}</span>
+                                        )}
+                                    </>
+                                ) : item.type === 'saved-layout' ? (
+                                    <>
+                                        <span className="palette-layout-icon saved">{'★'}</span>
                                         <div className="palette-item-info">
                                             <div className="palette-item-title">{item.title}</div>
                                             <div className="palette-item-subtitle">{item.description}</div>

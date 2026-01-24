@@ -13,7 +13,8 @@ import RenameDialog from './RenameDialog';
 import PaneLayout from './PaneLayout';
 import FocusModeOverlay from './FocusModeOverlay';
 import MoveModeOverlay from './MoveModeOverlay';
-import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
+import SaveLayoutModal from './SaveLayoutModal';
+import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize, GetSavedLayouts, SaveLayout, DeleteSavedLayout } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
 import { shouldInterceptShortcut, hasAppModifier } from './utils/platform';
@@ -33,6 +34,8 @@ import {
     applyPreset,
     getFirstPaneId,
     swapPaneSessions,
+    layoutToSaveFormat,
+    applySavedLayout,
 } from './layoutUtils';
 
 const logger = createLogger('App');
@@ -70,6 +73,9 @@ function App() {
     const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
     // Move mode - when true, shows pane numbers for session swap
     const [moveMode, setMoveMode] = useState(false);
+    // Saved layouts
+    const [savedLayouts, setSavedLayouts] = useState([]);
+    const [showSaveLayoutModal, setShowSaveLayoutModal] = useState(false);
     const sessionSelectorRef = useRef(null);
     const terminalRefs = useRef({});
     const searchRefs = useRef({});
@@ -148,6 +154,18 @@ function App() {
             }
         };
         loadFontSize();
+
+        // Load saved layouts
+        const loadSavedLayouts = async () => {
+            try {
+                const layouts = await GetSavedLayouts();
+                setSavedLayouts(layouts || []);
+                logger.info('Loaded saved layouts', { count: layouts?.length || 0 });
+            } catch (err) {
+                logger.error('Failed to load saved layouts:', err);
+            }
+        };
+        loadSavedLayouts();
     }, [loadShortcuts]);
 
     const handleCloseSearch = useCallback(() => {
@@ -246,10 +264,24 @@ function App() {
             case 'layout-2x2':
                 handleApplyPreset('2x2');
                 break;
+            case 'save-layout':
+                handleOpenSaveLayoutModal();
+                break;
             default:
-                logger.warn('Unknown layout action:', actionId);
+                // Check for saved layout IDs (format: 'saved-layout:id')
+                if (actionId.startsWith('saved-layout:')) {
+                    const layoutId = actionId.replace('saved-layout:', '');
+                    const savedLayout = savedLayouts.find(l => l.id === layoutId);
+                    if (savedLayout) {
+                        handleApplySavedLayout(savedLayout);
+                    } else {
+                        logger.warn('Saved layout not found:', layoutId);
+                    }
+                } else {
+                    logger.warn('Unknown layout action:', actionId);
+                }
         }
-    }, [handleSplitPane, handleClosePane, handleBalancePanes, handleToggleZoom, handleEnterMoveMode, handleApplyPreset]);
+    }, [handleSplitPane, handleClosePane, handleBalancePanes, handleToggleZoom, handleEnterMoveMode, handleApplyPreset, handleOpenSaveLayoutModal, savedLayouts, handleApplySavedLayout]);
 
     // Get the current active tab
     const activeTab = openTabs.find(t => t.id === activeTabId);
@@ -614,6 +646,82 @@ function App() {
         // Exit move mode
         handleExitMoveMode();
     }, [activeTab, activeTabId, moveMode, buildPaneNumberMap, handleExitMoveMode]);
+
+    // Open save layout modal
+    const handleOpenSaveLayoutModal = useCallback(() => {
+        if (!activeTab || countPanes(activeTab.layout) < 2) {
+            logger.info('Cannot save layout - need at least 2 panes');
+            return;
+        }
+        setShowSaveLayoutModal(true);
+    }, [activeTab]);
+
+    // Save current layout
+    const handleSaveLayout = useCallback(async (name, shortcut) => {
+        if (!activeTab) return;
+
+        try {
+            // Convert current layout to save format (strips sessions)
+            const layoutStructure = layoutToSaveFormat(activeTab.layout);
+
+            const savedLayout = await SaveLayout({
+                id: '', // Will be assigned by backend
+                name,
+                layout: layoutStructure,
+                shortcut: shortcut || '',
+                createdAt: 0, // Will be set by backend
+            });
+
+            logger.info('Layout saved', { id: savedLayout.id, name });
+
+            // Refresh saved layouts
+            const layouts = await GetSavedLayouts();
+            setSavedLayouts(layouts || []);
+
+            setShowSaveLayoutModal(false);
+        } catch (err) {
+            logger.error('Failed to save layout:', err);
+        }
+    }, [activeTab]);
+
+    // Apply a saved layout
+    const handleApplySavedLayout = useCallback((savedLayout) => {
+        if (!activeTab || !savedLayout?.layout) return;
+
+        const { layout, closedSessions } = applySavedLayout(activeTab.layout, savedLayout.layout);
+        const firstPaneId = getFirstPaneId(layout);
+
+        logger.info('Applied saved layout', { name: savedLayout.name, closedSessions: closedSessions.length });
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            return {
+                ...tab,
+                layout,
+                activePaneId: firstPaneId,
+                zoomedPaneId: null, // Exit zoom when applying layout
+            };
+        }));
+
+        // Update selected session to the first pane's session
+        const firstPane = findPane(layout, firstPaneId);
+        setSelectedSession(firstPane?.session || null);
+    }, [activeTab, activeTabId]);
+
+    // Delete a saved layout
+    const handleDeleteSavedLayout = useCallback(async (layoutId) => {
+        try {
+            await DeleteSavedLayout(layoutId);
+            logger.info('Layout deleted', { layoutId });
+
+            // Refresh saved layouts
+            const layouts = await GetSavedLayouts();
+            setSavedLayouts(layouts || []);
+        } catch (err) {
+            logger.error('Failed to delete layout:', err);
+        }
+    }, []);
+
     // Open a session in the active pane (from command palette)
     const handlePaneSessionSelect = useCallback((paneId) => {
         // This is called when user clicks on an empty pane
@@ -1407,6 +1515,13 @@ function App() {
             {moveMode && (
                 <MoveModeOverlay onExit={handleExitMoveMode} />
             )}
+            {/* Save layout modal */}
+            {showSaveLayoutModal && (
+                <SaveLayoutModal
+                    onSave={handleSaveLayout}
+                    onClose={() => setShowSaveLayoutModal(false)}
+                />
+            )}
             {showCommandPalette && (
                 <CommandPalette
                     onClose={handleClosePalette}
@@ -1421,6 +1536,7 @@ function App() {
                     onAction={handlePaletteAction}
                     onLayoutAction={handleLayoutAction}
                     showLayoutActions={true}
+                    savedLayouts={savedLayouts}
                     onLaunchProject={(path, name, tool, config, label) => {
                         // If we have an active empty pane, launch into it
                         // For now, use the default behavior (creates new tab)

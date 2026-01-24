@@ -21,6 +21,7 @@ type App struct {
 	quickLaunch      *QuickLaunchManager
 	launchConfig     *LaunchConfigManager
 	desktopSettings  *DesktopSettingsManager
+	savedLayouts     *SavedLayoutsManager
 	sshBridge        *SSHBridge
 }
 
@@ -33,6 +34,7 @@ func NewApp() *App {
 		quickLaunch:      NewQuickLaunchManager(),
 		launchConfig:     NewLaunchConfigManager(),
 		desktopSettings:  NewDesktopSettingsManager(),
+		savedLayouts:     NewSavedLayoutsManager(),
 		sshBridge:        NewSSHBridge(),
 	}
 }
@@ -406,4 +408,27 @@ type SSHHostStatus struct {
 	HostID    string `json:"hostId"`
 	Connected bool   `json:"connected"`
 	LastError string `json:"lastError,omitempty"`
+}
+
+// ==================== Saved Layouts Methods ====================
+
+// GetSavedLayouts returns all saved layout templates.
+func (a *App) GetSavedLayouts() ([]SavedLayout, error) {
+	return a.savedLayouts.GetSavedLayouts()
+}
+
+// SaveLayout saves a new layout or updates an existing one.
+// Returns the saved layout with ID filled in.
+func (a *App) SaveLayout(layout SavedLayout) (*SavedLayout, error) {
+	return a.savedLayouts.SaveLayout(layout)
+}
+
+// DeleteSavedLayout removes a layout by ID.
+func (a *App) DeleteSavedLayout(id string) error {
+	return a.savedLayouts.DeleteLayout(id)
+}
+
+// GetSavedLayoutByID returns a single layout by ID.
+func (a *App) GetSavedLayoutByID(id string) (*SavedLayout, error) {
+	return a.savedLayouts.GetLayoutByID(id)
 }

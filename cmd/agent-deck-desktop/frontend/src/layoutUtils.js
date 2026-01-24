@@ -545,3 +545,91 @@ export function getFirstPaneId(layout) {
     }
     return getFirstPaneId(layout.children[0]);
 }
+
+// ============================================================
+// Saved Layouts
+// ============================================================
+
+/**
+ * Convert a layout to a saveable format (strip session data, keep structure)
+ * @param {Object} layout - Layout node with sessions
+ * @returns {Object} Layout structure without sessions (for saving as template)
+ */
+export function layoutToSaveFormat(layout) {
+    if (layout.type === 'pane') {
+        return {
+            type: 'pane',
+            id: generatePaneId(), // Generate new IDs for the template
+        };
+    }
+
+    return {
+        type: 'split',
+        direction: layout.direction,
+        ratio: layout.ratio,
+        children: [
+            layoutToSaveFormat(layout.children[0]),
+            layoutToSaveFormat(layout.children[1]),
+        ],
+    };
+}
+
+/**
+ * Apply a saved layout template to the current layout, preserving sessions
+ * Similar to applyPreset but takes a SavedLayout structure
+ * @param {Object} currentLayout - Current layout with sessions
+ * @param {Object} savedLayout - Saved layout structure (from SavedLayout.layout)
+ * @returns {Object} { layout: newLayout, closedSessions: Session[] }
+ */
+export function applySavedLayout(currentLayout, savedLayout) {
+    // Get all sessions from current layout
+    const currentPanes = getPaneList(currentLayout);
+    const sessions = currentPanes
+        .map(p => p.session)
+        .filter(s => s != null);
+
+    // Clone the saved layout and assign new pane IDs
+    const clonedLayout = cloneLayoutWithNewIds(savedLayout);
+
+    // Get panes in new layout
+    const newPanes = getPaneList(clonedLayout);
+
+    // Assign sessions to new panes
+    let result = clonedLayout;
+    const closedSessions = [];
+
+    for (let i = 0; i < sessions.length; i++) {
+        if (i < newPanes.length) {
+            result = updatePaneSession(result, newPanes[i].id, sessions[i]);
+        } else {
+            closedSessions.push(sessions[i]);
+        }
+    }
+
+    return { layout: result, closedSessions };
+}
+
+/**
+ * Clone a layout tree with new pane IDs
+ * @param {Object} node - Layout node to clone
+ * @returns {Object} Cloned layout with fresh IDs
+ */
+function cloneLayoutWithNewIds(node) {
+    if (node.type === 'pane') {
+        return {
+            type: 'pane',
+            id: generatePaneId(),
+            sessionId: null,
+            session: null,
+        };
+    }
+    return {
+        type: 'split',
+        direction: node.direction,
+        ratio: node.ratio,
+        children: [
+            cloneLayoutWithNewIds(node.children[0]),
+            cloneLayoutWithNewIds(node.children[1]),
+        ],
+    };
+}
