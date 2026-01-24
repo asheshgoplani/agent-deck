@@ -186,9 +186,19 @@ func sanitizeHistoryForXterm(content string) string {
 	content = regexp.MustCompile(`\x1b\[H`).ReplaceAllString(content, "")                // Cursor home
 	content = regexp.MustCompile(`\x1b\[\d+;\d+H`).ReplaceAllString(content, "")         // Cursor position
 	content = regexp.MustCompile(`\x1b\[\d+;\d+f`).ReplaceAllString(content, "")         // Cursor position (alternate)
+	content = regexp.MustCompile(`\x1b\[\d*[ABCD]`).ReplaceAllString(content, "")        // Cursor movement (up/down/forward/back)
+	content = regexp.MustCompile(`\x1b\[\d*[EFG]`).ReplaceAllString(content, "")         // Cursor next/prev line, column absolute
+
+	// Remove cursor visibility and style (can cause rendering glitches on scroll)
+	content = regexp.MustCompile(`\x1b\[\?25[hl]`).ReplaceAllString(content, "")         // Show/hide cursor
+	content = regexp.MustCompile(`\x1b\[\d* ?q`).ReplaceAllString(content, "")           // Cursor style (block, underline, bar)
 
 	// Remove screen clearing
 	content = regexp.MustCompile(`\x1b\[2J`).ReplaceAllString(content, "")  // Clear screen
+	content = regexp.MustCompile(`\x1b\[J`).ReplaceAllString(content, "")   // Clear to end of screen
+	content = regexp.MustCompile(`\x1b\[\d*J`).ReplaceAllString(content, "")// Clear screen variants
+	content = regexp.MustCompile(`\x1b\[K`).ReplaceAllString(content, "")   // Clear to end of line
+	content = regexp.MustCompile(`\x1b\[\d*K`).ReplaceAllString(content, "")// Clear line variants
 	content = regexp.MustCompile(`\x1bc`).ReplaceAllString(content, "")     // Full reset
 
 	// Remove alternate screen buffer switches
@@ -200,6 +210,9 @@ func sanitizeHistoryForXterm(content string) string {
 	content = regexp.MustCompile(`\x1b\[u`).ReplaceAllString(content, "")   // Restore cursor (ANSI)
 	content = regexp.MustCompile(`\x1b7`).ReplaceAllString(content, "")     // Save cursor (DEC)
 	content = regexp.MustCompile(`\x1b8`).ReplaceAllString(content, "")     // Restore cursor (DEC)
+
+	// Remove scroll region setting (can interfere with xterm buffer)
+	content = regexp.MustCompile(`\x1b\[\d*;\d*r`).ReplaceAllString(content, "")    // Set scroll region
 
 	// KEEP: SGR color codes (\x1b[...m) - users want colored history
 

@@ -18,13 +18,14 @@ const TERMINAL_OPTIONS = {
     cursorStyle: 'block',
     scrollback: 10000,
     allowProposedApi: true,
-    // Rendering options to reduce artifacts
+    // Use DOM renderer to fix Canvas batching bug with repeated box-drawing chars
+    // Canvas renderer corrupts long ───── sequences during scroll/repaint
+    // DOM renderer is slightly slower but rock-solid for rendering accuracy
+    rendererType: 'dom',
+    // Rendering options
     smoothScrollDuration: 0,
     fastScrollModifier: 'alt',
-    // Window mode affects wrapping behavior
-    windowsMode: false, // Unix-style wrapping (default)
-    // Note: Terminal content doesn't reflow on resize (standard behavior)
-    // Already-printed output stays wrapped at original width
+    windowsMode: false,
     theme: {
         background: '#1a1a2e',
         foreground: '#eee',
@@ -71,6 +72,7 @@ export default function Terminal({ searchRef, session }) {
     const searchAddonRef = useRef(null);
     const initRef = useRef(false);
     const isAtBottomRef = useRef(true);
+    const refreshingRef = useRef(false); // Flag to pause PTY data during refresh
     const [showScrollIndicator, setShowScrollIndicator] = useState(false);
 
     // Initialize terminal
@@ -126,27 +128,14 @@ export default function Terminal({ searchRef, session }) {
             isAtBottomRef.current = isAtBottom;
             setShowScrollIndicator(!isAtBottom);
 
-            // If user scrolled up into scrollback (from bottom), refresh content
-            // This fixes xterm.js reflow corruption when viewing scrollback
-            if (wasAtBottom && !isAtBottom && session?.tmuxSession) {
-                // Debounce the refresh
-                if (scrollRefreshTimer) clearTimeout(scrollRefreshTimer);
-                scrollRefreshTimer = setTimeout(async () => {
-                    logger.info('[SCROLL] User scrolled into scrollback, refreshing...');
-                    try {
-                        const scrollback = await RefreshScrollback();
-                        if (scrollback && xtermRef.current) {
-                            const scrollPos = xtermRef.current.buffer.active.viewportY;
-                            xtermRef.current.clear();
-                            xtermRef.current.write(scrollback);
-                            // Try to restore scroll position
-                            xtermRef.current.scrollToLine(scrollPos);
-                        }
-                    } catch (err) {
-                        logger.error('[SCROLL] Refresh failed:', err);
-                    }
-                }, 200);
-            }
+            // Refresh viewport after scroll settles to fix xterm.js rendering glitches
+            if (scrollRefreshTimer) clearTimeout(scrollRefreshTimer);
+            scrollRefreshTimer = setTimeout(() => {
+                if (xtermRef.current) {
+                    // Refresh just the visible viewport (not full scrollback reload)
+                    xtermRef.current.refresh(0, xtermRef.current.rows - 1);
+                }
+            }, 100);
             wasAtBottom = isAtBottom;
         });
 
@@ -166,11 +155,11 @@ export default function Terminal({ searchRef, session }) {
 
         // Listen for data from PTY (Phase 2 - live streaming)
         const handleTerminalData = (data) => {
-            // Log data characteristics for debugging
-            const hasClr = data.includes('\x1b[2J');
-            const hasHome = data.includes('\x1b[H');
-            const lines = data.split('\n').length;
-            logger.debug(`[DATA] received: ${data.length} bytes, ${lines} lines, clearScreen=${hasClr}, home=${hasHome}`);
+            // Skip writes during refresh to prevent corruption
+            if (refreshingRef.current) {
+                logger.debug('[DATA] Skipped during refresh:', data.length, 'bytes');
+                return;
+            }
 
             if (xtermRef.current) {
                 xtermRef.current.write(data);
@@ -200,34 +189,22 @@ export default function Terminal({ searchRef, session }) {
             }
 
             try {
+                refreshingRef.current = true; // Pause PTY data writes
                 logger.info('[RESIZE-REFRESH] Fetching fresh scrollback from tmux...');
                 const scrollback = await RefreshScrollback();
 
                 if (scrollback && xtermRef.current) {
-                    // Count box-drawing chars and question marks in received content
-                    const boxChars = (scrollback.match(/[─│┌┐└┘├┤┬┴┼]/g) || []).length;
-                    const questionMarks = (scrollback.match(/\?/g) || []).length;
-                    logger.info(`[RESIZE-REFRESH] Received ${scrollback.length} bytes, box-drawing: ${boxChars}, question marks: ${questionMarks}`);
-
-                    // Log a sample line with box chars
-                    const lines = scrollback.split('\n');
-                    for (const line of lines) {
-                        if (/[─│┌┐└┘├┤┬┴┼]/.test(line)) {
-                            logger.debug('[RESIZE-REFRESH] Sample line with box chars:', line.substring(0, 120));
-                            break;
-                        }
-                    }
-
                     // Clear buffer and rewrite with fresh content from tmux
-                    logger.info('[RESIZE-REFRESH] Clearing xterm buffer and writing fresh content');
                     xtermRef.current.clear();
                     xtermRef.current.write(scrollback);
-                    logger.info('[RESIZE-REFRESH] Done');
+                    logger.info('[RESIZE-REFRESH] Done:', scrollback.length, 'bytes');
                 } else {
                     logger.warn('[RESIZE-REFRESH] No scrollback returned or xterm gone');
                 }
             } catch (err) {
                 logger.error('[RESIZE-REFRESH] Failed:', err);
+            } finally {
+                refreshingRef.current = false; // Resume PTY data writes
             }
         };
 
@@ -288,6 +265,7 @@ export default function Terminal({ searchRef, session }) {
                     setTimeout(async () => {
                         logger.info('Refreshing scrollback after PTY settle...');
                         try {
+                            refreshingRef.current = true; // Pause PTY data writes
                             const scrollback = await RefreshScrollback();
                             if (scrollback && xtermRef.current) {
                                 xtermRef.current.clear();
@@ -297,6 +275,8 @@ export default function Terminal({ searchRef, session }) {
                             }
                         } catch (err) {
                             logger.error('Failed to refresh initial scrollback:', err);
+                        } finally {
+                            refreshingRef.current = false; // Resume PTY data writes
                         }
                     }, 300);
                 } else {
