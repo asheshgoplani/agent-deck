@@ -128,9 +128,12 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
             searchRef.current = searchAddon;
         }
 
+        // Get the session ID for this terminal (used for multi-pane support)
+        const sessionId = session?.id || 'default';
+
         // Handle data from terminal (user input) - send to PTY
         const dataDisposable = term.onData((data) => {
-            WriteTerminal(data).catch(console.error);
+            WriteTerminal(sessionId, data).catch(console.error);
         });
 
         // ============================================================
@@ -188,7 +191,7 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
                 if (shouldIntercept) {
                     e.preventDefault();
                     // Send ESC + CR sequence which Claude Code interprets as soft newline
-                    WriteTerminal('\x1b\r').catch(console.error);
+                    WriteTerminal(sessionId, '\x1b\r').catch(console.error);
                     return false; // Prevent xterm from handling Enter
                 }
             }
@@ -309,15 +312,23 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
         LogFrontendDiagnostic('[INIT] Scroll detection initialized');
 
         // Listen for debug messages from backend
-        const handleDebug = (msg) => {
-            logger.debug('[Backend]', msg);
+        // Filter by sessionId for multi-pane support
+        const handleDebug = (payload) => {
+            // Filter: only process events for this terminal's session
+            if (payload?.sessionId !== sessionId) return;
+            logger.debug('[Backend]', payload.data);
         };
         EventsOn('terminal:debug', handleDebug);
 
         // Handle pre-loaded history (initial scrollback from tmux)
         // In polling mode, this contains the full scrollback captured before polling starts
-        const handleTerminalHistory = (history) => {
-            logger.info('Received initial history:', history.length, 'bytes');
+        // Filter by sessionId for multi-pane support
+        const handleTerminalHistory = (payload) => {
+            // Filter: only process events for this terminal's session
+            if (payload?.sessionId !== sessionId) return;
+
+            const history = payload.data;
+            logger.info('Received initial history:', history?.length || 0, 'bytes');
             if (xtermRef.current && history) {
                 // Write initial scrollback to xterm
                 xtermRef.current.write(history);
@@ -337,17 +348,25 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
         // In polling mode, this receives:
         // 1. History gap lines (content that scrolled off viewport)
         // 2. Viewport diff updates (efficient in-place updates)
-        const handleTerminalData = (data) => {
-            if (xtermRef.current) {
-                xtermRef.current.write(data);
+        // Filter by sessionId for multi-pane support
+        const handleTerminalData = (payload) => {
+            // Filter: only process events for this terminal's session
+            if (payload?.sessionId !== sessionId) return;
+
+            if (xtermRef.current && payload.data) {
+                xtermRef.current.write(payload.data);
             }
         };
         EventsOn('terminal:data', handleTerminalData);
 
         // Listen for terminal exit
-        const handleTerminalExit = (reason) => {
+        // Filter by sessionId for multi-pane support
+        const handleTerminalExit = (payload) => {
+            // Filter: only process events for this terminal's session
+            if (payload?.sessionId !== sessionId) return;
+
             if (xtermRef.current) {
-                xtermRef.current.write(`\r\n\x1b[31m[Terminal exited: ${reason}]\x1b[0m\r\n`);
+                xtermRef.current.write(`\r\n\x1b[31m[Terminal exited: ${payload.data}]\x1b[0m\r\n`);
             }
         };
         EventsOn('terminal:exit', handleTerminalExit);
@@ -392,7 +411,7 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
                         lastRows = rows;
 
                         // Send resize to PTY (handles tmux resize internally)
-                        ResizeTerminal(cols, rows)
+                        ResizeTerminal(sessionId, cols, rows)
                             .then(() => {
                                 // After resize, refresh terminal display
                                 // This helps clear artifacts from stale content
@@ -424,18 +443,18 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
         const startTerminal = async () => {
             try {
                 if (session && session.tmuxSession) {
-                    logger.info('Connecting to tmux session (polling mode):', session.tmuxSession);
+                    logger.info('Connecting to tmux session (polling mode):', session.tmuxSession, 'sessionId:', sessionId);
                     // Backend handles:
                     // 1. History fetch + emit via terminal:history event
                     // 2. PTY attach for user input
                     // 3. Polling loop for display updates
-                    await StartTmuxSession(session.tmuxSession, cols, rows);
+                    await StartTmuxSession(sessionId, session.tmuxSession, cols, rows);
                     logger.info('Polling session started');
                     console.log('%c[LOAD] Polling session started', 'color: cyan; font-weight: bold');
                     LogFrontendDiagnostic('[LOAD] Polling session started');
                 } else {
-                    logger.info('Starting new terminal');
-                    await StartTerminal(cols, rows);
+                    logger.info('Starting new terminal, sessionId:', sessionId);
+                    await StartTerminal(sessionId, cols, rows);
                     logger.info('Terminal started');
                 }
             } catch (err) {
@@ -450,18 +469,18 @@ export default function Terminal({ searchRef, session, fontSize = DEFAULT_FONT_S
         term.focus();
 
         return () => {
-            logger.info('Cleaning up terminal');
+            logger.info('Cleaning up terminal, sessionId:', sessionId);
 
-            // Close the PTY backend
-            CloseTerminal().catch((err) => {
+            // Close the PTY backend for this session
+            CloseTerminal(sessionId).catch((err) => {
                 logger.error('Failed to close terminal:', err);
             });
 
-            // Clean up frontend
-            EventsOff('terminal:debug');
-            EventsOff('terminal:history');
-            EventsOff('terminal:data');
-            EventsOff('terminal:exit');
+            // NOTE: We intentionally do NOT call EventsOff() here.
+            // EventsOff removes ALL listeners globally, which breaks multi-pane mode
+            // when one pane unmounts. Our event handlers already filter by sessionId
+            // and check xtermRef.current, so stale listeners safely no-op.
+
             if (scrollbackRefreshTimer) {
                 clearTimeout(scrollbackRefreshTimer);
             }

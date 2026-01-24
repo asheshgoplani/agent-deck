@@ -83,13 +83,13 @@ func (t *Terminal) debugLog(format string, args ...interface{}) {
 
 	// Also send to frontend
 	if t.ctx != nil {
-		runtime.EventsEmit(t.ctx, "terminal:debug", msg)
+		runtime.EventsEmit(t.ctx, "terminal:debug", TerminalEvent{SessionID: t.sessionID, Data: msg})
 	}
 }
 
 // LogDiagnostic writes a diagnostic message from the frontend to the debug log file.
-// This allows diagnostic info from browser to be read by external tools.
-func (t *Terminal) LogDiagnostic(message string) {
+// This is a package-level function that writes directly to the log file.
+func LogDiagnostic(message string) {
 	timestamp := time.Now().Format("15:04:05.000")
 	logLine := fmt.Sprintf("[%s] [FRONTEND-DIAG] %s\n", timestamp, message)
 
@@ -106,12 +106,20 @@ func stripTTSMarkers(s string) string {
 	return s
 }
 
+// TerminalEvent is the payload structure for terminal events.
+// All terminal events include sessionId for multi-pane support.
+type TerminalEvent struct {
+	SessionID string `json:"sessionId"`
+	Data      string `json:"data"`
+}
+
 // Terminal manages the PTY and communication with the frontend.
 type Terminal struct {
-	ctx    context.Context
-	pty    *PTY
-	mu     sync.Mutex
-	closed bool
+	ctx       context.Context
+	sessionID string // Identifies which session this terminal serves (for multi-pane support)
+	pty       *PTY
+	mu        sync.Mutex
+	closed    bool
 
 	// Current tmux session (for hybrid mode)
 	tmuxSession string
@@ -123,9 +131,11 @@ type Terminal struct {
 	historyTracker *HistoryTracker
 }
 
-// NewTerminal creates a new Terminal instance.
-func NewTerminal() *Terminal {
-	return &Terminal{}
+// NewTerminal creates a new Terminal instance for the given session ID.
+func NewTerminal(sessionID string) *Terminal {
+	return &Terminal{
+		sessionID: sessionID,
+	}
 }
 
 // SetContext sets the Wails runtime context.
@@ -209,7 +219,7 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 		history = normalizeCRLF(history)
 		t.debugLog("[POLLING] Emitting %d bytes of sanitized history", len(history))
 		if t.ctx != nil {
-			runtime.EventsEmit(t.ctx, "terminal:history", history)
+			runtime.EventsEmit(t.ctx, "terminal:history", TerminalEvent{SessionID: t.sessionID, Data: history})
 		}
 	}
 
@@ -261,7 +271,7 @@ func (t *Terminal) readLoopDiscard() {
 		n, err := p.Read(buf)
 		if err != nil {
 			if t.ctx != nil && !t.closed {
-				runtime.EventsEmit(t.ctx, "terminal:exit", err.Error())
+				runtime.EventsEmit(t.ctx, "terminal:exit", TerminalEvent{SessionID: t.sessionID, Data: err.Error()})
 			}
 			// Stop polling when PTY exits
 			t.stopTmuxPolling()
@@ -335,7 +345,7 @@ func (t *Terminal) pollTmuxOnce() {
 		t.debugLog("[POLL] GetTmuxInfo error: %v", err)
 		// Session might have ended
 		if t.ctx != nil {
-			runtime.EventsEmit(t.ctx, "terminal:exit", "tmux session ended")
+			runtime.EventsEmit(t.ctx, "terminal:exit", TerminalEvent{SessionID: t.sessionID, Data: "tmux session ended"})
 		}
 		t.stopTmuxPolling()
 		return
@@ -357,7 +367,7 @@ func (t *Terminal) pollTmuxOnce() {
 			// Append gap lines to xterm (blind, no diff - these are history)
 			t.debugLog("[POLL] Appending %d bytes of history gap (historySize=%d)", len(gap), historySize)
 			if t.ctx != nil {
-				runtime.EventsEmit(t.ctx, "terminal:data", gap)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: gap})
 			}
 		}
 	}
@@ -392,7 +402,7 @@ func (t *Terminal) pollTmuxOnce() {
 				lines := strings.Count(content, "\n")
 				t.debugLog("[POLL] Viewport diff: %d bytes update, %d content lines, historySize=%d, altScreen=%v",
 					len(updateSequence), lines, historySize, inAltScreen)
-				runtime.EventsEmit(t.ctx, "terminal:data", updateSequence)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: updateSequence})
 			}
 		}
 	}
@@ -469,7 +479,7 @@ func (t *Terminal) readLoopWithSeamFilter() {
 		n, err := p.Read(buf)
 		if err != nil {
 			if t.ctx != nil && !t.closed {
-				runtime.EventsEmit(t.ctx, "terminal:exit", err.Error())
+				runtime.EventsEmit(t.ctx, "terminal:exit", TerminalEvent{SessionID: t.sessionID, Data: err.Error()})
 			}
 			return
 		}
@@ -486,7 +496,7 @@ func (t *Terminal) readLoopWithSeamFilter() {
 
 			output = stripTTSMarkers(output)
 			if len(output) > 0 {
-				runtime.EventsEmit(t.ctx, "terminal:data", output)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: output})
 			}
 		}
 	}
@@ -695,7 +705,7 @@ func (t *Terminal) readLoop() {
 		n, err := p.Read(buf)
 		if err != nil {
 			if t.ctx != nil && !t.closed {
-				runtime.EventsEmit(t.ctx, "terminal:exit", err.Error())
+				runtime.EventsEmit(t.ctx, "terminal:exit", TerminalEvent{SessionID: t.sessionID, Data: err.Error()})
 			}
 			return
 		}
@@ -703,7 +713,7 @@ func (t *Terminal) readLoop() {
 		if n > 0 && t.ctx != nil {
 			output := stripTTSMarkers(string(buf[:n]))
 			if len(output) > 0 {
-				runtime.EventsEmit(t.ctx, "terminal:data", output)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: output})
 			}
 		}
 	}

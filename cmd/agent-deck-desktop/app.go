@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,7 @@ var Version = "0.1.0-dev"
 // App struct holds the application state.
 type App struct {
 	ctx              context.Context
-	terminal         *Terminal
+	terminals        *TerminalManager // Manages multiple terminals for multi-pane support
 	tmux             *TmuxManager
 	projectDiscovery *ProjectDiscovery
 	quickLaunch      *QuickLaunchManager
@@ -25,7 +26,7 @@ type App struct {
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	return &App{
-		terminal:         NewTerminal(),
+		terminals:        NewTerminalManager(),
 		tmux:             NewTmuxManager(),
 		projectDiscovery: NewProjectDiscovery(),
 		quickLaunch:      NewQuickLaunchManager(),
@@ -37,7 +38,12 @@ func NewApp() *App {
 // startup is called when the app starts.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.terminal.SetContext(ctx)
+	a.terminals.SetContext(ctx)
+}
+
+// shutdown is called when the app is closing.
+func (a *App) shutdown(ctx context.Context) {
+	a.terminals.CloseAll()
 }
 
 // GetVersion returns the application version.
@@ -45,24 +51,33 @@ func (a *App) GetVersion() string {
 	return Version
 }
 
-// StartTerminal spawns the shell with initial dimensions.
-func (a *App) StartTerminal(cols, rows int) error {
-	return a.terminal.Start(cols, rows)
+// StartTerminal spawns the shell with initial dimensions for a session.
+func (a *App) StartTerminal(sessionID string, cols, rows int) error {
+	t := a.terminals.GetOrCreate(sessionID)
+	return t.Start(cols, rows)
 }
 
-// WriteTerminal sends data to the PTY.
-func (a *App) WriteTerminal(data string) error {
-	return a.terminal.Write(data)
+// WriteTerminal sends data to the PTY for a session.
+func (a *App) WriteTerminal(sessionID, data string) error {
+	t := a.terminals.Get(sessionID)
+	if t == nil {
+		return fmt.Errorf("terminal %s not found", sessionID)
+	}
+	return t.Write(data)
 }
 
-// ResizeTerminal changes the PTY dimensions.
-func (a *App) ResizeTerminal(cols, rows int) error {
-	return a.terminal.Resize(cols, rows)
+// ResizeTerminal changes the PTY dimensions for a session.
+func (a *App) ResizeTerminal(sessionID string, cols, rows int) error {
+	t := a.terminals.Get(sessionID)
+	if t == nil {
+		return fmt.Errorf("terminal %s not found", sessionID)
+	}
+	return t.Resize(cols, rows)
 }
 
-// CloseTerminal terminates the PTY.
-func (a *App) CloseTerminal() error {
-	return a.terminal.Close()
+// CloseTerminal terminates the PTY for a session.
+func (a *App) CloseTerminal(sessionID string) error {
+	return a.terminals.Close(sessionID)
 }
 
 // ListSessions returns all Agent Deck sessions.
@@ -72,8 +87,9 @@ func (a *App) ListSessions() ([]SessionInfo, error) {
 
 // AttachSession attaches to an existing tmux session (direct mode, no history preload).
 // DEPRECATED: Use StartTmuxSession instead for the hybrid approach with scrollback support.
-func (a *App) AttachSession(tmuxSession string, cols, rows int) error {
-	return a.terminal.AttachTmux(tmuxSession, cols, rows)
+func (a *App) AttachSession(sessionID, tmuxSession string, cols, rows int) error {
+	t := a.terminals.GetOrCreate(sessionID)
+	return t.AttachTmux(tmuxSession, cols, rows)
 }
 
 // StartTmuxSession connects to a tmux session using the hybrid approach:
@@ -82,8 +98,10 @@ func (a *App) AttachSession(tmuxSession string, cols, rows int) error {
 //
 // This is the preferred method for connecting to tmux sessions as it provides
 // full scrollback history while maintaining real-time streaming.
-func (a *App) StartTmuxSession(tmuxSession string, cols, rows int) error {
-	return a.terminal.StartTmuxSession(tmuxSession, cols, rows)
+// The sessionID is used to identify which pane/terminal this belongs to.
+func (a *App) StartTmuxSession(sessionID, tmuxSession string, cols, rows int) error {
+	t := a.terminals.GetOrCreate(sessionID)
+	return t.StartTmuxSession(tmuxSession, cols, rows)
 }
 
 // GetScrollback returns the scrollback buffer for a tmux session.
@@ -91,10 +109,14 @@ func (a *App) GetScrollback(tmuxSession string) (string, error) {
 	return a.tmux.GetScrollback(tmuxSession, 10000)
 }
 
-// RefreshScrollback fetches fresh scrollback from the currently attached tmux session.
+// RefreshScrollback fetches fresh scrollback from the tmux session for a given terminal.
 // Called by frontend after resize to bypass xterm.js reflow issues with box-drawing chars.
-func (a *App) RefreshScrollback() (string, error) {
-	return a.terminal.GetScrollback()
+func (a *App) RefreshScrollback(sessionID string) (string, error) {
+	t := a.terminals.Get(sessionID)
+	if t == nil {
+		return "", nil
+	}
+	return t.GetScrollback()
 }
 
 // SessionExists checks if a tmux session exists.
@@ -219,7 +241,8 @@ func (a *App) GetProjectRoots() []string {
 // LogFrontendDiagnostic writes diagnostic info from frontend to the debug log file.
 // This allows Claude to read diagnostic info that would otherwise only be in browser console.
 func (a *App) LogFrontendDiagnostic(message string) {
-	a.terminal.LogDiagnostic(message)
+	// LogDiagnostic writes directly to the debug log file and doesn't need a session
+	LogDiagnostic(message)
 }
 
 // ==================== Launch Config Methods ====================
