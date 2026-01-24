@@ -50,6 +50,8 @@ export namespace main {
 	    tmuxSession: string;
 	    isRemote: boolean;
 	    remoteHost?: string;
+	    gitBranch?: string;
+	    isWorktree?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -66,6 +68,8 @@ export namespace main {
 	        this.tmuxSession = source["tmuxSession"];
 	        this.isRemote = source["isRemote"];
 	        this.remoteHost = source["remoteHost"];
+	        this.gitBranch = source["gitBranch"];
+	        this.isWorktree = source["isWorktree"];
 	    }
 	}
 

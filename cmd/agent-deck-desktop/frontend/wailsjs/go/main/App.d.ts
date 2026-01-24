@@ -14,8 +14,6 @@ export function DiscoverProjects():Promise<Array<main.ProjectInfo>>;
 
 export function GetGitBranch(arg1:string):Promise<string>;
 
-export function IsGitWorktree(arg1:string):Promise<boolean>;
-
 export function GetQuickLaunchBarVisibility():Promise<boolean>;
 
 export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite>>;
@@ -23,6 +21,8 @@ export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite
 export function GetScrollback(arg1:string):Promise<string>;
 
 export function GetVersion():Promise<string>;
+
+export function IsGitWorktree(arg1:string):Promise<boolean>;
 
 export function IsTmuxPolling():Promise<boolean>;
 
