@@ -6,6 +6,7 @@ import { createLogger } from './logger';
 import { formatShortcut } from './utils/shortcuts';
 import { getToolColor } from './utils/tools';
 import ToolIcon from './ToolIcon';
+import { useTooltip } from './Tooltip';
 
 const logger = createLogger('QuickLaunchBar');
 
@@ -14,8 +15,7 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
     const [contextMenu, setContextMenu] = useState(null);
     const [editingShortcut, setEditingShortcut] = useState(null); // { path, name, shortcut }
     const [editingName, setEditingName] = useState(null); // { path, name }
-    const [tooltip, setTooltip] = useState(null); // { text, x, y }
-    const tooltipTimeoutRef = useRef(null);
+    const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
 
     // Load favorites
     const loadFavorites = useCallback(async () => {
@@ -118,26 +118,9 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
         setEditingShortcut(null);
     };
 
-    // Tooltip handlers
-    const handleMouseEnter = useCallback((e, fav) => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const text = `${fav.name}\n${fav.path}${fav.shortcut ? `\n${formatShortcut(fav.shortcut)}` : ''}`;
-
-        tooltipTimeoutRef.current = setTimeout(() => {
-            setTooltip({
-                text,
-                x: rect.left + rect.width / 2,
-                y: rect.bottom + 8,
-            });
-        }, 200);
-    }, []);
-
-    const handleMouseLeave = useCallback(() => {
-        if (tooltipTimeoutRef.current) {
-            clearTimeout(tooltipTimeoutRef.current);
-            tooltipTimeoutRef.current = null;
-        }
-        setTooltip(null);
+    // Tooltip content builder
+    const getTooltipContent = useCallback((fav) => {
+        return `${fav.name}\n${fav.path}${fav.shortcut ? `\n${formatShortcut(fav.shortcut)}` : ''}`;
     }, []);
 
     // Build existing shortcuts map for conflict detection
@@ -173,8 +156,8 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
                         className="quick-launch-item"
                         onClick={(e) => handleClick(fav, e)}
                         onContextMenu={(e) => handleContextMenu(e, fav)}
-                        onMouseEnter={(e) => handleMouseEnter(e, fav)}
-                        onMouseLeave={handleMouseLeave}
+                        onMouseEnter={(e) => showTooltip(e, getTooltipContent(fav))}
+                        onMouseLeave={hideTooltip}
                     >
                         <span
                             className="quick-launch-icon"
@@ -243,17 +226,7 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
                 />
             )}
 
-            {tooltip && (
-                <div
-                    className="quick-launch-tooltip"
-                    style={{
-                        left: tooltip.x,
-                        top: tooltip.y,
-                    }}
-                >
-                    {tooltip.text}
-                </div>
-            )}
+            <Tooltip />
         </div>
     );
 }

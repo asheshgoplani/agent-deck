@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ListSessions } from '../wailsjs/go/main/App';
 import './SessionSelector.css';
 import { createLogger } from './logger';
 import ToolIcon from './ToolIcon';
+import { useTooltip } from './Tooltip';
 
 const logger = createLogger('SessionSelector');
 
@@ -10,9 +11,22 @@ export default function SessionSelector({ onSelect, onNewTerminal }) {
     const [sessions, setSessions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
 
     useEffect(() => {
         loadSessions();
+    }, []);
+
+    // Tooltip content builder for sessions
+    const getTooltipContent = useCallback((session) => {
+        const lines = [session.title];
+        if (session.projectPath) {
+            lines.push(session.projectPath);
+        }
+        if (session.isRemote) {
+            lines.push('Remote sessions not supported yet');
+        }
+        return lines.join('\n');
     }, []);
 
     const loadSessions = async () => {
@@ -78,7 +92,8 @@ export default function SessionSelector({ onSelect, onNewTerminal }) {
                             className="session-item"
                             onClick={() => onSelect(session)}
                             disabled={session.isRemote}
-                            title={session.isRemote ? 'Remote sessions not supported yet' : session.projectPath}
+                            onMouseEnter={(e) => showTooltip(e, getTooltipContent(session))}
+                            onMouseLeave={hideTooltip}
                         >
                             <span
                                 className="session-tool"
@@ -106,6 +121,8 @@ export default function SessionSelector({ onSelect, onNewTerminal }) {
                     New Terminal
                 </button>
             </div>
+
+            <Tooltip />
         </div>
     );
 }

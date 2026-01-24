@@ -45,24 +45,6 @@
     border-color: #4cc9f0;
 }
 
-/* Custom tooltip - JS controlled with 200ms delay */
-.quick-launch-tooltip {
-    position: fixed;
-    transform: translateX(-50%);
-    padding: 6px 10px;
-    background: #1a1a2e;
-    border: 1px solid #444;
-    border-radius: 4px;
-    color: #ccc;
-    font-size: 11px;
-    white-space: pre-line;
-    text-align: left;
-    z-index: 9999;
-    pointer-events: none;
-    max-width: 280px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-
 /* Tool Icon */
 .quick-launch-icon {
     width: 18px;
