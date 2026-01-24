@@ -154,3 +154,44 @@ func (tm *TmuxManager) SessionExists(tmuxSession string) bool {
 	cmd := exec.Command("tmux", "has-session", "-t", tmuxSession)
 	return cmd.Run() == nil
 }
+
+// CreateSession creates a new tmux session and launches an AI tool.
+func (tm *TmuxManager) CreateSession(projectPath, title, tool string) (SessionInfo, error) {
+	// Generate unique session name
+	sessionName := fmt.Sprintf("agentdeck_%d", time.Now().UnixNano())
+
+	// Create tmux session
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", projectPath)
+	if err := cmd.Run(); err != nil {
+		return SessionInfo{}, fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Build tool command
+	var toolCmd string
+	switch tool {
+	case "claude":
+		toolCmd = "claude"
+	case "gemini":
+		toolCmd = "gemini"
+	case "opencode":
+		toolCmd = "opencode"
+	default:
+		toolCmd = tool // Allow custom tools
+	}
+
+	// Send the tool command to the session
+	sendCmd := exec.Command("tmux", "send-keys", "-t", sessionName, toolCmd, "Enter")
+	if err := sendCmd.Run(); err != nil {
+		// Don't fail if we can't send the command, the session is still usable
+		fmt.Printf("Warning: failed to send tool command: %v\n", err)
+	}
+
+	return SessionInfo{
+		ID:          sessionName,
+		Title:       title,
+		ProjectPath: projectPath,
+		Tool:        tool,
+		Status:      "running",
+		TmuxSession: sessionName,
+	}, nil
+}

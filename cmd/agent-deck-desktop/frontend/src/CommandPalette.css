@@ -1,0 +1,203 @@
+/* Command Palette Overlay */
+.palette-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 15vh;
+    z-index: 1000;
+}
+
+/* Command Palette Container */
+.palette-container {
+    width: 100%;
+    max-width: 560px;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+}
+
+/* Search Input */
+.palette-input {
+    width: 100%;
+    padding: 16px 20px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #333;
+    color: #eee;
+    font-size: 16px;
+    outline: none;
+}
+
+.palette-input::placeholder {
+    color: #666;
+}
+
+/* Results List */
+.palette-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.palette-empty {
+    padding: 32px 20px;
+    text-align: center;
+    color: #666;
+    font-size: 14px;
+}
+
+/* Palette Items */
+.palette-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 20px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: #eee;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.palette-item:hover,
+.palette-item.selected {
+    background: #2a2a4a;
+}
+
+.palette-item.selected {
+    background: #323260;
+}
+
+/* Tool Icon (for sessions) */
+.palette-tool-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 5px;
+    font-weight: bold;
+    font-size: 13px;
+    color: #1a1a2e;
+    flex-shrink: 0;
+}
+
+/* Action Icon */
+.palette-action-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #4cc9f0;
+    flex-shrink: 0;
+}
+
+/* Project Icon */
+.palette-project-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: bold;
+    color: #6c8;
+    background: #253525;
+    border-radius: 5px;
+    flex-shrink: 0;
+}
+
+/* Project Hint */
+.palette-project-hint {
+    font-size: 10px;
+    color: #666;
+    padding: 2px 6px;
+    background: #2a2a40;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+/* Item Info */
+.palette-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.palette-item-title {
+    font-weight: 500;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.palette-item-subtitle {
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+/* Status Badge */
+.palette-status {
+    font-size: 11px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    font-weight: 500;
+}
+
+/* Footer Hints */
+.palette-footer {
+    display: flex;
+    gap: 16px;
+    padding: 10px 20px;
+    border-top: 1px solid #333;
+    background: #1f1f35;
+}
+
+.palette-hint {
+    font-size: 12px;
+    color: #666;
+}
+
+.palette-hint kbd {
+    display: inline-block;
+    background: #333;
+    border-radius: 3px;
+    padding: 2px 6px;
+    margin-right: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    color: #aaa;
+}
+
+/* Scrollbar Styling */
+.palette-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.palette-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.palette-list::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 3px;
+}
+
+.palette-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}

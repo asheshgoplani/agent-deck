@@ -73,6 +73,25 @@ type UserConfig struct {
 
 	// Instances defines multiple instance behavior settings
 	Instances InstanceSettings `toml:"instances"`
+
+	// ProjectDiscovery defines settings for project discovery in desktop app
+	ProjectDiscovery ProjectDiscoverySettings `toml:"project_discovery"`
+}
+
+// ProjectDiscoverySettings defines settings for discovering projects on disk
+type ProjectDiscoverySettings struct {
+	// ScanPaths is a list of directories to scan for projects
+	// Supports ~ expansion for home directory
+	// Example: ["~/code", "~/work", "~/Documents/projects"]
+	ScanPaths []string `toml:"scan_paths"`
+
+	// MaxDepth is how deep to scan for projects (default: 2)
+	// 1 = direct children only, 2 = children and grandchildren
+	MaxDepth int `toml:"max_depth"`
+
+	// IgnorePatterns are directory names to skip during scanning
+	// Default: ["node_modules", ".git", "vendor", "__pycache__"]
+	IgnorePatterns []string `toml:"ignore_patterns"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -929,6 +948,41 @@ func GetInstanceSettings() InstanceSettings {
 	}
 
 	return config.Instances
+}
+
+// GetProjectDiscoverySettings returns project discovery settings with defaults applied
+func GetProjectDiscoverySettings() ProjectDiscoverySettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return ProjectDiscoverySettings{
+			ScanPaths:      []string{},
+			MaxDepth:       2,
+			IgnorePatterns: []string{"node_modules", ".git", "vendor", "__pycache__", ".venv", "dist", "build"},
+		}
+	}
+
+	settings := config.ProjectDiscovery
+
+	// Apply defaults for unset values
+	if settings.MaxDepth <= 0 {
+		settings.MaxDepth = 2
+	}
+	if len(settings.IgnorePatterns) == 0 {
+		settings.IgnorePatterns = []string{"node_modules", ".git", "vendor", "__pycache__", ".venv", "dist", "build"}
+	}
+
+	// Expand ~ in scan paths
+	expandedPaths := make([]string, 0, len(settings.ScanPaths))
+	for _, p := range settings.ScanPaths {
+		if strings.HasPrefix(p, "~/") {
+			homeDir, _ := os.UserHomeDir()
+			p = filepath.Join(homeDir, p[2:])
+		}
+		expandedPaths = append(expandedPaths, p)
+	}
+	settings.ScanPaths = expandedPaths
+
+	return settings
 }
 
 // getMCPPoolConfigSection returns the MCP pool config section based on platform

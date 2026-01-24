@@ -1,0 +1,250 @@
+import { useState, useEffect, useRef, useMemo } from 'react';
+import Fuse from 'fuse.js';
+import './CommandPalette.css';
+import { createLogger } from './logger';
+
+const logger = createLogger('CommandPalette');
+
+// Quick actions available in the palette
+const QUICK_ACTIONS = [
+    { id: 'new-terminal', type: 'action', title: 'New Terminal', description: 'Start a new shell session' },
+    { id: 'refresh-sessions', type: 'action', title: 'Refresh Sessions', description: 'Reload session list' },
+    { id: 'toggle-quick-launch', type: 'action', title: 'Toggle Quick Launch Bar', description: 'Show/hide quick launch bar' },
+];
+
+export default function CommandPalette({
+    onClose,
+    onSelectSession,
+    onAction,
+    onLaunchProject, // (projectPath, projectName, tool) => void
+    onShowToolPicker, // (projectPath, projectName) => void - for Cmd+Enter
+    sessions = [],
+    projects = [],
+}) {
+    const [query, setQuery] = useState('');
+    const [selectedIndex, setSelectedIndex] = useState(0);
+    const inputRef = useRef(null);
+    const listRef = useRef(null);
+
+    // Log when palette opens
+    useEffect(() => {
+        logger.info('Command palette opened', { sessionCount: sessions.length, projectCount: projects.length });
+        return () => logger.info('Command palette closed');
+    }, [sessions.length, projects.length]);
+
+    // Convert projects to palette items
+    const projectItems = useMemo(() => {
+        return projects
+            .filter(p => !p.hasSession) // Only show projects without existing sessions
+            .map(p => ({
+                id: `project:${p.path}`,
+                type: 'project',
+                title: p.name,
+                projectPath: p.path,
+                score: p.score,
+                description: p.path,
+            }));
+    }, [projects]);
+
+    // Fuse.js configuration for fuzzy search
+    const fuse = useMemo(() => new Fuse([...sessions, ...projectItems, ...QUICK_ACTIONS], {
+        keys: [
+            { name: 'title', weight: 0.4 },
+            { name: 'projectPath', weight: 0.3 },
+            { name: 'tool', weight: 0.1 },
+            { name: 'description', weight: 0.2 },
+            { name: 'name', weight: 0.4 },
+        ],
+        threshold: 0.4,
+        includeScore: true,
+    }), [sessions, projectItems]);
+
+    // Get filtered results
+    const results = useMemo(() => {
+        if (!query.trim()) {
+            // No query: show sessions first, then projects, then actions
+            const allItems = [...sessions, ...projectItems, ...QUICK_ACTIONS];
+            logger.debug('Showing all items (no query)', { count: allItems.length });
+            return allItems;
+        }
+        const searchResults = fuse.search(query).map(result => result.item);
+        logger.debug('Search results', { query, count: searchResults.length });
+        return searchResults;
+    }, [query, fuse, sessions, projectItems]);
+
+    // Reset selection when results change
+    useEffect(() => {
+        setSelectedIndex(0);
+    }, [results]);
+
+    // Focus input on mount
+    useEffect(() => {
+        inputRef.current?.focus();
+    }, []);
+
+    // Scroll selected item into view
+    useEffect(() => {
+        if (listRef.current) {
+            const selectedItem = listRef.current.querySelector('.palette-item.selected');
+            if (selectedItem) {
+                selectedItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        }
+    }, [selectedIndex]);
+
+    const handleKeyDown = (e) => {
+        switch (e.key) {
+            case 'ArrowDown':
+                e.preventDefault();
+                setSelectedIndex(prev => {
+                    const newIndex = Math.min(prev + 1, results.length - 1);
+                    logger.debug('Navigate down', { from: prev, to: newIndex });
+                    return newIndex;
+                });
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                setSelectedIndex(prev => {
+                    const newIndex = Math.max(prev - 1, 0);
+                    logger.debug('Navigate up', { from: prev, to: newIndex });
+                    return newIndex;
+                });
+                break;
+            case 'Enter':
+                e.preventDefault();
+                if (results[selectedIndex]) {
+                    const item = results[selectedIndex];
+                    // Cmd+Enter on project shows tool picker
+                    if ((e.metaKey || e.ctrlKey) && item.type === 'project') {
+                        logger.info('Cmd+Enter on project, showing tool picker', { path: item.projectPath });
+                        onShowToolPicker?.(item.projectPath, item.title);
+                        onClose();
+                    } else {
+                        logger.info('Enter pressed, selecting item', { index: selectedIndex });
+                        handleSelect(item);
+                    }
+                }
+                break;
+            case 'Escape':
+                e.preventDefault();
+                logger.info('Escape pressed, closing palette');
+                onClose();
+                break;
+        }
+    };
+
+    const handleSelect = (item) => {
+        logger.info('Item selected', {
+            title: item.title,
+            type: item.type || 'session',
+            id: item.id
+        });
+        if (item.type === 'action') {
+            logger.info('Executing action', { actionId: item.id });
+            onAction?.(item.id);
+        } else if (item.type === 'project') {
+            // Launch project with default tool (Claude)
+            logger.info('Launching project with default tool', { path: item.projectPath, tool: 'claude' });
+            onLaunchProject?.(item.projectPath, item.title, 'claude');
+        } else {
+            logger.info('Navigating to session', { sessionId: item.id, title: item.title });
+            onSelectSession?.(item);
+        }
+        onClose();
+    };
+
+    const getToolIcon = (tool) => {
+        switch (tool) {
+            case 'claude': return 'C';
+            case 'gemini': return 'G';
+            case 'opencode': return 'O';
+            default: return '$';
+        }
+    };
+
+    const getStatusColor = (status) => {
+        switch (status) {
+            case 'running': return '#4ecdc4';
+            case 'waiting': return '#ffe66d';
+            case 'idle': return '#6c757d';
+            case 'error': return '#ff6b6b';
+            default: return '#6c757d';
+        }
+    };
+
+    return (
+        <div className="palette-overlay" onClick={onClose}>
+            <div className="palette-container" onClick={(e) => e.stopPropagation()}>
+                <input
+                    ref={inputRef}
+                    type="text"
+                    className="palette-input"
+                    placeholder="Search sessions or actions..."
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                />
+                <div className="palette-list" ref={listRef}>
+                    {results.length === 0 ? (
+                        <div className="palette-empty">No results found</div>
+                    ) : (
+                        results.map((item, index) => (
+                            <button
+                                key={item.id}
+                                className={`palette-item ${index === selectedIndex ? 'selected' : ''} ${item.type || 'session'}`}
+                                onClick={() => handleSelect(item)}
+                                onMouseEnter={() => setSelectedIndex(index)}
+                            >
+                                {item.type === 'action' ? (
+                                    <>
+                                        <span className="palette-action-icon">></span>
+                                        <div className="palette-item-info">
+                                            <div className="palette-item-title">{item.title}</div>
+                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        </div>
+                                    </>
+                                ) : item.type === 'project' ? (
+                                    <>
+                                        <span className="palette-project-icon">+</span>
+                                        <div className="palette-item-info">
+                                            <div className="palette-item-title">{item.title}</div>
+                                            <div className="palette-item-subtitle">{item.projectPath}</div>
+                                        </div>
+                                        <span className="palette-project-hint">Enter: Claude</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span
+                                            className="palette-tool-icon"
+                                            style={{ backgroundColor: getStatusColor(item.status) }}
+                                        >
+                                            {getToolIcon(item.tool)}
+                                        </span>
+                                        <div className="palette-item-info">
+                                            <div className="palette-item-title">{item.title}</div>
+                                            <div className="palette-item-subtitle">
+                                                {item.projectPath || item.groupPath || 'ungrouped'}
+                                            </div>
+                                        </div>
+                                        <span
+                                            className="palette-status"
+                                            style={{ color: getStatusColor(item.status) }}
+                                        >
+                                            {item.status}
+                                        </span>
+                                    </>
+                                )}
+                            </button>
+                        ))
+                    )}
+                </div>
+                <div className="palette-footer">
+                    <span className="palette-hint"><kbd>↑↓</kbd> Navigate</span>
+                    <span className="palette-hint"><kbd>Enter</kbd> Select</span>
+                    <span className="palette-hint"><kbd>⌘Enter</kbd> Tool picker</span>
+                    <span className="palette-hint"><kbd>Esc</kbd> Close</span>
+                </div>
+            </div>
+        </div>
+    );
+}

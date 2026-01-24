@@ -9,16 +9,20 @@ var Version = "0.1.0-dev"
 
 // App struct holds the application state.
 type App struct {
-	ctx      context.Context
-	terminal *Terminal
-	tmux     *TmuxManager
+	ctx              context.Context
+	terminal         *Terminal
+	tmux             *TmuxManager
+	projectDiscovery *ProjectDiscovery
+	quickLaunch      *QuickLaunchManager
 }
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	return &App{
-		terminal: NewTerminal(),
-		tmux:     NewTmuxManager(),
+		terminal:         NewTerminal(),
+		tmux:             NewTmuxManager(),
+		projectDiscovery: NewProjectDiscovery(),
+		quickLaunch:      NewQuickLaunchManager(),
 	}
 }
 
@@ -96,4 +100,43 @@ func (a *App) GetScrollback(tmuxSession string) (string, error) {
 // SessionExists checks if a tmux session exists.
 func (a *App) SessionExists(tmuxSession string) bool {
 	return a.tmux.SessionExists(tmuxSession)
+}
+
+// DiscoverProjects finds all projects from configured paths and existing sessions.
+func (a *App) DiscoverProjects() ([]ProjectInfo, error) {
+	sessions, err := a.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	return a.projectDiscovery.DiscoverProjects(sessions)
+}
+
+// RecordProjectUsage records that a project was used (for frecency scoring).
+func (a *App) RecordProjectUsage(projectPath string) error {
+	return a.projectDiscovery.RecordUsage(projectPath)
+}
+
+// CreateSession creates a new tmux session and launches the specified AI tool.
+func (a *App) CreateSession(projectPath, title, tool string) (SessionInfo, error) {
+	return a.tmux.CreateSession(projectPath, title, tool)
+}
+
+// GetQuickLaunchFavorites returns all quick launch favorites.
+func (a *App) GetQuickLaunchFavorites() ([]QuickLaunchFavorite, error) {
+	return a.quickLaunch.GetFavorites()
+}
+
+// AddQuickLaunchFavorite adds a project to quick launch.
+func (a *App) AddQuickLaunchFavorite(name, path, tool string) error {
+	return a.quickLaunch.AddFavorite(name, path, tool)
+}
+
+// RemoveQuickLaunchFavorite removes a project from quick launch.
+func (a *App) RemoveQuickLaunchFavorite(path string) error {
+	return a.quickLaunch.RemoveFavorite(path)
+}
+
+// UpdateQuickLaunchShortcut updates the keyboard shortcut for a favorite.
+func (a *App) UpdateQuickLaunchShortcut(path, shortcut string) error {
+	return a.quickLaunch.UpdateShortcut(path, shortcut)
 }

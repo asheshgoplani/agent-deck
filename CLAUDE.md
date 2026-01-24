@@ -92,3 +92,22 @@ internal/
 - Integration tests may spawn real tmux sessions (slower)
 - Use `t.TempDir()` for file-based tests
 - Platform-specific tests use build tags
+
+## Native Desktop App (In Development)
+
+A Wails-based native app (`cmd/agent-deck-desktop/`) complements the TUI with better UX:
+
+- **xterm.js** for terminal emulation with Cmd+F searchable scrollback
+- **Keeps tmux as backend** for session persistence, SSH support, and crash recovery
+- Attaches to existing Agent Deck sessions via `tmux attach-session`
+- Pre-loads scrollback into xterm.js buffer so search works through history
+
+**Key files:**
+- `cmd/agent-deck-desktop/` - Wails app (Go backend + React frontend)
+- `docs/native-app-prototype-plan.md` - Implementation phases and architecture
+- `docs/native-app-research.md` - Design rationale and competitive analysis
+
+**Run in dev mode:**
+```bash
+cd cmd/agent-deck-desktop && wails dev
+```

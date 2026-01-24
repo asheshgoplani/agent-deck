@@ -1,0 +1,147 @@
+/* Tool Picker Overlay */
+.tool-picker-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100; /* Above command palette */
+}
+
+/* Tool Picker Container */
+.tool-picker-container {
+    width: 100%;
+    max-width: 400px;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    outline: none;
+}
+
+/* Header */
+.tool-picker-header {
+    padding: 20px;
+    border-bottom: 1px solid #333;
+}
+
+.tool-picker-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: #eee;
+}
+
+.tool-picker-path {
+    margin: 8px 0 0 0;
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Options */
+.tool-picker-options {
+    padding: 8px;
+}
+
+.tool-picker-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    text-align: left;
+    color: #eee;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.tool-picker-option:hover,
+.tool-picker-option.selected {
+    background: #2a2a4a;
+}
+
+.tool-picker-option.selected {
+    background: #323260;
+}
+
+/* Tool Icon */
+.tool-picker-icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-weight: bold;
+    font-size: 16px;
+    color: #1a1a2e;
+    flex-shrink: 0;
+}
+
+/* Tool Info */
+.tool-picker-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.tool-picker-name {
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.tool-picker-desc {
+    font-size: 12px;
+    color: #888;
+    margin-top: 2px;
+}
+
+/* Shortcut Badge */
+.tool-picker-shortcut {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #333;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #888;
+    flex-shrink: 0;
+}
+
+/* Footer Hints */
+.tool-picker-footer {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    border-top: 1px solid #333;
+    background: #1f1f35;
+}
+
+.tool-picker-hint {
+    font-size: 11px;
+    color: #666;
+}
+
+.tool-picker-hint kbd {
+    display: inline-block;
+    background: #333;
+    border-radius: 3px;
+    padding: 2px 5px;
+    margin-right: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    color: #aaa;
+}
