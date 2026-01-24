@@ -45,7 +45,7 @@ function rafThrottle(fn) {
 
 const logger = createLogger('Terminal');
 
-export default function Terminal({ searchRef, session }) {
+export default function Terminal({ searchRef, session, fontSize = 14 }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);
@@ -64,6 +64,15 @@ export default function Terminal({ searchRef, session }) {
         }
     }, [theme]);
 
+    // Update terminal font size when it changes
+    useEffect(() => {
+        if (xtermRef.current && fitAddonRef.current) {
+            xtermRef.current.options.fontSize = fontSize;
+            fitAddonRef.current.fit();
+            logger.debug('Updated terminal font size to:', fontSize);
+        }
+    }, [fontSize]);
+
     // Initialize terminal
     useEffect(() => {
         // Prevent double initialization (React StrictMode)
@@ -76,6 +85,7 @@ export default function Terminal({ searchRef, session }) {
         const terminalTheme = getTerminalTheme(theme);
         const terminalOptions = {
             ...BASE_TERMINAL_OPTIONS,
+            fontSize,
             theme: terminalTheme,
         };
 
@@ -468,7 +478,7 @@ export default function Terminal({ searchRef, session }) {
             searchAddonRef.current = null;
             initRef.current = false;
         };
-    }, [searchRef, session]); // Note: theme changes handled by separate useEffect
+    }, [searchRef, session, fontSize]); // Note: theme/fontSize changes handled by separate useEffects
 
     // Scroll to bottom when indicator is clicked
     const handleScrollToBottom = () => {

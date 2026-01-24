@@ -26,6 +26,7 @@ export default function CommandPalette({
     projects = [],
     favorites = [], // Quick launch favorites for shortcut hints
     pinMode = false, // When true, selecting pins instead of launching
+    newTabMode = false, // When true, opened via Cmd+T for new tab
 }) {
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -237,7 +238,7 @@ export default function CommandPalette({
                     ref={inputRef}
                     type="text"
                     className="palette-input"
-                    placeholder={pinMode ? "Search projects to pin..." : "Search sessions or actions..."}
+                    placeholder={pinMode ? "Search projects to pin..." : newTabMode ? "Search for a session to open in a new tab..." : "Search sessions or actions..."}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}

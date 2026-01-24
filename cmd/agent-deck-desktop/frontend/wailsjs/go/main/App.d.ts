@@ -20,6 +20,8 @@ export function GetDefaultLaunchConfig(arg1:string):Promise<main.LaunchConfigInf
 
 export function GetDesktopTheme():Promise<string>;
 
+export function GetFontSize():Promise<number>;
+
 export function GetGitBranch(arg1:string):Promise<string>;
 
 export function GetLaunchConfig(arg1:string):Promise<main.LaunchConfigInfo>;
@@ -38,7 +40,7 @@ export function GetScrollback(arg1:string):Promise<string>;
 
 export function GetSoftNewlineMode():Promise<string>;
 
-export function GetTerminalSettings():Promise<Record<string, string>>;
+export function GetTerminalSettings():Promise<Record<string, any>>;
 
 export function GetVersion():Promise<string>;
 
@@ -63,6 +65,8 @@ export function SaveLaunchConfig(arg1:string,arg2:string,arg3:string,arg4:string
 export function SessionExists(arg1:string):Promise<boolean>;
 
 export function SetDesktopTheme(arg1:string):Promise<void>;
+
+export function SetFontSize(arg1:number):Promise<void>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
 

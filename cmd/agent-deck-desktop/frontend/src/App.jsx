@@ -11,7 +11,7 @@ import UnifiedTopBar from './UnifiedTopBar';
 import ShortcutBar from './ShortcutBar';
 import KeyboardHelpModal from './KeyboardHelpModal';
 import RenameDialog from './RenameDialog';
-import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
+import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 
 const logger = createLogger('App');
@@ -30,6 +30,7 @@ function App() {
     const [toolPickerProject, setToolPickerProject] = useState(null);
     const [showQuickLaunch, setShowQuickLaunch] = useState(true); // Show by default if favorites exist
     const [palettePinMode, setPalettePinMode] = useState(false); // When true, selecting pins instead of launching
+    const [paletteNewTabMode, setPaletteNewTabMode] = useState(false); // When true, Cmd+T was used to open palette
     const [quickLaunchKey, setQuickLaunchKey] = useState(0); // For forcing refresh
     const [shortcuts, setShortcuts] = useState({}); // shortcut -> {path, name, tool}
     const [favorites, setFavorites] = useState([]); // All quick launch favorites
@@ -43,6 +44,7 @@ function App() {
     const [showLabelDialog, setShowLabelDialog] = useState(false);
     const [openTabs, setOpenTabs] = useState([]); // Array of {id, session, openedAt}
     const [activeTabId, setActiveTabId] = useState(null);
+    const [fontSize, setFontSizeState] = useState(14); // Terminal font size (8-32)
     const sessionSelectorRef = useRef(null);
 
     // Cycle through status filter modes: all -> active -> idle -> all
@@ -92,7 +94,7 @@ function App() {
         }
     }, []);
 
-    // Load shortcuts and bar visibility on mount
+    // Load shortcuts, bar visibility, and font size on mount
     useEffect(() => {
         loadShortcuts();
 
@@ -107,6 +109,18 @@ function App() {
             }
         };
         loadBarVisibility();
+
+        // Load font size preference
+        const loadFontSize = async () => {
+            try {
+                const size = await GetFontSize();
+                setFontSizeState(size);
+                logger.info('Loaded font size', { size });
+            } catch (err) {
+                logger.error('Failed to load font size:', err);
+            }
+        };
+        loadFontSize();
     }, [loadShortcuts]);
 
     const handleCloseSearch = useCallback(() => {
@@ -324,10 +338,11 @@ function App() {
         setShowCommandPalette(true);
     }, []);
 
-    // Close palette and reset pin mode
+    // Close palette and reset modes
     const handleClosePalette = useCallback(() => {
         setShowCommandPalette(false);
         setPalettePinMode(false);
+        setPaletteNewTabMode(false);
     }, []);
 
     // Handle tool selection from picker (use default config if available)
@@ -460,6 +475,20 @@ function App() {
         setShowHelpModal(true);
     }, []);
 
+    // Handle font size change (delta: +1 or -1)
+    const handleFontSizeChange = useCallback(async (delta) => {
+        const newSize = Math.max(8, Math.min(32, fontSize + delta));
+        if (newSize === fontSize) return; // No change (at limit)
+
+        try {
+            await SetFontSize(newSize);
+            setFontSizeState(newSize);
+            logger.info('Font size changed', { from: fontSize, to: newSize });
+        } catch (err) {
+            logger.error('Failed to set font size:', err);
+        }
+    }, [fontSize]);
+
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
         // Don't handle shortcuts when help modal is open (it has its own handler)
@@ -515,6 +544,7 @@ function App() {
         if ((e.metaKey || e.ctrlKey) && e.key === 't') {
             e.preventDefault();
             logger.info('Cmd+T pressed - opening command palette for new tab');
+            setPaletteNewTabMode(true);
             setShowCommandPalette(true);
         }
         // Cmd+W to close current tab
@@ -578,7 +608,17 @@ function App() {
             e.preventDefault();
             handleOpenSettings();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab]);
+        // Cmd++ (Cmd+=) to increase font size (works in terminal view)
+        if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+') && view === 'terminal') {
+            e.preventDefault();
+            handleFontSizeChange(1);
+        }
+        // Cmd+- to decrease font size (works in terminal view)
+        if ((e.metaKey || e.ctrlKey) && e.key === '-' && view === 'terminal') {
+            e.preventDefault();
+            handleFontSizeChange(-1);
+        }
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -624,6 +664,7 @@ function App() {
                         projects={projects}
                         favorites={favorites}
                         pinMode={palettePinMode}
+                        newTabMode={paletteNewTabMode}
                     />
                 )}
                 {showToolPicker && toolPickerProject && (
@@ -700,6 +741,7 @@ function App() {
                 <Terminal
                     searchRef={searchAddonRef}
                     session={selectedSession}
+                    fontSize={fontSize}
                 />
             </div>
             <ShortcutBar
@@ -750,6 +792,7 @@ function App() {
                     projects={projects}
                     favorites={favorites}
                     pinMode={palettePinMode}
+                    newTabMode={paletteNewTabMode}
                 />
             )}
             {showToolPicker && toolPickerProject && (

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
-import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode } from '../wailsjs/go/main/App';
+import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
 import ToolIcon from './ToolIcon';
@@ -15,6 +15,7 @@ export default function SettingsModal({ onClose }) {
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
     const [softNewlineMode, setSoftNewlineMode] = useState('both');
+    const [fontSize, setFontSizeState] = useState(14);
     const { themePreference, setTheme } = useTheme();
 
     // Load configs and terminal settings on mount

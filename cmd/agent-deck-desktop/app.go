@@ -299,14 +299,30 @@ func (a *App) SetSoftNewlineMode(mode string) error {
 }
 
 // GetTerminalSettings returns all terminal settings for the frontend.
-func (a *App) GetTerminalSettings() map[string]string {
+func (a *App) GetTerminalSettings() map[string]interface{} {
 	config, err := a.desktopSettings.GetTerminalConfig()
 	if err != nil {
-		return map[string]string{
+		return map[string]interface{}{
 			"softNewline": "both",
+			"fontSize":    14,
 		}
 	}
-	return map[string]string{
+	return map[string]interface{}{
 		"softNewline": config.SoftNewline,
+		"fontSize":    config.FontSize,
 	}
+}
+
+// GetFontSize returns the terminal font size (8-32, default 14).
+func (a *App) GetFontSize() int {
+	size, err := a.desktopSettings.GetFontSize()
+	if err != nil {
+		return 14
+	}
+	return size
+}
+
+// SetFontSize sets the terminal font size (clamped to 8-32).
+func (a *App) SetFontSize(size int) error {
+	return a.desktopSettings.SetFontSize(size)
 }
