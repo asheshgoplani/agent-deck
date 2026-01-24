@@ -12,8 +12,9 @@ import KeyboardHelpModal from './KeyboardHelpModal';
 import RenameDialog from './RenameDialog';
 import PaneLayout from './PaneLayout';
 import FocusModeOverlay from './FocusModeOverlay';
-import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
+import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
+import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
 import {
     createSinglePaneLayout,
     splitPane,
@@ -47,6 +48,7 @@ function App() {
     const [toolPickerProject, setToolPickerProject] = useState(null);
     const [showQuickLaunch, setShowQuickLaunch] = useState(true); // Show by default if favorites exist
     const [palettePinMode, setPalettePinMode] = useState(false); // When true, selecting pins instead of launching
+    const [paletteNewTabMode, setPaletteNewTabMode] = useState(false); // When true, Cmd+T was used to open palette
     const [quickLaunchKey, setQuickLaunchKey] = useState(0); // For forcing refresh
     const [shortcuts, setShortcuts] = useState({}); // shortcut -> {path, name, tool}
     const [favorites, setFavorites] = useState([]); // All quick launch favorites
@@ -62,6 +64,7 @@ function App() {
     // Each tab: { id, name, layout: LayoutNode, activePaneId: string, openedAt, zoomedPaneId: string|null }
     const [openTabs, setOpenTabs] = useState([]);
     const [activeTabId, setActiveTabId] = useState(null);
+    const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
     const sessionSelectorRef = useRef(null);
     const terminalRefs = useRef({});
     const searchRefs = useRef({});
@@ -113,7 +116,7 @@ function App() {
         }
     }, []);
 
-    // Load shortcuts and bar visibility on mount
+    // Load shortcuts, bar visibility, and font size on mount
     useEffect(() => {
         loadShortcuts();
 
@@ -128,6 +131,18 @@ function App() {
             }
         };
         loadBarVisibility();
+
+        // Load font size preference
+        const loadFontSize = async () => {
+            try {
+                const size = await GetFontSize();
+                setFontSizeState(size);
+                logger.info('Loaded font size', { size });
+            } catch (err) {
+                logger.error('Failed to load font size:', err);
+            }
+        };
+        loadFontSize();
     }, [loadShortcuts]);
 
     const handleCloseSearch = useCallback(() => {
@@ -629,10 +644,11 @@ function App() {
         setShowCommandPalette(true);
     }, []);
 
-    // Close palette and reset pin mode
+    // Close palette and reset modes
     const handleClosePalette = useCallback(() => {
         setShowCommandPalette(false);
         setPalettePinMode(false);
+        setPaletteNewTabMode(false);
     }, []);
 
     // Handle tool selection from picker (use default config if available)
@@ -707,6 +723,19 @@ function App() {
         setShowLabelDialog(false);
     }, [selectedSession]);
 
+    // Handle tab label updated from context menu
+    const handleTabLabelUpdated = useCallback((sessionId, newLabel) => {
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.session.id === sessionId) {
+                return { ...tab, session: { ...tab.session, customLabel: newLabel || undefined } };
+            }
+            return tab;
+        }));
+        if (selectedSession?.id === sessionId) {
+            setSelectedSession(prev => prev ? { ...prev, customLabel: newLabel || undefined } : prev);
+        }
+    }, [selectedSession]);
+
     const handleSelectSession = useCallback(async (session) => {
         logger.info('Selecting session:', session.title);
 
@@ -765,6 +794,20 @@ function App() {
         setShowHelpModal(true);
     }, []);
 
+    // Handle font size change (delta: +1 or -1)
+    const handleFontSizeChange = useCallback(async (delta) => {
+        const newSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta));
+        if (newSize === fontSize) return; // No change (at limit)
+
+        try {
+            await SetFontSize(newSize);
+            setFontSizeState(newSize);
+            logger.info('Font size changed', { from: fontSize, to: newSize });
+        } catch (err) {
+            logger.error('Failed to set font size:', err);
+        }
+    }, [fontSize]);
+
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
         // Don't handle shortcuts when help modal is open (it has its own handler)
@@ -820,6 +863,7 @@ function App() {
         if ((e.metaKey || e.ctrlKey) && e.key === 't') {
             e.preventDefault();
             logger.info('Cmd+T pressed - opening command palette for new tab');
+            setPaletteNewTabMode(true);
             setShowCommandPalette(true);
         }
         // Cmd+W to close current tab
@@ -993,7 +1037,18 @@ function App() {
                 return;
             }
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset]);
+
+        // Cmd++ (Cmd+=) to increase font size (works in terminal view)
+        if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+') && view === 'terminal') {
+            e.preventDefault();
+            handleFontSizeChange(1);
+        }
+        // Cmd+- to decrease font size (works in terminal view)
+        if ((e.metaKey || e.ctrlKey) && e.key === '-' && view === 'terminal') {
+            e.preventDefault();
+            handleFontSizeChange(-1);
+        }
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -1017,6 +1072,7 @@ function App() {
                         activeTabId={activeTabId}
                         onSwitchTab={handleSwitchTab}
                         onCloseTab={handleCloseTab}
+                        onTabLabelUpdated={handleTabLabelUpdated}
                     />
                 )}
                 <SessionSelector
@@ -1039,6 +1095,7 @@ function App() {
                         projects={projects}
                         favorites={favorites}
                         pinMode={palettePinMode}
+                        newTabMode={paletteNewTabMode}
                     />
                 )}
                 {showToolPicker && toolPickerProject && (
@@ -1102,6 +1159,7 @@ function App() {
                 onPaneSessionSelect={handlePaneSessionSelect}
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
+                fontSize={fontSize}
             />
         );
     };
@@ -1121,6 +1179,7 @@ function App() {
                     activeTabId={activeTabId}
                     onSwitchTab={handleSwitchTab}
                     onCloseTab={handleCloseTab}
+                    onTabLabelUpdated={handleTabLabelUpdated}
                 />
             )}
             <div className="terminal-header">
@@ -1228,6 +1287,7 @@ function App() {
                     projects={projects}
                     favorites={favorites}
                     pinMode={palettePinMode}
+                    newTabMode={paletteNewTabMode}
                 />
             )}
             {showToolPicker && toolPickerProject && (

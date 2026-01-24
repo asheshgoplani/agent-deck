@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import './UnifiedTopBar.css';
-import { GetQuickLaunchFavorites, RemoveQuickLaunchFavorite, UpdateQuickLaunchShortcut, UpdateQuickLaunchFavoriteName } from '../wailsjs/go/main/App';
+import { GetQuickLaunchFavorites, RemoveQuickLaunchFavorite, UpdateQuickLaunchShortcut, UpdateQuickLaunchFavoriteName, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
 import ShortcutEditor from './ShortcutEditor';
 import RenameDialog from './RenameDialog';
 import SessionTab from './SessionTab';
@@ -22,11 +22,14 @@ export default function UnifiedTopBar({
     activeTabId = null,
     onSwitchTab,
     onCloseTab,
+    onTabLabelUpdated,
 }) {
     const [favorites, setFavorites] = useState([]);
     const [contextMenu, setContextMenu] = useState(null);
     const [editingShortcut, setEditingShortcut] = useState(null);
     const [editingName, setEditingName] = useState(null);
+    const [tabContextMenu, setTabContextMenu] = useState(null); // { x, y, tab }
+    const [labelingTab, setLabelingTab] = useState(null);
     const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
 
     // Load favorites
@@ -145,6 +148,47 @@ export default function UnifiedTopBar({
         setContextMenu(null);
     }, []);
 
+    // Tab context menu handlers
+    const handleTabContextMenu = useCallback((e, tab) => {
+        e.preventDefault();
+        hideTooltip();
+        const x = Math.min(e.clientX, window.innerWidth - 200);
+        const y = Math.min(e.clientY, window.innerHeight - 100);
+        setTabContextMenu({ x, y, tab });
+    }, [hideTooltip]);
+
+    const closeTabContextMenu = useCallback(() => {
+        setTabContextMenu(null);
+    }, []);
+
+    const handleTabAddLabel = useCallback(() => {
+        if (!tabContextMenu?.tab) return;
+        setLabelingTab(tabContextMenu.tab);
+        setTabContextMenu(null);
+    }, [tabContextMenu]);
+
+    const handleTabRemoveLabel = useCallback(async () => {
+        if (!tabContextMenu?.tab) return;
+        try {
+            await UpdateSessionCustomLabel(tabContextMenu.tab.session.id, '');
+            onTabLabelUpdated?.(tabContextMenu.tab.session.id, '');
+        } catch (err) {
+            logger.error('Failed to remove tab label:', err);
+        }
+        setTabContextMenu(null);
+    }, [tabContextMenu, onTabLabelUpdated]);
+
+    const handleTabSaveLabel = useCallback(async (newLabel) => {
+        if (!labelingTab || !newLabel.trim()) return;
+        try {
+            await UpdateSessionCustomLabel(labelingTab.session.id, newLabel.trim());
+            onTabLabelUpdated?.(labelingTab.session.id, newLabel.trim());
+        } catch (err) {
+            logger.error('Failed to save tab label:', err);
+        }
+        setLabelingTab(null);
+    }, [labelingTab, onTabLabelUpdated]);
+
     // Close context menu on click outside
     useEffect(() => {
         if (contextMenu) {
@@ -152,6 +196,20 @@ export default function UnifiedTopBar({
             return () => document.removeEventListener('click', closeContextMenu);
         }
     }, [contextMenu, closeContextMenu]);
+
+    // Close tab context menu on click outside or Escape
+    useEffect(() => {
+        if (tabContextMenu) {
+            const handleClick = () => setTabContextMenu(null);
+            const handleEscape = (e) => { if (e.key === 'Escape') setTabContextMenu(null); };
+            document.addEventListener('click', handleClick);
+            document.addEventListener('keydown', handleEscape);
+            return () => {
+                document.removeEventListener('click', handleClick);
+                document.removeEventListener('keydown', handleEscape);
+            };
+        }
+    }, [tabContextMenu]);
 
     const hasFavorites = favorites.length > 0;
 
@@ -206,6 +264,7 @@ export default function UnifiedTopBar({
                         isActive={tab.id === activeTabId}
                         onSwitch={() => onSwitchTab?.(tab.id)}
                         onClose={() => onCloseTab?.(tab.id)}
+                        onContextMenu={(e) => handleTabContextMenu(e, tab)}
                     />
                 ))}
             </div>
@@ -256,6 +315,35 @@ export default function UnifiedTopBar({
                     currentName={editingName.name}
                     onSave={handleSaveName}
                     onCancel={() => setEditingName(null)}
+                />
+            )}
+
+            {/* Tab Context Menu */}
+            {tabContextMenu && (
+                <div
+                    className="session-tab-context-menu"
+                    style={{ left: tabContextMenu.x, top: tabContextMenu.y }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <button onClick={handleTabAddLabel}>
+                        {tabContextMenu.tab.session.customLabel ? 'Edit Custom Label' : 'Add Custom Label'}
+                    </button>
+                    {tabContextMenu.tab.session.customLabel && (
+                        <button onClick={handleTabRemoveLabel}>
+                            Remove Custom Label
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {/* Tab Label Dialog */}
+            {labelingTab && (
+                <RenameDialog
+                    currentName={labelingTab.session.customLabel || ''}
+                    title={labelingTab.session.customLabel ? 'Edit Custom Label' : 'Add Custom Label'}
+                    placeholder="Enter label..."
+                    onSave={handleTabSaveLabel}
+                    onCancel={() => setLabelingTab(null)}
                 />
             )}
 

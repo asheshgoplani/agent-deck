@@ -20,6 +20,9 @@ type TerminalConfig struct {
 	// SoftNewline controls how to insert a newline without executing
 	// Options: "shift_enter" (default), "alt_enter", "both", "disabled"
 	SoftNewline string `toml:"soft_newline"`
+	// FontSize controls the terminal font size in pixels
+	// Range: 8-32, Default: 14
+	FontSize int `toml:"font_size"`
 }
 
 // DesktopSettingsManager manages desktop-specific settings in config.toml
@@ -47,6 +50,7 @@ func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error)
 		Theme: "dark",
 		Terminal: TerminalConfig{
 			SoftNewline: "both", // Both Shift+Enter and Alt+Enter by default
+			FontSize:    14,     // Default font size
 		},
 	}
 
@@ -87,6 +91,15 @@ func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error)
 		config.Desktop.Terminal.SoftNewline = "both"
 	}
 
+	// Validate and apply defaults for font size (8-32, default 14)
+	if config.Desktop.Terminal.FontSize == 0 {
+		config.Desktop.Terminal.FontSize = 14
+	} else if config.Desktop.Terminal.FontSize < 8 {
+		config.Desktop.Terminal.FontSize = 8
+	} else if config.Desktop.Terminal.FontSize > 32 {
+		config.Desktop.Terminal.FontSize = 32
+	}
+
 	return &config.Desktop, nil
 }
 
@@ -110,6 +123,7 @@ func (dsm *DesktopSettingsManager) saveDesktopSettings(desktop *DesktopConfig) e
 		"theme": desktop.Theme,
 		"terminal": map[string]interface{}{
 			"soft_newline": desktop.Terminal.SoftNewline,
+			"font_size":    desktop.Terminal.FontSize,
 		},
 	}
 
@@ -202,7 +216,42 @@ func (dsm *DesktopSettingsManager) SetSoftNewline(mode string) error {
 func (dsm *DesktopSettingsManager) GetTerminalConfig() (*TerminalConfig, error) {
 	config, err := dsm.loadDesktopSettings()
 	if err != nil {
-		return &TerminalConfig{SoftNewline: "both"}, err
+		return &TerminalConfig{SoftNewline: "both", FontSize: 14}, err
 	}
 	return &config.Terminal, nil
+}
+
+// GetFontSize returns the terminal font size
+// Returns: 8-32, default 14
+func (dsm *DesktopSettingsManager) GetFontSize() (int, error) {
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		return 14, err
+	}
+	return config.Terminal.FontSize, nil
+}
+
+// SetFontSize sets the terminal font size
+// Valid range: 8-32
+func (dsm *DesktopSettingsManager) SetFontSize(size int) error {
+	// Clamp to valid range
+	if size < 8 {
+		size = 8
+	} else if size > 32 {
+		size = 32
+	}
+
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		config = &DesktopConfig{
+			Theme: "dark",
+			Terminal: TerminalConfig{
+				SoftNewline: "both",
+				FontSize:    14,
+			},
+		}
+	}
+
+	config.Terminal.FontSize = size
+	return dsm.saveDesktopSettings(config)
 }

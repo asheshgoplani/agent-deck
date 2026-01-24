@@ -22,6 +22,7 @@ export default function Pane({
     onSessionSelect,
     terminalRefs,
     searchRefs,
+    fontSize,
 }) {
     const paneRef = useRef(null);
     const [gitBranch, setGitBranch] = useState('');
@@ -142,6 +143,7 @@ export default function Pane({
                     session={session}
                     paneId={paneId}
                     onFocus={handleTerminalFocus}
+                    fontSize={fontSize}
                 />
             </div>
         </div>

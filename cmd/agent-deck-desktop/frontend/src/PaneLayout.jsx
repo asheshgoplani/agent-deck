@@ -18,6 +18,7 @@ export default function PaneLayout({
     onPaneSessionSelect,
     terminalRefs,
     searchRefs,
+    fontSize,
 }) {
     // Handle ratio changes from the split handle
     const handleRatioChange = useCallback((newRatio) => {
@@ -43,6 +44,7 @@ export default function PaneLayout({
                 onSessionSelect={onPaneSessionSelect}
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
+                fontSize={fontSize}
             />
         );
     }
@@ -69,6 +71,7 @@ export default function PaneLayout({
                     onPaneSessionSelect={onPaneSessionSelect}
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
+                    fontSize={fontSize}
                 />
             </div>
 
@@ -90,6 +93,7 @@ export default function PaneLayout({
                     onPaneSessionSelect={onPaneSessionSelect}
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
+                    fontSize={fontSize}
                 />
             </div>
         </div>

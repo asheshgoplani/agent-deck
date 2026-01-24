@@ -9,6 +9,7 @@ import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
 import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxSession, LogFrontendDiagnostic, GetTerminalSettings } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
+import { DEFAULT_FONT_SIZE } from './constants/terminal';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 import { useTheme } from './context/ThemeContext';
 import { getTerminalTheme } from './themes/terminal';
@@ -16,7 +17,7 @@ import { getTerminalTheme } from './themes/terminal';
 // Base terminal options (theme applied dynamically)
 const BASE_TERMINAL_OPTIONS = {
     fontFamily: '"MesloLGS NF", Menlo, Monaco, "Courier New", monospace',
-    fontSize: 14,
+    fontSize: DEFAULT_FONT_SIZE,
     lineHeight: 1.2,
     cursorBlink: true,
     cursorStyle: 'block',
@@ -45,7 +46,7 @@ function rafThrottle(fn) {
 
 const logger = createLogger('Terminal');
 
-export default function Terminal({ searchRef, session, paneId, onFocus }) {
+export default function Terminal({ searchRef, session, paneId, onFocus, fontSize = DEFAULT_FONT_SIZE }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);
@@ -64,6 +65,15 @@ export default function Terminal({ searchRef, session, paneId, onFocus }) {
         }
     }, [theme]);
 
+    // Update terminal font size when it changes
+    useEffect(() => {
+        if (xtermRef.current && fitAddonRef.current) {
+            xtermRef.current.options.fontSize = fontSize;
+            fitAddonRef.current.fit();
+            logger.debug('Updated terminal font size to:', fontSize);
+        }
+    }, [fontSize]);
+
     // Initialize terminal
     useEffect(() => {
         // Prevent double initialization (React StrictMode)
@@ -76,6 +86,7 @@ export default function Terminal({ searchRef, session, paneId, onFocus }) {
         const terminalTheme = getTerminalTheme(theme);
         const terminalOptions = {
             ...BASE_TERMINAL_OPTIONS,
+            fontSize,
             theme: terminalTheme,
         };
 
@@ -472,7 +483,7 @@ export default function Terminal({ searchRef, session, paneId, onFocus }) {
             searchAddonRef.current = null;
             initRef.current = false;
         };
-    }, [searchRef, session, onFocus]); // Note: theme changes handled by separate useEffect
+    }, [searchRef, session, paneId, onFocus, fontSize]); // Note: theme/fontSize changes handled by separate useEffects
 
     // Scroll to bottom when indicator is clicked
     const handleScrollToBottom = () => {

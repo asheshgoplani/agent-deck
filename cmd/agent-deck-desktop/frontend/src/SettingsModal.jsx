@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
-import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode } from '../wailsjs/go/main/App';
+import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
 import ToolIcon from './ToolIcon';
 import { useTheme } from './context/ThemeContext';
+import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
 
 const logger = createLogger('SettingsModal');
 
@@ -15,6 +16,7 @@ export default function SettingsModal({ onClose }) {
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
     const [softNewlineMode, setSoftNewlineMode] = useState('both');
+    const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
     const { themePreference, setTheme } = useTheme();
 
     // Load configs and terminal settings on mount
@@ -31,6 +33,13 @@ export default function SettingsModal({ onClose }) {
         } catch (err) {
             logger.error('Failed to load terminal settings:', err);
         }
+        try {
+            const size = await GetFontSize();
+            setFontSizeState(size || DEFAULT_FONT_SIZE);
+            logger.info('Loaded font size:', size);
+        } catch (err) {
+            logger.error('Failed to load font size:', err);
+        }
     };
 
     const handleSoftNewlineModeChange = async (mode) => {
@@ -40,6 +49,30 @@ export default function SettingsModal({ onClose }) {
             logger.info('Set soft newline mode:', mode);
         } catch (err) {
             logger.error('Failed to set soft newline mode:', err);
+            alert('Failed to save setting: ' + err.message);
+        }
+    };
+
+    const handleFontSizeChange = async (delta) => {
+        const newSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta));
+        if (newSize === fontSize) return;
+        try {
+            await SetFontSize(newSize);
+            setFontSizeState(newSize);
+            logger.info('Set font size:', newSize);
+        } catch (err) {
+            logger.error('Failed to set font size:', err);
+            alert('Failed to save setting: ' + err.message);
+        }
+    };
+
+    const handleFontSizeReset = async () => {
+        try {
+            await SetFontSize(DEFAULT_FONT_SIZE);
+            setFontSizeState(DEFAULT_FONT_SIZE);
+            logger.info('Reset font size to default');
+        } catch (err) {
+            logger.error('Failed to reset font size:', err);
             alert('Failed to save setting: ' + err.message);
         }
     };
@@ -212,6 +245,44 @@ export default function SettingsModal({ onClose }) {
                                 title="Disable soft newline (use backslash continuation instead)"
                             >
                                 Disabled
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Font Size Settings */}
+                    <div className="settings-theme-section">
+                        <div className="settings-theme-header">
+                            <span className="settings-theme-icon">🔤</span>
+                            <h3>Font Size</h3>
+                        </div>
+                        <div className="settings-input-description">
+                            Terminal font size. Use <kbd>⌘+</kbd> / <kbd>⌘-</kbd> to adjust while in terminal.
+                        </div>
+                        <div className="settings-font-size-controls">
+                            <button
+                                className="settings-font-btn"
+                                onClick={() => handleFontSizeChange(-1)}
+                                disabled={fontSize <= MIN_FONT_SIZE}
+                                title="Decrease font size"
+                            >
+                                −
+                            </button>
+                            <span className="settings-font-size-value">{fontSize}px</span>
+                            <button
+                                className="settings-font-btn"
+                                onClick={() => handleFontSizeChange(1)}
+                                disabled={fontSize >= MAX_FONT_SIZE}
+                                title="Increase font size"
+                            >
+                                +
+                            </button>
+                            <button
+                                className="settings-font-reset-btn"
+                                onClick={handleFontSizeReset}
+                                disabled={fontSize === DEFAULT_FONT_SIZE}
+                                title={`Reset to default (${DEFAULT_FONT_SIZE}px)`}
+                            >
+                                Reset
                             </button>
                         </div>
                     </div>
