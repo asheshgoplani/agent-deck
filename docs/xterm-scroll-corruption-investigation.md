@@ -521,3 +521,118 @@ terminalRef.current?.addEventListener('wheel', handleWheel, { passive: false, ca
 
 **Key insight:** The corruption was never in the data or xterm.js - it was purely a WKWebView compositor bug triggered only by native wheel scroll events.
 
+---
+
+### 2026-01-24 - Session 5: TUI App Scrollbar Scrolling
+
+**Goal:** Enable mouse scrolling within TUI applications (nano, micro, vim, less) running inside the desktop app's xterm.js terminal.
+
+**Background:** The app uses a polling architecture where it captures tmux pane content via `tmux capture-pane` rather than streaming PTY output directly. This means xterm.js never sees escape sequences like alternate screen buffer switches (`\x1b[?1049h`) or mouse mode enables (`\x1b[?1000h`).
+
+#### What Was Already Working
+
+The wheel event interception from Session 4 was extended to handle alt-screen mode:
+```javascript
+if (isInAltScreen) {
+    // Page Up = \x1b[5~, Page Down = \x1b[6~
+    const pageSeq = scrollUp ? '\x1b[5~' : '\x1b[6~';
+    WriteTerminal(sessionId, pageSeq);
+    return;
+}
+```
+
+**Result:** Mouse wheel scrolling sends Page Up/Down to TUI apps with 400ms throttle. This works.
+
+#### The Problem: Scrollbar Still Scrolls xterm.js Viewport
+
+When in alt-screen mode (nano open), the scrollbar on the right side of the terminal window scrolls through xterm.js's old scrollback instead of sending commands to nano. This is because:
+1. xterm.js has scrollback history from before the TUI app was opened
+2. In polling mode, the backend sends `historySize=0` during alt-screen, but xterm.js retains its buffer
+3. The scrollbar scrolls the xterm.js internal buffer, not interacting with nano
+
+#### Attempted Solution: Hide Scrollbar in Alt-Screen Mode
+
+**Approach:** Track alt-screen state from backend, apply CSS class to hide scrollbar when TUI app is active.
+
+**Implementation:**
+1. Added `isAltScreen` React state synced with `terminal:altscreen` backend events
+2. Added CSS class `terminal-alt-screen` to container when in alt-screen
+3. Added CSS rules to hide scrollbar:
+```css
+.terminal-alt-screen .xterm-viewport::-webkit-scrollbar {
+    width: 0 !important;
+    display: none !important;
+}
+```
+
+**Branch:** `feature/tui-scrollbar-fix` (committed `f27f81f`)
+
+#### Debugging Attempts
+
+| What We Tried | Result |
+|---------------|--------|
+| CSS class with scrollbar hiding | Class not visually applied |
+| Added `!important` to CSS rules | No effect |
+| Added debug red outline via CSS | No red outline visible |
+| Added inline style `outline: isAltScreen ? '3px solid red' : 'none'` | No red outline visible |
+| Added inline style `backgroundColor: isAltScreen ? 'rgba(255,0,0,0.3)' : 'transparent'` | No red tint visible |
+| Added `data-alt-screen={isAltScreen}` attribute | N/A - couldn't inspect |
+| Added `LogFrontendDiagnostic` in useEffect for state change | ✅ Logs show state changing |
+| Added `LogFrontendDiagnostic` in render function | ✅ Logs show component re-rendering with `isAltScreen=true` |
+
+**Critical Finding:** React state IS updating correctly, and the component IS re-rendering with the correct `isAltScreen=true` value. But the inline styles and CSS classes are NOT being applied to the DOM visually.
+
+#### Log Evidence
+
+```
+[16:55:58.541] [FRONTEND-DIAG] [ALT-SCREEN] Changed to: true
+[16:55:58.541] [FRONTEND-DIAG] [RENDER] Terminal rendering, isAltScreen=true
+```
+
+The component logs show `isAltScreen=true` during render, but no visual styling changes occur.
+
+#### Hypothesis: WKWebView React Rendering Quirk
+
+The React component is updating state and re-rendering correctly (confirmed via logs), but WKWebView may not be applying the DOM changes. Possible causes:
+1. WKWebView batching/caching DOM updates incorrectly
+2. Some optimization preventing actual DOM mutation
+3. xterm.js elements overlaying/covering the styled container
+4. Vite hot reload creating stale component instances
+
+#### Current State (Committed)
+
+**What works:**
+- Wheel events in alt-screen mode send Page Up/Down to TUI apps (throttled 400ms)
+- Scrollbar scrolling goes into session history (better than before - previously caused issues)
+- Alt-screen state tracking infrastructure is in place
+
+**What doesn't work:**
+- CSS class not visually applying despite React state updating correctly
+- Scrollbar doesn't hide in alt-screen mode
+- Inline styles on container div don't render
+
+#### Files Changed
+
+- `cmd/agent-deck-desktop/frontend/src/Terminal.jsx`:
+  - Added `isAltScreen` state
+  - Added `setIsAltScreen()` call in alt-screen event handler
+  - Added `className={isAltScreen ? 'terminal-alt-screen' : ''}` to container
+
+- `cmd/agent-deck-desktop/frontend/src/Terminal.css`:
+  - Added `.terminal-alt-screen .xterm-viewport::-webkit-scrollbar` rules
+
+#### Future Investigation Ideas
+
+1. **Inspect actual DOM in Safari Web Inspector** - Verify if class/styles are in DOM but not rendering
+2. **Use Wails debug mode with Chrome DevTools** - May give better visibility than WKWebView
+3. **Try applying class to a different element** - Maybe the container is being replaced/overlaid
+4. **Force re-mount of Terminal component on alt-screen change** - Heavy-handed but might work
+5. **Use xterm.js options API to disable scrollbar** - `term.options.scrollback = 0` temporarily
+6. **Clear xterm.js buffer on alt-screen enter** - `term.clear()` to remove scrollback
+
+#### Summary
+
+The state tracking infrastructure works correctly - we can detect alt-screen mode and the React component re-renders with the correct state. However, WKWebView appears to have a rendering issue where React DOM updates (className, inline styles) don't visually apply to the Terminal container. This may be related to the same WKWebView compositor bugs discovered in earlier sessions.
+
+The current behavior is acceptable: wheel scrolling sends Page Up/Down to TUI apps, and scrollbar scrolling goes into session history which is the best behavior observed so far.
+
