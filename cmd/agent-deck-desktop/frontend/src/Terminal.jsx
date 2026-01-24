@@ -8,8 +8,11 @@ import './Terminal.css';
 import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxSession } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
+import { useTheme } from './context/ThemeContext';
+import { getTerminalTheme } from './themes/terminal';
 
-const TERMINAL_OPTIONS = {
+// Base terminal options (theme applied dynamically)
+const BASE_TERMINAL_OPTIONS = {
     fontFamily: '"MesloLGS NF", Menlo, Monaco, "Courier New", monospace',
     fontSize: 14,
     lineHeight: 1.2,
@@ -24,29 +27,6 @@ const TERMINAL_OPTIONS = {
     windowsMode: false, // Unix-style wrapping (default)
     // Note: Terminal content doesn't reflow on resize (standard behavior)
     // Already-printed output stays wrapped at original width
-    theme: {
-        background: '#1a1a2e',
-        foreground: '#eee',
-        cursor: '#4cc9f0',
-        cursorAccent: '#1a1a2e',
-        selectionBackground: 'rgba(76, 201, 240, 0.3)',
-        black: '#1a1a2e',
-        red: '#ff6b6b',
-        green: '#4ecdc4',
-        yellow: '#ffe66d',
-        blue: '#4cc9f0',
-        magenta: '#f72585',
-        cyan: '#7b8cde',
-        white: '#eee',
-        brightBlack: '#6c757d',
-        brightRed: '#ff8787',
-        brightGreen: '#69d9d0',
-        brightYellow: '#fff3a3',
-        brightBlue: '#72d4f7',
-        brightMagenta: '#f85ca2',
-        brightCyan: '#9ba8e8',
-        brightWhite: '#fff',
-    },
 };
 
 // requestAnimationFrame throttle - fires at most once per frame
@@ -71,6 +51,16 @@ export default function Terminal({ searchRef, session }) {
     const initRef = useRef(false);
     const isAtBottomRef = useRef(true);
     const [showScrollIndicator, setShowScrollIndicator] = useState(false);
+    const { theme } = useTheme();
+
+    // Update terminal theme when app theme changes
+    useEffect(() => {
+        if (xtermRef.current) {
+            const terminalTheme = getTerminalTheme(theme);
+            xtermRef.current.options.theme = terminalTheme;
+            logger.debug('Updated terminal theme to:', theme);
+        }
+    }, [theme]);
 
     // Initialize terminal
     useEffect(() => {
@@ -80,7 +70,14 @@ export default function Terminal({ searchRef, session }) {
 
         logger.info('Initializing terminal', session ? `session: ${session.title}` : 'new terminal');
 
-        const term = new XTerm(TERMINAL_OPTIONS);
+        // Get theme-specific terminal options
+        const terminalTheme = getTerminalTheme(theme);
+        const terminalOptions = {
+            ...BASE_TERMINAL_OPTIONS,
+            theme: terminalTheme,
+        };
+
+        const term = new XTerm(terminalOptions);
         const fitAddon = new FitAddon();
         const searchAddon = new SearchAddon();
         const webLinksAddon = new WebLinksAddon();
@@ -243,7 +240,7 @@ export default function Terminal({ searchRef, session }) {
             searchAddonRef.current = null;
             initRef.current = false;
         };
-    }, [searchRef, session]);
+    }, [searchRef, session]); // Note: theme changes handled by separate useEffect
 
     // Scroll to bottom when indicator is clicked
     const handleScrollToBottom = () => {
@@ -262,7 +259,6 @@ export default function Terminal({ searchRef, session }) {
                 style={{
                     width: '100%',
                     height: '100%',
-                    backgroundColor: '#1a1a2e',
                 }}
             />
             {showScrollIndicator && (

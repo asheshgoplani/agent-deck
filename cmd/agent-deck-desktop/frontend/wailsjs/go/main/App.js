@@ -34,6 +34,10 @@ export function GetDefaultLaunchConfig(arg1) {
   return window['go']['main']['App']['GetDefaultLaunchConfig'](arg1);
 }
 
+export function GetDesktopTheme() {
+  return window['go']['main']['App']['GetDesktopTheme']();
+}
+
 export function GetGitBranch(arg1) {
   return window['go']['main']['App']['GetGitBranch'](arg1);
 }
@@ -100,6 +104,10 @@ export function SaveLaunchConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8)
 
 export function SessionExists(arg1) {
   return window['go']['main']['App']['SessionExists'](arg1);
+}
+
+export function SetDesktopTheme(arg1) {
+  return window['go']['main']['App']['SetDesktopTheme'](arg1);
 }
 
 export function SetQuickLaunchBarVisibility(arg1) {

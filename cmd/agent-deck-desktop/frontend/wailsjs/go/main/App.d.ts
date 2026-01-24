@@ -18,6 +18,8 @@ export function GenerateConfigKey(arg1:string,arg2:string):Promise<string>;
 
 export function GetDefaultLaunchConfig(arg1:string):Promise<main.LaunchConfigInfo>;
 
+export function GetDesktopTheme():Promise<string>;
+
 export function GetGitBranch(arg1:string):Promise<string>;
 
 export function GetLaunchConfig(arg1:string):Promise<main.LaunchConfigInfo>;
@@ -51,6 +53,8 @@ export function ResizeTerminal(arg1:number,arg2:number):Promise<void>;
 export function SaveLaunchConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string,arg7:Array<string>,arg8:boolean):Promise<void>;
 
 export function SessionExists(arg1:string):Promise<boolean>;
+
+export function SetDesktopTheme(arg1:string):Promise<void>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
 

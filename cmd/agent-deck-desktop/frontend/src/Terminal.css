@@ -1,14 +1,14 @@
 /* Override xterm.js viewport and screen backgrounds to match theme */
 .xterm {
-    background-color: #1a1a2e;
+    background-color: var(--bg-primary);
 }
 
 .xterm-viewport {
-    background-color: #1a1a2e !important;
+    background-color: var(--bg-primary) !important;
 }
 
 .xterm-screen {
-    background-color: #1a1a2e;
+    background-color: var(--bg-primary);
 }
 
 /* Ensure terminal fills container */
@@ -22,16 +22,16 @@
 /* Scrollbar styling */
 .xterm-viewport::-webkit-scrollbar {
     width: 10px;
-    background-color: #1a1a2e;
+    background-color: var(--bg-primary);
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb {
-    background-color: #4cc9f0;
+    background-color: var(--accent-primary);
     border-radius: 5px;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
-    background-color: #72d4f7;
+    filter: brightness(1.15);
 }
 
 /* Scroll indicator - shows when scrolled up during output */
@@ -40,8 +40,8 @@
     bottom: 16px;
     right: 24px;
     padding: 8px 16px;
-    background: linear-gradient(135deg, #4cc9f0 0%, #7b8cde 100%);
-    color: #1a1a2e;
+    background: linear-gradient(135deg, var(--accent-primary) 0%, #7b8cde 100%);
+    color: var(--tool-icon-text);
     border: none;
     border-radius: 20px;
     font-size: 13px;
@@ -53,9 +53,17 @@
     transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
+[data-theme="light"] .scroll-indicator {
+    box-shadow: 0 4px 12px rgba(0, 119, 204, 0.3);
+}
+
 .scroll-indicator:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 16px rgba(76, 201, 240, 0.5);
+}
+
+[data-theme="light"] .scroll-indicator:hover {
+    box-shadow: 0 6px 16px rgba(0, 119, 204, 0.4);
 }
 
 .scroll-indicator:active {

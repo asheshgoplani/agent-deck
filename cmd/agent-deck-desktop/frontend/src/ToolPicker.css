@@ -5,7 +5,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--modal-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -16,10 +16,10 @@
 .tool-picker-container {
     width: 100%;
     max-width: 400px;
-    background: #252540;
-    border: 1px solid #444;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
     border-radius: 10px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 16px 48px var(--modal-shadow);
     overflow: hidden;
     outline: none;
 }
@@ -27,20 +27,20 @@
 /* Header */
 .tool-picker-header {
     padding: 20px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-secondary);
 }
 
 .tool-picker-header h3 {
     margin: 0;
     font-size: 16px;
     font-weight: 500;
-    color: #eee;
+    color: var(--text-primary);
 }
 
 .tool-picker-path {
     margin: 8px 0 0 0;
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -61,18 +61,18 @@
     border: none;
     border-radius: 6px;
     text-align: left;
-    color: #eee;
+    color: var(--text-primary);
     cursor: pointer;
     transition: background 0.1s;
 }
 
 .tool-picker-option:hover,
 .tool-picker-option.selected {
-    background: #2a2a4a;
+    background: var(--bg-selected);
 }
 
 .tool-picker-option.selected {
-    background: #323260;
+    background: var(--bg-selected);
 }
 
 /* Tool Icon */
@@ -85,7 +85,7 @@
     border-radius: 6px;
     font-weight: bold;
     font-size: 16px;
-    color: #1a1a2e;
+    color: var(--tool-icon-text);
     flex-shrink: 0;
 }
 
@@ -102,7 +102,7 @@
 
 .tool-picker-desc {
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     margin-top: 2px;
 }
 
@@ -113,10 +113,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #333;
+    background: var(--kbd-bg);
     border-radius: 4px;
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     flex-shrink: 0;
 }
 
@@ -126,22 +126,22 @@
     gap: 12px;
     flex-wrap: wrap;
     padding: 10px 16px;
-    border-top: 1px solid #333;
-    background: #1f1f35;
+    border-top: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
 }
 
 .tool-picker-hint {
     font-size: 11px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 .tool-picker-hint kbd {
     display: inline-block;
-    background: #333;
+    background: var(--kbd-bg);
     border-radius: 3px;
     padding: 2px 5px;
     margin-right: 3px;
     font-family: inherit;
     font-size: 10px;
-    color: #aaa;
+    color: var(--kbd-text);
 }

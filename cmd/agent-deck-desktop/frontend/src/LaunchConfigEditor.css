@@ -11,7 +11,7 @@
     align-items: center;
     gap: 12px;
     padding: 16px 20px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-secondary);
     flex-shrink: 0;
 }
 
@@ -19,7 +19,7 @@
     margin: 0;
     font-size: 16px;
     font-weight: 500;
-    color: #eee;
+    color: var(--text-primary);
 }
 
 .editor-tool-icon {
@@ -31,7 +31,7 @@
     border-radius: 6px;
     font-weight: bold;
     font-size: 14px;
-    color: #1a1a2e;
+    color: var(--tool-icon-text);
 }
 
 /* Form */
@@ -53,21 +53,21 @@
     display: block;
     font-size: 13px;
     font-weight: 500;
-    color: #aaa;
+    color: var(--text-secondary);
     margin-bottom: 6px;
 }
 
 .editor-required {
-    color: #ff6b6b;
+    color: var(--accent-error);
 }
 
 .editor-field input[type="text"] {
     width: 100%;
     padding: 10px 12px;
-    background: #1f1f35;
-    border: 1px solid #333;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
     border-radius: 6px;
-    color: #eee;
+    color: var(--text-primary);
     font-size: 14px;
     font-family: inherit;
     outline: none;
@@ -75,26 +75,26 @@
 }
 
 .editor-field input[type="text"]:focus {
-    border-color: #4cc9f0;
+    border-color: var(--accent-primary);
 }
 
 .editor-field input[type="text"]::placeholder {
-    color: #555;
+    color: var(--text-dimmed);
 }
 
 .editor-readonly {
     padding: 10px 12px;
-    background: #1a1a2e;
-    border: 1px solid #2a2a40;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-secondary);
     border-radius: 6px;
-    color: #888;
+    color: var(--text-muted);
     font-size: 14px;
 }
 
 /* Checkbox Field */
 .editor-checkbox-field {
     padding: 12px;
-    background: #1f1f35;
+    background: var(--bg-tertiary);
     border-radius: 6px;
 }
 
@@ -109,29 +109,29 @@
 .editor-checkbox input[type="checkbox"] {
     width: 16px;
     height: 16px;
-    accent-color: #4cc9f0;
+    accent-color: var(--accent-primary);
     cursor: pointer;
 }
 
 .editor-checkbox span {
     font-size: 14px;
-    color: #ccc;
+    color: var(--text-secondary);
 }
 
 /* Hints */
 .editor-hint {
     margin-top: 6px;
     font-size: 12px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 .editor-hint code {
-    background: #2a2a40;
+    background: var(--bg-tertiary);
     padding: 2px 6px;
     border-radius: 3px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     font-size: 11px;
-    color: #fabd2f;
+    color: var(--accent-warning);
 }
 
 /* MCP Preview */
@@ -144,36 +144,51 @@
 }
 
 .editor-mcp-preview.valid {
-    background: #1a2e1a;
-    border: 1px solid #2a4a2a;
+    background: rgba(78, 205, 196, 0.1);
+    border: 1px solid rgba(78, 205, 196, 0.3);
+}
+
+[data-theme="light"] .editor-mcp-preview.valid {
+    background: rgba(0, 166, 147, 0.1);
+    border: 1px solid rgba(0, 166, 147, 0.3);
 }
 
 .editor-mcp-preview.invalid {
-    background: #2e1a1a;
-    border: 1px solid #4a2a2a;
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid rgba(255, 107, 107, 0.3);
+}
+
+[data-theme="light"] .editor-mcp-preview.invalid {
+    background: rgba(204, 51, 51, 0.1);
+    border: 1px solid rgba(204, 51, 51, 0.3);
 }
 
 .editor-mcp-names {
-    color: #8ec07c;
+    color: var(--accent-success);
 }
 
 .editor-mcp-empty {
-    color: #888;
+    color: var(--text-muted);
 }
 
 .editor-mcp-error {
-    color: #ff6b6b;
+    color: var(--accent-error);
 }
 
 /* Error Message */
 .editor-error {
     padding: 12px;
-    background: #2e1a1a;
-    border: 1px solid #4a2a2a;
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid rgba(255, 107, 107, 0.3);
     border-radius: 6px;
-    color: #ff6b6b;
+    color: var(--accent-error);
     font-size: 13px;
     margin-top: 16px;
+}
+
+[data-theme="light"] .editor-error {
+    background: rgba(204, 51, 51, 0.1);
+    border: 1px solid rgba(204, 51, 51, 0.3);
 }
 
 /* Footer */
@@ -182,25 +197,25 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 20px;
-    border-top: 1px solid #333;
-    background: #1f1f35;
+    border-top: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
     flex-shrink: 0;
 }
 
 .editor-footer-hint {
     font-size: 12px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 .editor-footer-hint kbd {
     display: inline-block;
-    background: #333;
+    background: var(--kbd-bg);
     border-radius: 3px;
     padding: 2px 5px;
     margin: 0 2px;
     font-family: inherit;
     font-size: 10px;
-    color: #aaa;
+    color: var(--kbd-text);
 }
 
 .editor-footer-actions {
@@ -220,22 +235,22 @@
 }
 
 .editor-cancel-btn {
-    background: #333;
-    color: #ccc;
+    background: var(--btn-bg);
+    color: var(--btn-text);
 }
 
 .editor-cancel-btn:hover:not(:disabled) {
-    background: #444;
-    color: #eee;
+    background: var(--btn-bg-hover);
+    color: var(--btn-text-hover);
 }
 
 .editor-save-btn {
-    background: #4cc9f0;
-    color: #1a1a2e;
+    background: var(--accent-primary);
+    color: var(--tool-icon-text);
 }
 
 .editor-save-btn:hover:not(:disabled) {
-    background: #5fd4f8;
+    filter: brightness(1.1);
 }
 
 .editor-cancel-btn:disabled,

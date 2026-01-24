@@ -5,7 +5,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--modal-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -16,10 +16,10 @@
 .help-container {
     width: 100%;
     max-width: 640px;
-    background: #252540;
-    border: 1px solid #444;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
     border-radius: 10px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 16px 48px var(--modal-shadow);
     overflow: hidden;
 }
 
@@ -29,20 +29,20 @@
     justify-content: space-between;
     align-items: center;
     padding: 16px 20px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-secondary);
 }
 
 .help-header h2 {
     margin: 0;
     font-size: 16px;
     font-weight: 500;
-    color: #eee;
+    color: var(--text-primary);
 }
 
 .help-close {
     background: transparent;
     border: none;
-    color: #888;
+    color: var(--text-muted);
     font-size: 24px;
     line-height: 1;
     cursor: pointer;
@@ -57,8 +57,8 @@
 }
 
 .help-close:hover {
-    color: #eee;
-    background: #333;
+    color: var(--text-primary);
+    background: var(--bg-hover);
 }
 
 /* Content - Two columns */
@@ -82,7 +82,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    color: #888;
+    color: var(--text-muted);
 }
 
 /* Shortcut rows */
@@ -92,18 +92,18 @@
     gap: 12px;
     padding: 4px 0;
     font-size: 13px;
-    color: #ccc;
+    color: var(--text-secondary);
 }
 
 .help-row kbd {
     display: inline-block;
     min-width: 28px;
-    background: #333;
+    background: var(--kbd-bg);
     border-radius: 4px;
     padding: 4px 8px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
-    color: #4cc9f0;
+    color: var(--accent-primary);
     text-align: center;
 }
 
@@ -117,7 +117,7 @@
     min-width: 28px;
     padding: 4px 8px;
     font-size: 11px;
-    color: #888;
+    color: var(--text-muted);
     font-style: italic;
 }
 
@@ -128,18 +128,18 @@
 
 .help-note {
     font-size: 11px;
-    color: #666;
+    color: var(--text-dimmed);
     font-style: italic;
 }
 
 /* Footer */
 .help-footer {
     padding: 12px 20px;
-    border-top: 1px solid #333;
-    background: #1f1f35;
+    border-top: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
     text-align: center;
     font-size: 12px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 /* Responsive - Stack columns on narrow screens */

@@ -4,6 +4,7 @@ import LaunchConfigEditor from './LaunchConfigEditor';
 import { GetLaunchConfigs, DeleteLaunchConfig } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
+import { useTheme } from './context/ThemeContext';
 
 const logger = createLogger('SettingsModal');
 
@@ -12,6 +13,7 @@ export default function SettingsModal({ onClose }) {
     const [loading, setLoading] = useState(true);
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
+    const { themePreference, setTheme } = useTheme();
 
     // Load configs on mount
     useEffect(() => {
@@ -110,13 +112,45 @@ export default function SettingsModal({ onClose }) {
         <div className="settings-overlay" onClick={onClose}>
             <div className="settings-container" onClick={(e) => e.stopPropagation()}>
                 <div className="settings-header">
-                    <h2>Launch Configurations</h2>
+                    <h2>Settings</h2>
                     <button className="settings-close" onClick={onClose}>
                         &times;
                     </button>
                 </div>
 
                 <div className="settings-content">
+                    {/* Theme Section */}
+                    <div className="settings-theme-section">
+                        <div className="settings-theme-header">
+                            <span className="settings-theme-icon">🎨</span>
+                            <h3>Appearance</h3>
+                        </div>
+                        <div className="settings-theme-options">
+                            <button
+                                className={`settings-theme-option ${themePreference === 'dark' ? 'active' : ''}`}
+                                onClick={() => setTheme('dark')}
+                            >
+                                <span className="settings-theme-option-icon">🌙</span>
+                                Dark
+                            </button>
+                            <button
+                                className={`settings-theme-option ${themePreference === 'light' ? 'active' : ''}`}
+                                onClick={() => setTheme('light')}
+                            >
+                                <span className="settings-theme-option-icon">☀️</span>
+                                Light
+                            </button>
+                            <button
+                                className={`settings-theme-option ${themePreference === 'auto' ? 'active' : ''}`}
+                                onClick={() => setTheme('auto')}
+                            >
+                                <span className="settings-theme-option-icon">💻</span>
+                                Auto
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Launch Configurations */}
                     {loading ? (
                         <div className="settings-loading">Loading...</div>
                     ) : (

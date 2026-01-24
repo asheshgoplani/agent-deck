@@ -19,6 +19,7 @@ type App struct {
 	projectDiscovery *ProjectDiscovery
 	quickLaunch      *QuickLaunchManager
 	launchConfig     *LaunchConfigManager
+	desktopSettings  *DesktopSettingsManager
 }
 
 // NewApp creates a new App application struct.
@@ -29,6 +30,7 @@ func NewApp() *App {
 		projectDiscovery: NewProjectDiscovery(),
 		quickLaunch:      NewQuickLaunchManager(),
 		launchConfig:     NewLaunchConfigManager(),
+		desktopSettings:  NewDesktopSettingsManager(),
 	}
 }
 
@@ -242,4 +244,22 @@ func (a *App) ValidateMCPConfigPath(path string) ([]string, error) {
 // GenerateConfigKey generates a unique config key from tool and name.
 func (a *App) GenerateConfigKey(tool, name string) string {
 	return a.launchConfig.GenerateConfigKey(tool, name)
+}
+
+// ==================== Desktop Settings Methods ====================
+
+// GetDesktopTheme returns the current desktop theme preference.
+// Returns "dark", "light", or "auto".
+func (a *App) GetDesktopTheme() string {
+	theme, err := a.desktopSettings.GetTheme()
+	if err != nil {
+		return "dark"
+	}
+	return theme
+}
+
+// SetDesktopTheme sets the desktop theme preference.
+// Valid values: "dark", "light", "auto".
+func (a *App) SetDesktopTheme(theme string) error {
+	return a.desktopSettings.SetTheme(theme)
 }

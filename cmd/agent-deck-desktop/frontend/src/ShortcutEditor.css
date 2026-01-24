@@ -5,7 +5,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--modal-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -16,24 +16,24 @@
 .shortcut-editor-container {
     width: 100%;
     max-width: 400px;
-    background: #252540;
-    border: 1px solid #444;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
     border-radius: 10px;
     padding: 24px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 16px 48px var(--modal-shadow);
 }
 
 .shortcut-editor-container h3 {
     margin: 0 0 8px 0;
     font-size: 16px;
     font-weight: 500;
-    color: #eee;
+    color: var(--text-primary);
 }
 
 .shortcut-editor-path {
     margin: 0 0 20px 0;
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -41,8 +41,8 @@
 
 /* Input Area */
 .shortcut-editor-input-area {
-    background: #1a1a2e;
-    border: 1px solid #333;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-secondary);
     border-radius: 6px;
     padding: 20px;
     margin-bottom: 16px;
@@ -50,14 +50,14 @@
 }
 
 .shortcut-editor-recording {
-    color: #4cc9f0;
+    color: var(--accent-primary);
     font-size: 14px;
 }
 
 .shortcut-editor-hint {
     display: block;
     font-size: 12px;
-    color: #666;
+    color: var(--text-dimmed);
     margin-top: 8px;
 }
 
@@ -68,24 +68,28 @@
 .shortcut-editor-shortcut {
     font-size: 24px;
     font-weight: 500;
-    color: #eee;
+    color: var(--text-primary);
     letter-spacing: 2px;
 }
 
 .shortcut-editor-none {
     font-size: 14px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 /* Error */
 .shortcut-editor-error {
     background: rgba(255, 107, 107, 0.1);
-    border: 1px solid #ff6b6b;
+    border: 1px solid var(--accent-error);
     border-radius: 4px;
     padding: 10px 12px;
     margin-bottom: 16px;
     font-size: 13px;
-    color: #ff6b6b;
+    color: var(--accent-error);
+}
+
+[data-theme="light"] .shortcut-editor-error {
+    background: rgba(204, 51, 51, 0.1);
 }
 
 /* Button Groups */
@@ -113,12 +117,12 @@
 .shortcut-editor-btn.secondary {
     flex: 1;
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
 }
 
 .shortcut-editor-btn.secondary:hover:not(:disabled) {
-    background: #333;
+    background: var(--bg-hover);
 }
 
 .shortcut-editor-btn.secondary:disabled {
@@ -128,23 +132,23 @@
 
 .shortcut-editor-btn.cancel {
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
 }
 
 .shortcut-editor-btn.cancel:hover {
-    background: #333;
+    background: var(--bg-hover);
 }
 
 .shortcut-editor-btn.primary {
-    background: #4cc9f0;
+    background: var(--accent-primary);
     border: none;
-    color: #1a1a2e;
+    color: var(--tool-icon-text);
     font-weight: 500;
 }
 
 .shortcut-editor-btn.primary:hover:not(:disabled) {
-    background: #72d4f7;
+    filter: brightness(1.1);
 }
 
 .shortcut-editor-btn.primary:disabled {

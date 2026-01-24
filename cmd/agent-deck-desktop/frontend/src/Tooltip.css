@@ -2,10 +2,10 @@
 .tooltip {
     position: fixed;
     padding: 8px 12px;
-    background: #1a1a2e;
-    border: 1px solid #444;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
     border-radius: 6px;
-    color: #ccc;
+    color: var(--text-secondary);
     font-size: 12px;
     line-height: 1.4;
     white-space: pre-line;
@@ -17,7 +17,7 @@
     min-width: 270px;
     max-width: 370px;
     box-sizing: border-box;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 4px 16px var(--modal-shadow);
 }
 
 /* Session tooltip structured layout */
@@ -41,19 +41,19 @@
 }
 
 .tooltip-time {
-    color: #8ec07c; /* Soft green for recency */
+    color: var(--accent-success);
 }
 
 .tooltip-path {
-    color: #b8b8b8;
+    color: var(--text-muted);
     font-family: monospace;
     font-size: 11px;
 }
 
 .tooltip-worktree {
-    color: #83a598; /* Teal for worktree */
+    color: var(--accent-success);
 }
 
 .tooltip-remote {
-    color: #fabd2f; /* Yellow for warning */
+    color: var(--accent-warning);
 }

@@ -13,7 +13,7 @@ html, body, #root {
 #App {
     width: 100%;
     height: 100%;
-    background-color: #1a1a2e;
+    background-color: var(--bg-primary);
     display: flex;
     flex-direction: column;
 }
@@ -23,15 +23,15 @@ html, body, #root {
     align-items: center;
     gap: 12px;
     padding: 8px 12px;
-    background: #252540;
-    border-bottom: 1px solid #333;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
     flex-shrink: 0;
 }
 
 .back-button {
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
     padding: 6px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -40,12 +40,12 @@ html, body, #root {
 }
 
 .back-button:hover {
-    background: #333;
-    border-color: #4cc9f0;
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
 }
 
 .session-title-header {
-    color: #888;
+    color: var(--text-muted);
     font-size: 13px;
     font-weight: 500;
     display: flex;
@@ -57,12 +57,16 @@ html, body, #root {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: #4ecdc4;
+    color: var(--accent-success);
     font-size: 12px;
     font-weight: 400;
     background: rgba(78, 205, 196, 0.1);
     padding: 2px 8px;
     border-radius: 4px;
+}
+
+[data-theme="light"] .git-branch {
+    background: rgba(0, 166, 147, 0.1);
 }
 
 .git-branch-icon {
@@ -72,23 +76,31 @@ html, body, #root {
 
 .git-branch.is-worktree {
     background: rgba(156, 206, 106, 0.15);
-    border-left: 2px solid #9ece6a;
-    color: #9ece6a;
+    border-left: 2px solid var(--accent-green);
+    color: var(--accent-green);
+}
+
+[data-theme="light"] .git-branch.is-worktree {
+    background: rgba(90, 154, 48, 0.15);
 }
 
 .header-danger-icon {
-    color: #fabd2f;
+    color: var(--accent-warning);
     margin-right: 4px;
     cursor: help;
 }
 
 .header-config-badge {
-    color: #a9a1e1;
+    color: var(--accent-purple);
     font-size: 11px;
     font-style: italic;
     background: rgba(169, 161, 225, 0.1);
     padding: 2px 8px;
     border-radius: 4px;
+}
+
+[data-theme="light"] .header-config-badge {
+    background: rgba(107, 91, 184, 0.1);
 }
 
 .terminal-container {
@@ -104,7 +116,7 @@ html, body, #root {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--modal-overlay);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -112,8 +124,8 @@ html, body, #root {
 }
 
 .modal-content {
-    background: #252540;
-    border: 1px solid #444;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
     border-radius: 8px;
     padding: 24px;
     max-width: 400px;
@@ -122,14 +134,14 @@ html, body, #root {
 
 .modal-content h3 {
     margin: 0 0 12px 0;
-    color: #eee;
+    color: var(--text-primary);
     font-size: 18px;
     font-weight: 500;
 }
 
 .modal-content p {
     margin: 0 0 24px 0;
-    color: #aaa;
+    color: var(--text-secondary);
     font-size: 14px;
     line-height: 1.5;
 }
@@ -151,21 +163,21 @@ html, body, #root {
 
 .modal-btn-cancel {
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
 }
 
 .modal-btn-cancel:hover {
-    background: #333;
+    background: var(--bg-hover);
 }
 
 .modal-btn-confirm {
-    background: #ff6b6b;
+    background: var(--accent-error);
     border: none;
     color: #fff;
     font-weight: 500;
 }
 
 .modal-btn-confirm:hover {
-    background: #ff8787;
+    background: var(--accent-error-hover);
 }

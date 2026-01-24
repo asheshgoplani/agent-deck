@@ -5,7 +5,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--modal-overlay);
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -17,10 +17,10 @@
 .palette-container {
     width: 100%;
     max-width: 560px;
-    background: #252540;
-    border: 1px solid #444;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
     border-radius: 10px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 16px 48px var(--modal-shadow);
     overflow: hidden;
 }
 
@@ -30,14 +30,14 @@
     padding: 16px 20px;
     background: transparent;
     border: none;
-    border-bottom: 1px solid #333;
-    color: #eee;
+    border-bottom: 1px solid var(--border-secondary);
+    color: var(--text-primary);
     font-size: 16px;
     outline: none;
 }
 
 .palette-input::placeholder {
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 /* Results List */
@@ -49,7 +49,7 @@
 .palette-empty {
     padding: 32px 20px;
     text-align: center;
-    color: #666;
+    color: var(--text-dimmed);
     font-size: 14px;
 }
 
@@ -63,18 +63,18 @@
     background: transparent;
     border: none;
     text-align: left;
-    color: #eee;
+    color: var(--text-primary);
     cursor: pointer;
     transition: background 0.1s;
 }
 
 .palette-item:hover,
 .palette-item.selected {
-    background: #2a2a4a;
+    background: var(--bg-selected);
 }
 
 .palette-item.selected {
-    background: #323260;
+    background: var(--bg-selected);
 }
 
 /* Tool Icon (for sessions) */
@@ -87,7 +87,7 @@
     border-radius: 5px;
     font-weight: bold;
     font-size: 13px;
-    color: #1a1a2e;
+    color: var(--tool-icon-text);
     flex-shrink: 0;
 }
 
@@ -99,7 +99,7 @@
     align-items: center;
     justify-content: center;
     font-size: 16px;
-    color: #4cc9f0;
+    color: var(--accent-primary);
     flex-shrink: 0;
 }
 
@@ -113,17 +113,21 @@
     font-size: 18px;
     font-weight: bold;
     color: #6c8;
-    background: #253525;
+    background: rgba(102, 204, 136, 0.15);
     border-radius: 5px;
     flex-shrink: 0;
+}
+
+[data-theme="light"] .palette-project-icon {
+    background: rgba(102, 204, 136, 0.2);
 }
 
 /* Project Hint */
 .palette-project-hint {
     font-size: 10px;
-    color: #666;
+    color: var(--text-dimmed);
     padding: 2px 6px;
-    background: #2a2a40;
+    background: var(--bg-tertiary);
     border-radius: 3px;
     flex-shrink: 0;
 }
@@ -131,12 +135,16 @@
 /* Shortcut Hint */
 .palette-shortcut-hint {
     font-size: 10px;
-    color: #4cc9f0;
+    color: var(--accent-primary);
     padding: 2px 6px;
-    background: #1a2a3a;
+    background: rgba(76, 201, 240, 0.15);
     border-radius: 3px;
     flex-shrink: 0;
     font-family: ui-monospace, monospace;
+}
+
+[data-theme="light"] .palette-shortcut-hint {
+    background: rgba(0, 119, 204, 0.1);
 }
 
 /* Item Info */
@@ -155,7 +163,7 @@
 
 .palette-item-subtitle {
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -175,24 +183,24 @@
     display: flex;
     gap: 16px;
     padding: 10px 20px;
-    border-top: 1px solid #333;
-    background: #1f1f35;
+    border-top: 1px solid var(--border-secondary);
+    background: var(--bg-tertiary);
 }
 
 .palette-hint {
     font-size: 12px;
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 .palette-hint kbd {
     display: inline-block;
-    background: #333;
+    background: var(--kbd-bg);
     border-radius: 3px;
     padding: 2px 6px;
     margin-right: 4px;
     font-family: inherit;
     font-size: 11px;
-    color: #aaa;
+    color: var(--kbd-text);
 }
 
 /* Scrollbar Styling */
@@ -201,14 +209,14 @@
 }
 
 .palette-list::-webkit-scrollbar-track {
-    background: transparent;
+    background: var(--scrollbar-track);
 }
 
 .palette-list::-webkit-scrollbar-thumb {
-    background: #444;
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
 }
 
 .palette-list::-webkit-scrollbar-thumb:hover {
-    background: #555;
+    background: var(--scrollbar-thumb-hover);
 }

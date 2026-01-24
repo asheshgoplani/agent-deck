@@ -1,6 +1,6 @@
 html {
-    background-color: #1a1a2e;
-    color: white;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
 }
 
 body {

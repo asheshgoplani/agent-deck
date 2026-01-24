@@ -3,8 +3,8 @@
     flex-direction: column;
     flex: 1;
     min-height: 0; /* Enable proper scrolling in flex container */
-    background: #1a1a2e;
-    color: #eee;
+    background: var(--bg-primary);
+    color: var(--text-primary);
     padding: 20px;
     box-sizing: border-box;
 }
@@ -15,7 +15,7 @@
     align-items: center;
     margin-bottom: 20px;
     padding-bottom: 10px;
-    border-bottom: 1px solid #333;
+    border-bottom: 1px solid var(--border-secondary);
 }
 
 .session-header h2 {
@@ -35,8 +35,8 @@
     align-items: center;
     gap: 6px;
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
     padding: 6px 10px;
     border-radius: 4px;
     cursor: pointer;
@@ -47,7 +47,7 @@
 }
 
 .filter-btn:hover {
-    background: #333;
+    background: var(--bg-hover);
 }
 
 .filter-indicator {
@@ -59,8 +59,8 @@
 
 .refresh-btn {
     background: transparent;
-    border: 1px solid #444;
-    color: #eee;
+    border: 1px solid var(--border-primary);
+    color: var(--text-primary);
     padding: 6px 12px;
     border-radius: 4px;
     cursor: pointer;
@@ -68,7 +68,7 @@
 }
 
 .refresh-btn:hover {
-    background: #333;
+    background: var(--bg-hover);
 }
 
 .session-loading,
@@ -76,15 +76,15 @@
 .no-sessions {
     text-align: center;
     padding: 40px 20px;
-    color: #888;
+    color: var(--text-muted);
 }
 
 .session-error {
-    color: #ff6b6b;
+    color: var(--accent-error);
 }
 
 .no-sessions small {
-    color: #666;
+    color: var(--text-dimmed);
 }
 
 .session-list {
@@ -100,19 +100,19 @@
     align-items: center;
     gap: 12px;
     padding: 12px;
-    background: #252540;
-    border: 1px solid #333;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
     border-radius: 6px;
     cursor: pointer;
     text-align: left;
-    color: #eee;
+    color: var(--text-primary);
     transition: background 0.15s, border-color 0.15s;
 }
 
 .session-item:hover:not(:disabled),
 .session-item.selected:not(:disabled) {
-    background: #2a2a4a;
-    border-color: #4cc9f0;
+    background: var(--bg-selected);
+    border-color: var(--accent-primary);
 }
 
 .session-item:disabled {
@@ -129,7 +129,7 @@
     border-radius: 6px;
     font-weight: bold;
     font-size: 14px;
-    color: #1a1a2e;
+    color: var(--tool-icon-text);
     flex-shrink: 0;
 }
 
@@ -150,7 +150,7 @@
     align-items: center;
     gap: 6px;
     font-size: 12px;
-    color: #888;
+    color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
 }
@@ -163,7 +163,7 @@
 }
 
 .meta-separator {
-    color: #555;
+    color: var(--text-dimmed);
     flex-shrink: 0;
 }
 
@@ -171,7 +171,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    color: #4ecdc4;
+    color: var(--accent-success);
     flex-shrink: 0;
     max-width: 150px;
     overflow: hidden;
@@ -184,7 +184,7 @@
 }
 
 .session-branch.is-worktree {
-    color: #9ece6a;
+    color: var(--accent-green);
 }
 
 .session-status {
@@ -195,17 +195,16 @@
 
 /* Danger mode indicator */
 .session-danger-icon {
-    color: #fabd2f;
+    color: var(--accent-warning);
     margin-right: 6px;
     cursor: help;
 }
 
 /* Launch config badge */
 .session-config {
-    color: #a9a1e1;
+    color: var(--accent-purple);
     font-style: italic;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 100px;
 }
-

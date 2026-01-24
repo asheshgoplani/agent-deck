@@ -3,9 +3,9 @@
     justify-content: center;
     gap: 24px;
     padding: 14px 20px;
-    background: #16162a;
-    border-top: 1px solid #444;
-    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
+    background: var(--bg-tertiary);
+    border-top: 1px solid var(--border-primary);
+    box-shadow: 0 -2px 8px var(--modal-shadow);
 }
 
 .shortcut-item {
@@ -14,7 +14,7 @@
     gap: 8px;
     background: transparent;
     border: none;
-    color: #999;
+    color: var(--text-muted);
     cursor: pointer;
     font-size: 14px;
     padding: 6px 12px;
@@ -23,19 +23,19 @@
 }
 
 .shortcut-item:hover {
-    color: #eee;
-    background: #2a2a4a;
+    color: var(--text-primary);
+    background: var(--bg-selected);
 }
 
 .shortcut-item kbd {
     display: inline-block;
-    background: #2a2a45;
-    border: 1px solid #444;
+    background: var(--bg-selected);
+    border: 1px solid var(--border-primary);
     border-radius: 4px;
     padding: 3px 7px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     font-size: 12px;
-    color: #4cc9f0;
+    color: var(--accent-primary);
 }
 
 .shortcut-item span {

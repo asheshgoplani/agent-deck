@@ -1,0 +1,125 @@
+/* Theme CSS Custom Properties */
+/* Dark theme is default, light theme overrides */
+
+:root,
+[data-theme="dark"] {
+    /* Backgrounds */
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #252540;
+    --bg-tertiary: #1f1f35;
+    --bg-hover: #333;
+    --bg-selected: #2a2a4a;
+    --bg-input: #1f1f35;
+
+    /* Text colors */
+    --text-primary: #eee;
+    --text-secondary: #ccc;
+    --text-muted: #888;
+    --text-dimmed: #666;
+    --text-link: #4cc9f0;
+
+    /* Borders */
+    --border-primary: #444;
+    --border-secondary: #333;
+    --border-focus: #4cc9f0;
+
+    /* Accent colors */
+    --accent-primary: #4cc9f0;
+    --accent-success: #4ecdc4;
+    --accent-warning: #fabd2f;
+    --accent-error: #ff6b6b;
+    --accent-error-hover: #ff8787;
+    --accent-purple: #a9a1e1;
+    --accent-green: #9ece6a;
+
+    /* UI elements */
+    --btn-bg: #333;
+    --btn-bg-hover: #444;
+    --btn-text: #ccc;
+    --btn-text-hover: #eee;
+
+    --modal-overlay: rgba(0, 0, 0, 0.7);
+    --modal-shadow: rgba(0, 0, 0, 0.4);
+
+    --scrollbar-thumb: #444;
+    --scrollbar-thumb-hover: #555;
+    --scrollbar-track: transparent;
+
+    --kbd-bg: #333;
+    --kbd-text: #aaa;
+
+    --selection-bg: rgba(76, 201, 240, 0.3);
+
+    /* Status colors */
+    --status-running: #4ecdc4;
+    --status-waiting: #ffe66d;
+    --status-error: #ff6b6b;
+    --status-idle: #888;
+
+    /* Tool icon background contrast */
+    --tool-icon-text: #1a1a2e;
+
+    /* Danger/delete hover state */
+    --danger-hover-bg: #3a2020;
+}
+
+[data-theme="light"] {
+    /* Backgrounds */
+    --bg-primary: #f5f5f7;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #eaeaec;
+    --bg-hover: #e0e0e4;
+    --bg-selected: #d4d4dc;
+    --bg-input: #ffffff;
+
+    /* Text colors */
+    --text-primary: #1a1a2e;
+    --text-secondary: #3a3a50;
+    --text-muted: #6b6b80;
+    --text-dimmed: #9999aa;
+    --text-link: #0077cc;
+
+    /* Borders */
+    --border-primary: #d0d0d8;
+    --border-secondary: #e0e0e8;
+    --border-focus: #0077cc;
+
+    /* Accent colors - slightly adjusted for light bg */
+    --accent-primary: #0077cc;
+    --accent-success: #00a693;
+    --accent-warning: #cc8800;
+    --accent-error: #cc3333;
+    --accent-error-hover: #dd4444;
+    --accent-purple: #6b5bb8;
+    --accent-green: #5a9a30;
+
+    /* UI elements */
+    --btn-bg: #e8e8ec;
+    --btn-bg-hover: #d8d8dc;
+    --btn-text: #3a3a50;
+    --btn-text-hover: #1a1a2e;
+
+    --modal-overlay: rgba(0, 0, 0, 0.4);
+    --modal-shadow: rgba(0, 0, 0, 0.15);
+
+    --scrollbar-thumb: #c0c0c8;
+    --scrollbar-thumb-hover: #a0a0a8;
+    --scrollbar-track: transparent;
+
+    --kbd-bg: #e0e0e4;
+    --kbd-text: #6b6b80;
+
+    --selection-bg: rgba(0, 119, 204, 0.2);
+
+    /* Status colors - adjusted for light bg */
+    --status-running: #00a693;
+    --status-waiting: #cc8800;
+    --status-error: #cc3333;
+    --status-idle: #888;
+
+    /* Tool icon background contrast */
+    --tool-icon-text: #ffffff;
+
+    /* Danger/delete hover state */
+    --danger-hover-bg: #ffe0e0;
+}
