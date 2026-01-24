@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,23 +72,17 @@ func (qlm *QuickLaunchManager) saveConfig(config *QuickLaunchConfig) error {
 		return err
 	}
 
-	// Create file content with header
-	content := "# Quick Launch Favorites\n"
-	content += "# Pin projects for instant access from the Quick Launch Bar\n\n"
+	// Create file with header
+	var buf bytes.Buffer
+	buf.WriteString("# Quick Launch Favorites\n")
+	buf.WriteString("# Pin projects for instant access from the Quick Launch Bar\n\n")
 
-	// Encode favorites
-	for _, fav := range config.Favorites {
-		content += "[[favorites]]\n"
-		content += "name = \"" + fav.Name + "\"\n"
-		content += "path = \"" + fav.Path + "\"\n"
-		content += "tool = \"" + fav.Tool + "\"\n"
-		if fav.Shortcut != "" {
-			content += "shortcut = \"" + fav.Shortcut + "\"\n"
-		}
-		content += "\n"
+	// Use proper TOML encoding to escape special characters
+	if err := toml.NewEncoder(&buf).Encode(config); err != nil {
+		return err
 	}
 
-	return os.WriteFile(qlm.configPath, []byte(content), 0600)
+	return os.WriteFile(qlm.configPath, buf.Bytes(), 0600)
 }
 
 // GetFavorites returns all quick launch favorites

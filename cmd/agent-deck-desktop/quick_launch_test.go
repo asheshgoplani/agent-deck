@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -208,5 +209,83 @@ func TestQuickLaunchUpdateShortcut(t *testing.T) {
 	favorites, _ := qlm.GetFavorites()
 	if favorites[0].Shortcut != "cmd+shift+a" {
 		t.Errorf("Expected shortcut 'cmd+shift+a', got '%s'", favorites[0].Shortcut)
+	}
+}
+
+func TestQuickLaunchSpecialCharacters(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "quick-launch.toml")
+
+	qlm := &QuickLaunchManager{configPath: configPath}
+
+	// Test cases with special characters that could break TOML if not escaped
+	testCases := []struct {
+		name string
+		path string
+		tool string
+	}{
+		{
+			name: `Project with "quotes"`,
+			path: "/projects/quotes",
+			tool: "claude",
+		},
+		{
+			name: `Path with \backslashes\`,
+			path: `/projects/back\slash`,
+			tool: "gemini",
+		},
+		{
+			name: "Name with\nnewline",
+			path: "/projects/newline",
+			tool: "claude",
+		},
+		{
+			name: `Mixed "special" chars\n`,
+			path: "/projects/mixed",
+			tool: "opencode",
+		},
+	}
+
+	// Add all favorites with special characters
+	for _, tc := range testCases {
+		err := qlm.AddFavorite(tc.name, tc.path, tc.tool)
+		if err != nil {
+			t.Fatalf("AddFavorite failed for %q: %v", tc.name, err)
+		}
+	}
+
+	// Verify the file was written and can be parsed
+	favorites, err := qlm.GetFavorites()
+	if err != nil {
+		t.Fatalf("GetFavorites failed after adding special chars: %v", err)
+	}
+
+	if len(favorites) != len(testCases) {
+		t.Fatalf("Expected %d favorites, got %d", len(testCases), len(favorites))
+	}
+
+	// Verify each favorite was saved and loaded correctly
+	for i, tc := range testCases {
+		if favorites[i].Name != tc.name {
+			t.Errorf("Favorite %d: expected name %q, got %q", i, tc.name, favorites[i].Name)
+		}
+		if favorites[i].Path != tc.path {
+			t.Errorf("Favorite %d: expected path %q, got %q", i, tc.path, favorites[i].Path)
+		}
+		if favorites[i].Tool != tc.tool {
+			t.Errorf("Favorite %d: expected tool %q, got %q", i, tc.tool, favorites[i].Tool)
+		}
+	}
+
+	// Also verify the raw file content is valid TOML by reading it directly
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read config file: %v", err)
+	}
+
+	// The file should start with the header comments
+	content := string(data)
+	if !strings.Contains(content, "# Quick Launch Favorites") {
+		t.Error("Config file missing header comment")
 	}
 }
