@@ -89,6 +89,32 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         }
     };
 
+    // Get tooltip content for filter button explaining current and next states
+    const getFilterTooltipContent = useCallback(() => {
+        const descriptions = {
+            all: 'All sessions (agents + terminals)',
+            active: 'Active agents only (running or waiting)',
+            idle: 'Terminals only (no active agent)',
+        };
+        const nextFilter = {
+            all: 'active',
+            active: 'idle',
+            idle: 'all',
+        };
+        const nextLabels = {
+            all: 'All',
+            active: 'Active',
+            idle: 'Idle',
+        };
+
+        const current = descriptions[statusFilter];
+        const next = nextFilter[statusFilter];
+        const nextLabel = nextLabels[next];
+        const nextDesc = descriptions[next];
+
+        return `Showing: ${current}\n\nClick or Shift+5 to switch to:\n${nextLabel}: ${nextDesc}`;
+    }, [statusFilter]);
+
     if (loading) {
         return (
             <div className="session-selector">
@@ -105,7 +131,8 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                     <button
                         className="filter-btn"
                         onClick={onCycleFilter}
-                        title="Cycle status filter (Shift+5)"
+                        onMouseEnter={(e) => showTooltip(e, getFilterTooltipContent())}
+                        onMouseLeave={hideTooltip}
                         style={{ borderColor: getFilterColor() }}
                     >
                         <span className="filter-indicator" style={{ backgroundColor: getFilterColor() }} />
