@@ -26,8 +26,6 @@ export function GetVersion():Promise<string>;
 
 export function IsGitWorktree(arg1:string):Promise<boolean>;
 
-export function IsTmuxPolling():Promise<boolean>;
-
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 
 export function MarkSessionAccessed(arg1:string):Promise<void>;
@@ -38,17 +36,13 @@ export function RemoveQuickLaunchFavorite(arg1:string):Promise<void>;
 
 export function ResizeTerminal(arg1:number,arg2:number):Promise<void>;
 
-export function ResizeTmuxPane(arg1:number,arg2:number):Promise<void>;
-
-export function SendTmuxInput(arg1:string):Promise<void>;
-
 export function SessionExists(arg1:string):Promise<boolean>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
 
 export function StartTerminal(arg1:number,arg2:number):Promise<void>;
 
-export function StartTmuxPolling(arg1:string,arg2:number,arg3:number):Promise<void>;
+export function StartTmuxSession(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function UpdateQuickLaunchFavoriteName(arg1:string,arg2:string):Promise<void>;
 

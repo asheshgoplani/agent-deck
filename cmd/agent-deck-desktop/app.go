@@ -66,34 +66,20 @@ func (a *App) ListSessions() ([]SessionInfo, error) {
 	return a.tmux.ListSessions()
 }
 
-// AttachSession attaches to an existing tmux session.
-// DEPRECATED: Use StartTmuxPolling instead for clean scrollback handling.
+// AttachSession attaches to an existing tmux session (direct mode, no history preload).
+// DEPRECATED: Use StartTmuxSession instead for the hybrid approach with scrollback support.
 func (a *App) AttachSession(tmuxSession string, cols, rows int) error {
 	return a.terminal.AttachTmux(tmuxSession, cols, rows)
 }
 
-// StartTmuxPolling begins polling a tmux session.
-// This is the preferred method for attaching to tmux sessions as it
-// avoids cursor position conflicts when scrollback is pre-loaded.
-func (a *App) StartTmuxPolling(tmuxSession string, cols, rows int) error {
-	return a.terminal.StartTmuxPolling(tmuxSession, cols, rows)
-}
-
-// SendTmuxInput sends user input to the tmux session.
-// Use this instead of WriteTerminal when in tmux polling mode.
-func (a *App) SendTmuxInput(data string) error {
-	return a.terminal.SendTmuxInput(data)
-}
-
-// ResizeTmuxPane resizes the tmux pane.
-// Use this instead of ResizeTerminal when in tmux polling mode.
-func (a *App) ResizeTmuxPane(cols, rows int) error {
-	return a.terminal.ResizeTmuxPane(cols, rows)
-}
-
-// IsTmuxPolling returns whether we're in tmux polling mode.
-func (a *App) IsTmuxPolling() bool {
-	return a.terminal.IsTmuxPolling()
+// StartTmuxSession connects to a tmux session using the hybrid approach:
+// 1. Fetches and emits sanitized history via terminal:history event
+// 2. Attaches PTY for live streaming
+//
+// This is the preferred method for connecting to tmux sessions as it provides
+// full scrollback history while maintaining real-time streaming.
+func (a *App) StartTmuxSession(tmuxSession string, cols, rows int) error {
+	return a.terminal.StartTmuxSession(tmuxSession, cols, rows)
 }
 
 // GetScrollback returns the scrollback buffer for a tmux session.
