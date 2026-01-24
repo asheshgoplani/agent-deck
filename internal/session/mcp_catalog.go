@@ -17,7 +17,8 @@ type MCPServerConfig struct {
 	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
-	URL     string            `json:"url,omitempty"` // For HTTP transport
+	URL     string            `json:"url,omitempty"`     // For HTTP transport
+	Headers map[string]string `json:"headers,omitempty"` // For HTTP transport (e.g., Authorization)
 }
 
 // getExternalSocketPath returns the socket path if an external pool socket exists and is alive
@@ -63,8 +64,9 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 					transport = "http" // default to http if URL is set
 				}
 				mcpConfig.MCPServers[name] = MCPServerConfig{
-					Type: transport,
-					URL:  def.URL,
+					Type:    transport,
+					URL:     def.URL,
+					Headers: def.Headers,
 				}
 				log.Printf("[MCP] ✓ %s: using %s transport at %s", name, transport, def.URL)
 				continue
@@ -191,8 +193,9 @@ func WriteGlobalMCP(enabledNames []string) error {
 					transport = "http" // default to http if URL is set
 				}
 				mcpServers[name] = MCPServerConfig{
-					Type: transport,
-					URL:  def.URL,
+					Type:    transport,
+					URL:     def.URL,
+					Headers: def.Headers,
 				}
 				log.Printf("[MCP] ✓ Global %s: using %s transport at %s", name, transport, def.URL)
 				continue
@@ -442,8 +445,9 @@ func WriteUserMCP(enabledNames []string) error {
 					transport = "http" // default to http if URL is set
 				}
 				mcpServers[name] = MCPServerConfig{
-					Type: transport,
-					URL:  def.URL,
+					Type:    transport,
+					URL:     def.URL,
+					Headers: def.Headers,
 				}
 				log.Printf("[MCP] ✓ User %s: using %s transport at %s", name, transport, def.URL)
 				continue
