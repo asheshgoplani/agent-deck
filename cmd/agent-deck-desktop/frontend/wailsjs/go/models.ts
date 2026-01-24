@@ -135,6 +135,22 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SSHHostStatus {
+	    hostId: string;
+	    connected: boolean;
+	    lastError?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SSHHostStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostId = source["hostId"];
+	        this.connected = source["connected"];
+	        this.lastError = source["lastError"];
+	    }
+	}
 
 }
 

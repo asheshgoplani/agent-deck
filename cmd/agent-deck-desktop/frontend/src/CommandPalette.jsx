@@ -11,6 +11,7 @@ const logger = createLogger('CommandPalette');
 // Quick actions available in the palette
 const QUICK_ACTIONS = [
     { id: 'new-terminal', type: 'action', title: 'New Terminal', description: 'Start a new shell session' },
+    { id: 'create-remote-session', type: 'action', title: 'Create Remote Session', description: 'Create a session on a remote SSH host' },
     { id: 'refresh-sessions', type: 'action', title: 'Refresh Sessions', description: 'Reload session list' },
     { id: 'toggle-quick-launch', type: 'action', title: 'Toggle Quick Launch Bar', description: 'Show/hide quick launch bar' },
 ];

@@ -407,3 +407,10 @@ type SSHHostStatus struct {
 	Connected bool   `json:"connected"`
 	LastError string `json:"lastError,omitempty"`
 }
+
+// CreateRemoteSession creates a new tmux session on a remote host and launches the AI tool.
+// hostID should match a configured [ssh_hosts.X] section in config.toml.
+// If configKey is provided, the launch config settings will be applied.
+func (a *App) CreateRemoteSession(hostID, projectPath, title, tool, configKey string) (SessionInfo, error) {
+	return a.tmux.CreateRemoteSession(hostID, projectPath, title, tool, configKey, a.sshBridge)
+}

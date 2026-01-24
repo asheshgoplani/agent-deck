@@ -168,6 +168,7 @@ func (tm *TmuxManager) PersistSession(s SessionInfo) error {
 		TmuxSession:      s.TmuxSession,
 		CreatedAt:        now,
 		LastAccessedAt:   now,
+		RemoteHost:       s.RemoteHost,
 		LaunchConfigName: s.LaunchConfigName,
 		LoadedMCPNames:   s.LoadedMCPs,
 		DangerousMode:    s.DangerousMode,
@@ -505,6 +506,136 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string)
 	if err := tm.PersistSession(sessionInfo); err != nil {
 		// Log warning but don't fail - session is still usable
 		fmt.Printf("Warning: failed to persist session: %v\n", err)
+	}
+
+	return sessionInfo, nil
+}
+
+// CreateRemoteSession creates a new tmux session on a remote host and launches an AI tool.
+// The hostID should match a configured [ssh_hosts.X] section in config.toml.
+// If configKey is non-empty, the launch config settings will be applied.
+// The session is persisted to sessions.json so it survives app restarts.
+func (tm *TmuxManager) CreateRemoteSession(hostID, projectPath, title, tool, configKey string, sshBridge *SSHBridge) (SessionInfo, error) {
+	// Validate that the host is configured
+	if !sshBridge.IsHostConfigured(hostID) {
+		return SessionInfo{}, fmt.Errorf("SSH host %q is not configured in config.toml", hostID)
+	}
+
+	// Generate unique session ID (matches TUI format: {8-char-hex}-{unix-timestamp})
+	sessionID := generateSessionID()
+
+	// Generate unique tmux session name
+	sessionName := fmt.Sprintf("agentdeck_%d", time.Now().UnixNano())
+
+	// Get tmux path for remote host (may be non-standard on some servers)
+	tmuxPath := sshBridge.GetTmuxPath(hostID)
+
+	// Create tmux session on remote host
+	createCmd := fmt.Sprintf("%s new-session -d -s %s -c %q", tmuxPath, sessionName, projectPath)
+	if _, err := sshBridge.RunCommand(hostID, createCmd); err != nil {
+		return SessionInfo{}, fmt.Errorf("failed to create remote tmux session: %w", err)
+	}
+
+	// Build tool command with optional launch config settings
+	var toolCmd string
+	var cmdArgs []string
+	var dangerousMode bool
+	var loadedMCPs []string
+	var launchConfigName string
+
+	// Get base tool command
+	switch tool {
+	case "claude":
+		toolCmd = "claude"
+	case "gemini":
+		toolCmd = "gemini"
+	case "opencode":
+		toolCmd = "opencode"
+	default:
+		toolCmd = tool // Allow custom tools
+	}
+
+	// Apply launch config if provided
+	if configKey != "" {
+		cfg := session.GetLaunchConfigByKey(configKey)
+		if cfg != nil {
+			launchConfigName = cfg.Name
+			dangerousMode = cfg.DangerousMode
+
+			// Add dangerous mode flag
+			if cfg.DangerousMode {
+				switch tool {
+				case "claude":
+					cmdArgs = append(cmdArgs, "--dangerously-skip-permissions")
+				case "gemini":
+					cmdArgs = append(cmdArgs, "--yolo")
+				}
+			}
+
+			// Add MCP config path if specified
+			// Note: MCP config paths for remote sessions should reference paths on the remote host
+			if cfg.MCPConfigPath != "" {
+				expandedPath, err := cfg.ExpandMCPConfigPath()
+				if err == nil && expandedPath != "" {
+					switch tool {
+					case "claude":
+						cmdArgs = append(cmdArgs, "--mcp-config", expandedPath)
+					}
+					// Parse MCP names for display
+					if mcpNames, err := cfg.ParseMCPNames(); err == nil {
+						loadedMCPs = mcpNames
+					}
+				}
+			}
+
+			// Add extra args
+			cmdArgs = append(cmdArgs, cfg.ExtraArgs...)
+		}
+	}
+
+	// Build the full command string
+	fullCmd := toolCmd
+	if len(cmdArgs) > 0 {
+		fullCmd = toolCmd + " " + strings.Join(cmdArgs, " ")
+	}
+
+	// Send the tool command to the remote session
+	// Escape single quotes in command for shell safety
+	escapedCmd := strings.ReplaceAll(fullCmd, "'", "'\\''")
+	sendCmd := fmt.Sprintf("%s send-keys -t %s '%s' Enter", tmuxPath, sessionName, escapedCmd)
+	if _, err := sshBridge.RunCommand(hostID, sendCmd); err != nil {
+		// Don't fail if we can't send the command, the session is still usable
+		fmt.Printf("Warning: failed to send tool command to remote session: %v\n", err)
+	}
+
+	// Count existing sessions at this path to auto-generate label for duplicates
+	count := tm.countSessionsAtPath(projectPath)
+	customLabel := ""
+	if count > 0 {
+		customLabel = fmt.Sprintf("#%d", count+1)
+	}
+
+	// Build session info with remote fields set
+	sessionInfo := SessionInfo{
+		ID:               sessionID,
+		Title:            title,
+		CustomLabel:      customLabel,
+		ProjectPath:      projectPath,
+		Tool:             tool,
+		Status:           "running",
+		TmuxSession:      sessionName,
+		IsRemote:         true,
+		RemoteHost:       hostID,
+		LaunchConfigName: launchConfigName,
+		LoadedMCPs:       loadedMCPs,
+		DangerousMode:    dangerousMode,
+		LastAccessedAt:   time.Now(),
+	}
+
+	// Persist to sessions.json so session survives app restarts
+	if err := tm.PersistSession(sessionInfo); err != nil {
+		// Log warning but don't fail - session is still usable
+		fmt.Printf("Warning: failed to persist remote session: %v\n", err)
 	}
 
 	return sessionInfo, nil

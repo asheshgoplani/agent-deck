@@ -10,6 +10,8 @@ export function CloseTerminal():Promise<void>;
 
 export function CreateSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SessionInfo>;
 
+export function CreateRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.SessionInfo>;
+
 export function DeleteLaunchConfig(arg1:string):Promise<void>;
 
 export function DiscoverProjects():Promise<Array<main.ProjectInfo>>;
@@ -38,6 +40,8 @@ export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite
 
 export function GetScrollback(arg1:string):Promise<string>;
 
+export function GetSSHHostStatus():Promise<Array<main.SSHHostStatus>>;
+
 export function GetSoftNewlineMode():Promise<string>;
 
 export function GetTerminalSettings():Promise<Record<string, any>>;
@@ -47,6 +51,8 @@ export function GetVersion():Promise<string>;
 export function IsGitWorktree(arg1:string):Promise<boolean>;
 
 export function ListSessions():Promise<Array<main.SessionInfo>>;
+
+export function ListSSHHosts():Promise<Array<string>>;
 
 export function LogFrontendDiagnostic(arg1:string):Promise<void>;
 
@@ -75,6 +81,10 @@ export function SetSoftNewlineMode(arg1:string):Promise<void>;
 export function StartTerminal(arg1:number,arg2:number):Promise<void>;
 
 export function StartTmuxSession(arg1:string,arg2:number,arg3:number):Promise<void>;
+
+export function StartRemoteTmuxSession(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<void>;
+
+export function TestSSHConnection(arg1:string):Promise<void>;
 
 export function UpdateQuickLaunchFavoriteName(arg1:string,arg2:string):Promise<void>;
 
