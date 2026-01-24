@@ -100,9 +100,15 @@ func FetchRemoteStorageSnapshot(sshExec *tmux.SSHExecutor) *RemoteStorageSnapsho
 // TransformRemoteGroupPath converts a remote group path to local path
 // Example: "jeeves/workers" with prefix="remote" and hostname="jeeves" -> "remote/jeeves/jeeves/workers"
 // Empty remote path maps to just "{prefix}/{hostname}"
+// Remote-of-remote paths (starting with groupPrefix/) are mapped to host's root group
+// to prevent circular nesting like "remote/host/remote/otherhost"
 func TransformRemoteGroupPath(remoteGroupPath, groupPrefix, groupName string) string {
 	if remoteGroupPath == "" || remoteGroupPath == DefaultGroupPath {
 		// Remote's default group maps to host's root group
+		return groupPrefix + "/" + groupName
+	}
+	// Skip paths that are themselves remote groups - map to host's root group
+	if strings.HasPrefix(remoteGroupPath, groupPrefix+"/") {
 		return groupPrefix + "/" + groupName
 	}
 	return groupPrefix + "/" + groupName + "/" + remoteGroupPath
