@@ -192,6 +192,42 @@ function App() {
         }
     }, [view, loadSessionsAndProjects]);
 
+    // Handle layout actions from command palette
+    const handleLayoutAction = useCallback((actionId) => {
+        logger.info('Layout action from palette', { actionId });
+        switch (actionId) {
+            case 'split-right':
+                handleSplitPane('vertical');
+                break;
+            case 'split-down':
+                handleSplitPane('horizontal');
+                break;
+            case 'close-pane':
+                handleClosePane();
+                break;
+            case 'balance-panes':
+                handleBalancePanes();
+                break;
+            case 'toggle-zoom':
+                handleToggleZoom();
+                break;
+            case 'layout-single':
+                handleApplyPreset('single');
+                break;
+            case 'layout-2-col':
+                handleApplyPreset('2-col');
+                break;
+            case 'layout-2-row':
+                handleApplyPreset('2-row');
+                break;
+            case 'layout-2x2':
+                handleApplyPreset('2x2');
+                break;
+            default:
+                logger.warn('Unknown layout action:', actionId);
+        }
+    }, [handleSplitPane, handleClosePane, handleBalancePanes, handleToggleZoom, handleApplyPreset]);
+
     // Get the current active tab
     const activeTab = openTabs.find(t => t.id === activeTabId);
 
@@ -1128,6 +1164,7 @@ function App() {
             <ShortcutBar
                 view="terminal"
                 onBackToSessions={handleBackToSelector}
+                onSplitPane={() => handleSplitPane('vertical')}
                 onOpenSearch={() => {
                     setShowSearch(true);
                     setSearchFocusTrigger(prev => prev + 1);
@@ -1178,6 +1215,8 @@ function App() {
                         }
                     }}
                     onAction={handlePaletteAction}
+                    onLayoutAction={handleLayoutAction}
+                    showLayoutActions={true}
                     onLaunchProject={(path, name, tool, config, label) => {
                         // If we have an active empty pane, launch into it
                         // For now, use the default behavior (creates new tab)

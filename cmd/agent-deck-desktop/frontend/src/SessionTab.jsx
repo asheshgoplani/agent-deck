@@ -1,8 +1,9 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import './SessionTab.css';
 import ToolIcon from './ToolIcon';
 import { useTooltip } from './Tooltip';
 import { createLogger } from './logger';
+import { getPaneList, findPane, countPanes } from './layoutUtils';
 
 const logger = createLogger('SessionTab');
 
@@ -29,11 +30,54 @@ function getRelativePath(fullPath) {
 
 export default function SessionTab({ tab, index, isActive, onSwitch, onClose }) {
     const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
-    const session = tab.session;
+
+    // Extract session info from the new layout-based tab structure
+    // Tab structure: { id, name, layout, activePaneId, openedAt, zoomedPaneId }
+    const { primarySession, paneCount, sessions } = useMemo(() => {
+        if (!tab.layout) {
+            // Fallback for old tab structure (shouldn't happen but be safe)
+            return { primarySession: tab.session, paneCount: 1, sessions: [tab.session].filter(Boolean) };
+        }
+
+        const panes = getPaneList(tab.layout);
+        const panesWithSessions = panes.filter(p => p.session);
+        const count = panes.length;
+
+        // Get the active pane's session, or the first session if no active
+        const activePane = findPane(tab.layout, tab.activePaneId);
+        const primary = activePane?.session || panesWithSessions[0]?.session || null;
+
+        return {
+            primarySession: primary,
+            paneCount: count,
+            sessions: panesWithSessions.map(p => p.session),
+        };
+    }, [tab]);
+
+    const session = primarySession;
 
     // Build rich tooltip content
     const getTooltipContent = useCallback(() => {
         const shortcutNum = index < 9 ? index + 1 : null;
+
+        // Handle tabs with no sessions (empty panes only)
+        if (!session) {
+            return (
+                <div className="session-tooltip">
+                    <div className="tooltip-row tooltip-title">
+                        <span className="tooltip-icon">+</span>
+                        <span>Empty tab ({paneCount} pane{paneCount > 1 ? 's' : ''})</span>
+                    </div>
+                    {shortcutNum && (
+                        <div className="tooltip-row tooltip-shortcut-hint">
+                            <span className="tooltip-icon">⌘</span>
+                            <span>Press ⌘{shortcutNum} to switch</span>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         const relativePath = getRelativePath(session.projectPath);
 
         return (
@@ -50,6 +94,14 @@ export default function SessionTab({ tab, index, isActive, onSwitch, onClose }) 
                         )}
                     </span>
                 </div>
+
+                {/* Multi-pane indicator */}
+                {paneCount > 1 && (
+                    <div className="tooltip-row tooltip-panes">
+                        <span className="tooltip-icon">#</span>
+                        <span>{paneCount} panes ({sessions.length} with sessions)</span>
+                    </div>
+                )}
 
                 {/* Project path */}
                 {relativePath && (
@@ -88,31 +140,50 @@ export default function SessionTab({ tab, index, isActive, onSwitch, onClose }) 
                 )}
             </div>
         );
-    }, [session, index]);
+    }, [session, sessions, paneCount, index]);
 
     const handleClose = (e) => {
         e.stopPropagation();
-        logger.info('Closing tab', { tabId: tab.id, sessionTitle: session.title });
+        logger.info('Closing tab', { tabId: tab.id, sessionTitle: session?.title || 'empty' });
         onClose?.();
     };
+
+    // Calculate tab title: show "Name + N more" if multiple sessions
+    const tabTitle = useMemo(() => {
+        if (!session) {
+            return paneCount > 1 ? `${paneCount} panes` : 'Empty';
+        }
+        const displayName = session.customLabel || session.title;
+        if (sessions.length > 1) {
+            return `${displayName} +${sessions.length - 1}`;
+        }
+        return displayName;
+    }, [session, sessions.length, paneCount]);
 
     return (
         <>
             <button
-                className={`session-tab${isActive ? ' active' : ''}`}
+                className={`session-tab${isActive ? ' active' : ''}${paneCount > 1 ? ' multi-pane' : ''}`}
                 onClick={onSwitch}
                 onMouseEnter={(e) => showTooltip(e, getTooltipContent())}
                 onMouseLeave={hideTooltip}
             >
                 <span
                     className="tab-status"
-                    style={{ backgroundColor: getStatusColor(session.status) }}
+                    style={{ backgroundColor: session ? getStatusColor(session.status) : '#6c757d' }}
                 >
-                    <ToolIcon tool={session.tool} size={10} />
+                    {session ? (
+                        <ToolIcon tool={session.tool} size={10} />
+                    ) : (
+                        <span style={{ fontSize: '10px' }}>+</span>
+                    )}
                 </span>
                 <span className="tab-title">
-                    {session.customLabel || session.title}
+                    {tabTitle}
                 </span>
+                {paneCount > 1 && (
+                    <span className="tab-pane-badge">{paneCount}</span>
+                )}
                 <button
                     className="tab-close"
                     onClick={handleClose}

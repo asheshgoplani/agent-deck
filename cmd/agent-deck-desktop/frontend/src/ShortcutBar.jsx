@@ -12,6 +12,8 @@ export default function ShortcutBar({
     onOpenHelp,
     onBackToSessions,
     onOpenSearch,
+    onSplitPane,
+    hasPanes,
 }) {
     if (view === 'selector') {
         return (
@@ -42,6 +44,10 @@ export default function ShortcutBar({
             <button className="shortcut-item" onClick={onBackToSessions}>
                 <kbd>{modKey},</kbd>
                 <span>Sessions</span>
+            </button>
+            <button className="shortcut-item" onClick={onSplitPane}>
+                <kbd>{modKey}D</kbd>
+                <span>{hasPanes ? 'Split' : 'Split'}</span>
             </button>
             <button className="shortcut-item" onClick={onOpenSearch}>
                 <kbd>{modKey}F</kbd>

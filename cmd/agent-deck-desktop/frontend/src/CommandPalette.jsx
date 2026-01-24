@@ -15,6 +15,19 @@ const QUICK_ACTIONS = [
     { id: 'toggle-quick-launch', type: 'action', title: 'Toggle Quick Launch Bar', description: 'Show/hide quick launch bar' },
 ];
 
+// Layout actions - only shown when in terminal view
+const LAYOUT_ACTIONS = [
+    { id: 'split-right', type: 'layout', title: 'Split Right', description: 'Split pane vertically (Cmd+D)', shortcutHint: '⌘D' },
+    { id: 'split-down', type: 'layout', title: 'Split Down', description: 'Split pane horizontally (Cmd+Shift+D)', shortcutHint: '⌘⇧D' },
+    { id: 'close-pane', type: 'layout', title: 'Close Pane', description: 'Close current pane (Cmd+Shift+W)', shortcutHint: '⌘⇧W' },
+    { id: 'balance-panes', type: 'layout', title: 'Balance Panes', description: 'Make all panes equal size (Cmd+Option+=)', shortcutHint: '⌘⌥=' },
+    { id: 'toggle-zoom', type: 'layout', title: 'Toggle Zoom', description: 'Zoom/unzoom current pane (Cmd+Shift+Z)', shortcutHint: '⌘⇧Z' },
+    { id: 'layout-single', type: 'layout', title: 'Layout: Single Pane', description: 'Single pane layout (Cmd+Option+1)', shortcutHint: '⌘⌥1' },
+    { id: 'layout-2-col', type: 'layout', title: 'Layout: 2 Columns', description: 'Two columns side by side (Cmd+Option+2)', shortcutHint: '⌘⌥2' },
+    { id: 'layout-2-row', type: 'layout', title: 'Layout: 2 Rows', description: 'Two rows stacked (Cmd+Option+3)', shortcutHint: '⌘⌥3' },
+    { id: 'layout-2x2', type: 'layout', title: 'Layout: 2x2 Grid', description: 'Four panes in a grid (Cmd+Option+4)', shortcutHint: '⌘⌥4' },
+];
+
 export default function CommandPalette({
     onClose,
     onSelectSession,
@@ -22,10 +35,12 @@ export default function CommandPalette({
     onLaunchProject, // (projectPath, projectName, tool, configKey?, customLabel?) => void
     onShowToolPicker, // (projectPath, projectName) => void - for Cmd+Enter
     onPinToQuickLaunch, // (projectPath, projectName) => void - for Cmd+P
+    onLayoutAction, // (actionId) => void - for layout actions
     sessions = [],
     projects = [],
     favorites = [], // Quick launch favorites for shortcut hints
     pinMode = false, // When true, selecting pins instead of launching
+    showLayoutActions = false, // Show layout commands (when in terminal view)
 }) {
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -64,8 +79,15 @@ export default function CommandPalette({
             }));
     }, [projects, favoritesLookup]);
 
+    // Build list of all actions including layout actions if enabled
+    const allActions = useMemo(() => {
+        return showLayoutActions
+            ? [...QUICK_ACTIONS, ...LAYOUT_ACTIONS]
+            : QUICK_ACTIONS;
+    }, [showLayoutActions]);
+
     // Fuse.js configuration for fuzzy search
-    const fuse = useMemo(() => new Fuse([...sessions, ...projectItems, ...QUICK_ACTIONS], {
+    const fuse = useMemo(() => new Fuse([...sessions, ...projectItems, ...allActions], {
         keys: [
             { name: 'title', weight: 0.4 },
             { name: 'projectPath', weight: 0.3 },
@@ -75,7 +97,7 @@ export default function CommandPalette({
         ],
         threshold: 0.4,
         includeScore: true,
-    }), [sessions, projectItems]);
+    }), [sessions, projectItems, allActions]);
 
     // Get filtered results
     const results = useMemo(() => {
@@ -96,14 +118,14 @@ export default function CommandPalette({
 
         if (!query.trim()) {
             // No query: show sessions first, then projects, then actions
-            const allItems = [...sessions, ...projectItems, ...QUICK_ACTIONS];
+            const allItems = [...sessions, ...projectItems, ...allActions];
             logger.debug('Showing all items (no query)', { count: allItems.length });
             return allItems;
         }
         const searchResults = fuse.search(query).map(result => result.item);
         logger.debug('Search results', { query, count: searchResults.length });
         return searchResults;
-    }, [query, fuse, sessions, projectItems, pinMode]);
+    }, [query, fuse, sessions, projectItems, allActions, pinMode]);
 
     // Reset selection when results change
     useEffect(() => {
@@ -200,6 +222,9 @@ export default function CommandPalette({
         if (item.type === 'action') {
             logger.info('Executing action', { actionId: item.id });
             onAction?.(item.id);
+        } else if (item.type === 'layout') {
+            logger.info('Executing layout action', { actionId: item.id });
+            onLayoutAction?.(item.id);
         } else if (item.type === 'project') {
             // Launch project with default tool (Claude)
             logger.info('Launching project with default tool', { path: item.projectPath, tool: 'claude' });
@@ -255,11 +280,22 @@ export default function CommandPalette({
                             >
                                 {item.type === 'action' ? (
                                     <>
-                                        <span className="palette-action-icon">></span>
+                                        <span className="palette-action-icon">{'>'}</span>
                                         <div className="palette-item-info">
                                             <div className="palette-item-title">{item.title}</div>
                                             <div className="palette-item-subtitle">{item.description}</div>
                                         </div>
+                                    </>
+                                ) : item.type === 'layout' ? (
+                                    <>
+                                        <span className="palette-layout-icon">{'#'}</span>
+                                        <div className="palette-item-info">
+                                            <div className="palette-item-title">{item.title}</div>
+                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        </div>
+                                        {item.shortcutHint && (
+                                            <span className="palette-shortcut-hint">{item.shortcutHint}</span>
+                                        )}
                                     </>
                                 ) : item.type === 'project' ? (
                                     <>

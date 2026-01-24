@@ -118,3 +118,31 @@
 .tooltip-status {
     text-transform: capitalize;
 }
+
+/* Multi-pane tab styling */
+.session-tab.multi-pane {
+    border-style: dashed;
+}
+
+/* Pane count badge */
+.tab-pane-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 4px;
+    background: var(--accent-primary);
+    color: var(--bg-primary);
+    border-radius: 7px;
+    font-size: 9px;
+    font-weight: 600;
+    flex-shrink: 0;
+    margin-right: 2px;
+}
+
+/* Tooltip for multi-pane */
+.tooltip-panes {
+    color: var(--accent-primary);
+    font-size: 11px;
+}
