@@ -347,13 +347,18 @@ func (t *Terminal) pollTmuxOnce() {
 			content = strings.ReplaceAll(content, "\r\n", "\n") // Normalize any existing CRLF
 			content = strings.ReplaceAll(content, "\n", "\r\n") // Convert all LF to CRLF
 
-			// Build output: clear screen, write content, then position cursor
-			// xterm.js uses 1-indexed cursor positions, tmux uses 0-indexed
-			// Format: \x1b[row;colH
-			cursorPos := fmt.Sprintf("\x1b[%d;%dH", cursorY+1, cursorX+1)
-
-			cleared := "\x1b[2J\x1b[H" + content + cursorPos
-			t.debugLog("[POLL] Emitting clear+content+cursor: %d total bytes, cursor at (%d,%d)", len(cleared), cursorX+1, cursorY+1)
+			// Build output: clear screen, write content, hide cursor
+			// TUI apps like Claude Code draw their own visual cursor at the input prompt
+			// using escape sequences (reverse video, etc.). The terminal cursor position
+			// reported by tmux is often at a "neutral" location (like bottom-left) after
+			// the TUI finishes drawing. Positioning xterm.js cursor there creates a second
+			// cursor in the wrong place.
+			//
+			// Solution: Hide the hardware cursor in polling mode. The TUI's visual cursor
+			// representation is captured in the content and provides the input position indicator.
+			// \x1b[?25l = hide cursor
+			cleared := "\x1b[2J\x1b[H" + content + "\x1b[?25l"
+			t.debugLog("[POLL] Emitting clear+content (cursor hidden): %d total bytes, tmux cursor was at (%d,%d)", len(cleared), cursorX+1, cursorY+1)
 			runtime.EventsEmit(t.ctx, "terminal:data", cleared)
 		}
 	}
@@ -470,6 +475,12 @@ func (t *Terminal) StopTmuxPolling() {
 		t.tmuxPolling = false
 		t.tmuxSession = ""
 		t.tmuxLastState = ""
+
+		// Re-enable cursor visibility for next terminal session
+		// (polling mode hides cursor because TUI apps draw their own)
+		if t.ctx != nil {
+			runtime.EventsEmit(t.ctx, "terminal:data", "\x1b[?25h") // Show cursor
+		}
 	}
 }
 
