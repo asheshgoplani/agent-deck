@@ -1,9 +1,6 @@
 import { useEffect, useCallback } from 'react';
 import './KeyboardHelpModal.css';
-
-// Detect platform for modifier key display
-const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-const modKey = isMac ? '⌘' : 'Ctrl+';
+import { modKey } from './utils/platform';
 
 export default function KeyboardHelpModal({ onClose }) {
     // Close on Escape or any other key

@@ -14,6 +14,7 @@ import RenameDialog from './RenameDialog';
 import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
+import { shouldInterceptShortcut, hasAppModifier } from './utils/platform';
 
 const logger = createLogger('App');
 
@@ -543,42 +544,50 @@ function App() {
             handleOpenHelp();
             return;
         }
+        // Helper to check if app shortcut should fire (respects terminal passthrough on macOS)
+        const inTerminal = view === 'terminal';
+        const appMod = shouldInterceptShortcut(e, inTerminal);
+
         // Cmd+/ or Ctrl+/ to open help (works in both views)
-        if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+        if (appMod && e.key === '/') {
             e.preventDefault();
             e.stopPropagation();
             handleOpenHelp();
             return;
         }
-        // Cmd+N or Ctrl+N to open new terminal (in selector view)
-        if ((e.metaKey || e.ctrlKey) && e.key === 'n' && view === 'selector') {
+        // Cmd+N to open new terminal (in selector view)
+        if (hasAppModifier(e) && e.key === 'n' && view === 'selector') {
             e.preventDefault();
             logger.info('Cmd+N pressed - opening new terminal');
             handleNewTerminal();
             return;
         }
-        // Cmd+F or Ctrl+F to open search (only in terminal view)
-        if ((e.metaKey || e.ctrlKey) && e.key === 'f' && view === 'terminal') {
+        // Cmd+F to open search (only in terminal view)
+        // On macOS, Ctrl+F passes through to terminal (forward-char in bash/readline)
+        if (appMod && e.key === 'f' && inTerminal) {
             e.preventDefault();
             setShowSearch(true);
             // Always trigger focus - works whether search is opening or already open
             setSearchFocusTrigger(prev => prev + 1);
         }
         // Cmd+K - Open command palette
-        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        // On macOS, Ctrl+K passes through to terminal (kill-line in bash/readline)
+        if (appMod && e.key === 'k') {
             e.preventDefault();
             logger.info('Cmd+K pressed - opening command palette');
             setShowCommandPalette(true);
         }
         // Cmd+T - Open new tab (opens command palette to select session/project)
-        if ((e.metaKey || e.ctrlKey) && e.key === 't') {
+        // On macOS, Ctrl+T passes through to terminal (transpose-chars in bash)
+        if (appMod && e.key === 't') {
             e.preventDefault();
             logger.info('Cmd+T pressed - opening command palette for new tab');
             setPaletteNewTabMode(true);
             setShowCommandPalette(true);
         }
         // Cmd+W to close current tab
-        if ((e.metaKey || e.ctrlKey) && e.key === 'w' && view === 'terminal') {
+        // On macOS, Ctrl+W passes through to terminal (delete-word in bash, search in nano)
+        if (appMod && e.key === 'w' && inTerminal) {
             e.preventDefault();
             if (activeTabId) {
                 logger.info('Cmd+W pressed - closing current tab');
@@ -590,7 +599,7 @@ function App() {
             }
         }
         // Cmd+1-9 to switch to tab by number
-        if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
+        if (appMod && e.key >= '1' && e.key <= '9') {
             e.preventDefault();
             const tabIndex = parseInt(e.key, 10) - 1;
             if (tabIndex < openTabs.length) {
@@ -600,7 +609,7 @@ function App() {
             }
         }
         // Cmd+[ for previous tab
-        if ((e.metaKey || e.ctrlKey) && e.key === '[' && openTabs.length > 1) {
+        if (appMod && e.key === '[' && openTabs.length > 1) {
             e.preventDefault();
             const currentIndex = openTabs.findIndex(t => t.id === activeTabId);
             if (currentIndex <= 0) return; // Guard: -1 (not found) or 0 (already first)
@@ -609,7 +618,7 @@ function App() {
             handleSwitchTab(prevTab.id);
         }
         // Cmd+] for next tab
-        if ((e.metaKey || e.ctrlKey) && e.key === ']' && openTabs.length > 1) {
+        if (appMod && e.key === ']' && openTabs.length > 1) {
             e.preventDefault();
             const currentIndex = openTabs.findIndex(t => t.id === activeTabId);
             if (currentIndex === -1 || currentIndex >= openTabs.length - 1) return; // Guard: not found or already last
@@ -618,12 +627,13 @@ function App() {
             handleSwitchTab(nextTab.id);
         }
         // Cmd+, to go back to session selector
-        if ((e.metaKey || e.ctrlKey) && e.key === ',' && view === 'terminal') {
+        if (appMod && e.key === ',' && inTerminal) {
             e.preventDefault();
             handleBackToSelector();
         }
         // Cmd+R to add/edit custom label (only in terminal view with a session)
-        if ((e.metaKey || e.ctrlKey) && e.key === 'r' && view === 'terminal' && selectedSession) {
+        // On macOS, Ctrl+R passes through to terminal (reverse-search in bash)
+        if (appMod && e.key === 'r' && inTerminal && selectedSession) {
             e.preventDefault();
             logger.info('Cmd+R pressed - opening label dialog');
             setShowLabelDialog(true);
@@ -634,22 +644,22 @@ function App() {
             handleCycleStatusFilter();
         }
         // Cmd+Shift+, to open settings (works in both views)
-        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === ',') {
+        if (appMod && e.shiftKey && e.key === ',') {
             e.preventDefault();
             handleOpenSettings();
         }
         // Cmd++ (Cmd+=) to increase font size (works everywhere)
-        if ((e.metaKey || e.ctrlKey) && (e.key === '=' || e.key === '+')) {
+        if (appMod && (e.key === '=' || e.key === '+')) {
             e.preventDefault();
             handleFontSizeChange(1);
         }
         // Cmd+- to decrease font size (works everywhere)
-        if ((e.metaKey || e.ctrlKey) && e.key === '-') {
+        if (appMod && e.key === '-') {
             e.preventDefault();
             handleFontSizeChange(-1);
         }
         // Cmd+0 to reset font size to default (works everywhere)
-        if ((e.metaKey || e.ctrlKey) && e.key === '0') {
+        if (appMod && e.key === '0') {
             e.preventDefault();
             handleFontSizeReset();
         }
