@@ -27,7 +27,7 @@ function getRelativePath(fullPath) {
     return fullPath;
 }
 
-export default function SessionTab({ tab, index, isActive, onSwitch, onClose }) {
+export default function SessionTab({ tab, index, isActive, onSwitch, onClose, onContextMenu }) {
     const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
     const session = tab.session;
 
@@ -101,6 +101,7 @@ export default function SessionTab({ tab, index, isActive, onSwitch, onClose }) 
             <button
                 className={`session-tab${isActive ? ' active' : ''}`}
                 onClick={onSwitch}
+                onContextMenu={onContextMenu}
                 onMouseEnter={(e) => showTooltip(e, getTooltipContent())}
                 onMouseLeave={hideTooltip}
             >
