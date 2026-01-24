@@ -14,6 +14,8 @@ export function DiscoverProjects():Promise<Array<main.ProjectInfo>>;
 
 export function GetGitBranch(arg1:string):Promise<string>;
 
+export function GetProjectRoots():Promise<Array<string>>;
+
 export function GetQuickLaunchBarVisibility():Promise<boolean>;
 
 export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite>>;

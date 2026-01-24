@@ -354,3 +354,35 @@ If prototype validates successfully:
 - [ ] Remote session support (SSH executor integration)
 - [ ] MCP management UI
 - [ ] Session creation dialog
+
+---
+
+## UX Enhancements Roadmap
+
+### MCP Server Badges in Session List
+
+Display attached MCP servers as visual badges directly in the session list (no hover required):
+
+- Show MCP server names as compact badges/pills next to session info
+- Calculate available horizontal space and display as many as fit
+- Add "+N more" indicator when MCPs overflow the available space
+- On hover over MCP area, show full list of attached MCPs in a tooltip
+- Color-code or icon badges by MCP type if applicable
+
+**Implementation notes:**
+- Need to read MCP config from `.claude.json` or `.mcp.json` for each session
+- Consider caching MCP info to avoid file reads on every render
+- Badge styling should be subtle but scannable
+
+### Git Context in Session List
+
+Display extended git status directly in the session list for quick at-a-glance context:
+
+- **Dirty/clean indicator**: Show visual indicator (dot, icon, or color) for uncommitted changes
+- **Ahead/behind remote**: Show "↑2 ↓3" style indicators for commits ahead/behind tracking branch
+- Add hover tooltip with more detail (e.g., "3 files modified, 2 commits ahead of origin/main")
+
+**Implementation notes:**
+- Run `git status --porcelain` and `git rev-list --left-right --count HEAD...@{u}` in backend
+- Cache results with reasonable TTL to avoid git subprocess spam
+- Consider async loading to avoid blocking session list render

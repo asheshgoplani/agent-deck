@@ -4,7 +4,7 @@
     padding: 8px 12px;
     background: #1a1a2e;
     border: 1px solid #444;
-    border-radius: 4px;
+    border-radius: 6px;
     color: #ccc;
     font-size: 12px;
     line-height: 1.4;
@@ -17,5 +17,43 @@
     min-width: 270px;
     max-width: 370px;
     box-sizing: border-box;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* Session tooltip structured layout */
+.session-tooltip {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.tooltip-icon {
+    flex-shrink: 0;
+    font-size: 12px;
+    width: 16px;
+    text-align: center;
+}
+
+.tooltip-time {
+    color: #8ec07c; /* Soft green for recency */
+}
+
+.tooltip-path {
+    color: #b8b8b8;
+    font-family: monospace;
+    font-size: 11px;
+}
+
+.tooltip-worktree {
+    color: #83a598; /* Teal for worktree */
+}
+
+.tooltip-remote {
+    color: #fabd2f; /* Yellow for warning */
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { ListSessions } from '../wailsjs/go/main/App';
+import { ListSessions, GetProjectRoots } from '../wailsjs/go/main/App';
 import './SessionSelector.css';
 import { createLogger } from './logger';
 import ToolIcon from './ToolIcon';
@@ -7,30 +7,110 @@ import { useTooltip } from './Tooltip';
 
 const logger = createLogger('SessionSelector');
 
+// Format a relative time string (e.g., "5 min ago", "2 hours ago")
+function formatRelativeTime(dateString) {
+    if (!dateString) return null;
+
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return null;
+
+    const now = new Date();
+    const diffMs = now - date;
+    const diffSec = Math.floor(diffMs / 1000);
+    const diffMin = Math.floor(diffSec / 60);
+    const diffHour = Math.floor(diffMin / 60);
+    const diffDay = Math.floor(diffHour / 24);
+
+    if (diffSec < 60) return 'just now';
+    if (diffMin < 60) return `${diffMin} min ago`;
+    if (diffHour < 24) return `${diffHour} hour${diffHour > 1 ? 's' : ''} ago`;
+    if (diffDay < 7) return `${diffDay} day${diffDay > 1 ? 's' : ''} ago`;
+    if (diffDay < 30) return `${Math.floor(diffDay / 7)} week${Math.floor(diffDay / 7) > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+}
+
+// Compute relative project path based on configured roots
+function getRelativeProjectPath(fullPath, projectRoots) {
+    if (!fullPath || !projectRoots || projectRoots.length === 0) {
+        // Fallback: show last 2 path components
+        const parts = fullPath?.split('/').filter(Boolean) || [];
+        if (parts.length >= 2) {
+            return `.../${parts.slice(-2).join('/')}`;
+        }
+        return fullPath || '';
+    }
+
+    // Find which root contains this path
+    for (const root of projectRoots) {
+        if (fullPath.startsWith(root)) {
+            const rootName = root.split('/').filter(Boolean).pop();
+            const relativePath = fullPath.slice(root.length).replace(/^\//, '');
+            if (relativePath) {
+                return `${rootName}/${relativePath}`;
+            }
+            return rootName;
+        }
+    }
+
+    // No matching root, show abbreviated path
+    const parts = fullPath.split('/').filter(Boolean);
+    if (parts.length >= 2) {
+        return `.../${parts.slice(-2).join('/')}`;
+    }
+    return fullPath;
+}
+
 export default function SessionSelector({ onSelect, onNewTerminal, statusFilter = 'all', onCycleFilter }) {
     const [sessions, setSessions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [projectRoots, setProjectRoots] = useState([]);
     const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
 
     useEffect(() => {
         loadSessions();
+        // Load project roots for relative path display
+        GetProjectRoots().then(roots => {
+            setProjectRoots(roots || []);
+        }).catch(err => {
+            logger.warn('Failed to load project roots:', err);
+        });
     }, []);
 
-    // Tooltip content builder for sessions
+    // Tooltip content builder for sessions - returns JSX for rich formatting
     const getTooltipContent = useCallback((session) => {
-        const lines = [session.title];
-        if (session.projectPath) {
-            lines.push(session.projectPath);
-        }
-        if (session.isWorktree) {
-            lines.push('Git worktree (separate working directory)');
-        }
-        if (session.isRemote) {
-            lines.push('Remote sessions not supported yet');
-        }
-        return lines.join('\n');
-    }, []);
+        const relativeTime = formatRelativeTime(session.lastAccessedAt);
+        const relativePath = getRelativeProjectPath(session.projectPath, projectRoots);
+
+        return (
+            <div className="session-tooltip">
+                {relativeTime && (
+                    <div className="tooltip-row tooltip-time">
+                        <span className="tooltip-icon">🕐</span>
+                        <span>Active {relativeTime}</span>
+                    </div>
+                )}
+                {relativePath && (
+                    <div className="tooltip-row tooltip-path">
+                        <span className="tooltip-icon">📁</span>
+                        <span>{relativePath}</span>
+                    </div>
+                )}
+                {session.isWorktree && (
+                    <div className="tooltip-row tooltip-worktree">
+                        <span className="tooltip-icon">🌿</span>
+                        <span>Git worktree</span>
+                    </div>
+                )}
+                {session.isRemote && (
+                    <div className="tooltip-row tooltip-remote">
+                        <span className="tooltip-icon">⚠️</span>
+                        <span>Remote (not yet supported)</span>
+                    </div>
+                )}
+            </div>
+        );
+    }, [projectRoots]);
 
     const loadSessions = async () => {
         try {

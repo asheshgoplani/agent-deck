@@ -26,6 +26,10 @@ export function GetGitBranch(arg1) {
   return window['go']['main']['App']['GetGitBranch'](arg1);
 }
 
+export function GetProjectRoots() {
+  return window['go']['main']['App']['GetProjectRoots']();
+}
+
 export function GetQuickLaunchBarVisibility() {
   return window['go']['main']['App']['GetQuickLaunchBarVisibility']();
 }

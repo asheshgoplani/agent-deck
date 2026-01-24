@@ -263,8 +263,8 @@ export default function Terminal({ searchRef, session }) {
                     logger.debug(`[TIMING] Starting polling. xterm: cols=${term.cols}, rows=${term.rows}`);
 
                     // Start polling instead of attaching
-                    // Polling avoids cursor position conflicts - it clears and redraws
-                    // the visible screen each update, leaving scrollback buffer intact
+                    // Polling avoids cursor position conflicts - it overwrites the visible
+                    // screen each update using line-by-line rendering (no full screen clear)
                     logger.info('Starting tmux polling...');
                     isTmuxPollingRef.current = true;
                     await StartTmuxPolling(session.tmuxSession, cols, rows);

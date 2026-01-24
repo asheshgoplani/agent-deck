@@ -205,3 +205,10 @@ func expandHome(path string) string {
 	}
 	return path
 }
+
+// GetProjectRoots returns the configured project scan paths.
+// Used by the frontend to compute relative paths for display.
+func (a *App) GetProjectRoots() []string {
+	settings := a.projectDiscovery.getSettings()
+	return settings.ScanPaths
+}

@@ -331,35 +331,51 @@ func (t *Terminal) pollTmuxOnce() {
 		t.mu.Unlock()
 
 		if t.ctx != nil {
-			// Clear screen and redraw from tmux state
-			// \x1b[2J = clear entire screen
+			// Overwrite screen from tmux state WITHOUT clearing scrollback
+			// Previous approach used \x1b[2J which clears the viewport in-place,
+			// preventing new content from accumulating in the scrollback buffer.
+			//
+			// New approach: Overwrite line-by-line with end-of-line clear
 			// \x1b[H = move cursor to home (0,0)
+			// \x1b[K = clear from cursor to end of line (after each line)
+			// \x1b[J = clear from cursor to end of screen (after all content)
 			content := stripTTSMarkers(currentState)
 
 			// Strip trailing blank lines to avoid cursor ending up below content
 			// capture-pane pads output to fill the pane height with empty lines
 			content = strings.TrimRight(content, "\n")
 
-			// CRITICAL: Convert LF to CRLF for xterm.js
-			// tmux capture-pane outputs \n (LF) line endings, but xterm.js interprets
-			// \n as "move cursor down" without "carriage return to column 0".
-			// This causes overlapping/garbled text. We need \r\n (CRLF) for proper rendering.
-			content = strings.ReplaceAll(content, "\r\n", "\n") // Normalize any existing CRLF
-			content = strings.ReplaceAll(content, "\n", "\r\n") // Convert all LF to CRLF
+			// Split into lines for line-by-line rendering
+			lines := strings.Split(content, "\n")
 
-			// Build output: clear screen, write content, hide cursor
+			// Build output: home, then each line with clear-to-EOL
+			var output strings.Builder
+			output.WriteString("\x1b[H") // Move cursor to home (0,0)
+
+			for i, line := range lines {
+				output.WriteString(line)
+				output.WriteString("\x1b[K") // Clear from cursor to end of line
+				if i < len(lines)-1 {
+					output.WriteString("\r\n") // Move to next line
+				}
+			}
+
+			// Clear any remaining lines below (in case new content is shorter)
+			// \x1b[J = Erase from cursor to end of screen
+			output.WriteString("\r\n\x1b[J")
+
+			// Hide the hardware cursor in polling mode
 			// TUI apps like Claude Code draw their own visual cursor at the input prompt
 			// using escape sequences (reverse video, etc.). The terminal cursor position
 			// reported by tmux is often at a "neutral" location (like bottom-left) after
 			// the TUI finishes drawing. Positioning xterm.js cursor there creates a second
 			// cursor in the wrong place.
-			//
-			// Solution: Hide the hardware cursor in polling mode. The TUI's visual cursor
-			// representation is captured in the content and provides the input position indicator.
 			// \x1b[?25l = hide cursor
-			cleared := "\x1b[2J\x1b[H" + content + "\x1b[?25l"
-			t.debugLog("[POLL] Emitting clear+content (cursor hidden): %d total bytes, tmux cursor was at (%d,%d)", len(cleared), cursorX+1, cursorY+1)
-			runtime.EventsEmit(t.ctx, "terminal:data", cleared)
+			output.WriteString("\x1b[?25l")
+
+			result := output.String()
+			t.debugLog("[POLL] Emitting overwrite content (cursor hidden): %d total bytes, %d lines, tmux cursor was at (%d,%d)", len(result), len(lines), cursorX+1, cursorY+1)
+			runtime.EventsEmit(t.ctx, "terminal:data", result)
 		}
 	}
 }
