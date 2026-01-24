@@ -42,9 +42,13 @@ export function IsGitWorktree(arg1:string):Promise<boolean>;
 
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 
+export function LogFrontendDiagnostic(arg1:string):Promise<void>;
+
 export function MarkSessionAccessed(arg1:string):Promise<void>;
 
 export function RecordProjectUsage(arg1:string):Promise<void>;
+
+export function RefreshScrollback():Promise<string>;
 
 export function RemoveQuickLaunchFavorite(arg1:string):Promise<void>;
 

@@ -17,6 +17,45 @@ import (
 // Log file for debugging - can be read by the developer
 var debugLogFile *os.File
 
+// Pre-compiled regex patterns for sanitizing terminal output.
+// These are compiled once at package init time for performance.
+var (
+	// Cursor positioning patterns
+	cursorHomeRe    = regexp.MustCompile(`\x1b\[H`)
+	cursorPosRe     = regexp.MustCompile(`\x1b\[\d+;\d+H`)
+	cursorPosAltRe  = regexp.MustCompile(`\x1b\[\d+;\d+f`)
+	cursorMoveRe    = regexp.MustCompile(`\x1b\[\d*[ABCD]`) // Up/down/forward/back
+	cursorLineColRe = regexp.MustCompile(`\x1b\[\d*[EFG]`)  // Next/prev line, column absolute
+
+	// Cursor visibility and style patterns
+	cursorVisRe   = regexp.MustCompile(`\x1b\[\?25[hl]`) // Show/hide cursor
+	cursorStyleRe = regexp.MustCompile(`\x1b\[\d* ?q`)   // Cursor style (block, underline, bar)
+
+	// Screen clearing patterns
+	clearScreenRe    = regexp.MustCompile(`\x1b\[2J`)   // Clear screen
+	clearToEndRe     = regexp.MustCompile(`\x1b\[J`)    // Clear to end of screen
+	clearScreenVarRe = regexp.MustCompile(`\x1b\[\d*J`) // Clear screen variants
+	clearLineEndRe   = regexp.MustCompile(`\x1b\[K`)    // Clear to end of line
+	clearLineVarRe   = regexp.MustCompile(`\x1b\[\d*K`) // Clear line variants
+
+	// Alternate screen buffer patterns
+	altScreenXtermRe = regexp.MustCompile(`\x1b\[\?1049[hl]`) // xterm alt screen
+	altScreenDECRe   = regexp.MustCompile(`\x1b\[\?47[hl]`)   // DEC alt screen
+
+	// Cursor save/restore patterns
+	saveCursorANSIRe    = regexp.MustCompile(`\x1b\[s`) // Save cursor (ANSI)
+	restoreCursorANSIRe = regexp.MustCompile(`\x1b\[u`) // Restore cursor (ANSI)
+	saveCursorDECRe     = regexp.MustCompile(`\x1b7`)   // Save cursor (DEC)
+	restoreCursorDECRe  = regexp.MustCompile(`\x1b8`)   // Restore cursor (DEC)
+
+	// Scroll region pattern
+	scrollRegionRe = regexp.MustCompile(`\x1b\[\d*;\d*r`) // Set scroll region
+
+	// Seam-specific patterns (used during initial PTY attachment)
+	seamCursorPosRe       = regexp.MustCompile(`\x1b\[\d*;\d*[Hf]`) // Cursor positioning (H or f)
+	seamCursorPosSimpleRe = regexp.MustCompile(`\x1b\[\d+[Hf]`)     // Simple cursor positioning
+)
+
 func init() {
 	// Create log file in temp directory
 	logPath := filepath.Join(os.TempDir(), "agent-deck-desktop-debug.log")
@@ -45,6 +84,18 @@ func (t *Terminal) debugLog(format string, args ...interface{}) {
 	// Also send to frontend
 	if t.ctx != nil {
 		runtime.EventsEmit(t.ctx, "terminal:debug", msg)
+	}
+}
+
+// LogDiagnostic writes a diagnostic message from the frontend to the debug log file.
+// This allows diagnostic info from browser to be read by external tools.
+func (t *Terminal) LogDiagnostic(message string) {
+	timestamp := time.Now().Format("15:04:05.000")
+	logLine := fmt.Sprintf("[%s] [FRONTEND-DIAG] %s\n", timestamp, message)
+
+	if debugLogFile != nil {
+		debugLogFile.WriteString(logLine)
+		debugLogFile.Sync()
 	}
 }
 
@@ -183,23 +234,36 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 // with scrollback accumulation while preserving colors.
 func sanitizeHistoryForXterm(content string) string {
 	// Remove cursor positioning (conflicts with scrollback)
-	content = regexp.MustCompile(`\x1b\[H`).ReplaceAllString(content, "")                // Cursor home
-	content = regexp.MustCompile(`\x1b\[\d+;\d+H`).ReplaceAllString(content, "")         // Cursor position
-	content = regexp.MustCompile(`\x1b\[\d+;\d+f`).ReplaceAllString(content, "")         // Cursor position (alternate)
+	content = cursorHomeRe.ReplaceAllString(content, "")    // Cursor home
+	content = cursorPosRe.ReplaceAllString(content, "")     // Cursor position
+	content = cursorPosAltRe.ReplaceAllString(content, "")  // Cursor position (alternate)
+	content = cursorMoveRe.ReplaceAllString(content, "")    // Cursor movement (up/down/forward/back)
+	content = cursorLineColRe.ReplaceAllString(content, "") // Cursor next/prev line, column absolute
+
+	// Remove cursor visibility and style (can cause rendering glitches on scroll)
+	content = cursorVisRe.ReplaceAllString(content, "")   // Show/hide cursor
+	content = cursorStyleRe.ReplaceAllString(content, "") // Cursor style (block, underline, bar)
 
 	// Remove screen clearing
-	content = regexp.MustCompile(`\x1b\[2J`).ReplaceAllString(content, "")  // Clear screen
-	content = regexp.MustCompile(`\x1bc`).ReplaceAllString(content, "")     // Full reset
+	content = clearScreenRe.ReplaceAllString(content, "")    // Clear screen
+	content = clearToEndRe.ReplaceAllString(content, "")     // Clear to end of screen
+	content = clearScreenVarRe.ReplaceAllString(content, "") // Clear screen variants
+	content = clearLineEndRe.ReplaceAllString(content, "")   // Clear to end of line
+	content = clearLineVarRe.ReplaceAllString(content, "")   // Clear line variants
+	content = strings.ReplaceAll(content, "\x1bc", "")       // Full reset
 
 	// Remove alternate screen buffer switches
-	content = regexp.MustCompile(`\x1b\[\?1049[hl]`).ReplaceAllString(content, "")  // xterm alt screen
-	content = regexp.MustCompile(`\x1b\[\?47[hl]`).ReplaceAllString(content, "")    // DEC alt screen
+	content = altScreenXtermRe.ReplaceAllString(content, "") // xterm alt screen
+	content = altScreenDECRe.ReplaceAllString(content, "")   // DEC alt screen
 
 	// Remove cursor save/restore
-	content = regexp.MustCompile(`\x1b\[s`).ReplaceAllString(content, "")   // Save cursor (ANSI)
-	content = regexp.MustCompile(`\x1b\[u`).ReplaceAllString(content, "")   // Restore cursor (ANSI)
-	content = regexp.MustCompile(`\x1b7`).ReplaceAllString(content, "")     // Save cursor (DEC)
-	content = regexp.MustCompile(`\x1b8`).ReplaceAllString(content, "")     // Restore cursor (DEC)
+	content = saveCursorANSIRe.ReplaceAllString(content, "")    // Save cursor (ANSI)
+	content = restoreCursorANSIRe.ReplaceAllString(content, "") // Restore cursor (ANSI)
+	content = saveCursorDECRe.ReplaceAllString(content, "")     // Save cursor (DEC)
+	content = restoreCursorDECRe.ReplaceAllString(content, "")  // Restore cursor (DEC)
+
+	// Remove scroll region setting (can interfere with xterm buffer)
+	content = scrollRegionRe.ReplaceAllString(content, "") // Set scroll region
 
 	// KEEP: SGR color codes (\x1b[...m) - users want colored history
 
@@ -272,9 +336,16 @@ func stripSeamSequences(s string) string {
 	s = strings.ReplaceAll(s, "\x1b[?47h", "")
 	s = strings.ReplaceAll(s, "\x1b[?47l", "")
 
-	// Note: \x1b[2J (clear screen) only clears viewport, NOT scrollback - safe to keep
-	// Note: \x1b[H (home) is fine - positions cursor
-	// Note: \x1b[J (clear to end) is fine - only clears below cursor
+	// Clear screen - remove to prevent overwriting scrollback
+	s = strings.ReplaceAll(s, "\x1b[2J", "")
+
+	// Cursor home - remove during seam to prevent cursor jumping to top
+	s = strings.ReplaceAll(s, "\x1b[H", "")
+
+	// Remove any cursor positioning sequences (ESC [ row ; col H or f)
+	// These would cause content to overwrite wrong positions
+	s = seamCursorPosRe.ReplaceAllString(s, "")
+	s = seamCursorPosSimpleRe.ReplaceAllString(s, "")
 
 	return s
 }
@@ -348,6 +419,68 @@ func (t *Terminal) Resize(cols, rows int) error {
 	}
 
 	return nil
+}
+
+// GetScrollback fetches fresh scrollback content from tmux.
+// Called by frontend after resize to bypass xterm.js reflow issues.
+// Returns sanitized content ready for xterm.write().
+func (t *Terminal) GetScrollback() (string, error) {
+	t.mu.Lock()
+	session := t.tmuxSession
+	t.mu.Unlock()
+
+	if session == "" {
+		t.debugLog("[SCROLLBACK] No tmux session attached")
+		return "", nil
+	}
+
+	// Wait briefly for tmux to finish reflowing after resize
+	time.Sleep(30 * time.Millisecond)
+
+	// Capture current pane content (scrollback + visible)
+	cmd := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e", "-S", "-", "-E", "-")
+	output, err := cmd.Output()
+	if err != nil {
+		t.debugLog("[SCROLLBACK] capture-pane error: %v", err)
+		return "", err
+	}
+
+	rawContent := string(output)
+	t.debugLog("[SCROLLBACK] Raw tmux output: %d bytes", len(rawContent))
+
+	// Check for box-drawing characters in raw output
+	boxDrawingCount := 0
+	questionMarkCount := 0
+	for _, r := range rawContent {
+		if r == '─' || r == '│' || r == '┌' || r == '┐' || r == '└' || r == '┘' || r == '├' || r == '┤' || r == '┬' || r == '┴' || r == '┼' {
+			boxDrawingCount++
+		}
+		if r == '?' {
+			questionMarkCount++
+		}
+	}
+	t.debugLog("[SCROLLBACK] Box-drawing chars: %d, Question marks: %d", boxDrawingCount, questionMarkCount)
+
+	// Log a sample of lines containing box-drawing chars
+	lines := strings.Split(rawContent, "\n")
+	for i, line := range lines {
+		if strings.ContainsAny(line, "─│┌┐└┘├┤┬┴┼") {
+			// Log first 100 chars of this line
+			sample := line
+			if len(sample) > 100 {
+				sample = sample[:100] + "..."
+			}
+			t.debugLog("[SCROLLBACK] Line %d with box chars: %q", i, sample)
+			break // Just log first one
+		}
+	}
+
+	// Sanitize for xterm
+	content := sanitizeHistoryForXterm(rawContent)
+	content = normalizeCRLF(content)
+
+	t.debugLog("[SCROLLBACK] After sanitize: %d bytes", len(content))
+	return content, nil
 }
 
 // Close terminates the PTY.

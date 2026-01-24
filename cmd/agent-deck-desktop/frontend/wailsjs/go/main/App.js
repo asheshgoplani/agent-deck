@@ -82,12 +82,20 @@ export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
 
+export function LogFrontendDiagnostic(arg1) {
+  return window['go']['main']['App']['LogFrontendDiagnostic'](arg1);
+}
+
 export function MarkSessionAccessed(arg1) {
   return window['go']['main']['App']['MarkSessionAccessed'](arg1);
 }
 
 export function RecordProjectUsage(arg1) {
   return window['go']['main']['App']['RecordProjectUsage'](arg1);
+}
+
+export function RefreshScrollback() {
+  return window['go']['main']['App']['RefreshScrollback']();
 }
 
 export function RemoveQuickLaunchFavorite(arg1) {
