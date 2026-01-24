@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 import Search from './Search';
 import SessionSelector from './SessionSelector';
@@ -76,6 +76,18 @@ function App() {
     // Saved layouts
     const [savedLayouts, setSavedLayouts] = useState([]);
     const [showSaveLayoutModal, setShowSaveLayoutModal] = useState(false);
+
+    // Build saved layout shortcut map for keyboard handling
+    const savedLayoutShortcuts = useMemo(() => {
+        const map = {};
+        for (const layout of savedLayouts) {
+            if (layout.shortcut) {
+                map[layout.shortcut.toLowerCase()] = layout;
+            }
+        }
+        return map;
+    }, [savedLayouts]);
+
     const sessionSelectorRef = useRef(null);
     const terminalRefs = useRef({});
     const searchRefs = useRef({});
@@ -1041,13 +1053,22 @@ function App() {
             return;
         }
 
-        // Check custom shortcuts first (user-defined)
+        // Check custom shortcuts first (user-defined quick launch)
         const shortcutKey = buildShortcutKey(e);
         if (shortcuts[shortcutKey]) {
             e.preventDefault();
             const fav = shortcuts[shortcutKey];
             logger.info('Custom shortcut triggered', { shortcut: shortcutKey, name: fav.name });
             handleLaunchProject(fav.path, fav.name, fav.tool);
+            return;
+        }
+
+        // Check saved layout shortcuts (only in terminal view with active tab)
+        if (view === 'terminal' && activeTab && savedLayoutShortcuts[shortcutKey]) {
+            e.preventDefault();
+            const layout = savedLayoutShortcuts[shortcutKey];
+            logger.info('Saved layout shortcut triggered', { shortcut: shortcutKey, name: layout.name });
+            handleApplySavedLayout(layout);
             return;
         }
 
@@ -1288,7 +1309,7 @@ function App() {
             e.preventDefault();
             handleFontSizeReset();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
