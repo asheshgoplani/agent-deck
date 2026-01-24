@@ -36,6 +36,10 @@ export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite
 
 export function GetScrollback(arg1:string):Promise<string>;
 
+export function GetSoftNewlineMode():Promise<string>;
+
+export function GetTerminalSettings():Promise<Record<string, string>>;
+
 export function GetVersion():Promise<string>;
 
 export function IsGitWorktree(arg1:string):Promise<boolean>;
@@ -61,6 +65,8 @@ export function SessionExists(arg1:string):Promise<boolean>;
 export function SetDesktopTheme(arg1:string):Promise<void>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
+
+export function SetSoftNewlineMode(arg1:string):Promise<void>;
 
 export function StartTerminal(arg1:number,arg2:number):Promise<void>;
 

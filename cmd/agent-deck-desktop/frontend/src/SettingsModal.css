@@ -323,3 +323,30 @@
 .settings-theme-option-icon {
     font-size: 16px;
 }
+
+/* Terminal Input Settings */
+.settings-input-description {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+
+.settings-input-description code {
+    background: var(--bg-tertiary);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.settings-input-options {
+    flex-wrap: wrap;
+}
+
+.settings-input-options .settings-theme-option {
+    min-width: 100px;
+    padding: 10px 12px;
+    font-size: 12px;
+}

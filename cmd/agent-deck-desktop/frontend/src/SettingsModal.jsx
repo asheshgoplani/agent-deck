@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
-import { GetLaunchConfigs, DeleteLaunchConfig } from '../wailsjs/go/main/App';
+import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
 import ToolIcon from './ToolIcon';
@@ -14,12 +14,35 @@ export default function SettingsModal({ onClose }) {
     const [loading, setLoading] = useState(true);
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
+    const [softNewlineMode, setSoftNewlineMode] = useState('both');
     const { themePreference, setTheme } = useTheme();
 
-    // Load configs on mount
+    // Load configs and terminal settings on mount
     useEffect(() => {
         loadConfigs();
+        loadTerminalSettings();
     }, []);
+
+    const loadTerminalSettings = async () => {
+        try {
+            const mode = await GetSoftNewlineMode();
+            setSoftNewlineMode(mode || 'both');
+            logger.info('Loaded soft newline mode:', mode);
+        } catch (err) {
+            logger.error('Failed to load terminal settings:', err);
+        }
+    };
+
+    const handleSoftNewlineModeChange = async (mode) => {
+        try {
+            await SetSoftNewlineMode(mode);
+            setSoftNewlineMode(mode);
+            logger.info('Set soft newline mode:', mode);
+        } catch (err) {
+            logger.error('Failed to set soft newline mode:', err);
+            alert('Failed to save setting: ' + err.message);
+        }
+    };
 
     const loadConfigs = async () => {
         try {
@@ -147,6 +170,48 @@ export default function SettingsModal({ onClose }) {
                             >
                                 <span className="settings-theme-option-icon">💻</span>
                                 Auto
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Terminal Input Settings */}
+                    <div className="settings-theme-section">
+                        <div className="settings-theme-header">
+                            <span className="settings-theme-icon">⌨️</span>
+                            <h3>Terminal Input</h3>
+                        </div>
+                        <div className="settings-input-description">
+                            Soft newline inserts a new line without executing the command.
+                            You can also use <code>\</code> at the end of a line (backslash continuation).
+                        </div>
+                        <div className="settings-theme-options settings-input-options">
+                            <button
+                                className={`settings-theme-option ${softNewlineMode === 'both' ? 'active' : ''}`}
+                                onClick={() => handleSoftNewlineModeChange('both')}
+                                title="Both Shift+Enter and Option/Alt+Enter insert newline"
+                            >
+                                Both
+                            </button>
+                            <button
+                                className={`settings-theme-option ${softNewlineMode === 'shift_enter' ? 'active' : ''}`}
+                                onClick={() => handleSoftNewlineModeChange('shift_enter')}
+                                title="Only Shift+Enter inserts newline"
+                            >
+                                Shift+Enter
+                            </button>
+                            <button
+                                className={`settings-theme-option ${softNewlineMode === 'alt_enter' ? 'active' : ''}`}
+                                onClick={() => handleSoftNewlineModeChange('alt_enter')}
+                                title="Only Option/Alt+Enter inserts newline"
+                            >
+                                Opt+Enter
+                            </button>
+                            <button
+                                className={`settings-theme-option ${softNewlineMode === 'disabled' ? 'active' : ''}`}
+                                onClick={() => handleSoftNewlineModeChange('disabled')}
+                                title="Disable soft newline (use backslash continuation instead)"
+                            >
+                                Disabled
                             </button>
                         </div>
                     </div>

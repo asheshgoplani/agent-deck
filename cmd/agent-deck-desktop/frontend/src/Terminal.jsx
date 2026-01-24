@@ -7,7 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 // import { WebglAddon } from '@xterm/addon-webgl'; // Disabled - breaks scroll detection
 import '@xterm/xterm/css/xterm.css';
 import './Terminal.css';
-import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxSession, RefreshScrollback, LogFrontendDiagnostic } from '../wailsjs/go/main/App';
+import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxSession, RefreshScrollback, LogFrontendDiagnostic, GetTerminalSettings } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 import { useTheme } from './context/ThemeContext';
@@ -122,6 +122,71 @@ export default function Terminal({ searchRef, session }) {
         const dataDisposable = term.onData((data) => {
             WriteTerminal(data).catch(console.error);
         });
+
+        // ============================================================
+        // SOFT NEWLINE SUPPORT (multiline input without execute)
+        // ============================================================
+        // Claude Code and other AI tools support Shift+Enter for inserting
+        // a newline without executing the command. We send ESC + CR (\x1b\r)
+        // which is interpreted as "insert newline" rather than "execute".
+        //
+        // The user can configure this via Settings:
+        // - "shift_enter": Only Shift+Enter triggers soft newline
+        // - "alt_enter": Only Alt/Option+Enter triggers soft newline
+        // - "both": Both Shift+Enter and Alt+Enter work (default)
+        // - "disabled": Disable soft newline (use backslash continuation)
+        //
+        // Note: Backslash continuation (typing \ at end of line then Enter)
+        // is always supported natively by Claude Code - no special handling needed.
+        // ============================================================
+
+        // Use ref to allow settings to be updated without recreating handler
+        const softNewlineModeRef = { current: 'both' }; // Default to both
+
+        // Load settings asynchronously and update the ref
+        GetTerminalSettings()
+            .then(settings => {
+                softNewlineModeRef.current = settings?.softNewline || 'both';
+                logger.info('Loaded soft newline mode:', softNewlineModeRef.current);
+            })
+            .catch(err => {
+                logger.warn('Failed to load terminal settings, using defaults:', err);
+            });
+
+        const customKeyHandler = term.attachCustomKeyEventHandler((e) => {
+            // Only handle keydown events (not keyup)
+            if (e.type !== 'keydown') {
+                return true; // Let xterm handle it
+            }
+
+            // Check if this key combo should trigger soft newline
+            if (e.key === 'Enter') {
+                const mode = softNewlineModeRef.current;
+
+                // Determine if we should intercept based on current mode
+                let shouldIntercept = false;
+                if (mode === 'disabled') {
+                    shouldIntercept = false;
+                } else if (mode === 'shift_enter' && e.shiftKey && !e.altKey) {
+                    shouldIntercept = true;
+                } else if (mode === 'alt_enter' && e.altKey && !e.shiftKey) {
+                    shouldIntercept = true;
+                } else if (mode === 'both' && (e.shiftKey || e.altKey)) {
+                    shouldIntercept = true;
+                }
+
+                if (shouldIntercept) {
+                    e.preventDefault();
+                    // Send ESC + CR sequence which Claude Code interprets as soft newline
+                    WriteTerminal('\x1b\r').catch(console.error);
+                    return false; // Prevent xterm from handling Enter
+                }
+            }
+
+            // Let xterm.js handle all other keys normally
+            return true;
+        });
+        logger.info('Soft newline handler attached (default mode: both)');
 
         // ============================================================
         // SCROLL DETECTION & REPAIR SYSTEM
@@ -420,6 +485,7 @@ export default function Terminal({ searchRef, session }) {
             resizeObserver.disconnect();
             scrollDisposable.dispose();
             dataDisposable.dispose();
+            if (customKeyHandler) customKeyHandler.dispose();
             // Clean up scroll event listeners
             if (viewportEl) viewportEl.removeEventListener('scroll', handleDOMScroll);
             if (terminalRef.current) terminalRef.current.removeEventListener('wheel', handleWheel);

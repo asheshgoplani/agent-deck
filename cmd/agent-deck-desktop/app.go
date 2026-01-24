@@ -281,3 +281,32 @@ func (a *App) GetDesktopTheme() string {
 func (a *App) SetDesktopTheme(theme string) error {
 	return a.desktopSettings.SetTheme(theme)
 }
+
+// GetSoftNewlineMode returns the current soft newline key preference.
+// Returns: "shift_enter", "alt_enter", "both", or "disabled".
+func (a *App) GetSoftNewlineMode() string {
+	mode, err := a.desktopSettings.GetSoftNewline()
+	if err != nil {
+		return "both"
+	}
+	return mode
+}
+
+// SetSoftNewlineMode sets the soft newline key preference.
+// Valid values: "shift_enter", "alt_enter", "both", "disabled".
+func (a *App) SetSoftNewlineMode(mode string) error {
+	return a.desktopSettings.SetSoftNewline(mode)
+}
+
+// GetTerminalSettings returns all terminal settings for the frontend.
+func (a *App) GetTerminalSettings() map[string]string {
+	config, err := a.desktopSettings.GetTerminalConfig()
+	if err != nil {
+		return map[string]string{
+			"softNewline": "both",
+		}
+	}
+	return map[string]string{
+		"softNewline": config.SoftNewline,
+	}
+}

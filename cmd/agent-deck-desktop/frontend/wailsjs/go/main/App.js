@@ -70,6 +70,14 @@ export function GetScrollback(arg1) {
   return window['go']['main']['App']['GetScrollback'](arg1);
 }
 
+export function GetSoftNewlineMode() {
+  return window['go']['main']['App']['GetSoftNewlineMode']();
+}
+
+export function GetTerminalSettings() {
+  return window['go']['main']['App']['GetTerminalSettings']();
+}
+
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
 }
@@ -120,6 +128,10 @@ export function SetDesktopTheme(arg1) {
 
 export function SetQuickLaunchBarVisibility(arg1) {
   return window['go']['main']['App']['SetQuickLaunchBarVisibility'](arg1);
+}
+
+export function SetSoftNewlineMode(arg1) {
+  return window['go']['main']['App']['SetSoftNewlineMode'](arg1);
 }
 
 export function StartTerminal(arg1, arg2) {

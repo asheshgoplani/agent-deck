@@ -11,7 +11,15 @@ import (
 
 // DesktopConfig represents the [desktop] section of config.toml
 type DesktopConfig struct {
-	Theme string `toml:"theme"` // "dark", "light", or "auto"
+	Theme    string         `toml:"theme"`    // "dark", "light", or "auto"
+	Terminal TerminalConfig `toml:"terminal"` // Terminal behavior settings
+}
+
+// TerminalConfig represents terminal input behavior settings
+type TerminalConfig struct {
+	// SoftNewline controls how to insert a newline without executing
+	// Options: "shift_enter" (default), "alt_enter", "both", "disabled"
+	SoftNewline string `toml:"soft_newline"`
 }
 
 // DesktopSettingsManager manages desktop-specific settings in config.toml
@@ -37,6 +45,9 @@ type fullConfig struct {
 func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error) {
 	defaults := &DesktopConfig{
 		Theme: "dark",
+		Terminal: TerminalConfig{
+			SoftNewline: "both", // Both Shift+Enter and Alt+Enter by default
+		},
 	}
 
 	data, err := os.ReadFile(dsm.configPath)
@@ -65,6 +76,17 @@ func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error)
 		config.Desktop.Theme = "dark"
 	}
 
+	// Validate and apply defaults for terminal settings
+	if config.Desktop.Terminal.SoftNewline == "" {
+		config.Desktop.Terminal.SoftNewline = "both"
+	}
+	switch config.Desktop.Terminal.SoftNewline {
+	case "shift_enter", "alt_enter", "both", "disabled":
+		// Valid
+	default:
+		config.Desktop.Terminal.SoftNewline = "both"
+	}
+
 	return &config.Desktop, nil
 }
 
@@ -86,6 +108,9 @@ func (dsm *DesktopSettingsManager) saveDesktopSettings(desktop *DesktopConfig) e
 	// Update the desktop section
 	existingConfig["desktop"] = map[string]interface{}{
 		"theme": desktop.Theme,
+		"terminal": map[string]interface{}{
+			"soft_newline": desktop.Terminal.SoftNewline,
+		},
 	}
 
 	// Ensure directory exists
@@ -136,4 +161,48 @@ func (dsm *DesktopSettingsManager) SetTheme(theme string) error {
 
 	config.Theme = theme
 	return dsm.saveDesktopSettings(config)
+}
+
+// GetSoftNewline returns the soft newline key preference
+// Returns: "shift_enter", "alt_enter", "both", or "disabled"
+func (dsm *DesktopSettingsManager) GetSoftNewline() (string, error) {
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		return "both", err
+	}
+	return config.Terminal.SoftNewline, nil
+}
+
+// SetSoftNewline sets the soft newline key preference
+func (dsm *DesktopSettingsManager) SetSoftNewline(mode string) error {
+	// Validate mode
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "shift_enter", "alt_enter", "both", "disabled":
+		// Valid
+	default:
+		mode = "both"
+	}
+
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		config = &DesktopConfig{
+			Theme: "dark",
+			Terminal: TerminalConfig{
+				SoftNewline: "both",
+			},
+		}
+	}
+
+	config.Terminal.SoftNewline = mode
+	return dsm.saveDesktopSettings(config)
+}
+
+// GetTerminalConfig returns the full terminal configuration
+func (dsm *DesktopSettingsManager) GetTerminalConfig() (*TerminalConfig, error) {
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		return &TerminalConfig{SoftNewline: "both"}, err
+	}
+	return &config.Terminal, nil
 }
