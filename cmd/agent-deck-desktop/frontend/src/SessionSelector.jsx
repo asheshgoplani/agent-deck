@@ -129,8 +129,8 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                 )}
                 {session.isRemote && (
                     <div className="tooltip-row tooltip-remote">
-                        <span className="tooltip-icon">⚠️</span>
-                        <span>Remote (not yet supported)</span>
+                        <span className="tooltip-icon">🌐</span>
+                        <span>Remote session via SSH</span>
                     </div>
                 )}
             </div>
@@ -263,7 +263,7 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                 case 'Enter':
                     e.preventDefault();
                     const session = filteredSessions[selectedIndex];
-                    if (session && !session.isRemote) {
+                    if (session) {
                         onSelect(session);
                     }
                     break;
@@ -382,10 +382,9 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                     filteredSessions.map((session, index) => (
                         <button
                             key={session.id}
-                            className={`session-item${index === selectedIndex ? ' selected' : ''}`}
+                            className={`session-item${index === selectedIndex ? ' selected' : ''}${session.isRemote ? ' remote' : ''}`}
                             onClick={() => onSelect(session)}
                             onContextMenu={(e) => handleContextMenu(e, session)}
-                            disabled={session.isRemote}
                             onMouseEnter={(e) => {
                                 setSelectedIndex(index);
                                 showTooltip(e, getTooltipContent(session));
@@ -402,6 +401,11 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                                 <div className="session-title">
                                     {session.dangerousMode && (
                                         <span className="session-danger-icon" title="Dangerous mode enabled">⚠</span>
+                                    )}
+                                    {session.isRemote && (
+                                        <span className="session-remote-badge" title={`Remote session on ${session.remoteHost}`}>
+                                            {session.remoteHost}
+                                        </span>
                                     )}
                                     {session.title}
                                     {session.customLabel && (

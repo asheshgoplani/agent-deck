@@ -6,7 +6,7 @@
     border: 1px solid var(--border-primary);
     border-radius: 6px;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-base);
     line-height: 1.4;
     white-space: pre-line;
     word-wrap: break-word;
@@ -35,7 +35,7 @@
 
 .tooltip-icon {
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: var(--font-base);
     width: 16px;
     text-align: center;
 }
@@ -47,7 +47,7 @@
 .tooltip-path {
     color: var(--text-muted);
     font-family: monospace;
-    font-size: 11px;
+    font-size: var(--font-md);
 }
 
 .tooltip-worktree {
@@ -65,14 +65,14 @@
 
 .tooltip-icon.git-dirty-indicator {
     color: #ff9f43;
-    font-size: 10px;
+    font-size: var(--font-sm);
 }
 
 .tooltip-sync-icon {
     display: inline-flex;
     gap: 2px;
     font-family: monospace;
-    font-size: 11px;
+    font-size: var(--font-md);
 }
 
 .tooltip-sync-icon .git-ahead {

@@ -22,7 +22,7 @@
     border-radius: 4px;
     color: var(--text-primary);
     font-family: inherit;
-    font-size: 14px;
+    font-size: var(--font-xl);
     padding: 6px 10px;
     width: 250px;
     outline: none;
@@ -37,7 +37,7 @@
 }
 
 .search-status {
-    font-size: 12px;
+    font-size: var(--font-base);
     min-height: 16px;
 }
 
@@ -50,6 +50,6 @@
 }
 
 .search-hint {
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
 }

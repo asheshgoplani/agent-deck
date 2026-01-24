@@ -25,14 +25,14 @@
 
 .shortcut-editor-container h3 {
     margin: 0 0 8px 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
 
 .shortcut-editor-path {
     margin: 0 0 20px 0;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -51,12 +51,12 @@
 
 .shortcut-editor-recording {
     color: var(--accent-primary);
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 .shortcut-editor-hint {
     display: block;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
     margin-top: 8px;
 }
@@ -66,14 +66,14 @@
 }
 
 .shortcut-editor-shortcut {
-    font-size: 24px;
+    font-size: var(--font-4xl);
     font-weight: 500;
     color: var(--text-primary);
     letter-spacing: 2px;
 }
 
 .shortcut-editor-none {
-    font-size: 14px;
+    font-size: var(--font-xl);
     color: var(--text-dimmed);
 }
 
@@ -84,7 +84,7 @@
     border-radius: 4px;
     padding: 10px 12px;
     margin-bottom: 16px;
-    font-size: 13px;
+    font-size: var(--font-lg);
     color: var(--accent-error);
 }
 
@@ -109,7 +109,7 @@
 .shortcut-editor-btn {
     padding: 10px 16px;
     border-radius: 6px;
-    font-size: 14px;
+    font-size: var(--font-xl);
     cursor: pointer;
     transition: background 0.1s;
 }

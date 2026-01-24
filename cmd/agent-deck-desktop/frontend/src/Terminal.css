@@ -44,7 +44,7 @@
     color: var(--tool-icon-text);
     border: none;
     border-radius: 20px;
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 600;
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(76, 201, 240, 0.4);

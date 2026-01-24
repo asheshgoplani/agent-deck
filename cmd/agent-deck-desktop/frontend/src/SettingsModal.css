@@ -39,7 +39,7 @@
 
 .settings-header h2 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
@@ -48,7 +48,7 @@
     background: transparent;
     border: none;
     color: var(--text-muted);
-    font-size: 24px;
+    font-size: var(--font-4xl);
     line-height: 1;
     cursor: pointer;
     padding: 0;
@@ -97,7 +97,7 @@
 
 .settings-tool-header h3 {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 600;
     color: var(--text-secondary);
     flex: 1;
@@ -111,7 +111,7 @@
     justify-content: center;
     border-radius: 4px;
     font-weight: bold;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--tool-icon-text);
 }
 
@@ -125,7 +125,7 @@
     border: none;
     border-radius: 4px;
     color: var(--text-muted);
-    font-size: 16px;
+    font-size: var(--font-2xl);
     cursor: pointer;
     transition: color 0.15s, background 0.15s;
 }
@@ -140,7 +140,7 @@
     background: var(--bg-tertiary);
     border-radius: 6px;
     color: var(--text-dimmed);
-    font-size: 12px;
+    font-size: var(--font-base);
     text-align: center;
 }
 
@@ -166,12 +166,12 @@
 
 .settings-danger-icon {
     color: var(--accent-warning);
-    font-size: 14px;
+    font-size: var(--font-xl);
     cursor: help;
 }
 
 .settings-config-name {
-    font-size: 14px;
+    font-size: var(--font-xl);
     font-weight: 500;
     color: var(--text-primary);
 }
@@ -179,7 +179,7 @@
 .settings-default-badge {
     background: var(--accent-primary);
     color: var(--tool-icon-text);
-    font-size: 10px;
+    font-size: var(--font-sm);
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
@@ -188,13 +188,13 @@
 
 .settings-config-desc {
     margin-top: 4px;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
 }
 
 .settings-config-mcps {
     margin-top: 4px;
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -208,7 +208,7 @@
 .settings-edit-btn,
 .settings-delete-btn {
     padding: 4px 12px;
-    font-size: 12px;
+    font-size: var(--font-base);
     border: none;
     border-radius: 4px;
     cursor: pointer;
@@ -244,7 +244,7 @@
 }
 
 .settings-hint {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
@@ -255,7 +255,7 @@
     padding: 2px 5px;
     margin: 0 2px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--kbd-text);
 }
 
@@ -275,13 +275,13 @@
 
 .settings-theme-header h3 {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 600;
     color: var(--text-secondary);
 }
 
 .settings-theme-icon {
-    font-size: 16px;
+    font-size: var(--font-2xl);
 }
 
 .settings-theme-options {
@@ -300,7 +300,7 @@
     border: 2px solid var(--border-secondary);
     border-radius: 8px;
     color: var(--text-secondary);
-    font-size: 13px;
+    font-size: var(--font-lg);
     cursor: pointer;
     transition: all 0.15s;
 }
@@ -321,12 +321,12 @@
 }
 
 .settings-theme-option-icon {
-    font-size: 16px;
+    font-size: var(--font-2xl);
 }
 
 /* Terminal Input Settings */
 .settings-input-description {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     margin-bottom: 12px;
     line-height: 1.5;
@@ -337,7 +337,7 @@
     padding: 2px 5px;
     border-radius: 3px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-secondary);
 }
 
@@ -348,7 +348,7 @@
 .settings-input-options .settings-theme-option {
     min-width: 100px;
     padding: 10px 12px;
-    font-size: 12px;
+    font-size: var(--font-base);
 }
 
 /* Font Size Settings */
@@ -359,7 +359,7 @@
     padding: 2px 5px;
     margin: 0 2px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--kbd-text);
 }
 
@@ -379,7 +379,7 @@
     border: 2px solid var(--border-secondary);
     border-radius: 8px;
     color: var(--text-primary);
-    font-size: 18px;
+    font-size: var(--font-3xl);
     font-weight: 500;
     cursor: pointer;
     transition: all 0.15s;
@@ -396,7 +396,7 @@
 }
 
 .settings-font-size-value {
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 600;
     color: var(--text-primary);
     min-width: 50px;
@@ -410,7 +410,7 @@
     border: none;
     border-radius: 6px;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--font-base);
     cursor: pointer;
     transition: all 0.15s;
     margin-left: 8px;

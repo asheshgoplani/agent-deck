@@ -32,14 +32,14 @@
 
 .tool-picker-header h3 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
 
 .tool-picker-path {
     margin: 8px 0 0 0;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -84,7 +84,7 @@
     justify-content: center;
     border-radius: 6px;
     font-weight: bold;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -97,11 +97,11 @@
 
 .tool-picker-name {
     font-weight: 500;
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 .tool-picker-desc {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     margin-top: 2px;
 }
@@ -115,7 +115,7 @@
     justify-content: center;
     background: var(--kbd-bg);
     border-radius: 4px;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     flex-shrink: 0;
 }
@@ -131,7 +131,7 @@
 }
 
 .tool-picker-hint {
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
 }
 
@@ -142,6 +142,6 @@
     padding: 2px 5px;
     margin-right: 3px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--kbd-text);
 }

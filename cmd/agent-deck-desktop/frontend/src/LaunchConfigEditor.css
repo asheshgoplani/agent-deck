@@ -18,7 +18,7 @@
 
 .editor-header h2 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
@@ -31,7 +31,7 @@
     justify-content: center;
     border-radius: 6px;
     font-weight: bold;
-    font-size: 14px;
+    font-size: var(--font-xl);
     color: var(--tool-icon-text);
 }
 
@@ -53,7 +53,7 @@
 
 .editor-field label {
     display: block;
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 500;
     color: var(--text-secondary);
     margin-bottom: 6px;
@@ -70,7 +70,7 @@
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-xl);
     font-family: inherit;
     outline: none;
     transition: border-color 0.15s;
@@ -90,7 +90,7 @@
     border: 1px solid var(--border-secondary);
     border-radius: 6px;
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 /* Checkbox Field */
@@ -118,7 +118,7 @@
 }
 
 .editor-checkbox span {
-    font-size: 14px;
+    font-size: var(--font-xl);
     color: var(--text-secondary);
     margin-left: 8px;
 }
@@ -126,7 +126,7 @@
 /* Hints */
 .editor-hint {
     margin-top: 6px;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
@@ -135,7 +135,7 @@
     padding: 2px 6px;
     border-radius: 3px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--accent-warning);
 }
 
@@ -144,7 +144,7 @@
     margin-top: 8px;
     padding: 8px 12px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: var(--font-base);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -187,7 +187,7 @@
     border: 1px solid rgba(255, 107, 107, 0.3);
     border-radius: 6px;
     color: var(--accent-error);
-    font-size: 13px;
+    font-size: var(--font-lg);
     margin-top: 16px;
 }
 
@@ -208,7 +208,7 @@
 }
 
 .editor-footer-hint {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
@@ -219,7 +219,7 @@
     padding: 2px 5px;
     margin: 0 2px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--kbd-text);
 }
 
@@ -231,7 +231,7 @@
 .editor-cancel-btn,
 .editor-save-btn {
     padding: 8px 20px;
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 500;
     border: none;
     border-radius: 6px;

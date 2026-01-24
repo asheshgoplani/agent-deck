@@ -7,6 +7,7 @@ import {
 } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
+import { isMac } from './utils/platform';
 import ToolIcon from './ToolIcon';
 import { useTooltip } from './Tooltip';
 
@@ -295,7 +296,7 @@ export default function LaunchConfigEditor({ config, tool, onSave, onCancel }) {
 
             <div className="editor-footer">
                 <div className="editor-footer-hint">
-                    <kbd>{navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}</kbd>+<kbd>Enter</kbd> to save
+                    <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd>+<kbd>Enter</kbd> to save
                 </div>
                 <div className="editor-footer-actions">
                     <button

@@ -35,7 +35,7 @@ html, body, #root {
     padding: 6px 12px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--font-lg);
     transition: background 0.15s, border-color 0.15s;
 }
 
@@ -46,7 +46,7 @@ html, body, #root {
 
 .session-title-header {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--font-lg);
     font-weight: 500;
     display: flex;
     align-items: center;
@@ -58,7 +58,7 @@ html, body, #root {
     align-items: center;
     gap: 4px;
     color: var(--accent-success);
-    font-size: 12px;
+    font-size: var(--font-base);
     font-weight: 400;
     background: rgba(78, 205, 196, 0.1);
     padding: 2px 8px;
@@ -70,7 +70,7 @@ html, body, #root {
 }
 
 .git-branch-icon {
-    font-size: 11px;
+    font-size: var(--font-md);
     opacity: 0.8;
 }
 
@@ -92,7 +92,7 @@ html, body, #root {
 
 .header-config-badge {
     color: var(--accent-purple);
-    font-size: 11px;
+    font-size: var(--font-md);
     font-style: italic;
     background: rgba(169, 161, 225, 0.1);
     padding: 2px 8px;
@@ -109,7 +109,7 @@ html, body, #root {
     padding: 2px 10px;
     background: var(--accent-primary);
     color: var(--tool-icon-text);
-    font-size: 12px;
+    font-size: var(--font-base);
     font-weight: 500;
     border-radius: 10px;
     vertical-align: middle;
@@ -147,14 +147,14 @@ html, body, #root {
 .modal-content h3 {
     margin: 0 0 12px 0;
     color: var(--text-primary);
-    font-size: 18px;
+    font-size: var(--font-3xl);
     font-weight: 500;
 }
 
 .modal-content p {
     margin: 0 0 24px 0;
     color: var(--text-secondary);
-    font-size: 14px;
+    font-size: var(--font-xl);
     line-height: 1.5;
 }
 
@@ -168,7 +168,7 @@ html, body, #root {
 .modal-btn-confirm {
     padding: 8px 16px;
     border-radius: 4px;
-    font-size: 14px;
+    font-size: var(--font-xl);
     cursor: pointer;
     transition: background 0.15s;
 }

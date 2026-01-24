@@ -260,3 +260,21 @@ func (ht *HistoryTracker) SetAltScreen(inAltScreen bool) {
 	}
 	ht.inAltScreen = inAltScreen
 }
+
+// NewRemoteHistoryTracker creates a HistoryTracker for a remote tmux session.
+// The tracker itself is the same as local - remote command execution is handled
+// by the caller via SSHBridge. The hostID and sshBridge params are accepted for
+// API compatibility but the tracker doesn't use them directly.
+func NewRemoteHistoryTracker(hostID, session string, rows int, sshBridge *SSHBridge) *HistoryTracker {
+	// Remote polling uses sshBridge directly in terminal.go's pollRemoteTmuxOnce.
+	// The tracker just tracks viewport state for diffing, same as local.
+	_ = hostID    // Reserved for future use
+	_ = sshBridge // Reserved for future use
+	return &HistoryTracker{
+		tmuxSession:       session,
+		lastHistoryIndex:  0,
+		lastViewportLines: []string{},
+		viewportRows:      rows,
+		inAltScreen:       false,
+	}
+}

@@ -22,7 +22,7 @@
 }
 
 .rename-dialog-title {
-    font-size: 14px;
+    font-size: var(--font-xl);
     font-weight: 500;
     color: var(--text-primary);
     margin-bottom: 12px;
@@ -35,7 +35,7 @@
     border: 1px solid var(--border-primary);
     border-radius: 4px;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: var(--font-xl);
     outline: none;
     box-sizing: border-box;
 }
@@ -55,7 +55,7 @@
 .rename-dialog-save {
     padding: 6px 14px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: var(--font-lg);
     cursor: pointer;
     transition: background 0.15s;
 }

@@ -3,6 +3,18 @@
 
 :root,
 [data-theme="dark"] {
+    /* Font size tiers - scale with --font-scale */
+    --font-2xs: calc(8px * var(--font-scale, 1));
+    --font-xs:  calc(9px * var(--font-scale, 1));
+    --font-sm:  calc(10px * var(--font-scale, 1));
+    --font-md:  calc(11px * var(--font-scale, 1));
+    --font-base: calc(12px * var(--font-scale, 1));
+    --font-lg:  calc(13px * var(--font-scale, 1));
+    --font-xl:  calc(14px * var(--font-scale, 1));
+    --font-2xl: calc(16px * var(--font-scale, 1));
+    --font-3xl: calc(18px * var(--font-scale, 1));
+    --font-4xl: calc(24px * var(--font-scale, 1));
+
     /* Backgrounds */
     --bg-primary: #1a1a2e;
     --bg-secondary: #252540;

@@ -45,7 +45,7 @@
     justify-content: center;
     border-radius: 6px;
     font-weight: bold;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     color: var(--tool-icon-text);
     flex-shrink: 0;
 }
@@ -57,14 +57,14 @@
 
 .config-picker-header h3 {
     margin: 0;
-    font-size: 16px;
+    font-size: var(--font-2xl);
     font-weight: 500;
     color: var(--text-primary);
 }
 
 .config-picker-path {
     margin: 4px 0 0 0;
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -76,7 +76,7 @@
     padding: 32px 16px;
     text-align: center;
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--font-lg);
 }
 
 /* Options */
@@ -123,18 +123,18 @@
 
 .config-picker-danger-icon {
     color: var(--accent-warning);
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 .config-picker-option-name {
     font-weight: 500;
-    font-size: 14px;
+    font-size: var(--font-xl);
 }
 
 .config-picker-default-badge {
     background: var(--accent-primary);
     color: var(--tool-icon-text);
-    font-size: 10px;
+    font-size: var(--font-sm);
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
@@ -142,13 +142,13 @@
 }
 
 .config-picker-option-desc {
-    font-size: 12px;
+    font-size: var(--font-base);
     color: var(--text-muted);
     margin-top: 4px;
 }
 
 .config-picker-option-mcps {
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
     margin-top: 4px;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -166,7 +166,7 @@
 }
 
 .config-picker-hint {
-    font-size: 11px;
+    font-size: var(--font-md);
     color: var(--text-dimmed);
 }
 
@@ -177,6 +177,6 @@
     padding: 2px 5px;
     margin-right: 3px;
     font-family: inherit;
-    font-size: 10px;
+    font-size: var(--font-sm);
     color: var(--kbd-text);
 }
