@@ -9,22 +9,27 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // SessionInfo represents an Agent Deck session for the frontend.
 type SessionInfo struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	ProjectPath    string    `json:"projectPath"`
-	GroupPath      string    `json:"groupPath"`
-	Tool           string    `json:"tool"`
-	Status         string    `json:"status"`
-	TmuxSession    string    `json:"tmuxSession"`
-	IsRemote       bool      `json:"isRemote"`
-	RemoteHost     string    `json:"remoteHost,omitempty"`
-	GitBranch      string    `json:"gitBranch,omitempty"`
-	IsWorktree     bool      `json:"isWorktree,omitempty"`
-	LastAccessedAt time.Time `json:"lastAccessedAt,omitempty"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	ProjectPath      string    `json:"projectPath"`
+	GroupPath        string    `json:"groupPath"`
+	Tool             string    `json:"tool"`
+	Status           string    `json:"status"`
+	TmuxSession      string    `json:"tmuxSession"`
+	IsRemote         bool      `json:"isRemote"`
+	RemoteHost       string    `json:"remoteHost,omitempty"`
+	GitBranch        string    `json:"gitBranch,omitempty"`
+	IsWorktree       bool      `json:"isWorktree,omitempty"`
+	LastAccessedAt   time.Time `json:"lastAccessedAt,omitempty"`
+	LaunchConfigName string    `json:"launchConfigName,omitempty"`
+	LoadedMCPs       []string  `json:"loadedMcps,omitempty"`
+	DangerousMode    bool      `json:"dangerousMode,omitempty"`
 }
 
 // sessionsJSON mirrors the storage format from internal/session/storage.go
@@ -33,16 +38,19 @@ type sessionsJSON struct {
 }
 
 type instanceJSON struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	ProjectPath    string    `json:"project_path"`
-	GroupPath      string    `json:"group_path"`
-	Tool           string    `json:"tool"`
-	Status         string    `json:"status"`
-	TmuxSession    string    `json:"tmux_session"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"`
-	RemoteHost     string    `json:"remote_host,omitempty"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	ProjectPath      string    `json:"project_path"`
+	GroupPath        string    `json:"group_path"`
+	Tool             string    `json:"tool"`
+	Status           string    `json:"status"`
+	TmuxSession      string    `json:"tmux_session"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastAccessedAt   time.Time `json:"last_accessed_at,omitempty"`
+	RemoteHost       string    `json:"remote_host,omitempty"`
+	LaunchConfigName string    `json:"launch_config_name,omitempty"`
+	LoadedMCPNames   []string  `json:"loaded_mcp_names,omitempty"`
+	DangerousMode    bool      `json:"dangerous_mode,omitempty"`
 }
 
 // TmuxManager handles tmux session operations.
@@ -102,18 +110,21 @@ func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
 		}
 
 		result = append(result, SessionInfo{
-			ID:             inst.ID,
-			Title:          inst.Title,
-			ProjectPath:    inst.ProjectPath,
-			GroupPath:      inst.GroupPath,
-			Tool:           inst.Tool,
-			Status:         inst.Status,
-			TmuxSession:    inst.TmuxSession,
-			IsRemote:       isRemote,
-			RemoteHost:     inst.RemoteHost,
-			GitBranch:      gitBranch,
-			IsWorktree:     isWorktree,
-			LastAccessedAt: lastAccessed,
+			ID:               inst.ID,
+			Title:            inst.Title,
+			ProjectPath:      inst.ProjectPath,
+			GroupPath:        inst.GroupPath,
+			Tool:             inst.Tool,
+			Status:           inst.Status,
+			TmuxSession:      inst.TmuxSession,
+			IsRemote:         isRemote,
+			RemoteHost:       inst.RemoteHost,
+			GitBranch:        gitBranch,
+			IsWorktree:       isWorktree,
+			LastAccessedAt:   lastAccessed,
+			LaunchConfigName: inst.LaunchConfigName,
+			LoadedMCPs:       inst.LoadedMCPNames,
+			DangerousMode:    inst.DangerousMode,
 		})
 	}
 
@@ -204,7 +215,8 @@ func (tm *TmuxManager) SessionExists(tmuxSession string) bool {
 }
 
 // CreateSession creates a new tmux session and launches an AI tool.
-func (tm *TmuxManager) CreateSession(projectPath, title, tool string) (SessionInfo, error) {
+// If configKey is non-empty, the launch config settings will be applied.
+func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string) (SessionInfo, error) {
 	// Generate unique session name
 	sessionName := fmt.Sprintf("agentdeck_%d", time.Now().UnixNano())
 
@@ -214,8 +226,14 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool string) (SessionIn
 		return SessionInfo{}, fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
-	// Build tool command
+	// Build tool command with optional launch config settings
 	var toolCmd string
+	var cmdArgs []string
+	var dangerousMode bool
+	var loadedMCPs []string
+	var launchConfigName string
+
+	// Get base tool command
 	switch tool {
 	case "claude":
 		toolCmd = "claude"
@@ -227,20 +245,66 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool string) (SessionIn
 		toolCmd = tool // Allow custom tools
 	}
 
+	// Apply launch config if provided
+	if configKey != "" {
+		cfg := session.GetLaunchConfigByKey(configKey)
+		if cfg != nil {
+			launchConfigName = cfg.Name
+			dangerousMode = cfg.DangerousMode
+
+			// Add dangerous mode flag
+			if cfg.DangerousMode {
+				switch tool {
+				case "claude":
+					cmdArgs = append(cmdArgs, "--dangerously-skip-permissions")
+				case "gemini":
+					cmdArgs = append(cmdArgs, "--yolo")
+				}
+			}
+
+			// Add MCP config path if specified
+			if cfg.MCPConfigPath != "" {
+				expandedPath, err := cfg.ExpandMCPConfigPath()
+				if err == nil && expandedPath != "" {
+					switch tool {
+					case "claude":
+						cmdArgs = append(cmdArgs, "--mcp-config", expandedPath)
+					}
+					// Parse MCP names for display
+					if mcpNames, err := cfg.ParseMCPNames(); err == nil {
+						loadedMCPs = mcpNames
+					}
+				}
+			}
+
+			// Add extra args
+			cmdArgs = append(cmdArgs, cfg.ExtraArgs...)
+		}
+	}
+
+	// Build the full command string
+	fullCmd := toolCmd
+	if len(cmdArgs) > 0 {
+		fullCmd = toolCmd + " " + strings.Join(cmdArgs, " ")
+	}
+
 	// Send the tool command to the session
-	sendCmd := exec.Command("tmux", "send-keys", "-t", sessionName, toolCmd, "Enter")
+	sendCmd := exec.Command("tmux", "send-keys", "-t", sessionName, fullCmd, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		// Don't fail if we can't send the command, the session is still usable
 		fmt.Printf("Warning: failed to send tool command: %v\n", err)
 	}
 
 	return SessionInfo{
-		ID:          sessionName,
-		Title:       title,
-		ProjectPath: projectPath,
-		Tool:        tool,
-		Status:      "running",
-		TmuxSession: sessionName,
+		ID:               sessionName,
+		Title:            title,
+		ProjectPath:      projectPath,
+		Tool:             tool,
+		Status:           "running",
+		TmuxSession:      sessionName,
+		LaunchConfigName: launchConfigName,
+		LoadedMCPs:       loadedMCPs,
+		DangerousMode:    dangerousMode,
 	}, nil
 }
 

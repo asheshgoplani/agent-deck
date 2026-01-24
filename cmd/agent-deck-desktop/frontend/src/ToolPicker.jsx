@@ -6,7 +6,7 @@ import ToolIcon from './ToolIcon';
 
 const logger = createLogger('ToolPicker');
 
-export default function ToolPicker({ projectPath, projectName, onSelect, onCancel }) {
+export default function ToolPicker({ projectPath, projectName, onSelect, onSelectWithConfig, onCancel }) {
     const [selectedIndex, setSelectedIndex] = useState(0);
     const containerRef = useRef(null);
 
@@ -16,6 +16,8 @@ export default function ToolPicker({ projectPath, projectName, onSelect, onCance
     }, [projectPath, projectName]);
 
     const handleKeyDown = (e) => {
+        const withConfig = e.metaKey || e.ctrlKey;
+
         switch (e.key) {
             case 'ArrowDown':
             case 'ArrowRight':
@@ -30,7 +32,7 @@ export default function ToolPicker({ projectPath, projectName, onSelect, onCance
             case 'Enter':
             case ' ':
                 e.preventDefault();
-                handleSelect(TOOLS[selectedIndex]);
+                handleSelect(TOOLS[selectedIndex], withConfig);
                 break;
             case 'Escape':
                 e.preventDefault();
@@ -39,22 +41,27 @@ export default function ToolPicker({ projectPath, projectName, onSelect, onCance
                 break;
             case '1':
                 e.preventDefault();
-                handleSelect(TOOLS[0]);
+                handleSelect(TOOLS[0], withConfig);
                 break;
             case '2':
                 e.preventDefault();
-                handleSelect(TOOLS[1]);
+                handleSelect(TOOLS[1], withConfig);
                 break;
             case '3':
                 e.preventDefault();
-                handleSelect(TOOLS[2]);
+                handleSelect(TOOLS[2], withConfig);
                 break;
         }
     };
 
-    const handleSelect = (tool) => {
-        logger.info('Tool selected', { tool: tool.id, projectPath });
-        onSelect(tool.id);
+    const handleSelect = (tool, withConfig = false) => {
+        if (withConfig && onSelectWithConfig) {
+            logger.info('Tool selected with config picker', { tool: tool.id, projectPath });
+            onSelectWithConfig(tool.id);
+        } else {
+            logger.info('Tool selected', { tool: tool.id, projectPath });
+            onSelect(tool.id);
+        }
     };
 
     return (
@@ -75,7 +82,7 @@ export default function ToolPicker({ projectPath, projectName, onSelect, onCance
                         <button
                             key={tool.id}
                             className={`tool-picker-option ${index === selectedIndex ? 'selected' : ''}`}
-                            onClick={() => handleSelect(tool)}
+                            onClick={(e) => handleSelect(tool, e.metaKey || e.ctrlKey)}
                             onMouseEnter={() => setSelectedIndex(index)}
                         >
                             <span
@@ -95,7 +102,8 @@ export default function ToolPicker({ projectPath, projectName, onSelect, onCance
                 <div className="tool-picker-footer">
                     <span className="tool-picker-hint"><kbd>↑↓</kbd> Navigate</span>
                     <span className="tool-picker-hint"><kbd>1-3</kbd> Quick select</span>
-                    <span className="tool-picker-hint"><kbd>Enter</kbd> Confirm</span>
+                    <span className="tool-picker-hint"><kbd>Enter</kbd> Launch</span>
+                    <span className="tool-picker-hint"><kbd>⌘Enter</kbd> Pick config</span>
                     <span className="tool-picker-hint"><kbd>Esc</kbd> Cancel</span>
                 </div>
             </div>

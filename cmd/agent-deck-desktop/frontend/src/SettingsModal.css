@@ -1,0 +1,259 @@
+/* Settings Modal Overlay */
+.settings-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+}
+
+/* Settings Modal Container */
+.settings-container {
+    width: 100%;
+    max-width: 560px;
+    max-height: 80vh;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+.settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.settings-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: #eee;
+}
+
+.settings-close {
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.settings-close:hover {
+    color: #eee;
+    background: #333;
+}
+
+/* Content */
+.settings-content {
+    padding: 16px 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.settings-loading {
+    text-align: center;
+    color: #888;
+    padding: 40px 0;
+}
+
+/* Tool Sections */
+.settings-tool-section {
+    margin-bottom: 24px;
+}
+
+.settings-tool-section:last-child {
+    margin-bottom: 0;
+}
+
+.settings-tool-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.settings-tool-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: #ccc;
+    flex: 1;
+}
+
+.settings-tool-icon {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 12px;
+    color: #1a1a2e;
+}
+
+.settings-add-btn {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #333;
+    border: none;
+    border-radius: 4px;
+    color: #888;
+    font-size: 16px;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+
+.settings-add-btn:hover {
+    background: #444;
+    color: #eee;
+}
+
+.settings-empty {
+    padding: 12px 16px;
+    background: #1f1f35;
+    border-radius: 6px;
+    color: #666;
+    font-size: 12px;
+    text-align: center;
+}
+
+/* Config List */
+.settings-config-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-config-item {
+    background: #1f1f35;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.settings-config-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.settings-danger-icon {
+    color: #fabd2f;
+    font-size: 14px;
+    cursor: help;
+}
+
+.settings-config-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #eee;
+}
+
+.settings-default-badge {
+    background: #4cc9f0;
+    color: #1a1a2e;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.settings-config-desc {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #888;
+}
+
+.settings-config-mcps {
+    margin-top: 4px;
+    font-size: 11px;
+    color: #666;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.settings-config-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.settings-edit-btn,
+.settings-delete-btn {
+    padding: 4px 12px;
+    font-size: 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.settings-edit-btn {
+    background: #333;
+    color: #ccc;
+}
+
+.settings-edit-btn:hover {
+    background: #444;
+    color: #eee;
+}
+
+.settings-delete-btn {
+    background: transparent;
+    color: #888;
+}
+
+.settings-delete-btn:hover {
+    background: #3a2020;
+    color: #ff6b6b;
+}
+
+/* Footer */
+.settings-footer {
+    padding: 12px 20px;
+    border-top: 1px solid #333;
+    background: #1f1f35;
+    flex-shrink: 0;
+}
+
+.settings-hint {
+    font-size: 12px;
+    color: #666;
+}
+
+.settings-hint kbd {
+    display: inline-block;
+    background: #333;
+    border-radius: 3px;
+    padding: 2px 5px;
+    margin: 0 2px;
+    font-family: inherit;
+    font-size: 10px;
+    color: #aaa;
+}

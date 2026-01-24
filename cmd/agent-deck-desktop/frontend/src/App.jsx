@@ -5,10 +5,12 @@ import Search from './Search';
 import SessionSelector from './SessionSelector';
 import CommandPalette from './CommandPalette';
 import ToolPicker from './ToolPicker';
+import ConfigPicker from './ConfigPicker';
+import SettingsModal from './SettingsModal';
 import QuickLaunchBar from './QuickLaunchBar';
 import ShortcutBar from './ShortcutBar';
 import KeyboardHelpModal from './KeyboardHelpModal';
-import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed } from '../wailsjs/go/main/App';
+import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 
 const logger = createLogger('App');
@@ -34,6 +36,9 @@ function App() {
     const [isWorktree, setIsWorktree] = useState(false); // Whether session is in a git worktree
     const [statusFilter, setStatusFilter] = useState('all'); // 'all', 'active', 'idle'
     const [showHelpModal, setShowHelpModal] = useState(false);
+    const [showConfigPicker, setShowConfigPicker] = useState(false);
+    const [configPickerTool, setConfigPickerTool] = useState(null);
+    const [showSettings, setShowSettings] = useState(false);
     const sessionSelectorRef = useRef(null);
 
     // Cycle through status filter modes: all -> active -> idle -> all
@@ -162,13 +167,13 @@ function App() {
         }
     }, [view, loadSessionsAndProjects]);
 
-    // Launch a project with the specified tool
-    const handleLaunchProject = useCallback(async (projectPath, projectName, tool) => {
+    // Launch a project with the specified tool and optional config
+    const handleLaunchProject = useCallback(async (projectPath, projectName, tool, configKey = '') => {
         try {
-            logger.info('Launching project', { projectPath, projectName, tool });
+            logger.info('Launching project', { projectPath, projectName, tool, configKey });
 
-            // Create session
-            const session = await CreateSession(projectPath, projectName, tool);
+            // Create session with config key
+            const session = await CreateSession(projectPath, projectName, tool, configKey);
             logger.info('Session created', { sessionId: session.id, tmuxSession: session.tmuxSession });
 
             // Record usage for frecency
@@ -230,19 +235,62 @@ function App() {
         setPalettePinMode(false);
     }, []);
 
-    // Handle tool selection from picker
-    const handleToolSelected = useCallback((tool) => {
+    // Handle tool selection from picker (use default config if available)
+    const handleToolSelected = useCallback(async (tool) => {
         if (toolPickerProject) {
-            handleLaunchProject(toolPickerProject.path, toolPickerProject.name, tool);
+            // Try to get default config for this tool
+            let configKey = '';
+            try {
+                const defaultConfig = await GetDefaultLaunchConfig(tool);
+                if (defaultConfig?.key) {
+                    configKey = defaultConfig.key;
+                    logger.info('Using default config', { tool, configKey });
+                }
+            } catch (err) {
+                logger.warn('Failed to get default config:', err);
+            }
+            handleLaunchProject(toolPickerProject.path, toolPickerProject.name, tool, configKey);
         }
         setShowToolPicker(false);
         setToolPickerProject(null);
     }, [toolPickerProject, handleLaunchProject]);
 
+    // Handle tool selection with config picker (Cmd+Enter)
+    const handleToolSelectedWithConfig = useCallback((tool) => {
+        logger.info('Opening config picker', { tool });
+        setShowToolPicker(false);
+        setConfigPickerTool(tool);
+        setShowConfigPicker(true);
+    }, []);
+
+    // Handle config selection from picker
+    const handleConfigSelected = useCallback((configKey) => {
+        if (toolPickerProject && configPickerTool) {
+            handleLaunchProject(toolPickerProject.path, toolPickerProject.name, configPickerTool, configKey);
+        }
+        setShowConfigPicker(false);
+        setConfigPickerTool(null);
+        setToolPickerProject(null);
+    }, [toolPickerProject, configPickerTool, handleLaunchProject]);
+
+    // Cancel config picker
+    const handleCancelConfigPicker = useCallback(() => {
+        setShowConfigPicker(false);
+        setConfigPickerTool(null);
+        // Go back to tool picker
+        setShowToolPicker(true);
+    }, []);
+
     // Cancel tool picker
     const handleCancelToolPicker = useCallback(() => {
         setShowToolPicker(false);
         setToolPickerProject(null);
+    }, []);
+
+    // Open settings modal
+    const handleOpenSettings = useCallback(() => {
+        logger.info('Opening settings modal');
+        setShowSettings(true);
     }, []);
 
     const handleSelectSession = useCallback(async (session) => {
@@ -366,7 +414,12 @@ function App() {
             e.preventDefault();
             handleCycleStatusFilter();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal]);
+        // Cmd+Shift+, to open settings (works in both views)
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === ',') {
+            e.preventDefault();
+            handleOpenSettings();
+        }
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -415,8 +468,21 @@ function App() {
                         projectPath={toolPickerProject.path}
                         projectName={toolPickerProject.name}
                         onSelect={handleToolSelected}
+                        onSelectWithConfig={handleToolSelectedWithConfig}
                         onCancel={handleCancelToolPicker}
                     />
+                )}
+                {showConfigPicker && toolPickerProject && configPickerTool && (
+                    <ConfigPicker
+                        tool={configPickerTool}
+                        projectPath={toolPickerProject.path}
+                        projectName={toolPickerProject.name}
+                        onSelect={handleConfigSelected}
+                        onCancel={handleCancelConfigPicker}
+                    />
+                )}
+                {showSettings && (
+                    <SettingsModal onClose={() => setShowSettings(false)} />
                 )}
                 {showHelpModal && (
                     <KeyboardHelpModal onClose={() => setShowHelpModal(false)} />
@@ -444,12 +510,18 @@ function App() {
                 </button>
                 {selectedSession && (
                     <div className="session-title-header">
+                        {selectedSession.dangerousMode && (
+                            <span className="header-danger-icon" title="Dangerous mode enabled">⚠</span>
+                        )}
                         {selectedSession.title}
                         {gitBranch && (
                             <span className={`git-branch${isWorktree ? ' is-worktree' : ''}`}>
                                 <span className="git-branch-icon">{isWorktree ? '🌿' : '⎇'}</span>
                                 {gitBranch}
                             </span>
+                        )}
+                        {selectedSession.launchConfigName && (
+                            <span className="header-config-badge">{selectedSession.launchConfigName}</span>
                         )}
                     </div>
                 )}
@@ -515,8 +587,21 @@ function App() {
                     projectPath={toolPickerProject.path}
                     projectName={toolPickerProject.name}
                     onSelect={handleToolSelected}
+                    onSelectWithConfig={handleToolSelectedWithConfig}
                     onCancel={handleCancelToolPicker}
                 />
+            )}
+            {showConfigPicker && toolPickerProject && configPickerTool && (
+                <ConfigPicker
+                    tool={configPickerTool}
+                    projectPath={toolPickerProject.path}
+                    projectName={toolPickerProject.name}
+                    onSelect={handleConfigSelected}
+                    onCancel={handleCancelConfigPicker}
+                />
+            )}
+            {showSettings && (
+                <SettingsModal onClose={() => setShowSettings(false)} />
             )}
             {showHelpModal && (
                 <KeyboardHelpModal onClose={() => setShowHelpModal(false)} />

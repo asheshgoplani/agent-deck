@@ -314,9 +314,20 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                                 <ToolIcon tool={session.tool} size={16} />
                             </span>
                             <div className="session-info">
-                                <div className="session-title">{session.title}</div>
+                                <div className="session-title">
+                                    {session.dangerousMode && (
+                                        <span className="session-danger-icon" title="Dangerous mode enabled">⚠</span>
+                                    )}
+                                    {session.title}
+                                </div>
                                 <div className="session-meta">
                                     <span className="session-group">{session.groupPath || 'ungrouped'}</span>
+                                    {session.launchConfigName && (
+                                        <>
+                                            <span className="meta-separator">•</span>
+                                            <span className="session-config">{session.launchConfigName}</span>
+                                        </>
+                                    )}
                                     {session.gitBranch && (
                                         <>
                                             <span className="meta-separator">•</span>

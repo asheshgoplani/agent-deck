@@ -1,5 +1,33 @@
 export namespace main {
 	
+	export class LaunchConfigInfo {
+	    key: string;
+	    name: string;
+	    tool: string;
+	    description: string;
+	    dangerousMode: boolean;
+	    mcpConfigPath: string;
+	    mcpNames?: string[];
+	    extraArgs: string[];
+	    isDefault: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchConfigInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.tool = source["tool"];
+	        this.description = source["description"];
+	        this.dangerousMode = source["dangerousMode"];
+	        this.mcpConfigPath = source["mcpConfigPath"];
+	        this.mcpNames = source["mcpNames"];
+	        this.extraArgs = source["extraArgs"];
+	        this.isDefault = source["isDefault"];
+	    }
+	}
 	export class ProjectInfo {
 	    path: string;
 	    name: string;
@@ -54,6 +82,9 @@ export namespace main {
 	    isWorktree?: boolean;
 	    // Go type: time
 	    lastAccessedAt?: any;
+	    launchConfigName?: string;
+	    loadedMcps?: string[];
+	    dangerousMode?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SessionInfo(source);
@@ -73,6 +104,9 @@ export namespace main {
 	        this.gitBranch = source["gitBranch"];
 	        this.isWorktree = source["isWorktree"];
 	        this.lastAccessedAt = this.convertValues(source["lastAccessedAt"], null);
+	        this.launchConfigName = source["launchConfigName"];
+	        this.loadedMcps = source["loadedMcps"];
+	        this.dangerousMode = source["dangerousMode"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -1,0 +1,182 @@
+/* Config Picker Overlay */
+.config-picker-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1100;
+}
+
+/* Config Picker Container */
+.config-picker-container {
+    width: 100%;
+    max-width: 450px;
+    max-height: 70vh;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 10px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    outline: none;
+}
+
+/* Header */
+.config-picker-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.config-picker-tool-icon {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-weight: bold;
+    font-size: 16px;
+    color: #1a1a2e;
+    flex-shrink: 0;
+}
+
+.config-picker-header-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.config-picker-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: #eee;
+}
+
+.config-picker-path {
+    margin: 4px 0 0 0;
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Loading */
+.config-picker-loading {
+    padding: 32px 16px;
+    text-align: center;
+    color: #888;
+    font-size: 13px;
+}
+
+/* Options */
+.config-picker-options {
+    padding: 8px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.config-picker-option {
+    display: flex;
+    align-items: flex-start;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    text-align: left;
+    color: #eee;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.config-picker-option:hover,
+.config-picker-option.selected {
+    background: #2a2a4a;
+}
+
+.config-picker-option.selected {
+    background: #323260;
+}
+
+/* Option Content */
+.config-picker-option-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.config-picker-option-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.config-picker-danger-icon {
+    color: #fabd2f;
+    font-size: 14px;
+}
+
+.config-picker-option-name {
+    font-weight: 500;
+    font-size: 14px;
+}
+
+.config-picker-default-badge {
+    background: #4cc9f0;
+    color: #1a1a2e;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.config-picker-option-desc {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+}
+
+.config-picker-option-mcps {
+    font-size: 11px;
+    color: #666;
+    margin-top: 4px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Footer Hints */
+.config-picker-footer {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    border-top: 1px solid #333;
+    background: #1f1f35;
+    flex-shrink: 0;
+}
+
+.config-picker-hint {
+    font-size: 11px;
+    color: #666;
+}
+
+.config-picker-hint kbd {
+    display: inline-block;
+    background: #333;
+    border-radius: 3px;
+    padding: 2px 5px;
+    margin-right: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    color: #aaa;
+}

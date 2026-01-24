@@ -76,6 +76,21 @@ html, body, #root {
     color: #9ece6a;
 }
 
+.header-danger-icon {
+    color: #fabd2f;
+    margin-right: 4px;
+    cursor: help;
+}
+
+.header-config-badge {
+    color: #a9a1e1;
+    font-size: 11px;
+    font-style: italic;
+    background: rgba(169, 161, 225, 0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
 .terminal-container {
     flex: 1;
     overflow: hidden;

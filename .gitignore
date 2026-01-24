@@ -7,6 +7,7 @@ build/
 *.so
 *.dylib
 /agent-deck
+/cmd/agent-deck-desktop/agent-deck-desktop
 
 # Test binary
 *.test

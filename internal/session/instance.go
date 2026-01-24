@@ -81,6 +81,14 @@ type Instance struct {
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 
+	// LaunchConfigName is the key of the launch config used to create this session
+	// Used to display config info and for recreating sessions with same settings
+	LaunchConfigName string `json:"launch_config_name,omitempty"`
+
+	// DangerousMode indicates if the session was started with dangerous mode enabled
+	// Cached here so we can display it even if the launch config is deleted
+	DangerousMode bool `json:"dangerous_mode,omitempty"`
+
 	// ToolOptions stores tool-specific launch options (Claude, Codex, Gemini, etc.)
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`

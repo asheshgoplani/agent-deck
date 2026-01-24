@@ -1,0 +1,245 @@
+/* Editor Container */
+.editor-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* Editor Header */
+.editor-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.editor-header h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 500;
+    color: #eee;
+}
+
+.editor-tool-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-weight: bold;
+    font-size: 14px;
+    color: #1a1a2e;
+}
+
+/* Form */
+.editor-form {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.editor-field {
+    margin-bottom: 20px;
+}
+
+.editor-field:last-child {
+    margin-bottom: 0;
+}
+
+.editor-field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: #aaa;
+    margin-bottom: 6px;
+}
+
+.editor-required {
+    color: #ff6b6b;
+}
+
+.editor-field input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    background: #1f1f35;
+    border: 1px solid #333;
+    border-radius: 6px;
+    color: #eee;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.editor-field input[type="text"]:focus {
+    border-color: #4cc9f0;
+}
+
+.editor-field input[type="text"]::placeholder {
+    color: #555;
+}
+
+.editor-readonly {
+    padding: 10px 12px;
+    background: #1a1a2e;
+    border: 1px solid #2a2a40;
+    border-radius: 6px;
+    color: #888;
+    font-size: 14px;
+}
+
+/* Checkbox Field */
+.editor-checkbox-field {
+    padding: 12px;
+    background: #1f1f35;
+    border-radius: 6px;
+}
+
+.editor-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    margin-bottom: 0;
+}
+
+.editor-checkbox input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: #4cc9f0;
+    cursor: pointer;
+}
+
+.editor-checkbox span {
+    font-size: 14px;
+    color: #ccc;
+}
+
+/* Hints */
+.editor-hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #666;
+}
+
+.editor-hint code {
+    background: #2a2a40;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: #fabd2f;
+}
+
+/* MCP Preview */
+.editor-mcp-preview {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.editor-mcp-preview.valid {
+    background: #1a2e1a;
+    border: 1px solid #2a4a2a;
+}
+
+.editor-mcp-preview.invalid {
+    background: #2e1a1a;
+    border: 1px solid #4a2a2a;
+}
+
+.editor-mcp-names {
+    color: #8ec07c;
+}
+
+.editor-mcp-empty {
+    color: #888;
+}
+
+.editor-mcp-error {
+    color: #ff6b6b;
+}
+
+/* Error Message */
+.editor-error {
+    padding: 12px;
+    background: #2e1a1a;
+    border: 1px solid #4a2a2a;
+    border-radius: 6px;
+    color: #ff6b6b;
+    font-size: 13px;
+    margin-top: 16px;
+}
+
+/* Footer */
+.editor-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    border-top: 1px solid #333;
+    background: #1f1f35;
+    flex-shrink: 0;
+}
+
+.editor-footer-hint {
+    font-size: 12px;
+    color: #666;
+}
+
+.editor-footer-hint kbd {
+    display: inline-block;
+    background: #333;
+    border-radius: 3px;
+    padding: 2px 5px;
+    margin: 0 2px;
+    font-family: inherit;
+    font-size: 10px;
+    color: #aaa;
+}
+
+.editor-footer-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.editor-cancel-btn,
+.editor-save-btn {
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+}
+
+.editor-cancel-btn {
+    background: #333;
+    color: #ccc;
+}
+
+.editor-cancel-btn:hover:not(:disabled) {
+    background: #444;
+    color: #eee;
+}
+
+.editor-save-btn {
+    background: #4cc9f0;
+    color: #1a1a2e;
+}
+
+.editor-save-btn:hover:not(:disabled) {
+    background: #5fd4f8;
+}
+
+.editor-cancel-btn:disabled,
+.editor-save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

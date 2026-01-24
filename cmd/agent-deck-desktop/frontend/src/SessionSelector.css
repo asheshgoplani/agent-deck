@@ -193,3 +193,19 @@
     flex-shrink: 0;
 }
 
+/* Danger mode indicator */
+.session-danger-icon {
+    color: #fabd2f;
+    margin-right: 6px;
+    cursor: help;
+}
+
+/* Launch config badge */
+.session-config {
+    color: #a9a1e1;
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100px;
+}
+

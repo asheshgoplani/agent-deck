@@ -8,11 +8,23 @@ export function AttachSession(arg1:string,arg2:number,arg3:number):Promise<void>
 
 export function CloseTerminal():Promise<void>;
 
-export function CreateSession(arg1:string,arg2:string,arg3:string):Promise<main.SessionInfo>;
+export function CreateSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SessionInfo>;
+
+export function DeleteLaunchConfig(arg1:string):Promise<void>;
 
 export function DiscoverProjects():Promise<Array<main.ProjectInfo>>;
 
+export function GenerateConfigKey(arg1:string,arg2:string):Promise<string>;
+
+export function GetDefaultLaunchConfig(arg1:string):Promise<main.LaunchConfigInfo>;
+
 export function GetGitBranch(arg1:string):Promise<string>;
+
+export function GetLaunchConfig(arg1:string):Promise<main.LaunchConfigInfo>;
+
+export function GetLaunchConfigs():Promise<Array<main.LaunchConfigInfo>>;
+
+export function GetLaunchConfigsForTool(arg1:string):Promise<Array<main.LaunchConfigInfo>>;
 
 export function GetProjectRoots():Promise<Array<string>>;
 
@@ -36,6 +48,8 @@ export function RemoveQuickLaunchFavorite(arg1:string):Promise<void>;
 
 export function ResizeTerminal(arg1:number,arg2:number):Promise<void>;
 
+export function SaveLaunchConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string,arg7:Array<string>,arg8:boolean):Promise<void>;
+
 export function SessionExists(arg1:string):Promise<boolean>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
@@ -47,5 +61,7 @@ export function StartTmuxSession(arg1:string,arg2:number,arg3:number):Promise<vo
 export function UpdateQuickLaunchFavoriteName(arg1:string,arg2:string):Promise<void>;
 
 export function UpdateQuickLaunchShortcut(arg1:string,arg2:string):Promise<void>;
+
+export function ValidateMCPConfigPath(arg1:string):Promise<Array<string>>;
 
 export function WriteTerminal(arg1:string):Promise<void>;

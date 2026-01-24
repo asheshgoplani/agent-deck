@@ -94,6 +94,10 @@ type InstanceData struct {
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 
+	// Launch config used for this session
+	LaunchConfigName string `json:"launch_config_name,omitempty"`
+	DangerousMode    bool   `json:"dangerous_mode,omitempty"`
+
 	// Remote session support
 	RemoteHost     string `json:"remote_host,omitempty"`      // SSH host identifier
 	RemoteTmuxName string `json:"remote_tmux_name,omitempty"` // tmux session name on remote
@@ -240,6 +244,8 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			OpenCodeDetectedAt: inst.OpenCodeDetectedAt,
 			LatestPrompt:       inst.LatestPrompt,
 			LoadedMCPNames:     inst.LoadedMCPNames,
+			LaunchConfigName:   inst.LaunchConfigName,
+			DangerousMode:      inst.DangerousMode,
 			RemoteHost:         inst.RemoteHost,
 			RemoteTmuxName:     inst.RemoteTmuxName,
 		}
@@ -577,6 +583,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			OpenCodeDetectedAt: instData.OpenCodeDetectedAt,
 			LatestPrompt:       instData.LatestPrompt,
 			LoadedMCPNames:     instData.LoadedMCPNames,
+			LaunchConfigName:   instData.LaunchConfigName,
+			DangerousMode:      instData.DangerousMode,
 			RemoteHost:         instData.RemoteHost,
 			RemoteTmuxName:     instData.RemoteTmuxName,
 			tmuxSession:        tmuxSess,

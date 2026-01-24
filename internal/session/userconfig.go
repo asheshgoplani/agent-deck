@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,10 @@ type UserConfig struct {
 
 	// ProjectDiscovery defines settings for project discovery in desktop app
 	ProjectDiscovery ProjectDiscoverySettings `toml:"project_discovery"`
+
+	// LaunchConfigs maps config key (e.g., "claude:minimal") to launch configuration
+	// These configs provide preset CLI options for creating new sessions
+	LaunchConfigs map[string]LaunchConfig `toml:"launch_configs"`
 }
 
 // ProjectDiscoverySettings defines settings for discovering projects on disk
@@ -92,6 +97,33 @@ type ProjectDiscoverySettings struct {
 	// IgnorePatterns are directory names to skip during scanning
 	// Default: ["node_modules", ".git", "vendor", "__pycache__"]
 	IgnorePatterns []string `toml:"ignore_patterns"`
+}
+
+// LaunchConfig defines a preset configuration for launching AI tool sessions
+// These allow users to save commonly-used CLI options (dangerous mode, MCP configs, etc.)
+type LaunchConfig struct {
+	// Name is the display name for this configuration
+	Name string `toml:"name"`
+
+	// Tool specifies which AI tool this config applies to: "claude", "gemini", or "opencode"
+	Tool string `toml:"tool"`
+
+	// Description provides additional context shown in the picker
+	Description string `toml:"description"`
+
+	// DangerousMode enables --dangerously-skip-permissions (Claude) or --yolo (Gemini)
+	DangerousMode bool `toml:"dangerous_mode"`
+
+	// MCPConfigPath is the path to an MCP config file (supports ~ expansion)
+	// If set, the MCPs from this file will be loaded instead of the project's .mcp.json
+	MCPConfigPath string `toml:"mcp_config"`
+
+	// ExtraArgs are additional CLI arguments to pass to the tool
+	ExtraArgs []string `toml:"extra_args"`
+
+	// IsDefault marks this as the default config for its tool
+	// Only one config per tool should be marked as default
+	IsDefault bool `toml:"is_default"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -503,9 +535,10 @@ type RemoteDiscoverySettings struct {
 
 // Default user config (empty maps)
 var defaultUserConfig = UserConfig{
-	Tools:    make(map[string]ToolDef),
-	MCPs:     make(map[string]MCPDef),
-	SSHHosts: make(map[string]SSHHostDef),
+	Tools:         make(map[string]ToolDef),
+	MCPs:          make(map[string]MCPDef),
+	SSHHosts:      make(map[string]SSHHostDef),
+	LaunchConfigs: make(map[string]LaunchConfig),
 }
 
 // Cache for user config (loaded once per session)
@@ -569,6 +602,9 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 	if config.MCPs == nil {
 		config.MCPs = make(map[string]MCPDef)
+	}
+	if config.LaunchConfigs == nil {
+		config.LaunchConfigs = make(map[string]LaunchConfig)
 	}
 
 	userConfigCache = &config
@@ -983,6 +1019,131 @@ func GetProjectDiscoverySettings() ProjectDiscoverySettings {
 	settings.ScanPaths = expandedPaths
 
 	return settings
+}
+
+// GetLaunchConfigs returns all launch configurations from config
+func GetLaunchConfigs() map[string]LaunchConfig {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return make(map[string]LaunchConfig)
+	}
+	if config.LaunchConfigs == nil {
+		return make(map[string]LaunchConfig)
+	}
+	return config.LaunchConfigs
+}
+
+// GetLaunchConfigsForTool returns launch configs filtered by tool name
+func GetLaunchConfigsForTool(tool string) []LaunchConfig {
+	configs := GetLaunchConfigs()
+	result := make([]LaunchConfig, 0)
+	for _, cfg := range configs {
+		if cfg.Tool == tool {
+			result = append(result, cfg)
+		}
+	}
+	// Sort by name for consistent ordering
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
+// GetDefaultLaunchConfig returns the default config for a tool, or nil if none set
+func GetDefaultLaunchConfig(tool string) *LaunchConfig {
+	configs := GetLaunchConfigs()
+	for _, cfg := range configs {
+		if cfg.Tool == tool && cfg.IsDefault {
+			return &cfg
+		}
+	}
+	return nil
+}
+
+// GetLaunchConfigByKey returns a launch config by its key
+func GetLaunchConfigByKey(key string) *LaunchConfig {
+	configs := GetLaunchConfigs()
+	if cfg, ok := configs[key]; ok {
+		return &cfg
+	}
+	return nil
+}
+
+// ExpandMCPConfigPath expands ~ in MCP config path and returns the full path
+func (lc *LaunchConfig) ExpandMCPConfigPath() (string, error) {
+	if lc.MCPConfigPath == "" {
+		return "", nil
+	}
+	path := lc.MCPConfigPath
+	if strings.HasPrefix(path, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get home directory: %w", err)
+		}
+		path = filepath.Join(homeDir, path[2:])
+	}
+	return path, nil
+}
+
+// ParseMCPNames reads the MCP config file and returns the MCP server names
+// Supports both Claude .mcp.json format and Gemini format
+func (lc *LaunchConfig) ParseMCPNames() ([]string, error) {
+	path, err := lc.ExpandMCPConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, nil
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("MCP config file not found: %s", path)
+	}
+
+	// Read file content
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read MCP config: %w", err)
+	}
+
+	// Try to parse as JSON with mcpServers key (Claude format)
+	var claudeFormat struct {
+		MCPServers map[string]interface{} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &claudeFormat); err == nil && claudeFormat.MCPServers != nil {
+		names := make([]string, 0, len(claudeFormat.MCPServers))
+		for name := range claudeFormat.MCPServers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+
+	// Try to parse as direct map of server names (alternative format)
+	// Validate that entries look like MCP configs (have command, url, or args field)
+	var directFormat map[string]map[string]interface{}
+	if err := json.Unmarshal(data, &directFormat); err == nil && len(directFormat) > 0 {
+		names := make([]string, 0, len(directFormat))
+		validCount := 0
+		for name, serverConfig := range directFormat {
+			// Check if this looks like an MCP server config
+			_, hasCommand := serverConfig["command"]
+			_, hasUrl := serverConfig["url"]
+			_, hasArgs := serverConfig["args"]
+			if hasCommand || hasUrl || hasArgs {
+				validCount++
+				names = append(names, name)
+			}
+		}
+		// Only accept if at least one entry looks like a valid MCP config
+		if validCount > 0 {
+			sort.Strings(names)
+			return names, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unable to parse MCP config: file does not contain valid MCP server definitions")
 }
 
 // getMCPPoolConfigSection returns the MCP pool config section based on platform

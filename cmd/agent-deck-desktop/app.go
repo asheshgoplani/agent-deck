@@ -18,6 +18,7 @@ type App struct {
 	tmux             *TmuxManager
 	projectDiscovery *ProjectDiscovery
 	quickLaunch      *QuickLaunchManager
+	launchConfig     *LaunchConfigManager
 }
 
 // NewApp creates a new App application struct.
@@ -27,6 +28,7 @@ func NewApp() *App {
 		tmux:             NewTmuxManager(),
 		projectDiscovery: NewProjectDiscovery(),
 		quickLaunch:      NewQuickLaunchManager(),
+		launchConfig:     NewLaunchConfigManager(),
 	}
 }
 
@@ -107,8 +109,9 @@ func (a *App) RecordProjectUsage(projectPath string) error {
 }
 
 // CreateSession creates a new tmux session and launches the specified AI tool.
-func (a *App) CreateSession(projectPath, title, tool string) (SessionInfo, error) {
-	return a.tmux.CreateSession(projectPath, title, tool)
+// If configKey is provided, the launch config settings will be applied.
+func (a *App) CreateSession(projectPath, title, tool, configKey string) (SessionInfo, error) {
+	return a.tmux.CreateSession(projectPath, title, tool, configKey)
 }
 
 // GetQuickLaunchFavorites returns all quick launch favorites.
@@ -197,4 +200,46 @@ func expandHome(path string) string {
 func (a *App) GetProjectRoots() []string {
 	settings := a.projectDiscovery.getSettings()
 	return settings.ScanPaths
+}
+
+// ==================== Launch Config Methods ====================
+
+// GetLaunchConfigs returns all launch configurations.
+func (a *App) GetLaunchConfigs() ([]LaunchConfigInfo, error) {
+	return a.launchConfig.GetLaunchConfigs()
+}
+
+// GetLaunchConfigsForTool returns launch configs for a specific tool.
+func (a *App) GetLaunchConfigsForTool(tool string) ([]LaunchConfigInfo, error) {
+	return a.launchConfig.GetLaunchConfigsForTool(tool)
+}
+
+// GetLaunchConfig returns a single launch config by key.
+func (a *App) GetLaunchConfig(key string) (*LaunchConfigInfo, error) {
+	return a.launchConfig.GetLaunchConfig(key)
+}
+
+// GetDefaultLaunchConfig returns the default config for a tool, or nil if none set.
+func (a *App) GetDefaultLaunchConfig(tool string) (*LaunchConfigInfo, error) {
+	return a.launchConfig.GetDefaultLaunchConfig(tool)
+}
+
+// SaveLaunchConfig creates or updates a launch configuration.
+func (a *App) SaveLaunchConfig(key, name, tool, description string, dangerousMode bool, mcpConfigPath string, extraArgs []string, isDefault bool) error {
+	return a.launchConfig.SaveLaunchConfig(key, name, tool, description, dangerousMode, mcpConfigPath, extraArgs, isDefault)
+}
+
+// DeleteLaunchConfig removes a launch configuration.
+func (a *App) DeleteLaunchConfig(key string) error {
+	return a.launchConfig.DeleteLaunchConfig(key)
+}
+
+// ValidateMCPConfigPath validates an MCP config path and returns the MCP names.
+func (a *App) ValidateMCPConfigPath(path string) ([]string, error) {
+	return a.launchConfig.ValidateMCPConfigPath(path)
+}
+
+// GenerateConfigKey generates a unique config key from tool and name.
+func (a *App) GenerateConfigKey(tool, name string) string {
+	return a.launchConfig.GenerateConfigKey(tool, name)
 }
