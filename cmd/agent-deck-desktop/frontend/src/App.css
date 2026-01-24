@@ -103,6 +103,18 @@ html, body, #root {
     background: rgba(107, 91, 184, 0.1);
 }
 
+.header-custom-label {
+    display: inline-block;
+    margin-left: 10px;
+    padding: 2px 10px;
+    background: var(--accent-primary);
+    color: var(--tool-icon-text);
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 10px;
+    vertical-align: middle;
+}
+
 .terminal-container {
     flex: 1;
     overflow: hidden;

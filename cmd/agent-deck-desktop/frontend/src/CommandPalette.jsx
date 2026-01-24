@@ -4,6 +4,7 @@ import './CommandPalette.css';
 import { createLogger } from './logger';
 import ToolIcon from './ToolIcon';
 import { formatShortcut } from './utils/shortcuts';
+import RenameDialog from './RenameDialog';
 
 const logger = createLogger('CommandPalette');
 
@@ -18,7 +19,7 @@ export default function CommandPalette({
     onClose,
     onSelectSession,
     onAction,
-    onLaunchProject, // (projectPath, projectName, tool) => void
+    onLaunchProject, // (projectPath, projectName, tool, configKey?, customLabel?) => void
     onShowToolPicker, // (projectPath, projectName) => void - for Cmd+Enter
     onPinToQuickLaunch, // (projectPath, projectName) => void - for Cmd+P
     sessions = [],
@@ -28,6 +29,7 @@ export default function CommandPalette({
 }) {
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const [labelingProject, setLabelingProject] = useState(null); // { path, name } - for Shift+Enter
     const inputRef = useRef(null);
     const listRef = useRef(null);
 
@@ -150,6 +152,10 @@ export default function CommandPalette({
                         logger.info('Cmd+Enter on project, showing tool picker', { path: item.projectPath });
                         onShowToolPicker?.(item.projectPath, item.title);
                         onClose();
+                    } else if (e.shiftKey && item.type === 'project') {
+                        // Shift+Enter on project prompts for custom label
+                        logger.info('Shift+Enter on project, prompting for label', { path: item.projectPath });
+                        setLabelingProject({ path: item.projectPath, name: item.title });
                     } else {
                         logger.info('Enter pressed, selecting item', { index: selectedIndex });
                         handleSelect(item);
@@ -213,6 +219,15 @@ export default function CommandPalette({
             case 'error': return '#ff6b6b';
             default: return '#6c757d';
         }
+    };
+
+    // Handle saving custom label and launching project
+    const handleSaveProjectLabel = (customLabel) => {
+        if (!labelingProject) return;
+        logger.info('Launching project with custom label', { path: labelingProject.path, customLabel });
+        onLaunchProject?.(labelingProject.path, labelingProject.name, 'claude', '', customLabel);
+        setLabelingProject(null);
+        onClose();
     };
 
     return (
@@ -296,11 +311,22 @@ export default function CommandPalette({
                 <div className="palette-footer">
                     <span className="palette-hint"><kbd>↑↓</kbd> Navigate</span>
                     <span className="palette-hint"><kbd>Enter</kbd> {pinMode ? 'Pin to Quick Launch' : 'Select'}</span>
+                    {!pinMode && <span className="palette-hint"><kbd>⇧Enter</kbd> Label</span>}
                     {!pinMode && <span className="palette-hint"><kbd>⌘Enter</kbd> Tool picker</span>}
                     {!pinMode && <span className="palette-hint"><kbd>⌘P</kbd> Pin</span>}
                     <span className="palette-hint"><kbd>Esc</kbd> Close</span>
                 </div>
             </div>
+
+            {labelingProject && (
+                <RenameDialog
+                    currentName=""
+                    title="Add Custom Label"
+                    placeholder="Enter label..."
+                    onSave={handleSaveProjectLabel}
+                    onCancel={() => setLabelingProject(null)}
+                />
+            )}
         </div>
     );
 }

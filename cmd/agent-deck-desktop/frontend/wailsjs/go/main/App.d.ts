@@ -66,6 +66,8 @@ export function UpdateQuickLaunchFavoriteName(arg1:string,arg2:string):Promise<v
 
 export function UpdateQuickLaunchShortcut(arg1:string,arg2:string):Promise<void>;
 
+export function UpdateSessionCustomLabel(arg1:string,arg2:string):Promise<void>;
+
 export function ValidateMCPConfigPath(arg1:string):Promise<Array<string>>;
 
 export function WriteTerminal(arg1:string):Promise<void>;

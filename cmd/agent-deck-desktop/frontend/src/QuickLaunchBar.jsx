@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './QuickLaunchBar.css';
 import { GetQuickLaunchFavorites, RemoveQuickLaunchFavorite, UpdateQuickLaunchShortcut, UpdateQuickLaunchFavoriteName } from '../wailsjs/go/main/App';
 import ShortcutEditor from './ShortcutEditor';
+import RenameDialog from './RenameDialog';
 import { createLogger } from './logger';
 import { formatShortcut } from './utils/shortcuts';
 import { getToolColor } from './utils/tools';
@@ -227,58 +228,6 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
             )}
 
             <Tooltip />
-        </div>
-    );
-}
-
-// Simple rename dialog component
-function RenameDialog({ currentName, onSave, onCancel }) {
-    const [name, setName] = useState(currentName);
-    const inputRef = useRef(null);
-
-    useEffect(() => {
-        // Focus and select all text on mount
-        if (inputRef.current) {
-            inputRef.current.focus();
-            inputRef.current.select();
-        }
-    }, []);
-
-    const handleKeyDown = (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            onSave(name);
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            onCancel();
-        }
-    };
-
-    return (
-        <div className="rename-dialog-overlay" onClick={onCancel}>
-            <div className="rename-dialog" onClick={(e) => e.stopPropagation()}>
-                <div className="rename-dialog-title">Rename</div>
-                <input
-                    ref={inputRef}
-                    type="text"
-                    className="rename-dialog-input"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                />
-                <div className="rename-dialog-buttons">
-                    <button className="rename-dialog-cancel" onClick={onCancel}>
-                        Cancel
-                    </button>
-                    <button
-                        className="rename-dialog-save"
-                        onClick={() => onSave(name)}
-                        disabled={!name.trim()}
-                    >
-                        Save
-                    </button>
-                </div>
-            </div>
         </div>
     );
 }

@@ -130,6 +130,10 @@ export function UpdateQuickLaunchShortcut(arg1, arg2) {
   return window['go']['main']['App']['UpdateQuickLaunchShortcut'](arg1, arg2);
 }
 
+export function UpdateSessionCustomLabel(arg1, arg2) {
+  return window['go']['main']['App']['UpdateSessionCustomLabel'](arg1, arg2);
+}
+
 export function ValidateMCPConfigPath(arg1) {
   return window['go']['main']['App']['ValidateMCPConfigPath'](arg1);
 }

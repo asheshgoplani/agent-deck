@@ -71,6 +71,7 @@ export namespace main {
 	export class SessionInfo {
 	    id: string;
 	    title: string;
+	    customLabel?: string;
 	    projectPath: string;
 	    groupPath: string;
 	    tool: string;
@@ -97,6 +98,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.title = source["title"];
+	        this.customLabel = source["customLabel"];
 	        this.projectPath = source["projectPath"];
 	        this.groupPath = source["groupPath"];
 	        this.tool = source["tool"];

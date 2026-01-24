@@ -157,6 +157,12 @@ func (a *App) MarkSessionAccessed(sessionID string) error {
 	return a.tmux.MarkSessionAccessed(sessionID)
 }
 
+// UpdateSessionCustomLabel updates the custom label for a session.
+// Pass an empty string to remove the custom label.
+func (a *App) UpdateSessionCustomLabel(sessionID, customLabel string) error {
+	return a.tmux.UpdateSessionCustomLabel(sessionID, customLabel)
+}
+
 // GetGitBranch returns the current git branch for a given directory.
 // Returns empty string if not a git repository or on error.
 func (a *App) GetGitBranch(projectPath string) string {

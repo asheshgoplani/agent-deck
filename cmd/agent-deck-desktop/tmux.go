@@ -17,6 +17,7 @@ import (
 type SessionInfo struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"title"`
+	CustomLabel      string    `json:"customLabel,omitempty"`
 	ProjectPath      string    `json:"projectPath"`
 	GroupPath        string    `json:"groupPath"`
 	Tool             string    `json:"tool"`
@@ -43,6 +44,7 @@ type sessionsJSON struct {
 type instanceJSON struct {
 	ID               string    `json:"id"`
 	Title            string    `json:"title"`
+	CustomLabel      string    `json:"custom_label,omitempty"`
 	ProjectPath      string    `json:"project_path"`
 	GroupPath        string    `json:"group_path"`
 	Tool             string    `json:"tool"`
@@ -115,6 +117,7 @@ func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
 		result = append(result, SessionInfo{
 			ID:               inst.ID,
 			Title:            inst.Title,
+			CustomLabel:      inst.CustomLabel,
 			ProjectPath:      inst.ProjectPath,
 			GroupPath:        inst.GroupPath,
 			Tool:             inst.Tool,
@@ -197,7 +200,6 @@ func (tm *TmuxManager) getGitInfo(projectPath string) GitInfo {
 
 	return info
 }
-
 
 // getRunningTmuxSessions returns a map of currently running tmux session names.
 func (tm *TmuxManager) getRunningTmuxSessions() map[string]bool {
@@ -378,6 +380,69 @@ func (tm *TmuxManager) MarkSessionAccessed(sessionID string) error {
 	for i, inst := range instances {
 		if id, ok := inst["id"].(string); ok && id == sessionID {
 			instances[i]["last_accessed_at"] = time.Now().Format(time.RFC3339Nano)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	// Marshal instances back
+	instancesData, err := json.Marshal(instances)
+	if err != nil {
+		return err
+	}
+	raw["instances"] = instancesData
+
+	// Write back with indentation
+	output, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(sessionsPath, output, 0644)
+}
+
+// UpdateSessionCustomLabel updates the custom_label field for a session.
+// Pass an empty string to remove the custom label.
+func (tm *TmuxManager) UpdateSessionCustomLabel(sessionID, customLabel string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	sessionsPath := filepath.Join(home, ".agent-deck", "profiles", "default", "sessions.json")
+
+	// Read current sessions
+	data, err := os.ReadFile(sessionsPath)
+	if err != nil {
+		return err
+	}
+
+	// Parse as raw JSON to preserve all fields
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Parse instances array
+	var instances []map[string]interface{}
+	if err := json.Unmarshal(raw["instances"], &instances); err != nil {
+		return err
+	}
+
+	// Find and update the session
+	found := false
+	for i, inst := range instances {
+		if id, ok := inst["id"].(string); ok && id == sessionID {
+			if customLabel == "" {
+				// Remove the custom_label field
+				delete(instances[i], "custom_label")
+			} else {
+				instances[i]["custom_label"] = customLabel
+			}
 			found = true
 			break
 		}

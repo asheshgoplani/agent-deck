@@ -10,7 +10,8 @@ import SettingsModal from './SettingsModal';
 import QuickLaunchBar from './QuickLaunchBar';
 import ShortcutBar from './ShortcutBar';
 import KeyboardHelpModal from './KeyboardHelpModal';
-import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig } from '../wailsjs/go/main/App';
+import RenameDialog from './RenameDialog';
+import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 
 const logger = createLogger('App');
@@ -39,6 +40,7 @@ function App() {
     const [showConfigPicker, setShowConfigPicker] = useState(false);
     const [configPickerTool, setConfigPickerTool] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
+    const [showLabelDialog, setShowLabelDialog] = useState(false);
     const sessionSelectorRef = useRef(null);
 
     // Cycle through status filter modes: all -> active -> idle -> all
@@ -168,13 +170,25 @@ function App() {
     }, [view, loadSessionsAndProjects]);
 
     // Launch a project with the specified tool and optional config
-    const handleLaunchProject = useCallback(async (projectPath, projectName, tool, configKey = '') => {
+    // customLabel is optional - if provided, will be set as the session's custom label
+    const handleLaunchProject = useCallback(async (projectPath, projectName, tool, configKey = '', customLabel = '') => {
         try {
-            logger.info('Launching project', { projectPath, projectName, tool, configKey });
+            logger.info('Launching project', { projectPath, projectName, tool, configKey, customLabel });
 
             // Create session with config key
             const session = await CreateSession(projectPath, projectName, tool, configKey);
             logger.info('Session created', { sessionId: session.id, tmuxSession: session.tmuxSession });
+
+            // Set custom label if provided
+            if (customLabel) {
+                try {
+                    await UpdateSessionCustomLabel(session.id, customLabel);
+                    session.customLabel = customLabel;
+                    logger.info('Custom label set', { customLabel });
+                } catch (err) {
+                    logger.warn('Failed to set custom label:', err);
+                }
+            }
 
             // Record usage for frecency
             await RecordProjectUsage(projectPath);
@@ -293,6 +307,20 @@ function App() {
         setShowSettings(true);
     }, []);
 
+    // Handle saving custom label for current session
+    const handleSaveSessionCustomLabel = useCallback(async (newLabel) => {
+        if (!selectedSession) return;
+        try {
+            logger.info('Saving session custom label', { sessionId: selectedSession.id, newLabel });
+            await UpdateSessionCustomLabel(selectedSession.id, newLabel);
+            // Update local state
+            setSelectedSession(prev => ({ ...prev, customLabel: newLabel }));
+        } catch (err) {
+            logger.error('Failed to save session custom label:', err);
+        }
+        setShowLabelDialog(false);
+    }, [selectedSession]);
+
     const handleSelectSession = useCallback(async (session) => {
         logger.info('Selecting session:', session.title);
         setSelectedSession(session);
@@ -409,6 +437,12 @@ function App() {
             e.preventDefault();
             handleBackToSelector();
         }
+        // Cmd+R to add/edit custom label (only in terminal view with a session)
+        if ((e.metaKey || e.ctrlKey) && e.key === 'r' && view === 'terminal' && selectedSession) {
+            e.preventDefault();
+            logger.info('Cmd+R pressed - opening label dialog');
+            setShowLabelDialog(true);
+        }
         // Shift+5 (%) to cycle session status filter (only in selector view)
         if (e.key === '%' && view === 'selector') {
             e.preventDefault();
@@ -419,7 +453,7 @@ function App() {
             e.preventDefault();
             handleOpenSettings();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings]);
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -514,6 +548,9 @@ function App() {
                             <span className="header-danger-icon" title="Dangerous mode enabled">⚠</span>
                         )}
                         {selectedSession.title}
+                        {selectedSession.customLabel && (
+                            <span className="header-custom-label">{selectedSession.customLabel}</span>
+                        )}
                         {gitBranch && (
                             <span className={`git-branch${isWorktree ? ' is-worktree' : ''}`}>
                                 <span className="git-branch-icon">{isWorktree ? '🌿' : '⎇'}</span>
@@ -605,6 +642,15 @@ function App() {
             )}
             {showHelpModal && (
                 <KeyboardHelpModal onClose={() => setShowHelpModal(false)} />
+            )}
+            {showLabelDialog && selectedSession && (
+                <RenameDialog
+                    currentName={selectedSession.customLabel || ''}
+                    title={selectedSession.customLabel ? 'Edit Custom Label' : 'Add Custom Label'}
+                    placeholder="Enter label..."
+                    onSave={handleSaveSessionCustomLabel}
+                    onCancel={() => setShowLabelDialog(false)}
+                />
             )}
         </div>
     );

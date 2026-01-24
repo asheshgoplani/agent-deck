@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { ListSessions, GetProjectRoots } from '../wailsjs/go/main/App';
+import { ListSessions, GetProjectRoots, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
 import './SessionSelector.css';
 import { createLogger } from './logger';
 import ToolIcon from './ToolIcon';
 import { useTooltip } from './Tooltip';
 import ShortcutBar from './ShortcutBar';
+import RenameDialog from './RenameDialog';
 
 const logger = createLogger('SessionSelector');
 
@@ -67,6 +68,8 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
     const [error, setError] = useState(null);
     const [projectRoots, setProjectRoots] = useState([]);
     const [selectedIndex, setSelectedIndex] = useState(0);
+    const [contextMenu, setContextMenu] = useState(null); // { x, y, session }
+    const [labelingSession, setLabelingSession] = useState(null); // session being labeled
     const { show: showTooltip, hide: hideTooltip, Tooltip } = useTooltip();
 
     useEffect(() => {
@@ -130,7 +133,7 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         );
     }, [projectRoots, getGitStatusDescription]);
 
-    const loadSessions = async () => {
+    const loadSessions = useCallback(async () => {
         try {
             logger.info('Loading sessions...');
             setLoading(true);
@@ -145,7 +148,66 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
+
+    // Context menu handlers
+    const handleContextMenu = useCallback((e, session) => {
+        e.preventDefault();
+        logger.debug('Context menu on session', { title: session.title });
+        // Adjust position to keep menu in viewport (menu is ~180px wide, ~80px tall)
+        const menuWidth = 200;
+        const menuHeight = 100;
+        const x = Math.min(e.clientX, window.innerWidth - menuWidth);
+        const y = Math.min(e.clientY, window.innerHeight - menuHeight);
+        setContextMenu({
+            x,
+            y,
+            session,
+        });
+    }, []);
+
+    const closeContextMenu = useCallback(() => {
+        setContextMenu(null);
+    }, []);
+
+    // Close context menu on click outside
+    useEffect(() => {
+        if (contextMenu) {
+            document.addEventListener('click', closeContextMenu);
+            return () => document.removeEventListener('click', closeContextMenu);
+        }
+    }, [contextMenu, closeContextMenu]);
+
+    const handleAddCustomLabel = useCallback(() => {
+        if (!contextMenu?.session) return;
+        logger.info('Opening label dialog', { session: contextMenu.session.title });
+        setLabelingSession(contextMenu.session);
+        setContextMenu(null);
+    }, [contextMenu]);
+
+    const handleRemoveCustomLabel = useCallback(async () => {
+        if (!contextMenu?.session) return;
+        try {
+            logger.info('Removing custom label', { sessionId: contextMenu.session.id });
+            await UpdateSessionCustomLabel(contextMenu.session.id, '');
+            loadSessions(); // Refresh to show updated label
+        } catch (err) {
+            logger.error('Failed to remove custom label:', err);
+        }
+        setContextMenu(null);
+    }, [contextMenu, loadSessions]);
+
+    const handleSaveCustomLabel = useCallback(async (newLabel) => {
+        if (!labelingSession || !newLabel.trim()) return;
+        try {
+            logger.info('Saving custom label', { sessionId: labelingSession.id, label: newLabel });
+            await UpdateSessionCustomLabel(labelingSession.id, newLabel.trim());
+            loadSessions(); // Refresh to show updated label
+        } catch (err) {
+            logger.error('Failed to save custom label:', err);
+        }
+        setLabelingSession(null);
+    }, [labelingSession, loadSessions]);
 
     const getStatusColor = (status) => {
         switch (status) {
@@ -177,6 +239,8 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
     // Keyboard navigation for session list
     useEffect(() => {
         const handleKeyDown = (e) => {
+            // Don't handle keyboard nav when dialog is open
+            if (labelingSession || contextMenu) return;
             if (filteredSessions.length === 0) return;
 
             switch (e.key) {
@@ -206,7 +270,7 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
 
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [filteredSessions, selectedIndex, onSelect]);
+    }, [filteredSessions, selectedIndex, onSelect, labelingSession, contextMenu]);
 
     // Get display label for current filter mode
     const getFilterLabel = () => {
@@ -316,6 +380,7 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                             key={session.id}
                             className={`session-item${index === selectedIndex ? ' selected' : ''}`}
                             onClick={() => onSelect(session)}
+                            onContextMenu={(e) => handleContextMenu(e, session)}
                             disabled={session.isRemote}
                             onMouseEnter={(e) => {
                                 setSelectedIndex(index);
@@ -335,6 +400,9 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
                                         <span className="session-danger-icon" title="Dangerous mode enabled">⚠</span>
                                     )}
                                     {session.title}
+                                    {session.customLabel && (
+                                        <span className="session-custom-label">{session.customLabel}</span>
+                                    )}
                                 </div>
                                 <div className="session-meta">
                                     <span className="session-group">{session.groupPath || 'ungrouped'}</span>
@@ -382,6 +450,33 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
             />
 
             <Tooltip />
+
+            {contextMenu && (
+                <div
+                    className="session-context-menu"
+                    style={{ left: contextMenu.x, top: contextMenu.y }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    <button onClick={handleAddCustomLabel}>
+                        {contextMenu.session?.customLabel ? 'Edit Custom Label' : 'Add Custom Label'}
+                    </button>
+                    {contextMenu.session?.customLabel && (
+                        <button onClick={handleRemoveCustomLabel}>
+                            Remove Custom Label
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {labelingSession && (
+                <RenameDialog
+                    currentName={labelingSession.customLabel || ''}
+                    title={labelingSession.customLabel ? 'Edit Custom Label' : 'Add Custom Label'}
+                    placeholder="Enter label..."
+                    onSave={handleSaveCustomLabel}
+                    onCancel={() => setLabelingSession(null)}
+                />
+            )}
         </div>
     );
 }
