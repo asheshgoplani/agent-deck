@@ -3,6 +3,37 @@ import { createLogger } from './logger';
 
 const logger = createLogger('SplitHandle');
 
+// requestAnimationFrame throttle for smooth drag handling
+// Prevents excessive state updates during fast mouse movements
+function useRafCallback(callback) {
+    const rafRef = useRef(null);
+    const callbackRef = useRef(callback);
+
+    // Keep callback ref up to date
+    useEffect(() => {
+        callbackRef.current = callback;
+    }, [callback]);
+
+    const throttledCallback = useCallback((...args) => {
+        if (rafRef.current) return; // Already scheduled
+        rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = null;
+            callbackRef.current(...args);
+        });
+    }, []);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            if (rafRef.current) {
+                cancelAnimationFrame(rafRef.current);
+            }
+        };
+    }, []);
+
+    return throttledCallback;
+}
+
 /**
  * SplitHandle - Draggable divider between panes
  *
@@ -45,25 +76,30 @@ export default function SplitHandle({
         logger.debug('Drag started', { direction, currentRatio });
     }, [direction, currentRatio, isVertical]);
 
+    // RAF-throttled drag callback to prevent excessive state updates
+    const throttledDrag = useRafCallback((e) => {
+        const { x, y, ratio, parentSize } = dragStartRef.current;
+
+        // Calculate delta in pixels
+        const delta = isVertical
+            ? e.clientX - x
+            : e.clientY - y;
+
+        // Convert to ratio change
+        const ratioChange = delta / parentSize;
+        const newRatio = Math.max(0.1, Math.min(0.9, ratio + ratioChange));
+
+        if (onDrag) {
+            onDrag(newRatio);
+        }
+    });
+
     // Handle drag
     useEffect(() => {
         if (!isDragging) return;
 
         const handleMouseMove = (e) => {
-            const { x, y, ratio, parentSize } = dragStartRef.current;
-
-            // Calculate delta in pixels
-            const delta = isVertical
-                ? e.clientX - x
-                : e.clientY - y;
-
-            // Convert to ratio change
-            const ratioChange = delta / parentSize;
-            const newRatio = Math.max(0.1, Math.min(0.9, ratio + ratioChange));
-
-            if (onDrag) {
-                onDrag(newRatio);
-            }
+            throttledDrag(e);
         };
 
         const handleMouseUp = () => {
@@ -85,7 +121,7 @@ export default function SplitHandle({
             document.body.style.userSelect = '';
             document.body.style.cursor = '';
         };
-    }, [isDragging, isVertical, onDrag]);
+    }, [isDragging, isVertical, throttledDrag]);
 
     return (
         <div
