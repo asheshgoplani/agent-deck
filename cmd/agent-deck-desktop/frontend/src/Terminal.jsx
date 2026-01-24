@@ -45,7 +45,7 @@ function rafThrottle(fn) {
 
 const logger = createLogger('Terminal');
 
-export default function Terminal({ searchRef, session }) {
+export default function Terminal({ searchRef, session, paneId, onFocus }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);
@@ -120,6 +120,10 @@ export default function Terminal({ searchRef, session }) {
         // Handle data from terminal (user input) - send to PTY
         const dataDisposable = term.onData((data) => {
             WriteTerminal(data).catch(console.error);
+            // Notify parent that this pane received input (for focus tracking)
+            if (onFocus) {
+                onFocus();
+            }
         });
 
         // ============================================================
@@ -468,7 +472,7 @@ export default function Terminal({ searchRef, session }) {
             searchAddonRef.current = null;
             initRef.current = false;
         };
-    }, [searchRef, session]); // Note: theme changes handled by separate useEffect
+    }, [searchRef, session, onFocus]); // Note: theme changes handled by separate useEffect
 
     // Scroll to bottom when indicator is clicked
     const handleScrollToBottom = () => {

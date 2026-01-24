@@ -1,6 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import './App.css';
-import Terminal from './Terminal';
 import Search from './Search';
 import SessionSelector from './SessionSelector';
 import CommandPalette from './CommandPalette';
@@ -11,8 +10,26 @@ import UnifiedTopBar from './UnifiedTopBar';
 import ShortcutBar from './ShortcutBar';
 import KeyboardHelpModal from './KeyboardHelpModal';
 import RenameDialog from './RenameDialog';
+import PaneLayout from './PaneLayout';
+import FocusModeOverlay from './FocusModeOverlay';
 import { ListSessions, DiscoverProjects, CreateSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
+import {
+    createSinglePaneLayout,
+    splitPane,
+    closePane as closePaneInLayout,
+    updateSplitRatio,
+    getAdjacentPane,
+    getCyclicPane,
+    getPaneList,
+    findPane,
+    updatePaneSession,
+    countPanes,
+    balanceLayout,
+    createPresetLayout,
+    applyPreset,
+    getFirstPaneId,
+} from './layoutUtils';
 
 const logger = createLogger('App');
 
@@ -41,9 +58,13 @@ function App() {
     const [configPickerTool, setConfigPickerTool] = useState(null);
     const [showSettings, setShowSettings] = useState(false);
     const [showLabelDialog, setShowLabelDialog] = useState(false);
-    const [openTabs, setOpenTabs] = useState([]); // Array of {id, session, openedAt}
+    // Tab state - now includes layout tree and active pane
+    // Each tab: { id, name, layout: LayoutNode, activePaneId: string, openedAt, zoomedPaneId: string|null }
+    const [openTabs, setOpenTabs] = useState([]);
     const [activeTabId, setActiveTabId] = useState(null);
     const sessionSelectorRef = useRef(null);
+    const terminalRefs = useRef({});
+    const searchRefs = useRef({});
 
     // Cycle through status filter modes: all -> active -> idle -> all
     const handleCycleStatusFilter = useCallback(() => {
@@ -171,20 +192,36 @@ function App() {
         }
     }, [view, loadSessionsAndProjects]);
 
+    // Get the current active tab
+    const activeTab = openTabs.find(t => t.id === activeTabId);
+
     // Tab management handlers - defined early so other handlers can use them
     const handleOpenTab = useCallback((session) => {
-        // Check if tab already exists (read state outside updater to keep it pure)
-        const existingTab = openTabs.find(t => t.session.id === session.id);
-        if (existingTab) {
-            // Tab exists, just switch to it
-            setActiveTabId(existingTab.id);
-            return;
+        // Check if session is already open in any tab's pane
+        for (const tab of openTabs) {
+            const panes = getPaneList(tab.layout);
+            const paneWithSession = panes.find(p => p.session?.id === session.id);
+            if (paneWithSession) {
+                // Session exists in this tab, switch to it
+                setActiveTabId(tab.id);
+                // Update the tab's active pane to this one
+                setOpenTabs(prev => prev.map(t =>
+                    t.id === tab.id
+                        ? { ...t, activePaneId: paneWithSession.id }
+                        : t
+                ));
+                return;
+            }
         }
-        // Create new tab
+        // Create new tab with single-pane layout containing the session
+        const layout = createSinglePaneLayout(session);
         const newTab = {
             id: `tab-${session.id}-${Date.now()}`,
-            session,
+            name: session.customLabel || session.title,
+            layout,
+            activePaneId: layout.id,
             openedAt: Date.now(),
+            zoomedPaneId: null,
         };
         logger.info('Opening new tab', { tabId: newTab.id, sessionTitle: session.title });
         setOpenTabs(prev => [...prev, newTab]);
@@ -213,7 +250,9 @@ function App() {
                     const newIndex = Math.min(tabIndex, newTabs.length - 1);
                     const newActiveTab = newTabs[newIndex];
                     setActiveTabId(newActiveTab.id);
-                    setSelectedSession(newActiveTab.session);
+                    // Get the active pane's session from the new active tab
+                    const activePane = findPane(newActiveTab.layout, newActiveTab.activePaneId);
+                    setSelectedSession(activePane?.session || null);
                 }
             }
 
@@ -225,17 +264,21 @@ function App() {
         const tab = openTabs.find(t => t.id === tabId);
         if (!tab) return;
 
-        logger.info('Switching to tab', { tabId, sessionTitle: tab.session.title });
+        logger.info('Switching to tab', { tabId, tabName: tab.name });
         setActiveTabId(tabId);
-        setSelectedSession(tab.session);
         setView('terminal');
 
-        // Update git info for the new session
-        if (tab.session.projectPath) {
+        // Get the active pane's session from the tab
+        const activePane = findPane(tab.layout, tab.activePaneId);
+        const session = activePane?.session;
+        setSelectedSession(session || null);
+
+        // Update git info for the session
+        if (session?.projectPath) {
             try {
                 const [branch, worktree] = await Promise.all([
-                    GetGitBranch(tab.session.projectPath),
-                    IsGitWorktree(tab.session.projectPath)
+                    GetGitBranch(session.projectPath),
+                    IsGitWorktree(session.projectPath)
                 ]);
                 setGitBranch(branch || '');
                 setIsWorktree(worktree);
@@ -248,6 +291,232 @@ function App() {
             setIsWorktree(false);
         }
     }, [openTabs]);
+
+    // ============================================================
+    // PANE MANAGEMENT - Layout manipulation handlers
+    // ============================================================
+
+    // Focus a specific pane
+    const handlePaneFocus = useCallback((paneId) => {
+        if (!activeTabId) return;
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+
+            const pane = findPane(tab.layout, paneId);
+            if (!pane) return tab;
+
+            logger.debug('Pane focused', { paneId, hasSession: !!pane.session });
+
+            // Update selectedSession to match the focused pane
+            if (pane.session) {
+                setSelectedSession(pane.session);
+                // Update git info
+                if (pane.session.projectPath) {
+                    Promise.all([
+                        GetGitBranch(pane.session.projectPath),
+                        IsGitWorktree(pane.session.projectPath)
+                    ]).then(([branch, worktree]) => {
+                        setGitBranch(branch || '');
+                        setIsWorktree(worktree);
+                    }).catch(() => {
+                        setGitBranch('');
+                        setIsWorktree(false);
+                    });
+                } else {
+                    setGitBranch('');
+                    setIsWorktree(false);
+                }
+            } else {
+                setSelectedSession(null);
+                setGitBranch('');
+                setIsWorktree(false);
+            }
+
+            return { ...tab, activePaneId: paneId };
+        }));
+    }, [activeTabId]);
+
+    // Split the active pane
+    const handleSplitPane = useCallback((direction) => {
+        if (!activeTab) return;
+
+        const { layout, newPaneId } = splitPane(activeTab.layout, activeTab.activePaneId, direction);
+        logger.info('Split pane', { direction, newPaneId });
+
+        setOpenTabs(prev => prev.map(tab =>
+            tab.id === activeTabId
+                ? { ...tab, layout, activePaneId: newPaneId }
+                : tab
+        ));
+
+        // Clear selected session since new pane is empty
+        setSelectedSession(null);
+        setGitBranch('');
+        setIsWorktree(false);
+    }, [activeTab, activeTabId]);
+
+    // Close the active pane
+    const handleClosePane = useCallback(() => {
+        if (!activeTab) return;
+
+        const paneCount = countPanes(activeTab.layout);
+        if (paneCount <= 1) {
+            // Last pane - close the tab instead
+            handleCloseTab(activeTabId);
+            return;
+        }
+
+        // Find a sibling pane to focus after closing
+        const nextPaneId = getCyclicPane(activeTab.layout, activeTab.activePaneId, 'next');
+        const newLayout = closePaneInLayout(activeTab.layout, activeTab.activePaneId);
+
+        if (!newLayout) {
+            // This shouldn't happen given the paneCount check above
+            handleCloseTab(activeTabId);
+            return;
+        }
+
+        logger.info('Closed pane', { closedPaneId: activeTab.activePaneId, newActivePaneId: nextPaneId });
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            return { ...tab, layout: newLayout, activePaneId: nextPaneId };
+        }));
+
+        // Update selected session to the new active pane
+        const newActivePane = findPane(newLayout, nextPaneId);
+        if (newActivePane?.session) {
+            setSelectedSession(newActivePane.session);
+        } else {
+            setSelectedSession(null);
+            setGitBranch('');
+            setIsWorktree(false);
+        }
+    }, [activeTab, activeTabId, handleCloseTab]);
+
+    // Navigate to adjacent pane
+    const handleNavigatePane = useCallback((direction) => {
+        if (!activeTab) return;
+
+        const adjacentPaneId = getAdjacentPane(activeTab.layout, activeTab.activePaneId, direction);
+        if (adjacentPaneId) {
+            handlePaneFocus(adjacentPaneId);
+        }
+    }, [activeTab, handlePaneFocus]);
+
+    // Navigate to next/previous pane (cyclic)
+    const handleCyclicNavigatePane = useCallback((direction) => {
+        if (!activeTab) return;
+
+        const nextPaneId = getCyclicPane(activeTab.layout, activeTab.activePaneId, direction);
+        if (nextPaneId) {
+            handlePaneFocus(nextPaneId);
+        }
+    }, [activeTab, handlePaneFocus]);
+
+    // Update split ratio
+    const handleRatioChange = useCallback((paneId, newRatio) => {
+        if (!activeTabId) return;
+
+        setOpenTabs(prev => prev.map(tab =>
+            tab.id === activeTabId
+                ? { ...tab, layout: updateSplitRatio(tab.layout, paneId, newRatio) }
+                : tab
+        ));
+    }, [activeTabId]);
+
+    // Balance all panes
+    const handleBalancePanes = useCallback(() => {
+        if (!activeTabId) return;
+
+        logger.info('Balancing panes');
+        setOpenTabs(prev => prev.map(tab =>
+            tab.id === activeTabId
+                ? { ...tab, layout: balanceLayout(tab.layout) }
+                : tab
+        ));
+    }, [activeTabId]);
+
+    // Toggle zoom on active pane
+    const handleToggleZoom = useCallback(() => {
+        if (!activeTab) return;
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            const newZoomedPaneId = tab.zoomedPaneId ? null : tab.activePaneId;
+            logger.info('Toggle zoom', { zoomedPaneId: newZoomedPaneId });
+            return { ...tab, zoomedPaneId: newZoomedPaneId };
+        }));
+    }, [activeTab, activeTabId]);
+
+    // Exit zoom mode
+    const handleExitZoom = useCallback(() => {
+        if (!activeTab || !activeTab.zoomedPaneId) return;
+
+        setOpenTabs(prev => prev.map(tab =>
+            tab.id === activeTabId
+                ? { ...tab, zoomedPaneId: null }
+                : tab
+        ));
+    }, [activeTab, activeTabId]);
+
+    // Apply a layout preset
+    const handleApplyPreset = useCallback((presetType) => {
+        if (!activeTab) return;
+
+        const presetLayout = createPresetLayout(presetType);
+        const { layout, closedSessions } = applyPreset(activeTab.layout, presetLayout);
+        const firstPaneId = getFirstPaneId(layout);
+
+        logger.info('Applied preset', { presetType, closedSessions: closedSessions.length });
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            return {
+                ...tab,
+                layout,
+                activePaneId: firstPaneId,
+                zoomedPaneId: null, // Exit zoom when applying preset
+            };
+        }));
+
+        // Update selected session to the first pane's session
+        const firstPane = findPane(layout, firstPaneId);
+        setSelectedSession(firstPane?.session || null);
+    }, [activeTab, activeTabId]);
+
+    // Open a session in the active pane (from command palette)
+    const handlePaneSessionSelect = useCallback((paneId) => {
+        // This is called when user clicks on an empty pane
+        // Opens command palette to select a session for this pane
+        if (!activeTabId) return;
+
+        // First, ensure this pane is focused
+        handlePaneFocus(paneId);
+
+        // Then open command palette
+        setShowCommandPalette(true);
+    }, [activeTabId, handlePaneFocus]);
+
+    // Assign a session to the current active pane
+    const handleAssignSessionToPane = useCallback((session) => {
+        if (!activeTab) return;
+
+        logger.info('Assigning session to pane', { paneId: activeTab.activePaneId, sessionTitle: session.title });
+
+        setOpenTabs(prev => prev.map(tab => {
+            if (tab.id !== activeTabId) return tab;
+            return {
+                ...tab,
+                layout: updatePaneSession(tab.layout, tab.activePaneId, session),
+                // Update tab name if it's a single-pane tab
+                name: countPanes(tab.layout) === 1 ? (session.customLabel || session.title) : tab.name,
+            };
+        }));
+
+        setSelectedSession(session);
+    }, [activeTab, activeTabId]);
 
     // Launch a project with the specified tool and optional config
     // customLabel is optional - if provided, will be set as the session's custom label
@@ -578,7 +847,117 @@ function App() {
             e.preventDefault();
             handleOpenSettings();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab]);
+
+        // ============================================================
+        // PANE MANAGEMENT SHORTCUTS (terminal view only)
+        // ============================================================
+
+        // Cmd+D - Split pane right (vertical divider)
+        if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === 'd' && view === 'terminal') {
+            e.preventDefault();
+            logger.info('Cmd+D pressed - split right');
+            handleSplitPane('vertical');
+            return;
+        }
+
+        // Cmd+Shift+D - Split pane down (horizontal divider)
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'D' && view === 'terminal') {
+            e.preventDefault();
+            logger.info('Cmd+Shift+D pressed - split down');
+            handleSplitPane('horizontal');
+            return;
+        }
+
+        // Cmd+Shift+W - Close current pane
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'W' && view === 'terminal') {
+            e.preventDefault();
+            logger.info('Cmd+Shift+W pressed - close pane');
+            handleClosePane();
+            return;
+        }
+
+        // Cmd+Option+Arrow keys - Navigate between panes
+        if ((e.metaKey || e.ctrlKey) && e.altKey && view === 'terminal') {
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                handleNavigatePane('left');
+                return;
+            }
+            if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                handleNavigatePane('right');
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                handleNavigatePane('up');
+                return;
+            }
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                handleNavigatePane('down');
+                return;
+            }
+        }
+
+        // Cmd+Option+[ and Cmd+Option+] - Cycle through panes
+        if ((e.metaKey || e.ctrlKey) && e.altKey && e.key === '[' && view === 'terminal') {
+            e.preventDefault();
+            handleCyclicNavigatePane('prev');
+            return;
+        }
+        if ((e.metaKey || e.ctrlKey) && e.altKey && e.key === ']' && view === 'terminal') {
+            e.preventDefault();
+            handleCyclicNavigatePane('next');
+            return;
+        }
+
+        // Cmd+Shift+Z - Toggle zoom on current pane
+        if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'Z' && view === 'terminal') {
+            e.preventDefault();
+            logger.info('Cmd+Shift+Z pressed - toggle zoom');
+            handleToggleZoom();
+            return;
+        }
+
+        // Escape - Exit zoom mode (if zoomed)
+        if (e.key === 'Escape' && view === 'terminal' && activeTab?.zoomedPaneId) {
+            e.preventDefault();
+            handleExitZoom();
+            return;
+        }
+
+        // Cmd+Option+= - Balance pane sizes
+        if ((e.metaKey || e.ctrlKey) && e.altKey && e.key === '=' && view === 'terminal') {
+            e.preventDefault();
+            handleBalancePanes();
+            return;
+        }
+
+        // Layout presets: Cmd+Option+1/2/3/4
+        if ((e.metaKey || e.ctrlKey) && e.altKey && view === 'terminal') {
+            if (e.key === '1') {
+                e.preventDefault();
+                handleApplyPreset('single');
+                return;
+            }
+            if (e.key === '2') {
+                e.preventDefault();
+                handleApplyPreset('2-col');
+                return;
+            }
+            if (e.key === '3') {
+                e.preventDefault();
+                handleApplyPreset('2-row');
+                return;
+            }
+            if (e.key === '4') {
+                e.preventDefault();
+                handleApplyPreset('2x2');
+                return;
+            }
+        }
+    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, handleLaunchProject, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -654,6 +1033,43 @@ function App() {
         );
     }
 
+    // Determine what to render in the pane area
+    const renderPaneContent = () => {
+        if (!activeTab) {
+            // No active tab - show empty state
+            return (
+                <div className="pane-empty">
+                    <div className="pane-empty-icon">+</div>
+                    <div className="pane-empty-text">No session open</div>
+                    <div className="pane-empty-hint">
+                        Press <kbd>Cmd</kbd>+<kbd>K</kbd> to open a session
+                    </div>
+                </div>
+            );
+        }
+
+        // Determine which layout to render (zoomed or full)
+        const layoutToRender = activeTab.zoomedPaneId
+            ? findPane(activeTab.layout, activeTab.zoomedPaneId)
+            : activeTab.layout;
+
+        if (!layoutToRender) {
+            return null;
+        }
+
+        return (
+            <PaneLayout
+                node={layoutToRender}
+                activePaneId={activeTab.activePaneId}
+                onPaneFocus={handlePaneFocus}
+                onRatioChange={handleRatioChange}
+                onPaneSessionSelect={handlePaneSessionSelect}
+                terminalRefs={terminalRefs}
+                searchRefs={searchRefs}
+            />
+        );
+    };
+
     // Show terminal
     return (
         <div id="App">
@@ -675,32 +1091,39 @@ function App() {
                 <button className="back-button" onClick={handleBackToSelector} title="Back to sessions (Cmd+,)">
                     ← Sessions
                 </button>
-                {selectedSession && (
+                {activeTab && (
                     <div className="session-title-header">
-                        {selectedSession.dangerousMode && (
-                            <span className="header-danger-icon" title="Dangerous mode enabled">⚠</span>
+                        <span className="tab-pane-count">
+                            {countPanes(activeTab.layout) > 1 && `${countPanes(activeTab.layout)} panes`}
+                        </span>
+                        {selectedSession && (
+                            <>
+                                {selectedSession.dangerousMode && (
+                                    <span className="header-danger-icon" title="Dangerous mode enabled">!</span>
+                                )}
+                                {selectedSession.title}
+                                {selectedSession.customLabel && (
+                                    <span className="header-custom-label">{selectedSession.customLabel}</span>
+                                )}
+                                {gitBranch && (
+                                    <span className={`git-branch${isWorktree ? ' is-worktree' : ''}`}>
+                                        <span className="git-branch-icon">{isWorktree ? 'W' : 'B'}</span>
+                                        {gitBranch}
+                                    </span>
+                                )}
+                                {selectedSession.launchConfigName && (
+                                    <span className="header-config-badge">{selectedSession.launchConfigName}</span>
+                                )}
+                            </>
                         )}
-                        {selectedSession.title}
-                        {selectedSession.customLabel && (
-                            <span className="header-custom-label">{selectedSession.customLabel}</span>
-                        )}
-                        {gitBranch && (
-                            <span className={`git-branch${isWorktree ? ' is-worktree' : ''}`}>
-                                <span className="git-branch-icon">{isWorktree ? '🌿' : '⎇'}</span>
-                                {gitBranch}
-                            </span>
-                        )}
-                        {selectedSession.launchConfigName && (
-                            <span className="header-config-badge">{selectedSession.launchConfigName}</span>
+                        {!selectedSession && (
+                            <span style={{ color: 'var(--text-muted)' }}>Empty pane - Cmd+K to open session</span>
                         )}
                     </div>
                 )}
             </div>
             <div className="terminal-container">
-                <Terminal
-                    searchRef={searchAddonRef}
-                    session={selectedSession}
-                />
+                {renderPaneContent()}
             </div>
             <ShortcutBar
                 view="terminal"
@@ -711,10 +1134,11 @@ function App() {
                 }}
                 onOpenPalette={() => setShowCommandPalette(true)}
                 onOpenHelp={handleOpenHelp}
+                hasPanes={activeTab && countPanes(activeTab.layout) > 1}
             />
             {showSearch && (
                 <Search
-                    searchAddon={searchAddonRef.current}
+                    searchAddon={searchRefs.current?.[activeTab?.activePaneId] || searchAddonRef.current}
                     onClose={handleCloseSearch}
                     focusTrigger={searchFocusTrigger}
                 />
@@ -738,12 +1162,27 @@ function App() {
                     </div>
                 </div>
             )}
+            {/* Zoom mode overlay */}
+            {activeTab?.zoomedPaneId && (
+                <FocusModeOverlay onExit={handleExitZoom} />
+            )}
             {showCommandPalette && (
                 <CommandPalette
                     onClose={handleClosePalette}
-                    onSelectSession={handleSelectSession}
+                    onSelectSession={(session) => {
+                        // If we have an active pane without a session, assign to it
+                        if (activeTab && !findPane(activeTab.layout, activeTab.activePaneId)?.session) {
+                            handleAssignSessionToPane(session);
+                        } else {
+                            handleSelectSession(session);
+                        }
+                    }}
                     onAction={handlePaletteAction}
-                    onLaunchProject={handleLaunchProject}
+                    onLaunchProject={(path, name, tool, config, label) => {
+                        // If we have an active empty pane, launch into it
+                        // For now, use the default behavior (creates new tab)
+                        handleLaunchProject(path, name, tool, config, label);
+                    }}
                     onShowToolPicker={handleShowToolPicker}
                     onPinToQuickLaunch={handlePinToQuickLaunch}
                     sessions={sessions}

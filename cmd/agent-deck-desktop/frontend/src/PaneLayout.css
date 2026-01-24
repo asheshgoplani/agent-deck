@@ -1,0 +1,254 @@
+/* PaneLayout.css - Styles for the multi-pane grid layout system */
+
+/* Split container - flex layout for children */
+.pane-split {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* Vertical split - side by side (left/right) */
+.pane-split.split-vertical {
+    flex-direction: row;
+}
+
+/* Horizontal split - stacked (top/bottom) */
+.pane-split.split-horizontal {
+    flex-direction: column;
+}
+
+/* Child containers - sized by flex */
+.pane-split-child {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Pane wrapper - the leaf container */
+.pane-wrapper {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-secondary);
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+/* Active pane indicator */
+.pane-wrapper.pane-active {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+/* Pane header - simplified version of terminal header */
+.pane-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    flex-shrink: 0;
+    min-height: 28px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.pane-active .pane-header {
+    border-bottom-color: var(--accent-primary);
+}
+
+.pane-header-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pane-header-title .session-title {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.pane-header-title .git-branch {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 8px;
+    color: var(--accent-success);
+    font-size: 11px;
+    font-weight: 400;
+    background: rgba(78, 205, 196, 0.1);
+    padding: 1px 6px;
+    border-radius: 3px;
+}
+
+/* Pane content - terminal or empty state */
+.pane-content {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Empty pane state */
+.pane-empty {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 14px;
+    background: var(--bg-primary);
+}
+
+.pane-empty-icon {
+    font-size: 32px;
+    opacity: 0.5;
+}
+
+.pane-empty-text {
+    text-align: center;
+}
+
+.pane-empty-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    opacity: 0.8;
+}
+
+.pane-empty-hint kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+/* Split Handle */
+.split-handle {
+    flex-shrink: 0;
+    background: var(--border-secondary);
+    position: relative;
+    z-index: 10;
+    transition: background 0.15s;
+}
+
+.split-handle:hover,
+.split-handle.dragging {
+    background: var(--accent-primary);
+}
+
+/* Vertical split handle (between left/right panes) */
+.split-handle.handle-vertical {
+    width: 4px;
+    cursor: col-resize;
+}
+
+/* Horizontal split handle (between top/bottom panes) */
+.split-handle.handle-horizontal {
+    height: 4px;
+    cursor: row-resize;
+}
+
+/* Larger hit area for easier grabbing */
+.split-handle::after {
+    content: '';
+    position: absolute;
+}
+
+.split-handle.handle-vertical::after {
+    top: 0;
+    bottom: 0;
+    left: -4px;
+    right: -4px;
+}
+
+.split-handle.handle-horizontal::after {
+    left: 0;
+    right: 0;
+    top: -4px;
+    bottom: -4px;
+}
+
+/* Focus mode overlay - shown when a pane is zoomed */
+.focus-mode-overlay {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    z-index: 100;
+}
+
+.focus-mode-exit-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.focus-mode-exit-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent-primary);
+    color: var(--text-primary);
+}
+
+.focus-mode-exit-btn kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+/* Pane number overlay - for move mode */
+.pane-number-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 50;
+}
+
+.pane-number {
+    font-size: 72px;
+    font-weight: bold;
+    color: var(--accent-primary);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* Responsive adjustments for small panes */
+.pane-wrapper.pane-small .pane-header {
+    padding: 2px 6px;
+    min-height: 24px;
+    font-size: 11px;
+}
+
+.pane-wrapper.pane-small .pane-header-title .git-branch {
+    display: none;
+}

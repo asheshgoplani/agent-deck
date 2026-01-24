@@ -82,6 +82,34 @@ export default function KeyboardHelpModal({ onClose }) {
                         </div>
 
                         <div className="help-section">
+                            <h3>Panes</h3>
+                            <div className="help-row">
+                                <kbd>{modKey}D</kbd>
+                                <span>Split right</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⇧D</kbd>
+                                <span>Split down</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥&larr;&rarr;&uarr;&darr;</kbd>
+                                <span>Navigate panes</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⇧W</kbd>
+                                <span>Close pane</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⇧Z</kbd>
+                                <span>Zoom pane</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥=</kbd>
+                                <span>Balance sizes</span>
+                            </div>
+                        </div>
+
+                        <div className="help-section">
                             <h3>Quick Launch</h3>
                             <div className="help-row">
                                 <span className="help-action">Click</span>
@@ -127,6 +155,26 @@ export default function KeyboardHelpModal({ onClose }) {
                             <div className="help-row">
                                 <kbd>Esc</kbd>
                                 <span>Close palette</span>
+                            </div>
+                        </div>
+
+                        <div className="help-section">
+                            <h3>Layout Presets</h3>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥1</kbd>
+                                <span>Single pane</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥2</kbd>
+                                <span>2 columns</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥3</kbd>
+                                <span>2 rows</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey}⌥4</kbd>
+                                <span>2x2 grid</span>
                             </div>
                         </div>
 
