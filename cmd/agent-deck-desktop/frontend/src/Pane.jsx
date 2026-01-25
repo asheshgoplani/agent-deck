@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Terminal from './Terminal';
 import PaneOverlay from './PaneOverlay';
+import StatusBar from './StatusBar';
 import { createLogger } from './logger';
 import { GetGitBranch, IsGitWorktree } from '../wailsjs/go/main/App';
 
@@ -151,6 +152,7 @@ export default function Pane({
                     fontSize={fontSize}
                 />
             </div>
+            <StatusBar session={session} />
             {moveMode && <PaneOverlay number={paneNumber} isActive={isActive} />}
         </div>
     );

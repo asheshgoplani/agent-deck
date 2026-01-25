@@ -186,6 +186,22 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class SessionMetadata {
+	    hostname: string;
+	    cwd: string;
+	    gitBranch: string;
+
+	    static createFrom(source: any = {}) {
+	        return new SessionMetadata(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostname = source["hostname"];
+	        this.cwd = source["cwd"];
+	        this.gitBranch = source["gitBranch"];
+	    }
+	}
 
 	export class SessionInfo {
 	    id: string;

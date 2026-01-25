@@ -94,6 +94,10 @@ export function GetSavedLayouts() {
   return window['go']['main']['App']['GetSavedLayouts']();
 }
 
+export function GetSessionMetadata(arg1) {
+  return window['go']['main']['App']['GetSessionMetadata'](arg1);
+}
+
 export function GetScrollback(arg1) {
   return window['go']['main']['App']['GetScrollback'](arg1);
 }

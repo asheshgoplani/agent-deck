@@ -48,6 +48,8 @@ export function GetSavedLayoutByID(arg1:string):Promise<main.SavedLayout>;
 
 export function GetSavedLayouts():Promise<Array<main.SavedLayout>>;
 
+export function GetSessionMetadata(arg1:string):Promise<main.SessionMetadata>;
+
 export function GetScrollback(arg1:string):Promise<string>;
 
 export function GetSoftNewlineMode():Promise<string>;

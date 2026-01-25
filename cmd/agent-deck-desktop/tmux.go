@@ -44,6 +44,13 @@ type SessionInfo struct {
 	DangerousMode    bool      `json:"dangerousMode,omitempty"`
 }
 
+// SessionMetadata represents runtime metadata for a session's status bar.
+type SessionMetadata struct {
+	Hostname  string `json:"hostname"`
+	Cwd       string `json:"cwd"`
+	GitBranch string `json:"gitBranch"`
+}
+
 // sessionsJSON mirrors the storage format from internal/session/storage.go
 type sessionsJSON struct {
 	Instances []instanceJSON `json:"instances"`
@@ -538,6 +545,33 @@ func (tm *TmuxManager) GetScrollback(tmuxSession string, lines int) (string, err
 func (tm *TmuxManager) SessionExists(tmuxSession string) bool {
 	cmd := exec.Command("tmux", "has-session", "-t", tmuxSession)
 	return cmd.Run() == nil
+}
+
+// GetSessionMetadata retrieves runtime metadata for a tmux session.
+// This includes hostname and current working directory from the tmux pane.
+func (tm *TmuxManager) GetSessionMetadata(tmuxSession string) SessionMetadata {
+	result := SessionMetadata{}
+
+	// Get hostname
+	hostnameBytes, err := exec.Command("hostname", "-s").Output()
+	if err == nil {
+		result.Hostname = strings.TrimSpace(string(hostnameBytes))
+	}
+
+	// Get current working directory from tmux pane
+	// Use tmux display-message with pane_current_path format
+	cwdBytes, err := exec.Command("tmux", "display-message", "-t", tmuxSession, "-p", "#{pane_current_path}").Output()
+	if err == nil {
+		result.Cwd = strings.TrimSpace(string(cwdBytes))
+	}
+
+	// Get git branch for the current working directory
+	if result.Cwd != "" {
+		gitInfo := tm.getGitInfo(result.Cwd)
+		result.GitBranch = gitInfo.Branch
+	}
+
+	return result
 }
 
 // toolCommandResult holds the result of building a tool command from a launch config.

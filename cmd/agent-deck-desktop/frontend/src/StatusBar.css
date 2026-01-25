@@ -1,0 +1,137 @@
+/* StatusBar - Bottom status bar for session panes */
+
+.status-bar {
+    display: flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    background: var(--bg-tertiary, #1e1e1e);
+    border-top: 1px solid var(--border-color, #333);
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    user-select: none;
+    overflow: hidden;
+    gap: 12px;
+}
+
+.status-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.status-bar-icon {
+    flex-shrink: 0;
+    font-size: 10px;
+    opacity: 0.8;
+}
+
+.status-bar-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.status-bar-spacer {
+    flex: 1;
+}
+
+/* Hostname styling */
+.status-bar-hostname {
+    color: var(--text-muted, #888);
+}
+
+.status-bar-hostname .status-bar-icon {
+    color: var(--accent-blue, #4a9eff);
+}
+
+.status-bar-hostname.is-remote {
+    color: var(--accent-purple, #a78bfa);
+}
+
+.status-bar-hostname.is-remote .status-bar-icon {
+    color: var(--accent-purple, #a78bfa);
+}
+
+/* Path styling */
+.status-bar-path {
+    max-width: 200px;
+    color: var(--text-secondary, #aaa);
+}
+
+.status-bar-path .status-bar-icon {
+    font-size: 9px;
+}
+
+/* Git branch styling */
+.status-bar-branch {
+    color: var(--accent-green, #4ecdc4);
+}
+
+.status-bar-branch.is-worktree {
+    color: var(--accent-orange, #ff9f43);
+}
+
+.status-bar-branch .status-bar-icon {
+    font-size: 12px;
+}
+
+/* Session name styling */
+.status-bar-session {
+    color: var(--text-primary, #ddd);
+    font-weight: 500;
+}
+
+/* Tool styling */
+.status-bar-tool {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 6px;
+    background: var(--bg-quaternary, #2a2a2a);
+    border-radius: 3px;
+    color: var(--text-secondary, #aaa);
+}
+
+.status-bar-tool .status-bar-text {
+    text-transform: capitalize;
+}
+
+/* Loading indicator */
+.status-bar-loading {
+    color: var(--text-muted, #888);
+}
+
+.status-bar-spinner {
+    animation: spin 1s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Hover effects */
+.status-bar-item:hover {
+    color: var(--text-primary, #ddd);
+}
+
+.status-bar-branch:hover {
+    color: var(--accent-green-hover, #6fe5dc);
+}
+
+.status-bar-branch.is-worktree:hover {
+    color: var(--accent-orange-hover, #ffb066);
+}
+
+/* Remote session indicator */
+.status-bar-remote {
+    color: var(--accent-purple, #a78bfa);
+}
+
+.status-bar-remote .status-bar-icon {
+    font-size: 10px;
+}

@@ -168,6 +168,11 @@ func (a *App) SessionExists(tmuxSession string) bool {
 	return a.tmux.SessionExists(tmuxSession)
 }
 
+// GetSessionMetadata returns runtime metadata for a tmux session.
+func (a *App) GetSessionMetadata(tmuxSession string) SessionMetadata {
+	return a.tmux.GetSessionMetadata(tmuxSession)
+}
+
 // DiscoverProjects finds all projects from configured paths and existing sessions.
 func (a *App) DiscoverProjects() ([]ProjectInfo, error) {
 	sessions, err := a.ListSessions()
