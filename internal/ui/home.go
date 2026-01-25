@@ -239,6 +239,10 @@ type Home struct {
 	// Reusable string builder for View() to reduce allocations
 	viewBuilder strings.Builder
 
+	// Maintenance feedback
+	maintenanceMsg     string
+	maintenanceMsgTime time.Time
+
 	// Notification bar (tmux status-left for waiting sessions)
 	notificationManager  *session.NotificationManager
 	notificationsEnabled bool
@@ -334,6 +338,17 @@ type analyticsFetchedMsg struct {
 	geminiAnalytics *session.GeminiSessionAnalytics
 	err             error
 }
+
+type maintenanceCompleteMsg struct {
+	result session.MaintenanceResult
+}
+
+// MaintenanceCompleteMsg returns a tea.Msg for maintenance completion
+func MaintenanceCompleteMsg(result session.MaintenanceResult) tea.Msg {
+	return maintenanceCompleteMsg{result: result}
+}
+
+type clearMaintenanceMsg struct{}
 
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
@@ -1059,6 +1074,13 @@ func (h *Home) setError(err error) {
 func (h *Home) clearError() {
 	h.err = nil
 	h.errTime = time.Time{}
+}
+
+// clearMaintenanceMsgCmd returns a command that clears the maintenance message after a delay
+func (h *Home) clearMaintenanceMsgCmd(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return clearMaintenanceMsg{}
+	})
 }
 
 // cleanupExpiredAnimations removes expired entries from an animation map
@@ -1994,13 +2016,38 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.session != nil {
 			msg.session.CaptureLoadedMCPs()
 			h.saveInstances()
-			// NOTE: Do NOT delete from mcpLoadingSessions here!
-			// Animation continues until Claude is ready or timeout expires
-			log.Printf("[MCP-DEBUG] mcpRestartedMsg: MCP reload initiated for %s (animation continues)", msg.session.ID)
-		}
-		return h, nil
-
-	case updateCheckMsg:
+					// NOTE: Do NOT delete from mcpLoadingSessions here!
+					// Animation continues until Claude is ready or timeout expires
+					log.Printf("[MCP-DEBUG] mcpRestartedMsg: MCP reload initiated for %s (animation continues)", msg.session.ID)
+				}
+				return h, nil
+			
+				case maintenanceCompleteMsg:
+					res := msg.result
+					if res.PrunedLogs > 0 || res.PrunedBackups > 0 || res.ArchivedSessions > 0 {
+						var parts []string
+						if res.PrunedLogs > 0 {
+							parts = append(parts, fmt.Sprintf("%d logs pruned", res.PrunedLogs))
+						}
+						if res.PrunedBackups > 0 {
+							parts = append(parts, fmt.Sprintf("%d backups cleaned", res.PrunedBackups))
+						}
+						if res.ArchivedSessions > 0 {
+							parts = append(parts, fmt.Sprintf("%d sessions archived", res.ArchivedSessions))
+						}
+						h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ")
+						h.maintenanceMsgTime = time.Now()
+			
+						// Clear message after 10 seconds
+						return h, h.clearMaintenanceMsgCmd(10 * time.Second)
+					}
+					return h, nil
+			
+				case clearMaintenanceMsg:
+					h.maintenanceMsg = ""
+					h.maintenanceMsgTime = time.Time{}
+					return h, nil
+				case updateCheckMsg:
 		h.updateInfo = msg.info
 		return h, nil
 
@@ -2607,6 +2654,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h.tryQuit()
 
 	case "esc":
+		// If there's a maintenance message, Esc dismisses it
+		if h.maintenanceMsg != "" {
+			h.maintenanceMsg = ""
+			h.maintenanceMsgTime = time.Time{}
+			return h, nil
+		}
+
 		// Double ESC to quit (#28) - for non-English keyboard users
 		// If ESC pressed twice within 500ms, quit the application
 		if time.Since(h.lastEscTime) < 500*time.Millisecond {
@@ -4677,6 +4731,30 @@ func renderSectionDivider(label string, width int) string {
 
 // renderHelpBar renders context-aware keyboard shortcuts, adapting to terminal width
 func (h *Home) renderHelpBar() string {
+	// If there's a maintenance message, show it instead of help
+	if h.maintenanceMsg != "" {
+		maintenanceStyle := lipgloss.NewStyle().
+			Foreground(ColorCyan).
+			Bold(true).
+			Padding(0, 1)
+
+		content := maintenanceStyle.Render("🛠 " + h.maintenanceMsg)
+		// Right-aligned dismiss hint
+		dismissStyle := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
+		dismissHint := dismissStyle.Render("[Esc] hide")
+
+		padding := h.width - lipgloss.Width(content) - lipgloss.Width(dismissHint) - 2
+		if padding > 0 {
+			content += strings.Repeat(" ", padding) + dismissHint
+		}
+
+		return lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(ColorBorder).
+			Width(h.width).
+			Render(content)
+	}
+
 	// Route to appropriate tier based on width
 	switch {
 	case h.width < layoutBreakpointSingle:

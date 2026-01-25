@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -304,13 +305,25 @@ func main() {
 		log.SetOutput(io.Discard)
 	}
 
+	// Start background maintenance worker (prune logs, archive bloated sessions)
+	// Uses a separate goroutine and cancellable context
+	maintenanceCtx, cancelMaintenance := context.WithCancel(context.Background())
+	defer cancelMaintenance()
+
 	// Start TUI with the specified profile
 	// Pass isPrimaryInstance to control notification bar management
+	homeModel := ui.NewHomeWithProfileAndMode(profile, isPrimaryInstance)
 	p := tea.NewProgram(
-		ui.NewHomeWithProfileAndMode(profile, isPrimaryInstance),
+		homeModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+
+	// Maintenance callback sends msg to bubbletea program
+	onMaintenanceComplete := func(result session.MaintenanceResult) {
+		p.Send(ui.MaintenanceCompleteMsg(result))
+	}
+	session.StartMaintenanceWorker(maintenanceCtx, onMaintenanceComplete)
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)

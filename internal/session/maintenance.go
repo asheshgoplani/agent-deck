@@ -40,7 +40,8 @@ func Maintenance() (MaintenanceResult, error) {
 
 // StartMaintenanceWorker starts a background goroutine that performs periodic cleanup.
 // Runs immediately on startup, then every 15 minutes, provided maintenance is enabled in config.
-func StartMaintenanceWorker(ctx context.Context) {
+// onComplete is an optional callback executed after each maintenance run with the results.
+func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResult)) {
 	log.Printf("[MAINTENANCE] Starting background maintenance worker")
 
 	// Helper to run all maintenance tasks
@@ -56,6 +57,10 @@ func StartMaintenanceWorker(ctx context.Context) {
 
 		log.Printf("[MAINTENANCE] Maintenance complete in %v. Pruned: %d logs, %d backups. Archived: %d sessions.",
 			result.Duration.Round(time.Millisecond), result.PrunedLogs, result.PrunedBackups, result.ArchivedSessions)
+
+		if onComplete != nil {
+			onComplete(result)
+		}
 	}
 
 	// Run immediately on startup

@@ -231,7 +231,7 @@ func TestStartMaintenanceWorkerDisabled(t *testing.T) {
 	defer cancel()
 
 	// Call StartMaintenanceWorker - it should return immediately because Enabled is false
-	StartMaintenanceWorker(ctx)
+	StartMaintenanceWorker(ctx, nil)
 
 	// In this test we can't easily "wait" for it to NOT run, 
 	// but we've verified the logic in the code.
@@ -240,5 +240,43 @@ func TestStartMaintenanceWorkerDisabled(t *testing.T) {
 	settings := GetMaintenanceSettings()
 	if settings.Enabled {
 		t.Error("Maintenance should be disabled for this test")
+	}
+}
+
+func TestStartMaintenanceWorkerCallback(t *testing.T) {
+	// Setup: enable maintenance in config
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	config := &UserConfig{
+		Maintenance: MaintenanceSettings{
+			Enabled: true,
+		},
+	}
+	_ = SaveUserConfig(config)
+	ClearUserConfigCache()
+
+	// Use a channel to wait for the callback
+	done := make(chan MaintenanceResult, 1)
+	callback := func(res MaintenanceResult) {
+		done <- res
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start worker with callback
+	StartMaintenanceWorker(ctx, callback)
+
+	// Wait for callback with timeout
+	select {
+	case res := <-done:
+		// Success! Callback triggered.
+		t.Logf("Callback received: %+v", res)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timed out waiting for maintenance callback")
 	}
 }
