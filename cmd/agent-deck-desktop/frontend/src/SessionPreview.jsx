@@ -160,12 +160,20 @@ export default function SessionPreview({ session, onAttach, fontSize = DEFAULT_F
         EventsOn('terminal:data', handleTerminalData);
 
         // Make preview interactive (allow scrolling)
+        // Accumulator for smooth trackpad scrolling (small deltaY values)
+        let scrollAccumulator = 0;
+        const PIXELS_PER_LINE = 50; // Higher = slower scrolling
+
         const handleWheel = (e) => {
             e.preventDefault();
             e.stopPropagation();
             if (xtermRef.current) {
-                const linesToScroll = Math.sign(e.deltaY) * Math.max(1, Math.ceil(Math.abs(e.deltaY) / 30));
-                xtermRef.current.scrollLines(linesToScroll);
+                scrollAccumulator += e.deltaY;
+                if (Math.abs(scrollAccumulator) >= PIXELS_PER_LINE) {
+                    const linesToScroll = Math.trunc(scrollAccumulator / PIXELS_PER_LINE);
+                    xtermRef.current.scrollLines(linesToScroll);
+                    scrollAccumulator -= linesToScroll * PIXELS_PER_LINE;
+                }
             }
         };
         terminalRef.current?.addEventListener('wheel', handleWheel, { passive: false, capture: true });

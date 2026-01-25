@@ -19,6 +19,7 @@ export default function PaneLayout({
     terminalRefs,
     searchRefs,
     fontSize,
+    scrollSpeed = 100,
     moveMode = false,
     paneNumberMap = {},
 }) {
@@ -47,6 +48,7 @@ export default function PaneLayout({
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
                 fontSize={fontSize}
+                scrollSpeed={scrollSpeed}
                 moveMode={moveMode}
                 paneNumber={paneNumberMap[node.id] || 0}
             />
@@ -76,6 +78,7 @@ export default function PaneLayout({
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
                     fontSize={fontSize}
+                    scrollSpeed={scrollSpeed}
                     moveMode={moveMode}
                     paneNumberMap={paneNumberMap}
                 />
@@ -100,6 +103,7 @@ export default function PaneLayout({
                     terminalRefs={terminalRefs}
                     searchRefs={searchRefs}
                     fontSize={fontSize}
+                    scrollSpeed={scrollSpeed}
                     moveMode={moveMode}
                     paneNumberMap={paneNumberMap}
                 />

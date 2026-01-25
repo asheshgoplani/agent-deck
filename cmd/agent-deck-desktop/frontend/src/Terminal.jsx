@@ -55,7 +55,10 @@ function rafThrottle(fn) {
 
 const logger = createLogger('Terminal');
 
-export default function Terminal({ searchRef, session, paneId, onFocus, fontSize = DEFAULT_FONT_SIZE }) {
+const DEFAULT_SCROLL_SPEED = 100;
+const DEFAULT_PIXELS_PER_LINE = 50;
+
+export default function Terminal({ searchRef, session, paneId, onFocus, fontSize = DEFAULT_FONT_SIZE, scrollSpeed = DEFAULT_SCROLL_SPEED }) {
     const terminalRef = useRef(null);
     const xtermRef = useRef(null);
     const fitAddonRef = useRef(null);
@@ -405,6 +408,13 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
         let pendingDirection = null; // 'up' or 'down'
         const ALT_SCROLL_THROTTLE_MS = 400; // One page scroll per 400ms max
 
+        // Accumulator for smooth trackpad scrolling (small deltaY values)
+        let scrollAccumulator = 0;
+        // Calculate pixels per line based on scroll speed setting
+        // Higher scrollSpeed = lower pixelsPerLine = faster scrolling
+        // Formula: at 100% speed use DEFAULT (50), at 200% use 25, at 50% use 100
+        const pixelsPerLine = Math.round(DEFAULT_PIXELS_PER_LINE * 100 / scrollSpeed);
+
         const handleWheel = (e) => {
             // Always prevent default to stop browser from scrolling the viewport
             e.preventDefault();
@@ -436,9 +446,14 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
                 return;
             }
 
-            // Normal buffer (shell) - use programmatic xterm scroll
-            const linesToScroll = Math.sign(e.deltaY) * Math.max(1, Math.ceil(Math.abs(e.deltaY) / 30));
-            term.scrollLines(linesToScroll);
+            // Normal buffer (shell) - accumulate small deltas before scrolling
+            scrollAccumulator += e.deltaY;
+
+            if (Math.abs(scrollAccumulator) >= pixelsPerLine) {
+                const linesToScroll = Math.trunc(scrollAccumulator / pixelsPerLine);
+                term.scrollLines(linesToScroll);
+                scrollAccumulator -= linesToScroll * pixelsPerLine;
+            }
         };
 
 
@@ -703,7 +718,7 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
             searchAddonRef.current = null;
             initRef.current = false;
         };
-    }, [searchRef, session, paneId, onFocus, fontSize]); // Note: theme/fontSize changes handled by separate useEffects
+    }, [searchRef, session, paneId, onFocus, fontSize, scrollSpeed]); // Note: theme/fontSize changes handled by separate useEffects
 
     // Scroll to bottom when indicator is clicked
     const handleScrollToBottom = () => {

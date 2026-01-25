@@ -15,7 +15,7 @@ import FocusModeOverlay from './FocusModeOverlay';
 import MoveModeOverlay from './MoveModeOverlay';
 import SaveLayoutModal from './SaveLayoutModal';
 import HostPicker from './HostPicker';
-import { ListSessions, DiscoverProjects, CreateSession, CreateRemoteSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize, GetSavedLayouts, SaveLayout, DeleteSavedLayout, StartRemoteTmuxSession } from '../wailsjs/go/main/App';
+import { ListSessions, DiscoverProjects, CreateSession, CreateRemoteSession, RecordProjectUsage, GetQuickLaunchFavorites, AddQuickLaunchFavorite, GetQuickLaunchBarVisibility, SetQuickLaunchBarVisibility, GetGitBranch, IsGitWorktree, MarkSessionAccessed, GetDefaultLaunchConfig, UpdateSessionCustomLabel, GetFontSize, SetFontSize, GetScrollSpeed, GetSavedLayouts, SaveLayout, DeleteSavedLayout, StartRemoteTmuxSession } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/terminal';
 import { shouldInterceptShortcut, hasAppModifier } from './utils/platform';
@@ -72,6 +72,7 @@ function App() {
     const [openTabs, setOpenTabs] = useState([]);
     const [activeTabId, setActiveTabId] = useState(null);
     const [fontSize, setFontSizeState] = useState(DEFAULT_FONT_SIZE);
+    const [scrollSpeed, setScrollSpeedState] = useState(100); // Default 100%
     // Move mode - when true, shows pane numbers for session swap
     const [moveMode, setMoveMode] = useState(false);
     // Saved layouts
@@ -172,6 +173,18 @@ function App() {
             }
         };
         loadFontSize();
+
+        // Load scroll speed preference
+        const loadScrollSpeed = async () => {
+            try {
+                const speed = await GetScrollSpeed();
+                setScrollSpeedState(speed);
+                logger.info('Loaded scroll speed', { speed });
+            } catch (err) {
+                logger.error('Failed to load scroll speed:', err);
+            }
+        };
+        loadScrollSpeed();
 
         // Load saved layouts
         const loadSavedLayouts = async () => {
@@ -1505,6 +1518,8 @@ function App() {
                         onClose={() => setShowSettings(false)}
                         fontSize={fontSize}
                         onFontSizeChange={(newSize) => setFontSizeState(newSize)}
+                        scrollSpeed={scrollSpeed}
+                        onScrollSpeedChange={(newSpeed) => setScrollSpeedState(newSpeed)}
                     />
                 )}
                 {showHelpModal && (
@@ -1551,6 +1566,7 @@ function App() {
                 terminalRefs={terminalRefs}
                 searchRefs={searchRefs}
                 fontSize={fontSize}
+                scrollSpeed={scrollSpeed}
                 moveMode={moveMode}
                 paneNumberMap={paneNumberMap}
             />
@@ -1733,6 +1749,8 @@ function App() {
                     onClose={() => setShowSettings(false)}
                     fontSize={fontSize}
                     onFontSizeChange={(newSize) => setFontSizeState(newSize)}
+                    scrollSpeed={scrollSpeed}
+                    onScrollSpeedChange={(newSpeed) => setScrollSpeedState(newSpeed)}
                 />
             )}
             {showHelpModal && (

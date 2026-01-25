@@ -408,6 +408,20 @@ func (a *App) SetFontSize(size int) error {
 	return a.desktopSettings.SetFontSize(size)
 }
 
+// GetScrollSpeed returns the terminal scroll speed percentage (50-250, default 100).
+func (a *App) GetScrollSpeed() int {
+	speed, err := a.desktopSettings.GetScrollSpeed()
+	if err != nil {
+		return 100
+	}
+	return speed
+}
+
+// SetScrollSpeed sets the terminal scroll speed percentage (clamped to 50-250).
+func (a *App) SetScrollSpeed(speed int) error {
+	return a.desktopSettings.SetScrollSpeed(speed)
+}
+
 // ==================== SSH Remote Session Methods ====================
 
 // TestSSHConnection tests if a remote host is reachable.

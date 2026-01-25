@@ -29,6 +29,9 @@ type TerminalConfig struct {
 	// FontSize controls the terminal font size in pixels
 	// Range: 8-32, Default: 14
 	FontSize int `toml:"font_size"`
+	// ScrollSpeed controls mouse/trackpad scroll speed as a percentage
+	// Range: 50-250, Default: 100 (100% = normal speed)
+	ScrollSpeed int `toml:"scroll_speed"`
 }
 
 // DesktopSettingsManager manages desktop-specific settings in config.toml
@@ -57,6 +60,7 @@ func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error)
 		Terminal: TerminalConfig{
 			SoftNewline: "both", // Both Shift+Enter and Alt+Enter by default
 			FontSize:    14,     // Default font size
+			ScrollSpeed: 100,    // Default scroll speed (100%)
 		},
 	}
 
@@ -106,6 +110,15 @@ func (dsm *DesktopSettingsManager) loadDesktopSettings() (*DesktopConfig, error)
 		config.Desktop.Terminal.FontSize = 32
 	}
 
+	// Validate and apply defaults for scroll speed (50-250, default 100)
+	if config.Desktop.Terminal.ScrollSpeed == 0 {
+		config.Desktop.Terminal.ScrollSpeed = 100
+	} else if config.Desktop.Terminal.ScrollSpeed < 50 {
+		config.Desktop.Terminal.ScrollSpeed = 50
+	} else if config.Desktop.Terminal.ScrollSpeed > 250 {
+		config.Desktop.Terminal.ScrollSpeed = 250
+	}
+
 	return &config.Desktop, nil
 }
 
@@ -130,6 +143,7 @@ func (dsm *DesktopSettingsManager) saveDesktopSettings(desktop *DesktopConfig) e
 		"terminal": map[string]interface{}{
 			"soft_newline": desktop.Terminal.SoftNewline,
 			"font_size":    desktop.Terminal.FontSize,
+			"scroll_speed": desktop.Terminal.ScrollSpeed,
 		},
 	}
 
@@ -210,6 +224,8 @@ func (dsm *DesktopSettingsManager) SetSoftNewline(mode string) error {
 			Theme: "dark",
 			Terminal: TerminalConfig{
 				SoftNewline: "both",
+				FontSize:    14,
+				ScrollSpeed: 100,
 			},
 		}
 	}
@@ -222,7 +238,7 @@ func (dsm *DesktopSettingsManager) SetSoftNewline(mode string) error {
 func (dsm *DesktopSettingsManager) GetTerminalConfig() (*TerminalConfig, error) {
 	config, err := dsm.loadDesktopSettings()
 	if err != nil {
-		return &TerminalConfig{SoftNewline: "both", FontSize: 14}, err
+		return &TerminalConfig{SoftNewline: "both", FontSize: 14, ScrollSpeed: 100}, err
 	}
 	return &config.Terminal, nil
 }
@@ -254,11 +270,48 @@ func (dsm *DesktopSettingsManager) SetFontSize(size int) error {
 			Terminal: TerminalConfig{
 				SoftNewline: "both",
 				FontSize:    14,
+				ScrollSpeed: 100,
 			},
 		}
 	}
 
 	config.Terminal.FontSize = size
+	return dsm.saveDesktopSettings(config)
+}
+
+// GetScrollSpeed returns the terminal scroll speed percentage
+// Returns: 50-250, default 100
+func (dsm *DesktopSettingsManager) GetScrollSpeed() (int, error) {
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		return 100, err
+	}
+	return config.Terminal.ScrollSpeed, nil
+}
+
+// SetScrollSpeed sets the terminal scroll speed percentage
+// Valid range: 50-250 (100 = normal speed)
+func (dsm *DesktopSettingsManager) SetScrollSpeed(speed int) error {
+	// Clamp to valid range
+	if speed < 50 {
+		speed = 50
+	} else if speed > 250 {
+		speed = 250
+	}
+
+	config, err := dsm.loadDesktopSettings()
+	if err != nil {
+		config = &DesktopConfig{
+			Theme: "dark",
+			Terminal: TerminalConfig{
+				SoftNewline: "both",
+				FontSize:    14,
+				ScrollSpeed: 100,
+			},
+		}
+	}
+
+	config.Terminal.ScrollSpeed = speed
 	return dsm.saveDesktopSettings(config)
 }
 

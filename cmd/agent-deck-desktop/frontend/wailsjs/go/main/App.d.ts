@@ -50,6 +50,8 @@ export function GetSavedLayoutByID(arg1:string):Promise<main.SavedLayout>;
 
 export function GetSavedLayouts():Promise<Array<main.SavedLayout>>;
 
+export function GetScrollSpeed():Promise<number>;
+
 export function GetScrollback(arg1:string):Promise<string>;
 
 export function GetSessionMetadata(arg1:string):Promise<main.SessionMetadata>;
@@ -95,6 +97,8 @@ export function SetDesktopTheme(arg1:string):Promise<void>;
 export function SetFontSize(arg1:number):Promise<void>;
 
 export function SetQuickLaunchBarVisibility(arg1:boolean):Promise<void>;
+
+export function SetScrollSpeed(arg1:number):Promise<void>;
 
 export function SetSoftNewlineMode(arg1:string):Promise<void>;
 

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
-import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, SetFontSize, ResetGroupSettings } from '../wailsjs/go/main/App';
+import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, SetFontSize, GetScrollSpeed, SetScrollSpeed, ResetGroupSettings } from '../wailsjs/go/main/App';
 import { createLogger } from './logger';
 import { TOOLS } from './utils/tools';
 import ToolIcon from './ToolIcon';
@@ -10,7 +10,11 @@ import { DEFAULT_FONT_SIZE, MIN_FONT_SIZE, MAX_FONT_SIZE } from './constants/ter
 
 const logger = createLogger('SettingsModal');
 
-export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, onFontSizeChange }) {
+const DEFAULT_SCROLL_SPEED = 100;
+const MIN_SCROLL_SPEED = 50;
+const MAX_SCROLL_SPEED = 250;
+
+export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, onFontSizeChange, scrollSpeed = DEFAULT_SCROLL_SPEED, onScrollSpeedChange }) {
     const [configs, setConfigs] = useState([]);
     const [loading, setLoading] = useState(true);
     const [editingConfig, setEditingConfig] = useState(null); // null = list view, object = editing
@@ -66,6 +70,30 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
             logger.info('Reset font size to default');
         } catch (err) {
             logger.error('Failed to reset font size:', err);
+            alert('Failed to save setting: ' + err.message);
+        }
+    };
+
+    const handleScrollSpeedChange = async (newSpeed) => {
+        const clampedSpeed = Math.max(MIN_SCROLL_SPEED, Math.min(MAX_SCROLL_SPEED, newSpeed));
+        if (clampedSpeed === scrollSpeed) return;
+        try {
+            await SetScrollSpeed(clampedSpeed);
+            if (onScrollSpeedChange) onScrollSpeedChange(clampedSpeed);
+            logger.info('Set scroll speed:', clampedSpeed);
+        } catch (err) {
+            logger.error('Failed to set scroll speed:', err);
+            alert('Failed to save setting: ' + err.message);
+        }
+    };
+
+    const handleScrollSpeedReset = async () => {
+        try {
+            await SetScrollSpeed(DEFAULT_SCROLL_SPEED);
+            if (onScrollSpeedChange) onScrollSpeedChange(DEFAULT_SCROLL_SPEED);
+            logger.info('Reset scroll speed to default');
+        } catch (err) {
+            logger.error('Failed to reset scroll speed:', err);
             alert('Failed to save setting: ' + err.message);
         }
     };
@@ -286,6 +314,38 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
                                 onClick={handleFontSizeReset}
                                 disabled={fontSize === DEFAULT_FONT_SIZE}
                                 title={`Reset to default (${DEFAULT_FONT_SIZE}px)`}
+                            >
+                                Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Scroll Speed Settings */}
+                    <div className="settings-theme-section">
+                        <div className="settings-theme-header">
+                            <span className="settings-theme-icon">🖱️</span>
+                            <h3>Scroll Speed</h3>
+                        </div>
+                        <div className="settings-input-description">
+                            Mouse and trackpad scroll speed in terminal. Higher values scroll faster.
+                        </div>
+                        <div className="settings-scroll-speed-controls">
+                            <input
+                                type="range"
+                                className="settings-scroll-slider"
+                                min={MIN_SCROLL_SPEED}
+                                max={MAX_SCROLL_SPEED}
+                                step={10}
+                                value={scrollSpeed}
+                                onChange={(e) => handleScrollSpeedChange(parseInt(e.target.value, 10))}
+                                title={`Scroll speed: ${scrollSpeed}%`}
+                            />
+                            <span className="settings-scroll-speed-value">{scrollSpeed}%</span>
+                            <button
+                                className="settings-font-reset-btn"
+                                onClick={handleScrollSpeedReset}
+                                disabled={scrollSpeed === DEFAULT_SCROLL_SPEED}
+                                title="Reset to default (100%)"
                             >
                                 Reset
                             </button>

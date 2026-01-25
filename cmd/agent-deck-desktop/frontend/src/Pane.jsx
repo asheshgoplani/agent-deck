@@ -26,6 +26,7 @@ export default function Pane({
     terminalRefs,
     searchRefs,
     fontSize,
+    scrollSpeed = 100,
     moveMode = false,
     paneNumber = 0,
 }) {
@@ -150,6 +151,7 @@ export default function Pane({
                     paneId={paneId}
                     onFocus={handleTerminalFocus}
                     fontSize={fontSize}
+                    scrollSpeed={scrollSpeed}
                 />
             </div>
             <StatusBar session={session} />

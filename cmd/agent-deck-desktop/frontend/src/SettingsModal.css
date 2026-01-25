@@ -426,6 +426,62 @@
     cursor: not-allowed;
 }
 
+/* Scroll Speed Settings */
+.settings-scroll-speed-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-scroll-slider {
+    flex: 1;
+    max-width: 200px;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    outline: none;
+    cursor: pointer;
+}
+
+.settings-scroll-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    cursor: pointer;
+    border: 2px solid var(--bg-primary);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.settings-scroll-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+    box-shadow: 0 2px 8px rgba(76, 201, 240, 0.4);
+}
+
+.settings-scroll-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent-primary);
+    cursor: pointer;
+    border: 2px solid var(--bg-primary);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.settings-scroll-speed-value {
+    font-size: var(--font-xl);
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 55px;
+    text-align: center;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
 /* Group Settings */
 .settings-group-controls {
     display: flex;

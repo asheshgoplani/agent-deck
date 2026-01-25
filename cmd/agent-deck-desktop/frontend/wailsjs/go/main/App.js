@@ -98,6 +98,10 @@ export function GetSavedLayouts() {
   return window['go']['main']['App']['GetSavedLayouts']();
 }
 
+export function GetScrollSpeed() {
+  return window['go']['main']['App']['GetScrollSpeed']();
+}
+
 export function GetScrollback(arg1) {
   return window['go']['main']['App']['GetScrollback'](arg1);
 }
@@ -188,6 +192,10 @@ export function SetFontSize(arg1) {
 
 export function SetQuickLaunchBarVisibility(arg1) {
   return window['go']['main']['App']['SetQuickLaunchBarVisibility'](arg1);
+}
+
+export function SetScrollSpeed(arg1) {
+  return window['go']['main']['App']['SetScrollSpeed'](arg1);
 }
 
 export function SetSoftNewlineMode(arg1) {
