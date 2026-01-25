@@ -373,7 +373,6 @@ const SessionList = forwardRef(function SessionList({
 
             switch (e.key) {
                 case 'ArrowDown':
-                case 'j':
                     e.preventDefault();
                     setSelectedIndex(prev => {
                         const newIndex = prev < renderList.length - 1 ? prev + 1 : prev;
@@ -386,7 +385,6 @@ const SessionList = forwardRef(function SessionList({
                     });
                     break;
                 case 'ArrowUp':
-                case 'k':
                     e.preventDefault();
                     setSelectedIndex(prev => {
                         const newIndex = prev > 0 ? prev - 1 : prev;
@@ -409,7 +407,6 @@ const SessionList = forwardRef(function SessionList({
                     }
                     break;
                 case 'ArrowLeft':
-                case 'h':
                     e.preventDefault();
                     const currentItem = renderList[selectedIndex];
                     if (currentItem?.type === 'group' && isGroupExpanded(currentItem.group.path)) {
@@ -417,7 +414,6 @@ const SessionList = forwardRef(function SessionList({
                     }
                     break;
                 case 'ArrowRight':
-                case 'l':
                     e.preventDefault();
                     const rightItem = renderList[selectedIndex];
                     if (rightItem?.type === 'group' && !isGroupExpanded(rightItem.group.path)) {
