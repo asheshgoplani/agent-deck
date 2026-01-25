@@ -1,0 +1,70 @@
+/* GroupControls Component Styles */
+
+.group-controls-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-tertiary, #252530);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: var(--font-sm);
+    font-weight: 500;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    white-space: nowrap;
+}
+
+.group-controls-btn:hover:not(:disabled) {
+    background: var(--bg-selected);
+    border-color: var(--border-primary);
+    color: var(--text-primary);
+}
+
+.group-controls-btn:active:not(:disabled) {
+    background: var(--bg-active);
+}
+
+.group-controls-btn.expanded {
+    color: var(--text-secondary);
+}
+
+.group-controls-btn.expanded .group-controls-icon {
+    color: var(--accent-primary);
+}
+
+.group-controls-btn.collapsed .group-controls-icon {
+    color: var(--text-muted);
+}
+
+.group-controls-btn.mixed .group-controls-icon {
+    color: var(--warning-color, #ffe66d);
+}
+
+.group-controls-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    font-size: 10px;
+    transition: color 0.15s, transform 0.15s;
+    flex-shrink: 0;
+}
+
+.group-controls-label {
+    font-size: var(--font-sm);
+}
+
+/* Focus state for keyboard accessibility */
+.group-controls-btn:focus {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+/* Disabled state */
+.group-controls-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
