@@ -1611,7 +1611,7 @@ function App() {
             <div className="terminal-header">
                 <button
                     className="back-button"
-                    onClick={handleBackToSelector}
+                    onClick={() => { hideBackTooltip(); handleBackToSelector(); }}
                     onMouseEnter={(e) => showBackTooltip(e, 'Back to sessions (⌘Esc)')}
                     onMouseLeave={hideBackTooltip}
                 >
