@@ -635,10 +635,10 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
                         logger.info('Connecting to remote tmux session (SSH polling mode):',
                             session.remoteHost, session.tmuxSession, 'sessionId:', sessionId);
                         // Backend handles:
-                        // 1. SSH connection to remote host
+                        // 1. SSH connection to remote host (auto-restarts session if needed)
                         // 2. History fetch + emit via terminal:history event
                         // 3. Polling loop for display updates via SSH
-                        await StartRemoteTmuxSession(sessionId, session.remoteHost, session.tmuxSession, cols, rows);
+                        await StartRemoteTmuxSession(sessionId, session.remoteHost, session.tmuxSession, session.projectPath || '', session.tool || 'shell', cols, rows);
                         logger.info('Remote polling session started');
                         console.log('%c[LOAD] Remote SSH polling session started', 'color: cyan; font-weight: bold');
                         LogFrontendDiagnostic('[LOAD] Remote SSH polling session started');

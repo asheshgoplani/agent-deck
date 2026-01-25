@@ -143,15 +143,18 @@ func (a *App) StartTmuxSession(sessionID, tmuxSession string, cols, rows int) er
 
 // StartRemoteTmuxSession connects to a tmux session on a remote host via SSH.
 // Uses SSH polling for display updates.
+// If the remote tmux session doesn't exist (error state), it will be automatically restarted.
 //
 // Parameters:
 //   - sessionID: identifier for this terminal pane
 //   - hostID: SSH host identifier from config.toml [ssh_hosts.X]
 //   - tmuxSession: tmux session name on the remote host
+//   - projectPath: working directory for the session (used for restart)
+//   - tool: tool type for the session (used for restart, e.g., "claude", "shell")
 //   - cols, rows: initial terminal dimensions
-func (a *App) StartRemoteTmuxSession(sessionID, hostID, tmuxSession string, cols, rows int) error {
+func (a *App) StartRemoteTmuxSession(sessionID, hostID, tmuxSession, projectPath, tool string, cols, rows int) error {
 	t := a.terminals.GetOrCreate(sessionID)
-	return t.StartRemoteTmuxSession(hostID, tmuxSession, cols, rows)
+	return t.StartRemoteTmuxSession(hostID, tmuxSession, projectPath, tool, cols, rows, a.tmux, a.sshBridge)
 }
 
 // GetScrollback returns the scrollback buffer for a tmux session.

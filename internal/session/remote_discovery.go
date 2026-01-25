@@ -43,6 +43,7 @@ type RemoteStorageSnapshot struct {
 	Groups            []*GroupData      // Remote's group definitions
 	SessionGroupPaths map[string]string // tmux_session name -> group_path mapping
 	SessionTools      map[string]string // tmux_session name -> tool mapping
+	AllSessions       []*InstanceData   // All sessions from sessions.json (for discovering error-state sessions)
 }
 
 // agentDeckSessionPattern matches agentdeck_<title>_<8-hex-chars> tmux session names
@@ -75,11 +76,14 @@ func FetchRemoteStorageSnapshot(sshExec *tmux.SSHExecutor) *RemoteStorageSnapsho
 	// If machine A discovers B, and B has remote sessions from A, we must not re-discover those
 	sessionGroupPaths := make(map[string]string)
 	sessionTools := make(map[string]string)
+	var allSessions []*InstanceData
 	for _, inst := range data.Instances {
 		// Skip remote-of-remote sessions to prevent circular loops
 		if inst.RemoteHost != "" {
 			continue
 		}
+		// Keep track of all local sessions (including those without running tmux)
+		allSessions = append(allSessions, inst)
 		if inst.TmuxSession != "" {
 			if inst.GroupPath != "" {
 				sessionGroupPaths[inst.TmuxSession] = inst.GroupPath
@@ -94,6 +98,7 @@ func FetchRemoteStorageSnapshot(sshExec *tmux.SSHExecutor) *RemoteStorageSnapsho
 		Groups:            data.Groups,
 		SessionGroupPaths: sessionGroupPaths,
 		SessionTools:      sessionTools,
+		AllSessions:       allSessions,
 	}
 }
 
@@ -233,9 +238,6 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 		return nil, nil, nil, nil, err
 	}
 
-	// Find stale sessions (ones we have locally but no longer exist on remote)
-	staleIDs := FindStaleRemoteSessions(existing, hostID, remoteSessions)
-
 	// Build lookup map of existing instances by their deterministic remote ID
 	existingByRemoteID := make(map[string]*Instance)
 	for _, inst := range existing {
@@ -265,6 +267,10 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 	if remoteSnapshot != nil {
 		transformedGroups = TransformRemoteGroups(remoteSnapshot.Groups, groupPrefix, groupName)
 	}
+
+	// Find stale sessions (ones we have locally but no longer exist on remote)
+	// A session is only stale if it's not in running tmux AND not in sessions.json
+	staleIDs := FindStaleRemoteSessionsWithSnapshot(existing, hostID, remoteSessions, remoteSnapshot)
 
 	var discovered []*Instance
 	var updated []*UpdatedInstance
@@ -343,6 +349,59 @@ func DiscoverRemoteSessionsForHost(hostID string, existing []*Instance) ([]*Inst
 
 		discovered = append(discovered, inst)
 		log.Printf("[REMOTE-DISCOVERY] Discovered: %s on %s -> %s (group: %s)", rs.Name, hostID, title, localGroupPath)
+	}
+
+	// Also discover sessions from sessions.json that don't have running tmux sessions
+	// These are "error" state sessions that still exist in storage
+	if remoteSnapshot != nil && len(remoteSnapshot.AllSessions) > 0 {
+		// Build set of running tmux session names
+		runningTmux := make(map[string]bool)
+		for _, rs := range remoteSessions {
+			runningTmux[rs.Name] = true
+		}
+
+		for _, remoteInst := range remoteSnapshot.AllSessions {
+			// Skip if tmux session is running (already handled above)
+			if remoteInst.TmuxSession != "" && runningTmux[remoteInst.TmuxSession] {
+				continue
+			}
+
+			// Skip sessions without a tmux session name (shouldn't happen but be safe)
+			if remoteInst.TmuxSession == "" {
+				continue
+			}
+
+			// Generate deterministic ID
+			remoteID := GenerateRemoteInstanceID(hostID, remoteInst.TmuxSession)
+
+			// Check if already exists locally
+			if _, exists := existingByRemoteID[remoteID]; exists {
+				continue
+			}
+
+			// Transform group path
+			localGroupPath := TransformRemoteGroupPath(remoteInst.GroupPath, groupPrefix, groupName)
+
+			// Create instance for this error-state session
+			inst := &Instance{
+				ID:             remoteID,
+				Title:          remoteInst.Title,
+				ProjectPath:    remoteInst.ProjectPath,
+				GroupPath:      localGroupPath,
+				Tool:           remoteInst.Tool,
+				Status:         StatusError, // Mark as error since tmux isn't running
+				CreatedAt:      time.Now(),
+				RemoteHost:     hostID,
+				RemoteTmuxName: remoteInst.TmuxSession,
+			}
+
+			// Don't set up tmux session since it's not running
+			// The session will need to be restarted when attached
+
+			discovered = append(discovered, inst)
+			log.Printf("[REMOTE-DISCOVERY] Discovered (no tmux): %s on %s -> %s (group: %s, status: error)",
+				remoteInst.TmuxSession, hostID, remoteInst.Title, localGroupPath)
+		}
 	}
 
 	return discovered, updated, staleIDs, transformedGroups, nil
@@ -432,11 +491,29 @@ func FindByRemoteSession(instances []*Instance, hostID, tmuxName string) *Instan
 
 // FindStaleRemoteSessions finds instances that reference remote sessions that no longer exist
 // Returns instance IDs that should be removed from storage
+// DEPRECATED: Use FindStaleRemoteSessionsWithSnapshot which also considers sessions.json
 func FindStaleRemoteSessions(instances []*Instance, hostID string, currentRemoteSessions []RemoteTmuxSession) []string {
-	// Build set of current remote session names
-	currentNames := make(map[string]bool)
+	return FindStaleRemoteSessionsWithSnapshot(instances, hostID, currentRemoteSessions, nil)
+}
+
+// FindStaleRemoteSessionsWithSnapshot finds instances that reference remote sessions that no longer exist
+// A session is only stale if it's not in running tmux AND not in the remote's sessions.json
+// Returns instance IDs that should be removed from storage
+func FindStaleRemoteSessionsWithSnapshot(instances []*Instance, hostID string, currentRemoteSessions []RemoteTmuxSession, snapshot *RemoteStorageSnapshot) []string {
+	// Build set of current running tmux session names
+	runningTmux := make(map[string]bool)
 	for _, rs := range currentRemoteSessions {
-		currentNames[rs.Name] = true
+		runningTmux[rs.Name] = true
+	}
+
+	// Build set of sessions that exist in remote sessions.json
+	inSessionsJSON := make(map[string]bool)
+	if snapshot != nil {
+		for _, inst := range snapshot.AllSessions {
+			if inst.TmuxSession != "" {
+				inSessionsJSON[inst.TmuxSession] = true
+			}
+		}
 	}
 
 	var staleIDs []string
@@ -446,10 +523,16 @@ func FindStaleRemoteSessions(instances []*Instance, hostID string, currentRemote
 			continue
 		}
 
-		// If remote tmux name is not in current sessions, it's stale
-		if inst.RemoteTmuxName != "" && !currentNames[inst.RemoteTmuxName] {
-			staleIDs = append(staleIDs, inst.ID)
-			log.Printf("[REMOTE-DISCOVERY] Stale session: %s (%s) on %s", inst.Title, inst.RemoteTmuxName, hostID)
+		// A session is stale only if it's not in running tmux AND not in sessions.json
+		if inst.RemoteTmuxName != "" {
+			inTmux := runningTmux[inst.RemoteTmuxName]
+			inStorage := inSessionsJSON[inst.RemoteTmuxName]
+
+			// Only stale if missing from both
+			if !inTmux && !inStorage {
+				staleIDs = append(staleIDs, inst.ID)
+				log.Printf("[REMOTE-DISCOVERY] Stale session: %s (%s) on %s (not in tmux or sessions.json)", inst.Title, inst.RemoteTmuxName, hostID)
+			}
 		}
 	}
 

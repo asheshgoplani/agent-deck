@@ -188,7 +188,7 @@ export default function SessionPreview({ session, onAttach, fontSize = DEFAULT_F
                 if (session.tmuxSession) {
                     if (session.isRemote && session.remoteHost) {
                         logger.info('Starting remote preview for:', session.remoteHost, session.tmuxSession);
-                        await StartRemoteTmuxSession(previewSessionId, session.remoteHost, session.tmuxSession, cols, rows);
+                        await StartRemoteTmuxSession(previewSessionId, session.remoteHost, session.tmuxSession, session.projectPath || '', session.tool || 'shell', cols, rows);
                     } else {
                         logger.info('Starting local preview for:', session.tmuxSession);
                         await StartTmuxSession(previewSessionId, session.tmuxSession, cols, rows);

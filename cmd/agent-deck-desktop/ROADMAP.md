@@ -1,5 +1,34 @@
 # Agent Deck Desktop - Feature Roadmap
 
+TIL:
+- the app supports multiple instances at once
+>>   How it works:
+  - First instance launched becomes "primary" (manages the notification bar)
+  - Additional instances run as "secondary" (fully functional, but don't manage notifications to avoid conflicts)
+  - Both can view/attach/manage the same sessions
+
+### Action for us: enable a button in the app for this and keyboard and launcher shortcut, probably CMD + N, and reserve CMD +T for new tab
+
+## Priorities to implement
+- add an easy ability to create numerous Claude sessions in the same directory and to easily view them in menu trees and the launcher.
+- add option to launcher when searching for a session that asks to open an existing session (or choose from several existing sessions in a single directory, or open a new one in an existing directory)
+   - This will require thought and planning to avoid confusion
+   - end goal... allow users to work on multiple things at once in the same directory, with separate agents, and add labels to each duplicated session to distinguish them.  If no label provided by user, auto-apply incremental label #1, #2, etc. (brainstorm with claude what feels right here before implementing, there may be a better way)
+
+
+### Recently implemented
+
+- turn front page view of sessions into a list of agents on left, preview pane on right (like TMUX)
+- add hostname to top status bar in session view to clearly indicate which host the session is running in
+- add path to same status menu, for same reason
+- Bug: determine why branch sometimes not shown in this status bar (i.e. for agent-deck, no branch shown
+- add button & launcher action & keyboard shortcut to hide all groups (i.e. collapse to single view)
+- support keybindings, combos that allow the keyboard to jump one word at a time on mac, or to EoL, beg. of lines
+- Update documentation to show capabilities of desktop app -- dedicated Readme, plus mention on front page Readme
+   - Add remote SSH capabilities to main ireadme
+
+--
+
 ## v0.1.0 - Prototype ✓
 **Status:** In validation
 **Goal:** Prove the concept is worth pursuing
