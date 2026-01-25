@@ -22,8 +22,6 @@ type MaintenanceResult struct {
 // Returns a MaintenanceResult and any errors encountered.
 func Maintenance() (MaintenanceResult, error) {
 	start := time.Now()
-	// First, restore anything mistakenly archived
-	_, _ = RestoreFromArchive("")
 
 	prunedLogs, _ := pruneGeminiLogs("")
 	prunedBackups, _ := cleanupDeckBackups("")
