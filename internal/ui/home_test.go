@@ -670,3 +670,51 @@ func TestHomeViewAllLayoutModes(t *testing.T) {
 		})
 	}
 }
+
+func TestHome_MaintenanceMessage(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.initialLoading = false
+
+	// 1. Initial state - no message
+	if home.maintenanceMsg != "" {
+		t.Error("Initial maintenanceMsg should be empty")
+	}
+
+	// 2. Receive maintenanceCompleteMsg
+	res := session.MaintenanceResult{PrunedLogs: 5, PrunedBackups: 2}
+	msg := MaintenanceCompleteMsg(res)
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+
+	if !strings.Contains(h.maintenanceMsg, "5 logs pruned") {
+		t.Errorf("maintenanceMsg = %q, should contain '5 logs pruned'", h.maintenanceMsg)
+	}
+	if !strings.Contains(h.maintenanceMsg, "2 backups cleaned") {
+		t.Errorf("maintenanceMsg = %q, should contain '2 backups cleaned'", h.maintenanceMsg)
+	}
+
+	// 3. Verify it shows in View
+	view := h.View()
+	if !strings.Contains(view, "Maintenance: 5 logs pruned") {
+		t.Error("Maintenance banner should be visible in View")
+	}
+
+	// 4. Dismiss with Esc
+	escMsg := tea.KeyMsg{Type: tea.KeyEsc}
+	model, _ = h.Update(escMsg)
+	h = model.(*Home)
+	if h.maintenanceMsg != "" {
+		t.Error("maintenanceMsg should be cleared after Esc")
+	}
+
+	// 5. Verify auto-clear message
+	h.maintenanceMsg = "Test"
+	clearMsg := clearMaintenanceMsg{}
+	model, _ = h.Update(clearMsg)
+	h = model.(*Home)
+	if h.maintenanceMsg != "" {
+		t.Error("maintenanceMsg should be cleared after clearMaintenanceMsg")
+	}
+}

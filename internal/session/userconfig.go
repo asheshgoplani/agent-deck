@@ -68,6 +68,15 @@ type UserConfig struct {
 
 	// Shell defines global shell environment settings for sessions
 	Shell ShellSettings `toml:"shell"`
+
+	// Maintenance defines automated cleanup settings
+	Maintenance MaintenanceSettings `toml:"maintenance"`
+}
+
+// MaintenanceSettings defines automated maintenance configuration
+type MaintenanceSettings struct {
+	// Enabled enables background maintenance (default: false)
+	Enabled bool `toml:"enabled"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -863,6 +872,18 @@ func GetInstanceSettings() InstanceSettings {
 	}
 
 	return config.Instances
+}
+
+// GetMaintenanceSettings returns maintenance settings with defaults applied
+func GetMaintenanceSettings() MaintenanceSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return MaintenanceSettings{
+			Enabled: false, // Default: maintenance disabled
+		}
+	}
+
+	return config.Maintenance
 }
 
 // getMCPPoolConfigSection returns the MCP pool config section based on platform

@@ -603,3 +603,63 @@ enabled = true
 		t.Errorf("GetNotificationsSettings MaxShown: should default to 6, got %d", settings.MaxShown)
 	}
 }
+
+// ============================================================================
+// Maintenance Settings Tests
+// ============================================================================
+
+func TestMaintenanceConfig(t *testing.T) {
+	// Test parsing explicit TOML config
+	tmpDir := t.TempDir()
+	configContent := `
+[maintenance]
+enabled = true
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !config.Maintenance.Enabled {
+		t.Error("Expected Maintenance.Enabled to be true")
+	}
+}
+
+func TestGetMaintenanceSettings(t *testing.T) {
+	// Setup: use temp directory with no config
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	// 1. Test defaults (no config)
+	settings := GetMaintenanceSettings()
+	if settings.Enabled {
+		t.Error("Maintenance should be disabled by default")
+	}
+
+	// 2. Test explicit true from config
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[maintenance]
+enabled = true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings = GetMaintenanceSettings()
+	if !settings.Enabled {
+		t.Error("GetMaintenanceSettings Enabled: should be true from config")
+	}
+}
