@@ -197,6 +197,35 @@
     font-weight: 500;
 }
 
+/* Host Badge */
+.palette-host-badge {
+    font-size: var(--font-sm);
+    padding: 2px 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    font-weight: 500;
+    text-transform: lowercase;
+}
+
+.palette-host-badge.local {
+    background: rgba(108, 117, 125, 0.2);
+    color: var(--text-muted);
+}
+
+.palette-host-badge.remote {
+    background: rgba(78, 205, 196, 0.2);
+    color: #4ecdc4;
+}
+
+[data-theme="light"] .palette-host-badge.local {
+    background: rgba(108, 117, 125, 0.15);
+}
+
+[data-theme="light"] .palette-host-badge.remote {
+    background: rgba(0, 150, 136, 0.15);
+    color: #00796b;
+}
+
 /* Footer Hints */
 .palette-footer {
     display: flex;

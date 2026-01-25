@@ -336,6 +336,9 @@ export default function CommandPalette({
                                                 {formatShortcut(item.shortcut)}
                                             </span>
                                         )}
+                                        <span className={`palette-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
+                                            {item.remoteHostDisplayName || item.remoteHost || 'local'}
+                                        </span>
                                         <span className="palette-project-hint">
                                             {pinMode ? 'Enter to pin' : (item.isPinned ? 'Pinned' : '⌘P Pin')}
                                         </span>
@@ -359,6 +362,9 @@ export default function CommandPalette({
                                                 {formatShortcut(favoritesLookup[item.projectPath].shortcut)}
                                             </span>
                                         )}
+                                        <span className={`palette-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
+                                            {item.remoteHostDisplayName || item.remoteHost || 'local'}
+                                        </span>
                                         <span
                                             className="palette-status"
                                             style={{ color: getStatusColor(item.status) }}

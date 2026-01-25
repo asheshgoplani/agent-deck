@@ -80,3 +80,14 @@ func (b *SSHBridge) GetTmuxPath(hostID string) string {
 	}
 	return cfg.TmuxPath
 }
+
+// GetHostDisplayNames returns a map of hostID to display name (GroupName or hostID).
+// This is used to show friendly names in the UI instead of raw host IDs.
+func (b *SSHBridge) GetHostDisplayNames() map[string]string {
+	result := make(map[string]string)
+	hosts := session.GetAvailableSSHHosts()
+	for hostID, hostDef := range hosts {
+		result[hostID] = hostDef.GetGroupName(hostID)
+	}
+	return result
+}

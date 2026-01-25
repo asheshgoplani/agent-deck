@@ -23,25 +23,26 @@ var shellUnsafePattern = regexp.MustCompile(`[;&|$` + "`" + `\\(){}[\]<>!*?#~\n\
 
 // SessionInfo represents an Agent Deck session for the frontend.
 type SessionInfo struct {
-	ID               string    `json:"id"`
-	Title            string    `json:"title"`
-	CustomLabel      string    `json:"customLabel,omitempty"`
-	ProjectPath      string    `json:"projectPath"`
-	GroupPath        string    `json:"groupPath"`
-	Tool             string    `json:"tool"`
-	Status           string    `json:"status"`
-	TmuxSession      string    `json:"tmuxSession"`
-	IsRemote         bool      `json:"isRemote"`
-	RemoteHost       string    `json:"remoteHost,omitempty"`
-	GitBranch        string    `json:"gitBranch,omitempty"`
-	IsWorktree       bool      `json:"isWorktree,omitempty"`
-	GitDirty         bool      `json:"gitDirty,omitempty"`
-	GitAhead         int       `json:"gitAhead,omitempty"`
-	GitBehind        int       `json:"gitBehind,omitempty"`
-	LastAccessedAt   time.Time `json:"lastAccessedAt,omitempty"`
-	LaunchConfigName string    `json:"launchConfigName,omitempty"`
-	LoadedMCPs       []string  `json:"loadedMcps,omitempty"`
-	DangerousMode    bool      `json:"dangerousMode,omitempty"`
+	ID                    string    `json:"id"`
+	Title                 string    `json:"title"`
+	CustomLabel           string    `json:"customLabel,omitempty"`
+	ProjectPath           string    `json:"projectPath"`
+	GroupPath             string    `json:"groupPath"`
+	Tool                  string    `json:"tool"`
+	Status                string    `json:"status"`
+	TmuxSession           string    `json:"tmuxSession"`
+	IsRemote              bool      `json:"isRemote"`
+	RemoteHost            string    `json:"remoteHost,omitempty"`
+	RemoteHostDisplayName string    `json:"remoteHostDisplayName,omitempty"` // Friendly name from config (group_name)
+	GitBranch             string    `json:"gitBranch,omitempty"`
+	IsWorktree            bool      `json:"isWorktree,omitempty"`
+	GitDirty              bool      `json:"gitDirty,omitempty"`
+	GitAhead              int       `json:"gitAhead,omitempty"`
+	GitBehind             int       `json:"gitBehind,omitempty"`
+	LastAccessedAt        time.Time `json:"lastAccessedAt,omitempty"`
+	LaunchConfigName      string    `json:"launchConfigName,omitempty"`
+	LoadedMCPs            []string  `json:"loadedMcps,omitempty"`
+	DangerousMode         bool      `json:"dangerousMode,omitempty"`
 }
 
 // SessionMetadata represents runtime metadata for a session's status bar.
@@ -276,6 +277,9 @@ func (tm *TmuxManager) loadSessionsData() (*sessionsJSON, error) {
 func (tm *TmuxManager) convertInstancesToSessionInfos(instances []instanceJSON) []SessionInfo {
 	runningTmux := tm.getRunningTmuxSessions()
 
+	// Load SSH host configs for display name lookup
+	sshHosts := session.GetAvailableSSHHosts()
+
 	result := make([]SessionInfo, 0, len(instances))
 	for _, inst := range instances {
 		// Check if tmux session actually exists (for local sessions)
@@ -294,6 +298,16 @@ func (tm *TmuxManager) convertInstancesToSessionInfos(instances []instanceJSON) 
 			gitInfo = tm.getGitInfo(inst.ProjectPath)
 		}
 
+		// Get display name for remote host (uses group_name from config if set)
+		var remoteHostDisplayName string
+		if isRemote && inst.RemoteHost != "" {
+			if hostDef, ok := sshHosts[inst.RemoteHost]; ok {
+				remoteHostDisplayName = hostDef.GetGroupName(inst.RemoteHost)
+			} else {
+				remoteHostDisplayName = inst.RemoteHost // Fallback to host ID
+			}
+		}
+
 		// Use LastAccessedAt if set, otherwise fall back to CreatedAt
 		lastAccessed := inst.LastAccessedAt
 		if lastAccessed.IsZero() {
@@ -301,25 +315,26 @@ func (tm *TmuxManager) convertInstancesToSessionInfos(instances []instanceJSON) 
 		}
 
 		result = append(result, SessionInfo{
-			ID:               inst.ID,
-			Title:            inst.Title,
-			CustomLabel:      inst.CustomLabel,
-			ProjectPath:      inst.ProjectPath,
-			GroupPath:        inst.GroupPath,
-			Tool:             inst.Tool,
-			Status:           inst.Status,
-			TmuxSession:      inst.TmuxSession,
-			IsRemote:         isRemote,
-			RemoteHost:       inst.RemoteHost,
-			GitBranch:        gitInfo.Branch,
-			IsWorktree:       gitInfo.IsWorktree,
-			GitDirty:         gitInfo.IsDirty,
-			GitAhead:         gitInfo.Ahead,
-			GitBehind:        gitInfo.Behind,
-			LastAccessedAt:   lastAccessed,
-			LaunchConfigName: inst.LaunchConfigName,
-			LoadedMCPs:       inst.LoadedMCPNames,
-			DangerousMode:    inst.DangerousMode,
+			ID:                    inst.ID,
+			Title:                 inst.Title,
+			CustomLabel:           inst.CustomLabel,
+			ProjectPath:           inst.ProjectPath,
+			GroupPath:             inst.GroupPath,
+			Tool:                  inst.Tool,
+			Status:                inst.Status,
+			TmuxSession:           inst.TmuxSession,
+			IsRemote:              isRemote,
+			RemoteHost:            inst.RemoteHost,
+			RemoteHostDisplayName: remoteHostDisplayName,
+			GitBranch:             gitInfo.Branch,
+			IsWorktree:            gitInfo.IsWorktree,
+			GitDirty:              gitInfo.IsDirty,
+			GitAhead:              gitInfo.Ahead,
+			GitBehind:             gitInfo.Behind,
+			LastAccessedAt:        lastAccessed,
+			LaunchConfigName:      inst.LaunchConfigName,
+			LoadedMCPs:            inst.LoadedMCPNames,
+			DangerousMode:         inst.DangerousMode,
 		})
 	}
 

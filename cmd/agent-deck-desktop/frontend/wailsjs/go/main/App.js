@@ -82,6 +82,10 @@ export function GetQuickLaunchFavorites() {
   return window['go']['main']['App']['GetQuickLaunchFavorites']();
 }
 
+export function GetSSHHostDisplayNames() {
+  return window['go']['main']['App']['GetSSHHostDisplayNames']();
+}
+
 export function GetSSHHostStatus() {
   return window['go']['main']['App']['GetSSHHostStatus']();
 }
@@ -94,12 +98,12 @@ export function GetSavedLayouts() {
   return window['go']['main']['App']['GetSavedLayouts']();
 }
 
-export function GetSessionMetadata(arg1) {
-  return window['go']['main']['App']['GetSessionMetadata'](arg1);
-}
-
 export function GetScrollback(arg1) {
   return window['go']['main']['App']['GetScrollback'](arg1);
+}
+
+export function GetSessionMetadata(arg1) {
+  return window['go']['main']['App']['GetSessionMetadata'](arg1);
 }
 
 export function GetSoftNewlineMode() {
@@ -154,10 +158,6 @@ export function ResetGroupSettings() {
   return window['go']['main']['App']['ResetGroupSettings']();
 }
 
-export function SetAllGroupsExpanded(arg1, arg2) {
-  return window['go']['main']['App']['SetAllGroupsExpanded'](arg1, arg2);
-}
-
 export function ResizeTerminal(arg1, arg2, arg3) {
   return window['go']['main']['App']['ResizeTerminal'](arg1, arg2, arg3);
 }
@@ -172,6 +172,10 @@ export function SaveLayout(arg1) {
 
 export function SessionExists(arg1) {
   return window['go']['main']['App']['SessionExists'](arg1);
+}
+
+export function SetAllGroupsExpanded(arg1, arg2) {
+  return window['go']['main']['App']['SetAllGroupsExpanded'](arg1, arg2);
 }
 
 export function SetDesktopTheme(arg1) {

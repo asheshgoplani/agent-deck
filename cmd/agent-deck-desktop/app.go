@@ -436,6 +436,13 @@ func (a *App) ListSSHHosts() []string {
 	return a.sshBridge.ListConfiguredHosts()
 }
 
+// GetSSHHostDisplayNames returns a map of hostID to display name.
+// The display name is the GroupName from config.toml, or the hostID if not set.
+// Used to show friendly names like "MacStudio" instead of raw host IDs in the UI.
+func (a *App) GetSSHHostDisplayNames() map[string]string {
+	return a.sshBridge.GetHostDisplayNames()
+}
+
 // SSHHostStatus represents the connection status of an SSH host.
 type SSHHostStatus struct {
 	HostID    string `json:"hostId"`

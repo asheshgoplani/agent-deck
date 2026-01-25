@@ -186,23 +186,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class SessionMetadata {
-	    hostname: string;
-	    cwd: string;
-	    gitBranch: string;
-
-	    static createFrom(source: any = {}) {
-	        return new SessionMetadata(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.hostname = source["hostname"];
-	        this.cwd = source["cwd"];
-	        this.gitBranch = source["gitBranch"];
-	    }
-	}
-
+	
 	export class SessionInfo {
 	    id: string;
 	    title: string;
@@ -214,6 +198,7 @@ export namespace main {
 	    tmuxSession: string;
 	    isRemote: boolean;
 	    remoteHost?: string;
+	    remoteHostDisplayName?: string;
 	    gitBranch?: string;
 	    isWorktree?: boolean;
 	    gitDirty?: boolean;
@@ -241,6 +226,7 @@ export namespace main {
 	        this.tmuxSession = source["tmuxSession"];
 	        this.isRemote = source["isRemote"];
 	        this.remoteHost = source["remoteHost"];
+	        this.remoteHostDisplayName = source["remoteHostDisplayName"];
 	        this.gitBranch = source["gitBranch"];
 	        this.isWorktree = source["isWorktree"];
 	        this.gitDirty = source["gitDirty"];
@@ -269,6 +255,22 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+	export class SessionMetadata {
+	    hostname: string;
+	    cwd: string;
+	    gitBranch: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionMetadata(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hostname = source["hostname"];
+	        this.cwd = source["cwd"];
+	        this.gitBranch = source["gitBranch"];
+	    }
 	}
 	export class SessionsWithGroups {
 	    sessions: SessionInfo[];
