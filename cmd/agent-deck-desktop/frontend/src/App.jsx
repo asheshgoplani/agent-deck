@@ -1123,6 +1123,10 @@ function App() {
             return;
         }
 
+        // Don't intercept typing in input fields (except for modifier key combinations)
+        const isTypingInInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
+        const hasModifier = e.metaKey || e.ctrlKey || e.altKey;
+
         // Move mode keyboard handling - intercept number keys and Escape
         if (moveMode) {
             // Number keys 1-9 to select target pane
@@ -1145,8 +1149,9 @@ function App() {
         }
 
         // Check custom shortcuts first (user-defined quick launch)
+        // Skip when typing in input fields without modifiers
         const shortcutKey = buildShortcutKey(e);
-        if (shortcuts[shortcutKey]) {
+        if (!isTypingInInput && shortcuts[shortcutKey]) {
             e.preventDefault();
             const fav = shortcuts[shortcutKey];
             logger.info('Custom shortcut triggered', { shortcut: shortcutKey, name: fav.name });
@@ -1155,7 +1160,8 @@ function App() {
         }
 
         // Check saved layout shortcuts (only in terminal view with active tab)
-        if (view === 'terminal' && activeTab && savedLayoutShortcuts[shortcutKey]) {
+        // Skip when typing in input fields without modifiers
+        if (!isTypingInInput && view === 'terminal' && activeTab && savedLayoutShortcuts[shortcutKey]) {
             e.preventDefault();
             const layout = savedLayoutShortcuts[shortcutKey];
             logger.info('Saved layout shortcut triggered', { shortcut: shortcutKey, name: layout.name });
@@ -1164,7 +1170,8 @@ function App() {
         }
 
         // ? key to open help (only in selector view - Claude uses ? natively in terminal)
-        if (view === 'selector' && !e.metaKey && !e.ctrlKey && e.key === '?') {
+        // Skip when typing in input fields
+        if (!isTypingInInput && view === 'selector' && !e.metaKey && !e.ctrlKey && e.key === '?') {
             e.preventDefault();
             e.stopPropagation();
             handleOpenHelp();
@@ -1265,7 +1272,8 @@ function App() {
             setShowLabelDialog(true);
         }
         // Shift+5 (%) to cycle session status filter (only in selector view)
-        if (e.key === '%' && view === 'selector') {
+        // Skip when typing in input fields
+        if (!isTypingInInput && e.key === '%' && view === 'selector') {
             e.preventDefault();
             handleCycleStatusFilter();
         }
