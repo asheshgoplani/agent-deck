@@ -1146,14 +1146,14 @@ function App() {
 
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
-        // Don't handle shortcuts when modals with their own handlers are open
-        if (showHelpModal || showSettings) {
+        // Don't handle shortcuts when modals with input fields or their own handlers are open
+        // This includes modals with text input (CommandPalette, RenameDialog, etc) and modal handlers (HelpModal, Settings)
+        if (showHelpModal || showSettings || showCommandPalette || showLabelDialog || showRemotePathInput) {
             return;
         }
 
-        // Don't intercept typing in input fields (except for modifier key combinations)
+        // Don't intercept typing in input fields (fallback check if an input exists outside modals)
         const isTypingInInput = e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA';
-        const hasModifier = e.metaKey || e.ctrlKey || e.altKey;
 
         // Move mode keyboard handling - intercept number keys and Escape
         if (moveMode) {
@@ -1445,7 +1445,7 @@ function App() {
             e.preventDefault();
             handleFontSizeReset();
         }
-    }, [view, showSearch, showHelpModal, showSettings, showLabelDialog, showCommandPalette, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
+    }, [view, showSearch, showHelpModal, showSettings, showLabelDialog, showCommandPalette, showRemotePathInput, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
