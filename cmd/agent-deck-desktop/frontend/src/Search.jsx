@@ -69,6 +69,10 @@ export default function Search({ searchAddon, onClose, focusTrigger }) {
                     onKeyDown={handleKeyDown}
                     placeholder="Search..."
                     data-testid="search-input"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
                 />
                 <span className="search-status">
                     {matchCount && (
