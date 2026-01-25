@@ -1272,8 +1272,8 @@ function App() {
             logger.info('Switching to next tab');
             handleSwitchTab(nextTab.id);
         }
-        // Cmd+, to go back to session selector
-        if (appMod && e.key === ',' && inTerminal) {
+        // Cmd+, to go back to session selector (but not Cmd+Shift+, which opens settings)
+        if (appMod && !e.shiftKey && e.key === ',' && inTerminal) {
             e.preventDefault();
             handleBackToSelector();
         }

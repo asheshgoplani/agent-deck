@@ -11,6 +11,7 @@ const RESERVED_SHORTCUTS = [
     'cmd+f',      // Search
     'cmd+w',      // Close
     'cmd+,',      // Back to selector
+    'cmd+shift+,', // Settings
     'cmd+q',      // Quit app
     'cmd+c',      // Copy
     'cmd+v',      // Paste
