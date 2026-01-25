@@ -695,10 +695,10 @@ func TestHome_MaintenanceMessage(t *testing.T) {
 		t.Errorf("maintenanceMsg = %q, should contain '2 backups cleaned'", h.maintenanceMsg)
 	}
 
-	// 3. Verify it shows in help bar
-	view := h.renderHelpBar()
-	if !strings.Contains(view, "5 logs pruned") {
-		t.Error("Maintenance message should be visible in help bar")
+	// 3. Verify it shows in View
+	view := h.View()
+	if !strings.Contains(view, "Maintenance: 5 logs pruned") {
+		t.Error("Maintenance banner should be visible in View")
 	}
 
 	// 4. Dismiss with Esc

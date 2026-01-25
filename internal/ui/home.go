@@ -1083,6 +1083,14 @@ func (h *Home) clearMaintenanceMsgCmd(delay time.Duration) tea.Cmd {
 	})
 }
 
+// triggerMaintenanceCmd returns a command that triggers an immediate maintenance run
+func (h *Home) triggerMaintenanceCmd() tea.Cmd {
+	return func() tea.Msg {
+		result, _ := session.Maintenance()
+		return maintenanceCompleteMsg{result: result}
+	}
+}
+
 // cleanupExpiredAnimations removes expired entries from an animation map
 // Returns list of IDs that were removed (for logging/debugging if needed)
 func (h *Home) cleanupExpiredAnimations(animMap map[string]time.Time, claudeTimeout, defaultTimeout time.Duration) []string {
@@ -2022,28 +2030,52 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return h, nil
 			
-				case maintenanceCompleteMsg:
-					res := msg.result
-					if res.PrunedLogs > 0 || res.PrunedBackups > 0 || res.ArchivedSessions > 0 {
-						var parts []string
-						if res.PrunedLogs > 0 {
-							parts = append(parts, fmt.Sprintf("%d logs pruned", res.PrunedLogs))
-						}
-						if res.PrunedBackups > 0 {
-							parts = append(parts, fmt.Sprintf("%d backups cleaned", res.PrunedBackups))
-						}
-						if res.ArchivedSessions > 0 {
-							parts = append(parts, fmt.Sprintf("%d sessions archived", res.ArchivedSessions))
-						}
-						h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ")
-						h.maintenanceMsgTime = time.Now()
+						case maintenanceCompleteMsg:
 			
-						// Clear message after 10 seconds
-						return h, h.clearMaintenanceMsgCmd(10 * time.Second)
-					}
-					return h, nil
+							res := msg.result
 			
-				case clearMaintenanceMsg:
+							var parts []string
+			
+							if res.PrunedLogs > 0 {
+			
+								parts = append(parts, fmt.Sprintf("%d logs pruned", res.PrunedLogs))
+			
+							}
+			
+							if res.PrunedBackups > 0 {
+			
+								parts = append(parts, fmt.Sprintf("%d backups cleaned", res.PrunedBackups))
+			
+							}
+			
+							if res.ArchivedSessions > 0 {
+			
+								parts = append(parts, fmt.Sprintf("%d sessions archived", res.ArchivedSessions))
+			
+							}
+			
+					
+			
+							if len(parts) > 0 {
+			
+								h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ")
+			
+							} else {
+			
+								h.maintenanceMsg = "Maintenance: system is clean"
+			
+							}
+			
+							h.maintenanceMsgTime = time.Now()
+			
+					
+			
+							// Clear message after 30 seconds (longer for E2E and visibility)
+			
+							return h, h.clearMaintenanceMsgCmd(30 * time.Second)
+			
+					
+								case clearMaintenanceMsg:
 					h.maintenanceMsg = ""
 					h.maintenanceMsgTime = time.Time{}
 					return h, nil
@@ -2369,6 +2401,12 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.errTime = time.Now()
 				}
 				_, _ = session.ReloadUserConfig()
+
+				// If maintenance was just enabled, trigger an immediate run
+				if config.Maintenance.Enabled {
+					cmds = append(cmds, h.triggerMaintenanceCmd())
+				}
+
 				// Apply default tool to new dialog
 				if defaultTool := session.GetDefaultTool(); defaultTool != "" {
 					h.newDialog.SetDefaultTool(defaultTool)
@@ -4121,6 +4159,22 @@ func (h *Home) View() string {
 	b := &h.viewBuilder
 
 	// ═══════════════════════════════════════════════════════════════════
+	// MAINTENANCE BANNER (if active)
+	// ═══════════════════════════════════════════════════════════════════
+	maintenanceBannerHeight := 0
+	if h.maintenanceMsg != "" {
+		maintenanceBannerHeight = 1
+		maintenanceStyle := lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorCyan).
+			Bold(true).
+			Width(h.width).
+			Align(lipgloss.Center)
+		b.WriteString(maintenanceStyle.Render(" 🛠 " + h.maintenanceMsg + " "))
+		b.WriteString("\n")
+	}
+
+	// ═══════════════════════════════════════════════════════════════════
 	// HEADER BAR
 	// ═══════════════════════════════════════════════════════════════════
 	// Calculate real session status counts for logo and stats
@@ -4220,8 +4274,9 @@ func (h *Home) View() string {
 	// MAIN CONTENT AREA - Responsive layout based on terminal width
 	// ═══════════════════════════════════════════════════════════════════
 	helpBarHeight := 2 // Help bar takes 2 lines (border + content)
-	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -helpBarHeight help
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - filterBarHeight
+	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, 
+	// -maintenanceBannerHeight banner, -helpBarHeight help
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - filterBarHeight - maintenanceBannerHeight
 
 	// Route to appropriate layout based on terminal width
 	layoutMode := h.getLayoutMode()
@@ -4731,30 +4786,6 @@ func renderSectionDivider(label string, width int) string {
 
 // renderHelpBar renders context-aware keyboard shortcuts, adapting to terminal width
 func (h *Home) renderHelpBar() string {
-	// If there's a maintenance message, show it instead of help
-	if h.maintenanceMsg != "" {
-		maintenanceStyle := lipgloss.NewStyle().
-			Foreground(ColorCyan).
-			Bold(true).
-			Padding(0, 1)
-
-		content := maintenanceStyle.Render("🛠 " + h.maintenanceMsg)
-		// Right-aligned dismiss hint
-		dismissStyle := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
-		dismissHint := dismissStyle.Render("[Esc] hide")
-
-		padding := h.width - lipgloss.Width(content) - lipgloss.Width(dismissHint) - 2
-		if padding > 0 {
-			content += strings.Repeat(" ", padding) + dismissHint
-		}
-
-		return lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder(), true, false, false, false).
-			BorderForeground(ColorBorder).
-			Width(h.width).
-			Render(content)
-	}
-
 	// Route to appropriate tier based on width
 	switch {
 	case h.width < layoutBreakpointSingle:
