@@ -28,10 +28,11 @@ const (
 	SettingRecentDays
 	SettingShowOutput
 	SettingShowAnalytics
+	SettingMaintenanceEnabled
 )
 
 // Total number of navigable settings
-const settingsCount = 15
+const settingsCount = 16
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -56,6 +57,7 @@ type SettingsPanel struct {
 	recentDays          int
 	showOutput          bool
 	showAnalytics       bool
+	maintenanceEnabled  bool
 
 	// Text input state
 	editingText bool
@@ -189,6 +191,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Preview settings
 	s.showOutput = config.GetShowOutput()
 	s.showAnalytics = config.GetShowAnalytics()
+
+	// Maintenance settings
+	s.maintenanceEnabled = config.Maintenance.Enabled
 }
 
 // GetConfig returns a UserConfig with current panel values
@@ -238,6 +243,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Preview.ShowOutput = &showOutput
 	showAnalytics := s.showAnalytics
 	config.Preview.ShowAnalytics = &showAnalytics
+
+	// Maintenance settings
+	config.Maintenance.Enabled = s.maintenanceEnabled
 
 	// Preserve original MCPs and Tools if we have them
 	if s.originalConfig != nil {
@@ -391,6 +399,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowAnalytics:
 		s.showAnalytics = !s.showAnalytics
+		return true
+
+	case SettingMaintenanceEnabled:
+		s.maintenanceEnabled = !s.maintenanceEnabled
 		return true
 	}
 
@@ -626,6 +638,18 @@ func (s *SettingsPanel) View() string {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// MAINTENANCE
+	content.WriteString(sectionStyle.Render("MAINTENANCE"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Enable Background Maintenance", s.maintenanceEnabled)
+	if s.cursor == int(SettingMaintenanceEnabled) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+	content.WriteString(dimStyle.Render("  Periodic log pruning & session archiving"))
+	content.WriteString("\n\n")
 
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))

@@ -727,3 +727,87 @@ func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsPanel_Maintenance_LoadConfig(t *testing.T) {
+	panel := NewSettingsPanel()
+
+	// 1. Test enabled = true
+	config := &session.UserConfig{
+		Maintenance: session.MaintenanceSettings{Enabled: true},
+	}
+	panel.LoadConfig(config)
+	if !panel.maintenanceEnabled {
+		t.Error("maintenanceEnabled should be true after loading config")
+	}
+
+	// 2. Test enabled = false
+	config2 := &session.UserConfig{
+		Maintenance: session.MaintenanceSettings{Enabled: false},
+	}
+	panel.LoadConfig(config2)
+	if panel.maintenanceEnabled {
+		t.Error("maintenanceEnabled should be false after loading config2")
+	}
+}
+
+func TestSettingsPanel_Maintenance_GetConfig(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.maintenanceEnabled = true
+
+	config := panel.GetConfig()
+	if !config.Maintenance.Enabled {
+		t.Error("config.Maintenance.Enabled should be true")
+	}
+
+	panel.maintenanceEnabled = false
+	config2 := panel.GetConfig()
+	if config2.Maintenance.Enabled {
+		t.Error("config2.Maintenance.Enabled should be false")
+	}
+}
+
+func TestSettingsPanel_Maintenance_Toggle(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+
+	// Find the maintenance setting index
+	found := false
+	for i := 0; i < settingsCount; i++ {
+		if SettingType(i) == SettingMaintenanceEnabled {
+			panel.cursor = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("SettingMaintenanceEnabled not found in SettingType")
+	}
+
+	initial := panel.maintenanceEnabled
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Error("Toggle should report changed=true")
+	}
+	if panel.maintenanceEnabled == initial {
+		t.Error("maintenanceEnabled should have toggled")
+	}
+}
+
+func TestSettingsPanel_Maintenance_View(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.SetSize(80, 60)
+	panel.Show()
+
+	view := panel.View()
+	expected := []string{
+		"MAINTENANCE",
+		"Enable Background Maintenance",
+		"Periodic log pruning & session archiving",
+	}
+
+	for _, e := range expected {
+		if !containsString(view, e) {
+			t.Errorf("View() should contain %q", e)
+		}
+	}
+}
