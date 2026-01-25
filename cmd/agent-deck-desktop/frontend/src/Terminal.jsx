@@ -13,6 +13,7 @@ import { DEFAULT_FONT_SIZE } from './constants/terminal';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
 import { useTheme } from './context/ThemeContext';
 import { getTerminalTheme } from './themes/terminal';
+import { createMacKeyBindingHandler } from './hooks/useMacKeyBindings';
 
 // Connection state constants for remote sessions
 const CONN_STATE = {
@@ -231,10 +232,20 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
                 logger.warn('Failed to load terminal settings, using defaults:', err);
             });
 
+        // Create Mac key bindings handler
+        const handleMacKeyBinding = createMacKeyBindingHandler(WriteTerminal, sessionId);
+
         const customKeyHandler = term.attachCustomKeyEventHandler((e) => {
             // Only handle keydown events (not keyup)
             if (e.type !== 'keydown') {
                 return true; // Let xterm handle it
+            }
+
+            // Check for macOS navigation shortcuts first (Option+Arrow, Cmd+Arrow)
+            const macKeyResult = handleMacKeyBinding(e);
+            if (!macKeyResult) {
+                // Mac key binding handled it, don't process further
+                return false;
             }
 
             // Check if this key combo should trigger soft newline
@@ -264,7 +275,7 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
             // Let xterm.js handle all other keys normally
             return true;
         });
-        logger.info('Soft newline handler attached (default mode: both)');
+        logger.info('Keyboard handlers attached (soft newline + Mac navigation)');
 
         // ============================================================
         // SCROLL DETECTION & REPAIR SYSTEM
