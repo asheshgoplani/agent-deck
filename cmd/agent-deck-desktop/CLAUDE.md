@@ -133,6 +133,6 @@ The app uses polling instead of direct PTY streaming to solve xterm.js scrollbac
 - `Cmd+1-9` - Switch to tab by number
 - `Cmd+[` / `Cmd+]` - Previous/next tab
 - `Cmd+F` - Search in terminal
-- `Cmd+,` - Back to session selector
-- `Cmd+Shift+,` - Settings
+- `Cmd+,` - Settings
+- `Cmd+Escape` - Back to session selector
 - `Cmd++` / `Cmd+-` - Font size

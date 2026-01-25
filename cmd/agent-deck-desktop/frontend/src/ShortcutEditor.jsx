@@ -10,8 +10,8 @@ const RESERVED_SHORTCUTS = [
     'cmd+k',      // Command palette
     'cmd+f',      // Search
     'cmd+w',      // Close
-    'cmd+,',      // Back to selector
-    'cmd+shift+,', // Settings
+    'cmd+,',       // Settings
+    'cmd+escape',  // Back to selector
     'cmd+q',      // Quit app
     'cmd+c',      // Copy
     'cmd+v',      // Paste

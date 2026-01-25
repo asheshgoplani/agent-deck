@@ -91,7 +91,8 @@ Pin frequently used projects for one-click access:
 |----------|--------|
 | `Cmd+K` | Open command palette |
 | `Cmd+F` | Search in terminal scrollback |
-| `Cmd+,` | Return to session list / Open settings |
+| `Cmd+,` | Open settings |
+| `Cmd+Esc` | Return to session list |
 | `Arrow Keys` | Navigate session list |
 | `Enter` | Attach to selected session |
 

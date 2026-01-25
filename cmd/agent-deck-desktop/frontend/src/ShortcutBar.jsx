@@ -39,7 +39,7 @@ export default function ShortcutBar({
     return (
         <div className="shortcut-bar">
             <button className="shortcut-item" onClick={onBackToSessions}>
-                <kbd>{modKey},</kbd>
+                <kbd>{modKey}Esc</kbd>
                 <span>Sessions</span>
             </button>
             <button className="shortcut-item" onClick={onSplitPane}>

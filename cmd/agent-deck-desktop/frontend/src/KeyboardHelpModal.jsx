@@ -6,12 +6,14 @@ export default function KeyboardHelpModal({ onClose }) {
     // Close on Escape or any other key
     const handleKeyDown = useCallback((e) => {
         e.preventDefault();
+        e.stopPropagation();
         onClose();
     }, [onClose]);
 
     useEffect(() => {
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
+        // Use capture phase to intercept before xterm can swallow the event
+        document.addEventListener('keydown', handleKeyDown, true);
+        return () => document.removeEventListener('keydown', handleKeyDown, true);
     }, [handleKeyDown]);
 
     return (
@@ -45,8 +47,12 @@ export default function KeyboardHelpModal({ onClose }) {
                         <div className="help-section">
                             <h3>Navigation</h3>
                             <div className="help-row">
-                                <kbd>{modKey},</kbd>
+                                <kbd>{modKey}Esc</kbd>
                                 <span>Back to sessions</span>
+                            </div>
+                            <div className="help-row">
+                                <kbd>{modKey},</kbd>
+                                <span>Settings</span>
                             </div>
                             <div className="help-row">
                                 <kbd>{modKey}F</kbd>

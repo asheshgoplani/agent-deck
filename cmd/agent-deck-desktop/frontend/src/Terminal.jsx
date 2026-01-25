@@ -11,6 +11,7 @@ import { StartTerminal, WriteTerminal, ResizeTerminal, CloseTerminal, StartTmuxS
 import { createLogger } from './logger';
 import { DEFAULT_FONT_SIZE } from './constants/terminal';
 import { EventsOn, EventsOff } from '../wailsjs/runtime/runtime';
+import { createScrollAccumulator, DEFAULT_SCROLL_SPEED } from './utils/scrollAccumulator';
 import { useTheme } from './context/ThemeContext';
 import { getTerminalTheme } from './themes/terminal';
 import { createMacKeyBindingHandler } from './hooks/useMacKeyBindings';
@@ -54,9 +55,6 @@ function rafThrottle(fn) {
 }
 
 const logger = createLogger('Terminal');
-
-const DEFAULT_SCROLL_SPEED = 100;
-const DEFAULT_PIXELS_PER_LINE = 50;
 
 export default function Terminal({ searchRef, session, paneId, onFocus, fontSize = DEFAULT_FONT_SIZE, scrollSpeed = DEFAULT_SCROLL_SPEED }) {
     const terminalRef = useRef(null);
@@ -408,12 +406,8 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
         let pendingDirection = null; // 'up' or 'down'
         const ALT_SCROLL_THROTTLE_MS = 400; // One page scroll per 400ms max
 
-        // Accumulator for smooth trackpad scrolling (small deltaY values)
-        let scrollAccumulator = 0;
-        // Calculate pixels per line based on scroll speed setting
-        // Higher scrollSpeed = lower pixelsPerLine = faster scrolling
-        // Formula: at 100% speed use DEFAULT (50), at 200% use 25, at 50% use 100
-        const pixelsPerLine = Math.round(DEFAULT_PIXELS_PER_LINE * 100 / scrollSpeed);
+        // Use scroll accumulator utility for smooth trackpad scrolling
+        const scrollAcc = createScrollAccumulator(scrollSpeed);
 
         const handleWheel = (e) => {
             // Always prevent default to stop browser from scrolling the viewport
@@ -446,13 +440,10 @@ export default function Terminal({ searchRef, session, paneId, onFocus, fontSize
                 return;
             }
 
-            // Normal buffer (shell) - accumulate small deltas before scrolling
-            scrollAccumulator += e.deltaY;
-
-            if (Math.abs(scrollAccumulator) >= pixelsPerLine) {
-                const linesToScroll = Math.trunc(scrollAccumulator / pixelsPerLine);
+            // Normal buffer (shell) - use scroll accumulator for smooth trackpad scrolling
+            const linesToScroll = scrollAcc.accumulate(e.deltaY);
+            if (linesToScroll !== 0) {
                 term.scrollLines(linesToScroll);
-                scrollAccumulator -= linesToScroll * pixelsPerLine;
             }
         };
 

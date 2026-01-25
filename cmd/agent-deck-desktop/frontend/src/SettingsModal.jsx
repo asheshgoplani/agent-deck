@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './SettingsModal.css';
 import LaunchConfigEditor from './LaunchConfigEditor';
 import { GetLaunchConfigs, DeleteLaunchConfig, GetSoftNewlineMode, SetSoftNewlineMode, SetFontSize, GetScrollSpeed, SetScrollSpeed, ResetGroupSettings } from '../wailsjs/go/main/App';
@@ -21,6 +21,14 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
     const [creatingForTool, setCreatingForTool] = useState(null); // tool name when creating new
     const [softNewlineMode, setSoftNewlineMode] = useState('both');
     const { themePreference, setTheme } = useTheme();
+    const containerRef = useRef(null);
+
+    // Focus the modal container on mount so Escape works immediately
+    useEffect(() => {
+        if (containerRef.current) {
+            containerRef.current.focus();
+        }
+    }, []);
 
     // Load configs and terminal settings on mount
     useEffect(() => {
@@ -126,6 +134,8 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
         if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
             if (editingConfig || creatingForTool) {
                 // Close editor, go back to list
                 setEditingConfig(null);
@@ -138,8 +148,9 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
     }, [editingConfig, creatingForTool, onClose]);
 
     useEffect(() => {
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
+        // Use capture phase to intercept before xterm can swallow the event
+        document.addEventListener('keydown', handleKeyDown, true);
+        return () => document.removeEventListener('keydown', handleKeyDown, true);
     }, [handleKeyDown]);
 
     // Group configs by tool
@@ -200,7 +211,7 @@ export default function SettingsModal({ onClose, fontSize = DEFAULT_FONT_SIZE, o
 
     return (
         <div className="settings-overlay" onClick={onClose}>
-            <div className="settings-container" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-container" ref={containerRef} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
                 <div className="settings-header">
                     <h2>Settings</h2>
                     <button className="settings-close" onClick={onClose}>

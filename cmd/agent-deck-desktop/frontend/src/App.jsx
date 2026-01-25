@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useTooltip } from './Tooltip';
 import './App.css';
 import Search from './Search';
 import SessionSelector from './SessionSelector';
@@ -94,6 +95,9 @@ function App() {
     const sessionSelectorRef = useRef(null);
     const terminalRefs = useRef({});
     const searchRefs = useRef({});
+
+    // Tooltip for back button
+    const { show: showBackTooltip, hide: hideBackTooltip, Tooltip: BackTooltip } = useTooltip();
 
     // Remote session creation flow state
     const [showHostPicker, setShowHostPicker] = useState(false);
@@ -1142,8 +1146,8 @@ function App() {
 
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
-        // Don't handle shortcuts when help modal is open (it has its own handler)
-        if (showHelpModal) {
+        // Don't handle shortcuts when modals with their own handlers are open
+        if (showHelpModal || showSettings) {
             return;
         }
 
@@ -1283,8 +1287,9 @@ function App() {
             logger.info('Switching to next tab');
             handleSwitchTab(nextTab.id);
         }
-        // Cmd+, to go back to session selector (but not Cmd+Shift+, which opens settings)
-        if (appMod && !e.shiftKey && e.key === ',' && inTerminal) {
+        // Cmd+Escape to go back to session selector (skip when any modal is open)
+        const anyModalOpen = showSettings || showSearch || showLabelDialog || showCommandPalette;
+        if (appMod && e.key === 'Escape' && inTerminal && !anyModalOpen) {
             e.preventDefault();
             handleBackToSelector();
         }
@@ -1309,8 +1314,8 @@ function App() {
                 sessionSelectorRef.current.toggleAllGroups();
             }
         }
-        // Cmd+Shift+, to open settings (works in both views)
-        if (appMod && e.shiftKey && e.key === ',') {
+        // Cmd+, to open settings (macOS standard, works in both views)
+        if (appMod && !e.shiftKey && e.key === ',') {
             e.preventDefault();
             handleOpenSettings();
         }
@@ -1440,7 +1445,7 @@ function App() {
             e.preventDefault();
             handleFontSizeReset();
         }
-    }, [view, showSearch, showHelpModal, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
+    }, [view, showSearch, showHelpModal, showSettings, showLabelDialog, showCommandPalette, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -1603,9 +1608,15 @@ function App() {
                 />
             )}
             <div className="terminal-header">
-                <button className="back-button" onClick={handleBackToSelector} title="Back to sessions (Cmd+,)">
+                <button
+                    className="back-button"
+                    onClick={handleBackToSelector}
+                    onMouseEnter={(e) => showBackTooltip(e, 'Back to sessions (⌘Esc)')}
+                    onMouseLeave={hideBackTooltip}
+                >
                     ← Sessions
                 </button>
+                <BackTooltip />
                 {activeTab && (
                     <div className="session-title-header">
                         <span className="tab-pane-count">
