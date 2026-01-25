@@ -787,6 +787,11 @@ function App() {
             const session = await CreateSession(projectPath, projectName, tool, configKey);
             logger.info('Session created', { sessionId: session.id, tmuxSession: session.tmuxSession });
 
+            // Validate session object
+            if (!session || !session.id || !session.tmuxSession) {
+                throw new Error('Invalid session returned from CreateSession');
+            }
+
             // Set custom label if provided
             if (customLabel) {
                 try {
@@ -821,7 +826,8 @@ function App() {
             setView('terminal');
         } catch (err) {
             logger.error('Failed to launch project:', err);
-            // Could show an error toast here
+            // Show alert so user knows something went wrong
+            alert(`Failed to create session: ${err.message || err}`);
         }
     }, [handleOpenTab]);
 
@@ -846,7 +852,8 @@ function App() {
             setIsWorktree(false);
         } catch (err) {
             logger.error('Failed to launch remote project:', err);
-            // Could show an error toast here
+            // Show alert so user knows something went wrong
+            alert(`Failed to create remote session: ${err.message || err}`);
         }
     }, [handleOpenTab]);
 

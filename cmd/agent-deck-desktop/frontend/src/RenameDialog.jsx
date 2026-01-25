@@ -38,6 +38,10 @@ export default function RenameDialog({ currentName, title = 'Rename', placeholde
                     onChange={(e) => setName(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder={placeholder}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
                 />
                 <div className="rename-dialog-buttons">
                     <button className="rename-dialog-cancel" onClick={onCancel}>

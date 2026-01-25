@@ -10,7 +10,45 @@ wails build                 # Build production binary
 cd frontend && npm install  # Install frontend dependencies
 ```
 
-**Debug log location:** `/tmp/agent-deck-desktop-debug.log` (written by terminal.go)
+## Debugging & Logging
+
+**Log locations:**
+- **Backend debug log**: `$TMPDIR/agent-deck-desktop-debug.log` (on macOS: `/var/folders/.../T/agent-deck-desktop-debug.log`)
+- **Frontend console**: View → Developer → Developer Tools (or right-click → Inspect) in the Wails window
+
+**Reading logs:**
+```bash
+# Find and watch backend debug log in real-time (macOS)
+tail -f "$(find /var/folders -name 'agent-deck-desktop-debug.log' 2>/dev/null | head -1)"
+
+# Or use TMPDIR directly
+tail -f "$TMPDIR/agent-deck-desktop-debug.log"
+
+# View recent log entries
+cat "$TMPDIR/agent-deck-desktop-debug.log" | tail -100
+```
+
+**Frontend logging utility** (`frontend/src/logger.js`):
+- `logger.debug()` - Dev mode only, console only
+- `logger.info()` - Console only
+- `logger.warn()` / `logger.error()` - Console AND backend debug log file
+
+**Adding debug logging:**
+```javascript
+import { createLogger } from './logger';
+const logger = createLogger('MyComponent');
+logger.info('Something happened', { data: value });
+
+// For critical debugging, use console.error (always visible):
+console.error('[DEBUG] checkpoint reached', { state });
+```
+
+**Common debugging steps:**
+1. Run `wails dev` to start with hot reload
+2. Open browser dev tools in the Wails window (View → Developer → Developer Tools)
+3. Check Console tab for frontend errors
+4. Check `/tmp/agent-deck-desktop-debug.log` for backend errors
+5. Errors from Go functions called via Wails bindings appear in the frontend catch blocks
 
 ## Git & Pull Requests
 

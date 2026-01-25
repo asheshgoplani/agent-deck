@@ -282,6 +282,10 @@ export default function CommandPalette({
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
                 />
                 <div className="palette-list" ref={listRef}>
                     {results.length === 0 ? (
