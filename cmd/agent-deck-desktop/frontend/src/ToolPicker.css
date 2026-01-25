@@ -9,7 +9,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1100; /* Above command palette */
+    z-index: 1100; /* Above command menu */
 }
 
 /* Tool Picker Container */

@@ -73,7 +73,7 @@ export function createMacKeyBindingHandler(writeToTerminal, sessionId) {
 
 /**
  * Standalone utility to check if a keyboard event is a Mac navigation shortcut.
- * Useful for detecting these shortcuts in other contexts (e.g., command palette).
+ * Useful for detecting these shortcuts in other contexts (e.g., command menu).
  *
  * @param {KeyboardEvent} e - The keyboard event
  * @returns {boolean} - True if this is a Mac navigation shortcut

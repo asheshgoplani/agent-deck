@@ -147,13 +147,13 @@ export default function KeyboardHelpModal({ onClose }) {
 
                     <div className="help-column">
                         <div className="help-section">
-                            <h3>Command Palette</h3>
+                            <h3>Command Menu</h3>
                             <div className="help-row">
                                 <kbd>{modKey}K</kbd>
-                                <span>Open palette</span>
+                                <span>Open menu</span>
                             </div>
                             <div className="help-row help-subtext">
-                                <span className="help-note">While palette is open:</span>
+                                <span className="help-note">While menu is open:</span>
                             </div>
                             <div className="help-row">
                                 <kbd>&uarr;&darr;</kbd>

@@ -4,7 +4,7 @@ import { useTheme } from './context/ThemeContext';
 import './App.css';
 import Search from './Search';
 import SessionSelector from './SessionSelector';
-import CommandPalette from './CommandPalette';
+import CommandMenu from './CommandMenu';
 import ToolPicker from './ToolPicker';
 import ConfigPicker from './ConfigPicker';
 import SettingsModal from './SettingsModal';
@@ -51,7 +51,7 @@ function App() {
     const [view, setView] = useState('selector'); // 'selector' or 'terminal'
     const [selectedSession, setSelectedSession] = useState(null);
     const [showCloseConfirm, setShowCloseConfirm] = useState(false);
-    const [showCommandPalette, setShowCommandPalette] = useState(false);
+    const [showCommandMenu, setShowCommandMenu] = useState(false);
     const [sessions, setSessions] = useState([]);
     const [projects, setProjects] = useState([]);
     const [showToolPicker, setShowToolPicker] = useState(false);
@@ -212,7 +212,7 @@ function App() {
         setShowSearch(false);
     }, []);
 
-    // Load sessions and projects for command palette
+    // Load sessions and projects for command menu
     const loadSessionsAndProjects = useCallback(async () => {
         try {
             logger.info('Loading sessions and projects for palette');
@@ -233,12 +233,12 @@ function App() {
 
     // Load sessions/projects when palette opens
     useEffect(() => {
-        if (showCommandPalette) {
+        if (showCommandMenu) {
             loadSessionsAndProjects();
         }
-    }, [showCommandPalette, loadSessionsAndProjects]);
+    }, [showCommandMenu, loadSessionsAndProjects]);
 
-    // Handle command palette actions
+    // Handle command menu actions
     const handlePaletteAction = useCallback((actionId) => {
         switch (actionId) {
             case 'new-terminal':
@@ -709,7 +709,7 @@ function App() {
         setSelectedSession(firstPane?.session || null);
     }, [activeTab, activeTabId]);
 
-    // Handle layout actions from command palette
+    // Handle layout actions from command menu
     // NOTE: Defined after all the handlers it depends on to avoid forward reference issues
     const handleLayoutAction = useCallback((actionId) => {
         logger.info('Layout action from palette', { actionId });
@@ -777,17 +777,17 @@ function App() {
         }
     }, []);
 
-    // Open a session in the active pane (from command palette)
+    // Open a session in the active pane (from command menu)
     const handlePaneSessionSelect = useCallback((paneId) => {
         // This is called when user clicks on an empty pane
-        // Opens command palette to select a session for this pane
+        // Opens command menu to select a session for this pane
         if (!activeTabId) return;
 
         // First, ensure this pane is focused
         handlePaneFocus(paneId);
 
-        // Then open command palette
-        setShowCommandPalette(true);
+        // Then open command menu
+        setShowCommandMenu(true);
     }, [activeTabId, handlePaneFocus]);
 
     // Assign a session to the current active pane
@@ -915,12 +915,12 @@ function App() {
     const handleOpenPaletteForPinning = useCallback(() => {
         logger.info('Opening palette in pin mode');
         setPalettePinMode(true);
-        setShowCommandPalette(true);
+        setShowCommandMenu(true);
     }, []);
 
     // Close palette and reset modes
     const handleClosePalette = useCallback(() => {
-        setShowCommandPalette(false);
+        setShowCommandMenu(false);
         setPalettePinMode(false);
         setPaletteNewTabMode(false);
     }, []);
@@ -1156,8 +1156,8 @@ function App() {
     // Handle keyboard shortcuts
     const handleKeyDown = useCallback((e) => {
         // Don't handle shortcuts when modals with input fields or their own handlers are open
-        // This includes modals with text input (CommandPalette, RenameDialog, etc) and modal handlers (HelpModal, Settings)
-        if (showHelpModal || showSettings || showCommandPalette || showLabelDialog || showRemotePathInput) {
+        // This includes modals with text input (CommandMenu, RenameDialog, etc) and modal handlers (HelpModal, Settings)
+        if (showHelpModal || showSettings || showCommandMenu || showLabelDialog || showRemotePathInput) {
             return;
         }
 
@@ -1240,20 +1240,20 @@ function App() {
             // Always trigger focus - works whether search is opening or already open
             setSearchFocusTrigger(prev => prev + 1);
         }
-        // Cmd+K - Open command palette
+        // Cmd+K - Open command menu
         // On macOS, Ctrl+K passes through to terminal (kill-line in bash/readline)
         if (appMod && e.key === 'k') {
             e.preventDefault();
-            logger.info('Cmd+K pressed - opening command palette');
-            setShowCommandPalette(true);
+            logger.info('Cmd+K pressed - opening command menu');
+            setShowCommandMenu(true);
         }
-        // Cmd+T - Open new tab (opens command palette to select session/project)
+        // Cmd+T - Open new tab (opens command menu to select session/project)
         // On macOS, Ctrl+T passes through to terminal (transpose-chars in bash)
         if (appMod && e.key === 't') {
             e.preventDefault();
-            logger.info('Cmd+T pressed - opening command palette for new tab');
+            logger.info('Cmd+T pressed - opening command menu for new tab');
             setPaletteNewTabMode(true);
-            setShowCommandPalette(true);
+            setShowCommandMenu(true);
         }
         // Cmd+W to close current tab
         // On macOS, Ctrl+W passes through to terminal (delete-word in bash, search in nano)
@@ -1297,7 +1297,7 @@ function App() {
             handleSwitchTab(nextTab.id);
         }
         // Cmd+Escape to go back to session selector (skip when any modal is open)
-        const anyModalOpen = showSettings || showSearch || showLabelDialog || showCommandPalette;
+        const anyModalOpen = showSettings || showSearch || showLabelDialog || showCommandMenu;
         if (appMod && e.key === 'Escape' && inTerminal && !anyModalOpen) {
             e.preventDefault();
             handleBackToSelector();
@@ -1454,7 +1454,7 @@ function App() {
             e.preventDefault();
             handleFontSizeReset();
         }
-    }, [view, showSearch, showHelpModal, showSettings, showLabelDialog, showCommandPalette, showRemotePathInput, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
+    }, [view, showSearch, showHelpModal, showSettings, showLabelDialog, showCommandMenu, showRemotePathInput, handleBackToSelector, buildShortcutKey, shortcuts, savedLayoutShortcuts, handleLaunchProject, handleApplySavedLayout, handleCycleStatusFilter, handleOpenHelp, handleNewTerminal, handleOpenSettings, selectedSession, activeTabId, openTabs, handleCloseTab, handleSwitchTab, handleFontSizeChange, handleFontSizeReset, activeTab, handleSplitPane, handleClosePane, handleNavigatePane, handleCyclicNavigatePane, handleToggleZoom, handleExitZoom, handleBalancePanes, handleApplyPreset, moveMode, handleMoveToPane, handleExitMoveMode]);
 
     useEffect(() => {
         // Use capture phase to intercept keys before terminal swallows them
@@ -1471,7 +1471,7 @@ function App() {
                         key={quickLaunchKey}
                         onLaunch={handleLaunchProject}
                         onShowToolPicker={handleShowToolPicker}
-                        onOpenPalette={() => setShowCommandPalette(true)}
+                        onOpenPalette={() => setShowCommandMenu(true)}
                         onOpenPaletteForPinning={handleOpenPaletteForPinning}
                         onShortcutsChanged={loadShortcuts}
                         openTabs={openTabs}
@@ -1487,11 +1487,11 @@ function App() {
                     onNewTerminal={handleNewTerminal}
                     statusFilter={statusFilter}
                     onCycleFilter={handleCycleStatusFilter}
-                    onOpenPalette={() => setShowCommandPalette(true)}
+                    onOpenPalette={() => setShowCommandMenu(true)}
                     onOpenHelp={handleOpenHelp}
                 />
-                {showCommandPalette && (
-                    <CommandPalette
+                {showCommandMenu && (
+                    <CommandMenu
                         onClose={handleClosePalette}
                         onSelectSession={handleSelectSession}
                         onAction={handlePaletteAction}
@@ -1606,7 +1606,7 @@ function App() {
                     key={quickLaunchKey}
                     onLaunch={handleLaunchProject}
                     onShowToolPicker={handleShowToolPicker}
-                    onOpenPalette={() => setShowCommandPalette(true)}
+                    onOpenPalette={() => setShowCommandMenu(true)}
                     onOpenPaletteForPinning={handleOpenPaletteForPinning}
                     onShortcutsChanged={loadShortcuts}
                     openTabs={openTabs}
@@ -1668,7 +1668,7 @@ function App() {
                     setShowSearch(true);
                     setSearchFocusTrigger(prev => prev + 1);
                 }}
-                onOpenPalette={() => setShowCommandPalette(true)}
+                onOpenPalette={() => setShowCommandMenu(true)}
                 onOpenHelp={handleOpenHelp}
                 hasPanes={activeTab && countPanes(activeTab.layout) > 1}
             />
@@ -1713,8 +1713,8 @@ function App() {
                     onClose={() => setShowSaveLayoutModal(false)}
                 />
             )}
-            {showCommandPalette && (
-                <CommandPalette
+            {showCommandMenu && (
+                <CommandMenu
                     onClose={handleClosePalette}
                     onSelectSession={(session) => {
                         // If we have an active pane without a session, assign to it

@@ -89,7 +89,7 @@ Pin frequently used projects for one-click access:
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+K` | Open command palette |
+| `Cmd+K` | Open command menu |
 | `Cmd+F` | Search in terminal scrollback |
 | `Cmd+,` | Open settings |
 | `Cmd+Esc` | Return to session list |
@@ -159,15 +159,15 @@ Pin frequently used projects for one-click access:
 | `?` or `Cmd+/` | Show keyboard shortcuts help |
 | `Esc` | Close dialogs/modals |
 
-## Command Palette
+## Command Menu
 
-Press `Cmd+K` to open the command palette for quick access to:
+Press `Cmd+K` to open the command menu for quick access to:
 
 - **Sessions:** Search and attach to any session
 - **Projects:** Open projects with your preferred AI tool
 - **Actions:** Split panes, save layouts, manage sessions
 
-**Palette shortcuts:**
+**Menu shortcuts:**
 - `Arrow Up/Down` - Navigate items
 - `Enter` - Select item
 - `Cmd+Enter` - Open with tool picker

@@ -7,7 +7,7 @@ const logger = createLogger('ShortcutEditor');
 
 // Reserved shortcuts that can't be overridden
 const RESERVED_SHORTCUTS = [
-    'cmd+k',      // Command palette
+    'cmd+k',      // Command menu
     'cmd+f',      // Search
     'cmd+w',      // Close
     'cmd+,',       // Settings

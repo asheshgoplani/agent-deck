@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import Fuse from 'fuse.js';
-import './CommandPalette.css';
+import './CommandMenu.css';
 import { createLogger } from './logger';
 import ToolIcon from './ToolIcon';
 import { formatShortcut } from './utils/shortcuts';
 import RenameDialog from './RenameDialog';
 
-const logger = createLogger('CommandPalette');
+const logger = createLogger('CommandMenu');
 
-// Quick actions available in the palette
+// Quick actions available in the menu
 const QUICK_ACTIONS = [
     { id: 'new-terminal', type: 'action', title: 'New Terminal', description: 'Start a new shell session' },
     { id: 'create-remote-session', type: 'action', title: 'Create Remote Session', description: 'Create a session on a remote SSH host' },
@@ -32,7 +32,7 @@ const LAYOUT_ACTIONS = [
     { id: 'layout-2x2', type: 'layout', title: 'Layout: 2x2 Grid', description: 'Four panes in a grid (Cmd+Option+4)', shortcutHint: '⌘⌥4' },
 ];
 
-export default function CommandPalette({
+export default function CommandMenu({
     onClose,
     onSelectSession,
     onAction,
@@ -54,10 +54,10 @@ export default function CommandPalette({
     const inputRef = useRef(null);
     const listRef = useRef(null);
 
-    // Log when palette opens
+    // Log when menu opens
     useEffect(() => {
-        logger.info('Command palette opened', { sessionCount: sessions.length, projectCount: projects.length });
-        return () => logger.info('Command palette closed');
+        logger.info('Command menu opened', { sessionCount: sessions.length, projectCount: projects.length });
+        return () => logger.info('Command menu closed');
     }, [sessions.length, projects.length]);
 
     // Build lookup for favorites by path
@@ -69,7 +69,7 @@ export default function CommandPalette({
         return lookup;
     }, [favorites]);
 
-    // Convert projects to palette items
+    // Convert projects to menu items
     const projectItems = useMemo(() => {
         return projects
             .filter(p => !p.hasSession) // Only show projects without existing sessions
@@ -157,7 +157,7 @@ export default function CommandPalette({
     // Scroll selected item into view
     useEffect(() => {
         if (listRef.current) {
-            const selectedItem = listRef.current.querySelector('.palette-item.selected');
+            const selectedItem = listRef.current.querySelector('.menu-item.selected');
             if (selectedItem) {
                 selectedItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
@@ -214,7 +214,7 @@ export default function CommandPalette({
                 break;
             case 'Escape':
                 e.preventDefault();
-                logger.info('Escape pressed, closing palette');
+                logger.info('Escape pressed, closing menu');
                 onClose();
                 break;
         }
@@ -273,12 +273,12 @@ export default function CommandPalette({
     };
 
     return (
-        <div className="palette-overlay" onClick={onClose}>
-            <div className="palette-container" onClick={(e) => e.stopPropagation()}>
+        <div className="menu-overlay" onClick={onClose}>
+            <div className="menu-container" onClick={(e) => e.stopPropagation()}>
                 <input
                     ref={inputRef}
                     type="text"
-                    className="palette-input"
+                    className="menu-input"
                     placeholder={pinMode ? "Search projects to pin..." : newTabMode ? "Search for a session to open in a new tab..." : "Search sessions or actions..."}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -288,90 +288,90 @@ export default function CommandPalette({
                     autoCapitalize="off"
                     spellCheck="false"
                 />
-                <div className="palette-list" ref={listRef}>
+                <div className="menu-list" ref={listRef}>
                     {results.length === 0 ? (
-                        <div className="palette-empty">No results found</div>
+                        <div className="menu-empty">No results found</div>
                     ) : (
                         results.map((item, index) => (
                             <button
                                 key={item.id}
-                                className={`palette-item ${index === selectedIndex ? 'selected' : ''} ${item.type || 'session'}`}
+                                className={`menu-item ${index === selectedIndex ? 'selected' : ''} ${item.type || 'session'}`}
                                 onClick={() => handleSelect(item)}
                                 onMouseEnter={() => setSelectedIndex(index)}
                             >
                                 {item.type === 'action' ? (
                                     <>
-                                        <span className="palette-action-icon">{'>'}</span>
-                                        <div className="palette-item-info">
-                                            <div className="palette-item-title">{item.title}</div>
-                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        <span className="menu-action-icon">{'>'}</span>
+                                        <div className="menu-item-info">
+                                            <div className="menu-item-title">{item.title}</div>
+                                            <div className="menu-item-subtitle">{item.description}</div>
                                         </div>
                                     </>
                                 ) : item.type === 'layout' ? (
                                     <>
-                                        <span className="palette-layout-icon">{'#'}</span>
-                                        <div className="palette-item-info">
-                                            <div className="palette-item-title">{item.title}</div>
-                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        <span className="menu-layout-icon">{'#'}</span>
+                                        <div className="menu-item-info">
+                                            <div className="menu-item-title">{item.title}</div>
+                                            <div className="menu-item-subtitle">{item.description}</div>
                                         </div>
                                         {item.shortcutHint && (
-                                            <span className="palette-shortcut-hint">{item.shortcutHint}</span>
+                                            <span className="menu-shortcut-hint">{item.shortcutHint}</span>
                                         )}
                                     </>
                                 ) : item.type === 'saved-layout' ? (
                                     <>
-                                        <span className="palette-layout-icon saved">{'★'}</span>
-                                        <div className="palette-item-info">
-                                            <div className="palette-item-title">{item.title}</div>
-                                            <div className="palette-item-subtitle">{item.description}</div>
+                                        <span className="menu-layout-icon saved">{'★'}</span>
+                                        <div className="menu-item-info">
+                                            <div className="menu-item-title">{item.title}</div>
+                                            <div className="menu-item-subtitle">{item.description}</div>
                                         </div>
                                         {item.shortcutHint && (
-                                            <span className="palette-shortcut-hint">{item.shortcutHint}</span>
+                                            <span className="menu-shortcut-hint">{item.shortcutHint}</span>
                                         )}
                                     </>
                                 ) : item.type === 'project' ? (
                                     <>
-                                        <span className="palette-project-icon">{item.isPinned ? '★' : '+'}</span>
-                                        <div className="palette-item-info">
-                                            <div className="palette-item-title">{item.title}</div>
-                                            <div className="palette-item-subtitle">{item.projectPath}</div>
+                                        <span className="menu-project-icon">{item.isPinned ? '★' : '+'}</span>
+                                        <div className="menu-item-info">
+                                            <div className="menu-item-title">{item.title}</div>
+                                            <div className="menu-item-subtitle">{item.projectPath}</div>
                                         </div>
                                         {item.shortcut && (
-                                            <span className="palette-shortcut-hint">
+                                            <span className="menu-shortcut-hint">
                                                 {formatShortcut(item.shortcut)}
                                             </span>
                                         )}
-                                        <span className={`palette-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
+                                        <span className={`menu-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
                                             {item.remoteHostDisplayName || item.remoteHost || 'local'}
                                         </span>
-                                        <span className="palette-project-hint">
+                                        <span className="menu-project-hint">
                                             {pinMode ? 'Enter to pin' : (item.isPinned ? 'Pinned' : '⌘P Pin')}
                                         </span>
                                     </>
                                 ) : (
                                     <>
                                         <span
-                                            className="palette-tool-icon"
+                                            className="menu-tool-icon"
                                             style={{ backgroundColor: getStatusColor(item.status) }}
                                         >
                                             <ToolIcon tool={item.tool} size={14} status={item.status} />
                                         </span>
-                                        <div className="palette-item-info">
-                                            <div className="palette-item-title">{item.title}</div>
-                                            <div className="palette-item-subtitle">
+                                        <div className="menu-item-info">
+                                            <div className="menu-item-title">{item.title}</div>
+                                            <div className="menu-item-subtitle">
                                                 {item.projectPath || item.groupPath || 'ungrouped'}
                                             </div>
                                         </div>
                                         {favoritesLookup[item.projectPath]?.shortcut && (
-                                            <span className="palette-shortcut-hint">
+                                            <span className="menu-shortcut-hint">
                                                 {formatShortcut(favoritesLookup[item.projectPath].shortcut)}
                                             </span>
                                         )}
-                                        <span className={`palette-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
+                                        <span className={`menu-host-badge ${item.isRemote ? 'remote' : 'local'}`}>
                                             {item.remoteHostDisplayName || item.remoteHost || 'local'}
                                         </span>
                                         <span
-                                            className="palette-status"
+                                            className="menu-status"
                                             style={{ color: getStatusColor(item.status) }}
                                         >
                                             {item.status}
@@ -382,13 +382,13 @@ export default function CommandPalette({
                         ))
                     )}
                 </div>
-                <div className="palette-footer">
-                    <span className="palette-hint"><kbd>↑↓</kbd> Navigate</span>
-                    <span className="palette-hint"><kbd>Enter</kbd> {pinMode ? 'Pin to Quick Launch' : 'Select'}</span>
-                    {!pinMode && <span className="palette-hint"><kbd>⇧Enter</kbd> Label</span>}
-                    {!pinMode && <span className="palette-hint"><kbd>⌘Enter</kbd> Tool picker</span>}
-                    {!pinMode && <span className="palette-hint"><kbd>⌘P</kbd> Pin</span>}
-                    <span className="palette-hint"><kbd>Esc</kbd> Close</span>
+                <div className="menu-footer">
+                    <span className="menu-hint"><kbd>↑↓</kbd> Navigate</span>
+                    <span className="menu-hint"><kbd>Enter</kbd> {pinMode ? 'Pin to Quick Launch' : 'Select'}</span>
+                    {!pinMode && <span className="menu-hint"><kbd>⇧Enter</kbd> Label</span>}
+                    {!pinMode && <span className="menu-hint"><kbd>⌘Enter</kbd> Tool picker</span>}
+                    {!pinMode && <span className="menu-hint"><kbd>⌘P</kbd> Pin</span>}
+                    <span className="menu-hint"><kbd>Esc</kbd> Close</span>
                 </div>
             </div>
 

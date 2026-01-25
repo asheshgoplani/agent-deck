@@ -185,7 +185,7 @@ export default function QuickLaunchBar({ onLaunch, onShowToolPicker, onOpenPalet
             <button
                 className="quick-launch-palette-btn"
                 onClick={onOpenPalette}
-                title="Command Palette (Cmd+K)"
+                title="Command Menu (Cmd+K)"
             >
                 ⌘K
             </button>

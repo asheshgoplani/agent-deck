@@ -83,7 +83,7 @@ React Frontend (frontend/src/)
 │   ├── terminal:data           Streaming updates (history gaps + viewport diffs)
 │   └── Wheel interception      Programmatic scrollLines() for reliable rendering
 ├── UnifiedTopBar.jsx           Session tabs + quick launch bar
-├── CommandPalette.jsx          Cmd+K fuzzy search (sessions + projects)
+├── CommandMenu.jsx             Cmd+K fuzzy search (sessions + projects)
 ├── SessionSelector.jsx         Main session list view
 └── SettingsModal.jsx           Theme, font size, soft newline preferences
 ```
@@ -127,8 +127,8 @@ The app uses polling instead of direct PTY streaming to solve xterm.js scrollbac
 
 ### Keyboard Shortcuts (App.jsx)
 
-- `Cmd+K` - Command palette
-- `Cmd+T` - New tab via palette
+- `Cmd+K` - Command menu
+- `Cmd+T` - New tab via menu
 - `Cmd+W` - Close current tab
 - `Cmd+1-9` - Switch to tab by number
 - `Cmd+[` / `Cmd+]` - Previous/next tab

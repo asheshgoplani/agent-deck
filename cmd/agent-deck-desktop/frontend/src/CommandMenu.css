@@ -1,5 +1,5 @@
-/* Command Palette Overlay */
-.palette-overlay {
+/* Command Menu Overlay */
+.menu-overlay {
     position: fixed;
     top: 0;
     left: 0;
@@ -13,8 +13,8 @@
     z-index: 1000;
 }
 
-/* Command Palette Container */
-.palette-container {
+/* Command Menu Container */
+.menu-container {
     width: 100%;
     max-width: 560px;
     background: var(--bg-secondary);
@@ -25,7 +25,7 @@
 }
 
 /* Search Input */
-.palette-input {
+.menu-input {
     width: 100%;
     padding: 16px 20px;
     background: transparent;
@@ -36,25 +36,25 @@
     outline: none;
 }
 
-.palette-input::placeholder {
+.menu-input::placeholder {
     color: var(--text-dimmed);
 }
 
 /* Results List */
-.palette-list {
+.menu-list {
     max-height: 400px;
     overflow-y: auto;
 }
 
-.palette-empty {
+.menu-empty {
     padding: 32px 20px;
     text-align: center;
     color: var(--text-dimmed);
     font-size: var(--font-xl);
 }
 
-/* Palette Items */
-.palette-item {
+/* Menu Items */
+.menu-item {
     display: flex;
     align-items: center;
     gap: 12px;
@@ -68,17 +68,17 @@
     transition: background 0.1s;
 }
 
-.palette-item:hover,
-.palette-item.selected {
+.menu-item:hover,
+.menu-item.selected {
     background: var(--bg-selected);
 }
 
-.palette-item.selected {
+.menu-item.selected {
     background: var(--bg-selected);
 }
 
 /* Tool Icon (for sessions) */
-.palette-tool-icon {
+.menu-tool-icon {
     width: 28px;
     height: 28px;
     display: flex;
@@ -92,7 +92,7 @@
 }
 
 /* Action Icon */
-.palette-action-icon {
+.menu-action-icon {
     width: 28px;
     height: 28px;
     display: flex;
@@ -104,7 +104,7 @@
 }
 
 /* Layout Icon */
-.palette-layout-icon {
+.menu-layout-icon {
     width: 28px;
     height: 28px;
     display: flex;
@@ -118,12 +118,12 @@
     flex-shrink: 0;
 }
 
-[data-theme="light"] .palette-layout-icon {
+[data-theme="light"] .menu-layout-icon {
     background: rgba(107, 91, 184, 0.15);
 }
 
 /* Project Icon */
-.palette-project-icon {
+.menu-project-icon {
     width: 28px;
     height: 28px;
     display: flex;
@@ -137,12 +137,12 @@
     flex-shrink: 0;
 }
 
-[data-theme="light"] .palette-project-icon {
+[data-theme="light"] .menu-project-icon {
     background: rgba(102, 204, 136, 0.2);
 }
 
 /* Project Hint */
-.palette-project-hint {
+.menu-project-hint {
     font-size: var(--font-sm);
     color: var(--text-dimmed);
     padding: 2px 6px;
@@ -152,7 +152,7 @@
 }
 
 /* Shortcut Hint */
-.palette-shortcut-hint {
+.menu-shortcut-hint {
     font-size: var(--font-sm);
     color: var(--accent-primary);
     padding: 2px 6px;
@@ -162,17 +162,17 @@
     font-family: ui-monospace, monospace;
 }
 
-[data-theme="light"] .palette-shortcut-hint {
+[data-theme="light"] .menu-shortcut-hint {
     background: rgba(0, 119, 204, 0.1);
 }
 
 /* Item Info */
-.palette-item-info {
+.menu-item-info {
     flex: 1;
     min-width: 0;
 }
 
-.palette-item-title {
+.menu-item-title {
     font-weight: 500;
     font-size: var(--font-xl);
     white-space: nowrap;
@@ -180,7 +180,7 @@
     text-overflow: ellipsis;
 }
 
-.palette-item-subtitle {
+.menu-item-subtitle {
     font-size: var(--font-base);
     color: var(--text-muted);
     white-space: nowrap;
@@ -190,7 +190,7 @@
 }
 
 /* Status Badge */
-.palette-status {
+.menu-status {
     font-size: var(--font-md);
     text-transform: uppercase;
     flex-shrink: 0;
@@ -198,7 +198,7 @@
 }
 
 /* Host Badge */
-.palette-host-badge {
+.menu-host-badge {
     font-size: var(--font-sm);
     padding: 2px 8px;
     border-radius: 4px;
@@ -207,27 +207,27 @@
     text-transform: lowercase;
 }
 
-.palette-host-badge.local {
+.menu-host-badge.local {
     background: rgba(108, 117, 125, 0.2);
     color: var(--text-muted);
 }
 
-.palette-host-badge.remote {
+.menu-host-badge.remote {
     background: rgba(78, 205, 196, 0.2);
     color: #4ecdc4;
 }
 
-[data-theme="light"] .palette-host-badge.local {
+[data-theme="light"] .menu-host-badge.local {
     background: rgba(108, 117, 125, 0.15);
 }
 
-[data-theme="light"] .palette-host-badge.remote {
+[data-theme="light"] .menu-host-badge.remote {
     background: rgba(0, 150, 136, 0.15);
     color: #00796b;
 }
 
 /* Footer Hints */
-.palette-footer {
+.menu-footer {
     display: flex;
     gap: 16px;
     padding: 10px 20px;
@@ -235,12 +235,12 @@
     background: var(--bg-tertiary);
 }
 
-.palette-hint {
+.menu-hint {
     font-size: var(--font-base);
     color: var(--text-dimmed);
 }
 
-.palette-hint kbd {
+.menu-hint kbd {
     display: inline-block;
     background: var(--kbd-bg);
     border-radius: 3px;
@@ -252,19 +252,19 @@
 }
 
 /* Scrollbar Styling */
-.palette-list::-webkit-scrollbar {
+.menu-list::-webkit-scrollbar {
     width: 6px;
 }
 
-.palette-list::-webkit-scrollbar-track {
+.menu-list::-webkit-scrollbar-track {
     background: var(--scrollbar-track);
 }
 
-.palette-list::-webkit-scrollbar-thumb {
+.menu-list::-webkit-scrollbar-thumb {
     background: var(--scrollbar-thumb);
     border-radius: 3px;
 }
 
-.palette-list::-webkit-scrollbar-thumb:hover {
+.menu-list::-webkit-scrollbar-thumb:hover {
     background: var(--scrollbar-thumb-hover);
 }
