@@ -101,12 +101,46 @@ type instanceJSON struct {
 	DangerousMode    bool      `json:"dangerous_mode,omitempty"`
 }
 
+// tmuxBinaryPath is the resolved path to tmux, used by all components.
+// GUI apps on macOS don't inherit shell PATH, so we probe common locations.
+var tmuxBinaryPath = findTmuxPath()
+
+// findTmuxPath locates the tmux binary, checking common Homebrew paths
+// that GUI apps don't have in their default PATH.
+func findTmuxPath() string {
+	// First try the simple case - tmux in PATH
+	if path, err := exec.LookPath("tmux"); err == nil {
+		return path
+	}
+
+	// GUI apps on macOS don't inherit shell PATH, so check common locations
+	commonPaths := []string{
+		"/opt/homebrew/bin/tmux", // Apple Silicon Homebrew
+		"/usr/local/bin/tmux",    // Intel Homebrew
+		"/usr/bin/tmux",          // System (unlikely)
+	}
+
+	for _, p := range commonPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	// Fallback to bare "tmux" and hope for the best
+	return "tmux"
+}
+
 // TmuxManager handles tmux session operations.
 type TmuxManager struct{}
 
 // NewTmuxManager creates a new TmuxManager.
 func NewTmuxManager() *TmuxManager {
 	return &TmuxManager{}
+}
+
+// GetTmuxPath returns the path to the tmux binary.
+func (tm *TmuxManager) GetTmuxPath() string {
+	return tmuxBinaryPath
 }
 
 // getSessionsPath returns the path to sessions.json for the default profile.
@@ -515,7 +549,8 @@ func (tm *TmuxManager) getRunningTmuxSessions() map[string]bool {
 	result := make(map[string]bool)
 
 	// Run: tmux list-sessions -F "#{session_name}"
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	// Use resolved tmux path for GUI app compatibility
+	cmd := exec.Command(tmuxBinaryPath, "list-sessions", "-F", "#{session_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		// tmux might not be running or no sessions exist
@@ -540,7 +575,8 @@ func (tm *TmuxManager) GetScrollback(tmuxSession string, lines int) (string, err
 
 	// tmux capture-pane -t <session> -p -S -<lines>
 	// -e preserves escape sequences (colors)
-	cmd := exec.Command("tmux", "capture-pane", "-t", tmuxSession, "-p", "-e", "-S", fmt.Sprintf("-%d", lines))
+	// Use resolved tmux path for GUI app compatibility
+	cmd := exec.Command(tmuxBinaryPath, "capture-pane", "-t", tmuxSession, "-p", "-e", "-S", fmt.Sprintf("-%d", lines))
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -558,8 +594,56 @@ func (tm *TmuxManager) GetScrollback(tmuxSession string, lines int) (string, err
 
 // SessionExists checks if a tmux session exists.
 func (tm *TmuxManager) SessionExists(tmuxSession string) bool {
-	cmd := exec.Command("tmux", "has-session", "-t", tmuxSession)
+	cmd := exec.Command(tmuxBinaryPath, "has-session", "-t", tmuxSession)
 	return cmd.Run() == nil
+}
+
+// RemoteSessionExists checks if a tmux session exists on a remote host.
+func (tm *TmuxManager) RemoteSessionExists(hostID, tmuxSession string, sshBridge *SSHBridge) bool {
+	if sshBridge == nil {
+		return false
+	}
+	tmuxPath := sshBridge.GetTmuxPath(hostID)
+	cmd := fmt.Sprintf("%s has-session -t %q 2>/dev/null && echo yes || echo no", tmuxPath, tmuxSession)
+	output, err := sshBridge.RunCommand(hostID, cmd)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(output) == "yes"
+}
+
+// RestartRemoteSession recreates a tmux session on a remote host for a session in error state.
+// It creates the tmux session and sends the tool command to start it.
+func (tm *TmuxManager) RestartRemoteSession(hostID, tmuxSession, projectPath, tool string, sshBridge *SSHBridge) error {
+	if sshBridge == nil {
+		return fmt.Errorf("SSH bridge not initialized")
+	}
+
+	tmuxPath := sshBridge.GetTmuxPath(hostID)
+
+	// Create the tmux session on the remote host
+	// Use -A flag to attach if exists, or create if not (avoids "duplicate session" error)
+	createCmd := fmt.Sprintf("%s new-session -d -s %q -c %q 2>/dev/null || true", tmuxPath, tmuxSession, projectPath)
+	if _, err := sshBridge.RunCommand(hostID, createCmd); err != nil {
+		return fmt.Errorf("failed to create remote tmux session: %w", err)
+	}
+
+	// Send the tool command to start the session
+	toolCmd := tool
+	if toolCmd == "" || toolCmd == "shell" {
+		// For shell sessions, just start a clean shell (no command needed, tmux starts bash/zsh by default)
+		return nil
+	}
+
+	// For agent tools like claude, gemini, opencode - send the command
+	escapedCmd := strings.ReplaceAll(toolCmd, "'", "'\\''")
+	sendCmd := fmt.Sprintf("%s send-keys -t %q '%s' Enter", tmuxPath, tmuxSession, escapedCmd)
+	if _, err := sshBridge.RunCommand(hostID, sendCmd); err != nil {
+		// Non-fatal - session exists, just tool might not have started
+		fmt.Printf("Warning: failed to send tool command to restarted session: %v\n", err)
+	}
+
+	return nil
 }
 
 // GetSessionMetadata retrieves runtime metadata for a tmux session.
@@ -575,7 +659,7 @@ func (tm *TmuxManager) GetSessionMetadata(tmuxSession string) SessionMetadata {
 
 	// Get current working directory from tmux pane
 	// Use tmux display-message with pane_current_path format
-	cwdBytes, err := exec.Command("tmux", "display-message", "-t", tmuxSession, "-p", "#{pane_current_path}").Output()
+	cwdBytes, err := exec.Command(tmuxBinaryPath, "display-message", "-t", tmuxSession, "-p", "#{pane_current_path}").Output()
 	if err == nil {
 		result.Cwd = strings.TrimSpace(string(cwdBytes))
 	}
@@ -698,7 +782,7 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string)
 	sessionName := fmt.Sprintf("agentdeck_%d", time.Now().UnixNano())
 
 	// Create tmux session
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", projectPath)
+	cmd := exec.Command(tmuxBinaryPath, "new-session", "-d", "-s", sessionName, "-c", projectPath)
 	if err := cmd.Run(); err != nil {
 		return SessionInfo{}, fmt.Errorf("failed to create tmux session: %w", err)
 	}
@@ -714,7 +798,7 @@ func (tm *TmuxManager) CreateSession(projectPath, title, tool, configKey string)
 
 	// Send the tool command to the session
 	// Note: exec.Command handles argument escaping properly for local execution
-	sendCmd := exec.Command("tmux", "send-keys", "-t", sessionName, fullCmd, "Enter")
+	sendCmd := exec.Command(tmuxBinaryPath, "send-keys", "-t", sessionName, fullCmd, "Enter")
 	if err := sendCmd.Run(); err != nil {
 		// Don't fail if we can't send the command, the session is still usable
 		fmt.Printf("Warning: failed to send tool command: %v\n", err)

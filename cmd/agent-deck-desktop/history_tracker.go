@@ -40,7 +40,7 @@ func (ht *HistoryTracker) GetTmuxInfo() (historySize int, inAltScreen bool, err 
 	// Query tmux for history_size and alternate_on
 	// history_size = number of lines in scrollback (above visible pane)
 	// alternate_on = 1 if app is using alternate screen buffer (vim, less, htop)
-	cmd := exec.Command("tmux", "display-message", "-t", ht.tmuxSession, "-p",
+	cmd := exec.Command(tmuxBinaryPath, "display-message", "-t", ht.tmuxSession, "-p",
 		"#{history_size},#{alternate_on}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -98,7 +98,7 @@ func (ht *HistoryTracker) FetchHistoryGap(currentHistorySize int) (string, error
 		return "", nil
 	}
 
-	cmd := exec.Command("tmux", "capture-pane", "-t", ht.tmuxSession,
+	cmd := exec.Command(tmuxBinaryPath, "capture-pane", "-t", ht.tmuxSession,
 		"-p", "-e", // -p = stdout, -e = preserve escape sequences (colors)
 		"-S", fmt.Sprintf("%d", startOffset),
 		"-E", fmt.Sprintf("%d", endOffset))

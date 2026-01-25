@@ -215,7 +215,7 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 
 	// 1. Resize tmux window to match terminal dimensions
 	if cols > 0 && rows > 0 {
-		resizeCmd := exec.Command("tmux", "resize-window", "-t", tmuxSession, "-x", itoa(cols), "-y", itoa(rows))
+		resizeCmd := exec.Command(tmuxBinaryPath, "resize-window", "-t", tmuxSession, "-x", itoa(cols), "-y", itoa(rows))
 		if err := resizeCmd.Run(); err != nil {
 			t.debugLog("[POLLING] resize-window error: %v", err)
 		} else {
@@ -230,7 +230,7 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 	// -E - = end at current cursor position
 	// -p = print to stdout
 	// -e = include escape sequences (colors)
-	historyCmd := exec.Command("tmux", "capture-pane", "-t", tmuxSession, "-p", "-e", "-S", "-", "-E", "-")
+	historyCmd := exec.Command(tmuxBinaryPath, "capture-pane", "-t", tmuxSession, "-p", "-e", "-S", "-", "-E", "-")
 	historyOutput, err := historyCmd.Output()
 	if err != nil {
 		t.debugLog("[POLLING] capture-pane error: %v", err)
@@ -252,7 +252,7 @@ func (t *Terminal) StartTmuxSession(tmuxSession string, cols, rows int) error {
 
 	// 5. Attach PTY to tmux (for user input only - output is handled by polling)
 	t.debugLog("[POLLING] Attaching PTY to tmux session for input")
-	pty, err := SpawnPTYWithCommand("tmux", "attach-session", "-t", tmuxSession)
+	pty, err := SpawnPTYWithCommand(tmuxBinaryPath, "attach-session", "-t", tmuxSession)
 	if err != nil {
 		return fmt.Errorf("failed to attach to tmux: %w", err)
 	}
@@ -284,13 +284,18 @@ func (t *Terminal) SetSSHBridge(bridge *SSHBridge) {
 }
 
 // StartRemoteTmuxSession connects to a tmux session on a remote host via SSH.
-// Uses SSH polling for display updates (read-only for now in Stage 3).
+// Uses SSH polling for display updates.
+// If the remote tmux session doesn't exist (error state), it will be automatically restarted.
 //
 // Parameters:
 //   - hostID: SSH host identifier from config.toml [ssh_hosts.X]
 //   - tmuxSession: tmux session name on the remote host
+//   - projectPath: working directory for the session (used for restart)
+//   - tool: tool type for the session (used for restart, e.g., "claude", "shell")
 //   - cols, rows: initial terminal dimensions
-func (t *Terminal) StartRemoteTmuxSession(hostID, tmuxSession string, cols, rows int) error {
+//   - tmuxMgr: TmuxManager for restart operations
+//   - sshBridgeArg: SSHBridge for restart operations
+func (t *Terminal) StartRemoteTmuxSession(hostID, tmuxSession, projectPath, tool string, cols, rows int, tmuxMgr *TmuxManager, sshBridgeArg *SSHBridge) error {
 	// Quick lock to check if already started and get sshBridge reference
 	t.mu.Lock()
 	if t.pty != nil {
@@ -311,6 +316,18 @@ func (t *Terminal) StartRemoteTmuxSession(hostID, tmuxSession string, cols, rows
 
 	// Get tmux path for this host
 	tmuxPath := sshBridge.GetTmuxPath(hostID)
+
+	// Check if tmux session exists on remote, restart if not
+	if tmuxMgr != nil && !tmuxMgr.RemoteSessionExists(hostID, tmuxSession, sshBridgeArg) {
+		t.debugLog("[REMOTE] Tmux session %s does not exist on %s, restarting...", tmuxSession, hostID)
+		if err := tmuxMgr.RestartRemoteSession(hostID, tmuxSession, projectPath, tool, sshBridgeArg); err != nil {
+			t.debugLog("[REMOTE] Failed to restart remote session: %v", err)
+			return fmt.Errorf("failed to restart remote session: %w", err)
+		}
+		t.debugLog("[REMOTE] Remote session restarted successfully")
+		// Give the session a moment to start
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// 1. Resize tmux window on remote host (outside lock - network call)
 	if cols > 0 && rows > 0 {
@@ -786,7 +803,7 @@ func (t *Terminal) pollTmuxOnce() {
 	}
 
 	// Step 4: Capture current viewport
-	cmd := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e")
+	cmd := exec.Command(tmuxBinaryPath, "capture-pane", "-t", session, "-p", "-e")
 	output, err := cmd.Output()
 	if err != nil {
 		t.debugLog("[POLL] capture-pane error: %v", err)
@@ -1014,7 +1031,7 @@ func (t *Terminal) Resize(cols, rows int) error {
 			}
 		} else {
 			// Local session - use local tmux
-			cmd := exec.Command("tmux", "resize-window", "-t", session, "-x", itoa(cols), "-y", itoa(rows))
+			cmd := exec.Command(tmuxBinaryPath, "resize-window", "-t", session, "-x", itoa(cols), "-y", itoa(rows))
 			if err := cmd.Run(); err != nil {
 				t.debugLog("[RESIZE] tmux resize-window error: %v", err)
 			}
@@ -1048,7 +1065,7 @@ func (t *Terminal) GetScrollback() (string, error) {
 	time.Sleep(30 * time.Millisecond)
 
 	// Capture current pane content (scrollback + visible)
-	cmd := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e", "-S", "-", "-E", "-")
+	cmd := exec.Command(tmuxBinaryPath, "capture-pane", "-t", session, "-p", "-e", "-S", "-", "-E", "-")
 	output, err := cmd.Output()
 	if err != nil {
 		t.debugLog("[SCROLLBACK] capture-pane error: %v", err)
