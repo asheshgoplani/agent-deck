@@ -14,6 +14,7 @@ const QUICK_ACTIONS = [
     { id: 'create-remote-session', type: 'action', title: 'Create Remote Session', description: 'Create a session on a remote SSH host' },
     { id: 'refresh-sessions', type: 'action', title: 'Refresh Sessions', description: 'Reload session list' },
     { id: 'toggle-quick-launch', type: 'action', title: 'Toggle Quick Launch Bar', description: 'Show/hide quick launch bar' },
+    { id: 'toggle-theme', type: 'action', title: 'Toggle Theme', description: 'Switch between light and dark mode' },
 ];
 
 // Layout actions - only shown when in terminal view
@@ -353,7 +354,7 @@ export default function CommandPalette({
                                             className="palette-tool-icon"
                                             style={{ backgroundColor: getStatusColor(item.status) }}
                                         >
-                                            <ToolIcon tool={item.tool} size={14} />
+                                            <ToolIcon tool={item.tool} size={14} status={item.status} />
                                         </span>
                                         <div className="palette-item-info">
                                             <div className="palette-item-title">{item.title}</div>

@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useTooltip } from './Tooltip';
+import { useTheme } from './context/ThemeContext';
 import './App.css';
 import Search from './Search';
 import SessionSelector from './SessionSelector';
@@ -98,6 +99,9 @@ function App() {
 
     // Tooltip for back button
     const { show: showBackTooltip, hide: hideBackTooltip, Tooltip: BackTooltip } = useTooltip();
+
+    // Theme context for toggle
+    const { theme, setTheme } = useTheme();
 
     // Remote session creation flow state
     const [showHostPicker, setShowHostPicker] = useState(false);
@@ -265,10 +269,15 @@ function App() {
                 logger.info('Palette action: create remote session');
                 setShowHostPicker(true);
                 break;
+            case 'toggle-theme':
+                logger.info('Palette action: toggle theme', { currentTheme: theme });
+                // Toggle between light and dark (skip auto for quick toggle)
+                setTheme(theme === 'dark' ? 'light' : 'dark');
+                break;
             default:
                 logger.warn('Unknown palette action:', actionId);
         }
-    }, [view, loadSessionsAndProjects]);
+    }, [view, loadSessionsAndProjects, theme, setTheme]);
 
     // Get the current active tab
     const activeTab = openTabs.find(t => t.id === activeTabId);
