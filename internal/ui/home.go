@@ -5263,27 +5263,7 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 	}
 
 	title := titleStyle.Render(inst.Title)
-
 	toolLabel := inst.Tool
-	if inst.Tool == "gemini" {
-		model := inst.GeminiModel
-		if model == "" {
-			model = "auto"
-		}
-
-		// Strip redundant gemini- prefix (e.g., gemini-2.0-flash -> 2.0-flash)
-		displayModel := strings.TrimPrefix(model, "gemini-")
-
-		// Handle "auto" with detected model (e.g. auto(2.0-flash))
-		if model == "auto" && inst.GeminiAnalytics != nil && inst.GeminiAnalytics.Model != "" {
-			shortenedDetected := strings.TrimPrefix(inst.GeminiAnalytics.Model, "gemini-")
-			toolLabel = fmt.Sprintf("gemini(auto(%s))", shortenedDetected)
-		} else {
-			// Just the model name (without gemini- prefix)
-			toolLabel = fmt.Sprintf("gemini(%s)", displayModel)
-		}
-	}
-
 	tool := toolStyle.Render(" " + toolLabel)
 
 	// YOLO badge for Gemini sessions with YOLO mode enabled
@@ -5872,6 +5852,25 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 			b.WriteString(labelStyle.Render("Session: "))
 			b.WriteString(valueStyle.Render(selected.GeminiSessionID))
+			b.WriteString("\n")
+
+			// Model dropdown-style field
+			modelLabel := "auto"
+			if selected.GeminiModel != "" && selected.GeminiModel != "auto" {
+				modelLabel = selected.GeminiModel
+			} else if selected.GeminiAnalytics != nil && selected.GeminiAnalytics.Model != "" {
+				modelLabel = fmt.Sprintf("auto (%s)", selected.GeminiAnalytics.Model)
+			}
+
+			// Render as a clickable-looking field (box with arrow)
+			dropdownStyle := lipgloss.NewStyle().
+				Foreground(ColorAccent).
+				Border(lipgloss.NormalBorder(), false, false, false, false).
+				Padding(0, 1).
+				Background(ColorBg)
+
+			b.WriteString(labelStyle.Render("Model:   "))
+			b.WriteString(dropdownStyle.Render(modelLabel + " ▾"))
 			b.WriteString("\n")
 		} else {
 			statusStyle := lipgloss.NewStyle().Foreground(ColorText)
