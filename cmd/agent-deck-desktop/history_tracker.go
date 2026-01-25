@@ -196,10 +196,10 @@ func (ht *HistoryTracker) DiffViewport(currentContent string) string {
 			output.WriteString(newLine)
 			output.WriteString("\x1b[K") // Clear to end of line
 		} else {
-			// New line beyond previous viewport - append naturally
-			if i > 0 {
-				output.WriteString("\r\n")
-			}
+			// New line beyond previous viewport - position cursor and write
+			// (Can't use \r\n because cursor may be at an arbitrary row from
+			// previous positioned writes of changed lines)
+			output.WriteString(fmt.Sprintf("\x1b[%d;1H", i+1))
 			output.WriteString(newLine)
 			output.WriteString("\x1b[K") // Clear to end of line
 		}
