@@ -4,9 +4,9 @@ import {main} from '../models';
 
 export function AddQuickLaunchFavorite(arg1:string,arg2:string,arg3:string):Promise<void>;
 
-export function AttachSession(arg1:string,arg2:number,arg3:number):Promise<void>;
+export function AttachSession(arg1:string,arg2:string,arg3:number,arg4:number):Promise<void>;
 
-export function CloseTerminal():Promise<void>;
+export function CloseTerminal(arg1:string):Promise<void>;
 
 export function CreateSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SessionInfo>;
 
@@ -38,9 +38,9 @@ export function GetQuickLaunchBarVisibility():Promise<boolean>;
 
 export function GetQuickLaunchFavorites():Promise<Array<main.QuickLaunchFavorite>>;
 
-export function GetScrollback(arg1:string):Promise<string>;
-
 export function GetSSHHostStatus():Promise<Array<main.SSHHostStatus>>;
+
+export function GetScrollback(arg1:string):Promise<string>;
 
 export function GetSoftNewlineMode():Promise<string>;
 
@@ -50,11 +50,11 @@ export function GetVersion():Promise<string>;
 
 export function IsGitWorktree(arg1:string):Promise<boolean>;
 
+export function ListSSHHosts():Promise<Array<string>>;
+
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 
 export function ListSessionsWithGroups():Promise<main.SessionsWithGroups>;
-
-export function ListSSHHosts():Promise<Array<string>>;
 
 export function LogFrontendDiagnostic(arg1:string):Promise<void>;
 
@@ -62,13 +62,13 @@ export function MarkSessionAccessed(arg1:string):Promise<void>;
 
 export function RecordProjectUsage(arg1:string):Promise<void>;
 
-export function RefreshScrollback():Promise<string>;
+export function RefreshScrollback(arg1:string):Promise<string>;
 
 export function RemoveQuickLaunchFavorite(arg1:string):Promise<void>;
 
 export function ResetGroupSettings():Promise<void>;
 
-export function ResizeTerminal(arg1:number,arg2:number):Promise<void>;
+export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function SaveLaunchConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean,arg6:string,arg7:Array<string>,arg8:boolean):Promise<void>;
 
@@ -100,4 +100,4 @@ export function UpdateSessionCustomLabel(arg1:string,arg2:string):Promise<void>;
 
 export function ValidateMCPConfigPath(arg1:string):Promise<Array<string>>;
 
-export function WriteTerminal(arg1:string):Promise<void>;
+export function WriteTerminal(arg1:string,arg2:string):Promise<void>;

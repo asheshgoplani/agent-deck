@@ -6,12 +6,12 @@ export function AddQuickLaunchFavorite(arg1, arg2, arg3) {
   return window['go']['main']['App']['AddQuickLaunchFavorite'](arg1, arg2, arg3);
 }
 
-export function AttachSession(arg1, arg2, arg3) {
-  return window['go']['main']['App']['AttachSession'](arg1, arg2, arg3);
+export function AttachSession(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AttachSession'](arg1, arg2, arg3, arg4);
 }
 
-export function CloseTerminal() {
-  return window['go']['main']['App']['CloseTerminal']();
+export function CloseTerminal(arg1) {
+  return window['go']['main']['App']['CloseTerminal'](arg1);
 }
 
 export function CreateSession(arg1, arg2, arg3, arg4) {
@@ -74,12 +74,12 @@ export function GetQuickLaunchFavorites() {
   return window['go']['main']['App']['GetQuickLaunchFavorites']();
 }
 
-export function GetScrollback(arg1) {
-  return window['go']['main']['App']['GetScrollback'](arg1);
-}
-
 export function GetSSHHostStatus() {
   return window['go']['main']['App']['GetSSHHostStatus']();
+}
+
+export function GetScrollback(arg1) {
+  return window['go']['main']['App']['GetScrollback'](arg1);
 }
 
 export function GetSoftNewlineMode() {
@@ -98,16 +98,16 @@ export function IsGitWorktree(arg1) {
   return window['go']['main']['App']['IsGitWorktree'](arg1);
 }
 
+export function ListSSHHosts() {
+  return window['go']['main']['App']['ListSSHHosts']();
+}
+
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
 
 export function ListSessionsWithGroups() {
   return window['go']['main']['App']['ListSessionsWithGroups']();
-}
-
-export function ListSSHHosts() {
-  return window['go']['main']['App']['ListSSHHosts']();
 }
 
 export function LogFrontendDiagnostic(arg1) {
@@ -122,8 +122,8 @@ export function RecordProjectUsage(arg1) {
   return window['go']['main']['App']['RecordProjectUsage'](arg1);
 }
 
-export function RefreshScrollback() {
-  return window['go']['main']['App']['RefreshScrollback']();
+export function RefreshScrollback(arg1) {
+  return window['go']['main']['App']['RefreshScrollback'](arg1);
 }
 
 export function RemoveQuickLaunchFavorite(arg1) {
@@ -134,8 +134,8 @@ export function ResetGroupSettings() {
   return window['go']['main']['App']['ResetGroupSettings']();
 }
 
-export function ResizeTerminal(arg1, arg2) {
-  return window['go']['main']['App']['ResizeTerminal'](arg1, arg2);
+export function ResizeTerminal(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ResizeTerminal'](arg1, arg2, arg3);
 }
 
 export function SaveLaunchConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
@@ -162,12 +162,12 @@ export function SetSoftNewlineMode(arg1) {
   return window['go']['main']['App']['SetSoftNewlineMode'](arg1);
 }
 
-export function StartTerminal(arg1, arg2) {
-  return window['go']['main']['App']['StartTerminal'](arg1, arg2);
-}
-
 export function StartRemoteTmuxSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['StartRemoteTmuxSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function StartTerminal(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartTerminal'](arg1, arg2, arg3);
 }
 
 export function StartTmuxSession(arg1, arg2, arg3, arg4) {
@@ -198,6 +198,6 @@ export function ValidateMCPConfigPath(arg1) {
   return window['go']['main']['App']['ValidateMCPConfigPath'](arg1);
 }
 
-export function WriteTerminal(arg1) {
-  return window['go']['main']['App']['WriteTerminal'](arg1);
+export function WriteTerminal(arg1, arg2) {
+  return window['go']['main']['App']['WriteTerminal'](arg1, arg2);
 }
