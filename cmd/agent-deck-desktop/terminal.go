@@ -787,18 +787,16 @@ func (t *Terminal) pollTmuxOnce() {
 		}
 	}
 
-	// Step 3: If NOT in alt-screen, fetch any history gap
-	// (Don't append TUI frames to scrollback when in vim/less)
+	// Step 3: Fetch history gap (if any) - but don't emit yet
+	// We'll combine it with viewport diff into a single emission to prevent cursor state bugs
+	var historyGap string
 	if !inAltScreen && historySize > 0 {
 		gap, err := tracker.FetchHistoryGap(historySize)
 		if err != nil {
 			t.debugLog("[POLL] FetchHistoryGap error: %v", err)
 		} else if len(gap) > 0 {
-			// Append gap lines to xterm (blind, no diff - these are history)
-			t.debugLog("[POLL] Appending %d bytes of history gap (historySize=%d)", len(gap), historySize)
-			if t.ctx != nil {
-				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: gap})
-			}
+			historyGap = gap
+			t.debugLog("[POLL] Fetched %d bytes of history gap (historySize=%d)", len(gap), historySize)
 		}
 	}
 
@@ -825,15 +823,43 @@ func (t *Terminal) pollTmuxOnce() {
 		if t.ctx != nil {
 			content := stripTTSMarkers(currentState)
 
-			// Step 6: Diff viewport and emit minimal updates
-			updateSequence := tracker.DiffViewport(content)
+			// Step 6: Diff viewport
+			viewportUpdate := tracker.DiffViewport(content)
 
-			if len(updateSequence) > 0 {
-				lines := strings.Count(content, "\n")
-				t.debugLog("[POLL] Viewport diff: %d bytes update, %d content lines, historySize=%d, altScreen=%v",
-					len(updateSequence), lines, historySize, inAltScreen)
-				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: updateSequence})
+			// Step 7: Combine history gap + viewport update into single emission
+			// This prevents cursor state bugs from separate emissions
+			var combined strings.Builder
+
+			// First: emit history gap at bottom of viewport (will scroll up into scrollback)
+			// We position cursor to the last viewport row, so CRLF scrolls content up
+			if len(historyGap) > 0 {
+				// Save cursor, move to bottom row, emit history, restore cursor
+				combined.WriteString("\x1b7")                                        // Save cursor (DEC)
+				combined.WriteString(fmt.Sprintf("\x1b[%d;1H", tracker.viewportRows)) // Go to bottom row
+				combined.WriteString(historyGap)                                      // History lines with CRLF scroll up
+				combined.WriteString("\x1b8")                                         // Restore cursor (DEC)
 			}
+
+			// Then: emit viewport diff (which starts with cursor home)
+			combined.WriteString(viewportUpdate)
+
+			if combined.Len() > 0 {
+				lines := strings.Count(content, "\n")
+				t.debugLog("[POLL] Combined update: %d bytes (gap=%d, viewport=%d), %d content lines, historySize=%d, altScreen=%v",
+					combined.Len(), len(historyGap), len(viewportUpdate), lines, historySize, inAltScreen)
+				runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: combined.String()})
+			}
+		}
+	} else if len(historyGap) > 0 {
+		// Viewport unchanged but we have history gap - emit it with proper cursor management
+		if t.ctx != nil {
+			var combined strings.Builder
+			combined.WriteString("\x1b7")                                        // Save cursor
+			combined.WriteString(fmt.Sprintf("\x1b[%d;1H", tracker.viewportRows)) // Go to bottom row
+			combined.WriteString(historyGap)
+			combined.WriteString("\x1b8") // Restore cursor
+			t.debugLog("[POLL] History gap only: %d bytes, historySize=%d", len(historyGap), historySize)
+			runtime.EventsEmit(t.ctx, "terminal:data", TerminalEvent{SessionID: t.sessionID, Data: combined.String()})
 		}
 	}
 }

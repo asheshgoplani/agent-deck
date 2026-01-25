@@ -185,6 +185,10 @@ func (ht *HistoryTracker) DiffViewport(currentContent string) string {
 	// Smart diff: only update changed lines
 	var output strings.Builder
 
+	// Always start with cursor home to establish known state
+	// This prevents cursor position bugs when history gap was emitted before us
+	output.WriteString("\x1b[H")
+
 	for i, newLine := range newLines {
 		if i < len(ht.lastViewportLines) {
 			if newLine == ht.lastViewportLines[i] {
