@@ -825,6 +825,31 @@ function App() {
         }
     }, [handleOpenTab]);
 
+    // Launch a remote session (modified version of handleLaunchProject)
+    const handleLaunchRemoteProject = useCallback(async (hostId, projectPath, projectName, tool, configKey = '') => {
+        try {
+            logger.info('Launching remote project', { hostId, projectPath, projectName, tool, configKey });
+
+            // Create session on remote host
+            const session = await CreateRemoteSession(hostId, projectPath, projectName, tool, configKey);
+            logger.info('Remote session created', { sessionId: session.id, tmuxSession: session.tmuxSession, remoteHost: session.remoteHost });
+
+            // Clear remote session state
+            setSelectedRemoteHost(null);
+
+            // Open as tab and switch to terminal view
+            handleOpenTab(session);
+            setSelectedSession(session);
+            setView('terminal');
+            // Remote sessions don't have local git info
+            setGitBranch('');
+            setIsWorktree(false);
+        } catch (err) {
+            logger.error('Failed to launch remote project:', err);
+            // Could show an error toast here
+        }
+    }, [handleOpenTab]);
+
     // Show tool picker for a project
     const handleShowToolPicker = useCallback((projectPath, projectName) => {
         logger.info('Showing tool picker', { projectPath, projectName });
@@ -958,31 +983,6 @@ function App() {
         setShowRemotePathInput(false);
         setSelectedRemoteHost(null);
     }, []);
-
-    // Launch a remote session (modified version of handleLaunchProject)
-    const handleLaunchRemoteProject = useCallback(async (hostId, projectPath, projectName, tool, configKey = '') => {
-        try {
-            logger.info('Launching remote project', { hostId, projectPath, projectName, tool, configKey });
-
-            // Create session on remote host
-            const session = await CreateRemoteSession(hostId, projectPath, projectName, tool, configKey);
-            logger.info('Remote session created', { sessionId: session.id, tmuxSession: session.tmuxSession, remoteHost: session.remoteHost });
-
-            // Clear remote session state
-            setSelectedRemoteHost(null);
-
-            // Open as tab and switch to terminal view
-            handleOpenTab(session);
-            setSelectedSession(session);
-            setView('terminal');
-            // Remote sessions don't have local git info
-            setGitBranch('');
-            setIsWorktree(false);
-        } catch (err) {
-            logger.error('Failed to launch remote project:', err);
-            // Could show an error toast here
-        }
-    }, [handleOpenTab]);
 
     // Open settings modal
     const handleOpenSettings = useCallback(() => {

@@ -96,11 +96,11 @@ export namespace main {
 	    hostId: string;
 	    connected: boolean;
 	    lastError?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SSHHostStatus(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.hostId = source["hostId"];
@@ -114,11 +114,11 @@ export namespace main {
 	    direction?: string;
 	    ratio?: number;
 	    children?: SavedLayoutNode[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SavedLayoutNode(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.type = source["type"];
@@ -127,7 +127,7 @@ export namespace main {
 	        this.ratio = source["ratio"];
 	        this.children = this.convertValues(source["children"], SavedLayoutNode);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -153,11 +153,11 @@ export namespace main {
 	    shortcut?: string;
 	    createdAt: number;
 	    updatedAt?: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SavedLayout(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -167,7 +167,7 @@ export namespace main {
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -273,17 +273,17 @@ export namespace main {
 	export class SessionsWithGroups {
 	    sessions: SessionInfo[];
 	    groups: GroupInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SessionsWithGroups(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.sessions = this.convertValues(source["sessions"], SessionInfo);
 	        this.groups = this.convertValues(source["groups"], GroupInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;

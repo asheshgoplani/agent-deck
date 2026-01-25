@@ -8,9 +8,9 @@ export function AttachSession(arg1:string,arg2:string,arg3:number,arg4:number):P
 
 export function CloseTerminal(arg1:string):Promise<void>;
 
-export function CreateSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SessionInfo>;
-
 export function CreateRemoteSession(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.SessionInfo>;
+
+export function CreateSession(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SessionInfo>;
 
 export function DeleteLaunchConfig(arg1:string):Promise<void>;
 

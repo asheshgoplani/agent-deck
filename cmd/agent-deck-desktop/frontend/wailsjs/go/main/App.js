@@ -14,12 +14,12 @@ export function CloseTerminal(arg1) {
   return window['go']['main']['App']['CloseTerminal'](arg1);
 }
 
-export function CreateSession(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['CreateSession'](arg1, arg2, arg3, arg4);
-}
-
 export function CreateRemoteSession(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateRemoteSession'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function CreateSession(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateSession'](arg1, arg2, arg3, arg4);
 }
 
 export function DeleteLaunchConfig(arg1) {
