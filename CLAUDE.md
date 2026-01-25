@@ -24,6 +24,10 @@ go test -v ./internal/session -run TestStorageSave
 AGENTDECK_DEBUG=1 go run ./cmd/agent-deck
 ```
 
+## Git & Pull Requests
+
+**IMPORTANT:** This is a fork. Never submit PRs to the upstream repository. When asked to create a PR, always target our fork's `main` branch only.
+
 ## Architecture Overview
 
 Agent Deck is a terminal session manager for AI coding agents (Claude Code, Gemini CLI, OpenCode), built with Go and Bubble Tea TUI framework. It runs sessions inside tmux for persistence.

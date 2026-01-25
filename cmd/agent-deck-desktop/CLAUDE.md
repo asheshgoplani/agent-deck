@@ -12,6 +12,10 @@ cd frontend && npm install  # Install frontend dependencies
 
 **Debug log location:** `/tmp/agent-deck-desktop-debug.log` (written by terminal.go)
 
+## Git & Pull Requests
+
+**IMPORTANT:** This is a fork. Never submit PRs to the upstream repository. When asked to create a PR, always target our fork's `main` branch only.
+
 ## Architecture Overview
 
 RevDen (Agent Deck Desktop) is a Wails v2 native app wrapping the Agent Deck TUI. It provides xterm.js-based terminal emulation with searchable scrollback, connecting to existing tmux sessions managed by Agent Deck.
