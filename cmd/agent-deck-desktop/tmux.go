@@ -233,18 +233,18 @@ func (tm *TmuxManager) PersistSession(s SessionInfo) error {
 	return nil
 }
 
-// ListSessions returns all Agent Deck sessions from sessions.json.
-func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
+// loadSessionsData reads and parses sessions.json, returning the raw data.
+// This is used by both ListSessions and ListSessionsWithGroups.
+func (tm *TmuxManager) loadSessionsData() (*sessionsJSON, error) {
 	sessionsPath, err := tm.getSessionsPath()
 	if err != nil {
 		return nil, err
 	}
 
-	// Read and parse sessions.json
 	data, err := os.ReadFile(sessionsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []SessionInfo{}, nil
+			return &sessionsJSON{}, nil
 		}
 		return nil, err
 	}
@@ -254,12 +254,16 @@ func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
 		return nil, err
 	}
 
-	// Get list of running tmux sessions
+	return &sessions, nil
+}
+
+// convertInstancesToSessionInfos converts raw instance data to SessionInfo slice.
+// Filters out local sessions without running tmux sessions and sorts by LastAccessedAt.
+func (tm *TmuxManager) convertInstancesToSessionInfos(instances []instanceJSON) []SessionInfo {
 	runningTmux := tm.getRunningTmuxSessions()
 
-	// Convert to SessionInfo
-	result := make([]SessionInfo, 0, len(sessions.Instances))
-	for _, inst := range sessions.Instances {
+	result := make([]SessionInfo, 0, len(instances))
+	for _, inst := range instances {
 		// Check if tmux session actually exists (for local sessions)
 		_, exists := runningTmux[inst.TmuxSession]
 		isRemote := inst.RemoteHost != ""
@@ -310,84 +314,28 @@ func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
 		return result[i].LastAccessedAt.After(result[j].LastAccessedAt)
 	})
 
-	return result, nil
+	return result
+}
+
+// ListSessions returns all Agent Deck sessions from sessions.json.
+func (tm *TmuxManager) ListSessions() ([]SessionInfo, error) {
+	sessionsData, err := tm.loadSessionsData()
+	if err != nil {
+		return nil, err
+	}
+
+	return tm.convertInstancesToSessionInfos(sessionsData.Instances), nil
 }
 
 // ListSessionsWithGroups returns sessions along with group information for hierarchical display.
 func (tm *TmuxManager) ListSessionsWithGroups() (SessionsWithGroups, error) {
-	sessionsPath, err := tm.getSessionsPath()
+	sessionsData, err := tm.loadSessionsData()
 	if err != nil {
 		return SessionsWithGroups{}, err
 	}
 
-	// Read and parse sessions.json
-	data, err := os.ReadFile(sessionsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return SessionsWithGroups{Sessions: []SessionInfo{}, Groups: []GroupInfo{}}, nil
-		}
-		return SessionsWithGroups{}, err
-	}
-
-	var sessionsData sessionsJSON
-	if err := json.Unmarshal(data, &sessionsData); err != nil {
-		return SessionsWithGroups{}, err
-	}
-
-	// Get list of running tmux sessions
-	runningTmux := tm.getRunningTmuxSessions()
-
-	// Convert instances to SessionInfo
-	sessions := make([]SessionInfo, 0, len(sessionsData.Instances))
-	for _, inst := range sessionsData.Instances {
-		// Check if tmux session actually exists (for local sessions)
-		_, exists := runningTmux[inst.TmuxSession]
-		isRemote := inst.RemoteHost != ""
-
-		// Skip local sessions without a running tmux session
-		if !exists && !isRemote {
-			continue
-		}
-
-		// Get git info for the project path (only for local sessions)
-		var gitInfo GitInfo
-		if !isRemote {
-			gitInfo = tm.getGitInfo(inst.ProjectPath)
-		}
-
-		// Use LastAccessedAt if set, otherwise fall back to CreatedAt
-		lastAccessed := inst.LastAccessedAt
-		if lastAccessed.IsZero() {
-			lastAccessed = inst.CreatedAt
-		}
-
-		sessions = append(sessions, SessionInfo{
-			ID:               inst.ID,
-			Title:            inst.Title,
-			CustomLabel:      inst.CustomLabel,
-			ProjectPath:      inst.ProjectPath,
-			GroupPath:        inst.GroupPath,
-			Tool:             inst.Tool,
-			Status:           inst.Status,
-			TmuxSession:      inst.TmuxSession,
-			IsRemote:         isRemote,
-			RemoteHost:       inst.RemoteHost,
-			GitBranch:        gitInfo.Branch,
-			IsWorktree:       gitInfo.IsWorktree,
-			GitDirty:         gitInfo.IsDirty,
-			GitAhead:         gitInfo.Ahead,
-			GitBehind:        gitInfo.Behind,
-			LastAccessedAt:   lastAccessed,
-			LaunchConfigName: inst.LaunchConfigName,
-			LoadedMCPs:       inst.LoadedMCPNames,
-			DangerousMode:    inst.DangerousMode,
-		})
-	}
-
-	// Sort sessions by LastAccessedAt (most recent first)
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].LastAccessedAt.After(sessions[j].LastAccessedAt)
-	})
+	// Convert instances to SessionInfo using shared helper
+	sessions := tm.convertInstancesToSessionInfos(sessionsData.Instances)
 
 	// Build group info from stored groups
 	groups := make([]GroupInfo, 0, len(sessionsData.Groups))

@@ -292,9 +292,10 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         const items = [];
 
         // Create a map of sessions by group path
+        // Sessions with empty/undefined groupPath are stored under '' and handled specially later
         const sessionsByGroup = {};
         for (const session of filteredSessions) {
-            const groupPath = session.groupPath || 'my-sessions';
+            const groupPath = session.groupPath || '';
             if (!sessionsByGroup[groupPath]) {
                 sessionsByGroup[groupPath] = [];
             }
@@ -357,8 +358,9 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
         // Handle ungrouped sessions (sessions with empty groupPath and no my-sessions group)
         const ungroupedSessions = sessionsByGroup[''] || [];
         if (ungroupedSessions.length > 0 && !groups.some(g => g.path === 'my-sessions')) {
-            // Add implicit "My Sessions" group
-            items.unshift({
+            // Build the ungrouped items first, then prepend to maintain order
+            const ungroupedItems = [];
+            ungroupedItems.push({
                 type: 'group',
                 group: {
                     name: 'My Sessions',
@@ -372,13 +374,15 @@ export default function SessionSelector({ onSelect, onNewTerminal, statusFilter 
             });
             if (isGroupExpanded('my-sessions')) {
                 for (const session of ungroupedSessions) {
-                    items.splice(1, 0, {
+                    ungroupedItems.push({
                         type: 'session',
                         session,
                         level: 1
                     });
                 }
             }
+            // Prepend ungrouped items to maintain correct order
+            items.unshift(...ungroupedItems);
         }
 
         return items;
