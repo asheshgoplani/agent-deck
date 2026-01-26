@@ -2152,6 +2152,12 @@ func TestClearStatusLeft(t *testing.T) {
 func TestBindUnbindKey(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
+	// Verify we can actually run tmux commands (bind-key may fail in CI
+	// even when tmux server is detected, e.g., no attached clients)
+	if err := exec.Command("tmux", "list-keys").Run(); err != nil {
+		t.Skip("tmux cannot list keys (no attached client?)")
+	}
+
 	// Bind a key
 	err := BindSwitchKey("9", "nonexistent-session")
 	assert.NoError(t, err)
