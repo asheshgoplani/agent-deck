@@ -43,7 +43,7 @@ func NewNewDialog() *NewDialog {
 	nameInput := textinput.New()
 	nameInput.Placeholder = "session-name"
 	nameInput.Focus()
-	nameInput.CharLimit = 100
+	nameInput.CharLimit = 50
 	nameInput.Width = 40
 
 	// Create path input
