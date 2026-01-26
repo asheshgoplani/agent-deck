@@ -717,4 +717,13 @@ func TestHome_MaintenanceMessage(t *testing.T) {
 	if h.maintenanceMsg != "" {
 		t.Error("maintenanceMsg should be cleared after clearMaintenanceMsg")
 	}
+
+	// 6. Verify empty result doesn't show message
+	res2 := session.MaintenanceResult{PrunedLogs: 0, PrunedBackups: 0, ArchivedSessions: 0}
+	msg2 := MaintenanceCompleteMsg(res2)
+	model, _ = home.Update(msg2)
+	h = model.(*Home)
+	if h.maintenanceMsg != "" {
+		t.Error("maintenanceMsg should be empty for 0 results")
+	}
 }

@@ -2096,22 +2096,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					
 			
 							if len(parts) > 0 {
-			
 								h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ")
-			
-							} else {
-			
-								h.maintenanceMsg = "Maintenance: system is clean"
-			
+								h.maintenanceMsgTime = time.Now()
+
+								// Clear message after 30 seconds (longer for E2E and visibility)
+								return h, h.clearMaintenanceMsgCmd(30 * time.Second)
 							}
-			
-							h.maintenanceMsgTime = time.Now()
-			
-					
-			
-							// Clear message after 30 seconds (longer for E2E and visibility)
-			
-							return h, h.clearMaintenanceMsgCmd(30 * time.Second)
+							return h, nil
 			
 					
 								case clearMaintenanceMsg:
