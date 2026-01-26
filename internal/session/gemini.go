@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -269,5 +272,104 @@ func UpdateGeminiAnalyticsFromDisk(projectPath, sessionID string, analytics *Gem
 	analytics.LastFileModTime = fileMtime
 
 	return nil
+}
+
+// geminiModelCache holds cached model list from the Gemini API
+var (
+	geminiModelCacheMu    sync.Mutex
+	geminiModelCacheList  []string
+	geminiModelCacheTime  time.Time
+	geminiModelCacheTTL   = 1 * time.Hour
+)
+
+// geminiModelFallback is the hardcoded fallback list when API is unavailable
+var geminiModelFallback = []string{
+	"gemini-1.5-flash",
+	"gemini-1.5-pro",
+	"gemini-2.0-flash",
+	"gemini-2.5-flash",
+	"gemini-2.5-pro",
+}
+
+// GetAvailableGeminiModels returns a sorted list of Gemini models that support generateContent.
+// Priority: 1) GEMINI_MODELS_OVERRIDE env var, 2) cached API result, 3) live API call, 4) fallback list.
+func GetAvailableGeminiModels() ([]string, error) {
+	// Priority 1: env var override (for testing)
+	if override := os.Getenv("GEMINI_MODELS_OVERRIDE"); override != "" {
+		models := strings.Split(override, ",")
+		var result []string
+		for _, m := range models {
+			m = strings.TrimSpace(m)
+			if m != "" {
+				result = append(result, m)
+			}
+		}
+		sort.Strings(result)
+		return result, nil
+	}
+
+	// Priority 2: cache hit
+	geminiModelCacheMu.Lock()
+	defer geminiModelCacheMu.Unlock()
+
+	if len(geminiModelCacheList) > 0 && time.Since(geminiModelCacheTime) < geminiModelCacheTTL {
+		result := make([]string, len(geminiModelCacheList))
+		copy(result, geminiModelCacheList)
+		return result, nil
+	}
+
+	// Priority 3: API call (requires GOOGLE_API_KEY)
+	apiKey := os.Getenv("GOOGLE_API_KEY")
+	if apiKey == "" {
+		// No API key, use fallback
+		return geminiModelFallback, nil
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey)
+	if err != nil {
+		return geminiModelFallback, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return geminiModelFallback, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var apiResp struct {
+		Models []struct {
+			Name                       string   `json:"name"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return geminiModelFallback, fmt.Errorf("failed to decode API response: %w", err)
+	}
+
+	// Filter to models that support generateContent
+	var models []string
+	for _, m := range apiResp.Models {
+		supportsGenerate := false
+		for _, method := range m.SupportedGenerationMethods {
+			if method == "generateContent" {
+				supportsGenerate = true
+				break
+			}
+		}
+		if !supportsGenerate {
+			continue
+		}
+		// Strip "models/" prefix from name
+		name := strings.TrimPrefix(m.Name, "models/")
+		models = append(models, name)
+	}
+
+	sort.Strings(models)
+
+	// Update cache
+	geminiModelCacheList = models
+	geminiModelCacheTime = time.Now()
+
+	return models, nil
 }
 

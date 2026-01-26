@@ -2292,6 +2292,18 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 }
 
+// SetGeminiModel sets the Gemini model for this session and triggers a restart if running.
+func (i *Instance) SetGeminiModel(model string) error {
+	i.GeminiModel = model
+	log.Printf("[GEMINI-MODEL] Set model=%q for session %s (%s)", model, i.ID, i.Title)
+
+	// Restart if the session is running so it picks up the new model
+	if i.Exists() {
+		return i.Restart()
+	}
+	return nil
+}
+
 // CanRestart returns true if the session can be restarted
 // For Claude sessions with known ID: can always restart (interrupt and resume)
 // For Gemini sessions with known ID: can always restart (interrupt and resume)

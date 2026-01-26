@@ -343,3 +343,73 @@ func TestUpdateGeminiAnalyticsFromDisk_ExtractsModel(t *testing.T) {
 		t.Errorf("TotalTurns = %d, want 2", analytics.TotalTurns)
 	}
 }
+
+func TestGetAvailableGeminiModels_Fallback(t *testing.T) {
+	// Clear cache and env vars to force fallback
+	geminiModelCacheMu.Lock()
+	geminiModelCacheList = nil
+	geminiModelCacheTime = time.Time{}
+	geminiModelCacheMu.Unlock()
+
+	origKey := os.Getenv("GOOGLE_API_KEY")
+	origOverride := os.Getenv("GEMINI_MODELS_OVERRIDE")
+	os.Unsetenv("GOOGLE_API_KEY")
+	os.Unsetenv("GEMINI_MODELS_OVERRIDE")
+	defer func() {
+		if origKey != "" {
+			os.Setenv("GOOGLE_API_KEY", origKey)
+		}
+		if origOverride != "" {
+			os.Setenv("GEMINI_MODELS_OVERRIDE", origOverride)
+		}
+	}()
+
+	models, err := GetAvailableGeminiModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("expected non-empty fallback model list")
+	}
+	// Verify known fallback models are present
+	found := false
+	for _, m := range models {
+		if m == "gemini-2.5-pro" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected gemini-2.5-pro in fallback list, got %v", models)
+	}
+}
+
+func TestGetAvailableGeminiModels_Override(t *testing.T) {
+	// Clear cache to prevent stale results
+	geminiModelCacheMu.Lock()
+	geminiModelCacheList = nil
+	geminiModelCacheTime = time.Time{}
+	geminiModelCacheMu.Unlock()
+
+	origOverride := os.Getenv("GEMINI_MODELS_OVERRIDE")
+	os.Setenv("GEMINI_MODELS_OVERRIDE", "model-b, model-a, model-c")
+	defer func() {
+		if origOverride != "" {
+			os.Setenv("GEMINI_MODELS_OVERRIDE", origOverride)
+		} else {
+			os.Unsetenv("GEMINI_MODELS_OVERRIDE")
+		}
+	}()
+
+	models, err := GetAvailableGeminiModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models, got %d: %v", len(models), models)
+	}
+	// Should be sorted alphabetically
+	if models[0] != "model-a" || models[1] != "model-b" || models[2] != "model-c" {
+		t.Errorf("expected sorted [model-a model-b model-c], got %v", models)
+	}
+}

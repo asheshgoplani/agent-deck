@@ -139,7 +139,8 @@ type Home struct {
 	mcpDialog      *MCPDialog      // For managing MCPs
 	setupWizard    *SetupWizard    // For first-run setup
 	settingsPanel  *SettingsPanel  // For editing settings
-	analyticsPanel *AnalyticsPanel // For displaying session analytics
+	analyticsPanel    *AnalyticsPanel    // For displaying session analytics
+	geminiModelDialog *GeminiModelDialog // For selecting Gemini model
 
 	// Analytics cache (async fetching with TTL)
 	currentAnalytics       *session.SessionAnalytics             // Current analytics for selected session (Claude)
@@ -406,6 +407,7 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 		setupWizard:       NewSetupWizard(),
 		settingsPanel:     NewSettingsPanel(),
 		analyticsPanel:    NewAnalyticsPanel(),
+		geminiModelDialog: NewGeminiModelDialog(),
 		cursor:            0,
 		initialLoading:    true, // Show splash until sessions load
 		ctx:               ctx,
@@ -1724,6 +1726,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.syncViewport() // Recalculate viewport when window size changes
 		h.setupWizard.SetSize(msg.Width, msg.Height)
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
+		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		return h, nil
 
 	case loadSessionsMsg:
@@ -2060,6 +2063,27 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearMaintenanceMsg:
 		h.maintenanceMsg = ""
+		return h, nil
+
+	case modelsFetchedMsg:
+		if h.geminiModelDialog != nil && h.geminiModelDialog.IsVisible() {
+			h.geminiModelDialog.HandleModelsFetched(msg)
+		}
+		return h, nil
+
+	case modelSelectedMsg:
+		// Find the session and set the model
+		h.instancesMu.RLock()
+		inst := h.instanceByID[msg.instanceID]
+		h.instancesMu.RUnlock()
+		if inst != nil {
+			if err := inst.SetGeminiModel(msg.model); err != nil {
+				h.err = fmt.Errorf("failed to set model: %w", err)
+				h.errTime = time.Now()
+			}
+			// Force save to persist the model change
+			h.forceSaveInstances()
+		}
 		return h, nil
 
 	case refreshMsg:
@@ -2414,6 +2438,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.mcpDialog.IsVisible() {
 			return h.handleMCPDialogKey(msg)
+		}
+		if h.geminiModelDialog.IsVisible() {
+			d, cmd := h.geminiModelDialog.Update(msg)
+			h.geminiModelDialog = d
+			return h, cmd
 		}
 
 		// Main view keys
@@ -3170,6 +3199,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return h, h.restartSession(item.Session)
 				}
 			}
+		}
+		return h, nil
+
+	case "ctrl+g":
+		// Open Gemini model selection dialog (only for Gemini sessions)
+		if inst := h.getSelectedSession(); inst != nil && inst.Tool == "gemini" {
+			cmd := h.geminiModelDialog.Show(inst.ID, inst.GeminiModel)
+			return h, cmd
 		}
 		return h, nil
 
@@ -4054,6 +4091,7 @@ func (h *Home) updateSizes() {
 	h.newDialog.SetSize(h.width, h.height)
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
+	h.geminiModelDialog.SetSize(h.width, h.height)
 }
 
 // View renders the UI
@@ -4122,6 +4160,9 @@ func (h *Home) View() string {
 	}
 	if h.mcpDialog.IsVisible() {
 		return h.mcpDialog.View()
+	}
+	if h.geminiModelDialog.IsVisible() {
+		return h.geminiModelDialog.View()
 	}
 
 	// Reuse viewBuilder to reduce allocations (reset and pre-allocate)
