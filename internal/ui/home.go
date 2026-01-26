@@ -3506,6 +3506,11 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Find and rename the session (O(1) lookup)
 				if inst := h.getInstanceByID(sessionID); inst != nil {
 					inst.Title = newName
+					// Update tmux status bar with new name
+					if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+						tmuxSess.DisplayName = newName
+						tmuxSess.ConfigureStatusBar()
+					}
 				}
 				// Invalidate preview cache since title changed
 				h.invalidatePreviewCache(sessionID)
