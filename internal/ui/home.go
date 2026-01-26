@@ -2161,11 +2161,16 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// Save both instances AND groups (critical fix: was losing groups!)
+			// CRITICAL: Save to storage BEFORE starting tmux session to prevent orphans
+			// If save fails, the tmux session won't be created
 			h.saveInstances()
 
-			// Start fetching preview for the new session
-			return h, h.fetchPreview(msg.instance)
+			// Start the session after save completes
+			// This happens asynchronously - if it fails, the session will show as "stopped"
+			return h, tea.Batch(
+				h.startSession(msg.instance),
+				h.fetchPreview(msg.instance),
+			)
 		}
 		return h, nil
 
@@ -2216,11 +2221,16 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// Save both instances AND groups
+			// CRITICAL: Save to storage BEFORE starting tmux session to prevent orphans
+			// If save fails, the tmux session won't be created
 			h.saveInstances()
 
-			// Start fetching preview for the forked session
-			return h, h.fetchPreview(msg.instance)
+			// Start the forked session after save completes
+			// This happens asynchronously - if it fails, the session will show as "stopped"
+			return h, tea.Batch(
+				h.startForkedSession(msg.instance),
+				h.fetchPreview(msg.instance),
+			)
 		}
 		return h, nil
 
@@ -2860,11 +2870,8 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		}
 		inst.Command = cmdBuilder.String()
 
-		// Start the session
-		if err := inst.Start(); err != nil {
-			return sessionCreatedMsg{err: fmt.Errorf("failed to start session: %w", err)}
-		}
-
+		// CRITICAL: Do NOT start the session here - it will be started in the message handler
+		// AFTER saving to storage to prevent orphaned tmux sessions if save fails
 		return sessionCreatedMsg{instance: inst}
 	}
 }
@@ -4003,9 +4010,8 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, g
 			}
 		}
 
-		if err := inst.Start(); err != nil {
-			return sessionCreatedMsg{err: err}
-		}
+		// CRITICAL: Do NOT start the session here - it will be started in the message handler
+		// AFTER saving to storage to prevent orphaned tmux sessions if save fails
 		return sessionCreatedMsg{instance: inst}
 	}
 }
@@ -4047,9 +4053,6 @@ func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupP
 	// Track source session as "forking" for immediate UI feedback
 	h.forkingSessions[source.ID] = time.Now()
 
-	// Capture current used session IDs before starting the async fork
-	// This ensures we don't detect an already-used session ID
-	usedIDs := h.getUsedClaudeSessionIDs()
 	sourceID := source.ID // Capture for closure
 
 	return func() tea.Msg {
@@ -4064,19 +4067,59 @@ func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupP
 			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
 		}
 
-		// Start the forked session
+		// CRITICAL: Do NOT start the session here - it will be started in the message handler
+		// AFTER saving to storage to prevent orphaned tmux sessions if save fails
+		return sessionForkedMsg{instance: inst, sourceID: sourceID}
+	}
+}
+
+// startSession starts a newly created session after it has been saved to storage
+// This is called after saving to prevent orphaned tmux sessions
+func (h *Home) startSession(inst *session.Instance) tea.Cmd {
+	return func() tea.Msg {
+		// Start the session - this creates the tmux session
 		if err := inst.Start(); err != nil {
-			return sessionForkedMsg{err: err, sourceID: sourceID}
+			log.Printf("[SESSION] Failed to start session %s: %v", inst.ID, err)
+			// Don't return error msg - session is already in storage as "stopped"
+			// User can manually start it later
+			return nil
+		}
+
+		// Return nil - no message needed, status will be updated via normal polling
+		return nil
+	}
+}
+
+// startForkedSession starts a forked session after it has been saved to storage
+// This is called after saving to prevent orphaned tmux sessions
+func (h *Home) startForkedSession(inst *session.Instance) tea.Cmd {
+	return func() tea.Msg {
+		// Start the session - this creates the tmux session
+		if err := inst.Start(); err != nil {
+			log.Printf("[FORK] Failed to start forked session %s: %v", inst.ID, err)
+			// Don't return error msg - session is already in storage as "stopped"
+			// User can manually start it later
+			return nil
 		}
 
 		// Wait for Claude to create the new session file (fork creates new UUID)
 		// Give Claude up to 5 seconds to initialize and write the session file
-		// Pass usedIDs to prevent detecting an already-claimed session
+		// Build exclusion list from all current Claude sessions
+		usedIDs := make(map[string]bool)
+		h.instancesMu.RLock()
+		for _, i := range h.instances {
+			if i.ClaudeSessionID != "" {
+				usedIDs[i.ClaudeSessionID] = true
+			}
+		}
+		h.instancesMu.RUnlock()
+
 		if inst.Tool == "claude" {
 			_ = inst.WaitForClaudeSessionWithExclude(5*time.Second, usedIDs)
 		}
 
-		return sessionForkedMsg{instance: inst, sourceID: sourceID}
+		// Return nil - no message needed, status will be updated via normal polling
+		return nil
 	}
 }
 

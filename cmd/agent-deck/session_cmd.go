@@ -164,7 +164,16 @@ func handleSessionStart(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// CRITICAL: Save to storage BEFORE creating tmux session to prevent orphans
+	// If save fails, we exit without creating the tmux session
+	// If tmux creation fails after save, the session shows as "stopped" which is correct
+	if err := saveSessionData(storage, instances); err != nil {
+		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Start the session (with or without initial message)
+	// This creates the actual tmux session - if it fails, the session remains in storage as "stopped"
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
@@ -175,12 +184,6 @@ func handleSessionStart(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-	}
-
-	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
 	}
 
 	// Output success
@@ -412,12 +415,6 @@ func handleSessionFork(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Start the forked session
-	if err := forkedInst.Start(); err != nil {
-		out.Error(fmt.Sprintf("failed to start forked session: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
 	// Add to instances
 	instances = append(instances, forkedInst)
 
@@ -427,9 +424,18 @@ func handleSessionFork(profile string, args []string) {
 		groupTree.CreateGroup(forkedInst.GroupPath)
 	}
 
-	// Save
+	// CRITICAL: Save to storage BEFORE creating tmux session to prevent orphans
+	// If save fails, we exit without creating the tmux session
+	// If tmux creation fails after save, the session shows as "stopped" which is correct
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	// Start the forked session
+	// This creates the actual tmux session - if it fails, the session remains in storage as "stopped"
+	if err := forkedInst.Start(); err != nil {
+		out.Error(fmt.Sprintf("failed to start forked session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
