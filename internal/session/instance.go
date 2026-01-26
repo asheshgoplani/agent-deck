@@ -308,7 +308,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 					`tmux set-environment CLAUDE_SESSION_ID "%s"; %sexec claude --session-id "%s"%s`,
 					opts.ResumeSessionID, bashExportPrefix, opts.ResumeSessionID, extraFlags)
 			}
-			// Fall through to default if no ID provided
+			// No session ID provided - use -r flag for interactive picker
+			return fmt.Sprintf(`%s%s -r%s`, configDirPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
