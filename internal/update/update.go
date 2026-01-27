@@ -55,11 +55,11 @@ type Asset struct {
 
 // UpdateCache stores the last check result
 type UpdateCache struct {
-	CheckedAt     time.Time `json:"checked_at"`
-	LatestVersion string    `json:"latest_version"`
-	CurrentVersion string   `json:"current_version"`
-	DownloadURL   string    `json:"download_url"`
-	ReleaseURL    string    `json:"release_url"`
+	CheckedAt      time.Time `json:"checked_at"`
+	LatestVersion  string    `json:"latest_version"`
+	CurrentVersion string    `json:"current_version"`
+	DownloadURL    string    `json:"download_url"`
+	ReleaseURL     string    `json:"release_url"`
 }
 
 // UpdateInfo contains information about an available update

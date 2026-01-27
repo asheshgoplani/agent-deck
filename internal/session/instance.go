@@ -32,11 +32,11 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
-	ID             string    `json:"id"`
-	Title          string    `json:"title"`
-	ProjectPath    string    `json:"project_path"`
-	GroupPath      string    `json:"group_path"` // e.g., "projects/devops"
-	ParentSessionID   string `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	ProjectPath       string `json:"project_path"`
+	GroupPath         string `json:"group_path"`                    // e.g., "projects/devops"
+	ParentSessionID   string `json:"parent_session_id,omitempty"`   // Links to parent session (makes this a sub-session)
 	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
 
 	// Git worktree support
@@ -57,9 +57,9 @@ type Instance struct {
 	// Gemini CLI integration
 	GeminiSessionID  string                  `json:"gemini_session_id,omitempty"`
 	GeminiDetectedAt time.Time               `json:"gemini_detected_at,omitempty"`
-	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"`   // Per-session override (nil = use global config)
-	GeminiModel      string                  `json:"gemini_model,omitempty"`       // Active model for this session
-	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"`   // Per-session analytics
+	GeminiYoloMode   *bool                   `json:"gemini_yolo_mode,omitempty"` // Per-session override (nil = use global config)
+	GeminiModel      string                  `json:"gemini_model,omitempty"`     // Active model for this session
+	GeminiAnalytics  *GeminiSessionAnalytics `json:"gemini_analytics,omitempty"` // Per-session analytics
 
 	// OpenCode CLI integration
 	OpenCodeSessionID  string    `json:"opencode_session_id,omitempty"`
@@ -72,8 +72,8 @@ type Instance struct {
 	CodexStartedAt  int64     `json:"-"` // Unix millis when we started Codex (for session matching, not persisted)
 
 	// Latest user input for context (extracted from session files)
-	LatestPrompt        string    `json:"latest_prompt,omitempty"`
-	lastPromptModTime   time.Time // mtime cache for updateGeminiLatestPrompt (not serialized)
+	LatestPrompt      string    `json:"latest_prompt,omitempty"`
+	lastPromptModTime time.Time // mtime cache for updateGeminiLatestPrompt (not serialized)
 
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
@@ -1080,7 +1080,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 	// Track state transitions: we need to see "active" before accepting "waiting"
 	// This ensures we don't send the message during initial startup (false "waiting")
 	sawActive := false
-	waitingCount := 0 // Track consecutive "waiting" states to detect already-ready sessions
+	waitingCount := 0  // Track consecutive "waiting" states to detect already-ready sessions
 	maxAttempts := 300 // 60 seconds max (300 * 200ms) - Claude with MCPs can take 40-60s
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -1796,14 +1796,14 @@ func parseGeminiLastAssistantMessage(data []byte) (*ResponseOutput, error) {
 	var session struct {
 		SessionID string `json:"sessionId"` // VERIFIED: camelCase
 		Messages  []struct {
-			ID        string          `json:"id"`
-			Timestamp string          `json:"timestamp"`
-			Type      string          `json:"type"` // VERIFIED: "user" or "gemini"
-			Content   string          `json:"content"`
+			ID        string            `json:"id"`
+			Timestamp string            `json:"timestamp"`
+			Type      string            `json:"type"` // VERIFIED: "user" or "gemini"
+			Content   string            `json:"content"`
 			ToolCalls []json.RawMessage `json:"toolCalls,omitempty"`
 			Thoughts  []json.RawMessage `json:"thoughts,omitempty"`
-			Model     string          `json:"model,omitempty"`
-			Tokens    json.RawMessage `json:"tokens,omitempty"`
+			Model     string            `json:"model,omitempty"`
+			Tokens    json.RawMessage   `json:"tokens,omitempty"`
 		} `json:"messages"`
 	}
 

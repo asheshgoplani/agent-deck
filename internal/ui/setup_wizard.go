@@ -23,10 +23,10 @@ type SetupWizard struct {
 	selectedTool int // 0=Claude, 1=Gemini, 2=OpenCode, 3=Codex, 4=Shell
 
 	// Step 2: Claude settings (only if Claude selected)
-	dangerousMode       bool
-	useDefaultConfigDir bool
-	customConfigDir     string
-	configDirInput      textinput.Model
+	dangerousMode        bool
+	useDefaultConfigDir  bool
+	customConfigDir      string
+	configDirInput       textinput.Model
 	claudeSettingsCursor int // 0=dangerous mode, 1=config dir
 
 	// Theme setting
@@ -35,10 +35,10 @@ type SetupWizard struct {
 
 // Wizard steps
 const (
-	stepWelcome       = 0
-	stepToolSelection = 1
+	stepWelcome        = 0
+	stepToolSelection  = 1
 	stepClaudeSettings = 2
-	stepReady         = 3
+	stepReady          = 3
 )
 
 // NewSetupWizard creates a new setup wizard

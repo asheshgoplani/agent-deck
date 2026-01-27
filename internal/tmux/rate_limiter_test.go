@@ -20,7 +20,7 @@ func TestRateLimiter(t *testing.T) {
 	// 3. Wait 150ms (more than the 100ms interval)
 	time.Sleep(150 * time.Millisecond)
 	assert.True(t, rl.Allow())
-	
+
 	// 4. Denied again immediately after
 	assert.False(t, rl.Allow())
 }
@@ -28,7 +28,7 @@ func TestRateLimiter(t *testing.T) {
 func TestRateLimiter_Coalesce(t *testing.T) {
 	// 2 events per second (1 every 500ms)
 	rl := NewRateLimiter(2)
-	
+
 	count := 0
 	callback := func() {
 		count++
@@ -44,7 +44,7 @@ func TestRateLimiter_Coalesce(t *testing.T) {
 
 	// Wait for cooldown
 	time.Sleep(600 * time.Millisecond)
-	
+
 	// Now it should execute
 	rl.Coalesce(callback)
 	assert.Equal(t, 2, count)

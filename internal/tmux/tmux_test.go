@@ -250,7 +250,7 @@ func TestStripANSI(t *testing.T) {
 		{"8-bit csi", "\x9Bmtest\x9Bm", "test"}, // 8-bit CSI (0x9B)
 		// Edge cases - malformed sequences (rare in real terminal output)
 		// These match behavior of the original O(n²) implementation
-		{"esc at end", "hello\x1b", "hello\x1b"},             // trailing ESC kept (same as old)
+		{"esc at end", "hello\x1b", "hello\x1b"},              // trailing ESC kept (same as old)
 		{"osc without terminator", "\x1b]0;Title", "0;Title"}, // ESC] stripped, rest kept
 		{"csi without letter", "\x1b[123", ""},                // CSI params stripped
 		{"just esc", "\x1b", "\x1b"},                          // lone ESC kept (same as old)
@@ -2023,7 +2023,7 @@ func TestSession_GetEnvironment_NotFound(t *testing.T) {
 func TestSession_SendCtrlC(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
-	sess := NewSession("ctrl-c-test", "/tmp")
+	sess := NewSession("ctrl-c-test-unique", "/tmp")
 
 	// Start session with a long-running command
 	err := sess.Start("sleep 60")
@@ -2051,13 +2051,17 @@ func TestSession_SendCtrlC(t *testing.T) {
 }
 
 func TestSession_SendCommand(t *testing.T) {
-	sess := NewSession("send-cmd-test", "/tmp")
+	skipIfNoTmuxServer(t)
+	sess := NewSession("send-cmd-test-unique", "/tmp")
 
-	err := sess.Start("")
+	err := sess.Start("sleep 10")
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
 	}
 	defer func() { _ = sess.Kill() }()
+
+	// Give the command time to start
+	time.Sleep(200 * time.Millisecond)
 
 	// Send a command
 	err = sess.SendCommand("echo hello")
@@ -2261,93 +2265,92 @@ func TestSplitIntoChunks_SplitsAtNewlineBoundary(t *testing.T) {
 	require.Equal(t, 2, len(chunks))
 
 	// First chunk should contain exactly 2 lines (4002 bytes), split at newline
-	        assert.Equal(t, line+line, chunks[0])
-	        assert.Equal(t, line, chunks[1])
+	assert.Equal(t, line+line, chunks[0])
+	assert.Equal(t, line, chunks[1])
+}
+
+func TestSession_CacheInfrastructure(t *testing.T) {
+	sess := &Session{Name: "test"}
+
+	now := time.Now()
+	sess.cacheMu.Lock()
+	sess.cacheContent = "test content"
+	sess.cacheTime = now
+	sess.cacheMu.Unlock()
+
+	sess.cacheMu.RLock()
+	content := sess.cacheContent
+	cacheTime := sess.cacheTime
+	sess.cacheMu.RUnlock()
+
+	assert.Equal(t, "test content", content)
+	assert.Equal(t, now, cacheTime)
+}
+
+func TestSession_CapturePaneCaching(t *testing.T) {
+	// Skip if no tmux available for integration test
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not found, skipping integration test")
 	}
-	
-	func TestSession_CacheInfrastructure(t *testing.T) {
-		sess := &Session{Name: "test"}
-		
-		now := time.Now()
-		sess.cacheMu.Lock()
-		sess.cacheContent = "test content"
-		sess.cacheTime = now
-		sess.cacheMu.Unlock()
-		
-		sess.cacheMu.RLock()
-		content := sess.cacheContent
-		cacheTime := sess.cacheTime
-		sess.cacheMu.RUnlock()
-		
-			assert.Equal(t, "test content", content)
-			assert.Equal(t, now, cacheTime)
-		}
-		
-		func TestSession_CapturePaneCaching(t *testing.T) {
-			// Skip if no tmux available for integration test
-			if _, err := exec.LookPath("tmux"); err != nil {
-				t.Skip("tmux not found, skipping integration test")
-			}
-		
-			sess := NewSession("cache-test", "/tmp")
-			// Use a unique name to avoid conflicts if tests run in parallel
-			defer func() { _ = sess.Kill() }()
-		
-			if err := sess.Start("sleep 100"); err != nil {
-				t.Fatalf("Failed to start session: %v", err)
-			}
-		
-			// 1. First capture - should populate cache
-			content1, err := sess.CapturePane()
-			if err != nil {
-				t.Fatalf("First capture failed: %v", err)
-			}
-		
-			sess.cacheMu.RLock()
-			cachedContent := sess.cacheContent
-			cachedTime := sess.cacheTime
-			sess.cacheMu.RUnlock()
-		
-			assert.NotEmpty(t, cachedContent)
-			assert.NotZero(t, cachedTime)
-			assert.Equal(t, content1, cachedContent)
-		
-			// 2. Immediate second capture - should return cached content
-			// We can verify this by checking if cacheTime is still the same
-			content2, err := sess.CapturePane()
-			if err != nil {
-				t.Fatalf("Second capture failed: %v", err)
-			}
-		
-			sess.cacheMu.RLock()
-			cachedTime2 := sess.cacheTime
-			sess.cacheMu.RUnlock()
-		
-			assert.Equal(t, content1, content2)
-			assert.Equal(t, cachedTime, cachedTime2, "Cache should have been used")
-		
-			// 3. Invalidation via SendKeys
-			if err := sess.SendKeys("echo hello"); err != nil {
-				t.Fatalf("SendKeys failed: %v", err)
-			}
-		
-			sess.cacheMu.RLock()
-			invalidatedContent := sess.cacheContent
-			sess.cacheMu.RUnlock()
-		
-			assert.Empty(t, invalidatedContent, "Cache should be empty after SendKeys")
-		
-			// 4. Capture after invalidation - should re-populate
-			content3, err := sess.CapturePane()
-			if err != nil {
-				t.Fatalf("Third capture failed: %v", err)
-			}
-			
-			sess.cacheMu.RLock()
-			repopulatedTime := sess.cacheTime
-			sess.cacheMu.RUnlock()
-		
-			assert.NotEqual(t, cachedTime, repopulatedTime, "New capture should have occurred")
-			assert.Equal(t, content3, sess.cacheContent)
-		}
-		
+
+	sess := NewSession("cache-test", "/tmp")
+	// Use a unique name to avoid conflicts if tests run in parallel
+	defer func() { _ = sess.Kill() }()
+
+	if err := sess.Start("sleep 100"); err != nil {
+		t.Fatalf("Failed to start session: %v", err)
+	}
+
+	// 1. First capture - should populate cache
+	content1, err := sess.CapturePane()
+	if err != nil {
+		t.Fatalf("First capture failed: %v", err)
+	}
+
+	sess.cacheMu.RLock()
+	cachedContent := sess.cacheContent
+	cachedTime := sess.cacheTime
+	sess.cacheMu.RUnlock()
+
+	assert.NotEmpty(t, cachedContent)
+	assert.NotZero(t, cachedTime)
+	assert.Equal(t, content1, cachedContent)
+
+	// 2. Immediate second capture - should return cached content
+	// We can verify this by checking if cacheTime is still the same
+	content2, err := sess.CapturePane()
+	if err != nil {
+		t.Fatalf("Second capture failed: %v", err)
+	}
+
+	sess.cacheMu.RLock()
+	cachedTime2 := sess.cacheTime
+	sess.cacheMu.RUnlock()
+
+	assert.Equal(t, content1, content2)
+	assert.Equal(t, cachedTime, cachedTime2, "Cache should have been used")
+
+	// 3. Invalidation via SendKeys
+	if err := sess.SendKeys("echo hello"); err != nil {
+		t.Fatalf("SendKeys failed: %v", err)
+	}
+
+	sess.cacheMu.RLock()
+	invalidatedContent := sess.cacheContent
+	sess.cacheMu.RUnlock()
+
+	assert.Empty(t, invalidatedContent, "Cache should be empty after SendKeys")
+
+	// 4. Capture after invalidation - should re-populate
+	content3, err := sess.CapturePane()
+	if err != nil {
+		t.Fatalf("Third capture failed: %v", err)
+	}
+
+	sess.cacheMu.RLock()
+	repopulatedTime := sess.cacheTime
+	sess.cacheMu.RUnlock()
+
+	assert.NotEqual(t, cachedTime, repopulatedTime, "New capture should have occurred")
+	assert.Equal(t, content3, sess.cacheContent)
+}

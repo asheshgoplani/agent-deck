@@ -92,9 +92,9 @@ const (
 type PreviewMode int
 
 const (
-	PreviewModeBoth     PreviewMode = iota // Show both analytics and output (default)
-	PreviewModeOutput                      // Show output only (content preview)
-	PreviewModeAnalytics                   // Show analytics only
+	PreviewModeBoth      PreviewMode = iota // Show both analytics and output (default)
+	PreviewModeOutput                       // Show output only (content preview)
+	PreviewModeAnalytics                    // Show analytics only
 )
 
 // Responsive breakpoints for empty state content tiers
@@ -129,48 +129,48 @@ type Home struct {
 	flatItems    []session.Item // Flattened view for cursor navigation
 
 	// Components
-	search        *Search
-	globalSearch  *GlobalSearch              // Global session search across all Claude conversations
-	globalSearchIndex *session.GlobalSearchIndex // Search index (nil if disabled)
-	newDialog     *NewDialog
-	groupDialog   *GroupDialog   // For creating/renaming groups
-	forkDialog    *ForkDialog    // For forking sessions
-	confirmDialog *ConfirmDialog // For confirming destructive actions
-	helpOverlay   *HelpOverlay   // For showing keyboard shortcuts
-	mcpDialog      *MCPDialog      // For managing MCPs
-	setupWizard    *SetupWizard    // For first-run setup
-	settingsPanel  *SettingsPanel  // For editing settings
-	analyticsPanel    *AnalyticsPanel    // For displaying session analytics
+	search              *Search
+	globalSearch        *GlobalSearch              // Global session search across all Claude conversations
+	globalSearchIndex   *session.GlobalSearchIndex // Search index (nil if disabled)
+	newDialog           *NewDialog
+	groupDialog         *GroupDialog         // For creating/renaming groups
+	forkDialog          *ForkDialog          // For forking sessions
+	confirmDialog       *ConfirmDialog       // For confirming destructive actions
+	helpOverlay         *HelpOverlay         // For showing keyboard shortcuts
+	mcpDialog           *MCPDialog           // For managing MCPs
+	setupWizard         *SetupWizard         // For first-run setup
+	settingsPanel       *SettingsPanel       // For editing settings
+	analyticsPanel      *AnalyticsPanel      // For displaying session analytics
 	geminiModelDialog   *GeminiModelDialog   // For selecting Gemini model
 	sessionPickerDialog *SessionPickerDialog // For sending output to another session
 
 	// Analytics cache (async fetching with TTL)
-	currentAnalytics       *session.SessionAnalytics             // Current analytics for selected session (Claude)
-	currentGeminiAnalytics *session.GeminiSessionAnalytics       // Current analytics for selected session (Gemini)
-	analyticsSessionID     string                                // Session ID for current analytics
-	analyticsFetchingID    string                                // ID currently being fetched (prevents duplicates)
-	analyticsCache         map[string]*session.SessionAnalytics  // TTL cache: sessionID -> analytics (Claude)
+	currentAnalytics       *session.SessionAnalytics                  // Current analytics for selected session (Claude)
+	currentGeminiAnalytics *session.GeminiSessionAnalytics            // Current analytics for selected session (Gemini)
+	analyticsSessionID     string                                     // Session ID for current analytics
+	analyticsFetchingID    string                                     // ID currently being fetched (prevents duplicates)
+	analyticsCache         map[string]*session.SessionAnalytics       // TTL cache: sessionID -> analytics (Claude)
 	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics // TTL cache: sessionID -> analytics (Gemini)
-	analyticsCacheTime     map[string]time.Time                  // TTL cache: sessionID -> cache timestamp
+	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor        int            // Selected item index in flatItems
-	viewOffset    int            // First visible item index (for scrolling)
-	isAttaching   atomic.Bool   // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter  session.Status // Filter sessions by status ("" = all, or specific status)
-	previewMode   PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
-	err           error
-	errTime       time.Time // When error occurred (for auto-dismiss)
-	isReloading    bool      // Visual feedback during auto-reload
-	initialLoading bool      // True until first loadSessionsMsg received (shows splash screen)
-	reloadVersion  uint64    // Incremented on each reload to prevent stale background saves
+	cursor         int            // Selected item index in flatItems
+	viewOffset     int            // First visible item index (for scrolling)
+	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
+	previewMode    PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
+	err            error
+	errTime        time.Time  // When error occurred (for auto-dismiss)
+	isReloading    bool       // Visual feedback during auto-reload
+	initialLoading bool       // True until first loadSessionsMsg received (shows splash screen)
+	reloadVersion  uint64     // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
 	// Preview cache (async fetching - View() must be pure, no blocking I/O)
-	previewCache       map[string]string    // sessionID -> cached preview content
-	previewCacheTime   map[string]time.Time // sessionID -> when cached (for expiration)
-	previewCacheMu     sync.RWMutex         // Protects previewCache for thread-safety
-	previewFetchingID  string               // ID currently being fetched (prevents duplicate fetches)
+	previewCache      map[string]string    // sessionID -> cached preview content
+	previewCacheTime  map[string]time.Time // sessionID -> when cached (for expiration)
+	previewCacheMu    sync.RWMutex         // Protects previewCache for thread-safety
+	previewFetchingID string               // ID currently being fetched (prevents duplicate fetches)
 
 	// Preview debouncing (PERFORMANCE: prevents subprocess spawn on every keystroke)
 	// During rapid navigation, we delay preview fetch by 150ms to let navigation settle
@@ -193,6 +193,12 @@ type Home struct {
 	// PERFORMANCE: Debounce log activity status updates
 	lastLogActivity map[string]time.Time // sessionID -> last update time
 	logActivityMu   sync.Mutex           // Protects lastLogActivity map
+
+	// Log event worker queue (FIX: prevents goroutine leak from unbounded spawning)
+	// Uses a fixed pool of workers to process log events instead of spawning
+	// thousands of goroutines when logs update rapidly (Gemini TUI sessions)
+	logEventQueue chan string    // Buffered channel for session names needing status update
+	logWorkers    sync.WaitGroup // Tracks worker goroutines for clean shutdown
 
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
@@ -372,8 +378,8 @@ type sendOutputResultMsg struct {
 
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
-	viewOffset    int   // Current scroll position
-	visibleHeight int   // How many items fit on screen
+	viewOffset    int      // Current scroll position
+	visibleHeight int      // How many items fit on screen
 	flatItemIDs   []string // IDs of sessions in current flatItems order (for visible detection)
 }
 
@@ -411,43 +417,43 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 	}
 
 	h := &Home{
-		profile:           actualProfile,
-		storage:           storage,
-		storageWarning:    storageWarning,
-		search:            NewSearch(),
-		newDialog:         NewNewDialog(),
-		groupDialog:       NewGroupDialog(),
-		forkDialog:        NewForkDialog(),
-		confirmDialog:     NewConfirmDialog(),
-		helpOverlay:       NewHelpOverlay(),
-		mcpDialog:         NewMCPDialog(),
-		setupWizard:       NewSetupWizard(),
-		settingsPanel:     NewSettingsPanel(),
-		analyticsPanel:    NewAnalyticsPanel(),
-		geminiModelDialog:   NewGeminiModelDialog(),
-		sessionPickerDialog: NewSessionPickerDialog(),
-		cursor:            0,
-		initialLoading:    true, // Show splash until sessions load
-		ctx:               ctx,
-		cancel:            cancel,
-		instances:         []*session.Instance{},
-		instanceByID:      make(map[string]*session.Instance),
-		groupTree:         session.NewGroupTree([]*session.Instance{}),
-		flatItems:         []session.Item{},
+		profile:              actualProfile,
+		storage:              storage,
+		storageWarning:       storageWarning,
+		search:               NewSearch(),
+		newDialog:            NewNewDialog(),
+		groupDialog:          NewGroupDialog(),
+		forkDialog:           NewForkDialog(),
+		confirmDialog:        NewConfirmDialog(),
+		helpOverlay:          NewHelpOverlay(),
+		mcpDialog:            NewMCPDialog(),
+		setupWizard:          NewSetupWizard(),
+		settingsPanel:        NewSettingsPanel(),
+		analyticsPanel:       NewAnalyticsPanel(),
+		geminiModelDialog:    NewGeminiModelDialog(),
+		sessionPickerDialog:  NewSessionPickerDialog(),
+		cursor:               0,
+		initialLoading:       true, // Show splash until sessions load
+		ctx:                  ctx,
+		cancel:               cancel,
+		instances:            []*session.Instance{},
+		instanceByID:         make(map[string]*session.Instance),
+		groupTree:            session.NewGroupTree([]*session.Instance{}),
+		flatItems:            []session.Item{},
 		previewCache:         make(map[string]string),
 		previewCacheTime:     make(map[string]time.Time),
 		analyticsCache:       make(map[string]*session.SessionAnalytics),
 		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:   make(map[string]time.Time),
 		launchingSessions:    make(map[string]time.Time),
-		resumingSessions:   make(map[string]time.Time),
-		mcpLoadingSessions: make(map[string]time.Time),
-		forkingSessions:    make(map[string]time.Time),
-		lastLogActivity:    make(map[string]time.Time),
-		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:  make(chan struct{}),
-		boundKeys:         make(map[string]string),
-		isPrimaryInstance: isPrimary,
+		resumingSessions:     make(map[string]time.Time),
+		mcpLoadingSessions:   make(map[string]time.Time),
+		forkingSessions:      make(map[string]time.Time),
+		lastLogActivity:      make(map[string]time.Time),
+		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:     make(chan struct{}),
+		boundKeys:            make(map[string]string),
+		isPrimaryInstance:    isPrimary,
 	}
 
 	// Initialize notification manager if enabled in config
@@ -464,37 +470,29 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 
 	// Initialize event-driven log watcher
 	logWatcher, err := tmux.NewLogWatcher(tmux.LogDir(), func(sessionName string) {
-		// Find session by tmux name and signal file activity
-		h.instancesMu.RLock()
-		for _, inst := range h.instances {
-			if inst.GetTmuxSession() != nil && inst.GetTmuxSession().Name == sessionName {
-				// PERFORMANCE: Debounce status updates from log events
-				// Only trigger update if it's been >500ms since last log-triggered update
-				h.logActivityMu.Lock()
-				lastUpdate := h.lastLogActivity[inst.ID]
-				if time.Since(lastUpdate) < 500*time.Millisecond {
-					h.logActivityMu.Unlock()
-					break // Too soon, skip this event
-				}
-				h.lastLogActivity[inst.ID] = time.Now()
-				h.logActivityMu.Unlock()
-
-				// Log file changed - trigger status update (will check busy indicator)
-				// NOTE: We do NOT call SignalFileActivity() here anymore because
-				// it bypasses the busy indicator check and causes false GREENs
-				go func(i *session.Instance) {
-					_ = i.UpdateStatus()
-				}(inst)
-				break
-			}
+		// FIX: Non-blocking send to worker queue instead of spawning unbounded goroutines
+		// This prevents goroutine leak when Gemini sessions write TUI output at high frequency
+		select {
+		case h.logEventQueue <- sessionName:
+			// Event queued for processing by worker pool
+		default:
+			// Queue full, drop event (not critical - background worker will catch up)
+			// This is acceptable because status updates are best-effort
 		}
-		h.instancesMu.RUnlock()
 	})
 	if err != nil {
 		log.Printf("Warning: failed to create log watcher: %v (falling back to polling)", err)
 	} else {
 		h.logWatcher = logWatcher
 		go h.logWatcher.Start()
+	}
+
+	// Initialize log event worker pool (FIX for goroutine leak)
+	// Use buffered channel (100) + 2 workers to handle log events without spawning unbounded goroutines
+	h.logEventQueue = make(chan string, 100)
+	for i := 0; i < 2; i++ {
+		h.logWorkers.Add(1)
+		go h.logEventWorker()
 	}
 
 	// Start background status worker (Priority 1C)
@@ -1030,7 +1028,6 @@ func (h *Home) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
@@ -1385,6 +1382,48 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 		return group.DefaultPath
 	}
 	return ""
+}
+
+// logEventWorker processes log events from the queue (FIX for goroutine leak)
+// This worker runs in a fixed pool (2 workers) instead of spawning unbounded goroutines
+func (h *Home) logEventWorker() {
+	defer h.logWorkers.Done()
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case sessionName := <-h.logEventQueue:
+			h.processLogEvent(sessionName)
+		}
+	}
+}
+
+// processLogEvent handles a log event for a specific tmux session
+// This contains the logic that was previously in the LogWatcher callback
+func (h *Home) processLogEvent(sessionName string) {
+	// Find session by tmux name and apply debouncing
+	h.instancesMu.RLock()
+	for _, inst := range h.instances {
+		if inst.GetTmuxSession() != nil && inst.GetTmuxSession().Name == sessionName {
+			// PERFORMANCE: Debounce status updates from log events
+			// Only trigger update if it's been >500ms since last log-triggered update
+			h.logActivityMu.Lock()
+			lastUpdate := h.lastLogActivity[inst.ID]
+			if time.Since(lastUpdate) < 500*time.Millisecond {
+				h.logActivityMu.Unlock()
+				break // Too soon, skip this event
+			}
+			h.lastLogActivity[inst.ID] = time.Now()
+			h.logActivityMu.Unlock()
+
+			// Log file changed - trigger status update (will check busy indicator)
+			// NOTE: We do NOT call SignalFileActivity() here anymore because
+			// it bypasses the busy indicator check and causes false GREENs
+			_ = inst.UpdateStatus()
+			break
+		}
+	}
+	h.instancesMu.RUnlock()
 }
 
 // statusWorker runs in a background goroutine with its own ticker
@@ -3448,6 +3487,12 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 		h.cancel()
 		// Wait for background worker to finish (prevents race on shutdown)
 		<-h.statusWorkerDone
+
+		// Clean up log event worker pool (FIX for goroutine leak)
+		if h.logEventQueue != nil {
+			close(h.logEventQueue)
+			h.logWorkers.Wait() // Wait for all workers to finish processing
+		}
 
 		if h.logWatcher != nil {
 			h.logWatcher.Close()
@@ -6159,7 +6204,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	case PreviewModeAnalytics:
 		// showAnalytics keeps its default value (only available for Claude/Gemini)
 		showOutput = false
-	// PreviewModeBoth: use config settings (default)
+		// PreviewModeBoth: use config settings (default)
 	}
 
 	// Check if session is launching/resuming (for animation priority)

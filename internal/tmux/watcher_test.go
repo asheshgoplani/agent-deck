@@ -88,7 +88,7 @@ Loop:
 		}
 	}
 
-	// We wrote 10 times over 50ms. 
+	// We wrote 10 times over 50ms.
 	// With 20 events/sec (50ms interval), we should see at most 2 events (first one immediate, second one potentially if timing overlaps)
 	// Definitely should be much less than 10.
 	assert.LessOrEqual(t, finalCount, 2, "Expected events to be rate limited/coalesced")

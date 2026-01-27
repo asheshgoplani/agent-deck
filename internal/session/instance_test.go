@@ -1222,11 +1222,11 @@ func TestInstance_CanRestart_Gemini(t *testing.T) {
 // Issue #16: Fork command breaks for project paths with spaces
 func TestInstance_Fork_PathWithSpaces(t *testing.T) {
 	inst := &Instance{
-		ID:              "test-123",
-		Title:           "test-session",
-		ProjectPath:     "/tmp/Test Path With Spaces",
-		Tool:            "claude",
-		ClaudeSessionID: "session-abc-123",
+		ID:               "test-123",
+		Title:            "test-session",
+		ProjectPath:      "/tmp/Test Path With Spaces",
+		Tool:             "claude",
+		ClaudeSessionID:  "session-abc-123",
 		ClaudeDetectedAt: time.Now(),
 	}
 
@@ -1334,11 +1334,11 @@ func TestInstance_WorktreeFields(t *testing.T) {
 // Issue #8: Fork command ignores dangerous_mode configuration
 func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 	inst := &Instance{
-		ID:              "test-456",
-		Title:           "test-session",
-		ProjectPath:     "/tmp/test",
-		Tool:            "claude",
-		ClaudeSessionID: "session-xyz-789",
+		ID:               "test-456",
+		Title:            "test-session",
+		ProjectPath:      "/tmp/test",
+		Tool:             "claude",
+		ClaudeSessionID:  "session-xyz-789",
 		ClaudeDetectedAt: time.Now(),
 	}
 
