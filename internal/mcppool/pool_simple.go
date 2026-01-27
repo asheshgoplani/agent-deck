@@ -165,10 +165,16 @@ func (p *Pool) Shutdown() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for name, proxy := range p.proxies {
-		log.Printf("Stopping socket proxy: %s", name)
-		_ = proxy.Stop()
+		wg.Add(1)
+		go func(n string, sp *SocketProxy) {
+			defer wg.Done()
+			log.Printf("Stopping socket proxy: %s", n)
+			_ = sp.Stop()
+		}(name, proxy)
 	}
+	wg.Wait()
 
 	return nil
 }
