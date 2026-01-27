@@ -356,10 +356,11 @@ type Session struct {
 	// mu protects all mutable fields below from concurrent access
 	mu sync.Mutex
 
-	// PERFORMANCE: Cache CapturePane content for short duration (100ms)
+	// PERFORMANCE: Cache CapturePane content for short duration (500ms)
 	// Reduces subprocess spawns during rapid status checks/log events
-	lastCaptureContent string
-	lastCaptureTime    time.Time
+	cacheMu      sync.RWMutex
+	cacheContent string
+	cacheTime    time.Time
 
 	// Content tracking for HasUpdated (separate from StateTracker)
 	lastHash    string
@@ -381,6 +382,15 @@ type Session struct {
 	customBusyPatterns   []string
 	customPromptPatterns []string
 	customDetectPatterns []string
+}
+
+// invalidateCache clears the CapturePane cache.
+// MUST be called after any action that might change terminal content.
+func (s *Session) invalidateCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cacheContent = ""
+	s.cacheTime = time.Time{}
 }
 
 // ensureStateTrackerLocked lazily allocates the tracker so callers can safely
@@ -557,6 +567,7 @@ func sanitizeName(name string) string {
 // Start creates and starts a tmux session
 func (s *Session) Start(command string) error {
 	s.Command = command
+	s.invalidateCache()
 
 	// Check if session already exists (shouldn't happen with unique IDs, but handle gracefully)
 	if s.Exists() {
@@ -826,6 +837,7 @@ func (s *Session) RespawnPane(command string) error {
 	if !s.Exists() {
 		return fmt.Errorf("session does not exist: %s", s.Name)
 	}
+	s.invalidateCache()
 
 	// Build respawn-pane command
 	// -k: Kill current process
@@ -892,14 +904,14 @@ func (s *Session) GetWindowActivity() (int64, error) {
 
 // CapturePane captures the visible pane content
 func (s *Session) CapturePane() (string, error) {
-	s.mu.Lock()
-	// Return cached content if it's less than 100ms old
-	if s.lastCaptureContent != "" && time.Since(s.lastCaptureTime) < 100*time.Millisecond {
-		content := s.lastCaptureContent
-		s.mu.Unlock()
+	s.cacheMu.RLock()
+	// Return cached content if it's less than 500ms old
+	if s.cacheContent != "" && time.Since(s.cacheTime) < 500*time.Millisecond {
+		content := s.cacheContent
+		s.cacheMu.RUnlock()
 		return content, nil
 	}
-	s.mu.Unlock()
+	s.cacheMu.RUnlock()
 
 	// -J joins wrapped lines and trims trailing spaces so hashes don't change on resize
 	cmd := exec.Command("tmux", "capture-pane", "-t", s.Name, "-p", "-J")
@@ -913,10 +925,10 @@ func (s *Session) CapturePane() (string, error) {
 
 	content := string(output)
 
-	s.mu.Lock()
-	s.lastCaptureContent = content
-	s.lastCaptureTime = time.Now()
-	s.mu.Unlock()
+	s.cacheMu.Lock()
+	s.cacheContent = content
+	s.cacheTime = time.Now()
+	s.cacheMu.Unlock()
 
 	if elapsed > 100*time.Millisecond {
 		shortName := s.DisplayName
@@ -1769,6 +1781,7 @@ func (s *Session) hashContent(content string) string {
 // SendKeys sends keys to the tmux session
 // Uses -l flag to treat keys as literal text, preventing tmux special key interpretation
 func (s *Session) SendKeys(keys string) error {
+	s.invalidateCache()
 	// The -l flag makes tmux treat the string as literal text, not key names
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
@@ -1778,6 +1791,7 @@ func (s *Session) SendKeys(keys string) error {
 
 // SendEnter sends an Enter key to the tmux session
 func (s *Session) SendEnter() error {
+	s.invalidateCache()
 	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "Enter")
 	return cmd.Run()
 }
@@ -1843,12 +1857,14 @@ func splitIntoChunks(content string, maxSize int) []string {
 
 // SendCtrlC sends Ctrl+C (interrupt signal) to the tmux session
 func (s *Session) SendCtrlC() error {
+	s.invalidateCache()
 	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "C-c")
 	return cmd.Run()
 }
 
 // SendCtrlU sends Ctrl+U (clear line) to the tmux session
 func (s *Session) SendCtrlU() error {
+	s.invalidateCache()
 	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "C-u")
 	return cmd.Run()
 }
