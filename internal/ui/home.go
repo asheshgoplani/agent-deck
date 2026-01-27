@@ -187,6 +187,11 @@ type Home struct {
 	statusTrigger    chan statusUpdateRequest // Triggers background status update
 	statusWorkerDone chan struct{}            // Signals worker has stopped
 
+	// PERFORMANCE: Worker pool for log-driven status updates (Priority 2)
+	// Caps the number of goroutines spawned for log file changes
+	logUpdateChan chan *session.Instance // Buffers status update requests from LogWatcher
+	logWorkerDone chan struct{}          // Signals log worker pool has stopped
+
 	// Event-driven status detection (Priority 2)
 	logWatcher *tmux.LogWatcher
 
@@ -446,6 +451,8 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 		lastLogActivity:    make(map[string]time.Time),
 		statusTrigger:     make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:  make(chan struct{}),
+		logUpdateChan:     make(chan *session.Instance, 100), // Buffered to absorb bursts
+		logWorkerDone:     make(chan struct{}),
 		boundKeys:         make(map[string]string),
 		isPrimaryInstance: isPrimary,
 	}
@@ -479,12 +486,13 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 				h.lastLogActivity[inst.ID] = time.Now()
 				h.logActivityMu.Unlock()
 
-				// Log file changed - trigger status update (will check busy indicator)
-				// NOTE: We do NOT call SignalFileActivity() here anymore because
-				// it bypasses the busy indicator check and causes false GREENs
-				go func(i *session.Instance) {
-					_ = i.UpdateStatus()
-				}(inst)
+				// Log file changed - queue status update (will check busy indicator)
+				// Uses buffered channel and worker pool to prevent goroutine leak
+				select {
+				case h.logUpdateChan <- inst:
+				default:
+					// Channel full, skip this update (another is likely already queued)
+				}
 				break
 			}
 		}
@@ -499,6 +507,9 @@ func NewHomeWithProfileAndMode(profile string, isPrimary bool) *Home {
 
 	// Start background status worker (Priority 1C)
 	go h.statusWorker()
+
+	// Start log worker pool (Priority 2)
+	h.startLogWorkers()
 
 	// Initialize global search
 	h.globalSearch = NewGlobalSearch()
@@ -1417,6 +1428,38 @@ func (h *Home) statusWorker() {
 					}
 				}()
 				h.processStatusUpdate(req)
+			}()
+		}
+	}
+}
+
+// startLogWorkers initializes the log worker pool
+func (h *Home) startLogWorkers() {
+	// Start 2 workers to handle log-triggered status updates concurrently
+	// This is enough to handle bursts without overwhelming the system
+	for i := 0; i < 2; i++ {
+		go h.logWorker()
+	}
+}
+
+// logWorker processes per-session status updates triggered by LogWatcher
+func (h *Home) logWorker() {
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case inst := <-h.logUpdateChan:
+			if inst == nil {
+				continue
+			}
+			// Panic recovery for worker stability
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("LOG WORKER PANIC (recovered): %v", r)
+					}
+				}()
+				_ = inst.UpdateStatus()
 			}()
 		}
 	}

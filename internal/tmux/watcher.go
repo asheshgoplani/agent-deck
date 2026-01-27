@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -12,10 +13,15 @@ import (
 // LogWatcher watches session log files for changes using fsnotify
 // When a log file is modified, it triggers a callback with the session name
 type LogWatcher struct {
-	watcher  *fsnotify.Watcher
-	logDir   string
-	callback func(sessionName string)
-	done     chan struct{}
+	watcher   *fsnotify.Watcher
+	logDir    string
+	callback  func(sessionName string)
+	done      chan struct{}
+	closeOnce sync.Once
+
+	// Rate limiting for log events (reduces UI flicker and backend load)
+	mu       sync.Mutex
+	limiters map[string]*RateLimiter
 }
 
 // NewLogWatcher creates a new log file watcher
@@ -43,6 +49,7 @@ func NewLogWatcher(logDir string, callback func(sessionName string)) (*LogWatche
 		logDir:   logDir,
 		callback: callback,
 		done:     make(chan struct{}),
+		limiters: make(map[string]*RateLimiter),
 	}, nil
 }
 
@@ -63,7 +70,21 @@ func (lw *LogWatcher) Start() {
 				filename := filepath.Base(event.Name)
 				if strings.HasSuffix(filename, ".log") {
 					sessionName := strings.TrimSuffix(filename, ".log")
-					lw.callback(sessionName)
+
+					// Get or create rate limiter for this session
+					lw.mu.Lock()
+					limiter, ok := lw.limiters[sessionName]
+					if !ok {
+						// 20 events per second limit per session
+						limiter = NewRateLimiter(20)
+						lw.limiters[sessionName] = limiter
+					}
+					lw.mu.Unlock()
+
+					// Trigger callback with rate limiting
+					limiter.Coalesce(func() {
+						lw.callback(sessionName)
+					})
 				}
 			}
 		case _, ok := <-lw.watcher.Errors:
@@ -77,7 +98,9 @@ func (lw *LogWatcher) Start() {
 
 // Close stops the watcher
 func (lw *LogWatcher) Close() error {
-	close(lw.done)
+	lw.closeOnce.Do(func() {
+		close(lw.done)
+	})
 	return lw.watcher.Close()
 }
 

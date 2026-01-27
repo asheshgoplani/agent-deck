@@ -21,6 +21,7 @@ type StorageWatcher struct {
 	storagePath string
 	reloadCh    chan struct{}
 	closeCh     chan struct{}
+	closeOnce   sync.Once
 
 	// lastModified tracks file modification time for change detection
 	lastModified time.Time
@@ -200,6 +201,8 @@ func (sw *StorageWatcher) NotifySave() {
 
 // Close stops the watcher and releases resources
 func (sw *StorageWatcher) Close() error {
-	close(sw.closeCh)
+	sw.closeOnce.Do(func() {
+		close(sw.closeCh)
+	})
 	return sw.watcher.Close()
 }

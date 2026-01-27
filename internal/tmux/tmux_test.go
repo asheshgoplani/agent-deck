@@ -2028,8 +2028,8 @@ func TestSession_SendCtrlC(t *testing.T) {
 
 	sess := NewSession("ctrl-c-test", "/tmp")
 
-	// Start session with a long-running command
-	err := sess.Start("sleep 60")
+	// Start session with a long-running command that doesn't exit on SIGINT
+	err := sess.Start("top -b")
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
 	}
