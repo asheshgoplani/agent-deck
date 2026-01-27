@@ -163,6 +163,7 @@ type Home struct {
 	errTime       time.Time // When error occurred (for auto-dismiss)
 	isReloading    bool      // Visual feedback during auto-reload
 	initialLoading bool      // True until first loadSessionsMsg received (shows splash screen)
+	isQuitting     bool      // True when user pressed q, shows quitting splash
 	reloadVersion  uint64    // Incremented on each reload to prevent stale background saves
 	reloadMu       sync.Mutex // Protects reloadVersion and isReloading for thread-safe access
 
@@ -325,6 +326,7 @@ type updateCheckMsg struct {
 }
 
 type tickMsg time.Time
+type quitMsg bool
 
 // previewFetchedMsg is sent when async preview content is ready
 type previewFetchedMsg struct {
@@ -1780,6 +1782,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case quitMsg:
+		// Execute final shutdown logic after splash delay
+		return h, h.performFinalShutdown(bool(msg))
+
 	case tea.WindowSizeMsg:
 		h.width = msg.Width
 		h.height = msg.Height
@@ -3421,10 +3427,12 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "k", "K":
 			// Keep pool running - quit without shutting down
 			h.confirmDialog.Hide()
+			h.isQuitting = true
 			return h, h.performQuit(false) // false = don't shutdown pool
 		case "s", "S":
 			// Shut down pool - quit and shutdown
 			h.confirmDialog.Hide()
+			h.isQuitting = true
 			return h, h.performQuit(true) // true = shutdown pool
 		case "esc":
 			// Cancel - don't quit
@@ -3480,17 +3488,28 @@ func (h *Home) tryQuit() (tea.Model, tea.Cmd) {
 		}
 	}
 	// No pool running, quit directly (shutdown = true by default for clean exit)
+	h.isQuitting = true
 	return h, h.performQuit(true)
 }
 
-// performQuit performs the actual quit logic
+// performQuit triggers the quitting splash screen and schedules final shutdown
 // shutdownPool: true = shutdown MCP pool, false = leave running in background
 func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(_ time.Time) tea.Msg {
+		return quitMsg(shutdownPool)
+	})
+}
+
+// performFinalShutdown performs the actual cleanup logic before exiting
+// This is called via quitMsg after the splash screen has had time to render
+func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 	return func() tea.Msg {
 		// Signal background worker to stop
 		h.cancel()
 		// Wait for background worker to finish (prevents race on shutdown)
-		<-h.statusWorkerDone
+		if h.statusWorkerDone != nil {
+			<-h.statusWorkerDone
+		}
 
 		if h.logWatcher != nil {
 			h.logWatcher.Close()
@@ -4260,6 +4279,11 @@ func (h *Home) View() string {
 		return renderLoadingSplash(h.width, h.height, h.animationFrame)
 	}
 
+	// Show quitting splash during shutdown
+	if h.isQuitting {
+		return renderQuittingSplash(h.width, h.height, h.animationFrame)
+	}
+
 	// Setup wizard takes over entire screen
 	if h.setupWizard.IsVisible() {
 		return h.setupWizard.View()
@@ -4603,6 +4627,67 @@ func renderLoadingSplash(width, height int, frame int) string {
 	)
 
 	return rendered
+}
+
+// renderQuittingSplash renders a splash screen during application shutdown
+func renderQuittingSplash(width, height int, frame int) string {
+	// Status indicator cycle (matches loading splash for consistency)
+	phase := (frame / 2) % 4
+
+	// Active status colors
+	greenStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
+	yellowStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
+	grayStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+	// Text styles
+	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Bold(true)
+	subtitleStyle := lipgloss.NewStyle().Foreground(ColorYellow)
+
+	var content strings.Builder
+
+	if width >= 40 && height >= 10 {
+		var running, waiting, idle string
+		switch phase {
+		case 0:
+			running = greenStyle.Render("●")
+			waiting = dimStyle.Render("◐")
+			idle = dimStyle.Render("○")
+		case 1:
+			running = dimStyle.Render("●")
+			waiting = yellowStyle.Render("◐")
+			idle = dimStyle.Render("○")
+		case 2:
+			running = dimStyle.Render("●")
+			waiting = dimStyle.Render("◐")
+			idle = grayStyle.Render("○")
+		case 3:
+			running = greenStyle.Render("●")
+			waiting = yellowStyle.Render("◐")
+			idle = grayStyle.Render("○")
+		}
+
+		content.WriteString("\n")
+		content.WriteString("      " + running + "   " + waiting + "   " + idle + "      \n")
+		content.WriteString("\n")
+		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
+		content.WriteString("\n")
+		content.WriteString(subtitleStyle.Render("Shutting down..."))
+	} else {
+		// Compact/Minimal
+		content.WriteString(titleStyle.Render("Agent Deck") + "\n")
+		content.WriteString(subtitleStyle.Render("Shutting down..."))
+	}
+
+	contentStyle := lipgloss.NewStyle().
+		Align(lipgloss.Center).
+		Width(width)
+
+	return lipgloss.Place(
+		width, height,
+		lipgloss.Center, lipgloss.Center,
+		contentStyle.Render(content.String()),
+	)
 }
 
 // EmptyStateConfig holds content for responsive empty state rendering
