@@ -111,6 +111,9 @@ func TestPromptDetector(t *testing.T) {
 		{"No, and tell Claude what to do differently", true},
 		{"Yes, allow once", true},
 		{"❯ Yes", true},
+		{"Action Required", true},
+		{"Waiting for user confirmation", true},
+		{"Allow execution of: 'npm'?", true},
 		// Input prompt (--dangerously-skip-permissions mode)
 		{">", true},
 		{"> ", true},
