@@ -2120,13 +2120,17 @@ func TestSession_SendCtrlC(t *testing.T) {
 }
 
 func TestSession_SendCommand(t *testing.T) {
-	sess := NewSession("send-cmd-test", "/tmp")
+	skipIfNoTmuxServer(t)
+	sess := NewSession("send-cmd-test-unique", "/tmp")
 
-	err := sess.Start("")
+	err := sess.Start("sleep 10")
 	if err != nil {
 		t.Fatalf("Failed to start session: %v", err)
 	}
 	defer func() { _ = sess.Kill() }()
+
+	// Give the command time to start
+	time.Sleep(200 * time.Millisecond)
 
 	// Send a command
 	err = sess.SendCommand("echo hello")
