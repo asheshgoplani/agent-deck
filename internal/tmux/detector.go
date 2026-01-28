@@ -162,6 +162,9 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 		// Tool permission prompts
 		"Run this command?",
 		"Execute this?",
+		"Action Required",
+		"Waiting for user confirmation",
+		"Allow execution of",
 	}
 	for _, prompt := range permissionPrompts {
 		if strings.Contains(content, prompt) {
