@@ -413,3 +413,47 @@ func TestGetAvailableGeminiModels_Override(t *testing.T) {
 		t.Errorf("expected sorted [model-a model-b model-c], got %v", models)
 	}
 }
+
+func TestGetAvailableGeminiModels_UpdatedFallback(t *testing.T) {
+	// Clear cache and env vars to force fallback
+	geminiModelCacheMu.Lock()
+	geminiModelCacheList = nil
+	geminiModelCacheTime = time.Time{}
+	geminiModelCacheMu.Unlock()
+
+	origKey := os.Getenv("GOOGLE_API_KEY")
+	origOverride := os.Getenv("GEMINI_MODELS_OVERRIDE")
+	os.Unsetenv("GOOGLE_API_KEY")
+	os.Unsetenv("GEMINI_MODELS_OVERRIDE")
+	defer func() {
+		if origKey != "" {
+			os.Setenv("GOOGLE_API_KEY", origKey)
+		}
+		if origOverride != "" {
+			os.Setenv("GEMINI_MODELS_OVERRIDE", origOverride)
+		}
+	}()
+
+	models, err := GetAvailableGeminiModels()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := []string{
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.5-pro",
+		"gemini-3-flash-preview",
+		"gemini-3-pro-preview",
+	}
+
+	if len(models) != len(expected) {
+		t.Fatalf("expected %d models, got %d: %v", len(expected), len(models), models)
+	}
+
+	for i, m := range models {
+		if m != expected[i] {
+			t.Errorf("at index %d: expected %q, got %q", i, expected[i], m)
+		}
+	}
+}

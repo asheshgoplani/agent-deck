@@ -284,11 +284,11 @@ var (
 
 // geminiModelFallback is the hardcoded fallback list when API is unavailable
 var geminiModelFallback = []string{
-	"gemini-1.5-flash",
-	"gemini-1.5-pro",
-	"gemini-2.0-flash",
 	"gemini-2.5-flash",
+	"gemini-2.5-flash-lite",
 	"gemini-2.5-pro",
+	"gemini-3-flash-preview",
+	"gemini-3-pro-preview",
 }
 
 // GetAvailableGeminiModels returns a sorted list of Gemini models that support generateContent.
