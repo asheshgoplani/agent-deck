@@ -254,10 +254,9 @@ func main() {
 	isPrimaryInstance := true // Assume we're primary until we know otherwise
 
 	if !instanceSettings.AllowMultiple {
-		// Acquire lock to prevent duplicate instances (default behavior)
+		// Acquire lock to prevent duplicate instances (user opted for single instance)
 		if err := acquireLock(profile); err != nil {
 			fmt.Printf("Error: %v\n", err)
-			fmt.Println("\nTip: Set [instances] allow_multiple = true in config.toml to allow multiple instances")
 			os.Exit(1)
 		}
 		defer releaseLock(profile)
