@@ -1160,3 +1160,102 @@ func TestSyncWithInstancesUpdatesDefaultPath(t *testing.T) {
 		t.Errorf("Expected DefaultPath '/new/path' after sync, got %q", group.DefaultPath)
 	}
 }
+
+func TestSubgroupAppearsAfterParent(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+
+	// Create multiple root groups
+	tree.CreateGroup("Alpha")
+	tree.CreateGroup("Beta")
+	tree.CreateGroup("Gamma")
+
+	// Create subgroup under Beta
+	child := tree.CreateSubgroup("beta", "Child")
+
+	// Verify path is correct
+	if child.Path != "beta/child" {
+		t.Errorf("Expected path 'beta/child', got '%s'", child.Path)
+	}
+
+	// Verify parent-child relationship in GroupList ordering
+	var betaIdx, childIdx int = -1, -1
+	for i, g := range tree.GroupList {
+		if g.Path == "beta" {
+			betaIdx = i
+		}
+		if g.Path == "beta/child" {
+			childIdx = i
+		}
+	}
+
+	// Child should come after parent in GroupList
+	if childIdx <= betaIdx {
+		t.Errorf("Subgroup should appear after parent in GroupList. Parent at %d, child at %d",
+			betaIdx, childIdx)
+	}
+}
+
+func TestSortingTransitivity(t *testing.T) {
+	// Reproduce the exact scenario that caused the bug:
+	// When alphabetical order differs from creation order, deep nesting
+	// could cause children to appear before their parents
+	tree := NewGroupTree([]*Instance{})
+
+	// Create "My Sessions" first (Order=0), then "Beta" (Order=1)
+	// Alphabetically: "beta" < "my-sessions", but by Order: my-sessions < beta
+	tree.CreateGroup("My Sessions")
+	tree.CreateGroup("Beta")
+	tree.CreateSubgroup("beta", "Tasks")
+	tree.CreateSubgroup("beta/tasks", "Urgent")
+
+	// Verify beta comes before its descendants
+	var betaIdx, tasksIdx, urgentIdx int = -1, -1, -1
+	for i, g := range tree.GroupList {
+		switch g.Path {
+		case "beta":
+			betaIdx = i
+		case "beta/tasks":
+			tasksIdx = i
+		case "beta/tasks/urgent":
+			urgentIdx = i
+		}
+	}
+
+	if betaIdx == -1 || tasksIdx == -1 || urgentIdx == -1 {
+		t.Fatal("Expected groups not found in GroupList")
+	}
+
+	// Parent chain should be in order: beta < tasks < urgent
+	if !(betaIdx < tasksIdx && tasksIdx < urgentIdx) {
+		t.Errorf("Parent chain out of order: beta=%d, tasks=%d, urgent=%d",
+			betaIdx, tasksIdx, urgentIdx)
+	}
+}
+
+func TestBranchOrderingByOrder(t *testing.T) {
+	tree := NewGroupTree([]*Instance{})
+
+	// Create groups where alphabetical order differs from Order
+	tree.CreateGroup("Zebra") // Created first, Order=0
+	tree.CreateGroup("Alpha") // Created second, Order=1
+
+	// Create subgroups
+	tree.CreateSubgroup("zebra", "Child")
+	tree.CreateSubgroup("alpha", "Child")
+
+	// Zebra branch should come before Alpha branch (by Order, not alphabetically)
+	var zebraIdx, alphaIdx int = -1, -1
+	for i, g := range tree.GroupList {
+		if g.Path == "zebra" {
+			zebraIdx = i
+		}
+		if g.Path == "alpha" {
+			alphaIdx = i
+		}
+	}
+
+	if zebraIdx > alphaIdx {
+		t.Errorf("Zebra (Order=0) should come before Alpha (Order=1). Zebra=%d, Alpha=%d",
+			zebraIdx, alphaIdx)
+	}
+}
