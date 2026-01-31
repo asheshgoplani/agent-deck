@@ -86,6 +86,13 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 		group.Sessions = append(group.Sessions, inst)
 	}
 
+	// Sort sessions within each group by persisted Order
+	for _, group := range tree.Groups {
+		sort.SliceStable(group.Sessions, func(i, j int) bool {
+			return group.Sessions[i].Order < group.Sessions[j].Order
+		})
+	}
+
 	// Sort groups alphabetically and assign order
 	tree.rebuildGroupList()
 
@@ -145,6 +152,13 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 			tree.Expanded[groupPath] = true
 		}
 		group.Sessions = append(group.Sessions, inst)
+	}
+
+	// Sort sessions within each group by persisted Order
+	for _, group := range tree.Groups {
+		sort.SliceStable(group.Sessions, func(i, j int) bool {
+			return group.Sessions[i].Order < group.Sessions[j].Order
+		})
 	}
 
 	// Rebuild group list maintaining stored order
@@ -533,6 +547,10 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 			break
 		}
 	}
+	// Normalize Order for all sessions in group
+	for i, s := range group.Sessions {
+		s.Order = i
+	}
 }
 
 // MoveSessionDown moves a session down within its group
@@ -547,6 +565,10 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 			group.Sessions[i], group.Sessions[i+1] = group.Sessions[i+1], group.Sessions[i]
 			break
 		}
+	}
+	// Normalize Order for all sessions in group
+	for i, s := range group.Sessions {
+		s.Order = i
 	}
 }
 
@@ -578,6 +600,7 @@ func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 		t.Groups[newGroupPath] = newGroup
 		t.rebuildGroupList()
 	}
+	inst.Order = len(newGroup.Sessions)
 	newGroup.Sessions = append(newGroup.Sessions, inst)
 
 	// Update default paths for both old and new groups
@@ -877,6 +900,7 @@ func (t *GroupTree) AddSession(inst *Instance) {
 		t.Expanded[groupPath] = true
 		t.rebuildGroupList()
 	}
+	inst.Order = len(group.Sessions)
 	group.Sessions = append(group.Sessions, inst)
 	t.updateGroupDefaultPath(groupPath)
 }
@@ -946,6 +970,13 @@ func (t *GroupTree) SyncWithInstances(instances []*Instance) {
 			t.rebuildGroupList()
 		}
 		group.Sessions = append(group.Sessions, inst)
+	}
+
+	// Sort sessions within each group by persisted Order
+	for _, group := range t.Groups {
+		sort.SliceStable(group.Sessions, func(i, j int) bool {
+			return group.Sessions[i].Order < group.Sessions[j].Order
+		})
 	}
 
 	// Always rebuild GroupList at the end to ensure consistency between

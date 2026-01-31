@@ -25,7 +25,7 @@ import (
 	"github.com/muesli/termenv"
 )
 
-const Version = "0.8.98"
+const Version = "0.8.99"
 
 // Table column widths for list command output
 const (

@@ -62,6 +62,7 @@ type InstanceData struct {
 	Title           string    `json:"title"`
 	ProjectPath     string    `json:"project_path"`
 	GroupPath       string    `json:"group_path"`
+	Order           int       `json:"order"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"` // Links to parent session (sub-session support)
 	Command         string    `json:"command"`
 	Tool            string    `json:"tool"`
@@ -222,6 +223,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			Title:              inst.Title,
 			ProjectPath:        inst.ProjectPath,
 			GroupPath:          inst.GroupPath,
+			Order:              inst.Order,
 			ParentSessionID:    inst.ParentSessionID,
 			Command:            inst.Command,
 			Tool:               inst.Tool,
@@ -559,6 +561,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Title:              instData.Title,
 			ProjectPath:        projectPath,
 			GroupPath:          groupPath,
+			Order:              instData.Order,
 			ParentSessionID:    instData.ParentSessionID,
 			Command:            instData.Command,
 			Tool:               instData.Tool,

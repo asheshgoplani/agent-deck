@@ -36,6 +36,7 @@ type Instance struct {
 	Title             string `json:"title"`
 	ProjectPath       string `json:"project_path"`
 	GroupPath         string `json:"group_path"`                    // e.g., "projects/devops"
+	Order             int    `json:"order"`                         // Position within group (for reorder persistence)
 	ParentSessionID   string `json:"parent_session_id,omitempty"`   // Links to parent session (makes this a sub-session)
 	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
 
