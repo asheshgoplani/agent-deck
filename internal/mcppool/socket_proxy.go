@@ -208,7 +208,10 @@ func (p *SocketProxy) acceptConnections() {
 			case <-p.ctx.Done():
 				return
 			default:
-				continue
+				// Listener was closed (e.g., MCP process crashed and broadcastResponses
+				// closed the listener). Exit to avoid spinning in a tight loop.
+				log.Printf("[%s] acceptConnections: listener error (exiting): %v", p.name, err)
+				return
 			}
 		}
 
