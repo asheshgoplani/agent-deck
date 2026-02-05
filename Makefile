@@ -1,4 +1,4 @@
-.PHONY: build run install clean dev release-local test fmt lint
+.PHONY: build run install clean dev release-local test fmt lint ci
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -59,6 +59,11 @@ fmt:
 lint:
 	@which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	golangci-lint run
+
+# Run local CI checks (same as pre-push hook: lint + test + build in parallel)
+ci:
+	@which lefthook > /dev/null || (echo "ERROR: lefthook not found. Run: brew install lefthook" && exit 1)
+	lefthook run pre-push --force --no-auto-install
 
 # Local release using GoReleaser
 # Prerequisites: brew install goreleaser

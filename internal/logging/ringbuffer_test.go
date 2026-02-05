@@ -28,8 +28,8 @@ func TestRingBufferWrap(t *testing.T) {
 	rb := NewRingBuffer(10)
 
 	// Write more than buffer size
-	rb.Write([]byte("abcdefghij")) // fills exactly
-	rb.Write([]byte("12345"))      // wraps
+	_, _ = rb.Write([]byte("abcdefghij")) // fills exactly
+	_, _ = rb.Write([]byte("12345"))      // wraps
 
 	got := rb.Bytes()
 	// Should contain: fghij12345 (last 10 bytes in order)
@@ -42,7 +42,7 @@ func TestRingBufferLargerThanCapacity(t *testing.T) {
 	rb := NewRingBuffer(5)
 
 	// Write data larger than buffer
-	rb.Write([]byte("0123456789"))
+	_, _ = rb.Write([]byte("0123456789"))
 
 	got := rb.Bytes()
 	// Should keep only last 5 bytes
@@ -54,10 +54,10 @@ func TestRingBufferLargerThanCapacity(t *testing.T) {
 func TestRingBufferMultipleSmallWrites(t *testing.T) {
 	rb := NewRingBuffer(8)
 
-	rb.Write([]byte("AA"))
-	rb.Write([]byte("BB"))
-	rb.Write([]byte("CC"))
-	rb.Write([]byte("DD"))
+	_, _ = rb.Write([]byte("AA"))
+	_, _ = rb.Write([]byte("BB"))
+	_, _ = rb.Write([]byte("CC"))
+	_, _ = rb.Write([]byte("DD"))
 	// Total: 8 bytes exactly fills buffer
 	got := rb.Bytes()
 	if string(got) != "AABBCCDD" {
@@ -65,7 +65,7 @@ func TestRingBufferMultipleSmallWrites(t *testing.T) {
 	}
 
 	// One more write wraps
-	rb.Write([]byte("EE"))
+	_, _ = rb.Write([]byte("EE"))
 	got = rb.Bytes()
 	// Should be: BBCCDDDEE (oldest data overwritten)
 	if string(got) != "BBCCDDEE" {
@@ -75,7 +75,7 @@ func TestRingBufferMultipleSmallWrites(t *testing.T) {
 
 func TestRingBufferDumpToFile(t *testing.T) {
 	rb := NewRingBuffer(32)
-	rb.Write([]byte("dump_test_data"))
+	_, _ = rb.Write([]byte("dump_test_data"))
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dump.bin")
@@ -102,7 +102,7 @@ func TestRingBufferConcurrent(t *testing.T) {
 		go func(id int) {
 			defer func() { done <- struct{}{} }()
 			for range 100 {
-				rb.Write([]byte("x"))
+				_, _ = rb.Write([]byte("x"))
 			}
 		}(i)
 	}

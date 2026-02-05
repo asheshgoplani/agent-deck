@@ -30,13 +30,13 @@ const (
 
 // MCPItem represents an MCP in the dialog list
 type MCPItem struct {
-	Name           string
-	Description    string
-	IsOrphan       bool   // True if MCP is attached but not in config.toml pool
-	IsPooled       bool   // True if this MCP uses socket pool
-	Transport      string // "stdio", "http", or "sse"
-	HTTPStatus     string // For HTTP MCPs: "running", "stopped", "external", etc.
-	HasServerCfg   bool   // True if HTTP MCP has [mcps.X.server] config
+	Name         string
+	Description  string
+	IsOrphan     bool   // True if MCP is attached but not in config.toml pool
+	IsPooled     bool   // True if this MCP uses socket pool
+	Transport    string // "stdio", "http", or "sse"
+	HTTPStatus   string // For HTTP MCPs: "running", "stopped", "external", etc.
+	HasServerCfg bool   // True if HTTP MCP has [mcps.X.server] config
 }
 
 // MCPDialog handles MCP management for Claude and Gemini sessions

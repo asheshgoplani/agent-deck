@@ -31,7 +31,7 @@ func TestAggregatorRecord(t *testing.T) {
 	// Wait for flush
 	time.Sleep(1500 * time.Millisecond)
 	agg.Stop()
-	f.Sync()
+	_ = f.Sync()
 
 	// Read and parse output
 	data, err := os.ReadFile(logPath)
@@ -104,7 +104,7 @@ func TestAggregatorStopFlushes(t *testing.T) {
 
 	// Stop should trigger final flush
 	agg.Stop()
-	f.Sync()
+	_ = f.Sync()
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {

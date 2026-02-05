@@ -400,8 +400,8 @@ type Session struct {
 	resolvedPatterns *ResolvedPatterns
 
 	// Environment variable cache (reduces tmux show-environment subprocess spawns)
-	envCache     map[string]envCacheEntry
-	envCacheMu   sync.RWMutex
+	envCache   map[string]envCacheEntry
+	envCacheMu sync.RWMutex
 }
 
 type envCacheEntry struct {

@@ -77,7 +77,7 @@ func GetDirectoryCompletions(input string) ([]string, error) {
 		name := entry.Name()
 		if strings.HasPrefix(name, prefix) {
 			match := filepath.Join(dir, name)
-			
+
 			// If original input used tilde, convert back
 			if strings.HasPrefix(originalInput, "~") {
 				home, _ := os.UserHomeDir()

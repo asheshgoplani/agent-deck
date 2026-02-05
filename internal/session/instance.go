@@ -111,8 +111,8 @@ type Instance struct {
 	lastErrorCheck time.Time
 
 	// Tiered polling: skip expensive checks for idle sessions with no activity
-	lastIdleCheck    time.Time // When we last did a full check for an idle session
-	lastKnownActivity int64   // Last window_activity timestamp seen
+	lastIdleCheck     time.Time // When we last did a full check for an idle session
+	lastKnownActivity int64     // Last window_activity timestamp seen
 
 	// lastStartTime tracks when Start() was called
 	// Used to provide grace period for tmux session creation (prevents error flash)

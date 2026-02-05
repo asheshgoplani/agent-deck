@@ -22,8 +22,8 @@ type RawPatterns struct {
 
 // ResolvedPatterns holds the compiled, ready-to-use patterns for status detection.
 type ResolvedPatterns struct {
-	BusyStrings  []string
-	BusyRegexps  []*regexp.Regexp
+	BusyStrings   []string
+	BusyRegexps   []*regexp.Regexp
 	PromptStrings []string
 	PromptRegexps []*regexp.Regexp
 	SpinnerChars  []string
@@ -45,7 +45,7 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				"esc to interrupt",
 				`re:[·✳✽✶✻✢]\s*.+…`, // Claude 2.1.25+ active spinner with unicode ellipsis
 			},
-			SpinnerChars: defaultSpinnerChars(),
+			SpinnerChars:   defaultSpinnerChars(),
 			WhimsicalWords: defaultWhimsicalWords(),
 		}
 	case "gemini":
@@ -132,8 +132,8 @@ func CompilePatterns(raw *RawPatterns) (*ResolvedPatterns, error) {
 			re, err := regexp.Compile(p[3:])
 			if err != nil {
 				patternLog.Warn("invalid_busy_regex",
-				slog.String("pattern", p),
-				slog.String("error", err.Error()))
+					slog.String("pattern", p),
+					slog.String("error", err.Error()))
 				continue
 			}
 			resolved.BusyRegexps = append(resolved.BusyRegexps, re)
@@ -148,8 +148,8 @@ func CompilePatterns(raw *RawPatterns) (*ResolvedPatterns, error) {
 			re, err := regexp.Compile(p[3:])
 			if err != nil {
 				patternLog.Warn("invalid_prompt_regex",
-				slog.String("pattern", p),
-				slog.String("error", err.Error()))
+					slog.String("pattern", p),
+					slog.String("error", err.Error()))
 				continue
 			}
 			resolved.PromptRegexps = append(resolved.PromptRegexps, re)

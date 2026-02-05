@@ -246,22 +246,22 @@ func TestValidateBranchName(t *testing.T) {
 
 	t.Run("rejects invalid branch names", func(t *testing.T) {
 		invalidNames := []string{
-			"",                // empty
-			".hidden",         // starts with dot
-			"branch..double",  // double dots
-			"branch.lock",     // ends with .lock
-			"branch ",         // trailing space
-			" branch",         // leading space
-			"branch\tname",    // contains tab
-			"branch~name",     // contains tilde
-			"branch^name",     // contains caret
-			"branch:name",     // contains colon
-			"branch?name",     // contains question mark
-			"branch*name",     // contains asterisk
-			"branch[name",     // contains open bracket
-			"branch\\name",    // contains backslash
-			"@",               // just @
-			"branch@{name",    // contains @{
+			"",               // empty
+			".hidden",        // starts with dot
+			"branch..double", // double dots
+			"branch.lock",    // ends with .lock
+			"branch ",        // trailing space
+			" branch",        // leading space
+			"branch\tname",   // contains tab
+			"branch~name",    // contains tilde
+			"branch^name",    // contains caret
+			"branch:name",    // contains colon
+			"branch?name",    // contains question mark
+			"branch*name",    // contains asterisk
+			"branch[name",    // contains open bracket
+			"branch\\name",   // contains backslash
+			"@",              // just @
+			"branch@{name",   // contains @{
 		}
 
 		for _, name := range invalidNames {

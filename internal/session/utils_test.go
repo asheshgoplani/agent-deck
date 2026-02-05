@@ -13,7 +13,7 @@ import (
 func TestGetDirectoryCompletions(t *testing.T) {
 	// Setup temporary directory structure
 	tmpDir := t.TempDir()
-	
+
 	// Create some directories
 	dirs := []string{
 		"projects",
@@ -26,7 +26,7 @@ func TestGetDirectoryCompletions(t *testing.T) {
 		err := os.MkdirAll(filepath.Join(tmpDir, d), 0755)
 		require.NoError(t, err)
 	}
-	
+
 	// Create some files (should be ignored)
 	files := []string{
 		"README.md",
@@ -82,27 +82,27 @@ func TestGetDirectoryCompletions(t *testing.T) {
 
 func TestCompletionCycler(t *testing.T) {
 	cycler := &CompletionCycler{}
-	
+
 	// 1. Initial state
 	assert.Equal(t, "", cycler.Next())
-	
+
 	// 2. Set matches and cycle
 	matches := []string{"/a", "/b", "/c"}
 	cycler.SetMatches(matches)
 	assert.True(t, cycler.IsActive())
-	
+
 	assert.Equal(t, "/a", cycler.Next())
 	assert.Equal(t, "/b", cycler.Next())
 	assert.Equal(t, "/c", cycler.Next())
-	
+
 	// 3. Wrap around
 	assert.Equal(t, "/a", cycler.Next())
-	
+
 	// 4. Reset
 	cycler.Reset()
 	assert.False(t, cycler.IsActive())
 	assert.Equal(t, "", cycler.Next())
-	
+
 	// 5. Change matches
 	cycler.SetMatches([]string{"/x"})
 	assert.Equal(t, "/x", cycler.Next())

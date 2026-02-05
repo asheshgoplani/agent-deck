@@ -709,11 +709,11 @@ func TestCtrlZEmptyStack(t *testing.T) {
 
 func TestUndoHintInHelpBar(t *testing.T) {
 	home := NewHome()
-	home.width = 120 // Full help bar mode
+	home.width = 200 // Wide terminal to fit all hints including Undo
 	home.height = 30
 
-	// Add a session to have context
-	inst := &session.Instance{ID: "test-1", Title: "Test", Tool: "claude"}
+	// Add a session to have context (non-Claude to reduce hint count)
+	inst := &session.Instance{ID: "test-1", Title: "Test", Tool: "other"}
 	home.flatItems = []session.Item{
 		{Type: session.ItemTypeSession, Session: inst},
 	}
@@ -729,7 +729,7 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	home.pushUndoStack(session.NewInstance("deleted", "/tmp"))
 	result = home.renderHelpBar()
 	if !strings.Contains(result, "Undo") {
-		t.Error("Help bar should show Undo when undo stack is non-empty")
+		t.Errorf("Help bar should show Undo when undo stack is non-empty\nGot: %q", result)
 	}
 }
 

@@ -1526,7 +1526,7 @@ func (h *Home) backgroundStatusUpdate() {
 			return nil
 		})
 	}
-	g.Wait()
+	_ = g.Wait() // Errors are logged within each goroutine
 
 	statusDur := time.Since(statusStart)
 	if statusDur > 500*time.Millisecond {

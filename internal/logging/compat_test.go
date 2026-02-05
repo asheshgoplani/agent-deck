@@ -37,7 +37,7 @@ func TestBridgeWriterParsesCategory(t *testing.T) {
 
 	// Write all inputs
 	for _, tt := range tests {
-		bw.Write([]byte(tt.input))
+		_, _ = bw.Write([]byte(tt.input))
 	}
 
 	// Read all records
@@ -87,7 +87,7 @@ func TestBridgeWriterStripsTimestamp(t *testing.T) {
 	bw := NewBridgeWriter("legacy")
 
 	// Simulate log.Ltime|log.Lmicroseconds prefix
-	bw.Write([]byte("15:04:05.000000 [STATUS] test message\n"))
+	_, _ = bw.Write([]byte("15:04:05.000000 [STATUS] test message\n"))
 
 	logPath := filepath.Join(dir, "debug.log")
 	data, err := os.ReadFile(logPath)

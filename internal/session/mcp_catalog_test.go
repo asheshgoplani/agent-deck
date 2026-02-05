@@ -405,4 +405,3 @@ func TestWriteUserMCPCreatesFile(t *testing.T) {
 		t.Errorf("expected empty mcpServers, got %v", mcpServers)
 	}
 }
-

@@ -52,7 +52,7 @@ type GlobalSearchResult struct {
 
 // globalSearchResultsMsg delivers async search results back to the UI
 type globalSearchResultsMsg struct {
-	query   string                 // The query these results are for
+	query   string                  // The query these results are for
 	results []*session.SearchResult // Raw search results from index
 }
 

@@ -739,14 +739,14 @@ func TestClaudeCode2125_SpinnerActiveRegex(t *testing.T) {
 		{"· sublimating…", true},
 		{"✻ cooking…", true},
 		{"✢ channelling…", true},
-		{"✶ Fixing Scanner Buffer Overflow…", true},    // multi-word task name
-		{"✻ Adding mcp-proxy subcommand…", true},       // multi-word with excluded spinner
-		{"· Installing package dependencies…", true},    // multi-word with excluded spinner
-		{"✳ Running tests and building…", true},         // multi-word
-		{"✻ worked for 54s", false},                     // done state, no ellipsis
-		{"✻ churned for 47s", false},                    // done state, no ellipsis
-		{"some random text…", false},                    // no spinner symbol
-		{"✻ ", false},                                   // no content after spinner
+		{"✶ Fixing Scanner Buffer Overflow…", true},  // multi-word task name
+		{"✻ Adding mcp-proxy subcommand…", true},     // multi-word with excluded spinner
+		{"· Installing package dependencies…", true}, // multi-word with excluded spinner
+		{"✳ Running tests and building…", true},      // multi-word
+		{"✻ worked for 54s", false},                  // done state, no ellipsis
+		{"✻ churned for 47s", false},                 // done state, no ellipsis
+		{"some random text…", false},                 // no spinner symbol
+		{"✻ ", false},                                // no content after spinner
 	}
 
 	for _, tt := range tests {
@@ -818,8 +818,8 @@ esc interrupt
 			wantPrompt: false,
 		},
 		{
-			name: "busy - pulse spinner ░ (light shade)",
-			content: `░ Waiting for tool response...`,
+			name:       "busy - pulse spinner ░ (light shade)",
+			content:    `░ Waiting for tool response...`,
 			wantPrompt: false,
 		},
 		{
@@ -830,18 +830,18 @@ press enter to send`,
 			wantPrompt: false,
 		},
 		{
-			name: "busy - Generating task text",
-			content: `Generating...`,
+			name:       "busy - Generating task text",
+			content:    `Generating...`,
 			wantPrompt: false,
 		},
 		{
-			name: "busy - Building tool call text",
-			content: `Building tool call...`,
+			name:       "busy - Building tool call text",
+			content:    `Building tool call...`,
 			wantPrompt: false,
 		},
 		{
-			name: "busy - Waiting for tool response text",
-			content: `Waiting for tool response...`,
+			name:       "busy - Waiting for tool response text",
+			content:    `Waiting for tool response...`,
 			wantPrompt: false,
 		},
 		{
@@ -864,8 +864,8 @@ press enter to send the message`,
 			wantPrompt: true,
 		},
 		{
-			name: "idle - Ask anything placeholder",
-			content: `Ask anything`,
+			name:       "idle - Ask anything placeholder",
+			content:    `Ask anything`,
 			wantPrompt: true,
 		},
 		{
@@ -875,8 +875,8 @@ press enter to send the message`,
 			wantPrompt: true,
 		},
 		{
-			name: "idle - line ending with >",
-			content: `some prompt >`,
+			name:       "idle - line ending with >",
+			content:    `some prompt >`,
 			wantPrompt: true,
 		},
 		{
@@ -891,13 +891,13 @@ press enter to send the message, write \ and enter to add a new line`,
 		},
 		// === Edge cases ===
 		{
-			name: "idle - opencode> prompt (line ending with >)",
-			content: `opencode>`,
+			name:       "idle - opencode> prompt (line ending with >)",
+			content:    `opencode>`,
 			wantPrompt: true, // Matches hasLineEndingWith(">")
 		},
 		{
-			name: "idle - empty content",
-			content: ``,
+			name:       "idle - empty content",
+			content:    ``,
 			wantPrompt: false,
 		},
 	}
@@ -921,9 +921,9 @@ func TestClaudeCode2125_DynamicStatusPattern(t *testing.T) {
 		{"(45s · 1234 tokens · ctrl+c to interrupt)", true}, // old format
 		{"(35s · ↑ 673 tokens)", true},                      // new format with up arrow
 		{"(39s · ↓ 1.8k tokens)", true},                     // new format with down arrow
-		{"(33s · ↑ 144 tokens · thinking)", true},            // new with thinking
-		{"(41s · ↓ 720 tokens)", true},                       // simple new format
-		{"(some text)", false},                               // not a status
+		{"(33s · ↑ 144 tokens · thinking)", true},           // new with thinking
+		{"(41s · ↓ 720 tokens)", true},                      // simple new format
+		{"(some text)", false},                              // not a status
 	}
 
 	for _, tt := range tests {

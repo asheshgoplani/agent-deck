@@ -153,9 +153,9 @@ func handleWorktreeList(profile string, args []string) {
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
-			"repo_root":  repoRoot,
-			"worktrees":  results,
-			"count":      len(results),
+			"repo_root": repoRoot,
+			"worktrees": results,
+			"count":     len(results),
 		})
 		return
 	}
@@ -245,12 +245,12 @@ func handleWorktreeInfo(profile string, args []string) {
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
-			"session":          inst.Title,
-			"session_id":       inst.ID,
-			"branch":           inst.WorktreeBranch,
-			"worktree_path":    inst.WorktreePath,
-			"main_repo":        inst.WorktreeRepoRoot,
-			"worktree_exists":  worktreeExists,
+			"session":         inst.Title,
+			"session_id":      inst.ID,
+			"branch":          inst.WorktreeBranch,
+			"worktree_path":   inst.WorktreePath,
+			"main_repo":       inst.WorktreeRepoRoot,
+			"worktree_exists": worktreeExists,
 		})
 		return
 	}
@@ -371,9 +371,9 @@ func handleWorktreeCleanup(profile string, args []string) {
 		}
 
 		result := map[string]interface{}{
-			"orphaned_sessions":   orphanedSessionData,
-			"orphaned_worktrees":  orphanedWorktreeData,
-			"dry_run":             !*force,
+			"orphaned_sessions":  orphanedSessionData,
+			"orphaned_worktrees": orphanedWorktreeData,
+			"dry_run":            !*force,
 		}
 
 		out.Print("", result)

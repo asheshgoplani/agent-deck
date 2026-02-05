@@ -80,11 +80,11 @@ func TestGetChangesBetweenVersions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		current        string
-		latest         string
-		expectedCount  int
-		expectedFirst  string
+		name          string
+		current       string
+		latest        string
+		expectedCount int
+		expectedFirst string
 	}{
 		{"one version behind", "0.8.84", "0.8.85", 1, "0.8.85"},
 		{"two versions behind", "0.8.83", "0.8.85", 2, "0.8.85"},
