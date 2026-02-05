@@ -193,14 +193,12 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 				d.updateFocus()
 			} else {
 				// Inside options panel - delegate
-				var cmd tea.Cmd
-				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
-				return d, cmd
+				return d, d.optionsPanel.Update(msg)
 			}
 			return d, nil
 
 		case "shift+tab", "up":
-			if d.focusIndex == optStart && d.optionsPanel.focusIndex == 0 {
+			if d.focusIndex == optStart && d.optionsPanel.AtTop() {
 				// At first option item, move back
 				if d.worktreeEnabled {
 					d.focusIndex = 2 // branch
@@ -220,9 +218,7 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 				d.updateFocus()
 			} else {
 				// Inside options panel - delegate
-				var cmd tea.Cmd
-				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
-				return d, cmd
+				return d, d.optionsPanel.Update(msg)
 			}
 			return d, nil
 
@@ -249,9 +245,7 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		case " ", "left", "right":
 			// Delegate space/arrow keys to options panel if focused there
 			if d.focusIndex >= optStart {
-				var cmd tea.Cmd
-				d.optionsPanel, cmd = d.optionsPanel.Update(msg)
-				return d, cmd
+				return d, d.optionsPanel.Update(msg)
 			}
 		}
 	}
@@ -267,11 +261,11 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		if d.worktreeEnabled {
 			d.branchInput, cmd = d.branchInput.Update(msg)
 		} else {
-			d.optionsPanel, cmd = d.optionsPanel.Update(msg)
+			cmd = d.optionsPanel.Update(msg)
 		}
 	default:
 		// Options panel handles its own inputs
-		d.optionsPanel, cmd = d.optionsPanel.Update(msg)
+		cmd = d.optionsPanel.Update(msg)
 	}
 
 	return d, cmd

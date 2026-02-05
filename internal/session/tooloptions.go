@@ -89,6 +89,60 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 	return opts
 }
 
+// CodexOptions holds launch options for Codex CLI sessions
+type CodexOptions struct {
+	// YoloMode enables --yolo flag (bypass approvals and sandbox)
+	// nil = inherit from global config, true/false = explicit override
+	YoloMode *bool `json:"yolo_mode,omitempty"`
+}
+
+// ToolName returns "codex"
+func (o *CodexOptions) ToolName() string {
+	return "codex"
+}
+
+// ToArgs returns command-line arguments based on options
+func (o *CodexOptions) ToArgs() []string {
+	var args []string
+	if o.YoloMode != nil && *o.YoloMode {
+		args = append(args, "--yolo")
+	}
+	return args
+}
+
+// NewCodexOptions creates CodexOptions with defaults from global config
+func NewCodexOptions(config *UserConfig) *CodexOptions {
+	opts := &CodexOptions{}
+	if config != nil && config.Codex.YoloMode {
+		yolo := true
+		opts.YoloMode = &yolo
+	}
+	return opts
+}
+
+// UnmarshalCodexOptions deserializes CodexOptions from JSON wrapper
+func UnmarshalCodexOptions(data json.RawMessage) (*CodexOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Tool != "codex" {
+		return nil, nil
+	}
+
+	var opts CodexOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}
+
 // ToolOptionsWrapper wraps tool options for JSON serialization
 // JSON structure: {"tool": "claude", "options": {...}}
 type ToolOptionsWrapper struct {

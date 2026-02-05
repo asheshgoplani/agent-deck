@@ -285,6 +285,135 @@ func TestUnmarshalClaudeOptions_WrongTool(t *testing.T) {
 	}
 }
 
+// === Codex Options Tests ===
+
+func TestCodexOptions_ToolName(t *testing.T) {
+	opts := &CodexOptions{}
+	if opts.ToolName() != "codex" {
+		t.Errorf("expected ToolName() = 'codex', got %q", opts.ToolName())
+	}
+}
+
+func TestCodexOptions_ToArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     CodexOptions
+		expected []string
+	}{
+		{
+			name:     "yolo nil (inherit)",
+			opts:     CodexOptions{YoloMode: nil},
+			expected: nil,
+		},
+		{
+			name:     "yolo true",
+			opts:     CodexOptions{YoloMode: boolPtr(true)},
+			expected: []string{"--yolo"},
+		},
+		{
+			name:     "yolo false",
+			opts:     CodexOptions{YoloMode: boolPtr(false)},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.opts.ToArgs()
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("ToArgs() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNewCodexOptions_WithConfig(t *testing.T) {
+	// Global yolo=true
+	config := &UserConfig{
+		Codex: CodexSettings{YoloMode: true},
+	}
+	opts := NewCodexOptions(config)
+	if opts.YoloMode == nil || !*opts.YoloMode {
+		t.Error("expected YoloMode=true when config.Codex.YoloMode=true")
+	}
+
+	// Global yolo=false
+	config2 := &UserConfig{
+		Codex: CodexSettings{YoloMode: false},
+	}
+	opts2 := NewCodexOptions(config2)
+	if opts2.YoloMode != nil {
+		t.Errorf("expected YoloMode=nil when config.Codex.YoloMode=false, got %v", *opts2.YoloMode)
+	}
+}
+
+func TestNewCodexOptions_NilConfig(t *testing.T) {
+	opts := NewCodexOptions(nil)
+	if opts.YoloMode != nil {
+		t.Errorf("expected YoloMode=nil when config is nil, got %v", *opts.YoloMode)
+	}
+}
+
+func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
+	original := &CodexOptions{YoloMode: boolPtr(true)}
+
+	data, err := MarshalToolOptions(original)
+	if err != nil {
+		t.Fatalf("MarshalToolOptions failed: %v", err)
+	}
+
+	restored, err := UnmarshalCodexOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalCodexOptions failed: %v", err)
+	}
+
+	if restored.YoloMode == nil || !*restored.YoloMode {
+		t.Error("expected YoloMode=true after roundtrip")
+	}
+}
+
+func TestUnmarshalCodexOptions_EmptyData(t *testing.T) {
+	result, err := UnmarshalCodexOptions(nil)
+	if err != nil {
+		t.Fatalf("UnmarshalCodexOptions(nil) failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil for empty data, got %v", result)
+	}
+}
+
+func TestUnmarshalCodexOptions_WrongTool(t *testing.T) {
+	// Create JSON with claude tool name — should return nil for codex
+	claudeOpts := &ClaudeOptions{SkipPermissions: true}
+	data, _ := MarshalToolOptions(claudeOpts)
+
+	result, err := UnmarshalCodexOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalCodexOptions failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil for wrong tool, got %v", result)
+	}
+}
+
+func TestCodexOptions_RoundTrip_NilYolo(t *testing.T) {
+	original := &CodexOptions{YoloMode: nil}
+
+	data, err := MarshalToolOptions(original)
+	if err != nil {
+		t.Fatalf("MarshalToolOptions failed: %v", err)
+	}
+
+	restored, err := UnmarshalCodexOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalCodexOptions failed: %v", err)
+	}
+
+	if restored.YoloMode != nil {
+		t.Errorf("expected YoloMode=nil after roundtrip, got %v", *restored.YoloMode)
+	}
+}
+
 func TestClaudeOptions_RoundTrip(t *testing.T) {
 	// Test complete round-trip serialization
 	original := &ClaudeOptions{

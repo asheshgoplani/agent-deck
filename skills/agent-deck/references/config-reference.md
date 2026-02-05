@@ -6,6 +6,7 @@ All options for `~/.agent-deck/config.toml`.
 
 - [Top-Level](#top-level)
 - [[claude] Section](#claude-section)
+- [[codex] Section](#codex-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[global_search] Section](#global_search-section)
@@ -33,6 +34,19 @@ dangerous_mode = true           # Enable --dangerously-skip-permissions
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `dangerous_mode` | bool | `false` | Skip Claude permission dialogs. Required for automation. |
+
+## [codex] Section
+
+Codex CLI integration settings.
+
+```toml
+[codex]
+yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
 
 ## [logs] Section
 
@@ -253,6 +267,9 @@ default_tool = "claude"
 [claude]
 config_dir = "~/.claude-work"
 dangerous_mode = true
+
+[codex]
+yolo_mode = false
 
 [logs]
 max_size_mb = 10

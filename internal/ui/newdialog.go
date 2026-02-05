@@ -18,7 +18,10 @@ type NewDialog struct {
 	nameInput            textinput.Model
 	pathInput            textinput.Model
 	commandInput         textinput.Model
-	claudeOptions        *ClaudeOptionsPanel // Claude-specific options
+	claudeOptions        *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction)
+	geminiOptions        *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction)
+	codexOptions         *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction)
+	toolOptions          OptionsPanel        // Currently active tool options panel (nil if none)
 	focusIndex           int                 // 0=name, 1=path, 2=command, 3+=options
 	width                int
 	height               int
@@ -33,8 +36,6 @@ type NewDialog struct {
 	// Worktree support
 	worktreeEnabled bool
 	branchInput     textinput.Model
-	// Gemini YOLO mode
-	geminiYoloMode bool
 	// Inline validation error displayed inside the dialog
 	validationErr string
 	pathCycler    session.CompletionCycler // Path autocomplete state
@@ -84,12 +85,14 @@ func NewNewDialog() *NewDialog {
 	branchInput.CharLimit = 100
 	branchInput.Width = 40
 
-	return &NewDialog{
+	dlg := &NewDialog{
 		nameInput:       nameInput,
 		pathInput:       pathInput,
 		commandInput:    commandInput,
 		branchInput:     branchInput,
 		claudeOptions:   NewClaudeOptionsPanel(),
+		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
+		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -98,6 +101,8 @@ func NewNewDialog() *NewDialog {
 		parentGroupName: "default",
 		worktreeEnabled: false,
 	}
+	dlg.updateToolOptions()
+	return dlg
 }
 
 // ShowInGroup shows the dialog with a pre-selected parent group and optional default path
@@ -118,7 +123,10 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
 	d.pathInput.Blur()
 	d.claudeOptions.Blur()
+	d.geminiOptions.Blur()
+	d.codexOptions.Blur()
 	// Keep commandCursor at previously set default (don't reset to 0)
+	d.updateToolOptions()
 	// Reset worktree fields
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
@@ -126,16 +134,17 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	if defaultPath != "" {
 		d.pathInput.SetValue(defaultPath)
 	} else {
-		// Fall back to current working directory
 		cwd, err := os.Getwd()
 		if err == nil {
 			d.pathInput.SetValue(cwd)
 		}
 	}
-	// Initialize Gemini YOLO mode and Claude options from global config
-	d.geminiYoloMode = false
+	// Initialize tool options from global config
+	d.geminiOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
-		d.geminiYoloMode = userConfig.Gemini.YoloMode
+		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
+		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.claudeOptions.SetDefaults(userConfig)
 	}
 }
@@ -152,12 +161,14 @@ func (d *NewDialog) SetDefaultTool(tool string) {
 	for i, cmd := range d.presetCommands {
 		if cmd == tool {
 			d.commandCursor = i
+			d.updateToolOptions()
 			return
 		}
 	}
 
 	// Tool not found in presets, default to shell
 	d.commandCursor = 0
+	d.updateToolOptions()
 }
 
 // GetSelectedGroup returns the parent group path
@@ -250,12 +261,12 @@ func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string,
 
 // IsGeminiYoloMode returns whether YOLO mode is enabled for Gemini
 func (d *NewDialog) IsGeminiYoloMode() bool {
-	return d.geminiYoloMode
+	return d.geminiOptions.GetYoloMode()
 }
 
-// SetGeminiYoloMode sets the YOLO mode state
-func (d *NewDialog) SetGeminiYoloMode(enabled bool) {
-	d.geminiYoloMode = enabled
+// GetCodexYoloMode returns the Codex YOLO mode state
+func (d *NewDialog) GetCodexYoloMode() bool {
+	return d.codexOptions.GetYoloMode()
 }
 
 // GetSelectedCommand returns the currently selected command/tool
@@ -324,13 +335,36 @@ func (d *NewDialog) ClearError() {
 	d.validationErr = ""
 }
 
-// updateFocus updates which input has focus
+// optionsStartIndex returns the focus index where tool options begin.
+func (d *NewDialog) optionsStartIndex() int {
+	if d.worktreeEnabled {
+		return 4 // 0=name, 1=path, 2=command, 3=branch, 4=options
+	}
+	return 3 // 0=name, 1=path, 2=command, 3=options
+}
+
+// updateToolOptions sets d.toolOptions to the panel matching the current tool selection.
+func (d *NewDialog) updateToolOptions() {
+	switch d.GetSelectedCommand() {
+	case "claude":
+		d.toolOptions = d.claudeOptions
+	case "gemini":
+		d.toolOptions = d.geminiOptions
+	case "codex":
+		d.toolOptions = d.codexOptions
+	default:
+		d.toolOptions = nil
+	}
+}
+
 func (d *NewDialog) updateFocus() {
 	d.nameInput.Blur()
 	d.pathInput.Blur()
 	d.commandInput.Blur()
 	d.branchInput.Blur()
 	d.claudeOptions.Blur()
+	d.geminiOptions.Blur()
+	d.codexOptions.Blur()
 
 	switch d.focusIndex {
 	case 0:
@@ -338,34 +372,31 @@ func (d *NewDialog) updateFocus() {
 	case 1:
 		d.pathInput.Focus()
 	case 2:
-		// Command selection - focus commandInput if shell is selected for custom command
 		if d.commandCursor == 0 { // shell
 			d.commandInput.Focus()
 		}
 	case 3:
-		// Branch input (when worktree is enabled) OR Claude options
 		if d.worktreeEnabled {
 			d.branchInput.Focus()
-		} else if d.isClaudeSelected() {
-			d.claudeOptions.Focus()
+		} else if d.toolOptions != nil {
+			d.toolOptions.Focus()
 		}
 	default:
-		// Claude options (focusIndex >= 4 when worktree enabled)
-		if d.isClaudeSelected() {
-			d.claudeOptions.Focus()
+		if d.toolOptions != nil {
+			d.toolOptions.Focus()
 		}
 	}
 }
 
 // getMaxFocusIndex returns the maximum focus index based on current state
 func (d *NewDialog) getMaxFocusIndex() int {
-	if d.worktreeEnabled {
-		return 3 // 0=name, 1=path, 2=command, 3=branch
+	if d.worktreeEnabled && d.toolOptions != nil {
+		return 4
 	}
-	if d.isClaudeSelected() {
-		return 3 // 0=name, 1=path, 2=command, 3=claude options
+	if d.worktreeEnabled || d.toolOptions != nil {
+		return 3
 	}
-	return 2 // 0=name, 1=path, 2=command
+	return 2
 }
 
 // Update handles key messages
@@ -416,14 +447,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathInput.SetCursor(len(d.pathInput.Value()))
 				}
 			}
-			// Move to next field (with worktree and claude options support)
+			// Move to next field
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
 				d.updateFocus()
-			} else if d.focusIndex >= 3 && d.isClaudeSelected() {
-				// Inside claude options - delegate
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			} else if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				return d, d.toolOptions.Update(msg)
 			} else {
 				d.focusIndex = 0
 				d.updateFocus()
@@ -454,22 +483,17 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
-			// Down navigates fields or delegates to options
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
 				d.updateFocus()
-			} else if d.focusIndex >= 3 && d.isClaudeSelected() {
-				// Inside claude options - delegate
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			} else if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				return d, d.toolOptions.Update(msg)
 			}
 			return d, nil
 
 		case "shift+tab", "up":
-			if d.focusIndex >= 3 && d.isClaudeSelected() && d.claudeOptions.focusIndex > 0 {
-				// Inside claude options, not at first item - delegate
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() && !d.toolOptions.AtTop() {
+				return d, d.toolOptions.Update(msg)
 			}
 			d.focusIndex--
 			if d.focusIndex < 0 {
@@ -487,32 +511,28 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "left":
-			// Command selection
 			if d.focusIndex == 2 {
 				d.commandCursor--
 				if d.commandCursor < 0 {
 					d.commandCursor = len(d.presetCommands) - 1
 				}
-				d.updateFocus() // Focus command input when shell is selected (#32)
+				d.updateToolOptions()
+				d.updateFocus()
 				return d, nil
 			}
-			// Delegate to claude options if focused there
-			if d.focusIndex >= 3 && d.isClaudeSelected() {
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				return d, d.toolOptions.Update(msg)
 			}
 
 		case "right":
-			// Command selection
 			if d.focusIndex == 2 {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
-				d.updateFocus() // Focus command input when shell is selected (#32)
+				d.updateToolOptions()
+				d.updateFocus()
 				return d, nil
 			}
-			// Delegate to claude options if focused there
-			if d.focusIndex >= 3 && d.isClaudeSelected() {
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				return d, d.toolOptions.Update(msg)
 			}
 
 		case "w":
@@ -528,17 +548,21 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "y":
-			// Toggle YOLO mode when on command field and gemini is selected
-			if d.focusIndex == 2 && d.GetSelectedCommand() == "gemini" {
-				d.geminiYoloMode = !d.geminiYoloMode
+			// 'y' shortcut from command field (gemini/codex only)
+			selectedCmd := d.GetSelectedCommand()
+			if d.focusIndex == 2 && (selectedCmd == "gemini" || selectedCmd == "codex") && d.toolOptions != nil {
+				d.toolOptions.Update(msg)
+				return d, nil
+			}
+			// 'y' from within tool options panel
+			if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				d.toolOptions.Update(msg)
 				return d, nil
 			}
 
 		case " ":
-			// Space toggles checkboxes in claude options
-			if d.focusIndex >= 3 && d.isClaudeSelected() {
-				d.claudeOptions, cmd = d.claudeOptions.Update(msg)
-				return d, cmd
+			if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+				return d, d.toolOptions.Update(msg)
 			}
 		}
 	}
@@ -562,15 +586,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.commandInput, cmd = d.commandInput.Update(msg)
 		}
 	case 3:
-		// Branch input (when worktree is enabled) or Claude options
 		if d.worktreeEnabled {
 			d.branchInput, cmd = d.branchInput.Update(msg)
-		} else if d.isClaudeSelected() {
-			d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+		} else if d.toolOptions != nil {
+			cmd = d.toolOptions.Update(msg)
 		}
 	default:
-		if d.focusIndex >= 3 && d.isClaudeSelected() {
-			d.claudeOptions, cmd = d.claudeOptions.Update(msg)
+		if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+			cmd = d.toolOptions.Update(msg)
 		}
 	}
 
@@ -760,39 +783,11 @@ func (d *NewDialog) View() string {
 	}
 
 	// Worktree checkbox (show when on command field or below)
-	checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
-	checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-
-	// Checkbox display
-	checkbox := "[ ]"
-	if d.worktreeEnabled {
-		checkbox = "[x]"
-	}
-
-	// Show worktree option with hint
+	worktreeLabel := "Create in worktree"
 	if d.focusIndex == 2 {
-		// When on command field, show as actionable
-		content.WriteString(checkboxActiveStyle.Render(fmt.Sprintf("  %s Create in worktree (press w)", checkbox)))
-	} else {
-		content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox)))
+		worktreeLabel = "Create in worktree (press w)"
 	}
-	content.WriteString("\n")
-
-	// YOLO mode checkbox (only visible when gemini is selected)
-	if d.GetSelectedCommand() == "gemini" {
-		yoloCheckbox := "[ ]"
-		if d.geminiYoloMode {
-			yoloCheckbox = "[x]"
-		}
-
-		if d.focusIndex == 2 {
-			// When on command field, show as actionable
-			content.WriteString(checkboxActiveStyle.Render(fmt.Sprintf("  %s YOLO mode - auto-approve all (press y)", yoloCheckbox)))
-		} else {
-			content.WriteString(checkboxStyle.Render(fmt.Sprintf("  %s YOLO mode - auto-approve all", yoloCheckbox)))
-		}
-		content.WriteString("\n")
-	}
+	content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, d.focusIndex == 2))
 
 	// Branch input (only visible when worktree is enabled)
 	if d.worktreeEnabled {
@@ -808,10 +803,10 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n")
 	}
 
-	// Claude options (only if Claude is selected)
-	if d.isClaudeSelected() {
+	// Tool options panel
+	if d.toolOptions != nil {
 		content.WriteString("\n")
-		content.WriteString(d.claudeOptions.View())
+		content.WriteString(d.toolOptions.View())
 	}
 
 	// Inline validation error
@@ -831,9 +826,14 @@ func (d *NewDialog) View() string {
 	if d.focusIndex == 1 {
 		helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if d.focusIndex == 2 {
-		helpText = "←→ command │ w worktree │ Tab next │ Enter create │ Esc cancel"
-	} else if d.isClaudeSelected() && d.focusIndex >= 3 {
-		helpText = "Tab next │ ↑↓ navigate │ Space toggle │ Enter create │ Esc cancel"
+		selectedCmd := d.GetSelectedCommand()
+		if selectedCmd == "gemini" || selectedCmd == "codex" {
+			helpText = "←→ command │ w worktree │ y yolo │ Tab next │ Enter create │ Esc cancel"
+		} else {
+			helpText = "←→ command │ w worktree │ Tab next │ Enter create │ Esc cancel"
+		}
+	} else if d.toolOptions != nil && d.focusIndex >= d.optionsStartIndex() {
+		helpText = "Space/y toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
 	}
 	content.WriteString(helpStyle.Render(helpText))
 

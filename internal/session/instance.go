@@ -541,6 +541,24 @@ func (i *Instance) DetectOpenCodeSession() {
 }
 
 // buildCodexCommand builds the command for OpenAI Codex CLI
+// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
+func (i *Instance) resolveCodexYoloFlag() string {
+	opts := i.GetCodexOptions()
+	if opts != nil && opts.YoloMode != nil {
+		if *opts.YoloMode {
+			return " --yolo"
+		}
+		return ""
+	}
+	// Fallback to global config
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Codex.YoloMode {
+			return " --yolo"
+		}
+	}
+	return ""
+}
+
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
@@ -551,16 +569,18 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
+	yoloFlag := i.resolveCodexYoloFlag()
+
 	// If baseCommand is just "codex", handle specially
 	if baseCommand == "codex" {
 		// If we already have a session ID, use resume
 		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex resume %s",
-				i.CodexSessionID, i.CodexSessionID)
+			return envPrefix + fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex%s resume %s",
+				i.CodexSessionID, yoloFlag, i.CodexSessionID)
 		}
 
 		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + "codex"
+		return envPrefix + "codex" + yoloFlag
 	}
 
 	// For custom commands (e.g., resume commands), return as-is
@@ -2359,14 +2379,15 @@ func (i *Instance) Restart() error {
 			}
 		}
 
+		codexYolo := i.resolveCodexYoloFlag()
 		var resumeCmd string
 		if i.CodexSessionID != "" {
 			// Resume with known session ID
-			resumeCmd = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex resume %s",
-				i.CodexSessionID, i.CodexSessionID)
+			resumeCmd = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex%s resume %s",
+				i.CodexSessionID, codexYolo, i.CodexSessionID)
 		} else {
 			// No session ID yet, start fresh (will detect ID async)
-			resumeCmd = "codex"
+			resumeCmd = "codex" + codexYolo
 			// Re-record start time for async detection
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
@@ -2450,8 +2471,8 @@ func (i *Instance) Restart() error {
 			i.OpenCodeSessionID, i.OpenCodeSessionID)
 	} else if i.Tool == "codex" && i.CodexSessionID != "" {
 		// Set CODEX_SESSION_ID in tmux env so detection works after restart
-		command = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex resume %s",
-			i.CodexSessionID, i.CodexSessionID)
+		command = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex%s resume %s",
+			i.CodexSessionID, i.resolveCodexYoloFlag(), i.CodexSessionID)
 	} else {
 		// Route to appropriate command builder based on tool
 		switch i.Tool {
@@ -2890,6 +2911,32 @@ func (i *Instance) GetClaudeOptions() *ClaudeOptions {
 
 // SetClaudeOptions stores Claude-specific options
 func (i *Instance) SetClaudeOptions(opts *ClaudeOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+// GetCodexOptions returns Codex-specific options, or nil if not set
+func (i *Instance) GetCodexOptions() *CodexOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalCodexOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetCodexOptions stores Codex-specific options
+func (i *Instance) SetCodexOptions(opts *CodexOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil

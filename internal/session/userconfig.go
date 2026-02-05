@@ -45,6 +45,9 @@ type UserConfig struct {
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini"`
 
+	// Codex defines Codex CLI integration settings
+	Codex CodexSettings `toml:"codex"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -403,6 +406,13 @@ type GeminiSettings struct {
 	// EnvFile is a .env file specific to Gemini sessions
 	// Sourced AFTER global [shell].env_files
 	EnvFile string `toml:"env_file"`
+}
+
+// CodexSettings defines Codex CLI configuration
+type CodexSettings struct {
+	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
+	// Default: false
+	YoloMode bool `toml:"yolo_mode"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1172,6 +1182,11 @@ func CreateExampleConfig() error {
 # Gemini CLI integration
 # [gemini]
 # Enable --yolo (auto-approve all actions) by default (default: false)
+# yolo_mode = true
+
+# Codex CLI integration
+# [codex]
+# Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
 
 # Log file management

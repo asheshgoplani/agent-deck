@@ -101,6 +101,9 @@ type InstanceData struct {
 	// Latest user input for context
 	LatestPrompt string `json:"latest_prompt,omitempty"`
 
+	// Tool-specific launch options (generic for all tools: claude, codex, etc.)
+	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
+
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 }
@@ -243,6 +246,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			OpenCodeDetectedAt: inst.OpenCodeDetectedAt,
 			CodexSessionID:     inst.CodexSessionID,
 			CodexDetectedAt:    inst.CodexDetectedAt,
+			ToolOptionsJSON:    inst.ToolOptionsJSON,
 			LatestPrompt:       inst.LatestPrompt,
 			LoadedMCPNames:     inst.LoadedMCPNames,
 		}
@@ -581,6 +585,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			OpenCodeDetectedAt: instData.OpenCodeDetectedAt,
 			CodexSessionID:     instData.CodexSessionID,
 			CodexDetectedAt:    instData.CodexDetectedAt,
+			ToolOptionsJSON:    instData.ToolOptionsJSON,
 			LatestPrompt:       instData.LatestPrompt,
 			LoadedMCPNames:     instData.LoadedMCPNames,
 			tmuxSession:        tmuxSess,

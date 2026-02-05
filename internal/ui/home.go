@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -3022,9 +3023,19 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			path = worktreePath
 		}
 
+		// Build generic toolOptionsJSON from tool-specific options
+		var toolOptionsJSON json.RawMessage
+		if command == "claude" && claudeOpts != nil {
+			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
+		} else if command == "codex" {
+			yolo := h.newDialog.GetCodexYoloMode()
+			codexOpts := &session.CodexOptions{YoloMode: &yolo}
+			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+		}
+
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			h.newDialog.Hide()
-			h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath)
+			h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON)
 			return h, nil
 		}
 
@@ -3033,7 +3044,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		geminiYoloMode := h.newDialog.IsGeminiYoloMode()
 
-		return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, geminiYoloMode, claudeOpts)
+		return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, geminiYoloMode, toolOptionsJSON)
 
 	case "esc":
 		h.newDialog.Hide()
@@ -3708,13 +3719,13 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ConfirmCreateDirectory:
 		switch msg.String() {
 		case "y", "Y":
-			name, path, command, groupPath := h.confirmDialog.GetPendingSession()
+			name, path, command, groupPath, pendingToolOpts := h.confirmDialog.GetPendingSession()
 			h.confirmDialog.Hide()
 			if err := os.MkdirAll(path, 0755); err != nil {
 				h.setError(fmt.Errorf("failed to create directory: %w", err))
 				return h, nil
 			}
-			return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, "", "", "", false, nil)
+			return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, "", "", "", false, pendingToolOpts)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
 			return h, nil
@@ -4166,8 +4177,8 @@ func (h *Home) getUsedClaudeSessionIDs() map[string]bool {
 	return usedIDs
 }
 
-// createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode and Claude options
-func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, geminiYoloMode bool, claudeOpts *session.ClaudeOptions) tea.Cmd {
+// createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode and tool options
+func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, geminiYoloMode bool, toolOptionsJSON json.RawMessage) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
@@ -4215,11 +4226,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, g
 			inst.GeminiYoloMode = &geminiYoloMode
 		}
 
-		// Apply Claude options if provided
-		if tool == "claude" && claudeOpts != nil {
-			if err := inst.SetClaudeOptions(claudeOpts); err != nil {
-				return sessionCreatedMsg{err: fmt.Errorf("failed to set Claude options: %w", err)}
-			}
+		// Apply generic tool options (claude, codex, etc.)
+		if len(toolOptionsJSON) > 0 {
+			inst.ToolOptionsJSON = toolOptionsJSON
 		}
 
 		if err := inst.Start(); err != nil {

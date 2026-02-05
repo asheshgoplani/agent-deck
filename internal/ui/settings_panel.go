@@ -18,6 +18,7 @@ const (
 	SettingDangerousMode
 	SettingClaudeConfigDir
 	SettingGeminiYoloMode
+	SettingCodexYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
 	SettingLogMaxSize
@@ -32,7 +33,7 @@ const (
 )
 
 // Total number of navigable settings
-const settingsCount = 16
+const settingsCount = 17
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -47,6 +48,7 @@ type SettingsPanel struct {
 	dangerousMode       bool
 	claudeConfigDir     string
 	geminiYoloMode      bool
+	codexYoloMode       bool
 	checkForUpdates     bool
 	autoUpdate          bool
 	logMaxSizeMB        int
@@ -159,6 +161,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Gemini settings
 	s.geminiYoloMode = config.Gemini.YoloMode
 
+	// Codex settings
+	s.codexYoloMode = config.Codex.YoloMode
+
 	// Update settings
 	s.checkForUpdates = config.Updates.CheckEnabled
 	s.autoUpdate = config.Updates.AutoUpdate
@@ -221,6 +226,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Gemini settings
 	config.Gemini.YoloMode = s.geminiYoloMode
+
+	// Codex settings
+	config.Codex.YoloMode = s.codexYoloMode
 
 	// Update settings
 	config.Updates.CheckEnabled = s.checkForUpdates
@@ -374,6 +382,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingGeminiYoloMode:
 		s.geminiYoloMode = !s.geminiYoloMode
+		return true
+
+	case SettingCodexYoloMode:
+		s.codexYoloMode = !s.codexYoloMode
 		return true
 
 	case SettingCheckForUpdates:
@@ -556,6 +568,17 @@ func (s *SettingsPanel) View() string {
 	// YOLO mode checkbox
 	line = s.renderCheckbox("YOLO mode", s.geminiYoloMode) + " - Auto-approve all actions"
 	if s.cursor == int(SettingGeminiYoloMode) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// CODEX
+	content.WriteString(sectionStyle.Render("CODEX"))
+	content.WriteString("\n")
+
+	// YOLO mode checkbox
+	line = s.renderCheckbox("YOLO mode", s.codexYoloMode) + " - Bypass approvals and sandbox"
+	if s.cursor == int(SettingCodexYoloMode) {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")

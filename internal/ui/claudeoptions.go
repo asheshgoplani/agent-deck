@@ -75,12 +75,18 @@ func (p *ClaudeOptionsPanel) Focus() {
 
 // Blur removes focus from this panel
 func (p *ClaudeOptionsPanel) Blur() {
+	p.focusIndex = -1
 	p.resumeIDInput.Blur()
 }
 
 // IsFocused returns true if any element in the panel has focus
 func (p *ClaudeOptionsPanel) IsFocused() bool {
 	return p.focusIndex >= 0
+}
+
+// AtTop returns true if focus is on the first element
+func (p *ClaudeOptionsPanel) AtTop() bool {
+	return p.focusIndex <= 0
 }
 
 // GetOptions returns current options as ClaudeOptions
@@ -106,9 +112,7 @@ func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 }
 
 // Update handles key events
-func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) {
-	var cmd tea.Cmd
-
+func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -118,7 +122,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 				p.focusIndex = p.getFocusCount() - 1
 			}
 			p.updateInputFocus()
-			return p, nil
+			return nil
 
 		case "down", "tab":
 			p.focusIndex++
@@ -126,7 +130,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 				p.focusIndex = 0
 			}
 			p.updateInputFocus()
-			return p, nil
+			return nil
 
 		case "shift+tab":
 			p.focusIndex--
@@ -134,7 +138,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 				p.focusIndex = p.getFocusCount() - 1
 			}
 			p.updateInputFocus()
-			return p, nil
+			return nil
 
 		case " ":
 			// Don't intercept space when focused on a text input
@@ -143,7 +147,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 			}
 			// Toggle checkbox or radio at current focus
 			p.handleSpaceKey()
-			return p, nil
+			return nil
 
 		case "left", "right":
 			// For session mode radio buttons
@@ -156,18 +160,19 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) (*ClaudeOptionsPanel, tea.Cmd) 
 				} else {
 					p.sessionMode = (p.sessionMode + 1) % 3
 				}
-				return p, nil
+				return nil
 			}
 		}
 	}
 
 	// Update text inputs if focused
 	if p.isResumeInputFocused() {
+		var cmd tea.Cmd
 		p.resumeIDInput, cmd = p.resumeIDInput.Update(msg)
-		return p, cmd
+		return cmd
 	}
 
-	return p, nil
+	return nil
 }
 
 // handleSpaceKey handles space key for toggling checkboxes/radios
@@ -276,23 +281,8 @@ func (p *ClaudeOptionsPanel) View() string {
 func (p *ClaudeOptionsPanel) viewForkMode(labelStyle, activeStyle, dimStyle, headerStyle lipgloss.Style) string {
 	var content string
 	content += headerStyle.Render("─ Advanced Options ─") + "\n"
-
-	// Skip permissions checkbox
-	checkbox := p.renderCheckbox(p.skipPermissions, p.focusIndex == 0)
-	if p.focusIndex == 0 {
-		content += activeStyle.Render("▶ ") + checkbox + " Skip permissions\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("Skip permissions") + "\n"
-	}
-
-	// Chrome checkbox
-	checkbox = p.renderCheckbox(p.useChrome, p.focusIndex == 1)
-	if p.focusIndex == 1 {
-		content += activeStyle.Render("▶ ") + checkbox + " Chrome mode\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("Chrome mode") + "\n"
-	}
-
+	content += renderCheckboxLine("Skip permissions", p.skipPermissions, p.focusIndex == 0)
+	content += renderCheckboxLine("Chrome mode", p.useChrome, p.focusIndex == 1)
 	return content
 }
 
@@ -324,27 +314,23 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 	}
 
 	// Skip permissions checkbox
-	checkbox := p.renderCheckbox(p.skipPermissions, p.focusIndex == focusIdx)
-	if p.focusIndex == focusIdx {
-		content += activeStyle.Render("▶ ") + checkbox + " Skip permissions\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("Skip permissions") + "\n"
-	}
+	content += renderCheckboxLine("Skip permissions", p.skipPermissions, p.focusIndex == focusIdx)
 	focusIdx++
 
 	// Chrome checkbox
-	checkbox = p.renderCheckbox(p.useChrome, p.focusIndex == focusIdx)
-	if p.focusIndex == focusIdx {
-		content += activeStyle.Render("▶ ") + checkbox + " Chrome mode\n"
-	} else {
-		content += "  " + checkbox + " " + labelStyle.Render("Chrome mode") + "\n"
-	}
+	content += renderCheckboxLine("Chrome mode", p.useChrome, p.focusIndex == focusIdx)
 
 	return content
 }
 
-// renderCheckbox renders a checkbox [x] or [ ]
+// renderCheckbox renders a checkbox [x] or [ ] (delegates to shared function)
 func (p *ClaudeOptionsPanel) renderCheckbox(checked, focused bool) string {
+	return renderCheckboxMark(checked, focused)
+}
+
+// renderCheckboxMark renders a checkbox mark [x] or [ ] with consistent styling.
+// Shared across all tool option panels for visual consistency.
+func renderCheckboxMark(checked, focused bool) string {
 	style := lipgloss.NewStyle()
 	if focused {
 		style = style.Foreground(ColorAccent).Bold(true)
@@ -353,6 +339,19 @@ func (p *ClaudeOptionsPanel) renderCheckbox(checked, focused bool) string {
 		return style.Render("[x]")
 	}
 	return style.Render("[ ]")
+}
+
+// renderCheckboxLine renders a complete checkbox line with label, matching Claude options panel style.
+// Used by Gemini and Codex options in NewDialog for visual consistency with Claude.
+func renderCheckboxLine(label string, checked, focused bool) string {
+	activeStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+	cb := renderCheckboxMark(checked, focused)
+	if focused {
+		return activeStyle.Render("▶ ") + cb + " " + label + "\n"
+	}
+	return "  " + cb + " " + labelStyle.Render(label) + "\n"
 }
 
 // renderRadio renders a radio button (•) or ( )
