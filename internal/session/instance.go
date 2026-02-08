@@ -215,11 +215,20 @@ func (inst *Instance) ClearParent() {
 	inst.ParentProjectPath = ""
 }
 
+// applyTmuxConfig applies user's tmux configuration to a tmux session.
+// This is called when creating new instances to ensure config is applied before Start().
+func applyTmuxConfig(tmuxSess *tmux.Session) {
+	tmuxSess.TmuxConfig = tmux.TmuxConfig(GetTmuxSettings())
+}
+
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
 	id := generateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
+
+	// Apply user's tmux configuration
+	applyTmuxConfig(tmuxSess)
 
 	return &Instance{
 		ID:          id,
@@ -245,6 +254,9 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	id := generateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
+
+	// Apply user's tmux configuration
+	applyTmuxConfig(tmuxSess)
 
 	inst := &Instance{
 		ID:          id,
@@ -2459,6 +2471,9 @@ func (i *Instance) Restart() error {
 	// Fallback: recreate tmux session (for dead sessions or unknown ID)
 	i.tmuxSession = tmux.NewSession(i.Title, i.ProjectPath)
 	i.tmuxSession.InstanceID = i.ID // Pass instance ID for activity hooks
+
+	// Apply user's tmux configuration
+	applyTmuxConfig(i.tmuxSession)
 
 	var command string
 	if i.Tool == "claude" && i.ClaudeSessionID != "" {

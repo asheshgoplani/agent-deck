@@ -32,6 +32,10 @@ var ErrCaptureTimeout = errors.New("capture-pane timed out")
 
 const SessionPrefix = "agentdeck_"
 
+// TmuxConfig holds user-configurable tmux session options as a map.
+// Keys use tmux's native hyphenated names (e.g., "history-limit", "escape-time").
+type TmuxConfig map[string]string
+
 // Session cache - reduces subprocess spawns from O(n) to O(1) per tick
 // Instead of calling `tmux has-session` and `tmux display-message` for each session,
 // we call `tmux list-sessions` ONCE and cache both existence and activity timestamps
@@ -369,6 +373,10 @@ type Session struct {
 	Command     string
 	Created     time.Time
 	InstanceID  string // Agent-deck instance ID for hook callbacks
+
+	// TmuxConfig holds user-configurable tmux options as a map
+	// Set by session.Instance before calling Start()
+	TmuxConfig TmuxConfig
 
 	// mu protects all mutable fields below from concurrent access
 	mu sync.Mutex
@@ -722,6 +730,22 @@ func sanitizeName(name string) string {
 	return re.ReplaceAllString(name, "-")
 }
 
+// getTmuxConfig returns the tmux configuration with defaults applied.
+// If TmuxConfig is not set on the session, returns sensible defaults.
+func (s *Session) getTmuxConfig() TmuxConfig {
+	if s.TmuxConfig != nil {
+		return s.TmuxConfig
+	}
+	// Return defaults matching the current hardcoded behavior
+	return TmuxConfig{
+		"mouse":             "on",
+		"history-limit":     "10000",
+		"escape-time":       "10",
+		"set-clipboard":     "on",
+		"allow-passthrough": "on",
+	}
+}
+
 // Start creates and starts a tmux session
 func (s *Session) Start(command string) error {
 	s.Command = command
@@ -756,41 +780,20 @@ func (s *Session) Start(command string) error {
 	_ = exec.Command("tmux", "set-option", "-t", s.Name, "window-style", "default").Run()
 	_ = exec.Command("tmux", "set-option", "-t", s.Name, "window-active-style", "default").Run()
 
-	// Enable mouse mode for proper scrolling (per-session, doesn't affect user's other sessions)
-	// This allows:
-	// - Mouse wheel scrolling through terminal history
-	// - Text selection with mouse
-	// - Pane resizing with mouse
-	// Non-fatal: session still works, just without mouse support
-	// This can fail on very old tmux versions
-	_ = exec.Command("tmux", "set-option", "-t", s.Name, "mouse", "on").Run()
-
-	// Enable escape sequence passthrough for modern terminal features (tmux 3.2+)
-	// This allows:
-	// - OSC 8: Clickable hyperlinks/file paths (Warp, iTerm2, kitty, Alacritty, etc.)
-	// - OSC 52: Clipboard integration (copy/paste from remote sessions)
-	// - Image protocols: Inline images in terminals that support it
-	// Uses -q flag to silently ignore on older tmux versions (< 3.2)
-	_ = exec.Command("tmux", "set-option", "-t", s.Name, "-q", "allow-passthrough", "on").Run()
+	// Apply user-configurable tmux options from [tmux] config section
+	// Uses -q flag to silently ignore unsupported options on older tmux versions
+	cfg := s.getTmuxConfig()
+	for key, value := range cfg {
+		if value != "" {
+			_ = exec.Command("tmux", "set-option", "-t", s.Name, "-q", key, value).Run()
+		}
+	}
 
 	// Enable hyperlink support in terminal features (tmux 3.4+, server-wide option)
 	// This tells tmux to track hyperlinks like it tracks colors/attributes
 	// Required for OSC 8 hyperlinks to work - passthrough alone isn't enough
 	// Uses -as to append to existing terminal-features, -q to ignore if unsupported
 	_ = exec.Command("tmux", "set", "-asq", "terminal-features", ",*:hyperlinks").Run()
-
-	// Enable OSC 52 clipboard integration for seamless copy/paste
-	// Works with: Warp, iTerm2, kitty, Alacritty, WezTerm, Windows Terminal, VS Code
-	// The 'on' value (tmux 2.6+) allows apps inside tmux to set the clipboard
-	_ = exec.Command("tmux", "set-option", "-t", s.Name, "set-clipboard", "on").Run()
-
-	// Set large history buffer for AI agent sessions (default is 2000)
-	// AI agents produce extensive output, 10000 lines is a good balance
-	_ = exec.Command("tmux", "set-option", "-t", s.Name, "history-limit", "10000").Run()
-
-	// Reduce escape-time for responsive Vim/editor usage (default 500ms is too slow)
-	// 10ms is a good balance between responsiveness and SSH reliability
-	_ = exec.Command("tmux", "set-option", "-t", s.Name, "escape-time", "10").Run()
 
 	// Configure status bar with session info for easy identification
 	// Shows: session title on left, project folder on right
@@ -898,35 +901,27 @@ func (s *Session) ConfigureStatusBar() {
 // Note: With mouse mode on, hold Shift while selecting to use native terminal selection
 // instead of tmux's selection (useful for copying to system clipboard in some terminals)
 func (s *Session) EnableMouseMode() error {
+	// Get user-configurable tmux options (or defaults if not set)
+	cfg := s.getTmuxConfig()
+
 	// CRITICAL: Mouse mode must succeed - keep as separate call for error handling
-	// This is the only essential feature; all others are enhancements
-	mouseCmd := exec.Command("tmux", "set-option", "-t", s.Name, "mouse", "on")
-	if err := mouseCmd.Run(); err != nil {
-		return err
+	if mouse := cfg["mouse"]; mouse != "" {
+		mouseCmd := exec.Command("tmux", "set-option", "-t", s.Name, "mouse", mouse)
+		if err := mouseCmd.Run(); err != nil {
+			return err
+		}
 	}
 
-	// PERFORMANCE: Batch all non-fatal enhancements into single subprocess call
-	// Uses tmux command chaining with \; separator (67% reduction in subprocess calls)
-	// Before: 5 separate exec.Command calls = 5 subprocess spawns
-	// After: 1 exec.Command call = 1 subprocess spawn
-	//
-	// Enhancements included:
-	// - set-clipboard on: OSC 52 clipboard integration (Warp, iTerm2, kitty, etc.)
-	// - allow-passthrough on: OSC 8 hyperlinks, advanced escape sequences (tmux 3.2+)
-	// - terminal-features hyperlinks: Track hyperlinks like colors (tmux 3.4+)
-	// - history-limit 10000: Large scrollback for AI agent output
-	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
-	//
-	// Uses -q flag where supported to silently ignore on older tmux versions
-	enhanceCmd := exec.Command("tmux",
-		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
-		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
-		"set-option", "-t", s.Name, "history-limit", "10000", ";",
-		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks")
-	// Ignore errors - all these are non-fatal enhancements
-	// Older tmux versions may not support some options
-	_ = enhanceCmd.Run()
+	// Apply remaining options from config (non-fatal enhancements)
+	// Uses -q flag to silently ignore on older tmux versions
+	for key, value := range cfg {
+		if key != "mouse" && value != "" {
+			_ = exec.Command("tmux", "set-option", "-t", s.Name, "-q", key, value).Run()
+		}
+	}
+
+	// Enable hyperlink support in terminal features (tmux 3.4+, server-wide option)
+	_ = exec.Command("tmux", "set", "-asq", "terminal-features", ",*:hyperlinks").Run()
 
 	return nil
 }

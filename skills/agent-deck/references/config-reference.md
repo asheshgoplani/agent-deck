@@ -8,6 +8,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[claude] Section](#claude-section)
 - [[codex] Section](#codex-section)
 - [[logs] Section](#logs-section)
+- [[tmux] Section](#tmux-section)
 - [[updates] Section](#updates-section)
 - [[global_search] Section](#global_search-section)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -66,6 +67,30 @@ remove_orphans = true   # Delete logs for removed sessions
 | `remove_orphans` | bool | `true` | Clean up logs for deleted sessions. |
 
 **Logs location:** `~/.agent-deck/logs/agentdeck_<session>_<id>.log`
+
+## [tmux] Section
+
+Tmux session configuration. Set any tmux option using its native hyphenated name.
+
+```toml
+[tmux]
+mouse = "on"               # Mouse support (default: on)
+history-limit = "10000"    # Scrollback buffer (default: 10000)
+escape-time = "10"         # Escape timeout in ms (default: 10)
+set-clipboard = "on"       # OSC 52 clipboard (default: on)
+allow-passthrough = "on"   # OSC 8 hyperlinks (default: on)
+focus-events = "on"        # Any tmux option works
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mouse` | `"on"` | Mouse support: `"on"` or `"off"`. |
+| `history-limit` | `"10000"` | Scrollback buffer size in lines. |
+| `escape-time` | `"10"` | Escape timeout in ms. Lower = faster Vim. |
+| `set-clipboard` | `"on"` | Clipboard: `"on"`, `"off"`, or `"external"`. |
+| `allow-passthrough` | `"on"` | Escape passthrough for hyperlinks. Requires tmux 3.2+. |
+
+Any valid tmux option can be set here. Use `tmux show-options` to see available options.
 
 ## [updates] Section
 
@@ -275,6 +300,10 @@ yolo_mode = false
 max_size_mb = 10
 max_lines = 10000
 remove_orphans = true
+
+[tmux]
+history-limit = "50000"
+escape-time = "0"
 
 [updates]
 check_enabled = true

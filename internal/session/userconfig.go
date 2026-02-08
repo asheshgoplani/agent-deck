@@ -83,6 +83,9 @@ type UserConfig struct {
 
 	// Status defines session status detection settings
 	Status StatusSettings `toml:"status"`
+
+	// Tmux defines tmux session configuration
+	Tmux TmuxSettings `toml:"tmux"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -417,6 +420,11 @@ type CodexSettings struct {
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
 }
+
+// TmuxSettings defines tmux session configuration as a map of option name to value.
+// Keys use tmux's native hyphenated names (e.g., "history-limit", "escape-time").
+// Common options: mouse, history-limit, escape-time, set-clipboard, allow-passthrough.
+type TmuxSettings map[string]string
 
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
@@ -983,6 +991,30 @@ func GetWorktreeSettings() WorktreeSettings {
 	return settings
 }
 
+// GetTmuxSettings returns tmux settings with defaults applied.
+// Defaults: mouse=on, history-limit=10000, escape-time=10, set-clipboard=on, allow-passthrough=on.
+func GetTmuxSettings() TmuxSettings {
+	defaults := TmuxSettings{
+		"mouse":            "on",
+		"history-limit":    "10000",
+		"escape-time":      "10",
+		"set-clipboard":    "on",
+		"allow-passthrough": "on",
+	}
+
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return defaults
+	}
+
+	// Merge user settings over defaults
+	for key, value := range config.Tmux {
+		defaults[key] = value
+	}
+
+	return defaults
+}
+
 // GetUpdateSettings returns update settings with defaults applied
 func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
@@ -1217,6 +1249,17 @@ max_size_mb = 10
 max_lines = 10000
 # Remove log files for sessions that no longer exist (default: true)
 remove_orphans = true
+
+# Tmux session configuration
+# Set any tmux option using its native name (hyphens, not underscores)
+# [tmux]
+# mouse = "on"               # Mouse support (default: on)
+# history-limit = "10000"    # Scrollback buffer (default: 10000)
+# escape-time = "10"         # Escape timeout in ms (default: 10, lower = faster Vim)
+# set-clipboard = "on"       # OSC 52 clipboard (default: on)
+# allow-passthrough = "on"   # OSC 8 hyperlinks (default: on, requires tmux 3.2+)
+# focus-events = "on"        # Any other tmux option works too
+# default-terminal = "tmux-256color"
 
 # Update settings
 # Controls automatic update checking and installation
