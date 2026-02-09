@@ -46,18 +46,34 @@ func getExternalSocketPath(mcpName string) string {
 	return socketPath
 }
 
+// readExistingLocalMCPServers reads mcpServers from an existing .mcp.json file.
+// Returns nil if the file doesn't exist or can't be parsed.
+func readExistingLocalMCPServers(mcpFile string) map[string]json.RawMessage {
+	data, err := os.ReadFile(mcpFile)
+	if err != nil {
+		return nil
+	}
+	var config struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return config.MCPServers
+}
+
 // WriteMCPJsonFromConfig writes enabled MCPs from config.toml to project's .mcp.json
+// It preserves any existing entries not managed by agent-deck (not defined in config.toml)
 func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 	mcpFile := filepath.Join(projectPath, ".mcp.json")
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool() // Get pool instance (may be nil)
 
-	// Build the .mcp.json content using MCPServerConfig format (Claude's expected format)
-	mcpConfig := struct {
-		MCPServers map[string]MCPServerConfig `json:"mcpServers"`
-	}{
-		MCPServers: make(map[string]MCPServerConfig),
-	}
+	// Read existing .mcp.json to preserve entries not managed by agent-deck (#146)
+	existingServers := readExistingLocalMCPServers(mcpFile)
+
+	// Build agent-deck managed MCP entries
+	agentDeckServers := make(map[string]MCPServerConfig)
 
 	for _, name := range enabledNames {
 		if def, ok := availableMCPs[name]; ok {
@@ -75,7 +91,7 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 				if transport == "" {
 					transport = "http" // default to http if URL is set
 				}
-				mcpConfig.MCPServers[name] = MCPServerConfig{
+				agentDeckServers[name] = MCPServerConfig{
 					Type:    transport,
 					URL:     def.URL,
 					Headers: def.Headers,
@@ -90,7 +106,7 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 				if pool.IsRunning(name) {
 					// Use Unix socket (nc connects to socket proxy)
 					socketPath := pool.GetSocketPath(name)
-					mcpConfig.MCPServers[name] = MCPServerConfig{
+					agentDeckServers[name] = MCPServerConfig{
 						Command: "agent-deck",
 						Args:    []string{"mcp-proxy", socketPath},
 					}
@@ -116,7 +132,7 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 				if config != nil && config.MCPPool.Enabled {
 					// Try to find existing socket from TUI's pool
 					if socketPath := getExternalSocketPath(name); socketPath != "" {
-						mcpConfig.MCPServers[name] = MCPServerConfig{
+						agentDeckServers[name] = MCPServerConfig{
 							Command: "agent-deck",
 							Args:    []string{"mcp-proxy", socketPath},
 						}
@@ -146,7 +162,7 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 			if env == nil {
 				env = map[string]string{}
 			}
-			mcpConfig.MCPServers[name] = MCPServerConfig{
+			agentDeckServers[name] = MCPServerConfig{
 				Type:    "stdio",
 				Command: def.Command,
 				Args:    args,
@@ -156,7 +172,30 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 		}
 	}
 
-	data, err := json.MarshalIndent(mcpConfig, "", "  ")
+	// Merge: preserve non-agent-deck entries, then add agent-deck entries (#146)
+	mergedServers := make(map[string]json.RawMessage)
+	for name, raw := range existingServers {
+		if _, managed := availableMCPs[name]; !managed {
+			mergedServers[name] = raw
+			mcpCatLog.Debug("preserved_existing_mcp", slog.String("mcp", name), slog.String("scope", "local"))
+		}
+	}
+	for name, cfg := range agentDeckServers {
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			mcpCatLog.Warn("marshal_mcp_entry_failed", slog.String("mcp", name), slog.Any("error", err))
+			continue
+		}
+		mergedServers[name] = raw
+	}
+
+	finalConfig := struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}{
+		MCPServers: mergedServers,
+	}
+
+	data, err := json.MarshalIndent(finalConfig, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal .mcp.json: %w", err)
 	}
@@ -292,7 +331,19 @@ func WriteGlobalMCP(enabledNames []string) error {
 		}
 	}
 
-	rawConfig["mcpServers"] = mcpServers
+	// Merge: preserve non-agent-deck entries from existing config (#146)
+	mergedMCPs := make(map[string]interface{})
+	if existingMCPs, ok := rawConfig["mcpServers"].(map[string]interface{}); ok {
+		for name, cfg := range existingMCPs {
+			if _, managed := availableMCPs[name]; !managed {
+				mergedMCPs[name] = cfg
+			}
+		}
+	}
+	for name, cfg := range mcpServers {
+		mergedMCPs[name] = cfg
+	}
+	rawConfig["mcpServers"] = mergedMCPs
 
 	// Write atomically
 	data, err := json.MarshalIndent(rawConfig, "", "  ")
@@ -551,7 +602,19 @@ func WriteUserMCP(enabledNames []string) error {
 		}
 	}
 
-	rawConfig["mcpServers"] = mcpServers
+	// Merge: preserve non-agent-deck entries from existing config (#146)
+	mergedMCPs := make(map[string]interface{})
+	if existingMCPs, ok := rawConfig["mcpServers"].(map[string]interface{}); ok {
+		for name, cfg := range existingMCPs {
+			if _, managed := availableMCPs[name]; !managed {
+				mergedMCPs[name] = cfg
+			}
+		}
+	}
+	for name, cfg := range mcpServers {
+		mergedMCPs[name] = cfg
+	}
+	rawConfig["mcpServers"] = mergedMCPs
 
 	// Write atomically
 	data, err := json.MarshalIndent(rawConfig, "", "  ")
