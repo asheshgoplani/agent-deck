@@ -618,6 +618,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			)
 			// Pass instance ID for activity hooks (enables real-time status updates)
 			tmuxSess.InstanceID = instData.ID
+			// Apply tmux config settings (e.g., inject_status_line)
+			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 			// Note: EnableMouseMode is now deferred to EnsureConfigured()
 			// Called automatically when user attaches to session
 		}

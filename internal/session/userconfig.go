@@ -83,6 +83,9 @@ type UserConfig struct {
 
 	// Status defines session status detection settings
 	Status StatusSettings `toml:"status"`
+
+	// Tmux defines tmux session configuration settings
+	Tmux TmuxSettings `toml:"tmux"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -625,6 +628,23 @@ type StatusSettings struct {
 	// Control mode pipes are always enabled (no longer configurable).
 }
 
+// TmuxSettings defines tmux session configuration
+type TmuxSettings struct {
+	// InjectStatusLine controls whether agent-deck injects a custom status line
+	// into new tmux sessions. When false, the tmux status bar is not modified,
+	// allowing users to use their own tmux status line configuration.
+	// Default: true (nil = use default true)
+	InjectStatusLine *bool `toml:"inject_status_line"`
+}
+
+// GetInjectStatusLine returns whether to inject status line, defaulting to true
+func (t TmuxSettings) GetInjectStatusLine() bool {
+	if t.InjectStatusLine == nil {
+		return true
+	}
+	return *t.InjectStatusLine
+}
+
 // MaintenanceSettings controls the automatic maintenance worker
 type MaintenanceSettings struct {
 	// Enabled enables the maintenance worker (default: false)
@@ -1113,6 +1133,15 @@ func GetStatusSettings() StatusSettings {
 	return config.Status
 }
 
+// GetTmuxSettings returns tmux configuration settings
+func GetTmuxSettings() TmuxSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return TmuxSettings{}
+	}
+	return config.Tmux
+}
+
 // GetInstanceSettings returns instance behavior settings
 func GetInstanceSettings() InstanceSettings {
 	config, err := LoadUserConfig()
@@ -1223,6 +1252,14 @@ max_size_mb = 10
 max_lines = 10000
 # Remove log files for sessions that no longer exist (default: true)
 remove_orphans = true
+
+# Tmux session settings
+# Controls how agent-deck configures tmux sessions
+# [tmux]
+# inject_status_line controls whether agent-deck sets up a custom tmux status bar
+# When false, your existing tmux status line configuration is preserved
+# Default: true (agent-deck injects its own status bar with session info)
+# inject_status_line = false
 
 # Update settings
 # Controls automatic update checking and installation

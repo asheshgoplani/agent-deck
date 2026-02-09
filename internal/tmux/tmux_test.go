@@ -69,6 +69,35 @@ func TestNewSessionUniqueness(t *testing.T) {
 	}
 }
 
+func TestNewSession_InjectStatusLineDefault(t *testing.T) {
+	sess := NewSession("test-inject", "/tmp")
+	// Default should be true
+	if !sess.injectStatusLine {
+		t.Error("New session should have injectStatusLine=true by default")
+	}
+}
+
+func TestSetInjectStatusLine(t *testing.T) {
+	sess := NewSession("test-inject", "/tmp")
+
+	// Initially true
+	if !sess.injectStatusLine {
+		t.Error("New session should have injectStatusLine=true by default")
+	}
+
+	// Set to false
+	sess.SetInjectStatusLine(false)
+	if sess.injectStatusLine {
+		t.Error("SetInjectStatusLine(false) should set injectStatusLine to false")
+	}
+
+	// Set back to true
+	sess.SetInjectStatusLine(true)
+	if !sess.injectStatusLine {
+		t.Error("SetInjectStatusLine(true) should set injectStatusLine to true")
+	}
+}
+
 func TestSessionPrefix(t *testing.T) {
 	if SessionPrefix != "agentdeck_" {
 		t.Errorf("SessionPrefix = %s, want agentdeck_", SessionPrefix)

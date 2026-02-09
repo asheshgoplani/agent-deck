@@ -413,6 +413,11 @@ type Session struct {
 	// Environment variable cache (reduces tmux show-environment subprocess spawns)
 	envCache   map[string]envCacheEntry
 	envCacheMu sync.RWMutex
+
+	// InjectStatusLine controls whether ConfigureStatusBar modifies tmux status
+	// When false, the status bar configuration is skipped entirely.
+	// Default: true (set via SetInjectStatusLine from session config)
+	injectStatusLine bool
 }
 
 type envCacheEntry struct {
@@ -471,6 +476,15 @@ func (s *Session) SetDetectPatterns(toolName string, detectPatterns []string) {
 	s.customDetectPatterns = detectPatterns
 }
 
+// SetInjectStatusLine controls whether ConfigureStatusBar modifies tmux status.
+// When false, the status bar configuration is skipped entirely, allowing users
+// to use their own tmux status line configuration.
+func (s *Session) SetInjectStatusLine(inject bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.injectStatusLine = inject
+}
+
 // LogFile returns the path to this session's log file
 // Logs are stored in ~/.agent-deck/logs/<session-name>.log
 func (s *Session) LogFile() string {
@@ -503,6 +517,7 @@ func NewSession(name, workDir string) *Session {
 		Created:          time.Now(),
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second, // Re-detect tool every 30 seconds
+		injectStatusLine: true,             // Default: inject status line (can be disabled via config)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 }
@@ -523,6 +538,7 @@ func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second,
 		configured:       false, // Will be set to true after configuration
+		injectStatusLine: true,  // Default: inject status line (can be disabled via config)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 
@@ -588,6 +604,7 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second,
 		configured:       false, // Explicitly mark as not configured
+		injectStatusLine: true,  // Default: inject status line (can be disabled via config)
 	}
 
 	// Restore state tracker based on previous status (without running tmux commands)
@@ -856,7 +873,15 @@ func (s *Session) Exists() bool {
 // Shows: notification bar on left (managed by NotificationManager), session info on right
 // NOTE: status-left is reserved for the notification bar showing waiting sessions
 // This function only configures status-right to avoid overwriting notification bar
+//
+// If injectStatusLine is false (set via SetInjectStatusLine), this function does nothing,
+// allowing users to use their own tmux status line configuration.
 func (s *Session) ConfigureStatusBar() {
+	// Check if status line injection is disabled
+	if !s.injectStatusLine {
+		return
+	}
+
 	// Get short folder name from WorkDir
 	folderName := filepath.Base(s.WorkDir)
 	if folderName == "" || folderName == "." {
