@@ -79,7 +79,7 @@ func handleMCPList(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -223,7 +223,7 @@ func handleMCPAttached(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -356,7 +356,7 @@ func handleMCPAttach(profile string, args []string) {
 		fmt.Println("  agent-deck mcp attach my-project exa --restart # Attach and restart")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -513,7 +513,7 @@ func handleMCPDetach(profile string, args []string) {
 		fmt.Println("  agent-deck mcp detach my-project exa --restart # Detach and restart")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -700,7 +700,7 @@ func handleMCPServerStart(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -774,7 +774,7 @@ func handleMCPServerStop(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -835,7 +835,7 @@ func handleMCPServerStatus(args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 

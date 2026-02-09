@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,52 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// normalizeArgs reorders args so flags come before positional arguments.
+// Go's flag package stops parsing at the first non-flag argument, which means
+// "session show my-title --json" silently ignores --json. This function
+// moves all flags to the front so they get parsed correctly.
+func normalizeArgs(fs *flag.FlagSet, args []string) []string {
+	// Build set of known boolean flags (don't need a value argument)
+	boolFlags := make(map[string]bool)
+	fs.VisitAll(func(f *flag.Flag) {
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags[f.Name] = true
+		}
+	})
+
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// "--" terminates flag processing
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+
+			// Determine flag name (strip leading dashes)
+			name := strings.TrimLeft(arg, "-")
+
+			// Handle --flag=value (value is part of the arg, nothing to move)
+			if strings.Contains(name, "=") {
+				continue
+			}
+
+			// If it's not a bool flag, the next arg is its value
+			if !boolFlags[name] && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+	return append(flags, positional...)
+}
 
 // CLIOutput handles consistent output formatting across all CLI commands
 type CLIOutput struct {

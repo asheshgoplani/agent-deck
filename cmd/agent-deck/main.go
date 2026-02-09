@@ -29,7 +29,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
-const Version = "0.11.4"
+const Version = "0.12.0"
 
 // Table column widths for list command output
 const (
@@ -229,6 +229,9 @@ func main() {
 			return
 		case "try":
 			handleTry(profile, args[1:])
+			return
+		case "conductor":
+			handleConductor(profile, args[1:])
 			return
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
@@ -605,7 +608,7 @@ func handleAdd(profile string, args []string) {
 	// This allows: "add . -c claude" to work same as "add -c claude ."
 	args = reorderArgsForFlagParsing(args)
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -965,7 +968,7 @@ func handleList(profile string, args []string) {
 		fmt.Println("  agent-deck list --all              # List from all profiles")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -1000,11 +1003,13 @@ func handleList(profile string, args []string) {
 			Group     string    `json:"group"`
 			Tool      string    `json:"tool"`
 			Command   string    `json:"command,omitempty"`
+			Status    string    `json:"status"`
 			Profile   string    `json:"profile"`
 			CreatedAt time.Time `json:"created_at"`
 		}
 		sessions := make([]sessionJSON, len(instances))
 		for i, inst := range instances {
+			_ = inst.UpdateStatus()
 			sessions[i] = sessionJSON{
 				ID:        inst.ID,
 				Title:     inst.Title,
@@ -1012,6 +1017,7 @@ func handleList(profile string, args []string) {
 				Group:     inst.GroupPath,
 				Tool:      inst.Tool,
 				Command:   inst.Command,
+				Status:    StatusString(inst.Status),
 				Profile:   storage.Profile(),
 				CreatedAt: inst.CreatedAt,
 			}
@@ -1160,7 +1166,7 @@ func handleRemove(profile string, args []string) {
 		fmt.Println("  agent-deck -p work remove abc12345   # Remove from 'work' profile")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -1298,7 +1304,7 @@ func handleStatus(profile string, args []string) {
 		fmt.Println("  agent-deck -p work status      # Status for 'work' profile")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -1580,7 +1586,7 @@ func handleUpdate(args []string) {
 		fmt.Println("  agent-deck update --check   # Only check, don't install")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -1697,6 +1703,7 @@ func printHelp() {
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
+	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
 	fmt.Println("  uninstall        Uninstall Agent Deck")
@@ -1722,6 +1729,11 @@ func printHelp() {
 	fmt.Println("  group create <name>       Create a new group")
 	fmt.Println("  group delete <name>       Delete a group")
 	fmt.Println("  group move <id> <group>   Move session to group")
+	fmt.Println()
+	fmt.Println("Conductor Commands:")
+	fmt.Println("  conductor setup           Set up conductor (Telegram bridge + sessions)")
+	fmt.Println("  conductor teardown        Stop conductor and remove bridge daemon")
+	fmt.Println("  conductor status          Show conductor health across profiles")
 	fmt.Println()
 	fmt.Println("Worktree Commands:")
 	fmt.Println("  worktree list             List worktrees with session associations")
@@ -1830,7 +1842,7 @@ func handleUninstall(args []string) {
 		fmt.Println("  agent-deck uninstall -y           # Uninstall without prompts")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 

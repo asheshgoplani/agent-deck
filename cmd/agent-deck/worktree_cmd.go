@@ -78,7 +78,7 @@ func handleWorktreeList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -209,7 +209,7 @@ func handleWorktreeInfo(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -297,7 +297,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 		fmt.Println("Use --force to actually perform the cleanup.")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -508,7 +508,7 @@ func handleWorktreeFinish(profile string, args []string) {
 		fmt.Println("  agent-deck worktree finish \"My Feature\" --no-merge --force")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 

@@ -73,7 +73,7 @@ func handleGroupList(profile string, args []string) {
 		fs.PrintDefaults()
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -312,7 +312,7 @@ func handleGroupCreate(profile string, args []string) {
 	// This allows: "group create ios --parent mobile" to work correctly
 	args = reorderGroupArgs(args)
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -410,7 +410,7 @@ func handleGroupDelete(profile string, args []string) {
 		fmt.Println("  agent-deck group delete work --force   # Move sessions to parent")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
@@ -538,7 +538,7 @@ func handleGroupMove(profile string, args []string) {
 		fmt.Println("  agent-deck group move my-project root            # Move to root")
 	}
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 

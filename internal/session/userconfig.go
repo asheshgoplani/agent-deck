@@ -83,6 +83,9 @@ type UserConfig struct {
 
 	// Status defines session status detection settings
 	Status StatusSettings `toml:"status"`
+
+	// Conductor defines conductor (meta-agent orchestration) settings
+	Conductor ConductorSettings `toml:"conductor"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
