@@ -3463,8 +3463,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only available when session has a valid Claude session ID
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.CanFork() {
-				return h, h.quickForkSession(item.Session)
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				// Block fork during animations to prevent concurrent operations
+				if h.hasActiveAnimation(item.Session.ID) {
+					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
+				if item.Session.CanFork() {
+					return h, h.quickForkSession(item.Session)
+				}
 			}
 		}
 		return h, nil
@@ -3474,8 +3481,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Only available when session has a valid Claude session ID
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.CanFork() {
-				return h, h.forkSessionWithDialog(item.Session)
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				// Block fork during animations to prevent concurrent operations
+				if h.hasActiveAnimation(item.Session.ID) {
+					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
+				if item.Session.CanFork() {
+					return h, h.forkSessionWithDialog(item.Session)
+				}
 			}
 		}
 		return h, nil
@@ -3714,6 +3728,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
+				// Block restart during animations to prevent concurrent restarts
+				if h.hasActiveAnimation(item.Session.ID) {
+					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
 				if item.Session.CanRestart() {
 					// Track as resuming for animation (before async call starts)
 					h.resumingSessions[item.Session.ID] = time.Now()
