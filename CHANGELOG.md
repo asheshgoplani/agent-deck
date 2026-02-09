@@ -5,6 +5,20 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-02-10
+
+### Fixed
+
+- Fix Shift+R restart race condition with animation guard on restart and fork hotkeys (#147)
+- Fix settings menu viewport cropping in small terminals with scroll windowing (#149)
+- Fix .mcp.json clobber by preserving existing entries when managing MCP sessions (#146)
+- Fix --resume-session arg parsing by registering it in the arg reorder map (#145)
+
+### Added
+
+- Add tmux option overrides via `[tmux]` config section in config.toml (#150)
+- Add opencode fork infrastructure with OpenCodeOptions for model/agent/fork support (#148)
+
 ## [0.12.0] - 2026-02-10
 
 ### Added
