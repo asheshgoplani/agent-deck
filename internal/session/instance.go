@@ -512,6 +512,8 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 // Session IDs are in format: ses_XXXXX
 // Resume: opencode -s <session-id> or opencode --session <session-id>
 // Continue last: opencode -c or opencode --continue
+// Model: opencode -m provider/model
+// Agent: opencode --agent name
 // Also sources .env files from [shell].env_files
 func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	if i.Tool != "opencode" {
@@ -522,18 +524,44 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	// If baseCommand is just "opencode", handle specially
 	if baseCommand == "opencode" {
+		extraFlags := i.buildOpenCodeExtraFlags()
+
 		// If we already have a session ID, use resume with -s flag
 		if i.OpenCodeSessionID != "" {
-			return envPrefix + fmt.Sprintf("tmux set-environment OPENCODE_SESSION_ID %s; opencode -s %s",
-				i.OpenCodeSessionID, i.OpenCodeSessionID)
+			return envPrefix + fmt.Sprintf("tmux set-environment OPENCODE_SESSION_ID %s; opencode -s %s%s",
+				i.OpenCodeSessionID, i.OpenCodeSessionID, extraFlags)
 		}
 
 		// Start OpenCode fresh - session ID will be captured async after startup
-		return envPrefix + "opencode"
+		return envPrefix + "opencode" + extraFlags
 	}
 
-	// For custom commands (e.g., resume commands), return as-is
+	// For custom commands (e.g., fork commands), return as-is
 	return envPrefix + baseCommand
+}
+
+// buildOpenCodeExtraFlags returns extra CLI flags from OpenCodeOptions (model, agent).
+// Returns a string with leading space, or empty string if no flags.
+func (i *Instance) buildOpenCodeExtraFlags() string {
+	opts := i.GetOpenCodeOptions()
+	if opts == nil {
+		// Fall back to global config defaults
+		if config, err := LoadUserConfig(); err == nil && config != nil {
+			opts = NewOpenCodeOptions(config)
+		}
+	}
+	if opts == nil {
+		return ""
+	}
+
+	var flags string
+	if opts.Model != "" {
+		flags += " -m " + opts.Model
+	}
+	if opts.Agent != "" {
+		flags += " --agent " + opts.Agent
+	}
+	return flags
 }
 
 // DetectOpenCodeSession is the public wrapper for async OpenCode session detection
@@ -2796,9 +2824,17 @@ func (i *Instance) CreateForkedInstanceWithOptions(newTitle, newGroupPath string
 }
 
 // ForkOpenCode returns the command to create a forked OpenCode session.
-// Uses OpenCode's built-in fork API (POST /session/{id}/fork) which properly
-// regenerates all IDs and maintains parent-child relationships.
+// Uses export/import to clone the session with a new ID, then launches
+// the forked session with opencode -s <new-id>.
+// Deprecated: Use ForkOpenCodeWithOptions instead.
 func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
+	return i.ForkOpenCodeWithOptions(newTitle, newGroupPath, nil)
+}
+
+// ForkOpenCodeWithOptions returns the command to create a forked OpenCode session with custom options.
+// Uses export/import to clone the session with a new ID, then launches
+// the forked session with opencode -s <new-id> plus any model/agent flags.
+func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
@@ -2806,7 +2842,20 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 	workDir := i.ProjectPath
 	envPrefix := i.buildEnvSourceCommand()
 
-	scriptPath, err := i.writeOpenCodeForkScript(workDir, envPrefix)
+	// Build extra flags from options (for fork, exclude session mode flags)
+	var extraFlags string
+	if opts != nil {
+		for _, arg := range opts.ToArgsForFork() {
+			extraFlags += " " + arg
+		}
+	} else if config, err := LoadUserConfig(); err == nil && config != nil {
+		defaultOpts := NewOpenCodeOptions(config)
+		for _, arg := range defaultOpts.ToArgsForFork() {
+			extraFlags += " " + arg
+		}
+	}
+
+	scriptPath, err := i.writeOpenCodeForkScript(workDir, envPrefix, extraFlags)
 	if err != nil {
 		return "", fmt.Errorf("failed to create fork script: %w", err)
 	}
@@ -2816,7 +2865,7 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 
 // writeOpenCodeForkScript writes a bash script that forks via export/import.
 // The script self-deletes after execution.
-func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix string) (string, error) {
+func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix, extraFlags string) (string, error) {
 	script := fmt.Sprintf(`#!/bin/bash
 cd "%s" || { echo "cd failed to: %s"; exit 1; }
 %s
@@ -2842,8 +2891,9 @@ fi
 opencode import "$tmpfile" 2>&1 || { echo "Import failed"; exit 1; }
 tmux set-environment OPENCODE_SESSION_ID "$new_id"
 echo "Forked to: $new_id"
-opencode -s "$new_id"
-`, workDir, workDir, envPrefix, i.OpenCodeSessionID, i.OpenCodeSessionID, i.OpenCodeSessionID)
+opencode -s "$new_id"%s
+`, workDir, workDir, envPrefix, i.OpenCodeSessionID,
+		i.OpenCodeSessionID, i.OpenCodeSessionID, extraFlags)
 
 	f, err := os.CreateTemp("", "opencode-fork-*.sh")
 	if err != nil {
@@ -2865,8 +2915,14 @@ opencode -s "$new_id"
 }
 
 // CreateForkedOpenCodeInstance creates a new Instance configured for forking an OpenCode session
+// Deprecated: Use CreateForkedOpenCodeInstanceWithOptions instead.
 func (i *Instance) CreateForkedOpenCodeInstance(newTitle, newGroupPath string) (*Instance, string, error) {
-	cmd, err := i.ForkOpenCode(newTitle, newGroupPath)
+	return i.CreateForkedOpenCodeInstanceWithOptions(newTitle, newGroupPath, nil)
+}
+
+// CreateForkedOpenCodeInstanceWithOptions creates a new Instance configured for forking with custom options
+func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (*Instance, string, error) {
+	cmd, err := i.ForkOpenCodeWithOptions(newTitle, newGroupPath, opts)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2879,6 +2935,13 @@ func (i *Instance) CreateForkedOpenCodeInstance(newTitle, newGroupPath string) (
 	}
 	forked.Command = cmd
 	forked.Tool = "opencode"
+
+	// Store options in the new instance for persistence
+	if opts != nil {
+		if err := forked.SetOpenCodeOptions(opts); err != nil {
+			sessionLog.Warn("set_opencode_options_failed", slog.String("error", err.Error()))
+		}
+	}
 
 	return forked, cmd, nil
 }
@@ -2953,6 +3016,32 @@ func (i *Instance) GetCodexOptions() *CodexOptions {
 
 // SetCodexOptions stores Codex-specific options
 func (i *Instance) SetCodexOptions(opts *CodexOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+// GetOpenCodeOptions returns OpenCode-specific options, or nil if not set
+func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalOpenCodeOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetOpenCodeOptions stores OpenCode-specific options
+func (i *Instance) SetOpenCodeOptions(opts *OpenCodeOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil

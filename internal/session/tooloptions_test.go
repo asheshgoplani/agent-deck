@@ -503,6 +503,200 @@ func TestClaudeOptions_RoundTrip_AllowSkipPermissions(t *testing.T) {
 	}
 }
 
+// === OpenCode Options Tests ===
+
+func TestOpenCodeOptions_ToolName(t *testing.T) {
+	opts := &OpenCodeOptions{}
+	if opts.ToolName() != "opencode" {
+		t.Errorf("expected ToolName() = 'opencode', got %q", opts.ToolName())
+	}
+}
+
+func TestOpenCodeOptions_ToArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     OpenCodeOptions
+		expected []string
+	}{
+		{
+			name:     "empty options",
+			opts:     OpenCodeOptions{},
+			expected: nil,
+		},
+		{
+			name:     "new session mode (default)",
+			opts:     OpenCodeOptions{SessionMode: "new"},
+			expected: nil,
+		},
+		{
+			name:     "continue mode",
+			opts:     OpenCodeOptions{SessionMode: "continue"},
+			expected: []string{"-c"},
+		},
+		{
+			name: "resume mode with session ID",
+			opts: OpenCodeOptions{
+				SessionMode:     "resume",
+				ResumeSessionID: "ses_abc123",
+			},
+			expected: []string{"-s", "ses_abc123"},
+		},
+		{
+			name:     "resume mode without session ID",
+			opts:     OpenCodeOptions{SessionMode: "resume"},
+			expected: nil,
+		},
+		{
+			name:     "model only",
+			opts:     OpenCodeOptions{Model: "anthropic/claude-sonnet-4-5-20250929"},
+			expected: []string{"-m", "anthropic/claude-sonnet-4-5-20250929"},
+		},
+		{
+			name:     "agent only",
+			opts:     OpenCodeOptions{Agent: "coder"},
+			expected: []string{"--agent", "coder"},
+		},
+		{
+			name: "all flags",
+			opts: OpenCodeOptions{
+				SessionMode: "continue",
+				Model:       "openai/gpt-4o",
+				Agent:       "reviewer",
+			},
+			expected: []string{"-c", "-m", "openai/gpt-4o", "--agent", "reviewer"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.opts.ToArgs()
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("ToArgs() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestOpenCodeOptions_ToArgsForFork(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     OpenCodeOptions
+		expected []string
+	}{
+		{
+			name:     "empty options",
+			opts:     OpenCodeOptions{},
+			expected: nil,
+		},
+		{
+			name: "session mode ignored for fork",
+			opts: OpenCodeOptions{
+				SessionMode:     "resume",
+				ResumeSessionID: "ses_abc123",
+			},
+			expected: nil,
+		},
+		{
+			name: "model and agent preserved for fork",
+			opts: OpenCodeOptions{
+				SessionMode: "continue",
+				Model:       "anthropic/claude-sonnet-4-5-20250929",
+				Agent:       "coder",
+			},
+			expected: []string{"-m", "anthropic/claude-sonnet-4-5-20250929", "--agent", "coder"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.opts.ToArgsForFork()
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("ToArgsForFork() = %v, expected %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestNewOpenCodeOptions_WithConfig(t *testing.T) {
+	config := &UserConfig{
+		OpenCode: OpenCodeSettings{
+			DefaultModel: "anthropic/claude-sonnet-4-5-20250929",
+			DefaultAgent: "coder",
+		},
+	}
+	opts := NewOpenCodeOptions(config)
+
+	if opts.SessionMode != "new" {
+		t.Errorf("expected SessionMode='new', got %q", opts.SessionMode)
+	}
+	if opts.Model != "anthropic/claude-sonnet-4-5-20250929" {
+		t.Errorf("expected Model from config, got %q", opts.Model)
+	}
+	if opts.Agent != "coder" {
+		t.Errorf("expected Agent from config, got %q", opts.Agent)
+	}
+}
+
+func TestNewOpenCodeOptions_NilConfig(t *testing.T) {
+	opts := NewOpenCodeOptions(nil)
+
+	if opts.SessionMode != "new" {
+		t.Errorf("expected SessionMode='new', got %q", opts.SessionMode)
+	}
+	if opts.Model != "" {
+		t.Errorf("expected empty Model, got %q", opts.Model)
+	}
+	if opts.Agent != "" {
+		t.Errorf("expected empty Agent, got %q", opts.Agent)
+	}
+}
+
+func TestOpenCodeOptions_MarshalUnmarshal(t *testing.T) {
+	original := &OpenCodeOptions{
+		SessionMode:     "resume",
+		ResumeSessionID: "ses_test123",
+		Model:           "openai/gpt-4o",
+		Agent:           "reviewer",
+	}
+
+	data, err := MarshalToolOptions(original)
+	if err != nil {
+		t.Fatalf("MarshalToolOptions failed: %v", err)
+	}
+
+	restored, err := UnmarshalOpenCodeOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalOpenCodeOptions failed: %v", err)
+	}
+
+	if !reflect.DeepEqual(original, restored) {
+		t.Errorf("round-trip failed: original=%+v, restored=%+v", original, restored)
+	}
+}
+
+func TestUnmarshalOpenCodeOptions_EmptyData(t *testing.T) {
+	result, err := UnmarshalOpenCodeOptions(nil)
+	if err != nil {
+		t.Fatalf("UnmarshalOpenCodeOptions(nil) failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil for empty data, got %v", result)
+	}
+}
+
+func TestUnmarshalOpenCodeOptions_WrongTool(t *testing.T) {
+	claudeOpts := &ClaudeOptions{SkipPermissions: true}
+	data, _ := MarshalToolOptions(claudeOpts)
+
+	result, err := UnmarshalOpenCodeOptions(data)
+	if err != nil {
+		t.Fatalf("UnmarshalOpenCodeOptions failed: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil for wrong tool, got %v", result)
+	}
+}
+
 func TestClaudeOptions_RoundTrip(t *testing.T) {
 	// Test complete round-trip serialization
 	original := &ClaudeOptions{

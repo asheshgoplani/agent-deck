@@ -45,6 +45,9 @@ type UserConfig struct {
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini"`
 
+	// OpenCode defines OpenCode CLI integration settings
+	OpenCode OpenCodeSettings `toml:"opencode"`
+
 	// Codex defines Codex CLI integration settings
 	Codex CodexSettings `toml:"codex"`
 
@@ -413,6 +416,22 @@ type GeminiSettings struct {
 	DefaultModel string `toml:"default_model"`
 
 	// EnvFile is a .env file specific to Gemini sessions
+	// Sourced AFTER global [shell].env_files
+	EnvFile string `toml:"env_file"`
+}
+
+// OpenCodeSettings defines OpenCode CLI configuration
+type OpenCodeSettings struct {
+	// DefaultModel is the model to use for new OpenCode sessions
+	// Format: "provider/model" (e.g., "anthropic/claude-sonnet-4-5-20250929")
+	// If empty, OpenCode uses its own default
+	DefaultModel string `toml:"default_model"`
+
+	// DefaultAgent is the agent to use for new OpenCode sessions
+	// If empty, OpenCode uses its own default
+	DefaultAgent string `toml:"default_agent"`
+
+	// EnvFile is a .env file specific to OpenCode sessions
 	// Sourced AFTER global [shell].env_files
 	EnvFile string `toml:"env_file"`
 }
@@ -1207,6 +1226,13 @@ func CreateExampleConfig() error {
 # [gemini]
 # Enable --yolo (auto-approve all actions) by default (default: false)
 # yolo_mode = true
+
+# OpenCode CLI integration
+# [opencode]
+# Default model for new sessions (format: "provider/model")
+# default_model = "anthropic/claude-sonnet-4-5-20250929"
+# Default agent for new sessions
+# default_agent = ""
 
 # Codex CLI integration
 # [codex]
