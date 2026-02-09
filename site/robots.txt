@@ -1,5 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://asheshgoplani.github.io/agent-deck/sitemap.xml
-
