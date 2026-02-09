@@ -458,7 +458,8 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"-p": true, "--parent": true,
 		"--mcp": true,
 		"-w":    true, "--worktree": true,
-		"--location": true,
+		"--location":       true,
+		"--resume-session": true,
 	}
 
 	var flags []string
