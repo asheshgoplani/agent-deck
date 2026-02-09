@@ -37,10 +37,11 @@ const settingsCount = 17
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
-	visible bool
-	width   int
-	height  int
-	cursor  int // Current setting index
+	visible      bool
+	width        int
+	height       int
+	cursor       int // Current setting index
+	scrollOffset int // Scroll offset when content overflows terminal height
 
 	// Setting values
 	selectedTheme       int // 0=dark, 1=light
@@ -102,6 +103,7 @@ func NewSettingsPanel() *SettingsPanel {
 func (s *SettingsPanel) Show() {
 	s.visible = true
 	s.cursor = 0
+	s.scrollOffset = 0
 	s.editingText = false
 	s.needsRestart = false
 
@@ -683,6 +685,82 @@ func (s *SettingsPanel) View() string {
 	// Help bar
 	content.WriteString(dimStyle.Render("j/k Navigate  Space Toggle  h/l Adjust  Enter Edit  Esc Close"))
 
+	// Apply scroll windowing if content overflows available terminal height.
+	// The dialog box adds 4 lines of chrome: border (top+bottom) + padding (top+bottom).
+	contentStr := content.String()
+	const dialogChrome = 4
+	availHeight := s.height - dialogChrome
+	if availHeight < 10 {
+		availHeight = 10
+	}
+
+	contentLines := strings.Split(strings.TrimRight(contentStr, "\n"), "\n")
+	totalLines := len(contentLines)
+
+	if totalLines > availHeight && s.height > 0 {
+		// Map cursor index to content line number (based on the fixed layout above).
+		// Update this mapping if settings are added/removed/reordered.
+		cursorToLine := [settingsCount]int{
+			4,  // SettingTheme
+			7,  // SettingDefaultTool
+			11, // SettingDangerousMode
+			12, // SettingClaudeConfigDir
+			15, // SettingGeminiYoloMode
+			18, // SettingCodexYoloMode
+			21, // SettingCheckForUpdates
+			22, // SettingAutoUpdate
+			25, // SettingLogMaxSize
+			25, // SettingLogMaxLines (shares line with LogMaxSize)
+			26, // SettingRemoveOrphans
+			29, // SettingGlobalSearchEnabled
+			30, // SettingSearchTier
+			31, // SettingRecentDays
+			34, // SettingShowOutput
+			35, // SettingShowAnalytics
+			38, // SettingMaintenanceEnabled
+		}
+		cursorLine := cursorToLine[s.cursor]
+
+		// Ensure cursor is visible with 2 lines of context
+		if cursorLine-2 < s.scrollOffset {
+			s.scrollOffset = cursorLine - 2
+		}
+		if cursorLine+2 >= s.scrollOffset+availHeight {
+			s.scrollOffset = cursorLine - availHeight + 3
+		}
+		if s.scrollOffset < 0 {
+			s.scrollOffset = 0
+		}
+		if maxOff := totalLines - availHeight; s.scrollOffset > maxOff {
+			s.scrollOffset = maxOff
+		}
+
+		// Determine visible window, replacing edge content lines with scroll indicators
+		startLine := s.scrollOffset
+		endLine := s.scrollOffset + availHeight
+		if endLine > totalLines {
+			endLine = totalLines
+		}
+		showScrollUp := startLine > 0
+		showScrollDown := endLine < totalLines
+		if showScrollUp {
+			startLine++
+		}
+		if showScrollDown {
+			endLine--
+		}
+
+		var scrolled strings.Builder
+		if showScrollUp {
+			scrolled.WriteString(dimStyle.Render("  ▲ more above") + "\n")
+		}
+		scrolled.WriteString(strings.Join(contentLines[startLine:endLine], "\n"))
+		if showScrollDown {
+			scrolled.WriteString("\n" + dimStyle.Render("  ▼ more below"))
+		}
+		contentStr = scrolled.String()
+	}
+
 	// Wrap in dialog box
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -691,7 +769,7 @@ func (s *SettingsPanel) View() string {
 		Padding(1, 2).
 		Width(dialogWidth)
 
-	dialog := dialogStyle.Render(content.String())
+	dialog := dialogStyle.Render(contentStr)
 
 	// Center the dialog
 	return lipgloss.Place(
