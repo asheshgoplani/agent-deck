@@ -1098,6 +1098,11 @@ func (i *Instance) Start() error {
 	// Load custom patterns for status detection
 	i.loadCustomPatternsFromConfig()
 
+	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
+	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+		i.tmuxSession.OptionOverrides = tmuxCfg.Options
+	}
+
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
 		return fmt.Errorf("failed to start tmux session: %w", err)
@@ -1170,6 +1175,11 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// Load custom patterns for status detection
 	i.loadCustomPatternsFromConfig()
+
+	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
+	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+		i.tmuxSession.OptionOverrides = tmuxCfg.Options
+	}
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2506,6 +2516,11 @@ func (i *Instance) Restart() error {
 
 	// Load custom patterns for status detection (for custom tools)
 	i.loadCustomPatternsFromConfig()
+
+	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
+	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+		i.tmuxSession.OptionOverrides = tmuxCfg.Options
+	}
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 

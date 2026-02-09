@@ -400,6 +400,12 @@ type Session struct {
 	// Last status returned (for debugging)
 	lastStableStatus string
 
+	// OptionOverrides are user-specified tmux set-option overrides from config.
+	// Applied AFTER all defaults in Start(), so they take precedence.
+	// Keys are tmux option names, values are their settings.
+	// Example: {"allow-passthrough": "all", "history-limit": "50000"}
+	OptionOverrides map[string]string
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -791,6 +797,14 @@ func (s *Session) Start(command string) error {
 	// Reduce escape-time for responsive Vim/editor usage (default 500ms is too slow)
 	// 10ms is a good balance between responsiveness and SSH reliability
 	_ = exec.Command("tmux", "set-option", "-t", s.Name, "escape-time", "10").Run()
+
+	// Apply user-specified tmux option overrides from config (after defaults)
+	// This allows users to override any default, e.g. allow-passthrough = "all"
+	if len(s.OptionOverrides) > 0 {
+		for key, value := range s.OptionOverrides {
+			_ = exec.Command("tmux", "set-option", "-t", s.Name, "-q", key, value).Run()
+		}
+	}
 
 	// Configure status bar with session info for easy identification
 	// Shows: session title on left, project folder on right

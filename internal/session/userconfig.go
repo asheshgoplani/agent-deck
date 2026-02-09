@@ -83,6 +83,9 @@ type UserConfig struct {
 
 	// Status defines session status detection settings
 	Status StatusSettings `toml:"status"`
+
+	// Tmux defines tmux option overrides applied to every session
+	Tmux TmuxSettings `toml:"tmux"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -619,7 +622,19 @@ func (m *MCPDef) HasAutoStartServer() bool {
 	return m.IsHTTP() && m.Server != nil && m.Server.Command != ""
 }
 
-// StatusSettings controls session status detection behavior
+// TmuxSettings allows users to override tmux options applied to every session.
+// Options are applied AFTER agent-deck's defaults, so they take precedence.
+//
+// Example config.toml:
+//
+//	[tmux]
+//	options = { "allow-passthrough" = "all", "history-limit" = "50000" }
+type TmuxSettings struct {
+	// Options is a map of tmux option names to values.
+	// These are passed to `tmux set-option -t <session>` after defaults.
+	Options map[string]string `toml:"options"`
+}
+
 type StatusSettings struct {
 	// Reserved for future status detection settings.
 	// Control mode pipes are always enabled (no longer configurable).
@@ -1111,6 +1126,15 @@ func GetStatusSettings() StatusSettings {
 		return StatusSettings{}
 	}
 	return config.Status
+}
+
+// GetTmuxSettings returns tmux option overrides from config
+func GetTmuxSettings() TmuxSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return TmuxSettings{}
+	}
+	return config.Tmux
 }
 
 // GetInstanceSettings returns instance behavior settings
