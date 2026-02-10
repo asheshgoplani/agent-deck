@@ -14,7 +14,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/asheshgoplani/agent-deck?style=for-the-badge&color=e0af68&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
 [![Discord](https://img.shields.io/discord/1469423271144587379?style=for-the-badge&logo=discord&logoColor=white&label=Discord&color=5865F2&labelColor=1a1b26)](https://discord.gg/e4xSs6NBN8)
 
-[Features](#features) . [Install](#installation) . [Quick Start](#quick-start) . [Docs](#documentation) . [Discord](https://discord.gg/e4xSs6NBN8) . [FAQ](#faq)
+[Features](#features) . [Conductor](#conductor) . [Install](#installation) . [Quick Start](#quick-start) . [Docs](#documentation) . [Discord](https://discord.gg/e4xSs6NBN8) . [FAQ](#faq)
 
 </div>
 
@@ -129,6 +129,58 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 ```
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
+
+### Conductor
+
+Conductors are persistent Claude Code sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect Telegram for mobile control.
+
+Create as many conductors as you need per profile:
+
+```bash
+# First-time setup (asks about Telegram, then creates the conductor)
+agent-deck -p work conductor setup ops --description "Ops monitor"
+
+# Add more conductors to the same profile (no prompts)
+agent-deck -p work conductor setup infra --no-heartbeat --description "Infra watcher"
+agent-deck conductor setup personal --description "Personal project monitor"
+```
+
+Each conductor gets its own directory, identity, and heartbeat settings:
+
+```
+~/.agent-deck/conductor/
+├── CLAUDE.md           # Shared knowledge (CLI ref, protocols, rules)
+├── bridge.py           # Telegram bridge (if configured)
+├── ops/
+│   ├── CLAUDE.md       # Identity: "You are ops, a conductor for the work profile"
+│   ├── meta.json       # Config: name, profile, heartbeat, description
+│   ├── state.json      # Runtime state
+│   └── task-log.md     # Action log
+└── infra/
+    ├── CLAUDE.md
+    └── meta.json
+```
+
+**CLI commands:**
+
+```bash
+agent-deck conductor list                    # List all conductors
+agent-deck conductor list --profile work     # Filter by profile
+agent-deck conductor status                  # Health check (all)
+agent-deck conductor status ops              # Health check (specific)
+agent-deck conductor teardown ops            # Stop a conductor
+agent-deck conductor teardown --all --remove # Remove everything
+```
+
+**Telegram bridge** (optional): Connect a Telegram bot for mobile monitoring. The bridge routes messages to specific conductors using a `name: message` prefix:
+
+```
+ops: check the frontend session      → routes to conductor-ops
+infra: restart all error sessions    → routes to conductor-infra
+/status                              → broadcasts to all conductors
+```
+
+**Heartbeat**: Conductors with heartbeat enabled receive periodic check-in prompts, keeping them actively monitoring your sessions. Disable per conductor with `--no-heartbeat`.
 
 ### Multi-Tool Support
 
