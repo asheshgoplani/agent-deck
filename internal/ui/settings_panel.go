@@ -44,7 +44,7 @@ type SettingsPanel struct {
 	scrollOffset int // Scroll offset when content overflows terminal height
 
 	// Setting values
-	selectedTheme       int // 0=dark, 1=light
+	selectedTheme       int // 0=dark, 1=light, 2=system
 	selectedTool        int // 0=claude, 1=gemini, 2=opencode, 3=codex, 4=none
 	dangerousMode       bool
 	claudeConfigDir     string
@@ -82,8 +82,8 @@ var tierNames = []string{"Auto", "Instant", "Balanced"}
 var tierValues = []string{"auto", "instant", "balanced"}
 
 // Theme names for radio selection
-var themeNames = []string{"Dark", "Light"}
-var themeValues = []string{"dark", "light"}
+var themeNames = []string{"Dark", "Light", "System"}
+var themeValues = []string{"dark", "light", "system"}
 
 // NewSettingsPanel creates a new settings panel
 func NewSettingsPanel() *SettingsPanel {
@@ -143,6 +143,8 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	switch config.Theme {
 	case "light":
 		s.selectedTheme = 1
+	case "system":
+		s.selectedTheme = 2
 	default:
 		s.selectedTheme = 0
 	}
@@ -325,7 +327,6 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 		if newVal >= 0 && newVal < len(themeNames) {
 			s.selectedTheme = newVal
 			changed = true
-			s.needsRestart = true
 		}
 
 	case SettingDefaultTool:

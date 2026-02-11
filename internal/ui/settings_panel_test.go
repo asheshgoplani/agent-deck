@@ -528,12 +528,9 @@ func containsSubstring(s, substr string) bool {
 
 func TestSettingsPanel_ThemeToggle(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.Show()
-
-	// Default should be dark (0)
-	if panel.selectedTheme != 0 {
-		t.Errorf("Default theme should be 0 (dark), got %d", panel.selectedTheme)
-	}
+	// Set dark explicitly (avoid loading config from disk)
+	panel.selectedTheme = 0
+	panel.visible = true
 
 	// Navigate right to select light
 	panel.cursor = int(SettingTheme)
@@ -545,8 +542,19 @@ func TestSettingsPanel_ThemeToggle(t *testing.T) {
 	if !shouldSave {
 		t.Error("Should trigger save on theme change")
 	}
-	if !panel.needsRestart {
-		t.Error("Theme change should require restart")
+
+	// Navigate right to select system
+	panel, _, shouldSave = panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.selectedTheme != 2 {
+		t.Errorf("Theme should be 2 (system) after right, got %d", panel.selectedTheme)
+	}
+	if !shouldSave {
+		t.Error("Should trigger save on theme change to system")
+	}
+
+	// Theme changes should not require restart (applied live)
+	if panel.needsRestart {
+		t.Error("Theme change should not require restart")
 	}
 }
 
@@ -558,6 +566,7 @@ func TestSettingsPanel_LoadConfig_Theme(t *testing.T) {
 	}{
 		{"dark", "dark", 0},
 		{"light", "light", 1},
+		{"system", "system", 2},
 		{"empty defaults to dark", "", 0},
 		{"invalid defaults to dark", "invalid", 0},
 	}
@@ -583,6 +592,7 @@ func TestSettingsPanel_GetConfig_Theme(t *testing.T) {
 	}{
 		{"dark", 0, "dark"},
 		{"light", 1, "light"},
+		{"system", 2, "system"},
 	}
 
 	for _, tt := range tests {

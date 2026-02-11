@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -76,9 +77,15 @@ var (
 	ColorComment lipgloss.Color
 )
 
+// themeMu protects global color/style variables during live theme switches.
+// Write lock held by InitTheme; read lock held by GetToolStyle (map access).
+var themeMu sync.RWMutex
+
 // InitTheme sets the active color palette based on theme name
 // Must be called before any UI rendering
 func InitTheme(theme string) {
+	themeMu.Lock()
+	defer themeMu.Unlock()
 	if theme == "light" {
 		currentTheme = ThemeLight
 		ColorBg = lightColors.Bg
@@ -551,9 +558,12 @@ func MenuKey(key, description string) string {
 	)
 }
 
-// StatusIndicator returns a styled status indicator
+// StatusIndicator returns a styled status indicator.
+// Read-locked to protect against concurrent style access during live theme switches.
 // Standard symbols: ● running, ◐ waiting, ○ idle, ✕ error, ⟳ starting
 func StatusIndicator(status string) string {
+	themeMu.RLock()
+	defer themeMu.RUnlock()
 	switch status {
 	case "running":
 		return RunningStyle.Render("●")
@@ -613,8 +623,11 @@ func ToolColor(tool string) lipgloss.Color {
 	}
 }
 
-// GetToolStyle returns cached style for tool or default
+// GetToolStyle returns cached style for tool or default.
+// Read-locked to protect against concurrent map access during live theme switches.
 func GetToolStyle(tool string) lipgloss.Style {
+	themeMu.RLock()
+	defer themeMu.RUnlock()
 	if style, ok := ToolStyleCache[tool]; ok {
 		return style
 	}

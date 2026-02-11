@@ -261,8 +261,8 @@ func main() {
 	// Set version for UI update checking
 	ui.SetVersion(Version)
 
-	// Initialize theme from config
-	theme := session.GetTheme()
+	// Initialize theme from config (resolves "system" to actual dark/light)
+	theme := session.ResolveTheme()
 	ui.InitTheme(theme)
 
 	// Check for updates and prompt user before launching TUI

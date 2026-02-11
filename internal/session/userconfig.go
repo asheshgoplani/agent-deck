@@ -11,6 +11,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	dark "github.com/thiagokokada/dark-mode-go"
+
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -25,7 +27,7 @@ type UserConfig struct {
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool"`
 
-	// Theme sets the color scheme: "dark" (default) or "light"
+	// Theme sets the color scheme: "dark" (default), "light", or "system"
 	Theme string `toml:"theme"`
 
 	// Tools defines custom AI tool configurations
@@ -966,10 +968,30 @@ func GetTheme() string {
 	if err != nil || config == nil {
 		return "dark"
 	}
-	if config.Theme == "" || (config.Theme != "dark" && config.Theme != "light") {
+	switch config.Theme {
+	case "dark", "light", "system":
+		return config.Theme
+	default:
 		return "dark"
 	}
-	return config.Theme
+}
+
+// ResolveTheme resolves the configured theme to "dark" or "light".
+// If theme is "system", detects the OS dark mode setting.
+// Falls back to "dark" on detection failure.
+func ResolveTheme() string {
+	theme := GetTheme()
+	if theme != "system" {
+		return theme
+	}
+	isDark, err := dark.IsDarkMode()
+	if err != nil {
+		return "dark"
+	}
+	if isDark {
+		return "dark"
+	}
+	return "light"
 }
 
 // GetLogSettings returns log management settings with defaults applied
