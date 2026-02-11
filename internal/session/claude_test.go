@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGetClaudeConfigDir_Default(t *testing.T) {
@@ -426,6 +427,99 @@ func TestClearMCPCache_ClearsParentDirectories(t *testing.T) {
 
 	if parentCached {
 		t.Error("parent directory cache should be cleared but wasn't")
+	}
+}
+
+func TestFindActiveSessionIDExcluding(t *testing.T) {
+	// Set up a fake Claude config dir with a project and session files
+	configDir := t.TempDir()
+	projectPath := "/Users/test/my-project"
+	projectDirName := ConvertToClaudeDirName(projectPath)
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two UUID-named session files
+	sessionA := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	sessionB := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	if err := os.WriteFile(filepath.Join(projectDir, sessionA+".jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Make sessionB newer
+	if err := os.WriteFile(filepath.Join(projectDir, sessionB+".jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no exclude returns most recent", func(t *testing.T) {
+		got := findActiveSessionIDExcluding(configDir, projectPath, nil)
+		if got != sessionB {
+			t.Errorf("got %q, want %q (most recent)", got, sessionB)
+		}
+	})
+
+	t.Run("excluding most recent returns older", func(t *testing.T) {
+		exclude := map[string]bool{sessionB: true}
+		got := findActiveSessionIDExcluding(configDir, projectPath, exclude)
+		if got != sessionA {
+			t.Errorf("got %q, want %q (after excluding %s)", got, sessionA, sessionB)
+		}
+	})
+
+	t.Run("excluding all returns empty", func(t *testing.T) {
+		exclude := map[string]bool{sessionA: true, sessionB: true}
+		got := findActiveSessionIDExcluding(configDir, projectPath, exclude)
+		if got != "" {
+			t.Errorf("got %q, want empty (all excluded)", got)
+		}
+	})
+
+	t.Run("skips agent files", func(t *testing.T) {
+		// Create an agent file that is newer than both sessions
+		agentFile := filepath.Join(projectDir, "agent-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl")
+		if err := os.WriteFile(agentFile, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Exclude sessionB so if agent file were picked up it would be wrong
+		exclude := map[string]bool{sessionB: true}
+		got := findActiveSessionIDExcluding(configDir, projectPath, exclude)
+		if got != sessionA {
+			t.Errorf("got %q, want %q (agent file should be skipped)", got, sessionA)
+		}
+	})
+
+	t.Run("nonexistent project returns empty", func(t *testing.T) {
+		got := findActiveSessionIDExcluding(configDir, "/no/such/project", nil)
+		if got != "" {
+			t.Errorf("got %q, want empty for nonexistent project", got)
+		}
+	})
+}
+
+func TestFindActiveSessionIDExcluding_StaleFile(t *testing.T) {
+	// Files older than 5 minutes should NOT be returned
+	configDir := t.TempDir()
+	projectPath := "/Users/test/stale-project"
+	projectDirName := ConvertToClaudeDirName(projectPath)
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	filePath := filepath.Join(projectDir, sessionID+".jsonl")
+	if err := os.WriteFile(filePath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Set mtime to 10 minutes ago
+	oldTime := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(filePath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	got := findActiveSessionIDExcluding(configDir, projectPath, nil)
+	if got != "" {
+		t.Errorf("got %q, want empty (file is stale >5min)", got)
 	}
 }
 
