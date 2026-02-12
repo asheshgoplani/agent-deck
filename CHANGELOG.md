@@ -5,6 +5,44 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-02-12
+
+### Added
+
+- Add title-based status detection fast-path: reads tmux pane titles (Braille spinner / done markers) to determine Claude session state without expensive content scanning
+- Add `RefreshPaneInfoCache()` for zero-subprocess pane title fetching via PipeManager
+- Add worktree finish dialog (`W` key): merge branch, remove worktree, delete branch, and clean up session in one step
+- Add worktree branch badge `[branch]` in session list for worktree sessions
+- Add worktree info section in preview pane (branch, repo, path, dirty status)
+- Add worktree dirty status cache with lazy 10s TTL checks
+- Add repository worktree summary in group preview when sessions share a repo
+- Add `esc to interrupt` fallback to Claude busy patterns for older Claude Code versions
+- Add worktree section to help overlay
+
+### Fixed
+
+- Fix busy indicator false negatives for `·` and `✻` spinner chars with ellipsis (BusyRegexp now correctly catches all spinner frames with active context)
+- Remove unused `matchesDetectPatterns` function (lint warning)
+- Fix `starting` and `inactive` status mapping in instance status update
+
+## [0.13.0] - 2026-02-11
+
+### Added
+
+- Add quick session creation with `Shift+N` hotkey: instant session with auto-generated name and smart defaults (#161)
+- Add Docker-style name generator (adjective-noun) with ~10,000 unique combinations
+- Add `--quick` / `-Q` flag to `agent-deck add` CLI for auto-named sessions
+- Smart defaults: inherits tool, options, and path from most recent session in the group
+
+## [0.12.3] - 2026-02-11
+
+### Fixed
+
+- Fix busy detection window reduced from 25 to 10 lines for faster status transitions
+- Fix conductor group permanently pinned to top of group list
+- Optimize status detection pipeline for faster green/yellow transitions
+- Add spinner movement detection tests for stuck spinner validation
+
 ## [0.12.2] - 2026-02-10
 
 ### Fixed

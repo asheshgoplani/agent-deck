@@ -242,22 +242,50 @@ func handleConductorSetup(profile string, args []string) {
 		newInst.Command = "claude"
 		instances = append(instances, newInst)
 
-		groupTree := session.NewGroupTreeWithGroups(instances, groups)
-		conductorGroup := groupTree.CreateGroup("conductor")
-		conductorGroup.Order = -1 // Pin conductor group to the top
-
-		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
-			fmt.Fprintf(os.Stderr, "Error saving session for %s: %v\n", profile, err)
-			os.Exit(1)
-		}
-
 		sessionID = newInst.ID
 		if !*jsonOutput {
 			fmt.Printf("  [ok] Session '%s' registered (ID: %s)\n", sessionTitle, newInst.ID[:8])
 		}
 	}
 
-	// Step 6: Install Telegram bridge (only if Telegram is configured)
+	// Always ensure conductor group is pinned to top
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	conductorGroup := groupTree.CreateGroup("conductor")
+	conductorGroup.Order = -1
+
+	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving session for %s: %v\n", profile, err)
+		os.Exit(1)
+	}
+
+	// Step 6: Install heartbeat timer (if heartbeat enabled)
+	if heartbeatEnabled {
+		interval := settings.GetHeartbeatInterval()
+		if err := session.InstallHeartbeatScript(name, profile); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
+		} else {
+			plistContent, err := session.GenerateHeartbeatPlist(name, interval)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to generate heartbeat plist: %v\n", err)
+			} else {
+				hbPlistPath, err := session.HeartbeatPlistPath(name)
+				if err == nil {
+					homeDir, _ := os.UserHomeDir()
+					_ = os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755)
+					_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+					if err := os.WriteFile(hbPlistPath, []byte(plistContent), 0o644); err == nil {
+						if err := exec.Command("launchctl", "load", hbPlistPath).Run(); err == nil {
+							if !*jsonOutput {
+								fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Step 7: Install Telegram bridge (only if Telegram is configured)
 	var plistPath string
 	if telegramConfigured {
 		if !*jsonOutput {
@@ -466,6 +494,13 @@ func handleConductorTeardown(_ string, args []string) {
 					}
 				}
 			}
+		}
+
+		// Remove heartbeat timer
+		hbPlistPath, err := session.HeartbeatPlistPath(meta.Name)
+		if err == nil {
+			_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+			_ = session.RemoveHeartbeatPlist(meta.Name)
 		}
 
 		// Optionally remove directory and session

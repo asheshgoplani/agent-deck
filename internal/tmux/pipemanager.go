@@ -207,6 +207,47 @@ func (pm *PipeManager) RefreshAllActivities() (map[string]int64, error) {
 	return result, nil
 }
 
+// RefreshAllPaneInfo sends a single list-panes command through any available
+// pipe to get pane titles and current commands for ALL sessions. This provides
+// the data needed for title-based state detection without subprocess spawns.
+func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, error) {
+	pm.mu.RLock()
+	var pipe *ControlPipe
+	for _, p := range pm.pipes {
+		if p.IsAlive() {
+			pipe = p
+			break
+		}
+	}
+	pm.mu.RUnlock()
+
+	if pipe == nil {
+		return nil, fmt.Errorf("no alive pipes available")
+	}
+
+	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}"`)
+	if err != nil {
+		return nil, fmt.Errorf("list-panes via pipe: %w", err)
+	}
+
+	result := make(map[string]PaneInfo)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		// Keep last pane per session (most sessions have one pane)
+		result[parts[0]] = PaneInfo{
+			Title:          parts[1],
+			CurrentCommand: parts[2],
+		}
+	}
+	return result, nil
+}
+
 // LastOutputTime returns the last output time for a session from its pipe.
 // Returns zero time if no pipe or no output recorded.
 func (pm *PipeManager) LastOutputTime(sessionName string) time.Time {

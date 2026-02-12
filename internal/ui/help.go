@@ -111,6 +111,7 @@ func (h *HelpOverlay) View() string {
 			title: "SESSIONS",
 			items: [][2]string{
 				{"n", "New session"},
+				{"N", "Quick create (auto name, smart defaults)"},
 				{"r", "Rename session"},
 				{"Shift+R", "Restart session"},
 				{"d", "Delete session"},
@@ -124,6 +125,14 @@ func (h *HelpOverlay) View() string {
 				{"F", "Fork with options (Claude only)"},
 				{"c", "Copy output to clipboard"},
 				{"x", "Send output to session"},
+			},
+		},
+		{
+			title: "WORKTREES",
+			items: [][2]string{
+				{"W", "Finish worktree (merge + cleanup)"},
+				{"n → w", "Create session in worktree"},
+				{"F → w", "Fork session into worktree"},
 			},
 		},
 		{

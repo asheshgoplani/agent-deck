@@ -241,6 +241,152 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 	return nil
 }
 
+// InstallHeartbeatScript writes the heartbeat.sh script for a conductor.
+// This is a standalone heartbeat that works without Telegram.
+func InstallHeartbeatScript(name, profile string) error {
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return err
+	}
+	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
+	script = strings.ReplaceAll(script, "{PROFILE}", profile)
+	scriptPath := filepath.Join(dir, "heartbeat.sh")
+	return os.WriteFile(scriptPath, []byte(script), 0o755)
+}
+
+// HeartbeatPlistLabel returns the launchd label for a conductor's heartbeat
+func HeartbeatPlistLabel(name string) string {
+	return fmt.Sprintf("com.agentdeck.conductor-heartbeat.%s", name)
+}
+
+// GenerateHeartbeatPlist returns a launchd plist for a conductor's heartbeat timer
+func GenerateHeartbeatPlist(name string, intervalMinutes int) (string, error) {
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return "", err
+	}
+
+	agentDeckPath := findAgentDeck()
+	if agentDeckPath == "" {
+		return "", fmt.Errorf("agent-deck not found in PATH")
+	}
+
+	scriptPath := filepath.Join(dir, "heartbeat.sh")
+	logPath := filepath.Join(dir, "heartbeat.log")
+	label := HeartbeatPlistLabel(name)
+	intervalSeconds := intervalMinutes * 60
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	plist := strings.ReplaceAll(conductorHeartbeatPlistTemplate, "__LABEL__", label)
+	plist = strings.ReplaceAll(plist, "__SCRIPT_PATH__", scriptPath)
+	plist = strings.ReplaceAll(plist, "__LOG_PATH__", logPath)
+	plist = strings.ReplaceAll(plist, "__HOME__", homeDir)
+	plist = strings.ReplaceAll(plist, "__INTERVAL__", fmt.Sprintf("%d", intervalSeconds))
+
+	return plist, nil
+}
+
+// HeartbeatPlistPath returns the path where a conductor's heartbeat plist should be installed
+func HeartbeatPlistPath(name string) (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, "Library", "LaunchAgents", HeartbeatPlistLabel(name)+".plist"), nil
+}
+
+// RemoveHeartbeatPlist removes the launchd plist for a conductor's heartbeat
+func RemoveHeartbeatPlist(name string) error {
+	path, err := HeartbeatPlistPath(name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+// findAgentDeck looks for agent-deck in common locations
+func findAgentDeck() string {
+	paths := []string{
+		"/usr/local/bin/agent-deck",
+		"/opt/homebrew/bin/agent-deck",
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		p := filepath.Join(dir, "agent-deck")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// conductorHeartbeatScript is the shell script that sends a heartbeat to a conductor session
+const conductorHeartbeatScript = `#!/bin/bash
+# Heartbeat for conductor: {NAME} (profile: {PROFILE})
+# Sends a check-in message to the conductor session
+
+SESSION="conductor-{NAME}"
+PROFILE="{PROFILE}"
+
+# Only send if the session is running
+STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+
+if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
+    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check all sessions in the $PROFILE profile. List any waiting sessions, auto-respond where safe, and report what needs my attention."
+fi
+`
+
+// conductorHeartbeatPlistTemplate is the launchd plist for a per-conductor heartbeat timer
+const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__SCRIPT_PATH__</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>__INTERVAL__</integer>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+
+    <key>StandardErrorPath</key>
+    <string>__LOG_PATH__</string>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+
+    <key>LowPriorityIO</key>
+    <true/>
+</dict>
+</plist>
+`
+
 // SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {

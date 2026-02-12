@@ -186,10 +186,7 @@ func TestBusyIndicatorDetection(t *testing.T) {
 	sess := NewSession("test", "/tmp")
 	sess.Command = "claude"
 
-	// NOTE: This test validates the SIMPLIFIED busy detection (2026-01)
-	// Primary indicator: "ctrl+c to interrupt"
-	// Backup indicator: Spinner characters in last 3 lines only
-	// REMOVED: "esc to interrupt", whimsical words + tokens pattern
+	// Busy detection should recognize explicit interrupt lines and spinner activity.
 	tests := []struct {
 		name     string
 		content  string
@@ -213,7 +210,7 @@ func TestBusyIndicatorDetection(t *testing.T) {
 		{
 			name:     "esc to interrupt - fallback for older Claude Code",
 			content:  "Working on task...\nesc to interrupt\n",
-			expected: true, // Restored: esc to interrupt is fallback for older Claude Code
+			expected: true,
 		},
 		{
 			name:     "normal output",
@@ -229,7 +226,10 @@ func TestBusyIndicatorDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := sess.hasBusyIndicator(tt.content)
+			// Fresh session per test to avoid spinner grace period carryover
+			s := NewSession("test-"+tt.name, "/tmp")
+			s.Command = "claude"
+			result := s.hasBusyIndicator(tt.content)
 			if result != tt.expected {
 				t.Errorf("hasBusyIndicator(%q) = %v, want %v", tt.name, result, tt.expected)
 			}
@@ -1432,6 +1432,11 @@ func TestStatusFlickerOnInvisibleCharsIntegration(t *testing.T) {
 	// Wait for session to be ready
 	time.Sleep(100 * time.Millisecond)
 
+	// Clear startup window so session doesn't stay in "starting" state
+	session.mu.Lock()
+	session.startupAt = time.Time{}
+	session.mu.Unlock()
+
 	// Helper to send content to the pane
 	sendToPane := func(content string) {
 		cmd := fmt.Sprintf("clear && printf -- %q", content)
@@ -1895,9 +1900,7 @@ func TestGetWindowActivity(t *testing.T) {
 
 // TestIsSustainedActivity verifies spike detection logic
 func TestIsSustainedActivity(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+	skipIfNoTmuxServer(t)
 	sess := NewSession("sustained-test", t.TempDir())
 	err := sess.Start("")
 	assert.NoError(t, err)

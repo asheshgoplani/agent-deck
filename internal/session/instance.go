@@ -1385,6 +1385,10 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusWaiting
 	case "idle":
 		i.Status = StatusIdle
+	case "starting":
+		i.Status = StatusStarting
+	case "inactive":
+		i.Status = StatusError
 	default:
 		i.Status = StatusError
 	}

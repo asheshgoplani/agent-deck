@@ -29,7 +29,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
-const Version = "0.12.2"
+const Version = "0.14.0"
 
 // Table column widths for list command output
 const (
@@ -556,6 +556,8 @@ func handleAdd(profile string, args []string) {
 	wrapper := fs.String("wrapper", "", "Wrapper command (use {command} to include tool command, e.g., 'nvim +\"terminal {command}\"')")
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
+	quickCreate := fs.Bool("quick", false, "Auto-generate session name (adjective-noun)")
+	quickCreateShort := fs.Bool("Q", false, "Auto-generate session name (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -597,6 +599,7 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add -t \"Sub-task\" --parent \"Main Project\"  # Create sub-session")
 		fmt.Println("  agent-deck add -t \"Research\" -c claude --mcp memory --mcp sequential-thinking /tmp/x")
 		fmt.Println("  agent-deck add -c opencode --wrapper \"nvim +'terminal {command}' +'startinsert'\" .")
+		fmt.Println("  agent-deck add --quick -c claude .   # Auto-generated name")
 		fmt.Println()
 		fmt.Println("Worktree Examples:")
 		fmt.Println("  agent-deck add -w feature/login .    # Create worktree for existing branch")
@@ -779,8 +782,12 @@ func handleAdd(profile string, args []string) {
 
 	// Track if user provided explicit title or we auto-generated from folder name
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
+	isQuick := *quickCreate || *quickCreateShort
 
-	if !userProvidedTitle {
+	if isQuick && !userProvidedTitle {
+		// Quick mode: use auto-generated adjective-noun name
+		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
+	} else if !userProvidedTitle {
 		// User didn't provide title - auto-generate unique title for this path
 		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
 	} else {
@@ -1183,56 +1190,62 @@ func handleRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	storage, err := session.NewStorageWithProfile(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
-		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeInvalidOperation)
+		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
-	instances, groups, err := storage.LoadWithGroups()
-	if err != nil {
-		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeInvalidOperation)
+	// Use shared ResolveSession for consistent matching (ambiguity detection, min prefix length)
+	inst, errMsg, errCode := ResolveSession(identifier, instances)
+	if inst == nil {
+		out.Error(fmt.Sprintf("%s (profile '%s')", errMsg, storage.Profile()), errCode)
+		if errCode == ErrCodeNotFound {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 
-	// Find and remove the session
-	found := false
-	var removedID, removedTitle string
-	newInstances := make([]*session.Instance, 0, len(instances))
-	for _, inst := range instances {
-		if inst.ID == identifier || strings.HasPrefix(inst.ID, identifier) || inst.Title == identifier {
-			found = true
-			removedID = inst.ID
-			removedTitle = inst.Title
-			// Kill tmux session if it exists
-			if inst.Exists() {
-				if err := inst.Kill(); err != nil {
-					if !*jsonOutput {
-						fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
-						fmt.Println("Session removed from Agent Deck but may still be running in tmux")
-					}
-				}
-			}
-			// Clean up worktree directory if this is a worktree session
-			if inst.IsWorktree() {
-				if err := git.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, false); err != nil {
-					if !*jsonOutput {
-						fmt.Printf("Warning: failed to remove worktree: %v\n", err)
-					}
-				}
-				_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
-			}
-		} else {
-			newInstances = append(newInstances, inst)
+	removedID := inst.ID
+	removedTitle := inst.Title
+
+	// Always attempt to kill the tmux session, even if Exists() returns false.
+	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
+	// Kill() is safe to call on non-existent sessions (returns error which we handle).
+	if err := inst.Kill(); err != nil {
+		// Only warn if the session actually existed (ignore "not found" errors)
+		if inst.Exists() && !*jsonOutput {
+			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
+			fmt.Println("Session removed from Agent Deck but may still be running in tmux")
 		}
 	}
 
-	if !found {
-		out.Error(fmt.Sprintf("session not found in profile '%s': %s", storage.Profile(), identifier), ErrCodeNotFound)
-		os.Exit(1)
+	// Clean up worktree directory if this is a worktree session
+	if inst.IsWorktree() {
+		if err := git.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, false); err != nil {
+			if !*jsonOutput {
+				fmt.Printf("Warning: failed to remove worktree: %v\n", err)
+			}
+		}
+		_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
 	}
 
-	// Rebuild group tree and save
+	// Direct SQL DELETE first to prevent resurrection by concurrent TUI force saves.
+	// The TUI's forceSaveInstances() can race with CLI deletion and re-insert the session.
+	// By deleting the row directly, we ensure it's gone even if SaveWithGroups races.
+	if err := storage.DeleteInstance(removedID); err != nil {
+		if !*jsonOutput {
+			fmt.Printf("Warning: direct delete failed: %v\n", err)
+		}
+	}
+
+	// Rebuild instance list without the deleted session and save with groups
+	newInstances := make([]*session.Instance, 0, len(instances)-1)
+	for _, s := range instances {
+		if s.ID != removedID {
+			newInstances = append(newInstances, s)
+		}
+	}
 	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
 
 	if err := storage.SaveWithGroups(newInstances, groupTree); err != nil {

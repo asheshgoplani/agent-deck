@@ -178,6 +178,10 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 func (t *GroupTree) rebuildGroupList() {
 	t.GroupList = make([]*Group, 0, len(t.Groups))
 	for _, g := range t.Groups {
+		// Always pin the "conductor" group to the top
+		if g.Path == "conductor" && g.Order >= 0 {
+			g.Order = -1
+		}
 		t.GroupList = append(t.GroupList, g)
 	}
 	sort.Slice(t.GroupList, func(i, j int) bool {

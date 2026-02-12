@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -135,20 +136,21 @@ type Home struct {
 	flatItems    []session.Item // Flattened view for cursor navigation
 
 	// Components
-	search              *Search
-	globalSearch        *GlobalSearch              // Global session search across all Claude conversations
-	globalSearchIndex   *session.GlobalSearchIndex // Search index (nil if disabled)
-	newDialog           *NewDialog
-	groupDialog         *GroupDialog         // For creating/renaming groups
-	forkDialog          *ForkDialog          // For forking sessions
-	confirmDialog       *ConfirmDialog       // For confirming destructive actions
-	helpOverlay         *HelpOverlay         // For showing keyboard shortcuts
-	mcpDialog           *MCPDialog           // For managing MCPs
-	setupWizard         *SetupWizard         // For first-run setup
-	settingsPanel       *SettingsPanel       // For editing settings
-	analyticsPanel      *AnalyticsPanel      // For displaying session analytics
-	geminiModelDialog   *GeminiModelDialog   // For selecting Gemini model
-	sessionPickerDialog *SessionPickerDialog // For sending output to another session
+	search               *Search
+	globalSearch         *GlobalSearch              // Global session search across all Claude conversations
+	globalSearchIndex    *session.GlobalSearchIndex // Search index (nil if disabled)
+	newDialog            *NewDialog
+	groupDialog          *GroupDialog          // For creating/renaming groups
+	forkDialog           *ForkDialog           // For forking sessions
+	confirmDialog        *ConfirmDialog        // For confirming destructive actions
+	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
+	mcpDialog            *MCPDialog            // For managing MCPs
+	setupWizard          *SetupWizard          // For first-run setup
+	settingsPanel        *SettingsPanel        // For editing settings
+	analyticsPanel       *AnalyticsPanel       // For displaying session analytics
+	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
+	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
+	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 
 	// Analytics cache (async fetching with TTL)
 	currentAnalytics       *session.SessionAnalytics                  // Current analytics for selected session (Claude)
@@ -203,6 +205,11 @@ type Home struct {
 	// PERFORMANCE: Debounce output activity status updates
 	lastLogActivity map[string]time.Time // sessionID -> last update time
 	logActivityMu   sync.Mutex           // Protects lastLogActivity map
+
+	// Worktree dirty status cache (lazy, 10s TTL)
+	worktreeDirtyCache   map[string]bool      // sessionID -> isDirty
+	worktreeDirtyCacheTs map[string]time.Time // sessionID -> cache timestamp
+	worktreeDirtyMu      sync.Mutex           // Protects dirty cache maps
 
 	// Memory management: periodic cache pruning
 	lastCachePrune time.Time
@@ -426,6 +433,22 @@ type systemThemeMsg struct {
 	dark bool
 }
 
+// worktreeDirtyCheckMsg is sent when an async worktree dirty check completes
+type worktreeDirtyCheckMsg struct {
+	sessionID string
+	isDirty   bool
+	err       error
+}
+
+// worktreeFinishResultMsg is sent when the worktree finish operation completes
+type worktreeFinishResultMsg struct {
+	sessionID    string
+	sessionTitle string
+	targetBranch string
+	merged       bool
+	err          error
+}
+
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
 	viewOffset    int      // Current scroll position
@@ -489,6 +512,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsPanel:       NewAnalyticsPanel(),
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
+		worktreeFinishDialog: NewWorktreeFinishDialog(),
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
@@ -507,6 +531,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
 		lastLogActivity:      make(map[string]time.Time),
+		worktreeDirtyCache:   make(map[string]bool),
+		worktreeDirtyCacheTs: make(map[string]time.Time),
 		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:     make(chan struct{}),
 		logUpdateChan:        make(chan *session.Instance, 100), // Buffered to absorb bursts
@@ -1557,6 +1583,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Refresh tmux session cache
 	refreshStart := time.Now()
 	tmux.RefreshExistingSessions()
+	tmux.RefreshPaneInfoCache()
 	refreshDur := time.Since(refreshStart)
 	if refreshDur > 100*time.Millisecond {
 		perfLog.Warn("slow_refresh", slog.Duration("duration", refreshDur))
@@ -2705,6 +2732,25 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// Worktree dirty status check (lazy, 10s TTL)
+			if inst.IsWorktree() && inst.WorktreePath != "" {
+				h.worktreeDirtyMu.Lock()
+				cacheTs, hasCached := h.worktreeDirtyCacheTs[inst.ID]
+				needsCheck := !hasCached || time.Since(cacheTs) > 10*time.Second
+				if needsCheck {
+					h.worktreeDirtyCacheTs[inst.ID] = time.Now() // Prevent duplicate fetches
+				}
+				h.worktreeDirtyMu.Unlock()
+				if needsCheck {
+					sid := inst.ID
+					wtPath := inst.WorktreePath
+					cmds = append(cmds, func() tea.Msg {
+						dirty, err := git.HasUncommittedChanges(wtPath)
+						return worktreeDirtyCheckMsg{sessionID: sid, isDirty: dirty, err: err}
+					})
+				}
+			}
+
 			if len(cmds) > 0 {
 				return h, tea.Batch(cmds...)
 			}
@@ -2757,6 +2803,80 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return h, nil
+
+	case worktreeDirtyCheckMsg:
+		// Update worktree dirty status cache
+		if msg.err == nil {
+			h.worktreeDirtyMu.Lock()
+			h.worktreeDirtyCache[msg.sessionID] = msg.isDirty
+			h.worktreeDirtyCacheTs[msg.sessionID] = time.Now()
+			h.worktreeDirtyMu.Unlock()
+		}
+		// Also update the finish dialog if it's open for this session
+		if h.worktreeFinishDialog.IsVisible() && h.worktreeFinishDialog.GetSessionID() == msg.sessionID && msg.err == nil {
+			h.worktreeFinishDialog.SetDirtyStatus(msg.isDirty)
+		}
+		return h, nil
+
+	case worktreeFinishResultMsg:
+		if msg.err != nil {
+			// Show error in dialog (user can go back or cancel)
+			if h.worktreeFinishDialog.IsVisible() {
+				h.worktreeFinishDialog.SetError(msg.err.Error())
+			} else {
+				h.setError(msg.err)
+			}
+			return h, nil
+		}
+
+		// Success: remove session from instances and clean up
+		h.worktreeFinishDialog.Hide()
+
+		h.instancesMu.Lock()
+		for i, s := range h.instances {
+			if s.ID == msg.sessionID {
+				h.instances = append(h.instances[:i], h.instances[i+1:]...)
+				break
+			}
+		}
+		inst := h.instanceByID[msg.sessionID]
+		delete(h.instanceByID, msg.sessionID)
+		h.instancesMu.Unlock()
+
+		// Invalidate caches
+		h.cachedStatusCounts.valid.Store(false)
+		h.invalidatePreviewCache(msg.sessionID)
+		delete(h.analyticsCache, msg.sessionID)
+		delete(h.geminiAnalyticsCache, msg.sessionID)
+		delete(h.analyticsCacheTime, msg.sessionID)
+		h.worktreeDirtyMu.Lock()
+		delete(h.worktreeDirtyCache, msg.sessionID)
+		delete(h.worktreeDirtyCacheTs, msg.sessionID)
+		h.worktreeDirtyMu.Unlock()
+		h.logActivityMu.Lock()
+		delete(h.lastLogActivity, msg.sessionID)
+		h.logActivityMu.Unlock()
+
+		// Remove from group tree and rebuild
+		if inst != nil {
+			h.groupTree.RemoveSession(inst)
+		}
+		h.rebuildFlatItems()
+		h.search.SetItems(h.instances)
+
+		// Delete from database and save
+		if err := h.storage.DeleteInstance(msg.sessionID); err != nil {
+			uiLog.Warn("worktree_finish_delete_err", slog.String("id", msg.sessionID), slog.String("err", err.Error()))
+		}
+		h.forceSaveInstances()
+
+		// Show success message
+		successMsg := fmt.Sprintf("Finished worktree '%s'", msg.sessionTitle)
+		if msg.merged {
+			successMsg += fmt.Sprintf(", merged into %s", msg.targetBranch)
+		}
+		h.setError(fmt.Errorf("%s", successMsg))
 		return h, nil
 
 	case copyResultMsg:
@@ -2996,6 +3116,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.sessionPickerDialog.IsVisible() {
 			return h.handleSessionPickerDialogKey(msg)
+		}
+		if h.worktreeFinishDialog.IsVisible() {
+			return h.handleWorktreeFinishDialogKey(msg)
 		}
 
 		// Main view keys
@@ -3581,6 +3704,34 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "W", "shift+w":
+		// Worktree finish - merge + cleanup for worktree sessions
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				inst := item.Session
+				if !inst.IsWorktree() {
+					h.setError(fmt.Errorf("session '%s' is not a worktree", inst.Title))
+					return h, nil
+				}
+				// Determine default target branch
+				defaultBranch := "main"
+				if detected, err := git.GetDefaultBranch(inst.WorktreeRepoRoot); err == nil {
+					defaultBranch = detected
+				}
+				h.worktreeFinishDialog.SetSize(h.width, h.height)
+				h.worktreeFinishDialog.Show(inst.ID, inst.Title, inst.WorktreeBranch, inst.WorktreeRepoRoot, inst.WorktreePath, defaultBranch)
+				// Trigger async dirty check
+				sid := inst.ID
+				wtPath := inst.WorktreePath
+				return h, func() tea.Msg {
+					dirty, err := git.HasUncommittedChanges(wtPath)
+					return worktreeDirtyCheckMsg{sessionID: sid, isDirty: dirty, err: err}
+				}
+			}
+		}
+		return h, nil
+
 	case "g":
 		// Vi-style gg to jump to top (#38) - check for double-tap first
 		if time.Since(h.lastGTime) < 500*time.Millisecond {
@@ -3730,6 +3881,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		defaultPath := h.getDefaultPathForGroup(groupPath)
 		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath)
 		return h, nil
+
+	case "N":
+		// Quick create: auto-generated name, smart defaults from group context
+		return h, h.quickCreateSession()
 
 	case "d":
 		// Show confirmation dialog before deletion (prevents accidental deletion)
@@ -4600,6 +4755,101 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	return h.forkSessionCmd(source, title, groupPath)
 }
 
+// quickCreateSession creates a session instantly with auto-generated name and smart defaults.
+// Defaults are inherited from the most recent session in the current group.
+func (h *Home) quickCreateSession() tea.Cmd {
+	// Resolve group from cursor position
+	groupPath := h.getCurrentGroupPath()
+	if groupPath == "" {
+		groupPath = session.DefaultGroupPath
+	}
+
+	// Resolve path: group default → most recent session in group → cwd
+	projectPath := h.getDefaultPathForGroup(groupPath)
+	if projectPath == "" {
+		projectPath = h.mostRecentPathInGroup(groupPath)
+	}
+	if projectPath == "" {
+		var err error
+		projectPath, err = os.Getwd()
+		if err != nil {
+			return func() tea.Msg {
+				return sessionCreatedMsg{err: fmt.Errorf("cannot determine project path: %w", err)}
+			}
+		}
+	}
+
+	// Resolve tool + options from most recent session in group
+	tool := ""
+	command := ""
+	var toolOptionsJSON json.RawMessage
+	geminiYoloMode := false
+
+	h.instancesMu.RLock()
+	var mostRecent *session.Instance
+	for _, inst := range h.instances {
+		if inst.GroupPath == groupPath {
+			if mostRecent == nil || inst.CreatedAt.After(mostRecent.CreatedAt) {
+				mostRecent = inst
+			}
+		}
+	}
+	if mostRecent != nil {
+		tool = mostRecent.Tool
+		command = mostRecent.Command
+		if len(mostRecent.ToolOptionsJSON) > 0 {
+			toolOptionsJSON = mostRecent.ToolOptionsJSON
+		}
+		if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
+			geminiYoloMode = true
+		}
+	}
+	h.instancesMu.RUnlock()
+
+	// Fall back to user's configured default tool
+	if tool == "" {
+		tool = session.GetDefaultTool()
+	}
+	if tool == "" {
+		tool = "claude"
+	}
+	// Ensure command matches tool if not inherited
+	if command == "" {
+		command = tool
+	}
+
+	// Generate unique name
+	h.instancesMu.RLock()
+	name := session.GenerateUniqueSessionName(h.instances, groupPath)
+	h.instancesMu.RUnlock()
+
+	return h.createSessionInGroupWithWorktreeAndOptions(
+		name, projectPath, command, groupPath,
+		"", "", "", // no worktree
+		geminiYoloMode, toolOptionsJSON,
+	)
+}
+
+// mostRecentPathInGroup returns the project path of the most recently created
+// session in the given group, or empty string if no sessions exist.
+func (h *Home) mostRecentPathInGroup(groupPath string) string {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+
+	var mostRecent *session.Instance
+	for _, inst := range h.instances {
+		if inst.GroupPath == groupPath && inst.ProjectPath != "" {
+			if mostRecent == nil || inst.CreatedAt.After(mostRecent.CreatedAt) {
+				mostRecent = inst
+			}
+		}
+	}
+	if mostRecent != nil {
+		return mostRecent.ProjectPath
+	}
+	return ""
+}
+
 // forkSessionWithDialog opens the fork dialog to customize title and group
 func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	if source == nil {
@@ -5007,6 +5257,7 @@ func (h *Home) updateSizes() {
 	h.groupDialog.SetSize(h.width, h.height)
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
+	h.worktreeFinishDialog.SetSize(h.width, h.height)
 }
 
 // View renders the UI
@@ -5086,6 +5337,9 @@ func (h *Home) View() string {
 	}
 	if h.sessionPickerDialog.IsVisible() {
 		return h.sessionPickerDialog.View()
+	}
+	if h.worktreeFinishDialog.IsVisible() {
+		return h.worktreeFinishDialog.View()
 	}
 
 	// Reuse viewBuilder to reduce allocations (reset and pre-allocate)
@@ -5978,13 +6232,13 @@ func (h *Home) renderHelpBarMinimal() string {
 	// Context-specific keys (left side)
 	var contextKeys string
 	if len(h.flatItems) == 0 {
-		contextKeys = keyStyle.Render("n") + " " + keyStyle.Render("i") + " " + keyStyle.Render("g")
+		contextKeys = keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("i") + " " + keyStyle.Render("g")
 	} else if h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
-			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("g")
+			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("g")
 		} else {
-			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("R")
+			contextKeys = keyStyle.Render("⏎") + " " + keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("R")
 			if item.Session != nil && item.Session.CanFork() {
 				contextKeys += " " + keyStyle.Render("f")
 			}
@@ -6027,7 +6281,7 @@ func (h *Home) renderHelpBarCompact() string {
 	var contextHints []string
 	if len(h.flatItems) == 0 {
 		contextHints = []string{
-			h.helpKeyShort("n", "New"),
+			h.helpKeyShort("n/N", "New"),
 			h.helpKeyShort("i", "Import"),
 		}
 	} else if h.cursor < len(h.flatItems) {
@@ -6035,12 +6289,12 @@ func (h *Home) renderHelpBarCompact() string {
 		if item.Type == session.ItemTypeGroup {
 			contextHints = []string{
 				h.helpKeyShort("⏎", "Toggle"),
-				h.helpKeyShort("n", "New"),
+				h.helpKeyShort("n/N", "New"),
 			}
 		} else {
 			contextHints = []string{
 				h.helpKeyShort("⏎", "Attach"),
-				h.helpKeyShort("n", "New"),
+				h.helpKeyShort("n/N", "New"),
 				h.helpKeyShort("R", "Restart"),
 			}
 			if item.Session != nil && item.Session.CanFork() {
@@ -6118,7 +6372,7 @@ func (h *Home) renderHelpBarFull() string {
 	if len(h.flatItems) == 0 {
 		contextTitle = "Empty"
 		primaryHints = []string{
-			h.helpKey("n", "New"),
+			h.helpKey("n/N", "New/Quick"),
 			h.helpKey("i", "Import"),
 			h.helpKey("g", "Group"),
 		}
@@ -6128,7 +6382,7 @@ func (h *Home) renderHelpBarFull() string {
 			contextTitle = "Group"
 			primaryHints = []string{
 				h.helpKey("Tab", "Toggle"),
-				h.helpKey("n", "New"),
+				h.helpKey("n/N", "New/Quick"),
 				h.helpKey("g", "Group"),
 			}
 			secondaryHints = []string{
@@ -6139,7 +6393,7 @@ func (h *Home) renderHelpBarFull() string {
 			contextTitle = "Session"
 			primaryHints = []string{
 				h.helpKey("Enter", "Attach"),
-				h.helpKey("n", "New"),
+				h.helpKey("n/N", "New/Quick"),
 				h.helpKey("g", "Group"),
 				h.helpKey("R", "Restart"),
 			}
@@ -6508,10 +6762,24 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		yoloBadge = yoloStyle.Render(" [YOLO]")
 	}
 
-	// Build row: [baseIndent][selection][tree][status] [title] [tool] [yolo]
+	// Worktree branch badge for sessions running in git worktrees
+	worktreeBadge := ""
+	if inst.IsWorktree() && inst.WorktreeBranch != "" {
+		branch := inst.WorktreeBranch
+		if len(branch) > 15 {
+			branch = branch[:12] + "..."
+		}
+		wtStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		if selected {
+			wtStyle = SessionStatusSelStyle
+		}
+		worktreeBadge = wtStyle.Render(" [" + branch + "]")
+	}
+
+	// Build row: [baseIndent][selection][tree][status] [title] [tool] [yolo] [worktree]
 	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
 	// Sub-sessions get extra indent: "   ├─◐ sub-session tool"
-	row := fmt.Sprintf("%s%s%s %s %s%s%s", baseIndent, selectionPrefix, treeStyle.Render(treeConnector), status, title, tool, yoloBadge)
+	row := fmt.Sprintf("%s%s%s %s %s%s%s%s", baseIndent, selectionPrefix, treeStyle.Render(treeConnector), status, title, tool, yoloBadge, worktreeBadge)
 	b.WriteString(row)
 	b.WriteString("\n")
 }
@@ -6895,6 +7163,68 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	b.WriteString(" ")
 	b.WriteString(groupBadge)
 	b.WriteString("\n")
+
+	// Worktree info section (for sessions running in git worktrees)
+	if selected.IsWorktree() {
+		wtHeader := renderSectionDivider("Worktree", width-4)
+		b.WriteString(wtHeader)
+		b.WriteString("\n")
+
+		wtLabelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		wtBranchStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+		wtValueStyle := lipgloss.NewStyle().Foreground(ColorText)
+		wtHintStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+		wtKeyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+
+		// Branch
+		if selected.WorktreeBranch != "" {
+			b.WriteString(wtLabelStyle.Render("Branch:  "))
+			b.WriteString(wtBranchStyle.Render(selected.WorktreeBranch))
+			b.WriteString("\n")
+		}
+
+		// Repo root (truncated)
+		if selected.WorktreeRepoRoot != "" {
+			repoPath := truncatePath(selected.WorktreeRepoRoot, width-4-9)
+			b.WriteString(wtLabelStyle.Render("Repo:    "))
+			b.WriteString(wtValueStyle.Render(repoPath))
+			b.WriteString("\n")
+		}
+
+		// Worktree path (truncated)
+		if selected.WorktreePath != "" {
+			wtPath := truncatePath(selected.WorktreePath, width-4-9)
+			b.WriteString(wtLabelStyle.Render("Path:    "))
+			b.WriteString(wtValueStyle.Render(wtPath))
+			b.WriteString("\n")
+		}
+
+		// Dirty status (lazy-cached, fetched via previewDebounce handler with 10s TTL)
+		h.worktreeDirtyMu.Lock()
+		isDirty, hasCached := h.worktreeDirtyCache[selected.ID]
+		h.worktreeDirtyMu.Unlock()
+
+		dirtyLabel := "checking..."
+		dirtyStyle := wtValueStyle
+		if hasCached {
+			if isDirty {
+				dirtyLabel = "dirty (uncommitted changes)"
+				dirtyStyle = lipgloss.NewStyle().Foreground(ColorYellow)
+			} else {
+				dirtyLabel = "clean"
+				dirtyStyle = lipgloss.NewStyle().Foreground(ColorGreen)
+			}
+		}
+		b.WriteString(wtLabelStyle.Render("Status:  "))
+		b.WriteString(dirtyStyle.Render(dirtyLabel))
+		b.WriteString("\n")
+
+		// Finish hint
+		b.WriteString(wtHintStyle.Render("Finish:  "))
+		b.WriteString(wtKeyStyle.Render("W"))
+		b.WriteString(wtHintStyle.Render(" merge + cleanup"))
+		b.WriteString("\n")
+	}
 
 	// Claude-specific info (session ID and MCPs)
 	if selected.Tool == "claude" {
@@ -7696,6 +8026,40 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 		b.WriteString("\n\n")
 	}
 
+	// Repository worktree summary (when all sessions share the same repo root)
+	if repoInfo := h.getGroupWorktreeInfo(group); repoInfo != nil {
+		b.WriteString(renderSectionDivider("Repository", width-4))
+		b.WriteString("\n")
+
+		repoLabelStyle := lipgloss.NewStyle().Foreground(ColorText)
+		repoValueStyle := lipgloss.NewStyle().Foreground(ColorText)
+		repoBranchStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+
+		b.WriteString(repoLabelStyle.Render("Repo:       "))
+		b.WriteString(repoValueStyle.Render(truncatePath(repoInfo.repoRoot, width-4-12)))
+		b.WriteString("\n")
+
+		b.WriteString(repoLabelStyle.Render("Worktrees:  "))
+		b.WriteString(repoValueStyle.Render(fmt.Sprintf("%d active", len(repoInfo.branches))))
+		b.WriteString("\n")
+
+		for _, br := range repoInfo.branches {
+			dirtyMark := ""
+			if br.dirtyChecked {
+				if br.isDirty {
+					dirtyMark = lipgloss.NewStyle().Foreground(ColorYellow).Render(" (dirty)")
+				} else {
+					dirtyMark = lipgloss.NewStyle().Foreground(ColorGreen).Render(" (clean)")
+				}
+			}
+			b.WriteString("  ")
+			b.WriteString(repoBranchStyle.Render("• " + br.branch))
+			b.WriteString(dirtyMark)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
 	// Sessions divider
 	b.WriteString(renderSectionDivider("Sessions", width-4))
 	b.WriteString("\n")
@@ -7762,6 +8126,61 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	}
 
 	return strings.Join(truncatedLines, "\n")
+}
+
+// groupWorktreeBranch holds info about a single worktree branch in a group
+type groupWorktreeBranch struct {
+	branch       string
+	isDirty      bool
+	dirtyChecked bool
+}
+
+// groupWorktreeInfo holds aggregated worktree info for a group sharing a common repo
+type groupWorktreeInfo struct {
+	repoRoot string
+	branches []groupWorktreeBranch
+}
+
+// getGroupWorktreeInfo returns worktree summary if all sessions in the group
+// share the same repo root and at least one is a worktree. Returns nil otherwise.
+func (h *Home) getGroupWorktreeInfo(group *session.Group) *groupWorktreeInfo {
+	if len(group.Sessions) < 2 {
+		return nil
+	}
+
+	// Check if all sessions share a common repo root and count worktrees
+	var commonRepo string
+	var branches []groupWorktreeBranch
+	for _, sess := range group.Sessions {
+		if !sess.IsWorktree() {
+			continue
+		}
+		if commonRepo == "" {
+			commonRepo = sess.WorktreeRepoRoot
+		} else if sess.WorktreeRepoRoot != commonRepo {
+			return nil // Different repos, skip
+		}
+
+		// Get dirty status from cache
+		h.worktreeDirtyMu.Lock()
+		isDirty, hasCached := h.worktreeDirtyCache[sess.ID]
+		h.worktreeDirtyMu.Unlock()
+
+		branches = append(branches, groupWorktreeBranch{
+			branch:       sess.WorktreeBranch,
+			isDirty:      isDirty,
+			dirtyChecked: hasCached,
+		})
+	}
+
+	if len(branches) == 0 {
+		return nil
+	}
+
+	return &groupWorktreeInfo{
+		repoRoot: commonRepo,
+		branches: branches,
+	}
 }
 
 // --- Copy & Send Output helpers ---
@@ -7849,6 +8268,98 @@ func (h *Home) handleSessionPickerDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	default:
 		h.sessionPickerDialog.Update(msg)
 		return h, nil
+	}
+}
+
+// handleWorktreeFinishDialogKey processes key events for the worktree finish dialog
+func (h *Home) handleWorktreeFinishDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	action := h.worktreeFinishDialog.HandleKey(msg.String())
+
+	switch action {
+	case "close":
+		return h, nil
+
+	case "confirm":
+		// Execute the finish operation
+		mergeEnabled, targetBranch, keepBranch := h.worktreeFinishDialog.GetOptions()
+		h.worktreeFinishDialog.SetExecuting(true)
+
+		sid := h.worktreeFinishDialog.sessionID
+		sTitle := h.worktreeFinishDialog.sessionTitle
+		branch := h.worktreeFinishDialog.branchName
+		repoRoot := h.worktreeFinishDialog.repoRoot
+		wtPath := h.worktreeFinishDialog.worktreePath
+
+		// Find the instance for kill/remove
+		h.instancesMu.RLock()
+		inst := h.instanceByID[sid]
+		h.instancesMu.RUnlock()
+
+		return h, h.finishWorktree(inst, sid, sTitle, branch, repoRoot, wtPath, mergeEnabled, targetBranch, keepBranch)
+
+	case "input":
+		// Pass through to text input
+		h.worktreeFinishDialog.UpdateTargetInput(msg)
+		return h, nil
+	}
+
+	return h, nil
+}
+
+// finishWorktree performs the worktree finish operation asynchronously:
+// merge branch, remove worktree, delete branch, kill session, remove from storage
+func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, branchName, repoRoot, worktreePath string, mergeEnabled bool, targetBranch string, keepBranch bool) tea.Cmd {
+	return func() tea.Msg {
+		merged := false
+
+		// Step 1: Merge (if requested)
+		if mergeEnabled {
+			// Checkout target branch in main repo
+			cmd := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
+			checkoutOutput, err := cmd.CombinedOutput()
+			if err != nil {
+				return worktreeFinishResultMsg{
+					sessionID: sessionID, sessionTitle: sessionTitle,
+					err: fmt.Errorf("failed to checkout %s: %s", targetBranch, strings.TrimSpace(string(checkoutOutput))),
+				}
+			}
+
+			// Merge the worktree branch
+			if err := git.MergeBranch(repoRoot, branchName); err != nil {
+				// Abort the merge to leave things clean
+				abortCmd := exec.Command("git", "-C", repoRoot, "merge", "--abort")
+				_ = abortCmd.Run()
+				return worktreeFinishResultMsg{
+					sessionID: sessionID, sessionTitle: sessionTitle,
+					err: fmt.Errorf("merge failed (aborted): %v", err),
+				}
+			}
+			merged = true
+		}
+
+		// Step 2: Remove worktree
+		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
+			_ = git.RemoveWorktree(repoRoot, worktreePath, false)
+		}
+		_ = git.PruneWorktrees(repoRoot)
+
+		// Step 3: Delete branch (if not keeping)
+		if !keepBranch {
+			// Use force delete if we merged (branch is fully merged), regular delete otherwise
+			_ = git.DeleteBranch(repoRoot, branchName, merged)
+		}
+
+		// Step 4: Kill tmux session
+		if inst != nil && inst.Exists() {
+			_ = inst.Kill()
+		}
+
+		return worktreeFinishResultMsg{
+			sessionID:    sessionID,
+			sessionTitle: sessionTitle,
+			targetBranch: targetBranch,
+			merged:       merged,
+		}
 	}
 }
 
