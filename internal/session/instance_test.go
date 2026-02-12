@@ -656,6 +656,157 @@ func TestInstance_UpdateClaudeSession_PreservesExistingID(t *testing.T) {
 	}
 }
 
+// TestSyncClaudeSessionFromDisk_PicksUpNewerSession verifies that when a newer
+// session file appears on disk (e.g., after /clear), syncClaudeSessionFromDisk
+// updates the instance's ClaudeSessionID.
+func TestSyncClaudeSessionFromDisk_PicksUpNewerSession(t *testing.T) {
+	configDir := t.TempDir()
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
+	}()
+
+	projectPath := "/Users/test/sync-project"
+	projectDirName := ConvertToClaudeDirName(projectPath)
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSessionID := "11111111-1111-1111-1111-111111111111"
+	newSessionID := "22222222-2222-2222-2222-222222222222"
+
+	oldPath := filepath.Join(projectDir, oldSessionID+".jsonl")
+	if err := os.WriteFile(oldPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pastTime := time.Now().Add(-30 * time.Second)
+	if err := os.Chtimes(oldPath, pastTime, pastTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(projectDir, newSessionID+".jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := NewInstanceWithTool("sync-test", projectPath, "claude")
+	inst.ClaudeSessionID = oldSessionID
+	inst.ClaudeDetectedAt = time.Now().Add(-1 * time.Minute)
+
+	inst.syncClaudeSessionFromDisk()
+
+	if inst.ClaudeSessionID != newSessionID {
+		t.Errorf("ClaudeSessionID = %q, want %q (newer session from disk)", inst.ClaudeSessionID, newSessionID)
+	}
+	if inst.ClaudeDetectedAt.IsZero() {
+		t.Error("ClaudeDetectedAt should be set after sync")
+	}
+}
+
+// TestSyncClaudeSessionFromDisk_NoChangeWhenCurrent verifies no update when
+// the current session is already the most recent file on disk.
+func TestSyncClaudeSessionFromDisk_NoChangeWhenCurrent(t *testing.T) {
+	configDir := t.TempDir()
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
+	}()
+
+	projectPath := "/Users/test/nochange-project"
+	projectDirName := ConvertToClaudeDirName(projectPath)
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	currentID := "33333333-3333-3333-3333-333333333333"
+	if err := os.WriteFile(filepath.Join(projectDir, currentID+".jsonl"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalDetectedAt := time.Now().Add(-1 * time.Minute)
+	inst := NewInstanceWithTool("nochange-test", projectPath, "claude")
+	inst.ClaudeSessionID = currentID
+	inst.ClaudeDetectedAt = originalDetectedAt
+
+	inst.syncClaudeSessionFromDisk()
+
+	if inst.ClaudeSessionID != currentID {
+		t.Errorf("ClaudeSessionID changed to %q, should remain %q", inst.ClaudeSessionID, currentID)
+	}
+	if inst.ClaudeDetectedAt != originalDetectedAt {
+		t.Error("ClaudeDetectedAt should not change when session is already current")
+	}
+}
+
+// TestSyncClaudeSessionFromDisk_IgnoresAgentFiles verifies that agent-*.jsonl files
+// are not picked up as the active session.
+func TestSyncClaudeSessionFromDisk_IgnoresAgentFiles(t *testing.T) {
+	configDir := t.TempDir()
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
+	}()
+
+	projectPath := "/Users/test/agent-files-project"
+	projectDirName := ConvertToClaudeDirName(projectPath)
+	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	realSession := "abcd1234-abcd-abcd-abcd-abcdabcdabcd"
+	agentSession := "agent-eeee5555-eeee-eeee-eeee-eeeeeeeeeeee"
+
+	realPath := filepath.Join(projectDir, realSession+".jsonl")
+	if err := os.WriteFile(realPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(realPath, time.Now().Add(-10*time.Second), time.Now().Add(-10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	agentPath := filepath.Join(projectDir, agentSession+".jsonl")
+	if err := os.WriteFile(agentPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := NewInstanceWithTool("agent-files-test", projectPath, "claude")
+	inst.ClaudeSessionID = realSession
+	inst.ClaudeDetectedAt = time.Now().Add(-1 * time.Minute)
+
+	inst.syncClaudeSessionFromDisk()
+
+	if inst.ClaudeSessionID != realSession {
+		t.Errorf("ClaudeSessionID = %q, want %q (agent files should be ignored)", inst.ClaudeSessionID, realSession)
+	}
+}
+
+// TestSyncClaudeSessionFromDisk_SkipsNonClaude verifies non-claude tools are no-ops.
+func TestSyncClaudeSessionFromDisk_SkipsNonClaude(t *testing.T) {
+	inst := NewInstanceWithTool("shell-test", "/tmp", "shell")
+	inst.ClaudeSessionID = "should-not-change"
+	inst.syncClaudeSessionFromDisk()
+	if inst.ClaudeSessionID != "should-not-change" {
+		t.Error("syncClaudeSessionFromDisk should be a no-op for non-claude tools")
+	}
+}
+
 // TestInstance_UpdateGeminiSession_UsesLatestFromFilesystem verifies that
 // UpdateGeminiSession ALWAYS scans filesystem for the most recent session,
 // even if we already have a cached session ID.

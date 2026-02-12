@@ -311,6 +311,13 @@ func GetClaudeSessionID(projectPath string) (string, error) {
 // findActiveSessionID looks for the most recently modified session file
 // This finds the CURRENTLY RUNNING session, not the last completed one
 func findActiveSessionID(configDir, projectPath string) string {
+	return findActiveSessionIDExcluding(configDir, projectPath, nil)
+}
+
+// findActiveSessionIDExcluding looks for the most recently modified session file,
+// skipping any session IDs in the exclude set. This prevents picking up a .jsonl
+// owned by another agent-deck instance when multiple sessions share the same project.
+func findActiveSessionIDExcluding(configDir, projectPath string, excludeIDs map[string]bool) string {
 	// Convert project path to Claude's directory format
 	// Claude replaces ALL non-alphanumeric chars (spaces, !, etc.) with hyphens
 	// /Users/master/Code cloud/!Project -> -Users-master-Code-cloud--Project
@@ -347,6 +354,13 @@ func findActiveSessionID(configDir, projectPath string) string {
 			continue
 		}
 
+		sessionID := strings.TrimSuffix(base, ".jsonl")
+
+		// Skip IDs owned by other agent-deck instances
+		if excludeIDs[sessionID] {
+			continue
+		}
+
 		info, err := os.Stat(file)
 		if err != nil {
 			continue
@@ -355,7 +369,7 @@ func findActiveSessionID(configDir, projectPath string) string {
 		// Find the most recently modified file
 		if info.ModTime().After(mostRecentTime) {
 			mostRecentTime = info.ModTime()
-			mostRecent = strings.TrimSuffix(base, ".jsonl")
+			mostRecent = sessionID
 		}
 	}
 

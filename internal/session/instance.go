@@ -1446,6 +1446,64 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	}
 }
 
+// collectOtherClaudeSessionIDs enumerates all agent-deck tmux sessions (except this one)
+// and returns the set of CLAUDE_SESSION_ID values they own. Used to avoid stealing
+// another instance's session when scanning for the most recent .jsonl on disk.
+func (i *Instance) collectOtherClaudeSessionIDs() map[string]bool {
+	exclude := make(map[string]bool)
+
+	tmuxSessions, err := tmux.ListAgentDeckSessions()
+	if err != nil {
+		return exclude
+	}
+
+	myTmuxName := ""
+	if i.tmuxSession != nil {
+		myTmuxName = i.tmuxSession.Name
+	}
+
+	for _, sessName := range tmuxSessions {
+		if sessName == myTmuxName {
+			continue
+		}
+		// Read CLAUDE_SESSION_ID from the other tmux session
+		other := &tmux.Session{Name: sessName}
+		if id, err := other.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
+			exclude[id] = true
+		}
+	}
+
+	return exclude
+}
+
+// syncClaudeSessionFromDisk scans the filesystem for the most recent session file,
+// excluding IDs owned by other agent-deck instances. If a different (newer) session
+// is found, it updates ClaudeSessionID, ClaudeDetectedAt, and the tmux env var.
+// This handles the case where /clear in Claude Code creates a new session UUID
+// that the tmux env var doesn't know about yet.
+func (i *Instance) syncClaudeSessionFromDisk() {
+	if i.Tool != "claude" {
+		return
+	}
+
+	configDir := GetClaudeConfigDir()
+	exclude := i.collectOtherClaudeSessionIDs()
+
+	activeID := findActiveSessionIDExcluding(configDir, i.ProjectPath, exclude)
+	if activeID == "" || activeID == i.ClaudeSessionID {
+		return
+	}
+
+	sessionLog.Debug("claude_session_update_from_disk", slog.String("old_id", i.ClaudeSessionID), slog.String("new_id", activeID))
+	i.ClaudeSessionID = activeID
+	i.ClaudeDetectedAt = time.Now()
+
+	// Sync back to tmux environment so restart uses the new ID
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", activeID)
+	}
+}
+
 // SetGeminiYoloMode sets the YOLO mode for Gemini and syncs it to the tmux environment.
 // This ensures the background status worker sees the correct state during restarts.
 func (i *Instance) SetGeminiYoloMode(enabled bool) {
@@ -2300,6 +2358,11 @@ func (i *Instance) Restart() error {
 		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
 	}
 
+	// Sync Claude session from disk before restart to pick up /clear session changes
+	if i.Tool == "claude" {
+		i.syncClaudeSessionFromDisk()
+	}
+
 	// If Claude session with known ID AND tmux session exists, use respawn-pane
 	if i.Tool == "claude" && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		// Build the resume command with proper config
@@ -2733,6 +2796,9 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 // Uses capture-resume pattern: starts fork in print mode to get new session ID,
 // stores in tmux environment, then resumes interactively
 func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOptions) (string, error) {
+	// Sync session from disk to pick up /clear session changes before forking
+	i.syncClaudeSessionFromDisk()
+
 	if !i.CanFork() {
 		return "", fmt.Errorf("cannot fork: no active Claude session")
 	}
