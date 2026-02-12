@@ -4681,19 +4681,74 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
-// Defaults are inherited from the most recent session in the current group.
+// When the cursor is on a session, it inherits that session's path and tool settings
+// (duplicate-like behavior per community feedback). When on a group header, it uses
+// the group's default path and most recently created session's settings.
 func (h *Home) quickCreateSession() tea.Cmd {
-	// Resolve group from cursor position
-	groupPath := h.getCurrentGroupPath()
+	groupPath := ""
+	var sourceSession *session.Instance
+
+	// Determine context from cursor position
+	if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+		item := h.flatItems[h.cursor]
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			sourceSession = item.Session
+			groupPath = item.Session.GroupPath
+		} else if item.Type == session.ItemTypeGroup && item.Group != nil {
+			groupPath = item.Group.Path
+		}
+	}
 	if groupPath == "" {
 		groupPath = session.DefaultGroupPath
 	}
 
-	// Resolve path: group default → most recent session in group → cwd
-	projectPath := h.getDefaultPathForGroup(groupPath)
-	if projectPath == "" {
-		projectPath = h.mostRecentPathInGroup(groupPath)
+	projectPath := ""
+	tool := ""
+	command := ""
+	var toolOptionsJSON json.RawMessage
+	geminiYoloMode := false
+
+	if sourceSession != nil {
+		// Cursor on a session: inherit from THAT session (duplicate-like)
+		projectPath = sourceSession.ProjectPath
+		tool = sourceSession.Tool
+		command = sourceSession.Command
+		if len(sourceSession.ToolOptionsJSON) > 0 {
+			toolOptionsJSON = sourceSession.ToolOptionsJSON
+		}
+		if sourceSession.GeminiYoloMode != nil && *sourceSession.GeminiYoloMode {
+			geminiYoloMode = true
+		}
+	} else {
+		// Cursor on a group header: use group defaults + most recent session
+		projectPath = h.getDefaultPathForGroup(groupPath)
+		if projectPath == "" {
+			projectPath = h.mostRecentPathInGroup(groupPath)
+		}
+
+		h.instancesMu.RLock()
+		var mostRecent *session.Instance
+		for _, inst := range h.instances {
+			if inst.GroupPath == groupPath {
+				if mostRecent == nil || inst.CreatedAt.After(mostRecent.CreatedAt) {
+					mostRecent = inst
+				}
+			}
+		}
+		if mostRecent != nil {
+			tool = mostRecent.Tool
+			command = mostRecent.Command
+			if len(mostRecent.ToolOptionsJSON) > 0 {
+				toolOptionsJSON = mostRecent.ToolOptionsJSON
+			}
+			if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
+				geminiYoloMode = true
+			}
+		}
+		h.instancesMu.RUnlock()
 	}
+
+	// Fallback for path
 	if projectPath == "" {
 		var err error
 		projectPath, err = os.Getwd()
@@ -4704,41 +4759,13 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		}
 	}
 
-	// Resolve tool + options from most recent session in group
-	tool := ""
-	command := ""
-	var toolOptionsJSON json.RawMessage
-	geminiYoloMode := false
-
-	h.instancesMu.RLock()
-	var mostRecent *session.Instance
-	for _, inst := range h.instances {
-		if inst.GroupPath == groupPath {
-			if mostRecent == nil || inst.CreatedAt.After(mostRecent.CreatedAt) {
-				mostRecent = inst
-			}
-		}
-	}
-	if mostRecent != nil {
-		tool = mostRecent.Tool
-		command = mostRecent.Command
-		if len(mostRecent.ToolOptionsJSON) > 0 {
-			toolOptionsJSON = mostRecent.ToolOptionsJSON
-		}
-		if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
-			geminiYoloMode = true
-		}
-	}
-	h.instancesMu.RUnlock()
-
-	// Fall back to user's configured default tool
+	// Fallback for tool
 	if tool == "" {
 		tool = session.GetDefaultTool()
 	}
 	if tool == "" {
 		tool = "claude"
 	}
-	// Ensure command matches tool if not inherited
 	if command == "" {
 		command = tool
 	}

@@ -36,6 +36,7 @@ type NewDialog struct {
 	// Worktree support
 	worktreeEnabled bool
 	branchInput     textinput.Model
+	branchAutoSet   bool // true if branch was auto-derived from session name
 	// Inline validation error displayed inside the dialog
 	validationErr string
 	pathCycler    session.CompletionCycler // Path autocomplete state
@@ -130,6 +131,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	// Reset worktree fields
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
+	d.branchAutoSet = false
 	// Set path input to group's default path if provided, otherwise use current working directory
 	if defaultPath != "" {
 		d.pathInput.SetValue(defaultPath)
@@ -241,9 +243,25 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 	return name, path, command
 }
 
-// ToggleWorktree toggles the worktree checkbox
+// ToggleWorktree toggles the worktree checkbox.
+// When enabling, auto-populates the branch name from the session name.
 func (d *NewDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
+	if d.worktreeEnabled {
+		d.autoBranchFromName()
+	}
+}
+
+// autoBranchFromName sets the branch input to "feature/<session-name>" if the
+// name field is non-empty and the branch hasn't been manually edited.
+func (d *NewDialog) autoBranchFromName() {
+	name := strings.TrimSpace(d.nameInput.Value())
+	if name == "" {
+		return
+	}
+	branch := "feature/" + name
+	d.branchInput.SetValue(branch)
+	d.branchAutoSet = true
 }
 
 // IsWorktreeEnabled returns whether worktree mode is enabled
@@ -570,7 +588,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	// Update focused input
 	switch d.focusIndex {
 	case 0:
+		oldName := d.nameInput.Value()
 		d.nameInput, cmd = d.nameInput.Update(msg)
+		// Auto-update branch when name changes and worktree is enabled
+		if d.worktreeEnabled && d.branchAutoSet && d.nameInput.Value() != oldName {
+			d.autoBranchFromName()
+		}
 	case 1:
 		oldValue := d.pathInput.Value()
 		d.pathInput, cmd = d.pathInput.Update(msg)
@@ -587,7 +610,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		}
 	case 3:
 		if d.worktreeEnabled {
+			oldBranch := d.branchInput.Value()
 			d.branchInput, cmd = d.branchInput.Update(msg)
+			// User manually edited branch: stop auto-deriving from name
+			if d.branchInput.Value() != oldBranch {
+				d.branchAutoSet = false
+			}
 		} else if d.toolOptions != nil {
 			cmd = d.toolOptions.Update(msg)
 		}

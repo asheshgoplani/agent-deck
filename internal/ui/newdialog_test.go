@@ -735,3 +735,45 @@ func TestNewDialog_ShowInGroup_ClearsError(t *testing.T) {
 		t.Error("ShowInGroup should clear validationErr")
 	}
 }
+
+// ===== Worktree Branch Auto-Matching Tests =====
+
+func TestNewDialog_ToggleWorktree_AutoPopulatesBranch(t *testing.T) {
+	d := NewNewDialog()
+	d.nameInput.SetValue("amber-falcon")
+
+	// Toggling worktree ON should auto-populate branch from session name
+	d.ToggleWorktree()
+
+	if !d.worktreeEnabled {
+		t.Fatal("worktreeEnabled should be true after toggle")
+	}
+	if d.branchInput.Value() != "feature/amber-falcon" {
+		t.Errorf("branch = %q, want %q", d.branchInput.Value(), "feature/amber-falcon")
+	}
+	if !d.branchAutoSet {
+		t.Error("branchAutoSet should be true after auto-population")
+	}
+}
+
+func TestNewDialog_ToggleWorktree_EmptyName_NoBranch(t *testing.T) {
+	d := NewNewDialog()
+	// Name is empty
+
+	d.ToggleWorktree()
+
+	if d.branchInput.Value() != "" {
+		t.Errorf("branch should be empty when name is empty, got %q", d.branchInput.Value())
+	}
+}
+
+func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
+	d := NewNewDialog()
+	d.branchAutoSet = true
+
+	d.ShowInGroup("projects", "Projects", "")
+
+	if d.branchAutoSet {
+		t.Error("branchAutoSet should be reset to false on ShowInGroup")
+	}
+}
