@@ -122,6 +122,7 @@ func handleConductorSetup(profile string, args []string) {
 
 	settings := config.Conductor
 	telegramConfigured := settings.Telegram.Token != ""
+	slackConfigured := settings.Slack.BotToken != ""
 
 	// Step 2: If conductor system not enabled, run first-time setup
 	if !settings.Enabled {
@@ -167,11 +168,55 @@ func handleConductorSetup(profile string, args []string) {
 			telegramConfigured = true
 		}
 
+		// Ask about Slack
+		fmt.Print("Connect Slack bot for channel-based control? (y/N): ")
+		slackAnswer, _ := reader.ReadString('\n')
+		slackAnswer = strings.TrimSpace(strings.ToLower(slackAnswer))
+
+		var slack session.SlackSettings
+		if slackAnswer == "y" || slackAnswer == "yes" {
+			fmt.Println()
+			fmt.Println("  1. Create a Slack app at https://api.slack.com/apps")
+			fmt.Println("  2. Enable Socket Mode -> generate an app-level token (xapp-...)")
+			fmt.Println("  3. Add bot scopes: chat:write, channels:history, channels:read, app_mentions:read")
+			fmt.Println("  4. Install the app to your workspace")
+			fmt.Println("  5. Invite the bot to your channel (/invite @botname)")
+			fmt.Println()
+
+			fmt.Print("Slack bot token (xoxb-...): ")
+			botToken, _ := reader.ReadString('\n')
+			botToken = strings.TrimSpace(botToken)
+			if botToken == "" {
+				fmt.Fprintln(os.Stderr, "Error: bot token is required")
+				os.Exit(1)
+			}
+
+			fmt.Print("Slack app token (xapp-...): ")
+			appToken, _ := reader.ReadString('\n')
+			appToken = strings.TrimSpace(appToken)
+			if appToken == "" {
+				fmt.Fprintln(os.Stderr, "Error: app token is required")
+				os.Exit(1)
+			}
+
+			fmt.Print("Slack channel ID (C01234...): ")
+			channelID, _ := reader.ReadString('\n')
+			channelID = strings.TrimSpace(channelID)
+			if channelID == "" {
+				fmt.Fprintln(os.Stderr, "Error: channel ID is required")
+				os.Exit(1)
+			}
+
+			slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
+			slackConfigured = true
+		}
+
 		// Update config (no longer stores profiles list, conductors are on disk)
 		settings = session.ConductorSettings{
 			Enabled:           true,
 			HeartbeatInterval: 15,
 			Telegram:          telegram,
+			Slack:             slack,
 		}
 		config.Conductor = settings
 
@@ -285,12 +330,12 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 7: Install Telegram bridge (only if Telegram is configured)
+	// Step 7: Install bridge (if Telegram or Slack is configured)
 	var plistPath string
-	if telegramConfigured {
+	if telegramConfigured || slackConfigured {
 		if !*jsonOutput {
 			fmt.Println()
-			fmt.Println("Installing Telegram bridge...")
+			fmt.Println("Installing bridge...")
 		}
 
 		installPythonDeps()
@@ -348,6 +393,7 @@ func handleConductorSetup(profile string, args []string) {
 			"existed":   existed,
 			"heartbeat": heartbeatEnabled,
 			"telegram":  telegramConfigured,
+			"slack":     slackConfigured,
 		}
 		if plistPath != "" {
 			data["daemon"] = plistPath
@@ -369,14 +415,20 @@ func handleConductorSetup(profile string, args []string) {
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Printf("  agent-deck -p %s session start %s\n", profile, sessionTitle)
-	if telegramConfigured {
+	condDir, _ := session.ConductorDir()
+	if telegramConfigured || slackConfigured {
 		fmt.Println()
-		fmt.Println("  Test from Telegram: send /status to your bot")
-		condDir, _ := session.ConductorDir()
+		if telegramConfigured {
+			fmt.Println("  Test from Telegram: send /status to your bot")
+		}
+		if slackConfigured {
+			fmt.Println("  Test from Slack: post a message in the configured channel")
+		}
 		fmt.Printf("  View bridge logs:   tail -f %s/bridge.log\n", condDir)
 	} else {
 		fmt.Println()
 		fmt.Println("  To add Telegram later: re-run setup after adding [conductor.telegram] to config.toml")
+		fmt.Println("  To add Slack later: re-run setup after adding [conductor.slack] to config.toml")
 	}
 }
 
@@ -854,14 +906,33 @@ func handleConductorList(profile string, args []string) {
 
 // installPythonDeps installs Python dependencies for the bridge
 func installPythonDeps() {
-	// Try pip install --user first
-	cmd := exec.Command("python3", "-m", "pip", "install", "--quiet", "--user", "aiogram", "toml")
+	config, err := session.LoadUserConfig()
+	var packages []string
+	packages = append(packages, "toml")
+
+	if err == nil && config != nil {
+		if config.Conductor.Telegram.Token != "" {
+			packages = append(packages, "aiogram")
+		}
+		if config.Conductor.Slack.BotToken != "" {
+			packages = append(packages, "slack-bolt", "slack-sdk")
+		}
+	}
+
+	// Fallback: if no specific integration detected, install all
+	if len(packages) == 1 {
+		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk")
+	}
+
+	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
+	cmd := exec.Command("python3", args...)
 	if err := cmd.Run(); err != nil {
 		// Try without --user
-		cmd = exec.Command("python3", "-m", "pip", "install", "--quiet", "aiogram", "toml")
+		args = append([]string{"-m", "pip", "install", "--quiet"}, packages...)
+		cmd = exec.Command("python3", args...)
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintln(os.Stderr, "Warning: could not install Python dependencies (aiogram, toml)")
-			fmt.Fprintln(os.Stderr, "Install manually: pip3 install aiogram toml")
+			fmt.Fprintf(os.Stderr, "Warning: could not install Python dependencies (%s)\n", strings.Join(packages, ", "))
+			fmt.Fprintf(os.Stderr, "Install manually: pip3 install %s\n", strings.Join(packages, " "))
 		}
 	}
 }
