@@ -25,6 +25,9 @@ type ConductorSettings struct {
 
 	// Telegram defines Telegram bot integration settings
 	Telegram TelegramSettings `toml:"telegram"`
+
+	// Slack defines Slack bot integration settings
+	Slack SlackSettings `toml:"slack"`
 }
 
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
@@ -34,6 +37,18 @@ type TelegramSettings struct {
 
 	// UserID is the authorized Telegram user ID from @userinfobot
 	UserID int64 `toml:"user_id"`
+}
+
+// SlackSettings defines Slack bot configuration for the conductor bridge
+type SlackSettings struct {
+	// BotToken is the Slack bot token (xoxb-...)
+	BotToken string `toml:"bot_token"`
+
+	// AppToken is the Slack app-level token for Socket Mode (xapp-...)
+	AppToken string `toml:"app_token"`
+
+	// ChannelID is the Slack channel where the bot listens and posts (C01234...)
+	ChannelID string `toml:"channel_id"`
 }
 
 // ConductorMeta holds metadata for a named conductor instance
