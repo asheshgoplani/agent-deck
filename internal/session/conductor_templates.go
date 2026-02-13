@@ -314,6 +314,7 @@ def load_config() -> dict:
     sl_bot_token = sl.get("bot_token", "")
     sl_app_token = sl.get("app_token", "")
     sl_channel_id = sl.get("channel_id", "")
+    sl_listen_mode = sl.get("listen_mode", "mentions")  # "mentions" or "all"
     sl_configured = bool(sl_bot_token and sl_app_token and sl_channel_id)
 
     if not tg_configured and not sl_configured:
@@ -333,6 +334,7 @@ def load_config() -> dict:
             "bot_token": sl_bot_token,
             "app_token": sl_app_token,
             "channel_id": sl_channel_id,
+            "listen_mode": sl_listen_mode,
             "configured": sl_configured,
         },
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
@@ -859,6 +861,7 @@ def create_slack_app(config: dict):
     channel_id = config["slack"]["channel_id"]
 
     app = AsyncApp(token=bot_token)
+    listen_mode = config["slack"].get("listen_mode", "mentions")
 
     def get_default_conductor() -> dict | None:
         """Get the first conductor (default target for messages)."""
@@ -920,7 +923,12 @@ def create_slack_app(config: dict):
 
     @app.event("message")
     async def handle_slack_message(event, say):
-        """Handle messages in the configured channel."""
+        """Handle messages in the configured channel.
+
+        Only active when listen_mode is "all". Ignored in "mentions" mode.
+        """
+        if listen_mode != "all":
+            return
         # Ignore bot messages
         if event.get("bot_id") or event.get("subtype"):
             return
@@ -934,9 +942,7 @@ def create_slack_app(config: dict):
 
     @app.event("app_mention")
     async def handle_slack_mention(event, say):
-        """Handle @bot mentions."""
-        if event.get("channel") != channel_id:
-            return
+        """Handle @bot mentions in any channel the bot is in. Always active."""
         text = event.get("text", "")
         # Strip the bot mention (e.g., "<@U01234> message" -> "message")
         text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()

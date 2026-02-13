@@ -52,6 +52,10 @@ type SlackSettings struct {
 
 	// ChannelID is the Slack channel where the bot listens and posts (C01234...)
 	ChannelID string `toml:"channel_id"`
+
+	// ListenMode controls when the bot responds: "mentions" (only @mentions) or "all" (all channel messages)
+	// Default: "mentions"
+	ListenMode string `toml:"listen_mode"`
 }
 
 // ConductorMeta holds metadata for a named conductor instance
