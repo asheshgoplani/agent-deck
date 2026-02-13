@@ -1369,7 +1369,7 @@ func sendWithRetry(tmuxSess *tmux.Session, message string) error {
 func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 	sawActive := false
 	waitingCount := 0
-	maxAttempts := 300 // 60 seconds max (300 * 200ms)
+	maxAttempts := 400 // 80 seconds max (400 * 200ms)
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		time.Sleep(200 * time.Millisecond)
@@ -1402,7 +1402,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 		}
 	}
 
-	return fmt.Errorf("agent not ready after 60 seconds")
+	return fmt.Errorf("agent not ready after 80 seconds")
 }
 
 // handleSessionOutput gets the last response from a session

@@ -242,7 +242,14 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 
 	// Write per-conductor CLAUDE.md with name and profile substitution
 	content := strings.ReplaceAll(conductorPerNameClaudeMDTemplate, "{NAME}", name)
-	content = strings.ReplaceAll(content, "{PROFILE}", profile)
+	if profile == "" {
+		// For default profile, show "default" in display text and omit -p flag in commands
+		content = strings.ReplaceAll(content, "{PROFILE}", "default")
+		content = strings.ReplaceAll(content, "agent-deck -p default ", "agent-deck ")
+		content = strings.ReplaceAll(content, "Always pass `-p default` to all CLI commands.", "Use CLI commands without `-p` flag (default profile).")
+	} else {
+		content = strings.ReplaceAll(content, "{PROFILE}", profile)
+	}
 	claudeMD := filepath.Join(dir, "CLAUDE.md")
 	if err := os.WriteFile(claudeMD, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write CLAUDE.md: %w", err)
@@ -271,7 +278,14 @@ func InstallHeartbeatScript(name, profile string) error {
 		return err
 	}
 	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
-	script = strings.ReplaceAll(script, "{PROFILE}", profile)
+	if profile == "" {
+		// For default profile, omit -p flag entirely
+		script = strings.ReplaceAll(script, "{PROFILE}", "default")
+		script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
+		script = strings.ReplaceAll(script, `$PROFILE profile`, "default profile")
+	} else {
+		script = strings.ReplaceAll(script, "{PROFILE}", profile)
+	}
 	scriptPath := filepath.Join(dir, "heartbeat.sh")
 	return os.WriteFile(scriptPath, []byte(script), 0o755)
 }

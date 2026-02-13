@@ -571,18 +571,46 @@ def parse_conductor_prefix(text: str, conductor_names: list[str]) -> tuple[str |
 async def wait_for_response(
     session: str, profile: str | None = None, timeout: int = RESPONSE_TIMEOUT
 ) -> str:
-    """Poll until the conductor finishes processing (status = waiting/idle)."""
+    """Poll until the conductor finishes processing (status = waiting/idle).
+
+    Two phases:
+    1. Wait for the session to become active (processing the message).
+       This avoids reading stale output from before the message was sent.
+    2. Wait for the session to return to waiting/idle (response ready).
+
+    If reading the output fails (e.g. session file not yet created for new
+    sessions), keeps polling instead of returning the error immediately.
+    """
     elapsed = 0
+    saw_active = False
+    last_error = ""
+
     while elapsed < timeout:
         await asyncio.sleep(POLL_INTERVAL)
         elapsed += POLL_INTERVAL
 
         status = get_session_status(session, profile=profile)
-        if status in ("waiting", "idle"):
-            return get_session_output(session, profile=profile)
         if status == "error":
             return "[Conductor session is in error state. Try /restart]"
 
+        if status in ("running", "active", "starting"):
+            saw_active = True
+            continue
+
+        if status in ("waiting", "idle"):
+            should_read = saw_active or elapsed >= 6
+            if should_read:
+                output = get_session_output(session, profile=profile)
+                if output.startswith("[Error"):
+                    # Output not available yet (e.g. JSONL file not created).
+                    # Keep polling — it should appear soon.
+                    last_error = output
+                    saw_active = True  # prevent re-reading every poll
+                    continue
+                return output
+
+    if last_error:
+        return last_error
     return f"[Conductor timed out after {timeout}s. It may still be processing.]"
 
 
@@ -1329,6 +1357,13 @@ async def main():
         if result:
             slack_app, slack_channel_id = result
             slack_handler = AsyncSocketModeHandler(slack_app, config["slack"]["app_token"])
+
+    # Pre-start all conductors so they're warm when messages arrive
+    for c in conductors:
+        if ensure_conductor_running(c["name"], c["profile"]):
+            log.info("Conductor %s is running", c["name"])
+        else:
+            log.warning("Failed to pre-start conductor %s", c["name"])
 
     # Start heartbeat (shared, notifies both platforms)
     heartbeat_task = asyncio.create_task(

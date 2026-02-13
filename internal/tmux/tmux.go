@@ -2743,7 +2743,8 @@ func (s *Session) SendEnter() error {
 // marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
 func (s *Session) SendKeysAndEnter(keys string) error {
 	s.invalidateCache()
-	if err := s.SendKeys(keys); err != nil {
+	// Use chunked sending for large messages to avoid tmux buffer limits
+	if err := s.SendKeysChunked(keys); err != nil {
 		return err
 	}
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
