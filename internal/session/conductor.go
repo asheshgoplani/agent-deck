@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
 
 // ConductorSettings defines conductor (meta-agent orchestration) configuration
@@ -629,3 +632,417 @@ const conductorPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </dict>
 </plist>
 `
+
+// --- Systemd unit templates ---
+
+const systemdBridgeServiceTemplate = `[Unit]
+Description=Agent Deck Conductor Bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__PYTHON3__ __BRIDGE_PATH__
+Restart=always
+RestartSec=10
+WorkingDirectory=__HOME__
+StandardOutput=append:__LOG_PATH__
+StandardError=append:__LOG_PATH__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__
+
+[Install]
+WantedBy=default.target
+`
+
+const systemdHeartbeatTimerTemplate = `[Unit]
+Description=Agent Deck Conductor Heartbeat Timer (__NAME__)
+
+[Timer]
+OnBootSec=__INTERVAL__s
+OnUnitActiveSec=__INTERVAL__s
+
+[Install]
+WantedBy=timers.target
+`
+
+const systemdHeartbeatServiceTemplate = `[Unit]
+Description=Agent Deck Conductor Heartbeat (__NAME__)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash __SCRIPT_PATH__
+WorkingDirectory=__HOME__
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=__HOME__
+`
+
+// --- Systemd path helpers ---
+
+const systemdBridgeServiceName = "agent-deck-conductor-bridge.service"
+
+// SystemdUserDir returns the systemd user unit directory (~/.config/systemd/user/)
+func SystemdUserDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".config", "systemd", "user"), nil
+}
+
+// SystemdBridgeServicePath returns the full path to the bridge systemd service file
+func SystemdBridgeServicePath() (string, error) {
+	dir, err := SystemdUserDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, systemdBridgeServiceName), nil
+}
+
+// SystemdHeartbeatServiceName returns the systemd service name for a conductor heartbeat
+func SystemdHeartbeatServiceName(name string) string {
+	return fmt.Sprintf("agent-deck-conductor-heartbeat-%s.service", name)
+}
+
+// SystemdHeartbeatTimerName returns the systemd timer name for a conductor heartbeat
+func SystemdHeartbeatTimerName(name string) string {
+	return fmt.Sprintf("agent-deck-conductor-heartbeat-%s.timer", name)
+}
+
+// SystemdHeartbeatServicePath returns the full path to a heartbeat systemd service
+func SystemdHeartbeatServicePath(name string) (string, error) {
+	dir, err := SystemdUserDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SystemdHeartbeatServiceName(name)), nil
+}
+
+// SystemdHeartbeatTimerPath returns the full path to a heartbeat systemd timer
+func SystemdHeartbeatTimerPath(name string) (string, error) {
+	dir, err := SystemdUserDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SystemdHeartbeatTimerName(name)), nil
+}
+
+// --- Systemd unit generators ---
+
+// GenerateSystemdBridgeService returns a systemd unit for the bridge daemon
+func GenerateSystemdBridgeService() (string, error) {
+	condDir, err := ConductorDir()
+	if err != nil {
+		return "", err
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	python3Path := findPython3()
+	if python3Path == "" {
+		return "", fmt.Errorf("python3 not found in PATH")
+	}
+	bridgePath := filepath.Join(condDir, "bridge.py")
+	logPath := filepath.Join(condDir, "bridge.log")
+
+	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
+	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
+	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
+	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
+	return unit, nil
+}
+
+// GenerateSystemdHeartbeatTimer returns a systemd timer unit for a conductor heartbeat
+func GenerateSystemdHeartbeatTimer(name string, intervalMinutes int) string {
+	intervalSeconds := intervalMinutes * 60
+	unit := strings.ReplaceAll(systemdHeartbeatTimerTemplate, "__NAME__", name)
+	unit = strings.ReplaceAll(unit, "__INTERVAL__", fmt.Sprintf("%d", intervalSeconds))
+	return unit
+}
+
+// GenerateSystemdHeartbeatService returns a systemd service unit for a conductor heartbeat
+func GenerateSystemdHeartbeatService(name string) (string, error) {
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return "", err
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	scriptPath := filepath.Join(dir, "heartbeat.sh")
+	unit := strings.ReplaceAll(systemdHeartbeatServiceTemplate, "__NAME__", name)
+	unit = strings.ReplaceAll(unit, "__SCRIPT_PATH__", scriptPath)
+	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
+	return unit, nil
+}
+
+// --- Platform-aware daemon management ---
+
+// InstallBridgeDaemon installs and starts the bridge daemon.
+// macOS: launchd plist; Linux: systemd user service.
+// Returns the unit/plist file path on success.
+func InstallBridgeDaemon() (string, error) {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		return installBridgeDaemonLaunchd()
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		return installBridgeDaemonSystemd()
+	default:
+		condDir, _ := ConductorDir()
+		return "", fmt.Errorf("unsupported platform %s for daemon management; run manually: python3 %s/bridge.py", plat, condDir)
+	}
+}
+
+func installBridgeDaemonLaunchd() (string, error) {
+	plistContent, err := GenerateLaunchdPlist()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate plist: %w", err)
+	}
+	plistPath, err := LaunchdPlistPath()
+	if err != nil {
+		return "", fmt.Errorf("failed to get plist path: %w", err)
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755); err != nil {
+		return "", fmt.Errorf("failed to create LaunchAgents dir: %w", err)
+	}
+	_ = exec.Command("launchctl", "unload", plistPath).Run()
+	if err := os.WriteFile(plistPath, []byte(plistContent), 0o644); err != nil {
+		return "", fmt.Errorf("failed to write plist: %w", err)
+	}
+	if err := exec.Command("launchctl", "load", plistPath).Run(); err != nil {
+		return plistPath, fmt.Errorf("plist written but failed to load daemon: %w", err)
+	}
+	return plistPath, nil
+}
+
+func installBridgeDaemonSystemd() (string, error) {
+	unitContent, err := GenerateSystemdBridgeService()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate systemd unit: %w", err)
+	}
+	unitPath, err := SystemdBridgeServicePath()
+	if err != nil {
+		return "", fmt.Errorf("failed to get systemd unit path: %w", err)
+	}
+	dir, err := SystemdUserDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create systemd user dir: %w", err)
+	}
+	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
+		return "", fmt.Errorf("failed to write systemd unit: %w", err)
+	}
+	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+		return unitPath, fmt.Errorf("unit written but daemon-reload failed: %w", err)
+	}
+	if err := exec.Command("systemctl", "--user", "enable", "--now", systemdBridgeServiceName).Run(); err != nil {
+		return unitPath, fmt.Errorf("unit written but enable failed: %w", err)
+	}
+	return unitPath, nil
+}
+
+// UninstallBridgeDaemon stops and removes the bridge daemon.
+func UninstallBridgeDaemon() error {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		return uninstallBridgeDaemonLaunchd()
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		return uninstallBridgeDaemonSystemd()
+	default:
+		return nil
+	}
+}
+
+func uninstallBridgeDaemonLaunchd() error {
+	plistPath, err := LaunchdPlistPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
+		return nil
+	}
+	_ = exec.Command("launchctl", "unload", plistPath).Run()
+	return os.Remove(plistPath)
+}
+
+func uninstallBridgeDaemonSystemd() error {
+	_ = exec.Command("systemctl", "--user", "disable", "--now", systemdBridgeServiceName).Run()
+	unitPath, err := SystemdBridgeServicePath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(unitPath); os.IsNotExist(err) {
+		return nil
+	}
+	if err := os.Remove(unitPath); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	return nil
+}
+
+// IsBridgeDaemonRunning checks if the bridge daemon is currently running.
+func IsBridgeDaemonRunning() bool {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		out, err := exec.Command("launchctl", "list", LaunchdPlistName).Output()
+		return err == nil && len(out) > 0
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		err := exec.Command("systemctl", "--user", "is-active", "--quiet", systemdBridgeServiceName).Run()
+		return err == nil
+	default:
+		return false
+	}
+}
+
+// BridgeDaemonHint returns a platform-appropriate hint for starting the bridge daemon.
+func BridgeDaemonHint() string {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		plistPath, err := LaunchdPlistPath()
+		if err == nil {
+			if _, err := os.Stat(plistPath); err == nil {
+				return fmt.Sprintf("Start daemon with: launchctl load %s", plistPath)
+			}
+		}
+		return "Run 'agent-deck conductor setup <name>' to install the daemon"
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		unitPath, err := SystemdBridgeServicePath()
+		if err == nil {
+			if _, err := os.Stat(unitPath); err == nil {
+				return "Start daemon with: systemctl --user start agent-deck-conductor-bridge"
+			}
+		}
+		return "Run 'agent-deck conductor setup <name>' to install the daemon"
+	default:
+		condDir, _ := ConductorDir()
+		return fmt.Sprintf("Run manually: python3 %s/bridge.py", condDir)
+	}
+}
+
+// InstallHeartbeatDaemon installs and starts the heartbeat timer for a conductor.
+// macOS: launchd plist; Linux: systemd timer/service pair.
+func InstallHeartbeatDaemon(name, profile string, intervalMinutes int) error {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		return installHeartbeatDaemonLaunchd(name, intervalMinutes)
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		return installHeartbeatDaemonSystemd(name, intervalMinutes)
+	default:
+		return fmt.Errorf("unsupported platform %s for heartbeat daemon; run heartbeat.sh manually via cron", plat)
+	}
+}
+
+func installHeartbeatDaemonLaunchd(name string, intervalMinutes int) error {
+	plistContent, err := GenerateHeartbeatPlist(name, intervalMinutes)
+	if err != nil {
+		return fmt.Errorf("failed to generate heartbeat plist: %w", err)
+	}
+	hbPlistPath, err := HeartbeatPlistPath(name)
+	if err != nil {
+		return err
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	_ = os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755)
+	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	if err := os.WriteFile(hbPlistPath, []byte(plistContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write heartbeat plist: %w", err)
+	}
+	if err := exec.Command("launchctl", "load", hbPlistPath).Run(); err != nil {
+		return fmt.Errorf("plist written but failed to load: %w", err)
+	}
+	return nil
+}
+
+func installHeartbeatDaemonSystemd(name string, intervalMinutes int) error {
+	dir, err := SystemdUserDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create systemd user dir: %w", err)
+	}
+
+	svcContent, err := GenerateSystemdHeartbeatService(name)
+	if err != nil {
+		return fmt.Errorf("failed to generate heartbeat service: %w", err)
+	}
+	svcPath, err := SystemdHeartbeatServicePath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(svcPath, []byte(svcContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write heartbeat service: %w", err)
+	}
+
+	timerContent := GenerateSystemdHeartbeatTimer(name, intervalMinutes)
+	timerPath, err := SystemdHeartbeatTimerPath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(timerPath, []byte(timerContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write heartbeat timer: %w", err)
+	}
+
+	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("daemon-reload failed: %w", err)
+	}
+	timerName := SystemdHeartbeatTimerName(name)
+	if err := exec.Command("systemctl", "--user", "enable", "--now", timerName).Run(); err != nil {
+		return fmt.Errorf("failed to enable heartbeat timer: %w", err)
+	}
+	return nil
+}
+
+// UninstallHeartbeatDaemon stops and removes the heartbeat timer for a conductor.
+func UninstallHeartbeatDaemon(name string) error {
+	plat := platform.Detect()
+	switch plat {
+	case platform.PlatformMacOS:
+		return uninstallHeartbeatDaemonLaunchd(name)
+	case platform.PlatformLinux, platform.PlatformWSL2:
+		return uninstallHeartbeatDaemonSystemd(name)
+	default:
+		return nil
+	}
+}
+
+func uninstallHeartbeatDaemonLaunchd(name string) error {
+	hbPlistPath, err := HeartbeatPlistPath(name)
+	if err != nil {
+		return err
+	}
+	_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
+	return RemoveHeartbeatPlist(name)
+}
+
+func uninstallHeartbeatDaemonSystemd(name string) error {
+	timerName := SystemdHeartbeatTimerName(name)
+	_ = exec.Command("systemctl", "--user", "disable", "--now", timerName).Run()
+
+	timerPath, err := SystemdHeartbeatTimerPath(name)
+	if err == nil {
+		_ = os.Remove(timerPath)
+	}
+	svcPath, err := SystemdHeartbeatServicePath(name)
+	if err == nil {
+		_ = os.Remove(svcPath)
+	}
+	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	return nil
+}

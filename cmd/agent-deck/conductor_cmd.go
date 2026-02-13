@@ -179,8 +179,9 @@ func handleConductorSetup(profile string, args []string) {
 			fmt.Println("  1. Create a Slack app at https://api.slack.com/apps")
 			fmt.Println("  2. Enable Socket Mode -> generate an app-level token (xapp-...)")
 			fmt.Println("  3. Add bot scopes: chat:write, channels:history, channels:read, app_mentions:read")
-			fmt.Println("  4. Install the app to your workspace")
-			fmt.Println("  5. Invite the bot to your channel (/invite @botname)")
+			fmt.Println("  4. Enable Event Subscriptions -> subscribe to bot events: message.channels, app_mention")
+			fmt.Println("  5. Install the app to your workspace")
+			fmt.Println("  6. Invite the bot to your channel (/invite @botname)")
 			fmt.Println()
 
 			fmt.Print("Slack bot token (xoxb-...): ")
@@ -308,25 +309,10 @@ func handleConductorSetup(profile string, args []string) {
 		interval := settings.GetHeartbeatInterval()
 		if err := session.InstallHeartbeatScript(name, profile); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
-		} else {
-			plistContent, err := session.GenerateHeartbeatPlist(name, interval)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to generate heartbeat plist: %v\n", err)
-			} else {
-				hbPlistPath, err := session.HeartbeatPlistPath(name)
-				if err == nil {
-					homeDir, _ := os.UserHomeDir()
-					_ = os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755)
-					_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
-					if err := os.WriteFile(hbPlistPath, []byte(plistContent), 0o644); err == nil {
-						if err := exec.Command("launchctl", "load", hbPlistPath).Run(); err == nil {
-							if !*jsonOutput {
-								fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
-							}
-						}
-					}
-				}
-			}
+		} else if err := session.InstallHeartbeatDaemon(name, profile, interval); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat daemon: %v\n", err)
+		} else if !*jsonOutput {
+			fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
 		}
 	}
 
@@ -348,38 +334,17 @@ func handleConductorSetup(profile string, args []string) {
 			fmt.Println("[ok] bridge.py installed")
 		}
 
-		// Install launchd plist
-		plistContent, err := session.GenerateLaunchdPlist()
+		// Install daemon (platform-aware: launchd on macOS, systemd on Linux)
+		daemonPath, err := session.InstallBridgeDaemon()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error generating plist: %v\n", err)
-			os.Exit(1)
-		}
-
-		plistPath, err = session.LaunchdPlistPath()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error getting plist path: %v\n", err)
-			os.Exit(1)
-		}
-
-		homeDir, _ := os.UserHomeDir()
-		if err := os.MkdirAll(filepath.Join(homeDir, "Library", "LaunchAgents"), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating LaunchAgents dir: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Unload existing daemon if any
-		_ = exec.Command("launchctl", "unload", plistPath).Run()
-
-		if err := os.WriteFile(plistPath, []byte(plistContent), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing plist: %v\n", err)
-			os.Exit(1)
-		}
-
-		if err := exec.Command("launchctl", "load", plistPath).Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to load daemon: %v\n", err)
-			fmt.Fprintln(os.Stderr, "You may need to load it manually: launchctl load", plistPath)
-		} else if !*jsonOutput {
-			fmt.Println("[ok] Bridge daemon loaded")
+			fmt.Fprintf(os.Stderr, "Warning: failed to install bridge daemon: %v\n", err)
+			condDir, _ := session.ConductorDir()
+			fmt.Fprintf(os.Stderr, "Run manually: python3 %s/bridge.py\n", condDir)
+		} else {
+			plistPath = daemonPath
+			if !*jsonOutput {
+				fmt.Println("[ok] Bridge daemon loaded")
+			}
 		}
 	}
 
@@ -504,19 +469,15 @@ func handleConductorTeardown(_ string, args []string) {
 		targets = []session.ConductorMeta{*meta}
 	}
 
-	// Step 1: Stop launchd daemon (only when tearing down all)
+	// Step 1: Stop bridge daemon (only when tearing down all)
 	if *allConductors {
-		plistPath, _ := session.LaunchdPlistPath()
-		if plistPath != "" {
-			if _, err := os.Stat(plistPath); err == nil {
-				if !*jsonOutput {
-					fmt.Println("Stopping bridge daemon...")
-				}
-				_ = exec.Command("launchctl", "unload", plistPath).Run()
-				_ = os.Remove(plistPath)
-				if !*jsonOutput {
-					fmt.Println("[ok] Daemon stopped and plist removed")
-				}
+		if session.IsBridgeDaemonRunning() {
+			if !*jsonOutput {
+				fmt.Println("Stopping bridge daemon...")
+			}
+			_ = session.UninstallBridgeDaemon()
+			if !*jsonOutput {
+				fmt.Println("[ok] Daemon stopped and removed")
 			}
 		}
 	}
@@ -549,11 +510,7 @@ func handleConductorTeardown(_ string, args []string) {
 		}
 
 		// Remove heartbeat timer
-		hbPlistPath, err := session.HeartbeatPlistPath(meta.Name)
-		if err == nil {
-			_ = exec.Command("launchctl", "unload", hbPlistPath).Run()
-			_ = session.RemoveHeartbeatPlist(meta.Name)
-		}
+		_ = session.UninstallHeartbeatDaemon(meta.Name)
 
 		// Optionally remove directory and session
 		if *removeAll {
@@ -733,10 +690,7 @@ func handleConductorStatus(_ string, args []string) {
 	}
 
 	// Check bridge daemon
-	daemonRunning := false
-	if out, err := exec.Command("launchctl", "list", session.LaunchdPlistName).Output(); err == nil {
-		daemonRunning = len(out) > 0
-	}
+	daemonRunning := session.IsBridgeDaemonRunning()
 
 	if *jsonOutput {
 		output, _ := json.MarshalIndent(map[string]any{
@@ -799,12 +753,7 @@ func handleConductorStatus(_ string, args []string) {
 
 	// Hints
 	if !daemonRunning {
-		plistPath, _ := session.LaunchdPlistPath()
-		if _, err := os.Stat(plistPath); err == nil {
-			fmt.Println("Tip: Start daemon with: launchctl load", plistPath)
-		} else {
-			fmt.Println("Tip: Run 'agent-deck conductor setup <name>' to install the daemon")
-		}
+		fmt.Printf("Tip: %s\n", session.BridgeDaemonHint())
 	}
 }
 
@@ -915,24 +864,23 @@ func installPythonDeps() {
 			packages = append(packages, "aiogram")
 		}
 		if config.Conductor.Slack.BotToken != "" {
-			packages = append(packages, "slack-bolt", "slack-sdk")
+			packages = append(packages, "slack-bolt", "slack-sdk", "aiohttp")
 		}
 	}
 
 	// Fallback: if no specific integration detected, install all
 	if len(packages) == 1 {
-		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk")
+		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk", "aiohttp")
 	}
 
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
-	cmd := exec.Command("python3", args...)
-	if err := cmd.Run(); err != nil {
-		// Try without --user
+	if err := exec.Command("python3", args...).Run(); err != nil {
+		// Try without --user (e.g. virtualenvs, containers)
 		args = append([]string{"-m", "pip", "install", "--quiet"}, packages...)
-		cmd = exec.Command("python3", args...)
-		if err := cmd.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not install Python dependencies (%s)\n", strings.Join(packages, ", "))
-			fmt.Fprintf(os.Stderr, "Install manually: pip3 install %s\n", strings.Join(packages, " "))
+		if err := exec.Command("python3", args...).Run(); err != nil {
+			// pip failed (e.g. PEP 668 externally-managed env) — rely on system packages
+			fmt.Fprintf(os.Stderr, "Note: pip install failed; using system-installed packages.\n")
+			fmt.Fprintf(os.Stderr, "If the bridge fails to start, install manually: pip3 install %s\n", strings.Join(packages, " "))
 		}
 	}
 }
