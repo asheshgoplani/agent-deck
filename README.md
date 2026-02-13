@@ -132,12 +132,12 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 ### Conductor
 
-Conductors are persistent Claude Code sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect Telegram for mobile control.
+Conductors are persistent Claude Code sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
 
 Create as many conductors as you need per profile:
 
 ```bash
-# First-time setup (asks about Telegram, then creates the conductor)
+# First-time setup (asks about Telegram/Slack, then creates the conductor)
 agent-deck -p work conductor setup ops --description "Ops monitor"
 
 # Add more conductors to the same profile (no prompts)
@@ -150,7 +150,7 @@ Each conductor gets its own directory, identity, and heartbeat settings:
 ```
 ~/.agent-deck/conductor/
 ├── CLAUDE.md           # Shared knowledge (CLI ref, protocols, rules)
-├── bridge.py           # Telegram bridge (if configured)
+├── bridge.py           # Bridge daemon (Telegram/Slack, if configured)
 ├── ops/
 │   ├── CLAUDE.md       # Identity: "You are ops, a conductor for the work profile"
 │   ├── meta.json       # Config: name, profile, heartbeat, description
@@ -177,8 +177,34 @@ agent-deck conductor teardown --all --remove # Remove everything
 ```
 ops: check the frontend session      → routes to conductor-ops
 infra: restart all error sessions    → routes to conductor-infra
-/status                              → broadcasts to all conductors
+/status                              → aggregated status across all profiles
 ```
+
+**Slack bridge** (optional): Connect a Slack bot for channel-based monitoring via Socket Mode. The bot listens in a dedicated channel and replies in threads to keep the channel clean. Uses the same `name: message` routing, plus slash commands:
+
+```
+ops: check the frontend session      → routes to conductor-ops (reply in thread)
+/ad-status                           → aggregated status across all profiles
+/ad-sessions                         → list all sessions
+/ad-restart [name]                   → restart a conductor
+/ad-help                             → list available commands
+```
+
+<details>
+<summary><b>Slack setup</b></summary>
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
+2. Enable **Socket Mode** → generate an app-level token (`xapp-...`)
+3. Under **OAuth & Permissions**, add bot scopes: `chat:write`, `channels:history`, `channels:read`, `app_mentions:read`
+4. Under **Event Subscriptions**, subscribe to bot events: `message.channels`, `app_mention`
+5. If using slash commands, create: `/ad-status`, `/ad-sessions`, `/ad-restart`, `/ad-help`
+6. Install the app to your workspace
+7. Invite the bot to your channel (`/invite @botname`)
+8. Run `agent-deck conductor setup <name>` and enter your bot token (`xoxb-...`), app token (`xapp-...`), and channel ID (`C01234...`)
+
+</details>
+
+Both Telegram and Slack can run simultaneously — the bridge daemon handles both concurrently and sends heartbeat alerts to all configured platforms.
 
 **Heartbeat**: Conductors with heartbeat enabled receive periodic check-in prompts, keeping them actively monitoring your sessions. Disable per conductor with `--no-heartbeat`.
 
