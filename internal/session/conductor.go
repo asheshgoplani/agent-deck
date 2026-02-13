@@ -779,6 +779,12 @@ func GenerateSystemdHeartbeatService(name string) (string, error) {
 
 // --- Platform-aware daemon management ---
 
+// systemdUserAvailable checks if systemd user session is functional.
+// Returns false on containers/VMs without a running user manager (common with SSH-only access).
+func systemdUserAvailable() bool {
+	return exec.Command("systemctl", "--user", "daemon-reload").Run() == nil
+}
+
 // InstallBridgeDaemon installs and starts the bridge daemon.
 // macOS: launchd plist; Linux: systemd user service.
 // Returns the unit/plist file path on success.
@@ -840,8 +846,9 @@ func installBridgeDaemonSystemd() (string, error) {
 	if err := os.WriteFile(unitPath, []byte(unitContent), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write systemd unit: %w", err)
 	}
-	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
-		return unitPath, fmt.Errorf("unit written but daemon-reload failed: %w", err)
+	if !systemdUserAvailable() {
+		condDir, _ := ConductorDir()
+		return "", fmt.Errorf("systemd user session not available (common in containers/VMs without lingering); run manually: python3 %s/bridge.py", condDir)
 	}
 	if err := exec.Command("systemctl", "--user", "enable", "--now", systemdBridgeServiceName).Run(); err != nil {
 		return unitPath, fmt.Errorf("unit written but enable failed: %w", err)
@@ -918,6 +925,10 @@ func BridgeDaemonHint() string {
 		}
 		return "Run 'agent-deck conductor setup <name>' to install the daemon"
 	case platform.PlatformLinux, platform.PlatformWSL2:
+		condDir, _ := ConductorDir()
+		if !systemdUserAvailable() {
+			return fmt.Sprintf("Run manually: python3 %s/bridge.py", condDir)
+		}
 		unitPath, err := SystemdBridgeServicePath()
 		if err == nil {
 			if _, err := os.Stat(unitPath); err == nil {
@@ -999,8 +1010,8 @@ func installHeartbeatDaemonSystemd(name string, intervalMinutes int) error {
 		return fmt.Errorf("failed to write heartbeat timer: %w", err)
 	}
 
-	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
-		return fmt.Errorf("daemon-reload failed: %w", err)
+	if !systemdUserAvailable() {
+		return fmt.Errorf("systemd user session not available; run heartbeat manually via cron or: bash %s/heartbeat.sh", dir)
 	}
 	timerName := SystemdHeartbeatTimerName(name)
 	if err := exec.Command("systemctl", "--user", "enable", "--now", timerName).Run(); err != nil {
