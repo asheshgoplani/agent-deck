@@ -440,6 +440,9 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts.UseChrome {
 			flags = append(flags, "--chrome")
 		}
+		if opts.UseTeammateMode {
+			flags = append(flags, "--teammate-mode tmux")
+		}
 	}
 
 	if len(flags) == 0 {

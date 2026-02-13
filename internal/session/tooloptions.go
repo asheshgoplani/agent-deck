@@ -27,6 +27,8 @@ type ClaudeOptions struct {
 	AllowSkipPermissions bool `json:"allow_skip_permissions,omitempty"`
 	// UseChrome adds --chrome flag
 	UseChrome bool `json:"use_chrome,omitempty"`
+	// UseTeammateMode adds --teammate-mode tmux flag
+	UseTeammateMode bool `json:"use_teammate_mode,omitempty"`
 
 	// Transient fields for worktree fork (not persisted)
 	WorkDir          string `json:"-"`
@@ -64,6 +66,9 @@ func (o *ClaudeOptions) ToArgs() []string {
 	if o.UseChrome {
 		args = append(args, "--chrome")
 	}
+	if o.UseTeammateMode {
+		args = append(args, "--teammate-mode", "tmux")
+	}
 
 	return args
 }
@@ -80,6 +85,9 @@ func (o *ClaudeOptions) ToArgsForFork() []string {
 	}
 	if o.UseChrome {
 		args = append(args, "--chrome")
+	}
+	if o.UseTeammateMode {
+		args = append(args, "--teammate-mode", "tmux")
 	}
 
 	return args
