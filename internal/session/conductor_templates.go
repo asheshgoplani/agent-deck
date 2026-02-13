@@ -241,6 +241,8 @@ except ImportError:
 try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+    from slack_bolt.authorization import AuthorizeResult
+    from slack_sdk.web.async_client import AsyncWebClient
     HAS_SLACK = True
 except ImportError:
     HAS_SLACK = False
@@ -860,7 +862,34 @@ def create_slack_app(config: dict):
     bot_token = config["slack"]["bot_token"]
     channel_id = config["slack"]["channel_id"]
 
-    app = AsyncApp(token=bot_token)
+    # Cache auth.test() result to avoid calling it on every event.
+    # The default SingleTeamAuthorization middleware calls auth.test()
+    # per-event until it succeeds; if the Slack API is slow after a
+    # Socket Mode reconnect, this causes cascading TimeoutErrors.
+    _auth_cache: dict = {}
+
+    async def _cached_authorize(**kwargs):
+        if "result" in _auth_cache:
+            return _auth_cache["result"]
+        client = AsyncWebClient(token=bot_token, timeout=30)
+        for attempt in range(3):
+            try:
+                resp = await client.auth_test()
+                _auth_cache["result"] = AuthorizeResult(
+                    enterprise_id=resp.get("enterprise_id"),
+                    team_id=resp.get("team_id"),
+                    bot_user_id=resp.get("user_id"),
+                    bot_id=resp.get("bot_id"),
+                    bot_token=bot_token,
+                )
+                return _auth_cache["result"]
+            except Exception as e:
+                log.warning("Slack auth.test attempt %d/3 failed: %s", attempt + 1, e)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+        raise RuntimeError("Slack auth.test failed after 3 attempts")
+
+    app = AsyncApp(token=bot_token, authorize=_cached_authorize)
     listen_mode = config["slack"].get("listen_mode", "mentions")
 
     def get_default_conductor() -> dict | None:
