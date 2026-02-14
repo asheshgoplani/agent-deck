@@ -799,8 +799,25 @@ func GenerateSystemdHeartbeatService(name string) (string, error) {
 
 // systemdUserAvailable checks if systemd user session is functional.
 // Returns false on containers/VMs without a running user manager (common with SSH-only access).
+// Verifies XDG_RUNTIME_DIR exists and loginctl can show the current user session,
+// which is more reliable than just checking daemon-reload success.
 func systemdUserAvailable() bool {
-	return exec.Command("systemctl", "--user", "daemon-reload").Run() == nil
+	// Check 1: XDG_RUNTIME_DIR must be set (indicates a proper login session)
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return false
+	}
+	if _, err := os.Stat(runtimeDir); err != nil {
+		return false
+	}
+
+	// Check 2: loginctl show-user verifies systemd-logind manages this user
+	if err := exec.Command("loginctl", "show-user", "--no-pager").Run(); err != nil {
+		// Fallback: try daemon-reload (loginctl may not be available)
+		return exec.Command("systemctl", "--user", "daemon-reload").Run() == nil
+	}
+
+	return true
 }
 
 // InstallBridgeDaemon installs and starts the bridge daemon.

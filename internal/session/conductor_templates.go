@@ -895,27 +895,29 @@ def create_slack_app(config: dict):
     # per-event until it succeeds; if the Slack API is slow after a
     # Socket Mode reconnect, this causes cascading TimeoutErrors.
     _auth_cache: dict = {}
+    _auth_lock = asyncio.Lock()
 
     async def _cached_authorize(**kwargs):
-        if "result" in _auth_cache:
-            return _auth_cache["result"]
-        client = AsyncWebClient(token=bot_token, timeout=30)
-        for attempt in range(3):
-            try:
-                resp = await client.auth_test()
-                _auth_cache["result"] = AuthorizeResult(
-                    enterprise_id=resp.get("enterprise_id"),
-                    team_id=resp.get("team_id"),
-                    bot_user_id=resp.get("user_id"),
-                    bot_id=resp.get("bot_id"),
-                    bot_token=bot_token,
-                )
+        async with _auth_lock:
+            if "result" in _auth_cache:
                 return _auth_cache["result"]
-            except Exception as e:
-                log.warning("Slack auth.test attempt %d/3 failed: %s", attempt + 1, e)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-        raise RuntimeError("Slack auth.test failed after 3 attempts")
+            client = AsyncWebClient(token=bot_token, timeout=30)
+            for attempt in range(3):
+                try:
+                    resp = await client.auth_test()
+                    _auth_cache["result"] = AuthorizeResult(
+                        enterprise_id=resp.get("enterprise_id"),
+                        team_id=resp.get("team_id"),
+                        bot_user_id=resp.get("user_id"),
+                        bot_id=resp.get("bot_id"),
+                        bot_token=bot_token,
+                    )
+                    return _auth_cache["result"]
+                except Exception as e:
+                    log.warning("Slack auth.test attempt %d/3 failed: %s", attempt + 1, e)
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+            raise RuntimeError("Slack auth.test failed after 3 attempts")
 
     app = AsyncApp(token=bot_token, authorize=_cached_authorize)
     listen_mode = config["slack"].get("listen_mode", "mentions")
@@ -958,6 +960,13 @@ def create_slack_app(config: dict):
             log.warning("Failed to fetch thread context: %s", e)
             return ""
 
+    async def _safe_say(say, **kwargs):
+        """Wrapper around say() that catches network/API errors."""
+        try:
+            await say(**kwargs)
+        except Exception as e:
+            log.error("Slack say() failed: %s", e)
+
     async def _handle_slack_text(text: str, say, thread_ts: str = None, channel: str = None, current_ts: str = None):
         """Shared handler for Slack messages and mentions."""
         conductor_names = get_conductor_names()
@@ -974,7 +983,8 @@ def create_slack_app(config: dict):
         if target is None:
             target = get_default_conductor()
         if target is None:
-            await say(
+            await _safe_say(
+                say,
                 text="[No conductors configured. Run: agent-deck conductor setup <name>]",
                 thread_ts=thread_ts,
             )
@@ -987,7 +997,8 @@ def create_slack_app(config: dict):
         profile = target["profile"]
 
         if not ensure_conductor_running(target["name"], profile):
-            await say(
+            await _safe_say(
+                say,
                 text=f"[Could not start conductor {target['name']}. Check agent-deck.]",
                 thread_ts=thread_ts,
             )
@@ -1001,21 +1012,22 @@ def create_slack_app(config: dict):
 
         log.info("Slack message -> [%s]: %s", target["name"], cleaned_msg[:100])
         if not send_to_conductor(session_title, cleaned_msg, profile=profile):
-            await say(
+            await _safe_say(
+                say,
                 text=f"[Failed to send message to conductor {target['name']}.]",
                 thread_ts=thread_ts,
             )
             return
 
         name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
-        await say(text=f"{name_tag}...", thread_ts=thread_ts)
+        await _safe_say(say, text=f"{name_tag}...", thread_ts=thread_ts)
 
         response = await wait_for_response(session_title, profile=profile)
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
         for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
             prefixed = f"{name_tag}{chunk}" if name_tag else chunk
-            await say(text=prefixed, thread_ts=thread_ts)
+            await _safe_say(say, text=prefixed, thread_ts=thread_ts)
 
     @app.event("message")
     async def handle_slack_message(event, say):
