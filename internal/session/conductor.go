@@ -234,8 +234,9 @@ func ListConductorsForProfile(profile string) ([]ConductorMeta, error) {
 }
 
 // SetupConductor creates the conductor directory, per-conductor CLAUDE.md, and meta.json.
+// If customClaudeMD is provided, creates a symlink instead of writing the template.
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductor(name, profile string, heartbeatEnabled bool, description string) error {
+func SetupConductor(name, profile string, heartbeatEnabled bool, description string, customClaudeMD string) error {
 	dir, err := ConductorNameDir(name)
 	if err != nil {
 		return fmt.Errorf("failed to get conductor dir: %w", err)
@@ -245,19 +246,28 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 		return fmt.Errorf("failed to create conductor dir: %w", err)
 	}
 
-	// Write per-conductor CLAUDE.md with name and profile substitution
-	content := strings.ReplaceAll(conductorPerNameClaudeMDTemplate, "{NAME}", name)
-	if profile == "" {
-		// For default profile, show "default" in display text and omit -p flag in commands
-		content = strings.ReplaceAll(content, "{PROFILE}", "default")
-		content = strings.ReplaceAll(content, "agent-deck -p default ", "agent-deck ")
-		content = strings.ReplaceAll(content, "Always pass `-p default` to all CLI commands.", "Use CLI commands without `-p` flag (default profile).")
-	} else {
-		content = strings.ReplaceAll(content, "{PROFILE}", profile)
-	}
-	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	if err := os.WriteFile(claudeMD, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("failed to write CLAUDE.md: %w", err)
+	targetPath := filepath.Join(dir, "CLAUDE.md")
+
+	if customClaudeMD != "" {
+		// Custom path provided - create symlink
+		if err := createSymlinkWithExpansion(targetPath, customClaudeMD); err != nil {
+			return err
+		}
+	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		// No custom path - write default template (but preserve existing symlink)
+		content := strings.ReplaceAll(conductorPerNameClaudeMDTemplate, "{NAME}", name)
+		if profile == "" {
+			// For default profile, show "default" in display text and omit -p flag in commands
+			content = strings.ReplaceAll(content, "{PROFILE}", "default")
+			content = strings.ReplaceAll(content, "agent-deck -p default ", "agent-deck ")
+			content = strings.ReplaceAll(content, "Always pass `-p default` to all CLI commands.", "Use CLI commands without `-p` flag (default profile).")
+		} else {
+			content = strings.ReplaceAll(content, "{PROFILE}", profile)
+		}
+
+		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("failed to write CLAUDE.md: %w", err)
+		}
 	}
 
 	// Write meta.json
@@ -431,21 +441,68 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, "")
+	return SetupConductor(profile, profile, true, "", "")
 }
 
-// InstallSharedClaudeMD writes the shared CLAUDE.md to the conductor base directory.
+// createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
+// target: the symlink path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
+// source: the user's custom file path (e.g., ~/my/custom.md)
+func createSymlinkWithExpansion(target, source string) error {
+	// Expand ~ in source path
+	if strings.HasPrefix(source, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("failed to expand ~: %w", err)
+		}
+		source = filepath.Join(homeDir, source[2:])
+	}
+
+	// Validate source is absolute
+	if !filepath.IsAbs(source) {
+		return fmt.Errorf("custom path must be absolute or start with ~/: %s", source)
+	}
+
+	// Check if source file exists
+	if _, err := os.Stat(source); os.IsNotExist(err) {
+		return fmt.Errorf("custom CLAUDE.md file does not exist: %s\nCreate the file first, then run setup again", source)
+	}
+
+	// Remove existing file/symlink at target
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove existing file: %w", err)
+	}
+
+	// Create symlink
+	if err := os.Symlink(source, target); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	return nil
+}
+
+// InstallSharedClaudeMD writes the shared CLAUDE.md to the conductor base directory,
+// or creates a symlink if customPath is provided.
 // This contains CLI reference, protocols, and rules shared by all conductors.
-func InstallSharedClaudeMD() error {
+func InstallSharedClaudeMD(customPath string) error {
 	dir, err := ConductorDir()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("failed to create conductor dir: %w", err)
+	targetPath := filepath.Join(dir, "CLAUDE.md")
+
+	if customPath != "" {
+		// Custom path provided - create symlink
+		return createSymlinkWithExpansion(targetPath, customPath)
 	}
-	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	if err := os.WriteFile(claudeMD, []byte(conductorSharedClaudeMDTemplate), 0o644); err != nil {
+
+	// No custom path - write default template (but preserve existing symlink)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if err := os.WriteFile(targetPath, []byte(conductorSharedClaudeMDTemplate), 0o644); err != nil {
 		return fmt.Errorf("failed to write shared CLAUDE.md: %w", err)
 	}
 	return nil

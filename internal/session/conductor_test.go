@@ -532,3 +532,254 @@ func TestBridgeTemplate_ConfigLoadsAllowedUserIDs(t *testing.T) {
 		}
 	}
 }
+
+// --- Symlink-based CLAUDE.md tests ---
+
+func TestInstallSharedClaudeMD_Default(t *testing.T) {
+	// Use actual conductor directory (cleanup after test)
+	homeDir, _ := os.UserHomeDir()
+	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
+
+	// Backup existing file if present
+	var backup []byte
+	if content, err := os.ReadFile(claudeMDPath); err == nil {
+		backup = content
+		defer os.WriteFile(claudeMDPath, backup, 0o644)
+	} else {
+		defer os.Remove(claudeMDPath)
+	}
+
+	// Test installing default template
+	err := InstallSharedClaudeMD("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify file exists at default location
+	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
+		t.Errorf("CLAUDE.md not created at %q", claudeMDPath)
+	}
+
+	// Verify it's NOT a symlink
+	if _, err := os.Readlink(claudeMDPath); err == nil {
+		t.Error("CLAUDE.md should not be a symlink when using default template")
+	}
+
+	// Verify content contains template
+	content, _ := os.ReadFile(claudeMDPath)
+	if !strings.Contains(string(content), "Conductor: Shared Knowledge Base") {
+		t.Error("CLAUDE.md should contain shared template content")
+	}
+}
+
+func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	customPath := filepath.Join(tmpDir, "my-shared-claude.md")
+
+	// Create custom file first
+	if err := os.WriteFile(customPath, []byte("# My Custom Shared Rules\n"), 0o644); err != nil {
+		t.Fatalf("failed to create custom file: %v", err)
+	}
+
+	// Use actual conductor directory (cleanup after test)
+	homeDir, _ := os.UserHomeDir()
+	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
+
+	// Backup existing file/symlink if present
+	var backupContent []byte
+	var backupLink string
+	if linkDest, err := os.Readlink(claudeMDPath); err == nil {
+		backupLink = linkDest
+	} else if content, err := os.ReadFile(claudeMDPath); err == nil {
+		backupContent = content
+	}
+	t.Cleanup(func() {
+		os.Remove(claudeMDPath) // Remove whatever the test created (symlink or file)
+		if backupLink != "" {
+			os.Symlink(backupLink, claudeMDPath)
+		} else if backupContent != nil {
+			os.WriteFile(claudeMDPath, backupContent, 0o644)
+		}
+	})
+
+	// Test installing with custom path (creates symlink)
+	err := InstallSharedClaudeMD(customPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify symlink exists
+	linkDest, err := os.Readlink(claudeMDPath)
+	if err != nil {
+		t.Fatalf("CLAUDE.md should be a symlink: %v", err)
+	}
+
+	// Verify symlink points to custom file
+	if linkDest != customPath {
+		t.Errorf("symlink should point to %q, got %q", customPath, linkDest)
+	}
+
+	// Verify reading through symlink works
+	content, _ := os.ReadFile(claudeMDPath)
+	if !strings.Contains(string(content), "My Custom Shared Rules") {
+		t.Error("reading through symlink should return custom content")
+	}
+}
+
+func TestSetupConductor_DefaultTemplate(t *testing.T) {
+	name := "test-default"
+	profile := "default"
+
+	// Clean up after test
+	homeDir, _ := os.UserHomeDir()
+	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
+
+	// Setup without custom path (uses default template)
+	err := SetupConductor(name, profile, true, "test description", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify CLAUDE.md exists
+	dir, _ := ConductorNameDir(name)
+	claudeMDPath := filepath.Join(dir, "CLAUDE.md")
+	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
+		t.Errorf("CLAUDE.md not created at %q", claudeMDPath)
+	}
+
+	// Verify it's NOT a symlink
+	if _, err := os.Readlink(claudeMDPath); err == nil {
+		t.Error("CLAUDE.md should not be a symlink when using default template")
+	}
+
+	// Verify content contains conductor identity
+	content, _ := os.ReadFile(claudeMDPath)
+	if !strings.Contains(string(content), name) {
+		t.Errorf("CLAUDE.md should contain conductor name %q", name)
+	}
+
+	// Verify meta.json does NOT contain ClaudeMDPath field
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	// Just verify basic fields exist
+	if meta.Name != name {
+		t.Errorf("expected name %q, got %q", name, meta.Name)
+	}
+}
+
+func TestSetupConductor_CustomSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	customPath := filepath.Join(tmpDir, "my-conductor-claude.md")
+
+	// Create custom file first
+	if err := os.WriteFile(customPath, []byte("# My Custom Conductor Rules\n"), 0o644); err != nil {
+		t.Fatalf("failed to create custom file: %v", err)
+	}
+
+	name := "test-symlink"
+	profile := "default"
+
+	// Clean up after test
+	homeDir, _ := os.UserHomeDir()
+	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
+
+	// Setup with custom path (creates symlink)
+	err := SetupConductor(name, profile, true, "test description", customPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify symlink exists
+	dir, _ := ConductorNameDir(name)
+	claudeMDPath := filepath.Join(dir, "CLAUDE.md")
+	linkDest, err := os.Readlink(claudeMDPath)
+	if err != nil {
+		t.Fatalf("CLAUDE.md should be a symlink: %v", err)
+	}
+
+	// Verify symlink points to custom file
+	if linkDest != customPath {
+		t.Errorf("symlink should point to %q, got %q", customPath, linkDest)
+	}
+
+	// Verify reading through symlink works
+	content, _ := os.ReadFile(claudeMDPath)
+	if !strings.Contains(string(content), "My Custom Conductor Rules") {
+		t.Error("reading through symlink should return custom content")
+	}
+}
+
+func TestCreateSymlinkWithExpansion_TildeExpansion(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home dir: %v", err)
+	}
+
+	// Create a temporary subdirectory under $HOME so tilde expansion resolves correctly
+	subDir := filepath.Join(homeDir, ".agent-deck-test-tilde")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("failed to create test dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(subDir) })
+
+	// Create source file under $HOME
+	sourceName := "test-tilde.md"
+	sourcePath := filepath.Join(subDir, sourceName)
+	if err := os.WriteFile(sourcePath, []byte("test"), 0o644); err != nil {
+		t.Fatalf("failed to create source: %v", err)
+	}
+
+	// Use tilde path — expands to $HOME/.agent-deck-test-tilde/test-tilde.md
+	tildePath := filepath.Join("~", ".agent-deck-test-tilde", sourceName)
+	targetPath := filepath.Join(t.TempDir(), "link.md")
+
+	// Test symlink creation with tilde expansion
+	err = createSymlinkWithExpansion(targetPath, tildePath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify symlink points to expanded path
+	linkDest, err := os.Readlink(targetPath)
+	if err != nil {
+		t.Fatalf("should be a symlink: %v", err)
+	}
+
+	expectedDest := filepath.Join(homeDir, ".agent-deck-test-tilde", sourceName)
+	if linkDest != expectedDest {
+		t.Errorf("symlink should point to %q, got %q", expectedDest, linkDest)
+	}
+}
+
+func TestCreateSymlinkWithExpansion_RelativePathError(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "link.md")
+
+	// Try with relative path (should fail)
+	err := createSymlinkWithExpansion(targetPath, "relative/path.md")
+	if err == nil {
+		t.Error("expected error for relative path, got nil")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("error should mention 'absolute', got %v", err)
+	}
+}
+
+func TestCreateSymlinkWithExpansion_MissingSourceError(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "link.md")
+	sourcePath := filepath.Join(tmpDir, "nonexistent.md")
+
+	// Try with non-existent source (should fail)
+	err := createSymlinkWithExpansion(targetPath, sourcePath)
+	if err == nil {
+		t.Error("expected error for missing source file, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should mention 'does not exist', got %v", err)
+	}
+}
