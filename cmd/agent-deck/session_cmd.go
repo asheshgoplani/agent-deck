@@ -1269,6 +1269,8 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
+	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for completion (used with --wait)")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
@@ -1336,6 +1338,28 @@ func handleSessionSend(profile string, args []string) {
 		"session_title": inst.Title,
 		"message":       message,
 	})
+
+	// If --wait, block until the agent finishes processing, then print output
+	if *wait {
+		finalStatus, err := waitForCompletion(tmuxSess, *timeout)
+		if err != nil {
+			out.Error(fmt.Sprintf("timeout waiting for completion: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
+		// Fetch and print last response (like session output -q)
+		response, err := inst.GetLastResponse()
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		fmt.Println(response.Content)
+
+		// Exit 1 for error/inactive status
+		if finalStatus == "inactive" || finalStatus == "error" {
+			os.Exit(1)
+		}
+	}
 }
 
 // sendWithRetry sends a message atomically and retries Enter if the agent
@@ -1403,6 +1427,48 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 	}
 
 	return fmt.Errorf("agent not ready after 80 seconds")
+}
+
+// statusChecker abstracts tmux status polling so waitForCompletion is testable.
+type statusChecker interface {
+	GetStatus() (string, error)
+}
+
+// waitForCompletion polls until the agent finishes processing (status leaves "active").
+// Returns the final status string ("waiting", "idle", "inactive") or an error on timeout.
+func waitForCompletion(checker statusChecker, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	const pollInterval = 2 * time.Second
+
+	// Initial grace period: wait for the agent to start processing.
+	// sendWithRetry already checks for "active", but give a small buffer.
+	time.Sleep(1 * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("agent still running after %s", timeout)
+		default:
+		}
+
+		status, err := checker.GetStatus()
+		if err != nil {
+			// Transient tmux error, keep polling
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// "active" means still processing, keep waiting
+		if status == "active" {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// Any non-active status means the agent is done
+		return status, nil
+	}
 }
 
 // handleSessionOutput gets the last response from a session
