@@ -5,6 +5,14 @@
   --muted: #6b7280;
   --border: #d4d9e2;
   --accent: #0f766e;
+  --topbar-height: 56px;
+  --app-height: 100vh;
+  --keyboard-inset: 0px;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 * {
@@ -16,26 +24,58 @@ body {
   font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
   color: var(--text);
   background: linear-gradient(160deg, #f8fbff 0%, #eef3f9 55%, #e6edf6 100%);
+  overflow: hidden;
 }
 
 .app {
-  min-height: 100vh;
+  height: var(--app-height);
+  min-height: var(--app-height);
+  padding-bottom: calc(var(--keyboard-inset) + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
+  transition: padding-bottom 120ms ease-out;
 }
 
 .topbar {
-  height: 56px;
+  height: var(--topbar-height);
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
+  gap: 12px;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .brand {
   font-weight: 700;
+}
+
+.menu-toggle {
+  display: none;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+
+.menu-toggle:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.2);
+  border-color: var(--accent);
 }
 
 .meta {
@@ -74,9 +114,9 @@ body {
 
 .layout {
   flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 28% 72%;
-  min-height: 0;
 }
 
 .menu-panel,
@@ -88,12 +128,20 @@ body {
 .menu-panel {
   border-right: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  flex-direction: column;
 }
 
 .terminal-panel {
   background: rgba(255, 255, 255, 0.45);
   display: flex;
   flex-direction: column;
+}
+
+.terminal-panel > #terminal-root {
+  min-height: 360px;
+  height: calc(var(--app-height) - 180px);
+  max-height: calc(var(--app-height) - 180px);
 }
 
 .menu-panel h2,
@@ -115,8 +163,8 @@ body {
 }
 
 .terminal-placeholder {
-  min-height: 360px;
-  height: calc(100vh - 180px);
+  height: 100%;
+  min-height: 100%;
   overflow: auto;
 }
 
@@ -144,8 +192,8 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
-  min-height: 360px;
-  max-height: calc(100vh - 180px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 
@@ -253,8 +301,8 @@ body {
   border-radius: 8px;
   background: #0a1220;
   color: #d9e2ec;
-  min-height: 360px;
-  height: calc(100vh - 180px);
+  height: 100%;
+  min-height: 100%;
   overflow: hidden;
   touch-action: none;
 }
@@ -320,19 +368,79 @@ body {
   text-overflow: ellipsis;
 }
 
+.menu-backdrop {
+  display: none;
+}
+
 @media (max-width: 900px) {
+  .menu-toggle {
+    display: inline-flex;
+  }
+
+  .meta {
+    font-size: 0.8rem;
+    padding: 4px 8px;
+  }
+
   .layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: 1fr;
   }
 
   .menu-panel {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
+    position: fixed;
+    top: var(--topbar-height);
+    left: 0;
+    bottom: 0;
+    width: min(86vw, 340px);
+    max-width: 340px;
+    z-index: 40;
+    transform: translateX(-105%);
+    transition: transform 180ms ease-out;
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+    background: #fff;
+    box-shadow: 0 14px 28px rgba(15, 23, 42, 0.26);
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
 
-  .terminal-shell,
-  .terminal-placeholder {
+  body.menu-open .menu-panel {
+    transform: translateX(0);
+  }
+
+  .menu-backdrop {
+    display: block;
+    position: fixed;
+    top: var(--topbar-height);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 35;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: rgba(15, 23, 42, 0.42);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease-out;
+  }
+
+  body.menu-open .menu-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .terminal-panel {
+    padding: 12px;
+  }
+
+  .terminal-panel h2 {
+    display: none;
+  }
+
+  .terminal-panel > #terminal-root {
+    min-height: 240px;
     height: 60vh;
+    max-height: 60vh;
   }
 }

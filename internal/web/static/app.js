@@ -1,6 +1,9 @@
 (function () {
   const menuRoot = document.getElementById("menu-root")
   const menuFilter = document.getElementById("menu-filter")
+  const menuPanel = document.getElementById("menu-panel")
+  const menuToggle = document.getElementById("menu-toggle")
+  const menuBackdrop = document.getElementById("menu-backdrop")
   const metaState = document.getElementById("meta-state")
   const terminalRoot = document.getElementById("terminal-root")
 
@@ -24,6 +27,14 @@
     lastReadOnlyBlockAt: 0,
     connectionPhase: "idle",
     connectionDetail: "",
+    groupExpandedByPath: new Map(),
+    menuOpen: false,
+    keyboardOpen: false,
+    viewportSyncFrame: 0,
+    mobileMenuQuery:
+      typeof window.matchMedia === "function"
+        ? window.matchMedia("(max-width: 900px)")
+        : null,
   }
 
   function readAuthTokenFromURL() {
@@ -39,6 +50,91 @@
     const url = new URL(path, window.location.origin)
     url.searchParams.set("token", state.authToken)
     return `${url.pathname}${url.search}`
+  }
+
+  function isSmallDisplay() {
+    return !!(state.mobileMenuQuery && state.mobileMenuQuery.matches)
+  }
+
+  function setMenuOpen(open) {
+    const next = !!open && isSmallDisplay()
+    const changed = state.menuOpen !== next
+
+    state.menuOpen = next
+    document.body.classList.toggle("menu-open", next)
+    if (menuPanel) {
+      const hidden = isSmallDisplay() ? !next : false
+      menuPanel.setAttribute("aria-hidden", hidden ? "true" : "false")
+    }
+
+    if (menuToggle) {
+      menuToggle.setAttribute("aria-expanded", next ? "true" : "false")
+      menuToggle.setAttribute(
+        "aria-label",
+        next ? "Close sessions menu" : "Open sessions menu",
+      )
+    }
+
+    if (next && changed && menuFilter) {
+      window.setTimeout(() => {
+        try {
+          menuFilter.focus({ preventScroll: true })
+        } catch (_err) {
+          menuFilter.focus()
+        }
+      }, 60)
+    }
+  }
+
+  function closeMenuForMobile() {
+    if (!isSmallDisplay()) {
+      return
+    }
+    setMenuOpen(false)
+  }
+
+  function scheduleViewportSync() {
+    if (state.viewportSyncFrame) {
+      return
+    }
+
+    state.viewportSyncFrame = window.requestAnimationFrame(() => {
+      state.viewportSyncFrame = 0
+
+      const root = document.documentElement
+      const layoutHeight = Math.max(
+        320,
+        window.innerHeight || root.clientHeight || 0,
+      )
+
+      let keyboardInset = 0
+      if (window.visualViewport) {
+        const vv = window.visualViewport
+        const obscured = layoutHeight - (vv.height + vv.offsetTop)
+        keyboardInset = Math.max(0, Math.round(obscured))
+      }
+
+      root.style.setProperty("--app-height", `${layoutHeight}px`)
+      root.style.setProperty("--keyboard-inset", `${keyboardInset}px`)
+
+      const keyboardOpen = keyboardInset > 44
+      if (keyboardOpen !== state.keyboardOpen) {
+        state.keyboardOpen = keyboardOpen
+        document.body.classList.toggle("keyboard-open", keyboardOpen)
+
+        if (keyboardOpen) {
+          closeMenuForMobile()
+          if (state.terminalUI && state.terminalUI.canvas) {
+            state.terminalUI.canvas.scrollIntoView({
+              block: "end",
+              inline: "nearest",
+            })
+          }
+        }
+      }
+
+      scheduleFitAndResize(40)
+    })
   }
 
   function connectMenuEvents() {
@@ -63,6 +159,7 @@
         return
       }
       state.snapshot = snapshot
+      reconcileGroupExpansionState(snapshot)
       renderMenu()
     })
 
@@ -137,6 +234,7 @@
       }
 
       state.snapshot = await response.json()
+      reconcileGroupExpansionState(state.snapshot)
       applySelectionFromRoute()
       renderMenu()
       connectMenuEvents()
@@ -228,6 +326,67 @@
     return result
   }
 
+  function isGroupExpanded(groupPath, fallbackExpanded) {
+    if (!groupPath) {
+      return true
+    }
+    if (state.groupExpandedByPath.has(groupPath)) {
+      return state.groupExpandedByPath.get(groupPath)
+    }
+    return fallbackExpanded !== false
+  }
+
+  function reconcileGroupExpansionState(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.items)) {
+      return
+    }
+
+    const knownPaths = new Set()
+    for (const item of snapshot.items) {
+      if (item.type !== "group" || !item.group) {
+        continue
+      }
+      const path = item.group.path || ""
+      if (!path) {
+        continue
+      }
+      knownPaths.add(path)
+      if (!state.groupExpandedByPath.has(path)) {
+        state.groupExpandedByPath.set(path, item.group.expanded !== false)
+      }
+    }
+
+    for (const path of Array.from(state.groupExpandedByPath.keys())) {
+      if (!knownPaths.has(path)) {
+        state.groupExpandedByPath.delete(path)
+      }
+    }
+  }
+
+  function hasCollapsedAncestor(groupPath, includeSelf) {
+    if (!groupPath) {
+      return false
+    }
+
+    const ancestors = collectGroupAncestors(groupPath)
+    const limit = includeSelf ? ancestors.length : Math.max(ancestors.length - 1, 0)
+    for (let i = 0; i < limit; i += 1) {
+      if (isGroupExpanded(ancestors[i], true) === false) {
+        return true
+      }
+    }
+    return false
+  }
+
+  function toggleGroupExpanded(groupPath, fallbackExpanded) {
+    if (!groupPath) {
+      return
+    }
+    const current = isGroupExpanded(groupPath, fallbackExpanded)
+    state.groupExpandedByPath.set(groupPath, !current)
+    renderMenu()
+  }
+
   function computeVisibleGroups(items, query) {
     if (!query) {
       return null
@@ -266,18 +425,26 @@
     const fragment = document.createDocumentFragment()
     let visibleCount = 0
     let firstSessionId = null
+    const visibleSessionIDs = new Set()
 
     for (const item of snapshot.items) {
       if (item.type === "group" && item.group) {
         const groupName = normalize(item.group.name)
         const groupPath = item.group.path || ""
+        if (!query && hasCollapsedAncestor(groupPath, false)) {
+          continue
+        }
         const groupMatches = query ? groupName.includes(query) : true
         const hasMatchingChild =
           !query || (visibleGroups && visibleGroups.has(groupPath))
         if (!(groupMatches || hasMatchingChild)) {
           continue
         }
-        fragment.appendChild(renderGroupRow(item))
+        fragment.appendChild(
+          renderGroupRow(item, {
+            forceExpanded: !!query,
+          }),
+        )
         visibleCount += 1
         continue
       }
@@ -286,16 +453,20 @@
         if (query && !sessionMatches(item.session, query)) {
           continue
         }
+        if (!query && hasCollapsedAncestor(item.session.groupPath || "", true)) {
+          continue
+        }
         if (!firstSessionId) {
           firstSessionId = item.session.id
         }
+        visibleSessionIDs.add(item.session.id)
         fragment.appendChild(renderSessionRow(item))
         visibleCount += 1
       }
     }
 
-    const selectedExists = !!findSessionById(state.selectedSessionId)
-    if (!selectedExists) {
+    const selectedVisible = visibleSessionIDs.has(state.selectedSessionId)
+    if (!selectedVisible) {
       state.selectedSessionId = firstSessionId
       if (firstSessionId) {
         syncRouteToSelection(true)
@@ -316,11 +487,19 @@
     renderTerminal(selected)
   }
 
-  function renderGroupRow(item) {
+  function renderGroupRow(item, options) {
+    const opts = options || {}
+    const groupPath = item.group.path || ""
+    const expanded = isGroupExpanded(groupPath, item.group.expanded)
+    const markerExpanded = opts.forceExpanded ? true : expanded
+
     const btn = document.createElement("button")
     btn.type = "button"
     btn.className = "menu-item group"
-    btn.disabled = true
+    btn.setAttribute("aria-expanded", markerExpanded ? "true" : "false")
+    btn.addEventListener("click", () => {
+      toggleGroupExpanded(groupPath, item.group.expanded)
+    })
 
     const row = document.createElement("div")
     row.className = "menu-row"
@@ -330,7 +509,7 @@
     indent.style.setProperty("--level", String(item.level || 0))
 
     const marker = document.createElement("span")
-    marker.textContent = item.group.expanded ? "▾" : "▸"
+    marker.textContent = markerExpanded ? "▾" : "▸"
 
     const name = document.createElement("span")
     name.textContent = item.group.name || item.path || "group"
@@ -356,6 +535,7 @@
     btn.className = `menu-item session${isSelected ? " selected" : ""}`
     btn.addEventListener("click", () => {
       selectSession(session.id, true)
+      closeMenuForMobile()
     })
 
     const row = document.createElement("div")
@@ -996,14 +1176,37 @@
   }
 
   window.addEventListener("resize", () => {
-    scheduleFitAndResize(120)
+    scheduleViewportSync()
   })
+
+  window.addEventListener("orientationchange", () => {
+    scheduleViewportSync()
+  })
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleViewportSync)
+    window.visualViewport.addEventListener("scroll", scheduleViewportSync)
+  }
+
+  if (state.mobileMenuQuery) {
+    const onMobileModeChange = () => {
+      if (!isSmallDisplay()) {
+        setMenuOpen(false)
+      }
+      scheduleViewportSync()
+    }
+    if (typeof state.mobileMenuQuery.addEventListener === "function") {
+      state.mobileMenuQuery.addEventListener("change", onMobileModeChange)
+    } else if (typeof state.mobileMenuQuery.addListener === "function") {
+      state.mobileMenuQuery.addListener(onMobileModeChange)
+    }
+  }
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") {
       return
     }
-    scheduleFitAndResize(0)
+    scheduleViewportSync()
     if (!state.ws && state.selectedSessionId) {
       connectWS(state.selectedSessionId, { reconnecting: true })
     }
@@ -1014,11 +1217,13 @@
     if (!ok) {
       state.selectedSessionId = null
     }
+    closeMenuForMobile()
     renderMenu()
   })
 
   window.addEventListener("beforeunload", () => {
     disconnectMenuEvents()
+    disconnectWS({ intentional: true })
   })
 
   menuFilter.addEventListener("input", (event) => {
@@ -1026,5 +1231,25 @@
     renderMenu()
   })
 
+  if (menuToggle) {
+    menuToggle.addEventListener("click", () => {
+      setMenuOpen(!state.menuOpen)
+    })
+  }
+
+  if (menuBackdrop) {
+    menuBackdrop.addEventListener("click", () => {
+      setMenuOpen(false)
+    })
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setMenuOpen(false)
+    }
+  })
+
+  setMenuOpen(false)
+  scheduleViewportSync()
   loadMenu()
 })()
