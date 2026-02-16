@@ -1301,7 +1301,7 @@ func handleRename(profile string, args []string) {
 	identifier := fs.Arg(0)
 	newTitle := fs.Arg(1)
 	if identifier == "" || newTitle == "" {
-		out.Error("session ID/title and new title are required", ErrCodeNotFound)
+		out.Error("session ID/title and new title are required", ErrCodeInvalidOperation)
 		if !*jsonOutput {
 			fs.Usage()
 		}
@@ -1324,6 +1324,18 @@ func handleRename(profile string, args []string) {
 	}
 
 	oldTitle := inst.Title
+
+	// Check for duplicate title at the same path (but allow renaming to same title)
+	if newTitle != oldTitle {
+		if isDup, existing := isDuplicateSession(instances, newTitle, inst.ProjectPath); isDup {
+			out.Error(
+				fmt.Sprintf("session with title %q already exists at path %q (id: %s)", newTitle, inst.ProjectPath, existing.ID),
+				ErrCodeInvalidOperation,
+			)
+			os.Exit(1)
+		}
+	}
+
 	inst.Title = newTitle
 	inst.SyncTmuxDisplayName()
 

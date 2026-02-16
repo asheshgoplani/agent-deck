@@ -387,10 +387,10 @@ func TestSlackSettings_AllowedUserIDs(t *testing.T) {
 func TestSlackSettings_UserIDFormat(t *testing.T) {
 	// Verify that typical Slack user ID formats are handled correctly
 	userIDs := []string{
-		"U01234ABCDE",  // Standard user ID
-		"U05678FGHIJ",  // Another standard ID
-		"W12345",       // Workspace user ID
-		"USLACKBOT",    // SlackBot ID
+		"U01234ABCDE", // Standard user ID
+		"U05678FGHIJ", // Another standard ID
+		"W12345",      // Workspace user ID
+		"USLACKBOT",   // SlackBot ID
 	}
 
 	settings := SlackSettings{
@@ -481,9 +481,9 @@ func TestBridgeTemplate_ContainsSlackAuthorization(t *testing.T) {
 
 	// Check for authorization checks in handlers
 	authCheckPatterns := []string{
-		"user_id = event.get(\"user\", \"\")",           // message/mention handlers
-		"user_id = command.get(\"user_id\", \"\")",      // slash command handlers
-		"if not is_slack_authorized(user_id):",         // authorization check
+		"user_id = event.get(\"user\", \"\")",                            // message/mention handlers
+		"user_id = command.get(\"user_id\", \"\")",                       // slash command handlers
+		"if not is_slack_authorized(user_id):",                           // authorization check
 		"await respond(\"⛔ Unauthorized. Contact your administrator.\")", // slash command error
 	}
 

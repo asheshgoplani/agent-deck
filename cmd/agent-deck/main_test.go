@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
 
@@ -104,4 +105,75 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 			t.Errorf("expected empty args for TUI mode with profile flag, got %v", args)
 		}
 	})
+}
+
+func TestIsDuplicateSession(t *testing.T) {
+	instances := []*session.Instance{
+		{ID: "abc123", Title: "Test Session", ProjectPath: "/home/user/project"},
+		{ID: "def456", Title: "Another Session", ProjectPath: "/home/user/other"},
+		{ID: "ghi789", Title: "Root Session", ProjectPath: "/"},
+	}
+
+	tests := []struct {
+		name      string
+		title     string
+		path      string
+		expectDup bool
+		expectID  string
+	}{
+		{
+			name:      "exact duplicate",
+			title:     "Test Session",
+			path:      "/home/user/project",
+			expectDup: true,
+			expectID:  "abc123",
+		},
+		{
+			name:      "same title different path",
+			title:     "Test Session",
+			path:      "/home/user/different",
+			expectDup: false,
+		},
+		{
+			name:      "different title same path",
+			title:     "New Name",
+			path:      "/home/user/project",
+			expectDup: false,
+		},
+		{
+			name:      "no duplicate",
+			title:     "Unique Session",
+			path:      "/home/user/unique",
+			expectDup: false,
+		},
+		{
+			name:      "trailing slash normalization - duplicate",
+			title:     "Test Session",
+			path:      "/home/user/project/",
+			expectDup: true,
+			expectID:  "abc123",
+		},
+		{
+			name:      "root path duplicate",
+			title:     "Root Session",
+			path:      "/",
+			expectDup: true,
+			expectID:  "ghi789",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isDup, inst := isDuplicateSession(instances, tt.title, tt.path)
+			if isDup != tt.expectDup {
+				t.Errorf("isDuplicateSession() isDup = %v, want %v", isDup, tt.expectDup)
+			}
+			if tt.expectDup && inst != nil && inst.ID != tt.expectID {
+				t.Errorf("isDuplicateSession() returned instance ID = %q, want %q", inst.ID, tt.expectID)
+			}
+			if !tt.expectDup && inst != nil {
+				t.Errorf("isDuplicateSession() returned instance when expecting no duplicate")
+			}
+		})
+	}
 }
