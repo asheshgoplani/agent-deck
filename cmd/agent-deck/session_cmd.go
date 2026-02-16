@@ -1325,11 +1325,19 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	// Send message atomically (text + Enter in single tmux invocation)
-	// with retry to handle rare cases where Enter is still dropped
-	if err := sendWithRetry(tmuxSess, message); err != nil {
-		out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+	// Send message atomically (text + Enter in single tmux invocation).
+	// --no-wait: fire-and-forget, skip retry/verification overhead entirely.
+	// Otherwise: retry Enter if the agent doesn't start processing promptly.
+	if *noWait {
+		if err := tmuxSess.SendKeysAndEnter(message); err != nil {
+			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	} else {
+		if err := sendWithRetry(tmuxSess, message, false); err != nil {
+			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), map[string]interface{}{
@@ -1347,8 +1355,28 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 
+		// Refresh session ID: the instance was loaded before sending the message,
+		// so the ClaudeSessionID may be stale (e.g., PostStartSync timed out,
+		// TUI updated it during the wait, or /clear created a new session).
+		// First try tmux env (fast), then fall back to reloading from DB.
+		if inst.Tool == "claude" {
+			if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
+				inst.ClaudeSessionID = freshID
+				inst.ClaudeDetectedAt = time.Now()
+			}
+		}
+
 		// Fetch and print last response (like session output -q)
 		response, err := inst.GetLastResponse()
+		if err != nil {
+			// Fallback: reload session from DB in case tmux env was also stale
+			// (e.g., /clear created a new session that TUI or hooks detected)
+			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
+				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
+					response, err = freshInst.GetLastResponse()
+				}
+			}
+		}
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -1364,9 +1392,13 @@ func handleSessionSend(profile string, args []string) {
 
 // sendWithRetry sends a message atomically and retries Enter if the agent
 // doesn't start processing within a reasonable time.
-func sendWithRetry(tmuxSess *tmux.Session, message string) error {
+func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) error {
 	if err := tmuxSess.SendKeysAndEnter(message); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	if skipVerify {
+		return nil
 	}
 
 	// Verify: check if agent transitions to "active" (processing).
