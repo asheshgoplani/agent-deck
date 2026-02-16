@@ -21,6 +21,7 @@ const (
 	CompStorage = "storage"
 	CompPool    = "pool"
 	CompHTTP    = "http"
+	CompWeb     = "web"
 )
 
 // Config holds logging configuration.

@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
 var (
@@ -61,7 +63,8 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 	emitIfChanged := func() error {
 		nextSnapshot, err := s.menuData.LoadMenuSnapshot()
 		if err != nil {
-			log.Printf("web menu stream refresh failed: %v", err)
+			logging.ForComponent(logging.CompWeb).Error("menu_stream_refresh_failed",
+				slog.String("error", err.Error()))
 			return nil
 		}
 

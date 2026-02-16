@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -53,8 +54,9 @@ func NewServer(cfg Config) *Server {
 		menuSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
+	webLog := logging.ForComponent(logging.CompWeb)
 	if pushSvc, err := newPushService(cfg, s.menuData); err != nil {
-		log.Printf("web push disabled: %v", err)
+		webLog.Warn("push_disabled", slog.String("error", err.Error()))
 	} else {
 		s.push = pushSvc
 	}
@@ -89,7 +91,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
 
-	handler := withRecover(withRequestLog(mux))
+	handler := withRecover(mux)
 
 	s.httpServer = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -115,13 +117,14 @@ func (s *Server) Handler() http.Handler {
 // Start starts the HTTP server and blocks until shutdown or error.
 // Returns nil on graceful shutdown.
 func (s *Server) Start() error {
+	webLog := logging.ForComponent(logging.CompWeb)
 	if watcher, err := session.NewStatusFileWatcher(func() {
 		s.notifyMenuChanged()
 		if s.push != nil {
 			s.push.TriggerSync()
 		}
 	}); err != nil {
-		log.Printf("web hooks watcher disabled: %v", err)
+		webLog.Warn("hooks_watcher_disabled", slog.String("error", err.Error()))
 	} else {
 		s.hookWatcher = watcher
 		go watcher.Start()
@@ -174,22 +177,13 @@ func withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("web panic: %v", rec)
+				logging.ForComponent(logging.CompWeb).Error("panic",
+					slog.String("recover", fmt.Sprintf("%v", rec)),
+					slog.String("path", r.URL.Path))
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
-	})
-}
-
-func withRequestLog(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-
-		next.ServeHTTP(rw, r)
-
-		log.Printf("web %s %s %d %s", r.Method, r.URL.Path, rw.status, time.Since(start).Round(time.Millisecond))
 	})
 }
 

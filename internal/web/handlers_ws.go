@@ -3,11 +3,12 @@ package web
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/gorilla/websocket"
 )
 
@@ -96,7 +97,10 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 	if menuSession.TmuxSession != "" {
 		bridge, err = newTmuxPTYBridge(menuSession.TmuxSession, sessionID, writer)
 		if err != nil {
-			log.Printf("web terminal attach failed session_id=%s tmux_session=%s err=%v", sessionID, menuSession.TmuxSession, err)
+			logging.ForComponent(logging.CompWeb).Error("terminal_attach_failed",
+				slog.String("session_id", sessionID),
+				slog.String("tmux_session", menuSession.TmuxSession),
+				slog.String("error", err.Error()))
 			code := "TERMINAL_ATTACH_FAILED"
 			message := "failed to attach terminal bridge"
 			if errors.Is(err, ErrTmuxSessionNotFound) {
@@ -130,7 +134,9 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				websocket.CloseGoingAway,
 				websocket.CloseNoStatusReceived,
 			) {
-				log.Printf("web websocket closed unexpectedly session_id=%s err=%v", sessionID, err)
+				logging.ForComponent(logging.CompWeb).Warn("websocket_closed_unexpectedly",
+					slog.String("session_id", sessionID),
+					slog.String("error", err.Error()))
 			}
 			return
 		}

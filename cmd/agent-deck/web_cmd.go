@@ -1,26 +1,22 @@
 package main
 
 import (
-	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-// handleWeb starts the web UI server entrypoint.
-// WP-00 scope: command wiring + flags + minimal blocking server lifecycle.
-func handleWeb(profile string, args []string) {
-	fs := flag.NewFlagSet("web", flag.ExitOnError)
+// buildWebServer parses web-specific flags and returns a ready-to-start server.
+// The caller is responsible for calling server.Start() and server.Shutdown().
+func buildWebServer(profile string, args []string) (*web.Server, error) {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
 	token := fs.String("token", "", "Bearer token for API/WS access")
-	openBrowser := fs.Bool("open", false, "Open browser automatically (placeholder)")
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
@@ -28,7 +24,7 @@ func handleWeb(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
 		fmt.Println()
-		fmt.Println("Start the web UI server for Agent Deck.")
+		fmt.Println("Start the TUI with web UI server running alongside.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -42,26 +38,19 @@ func handleWeb(profile string, args []string) {
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		os.Exit(1)
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(0)
+		}
+		return nil, fmt.Errorf("flag parsing: %w", err)
 	}
-
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %v\n", fs.Args())
-		fs.Usage()
-		os.Exit(1)
+		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	if *pushTestEvery < 0 {
-		fmt.Fprintln(os.Stderr, "Error: --push-test-every must be >= 0")
-		os.Exit(1)
+		return nil, fmt.Errorf("--push-test-every must be >= 0")
 	}
 	if *pushTestEvery > 0 && !*pushEnabled {
-		fmt.Fprintln(os.Stderr, "Error: --push-test-every requires --push")
-		os.Exit(1)
-	}
-
-	mode := "read-write"
-	if *readOnly {
-		mode = "read-only"
+		return nil, fmt.Errorf("--push-test-every requires --push")
 	}
 
 	effectiveProfile := session.GetEffectiveProfile(profile)
@@ -74,8 +63,7 @@ func handleWeb(profile string, args []string) {
 		var err error
 		resolvedPushPublic, resolvedPushPrivate, generated, err = web.EnsurePushVAPIDKeys(effectiveProfile, resolvedPushSubject)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to prepare web push keys: %v\n", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("failed to prepare web push keys: %w", err)
 		}
 		if generated {
 			fmt.Println("Push keys: generated new VAPID keypair for profile")
@@ -83,24 +71,6 @@ func handleWeb(profile string, args []string) {
 			fmt.Println("Push keys: using existing VAPID keypair for profile")
 		}
 	}
-
-	fmt.Printf("Starting Agent Deck web mode on http://%s\n", *listenAddr)
-	fmt.Printf("Profile: %s\n", effectiveProfile)
-	fmt.Printf("Mode: %s\n", mode)
-	if *token != "" {
-		fmt.Println("Auth: bearer token enabled")
-		fmt.Println("Auth hint: open the UI with ?token=<your-token> or pass Authorization: Bearer <token> on API requests")
-	}
-	if *openBrowser {
-		fmt.Println("Note: --open is not implemented yet")
-	}
-	if *pushEnabled {
-		fmt.Println("Push: enabled")
-		if *pushTestEvery > 0 {
-			fmt.Printf("Push test: periodic notifications every %s\n", pushTestEvery.String())
-		}
-	}
-	fmt.Println("Press Ctrl+C to stop.")
 
 	server := web.NewServer(web.Config{
 		ListenAddr:          *listenAddr,
@@ -113,27 +83,6 @@ func handleWeb(profile string, args []string) {
 		PushTestInterval:    *pushTestEvery,
 	})
 
-	errCh := make(chan error, 1)
-	go func() {
-		if err := server.Start(); err != nil {
-			errCh <- err
-		}
-	}()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
-
-	select {
-	case err := <-errCh:
-		fmt.Fprintf(os.Stderr, "Error: web server failed: %v\n", err)
-		os.Exit(1)
-	case <-sigCh:
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: web server shutdown error: %v\n", err)
-	}
+	return server, nil
 }
+

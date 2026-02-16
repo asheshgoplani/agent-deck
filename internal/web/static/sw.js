@@ -6,11 +6,10 @@ const APP_SHELL_URLS = [
   "/static/index.html",
   "/static/styles.css",
   "/static/app.js",
-  "/static/icons/icon-192.png",
-  "/static/icons/icon-512.png",
+  "/static/icons/logo.svg",
 ]
 
-const DEFAULT_NOTIFICATION_ICON = "/static/icons/icon-192.png"
+const DEFAULT_NOTIFICATION_ICON = "/static/icons/logo.svg"
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

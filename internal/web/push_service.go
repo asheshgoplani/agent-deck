@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -456,6 +457,8 @@ func (p *pushService) UpdateSubscriptionFocus(ctx context.Context, endpoint stri
 	return p.store.UpdateFocusByEndpoint(ctx, endpoint, focused)
 }
 
+var pushLog = logging.ForComponent(logging.CompWeb)
+
 func (p *pushService) run(ctx context.Context) {
 	ticker := time.NewTicker(p.pollInterval)
 	defer ticker.Stop()
@@ -465,7 +468,7 @@ func (p *pushService) run(ctx context.Context) {
 	if p.testEvery > 0 {
 		testTicker = time.NewTicker(p.testEvery)
 		testTick = testTicker.C
-		log.Printf("web push: periodic test notifications enabled interval=%s", p.testEvery)
+		pushLog.Info("push_test_enabled", slog.String("interval", p.testEvery.String()))
 		defer testTicker.Stop()
 	}
 
@@ -489,7 +492,7 @@ func (p *pushService) run(ctx context.Context) {
 func (p *pushService) syncOnce(ctx context.Context) {
 	snapshot, err := p.menuData.LoadMenuSnapshot()
 	if err != nil {
-		log.Printf("web push: snapshot load failed: %v", err)
+		pushLog.Error("push_snapshot_load_failed", slog.String("error", err.Error()))
 		return
 	}
 
@@ -532,7 +535,11 @@ func (p *pushService) syncOnce(ctx context.Context) {
 			Session: sessionMeta,
 			Status:  status,
 		})
-		log.Printf("web push: transition detected session=%s profile=%s from=%s to=%s", sessionID, snapshot.Profile, prev, status)
+		pushLog.Debug("push_transition",
+			slog.String("session", sessionID),
+			slog.String("profile", snapshot.Profile),
+			slog.String("from", prev),
+			slog.String("to", status))
 	}
 
 	p.lastStatus = current
@@ -550,13 +557,16 @@ func (p *pushService) notifySubscribers(ctx context.Context, tr pushTransition) 
 
 	subs, err := p.store.List(ctx)
 	if err != nil {
-		log.Printf("web push: list subscriptions failed: %v", err)
+		pushLog.Error("push_list_subscriptions_failed", slog.String("error", err.Error()))
 		return
 	}
 	if len(subs) == 0 {
 		return
 	}
-	log.Printf("web push: notifying session=%s status=%s subscribers=%d", tr.Session.ID, tr.Status, len(subs))
+	pushLog.Debug("push_notifying",
+		slog.String("session", tr.Session.ID),
+		slog.String("status", tr.Status),
+		slog.Int("subscribers", len(subs)))
 
 	msg := pushMessage{
 		Title:      pushTitleForStatus(tr),
@@ -574,35 +584,36 @@ func (p *pushService) notifySubscribers(ctx context.Context, tr pushTransition) 
 
 	payload, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("web push: marshal payload failed: %v", err)
+		pushLog.Error("push_marshal_failed", slog.String("error", err.Error()))
 		return
 	}
 
 	for _, sub := range subs {
 		if !shouldNotifySubscription(sub, tr) {
-			log.Printf(
-				"web push: skipped endpoint=%s session=%s status=%s reason=focused_state state=%s",
-				endpointForLog(sub.Endpoint),
-				tr.Session.ID,
-				tr.Status,
-				focusStateForLog(sub),
-			)
+			pushLog.Debug("push_skipped",
+				slog.String("endpoint", endpointForLog(sub.Endpoint)),
+				slog.String("session", tr.Session.ID),
+				slog.String("status", tr.Status),
+				slog.String("reason", "focused_state"),
+				slog.String("state", focusStateForLog(sub)))
 			continue
 		}
 		statusCode, err := p.sender.Send(payload, sub)
 		if err == nil {
-			log.Printf("web push: sent endpoint=%s status=%d session=%s status_change=%s", endpointForLog(sub.Endpoint), statusCode, tr.Session.ID, tr.Status)
+			pushLog.Debug("push_sent",
+				slog.String("endpoint", endpointForLog(sub.Endpoint)),
+				slog.Int("http_status", statusCode),
+				slog.String("session", tr.Session.ID),
+				slog.String("status_change", tr.Status))
 			continue
 		}
 
-		log.Printf(
-			"web push: send failed endpoint=%q status=%d session=%s status_change=%s err=%v",
-			sub.Endpoint,
-			statusCode,
-			tr.Session.ID,
-			tr.Status,
-			err,
-		)
+		pushLog.Error("push_send_failed",
+			slog.String("endpoint", sub.Endpoint),
+			slog.Int("http_status", statusCode),
+			slog.String("session", tr.Session.ID),
+			slog.String("status_change", tr.Status),
+			slog.String("error", err.Error()))
 		if statusCode == http.StatusGone || statusCode == http.StatusNotFound {
 			_ = p.store.RemoveByEndpoint(ctx, sub.Endpoint)
 		}
@@ -616,11 +627,11 @@ func (p *pushService) sendTestPush(ctx context.Context) {
 
 	subs, err := p.store.List(ctx)
 	if err != nil {
-		log.Printf("web push: test list subscriptions failed: %v", err)
+		pushLog.Error("push_test_list_failed", slog.String("error", err.Error()))
 		return
 	}
 	if len(subs) == 0 {
-		log.Printf("web push: test skipped (no subscriptions)")
+		pushLog.Debug("push_test_skipped_no_subs")
 		return
 	}
 
@@ -637,32 +648,31 @@ func (p *pushService) sendTestPush(ctx context.Context) {
 
 	payload, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("web push: test marshal payload failed: %v", err)
+		pushLog.Error("push_test_marshal_failed", slog.String("error", err.Error()))
 		return
 	}
 
-	log.Printf("web push: sending test notification subscribers=%d", len(subs))
+	pushLog.Debug("push_test_sending", slog.Int("subscribers", len(subs)))
 	for _, sub := range subs {
 		if !shouldNotifySubscription(sub, pushTransition{Status: "test"}) {
-			log.Printf(
-				"web push: test skipped endpoint=%s reason=focused_state state=%s",
-				endpointForLog(sub.Endpoint),
-				focusStateForLog(sub),
-			)
+			pushLog.Debug("push_test_skipped",
+				slog.String("endpoint", endpointForLog(sub.Endpoint)),
+				slog.String("reason", "focused_state"),
+				slog.String("state", focusStateForLog(sub)))
 			continue
 		}
 		statusCode, err := p.sender.Send(payload, sub)
 		if err == nil {
-			log.Printf("web push: test sent endpoint=%s status=%d", endpointForLog(sub.Endpoint), statusCode)
+			pushLog.Debug("push_test_sent",
+				slog.String("endpoint", endpointForLog(sub.Endpoint)),
+				slog.Int("http_status", statusCode))
 			continue
 		}
 
-		log.Printf(
-			"web push: test send failed endpoint=%q status=%d err=%v",
-			sub.Endpoint,
-			statusCode,
-			err,
-		)
+		pushLog.Error("push_test_send_failed",
+			slog.String("endpoint", sub.Endpoint),
+			slog.Int("http_status", statusCode),
+			slog.String("error", err.Error()))
 		if statusCode == http.StatusGone || statusCode == http.StatusNotFound {
 			_ = p.store.RemoveByEndpoint(ctx, sub.Endpoint)
 		}
