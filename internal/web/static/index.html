@@ -3,6 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Agent Deck" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/static/icons/icon-192.png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
     <title>Agent Deck Web</title>
     <link
       rel="stylesheet"
@@ -40,6 +47,14 @@
               placeholder="Filter sessions..."
               autocomplete="off"
             />
+            <div class="push-tools" id="push-tools" hidden>
+              <button id="push-toggle" class="push-toggle" type="button">
+                Enable notifications
+              </button>
+              <div class="push-status" id="push-status">
+                Push unavailable.
+              </div>
+            </div>
           </div>
           <div class="menu-list" id="menu-root">
             <div class="menu-empty">Loading session menu...</div>

@@ -21,6 +21,9 @@ func handleWeb(profile string, args []string) {
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
 	token := fs.String("token", "", "Bearer token for API/WS access")
 	openBrowser := fs.Bool("open", false, "Open browser automatically (placeholder)")
+	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
+	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
+	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
@@ -34,6 +37,8 @@ func handleWeb(profile string, args []string) {
 		fmt.Println("  agent-deck web")
 		fmt.Println("  agent-deck -p work web --listen 127.0.0.1:9000")
 		fmt.Println("  agent-deck web --read-only")
+		fmt.Println("  agent-deck web --push")
+		fmt.Println("  agent-deck web --push --push-test-every 10s")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -45,6 +50,14 @@ func handleWeb(profile string, args []string) {
 		fs.Usage()
 		os.Exit(1)
 	}
+	if *pushTestEvery < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --push-test-every must be >= 0")
+		os.Exit(1)
+	}
+	if *pushTestEvery > 0 && !*pushEnabled {
+		fmt.Fprintln(os.Stderr, "Error: --push-test-every requires --push")
+		os.Exit(1)
+	}
 
 	mode := "read-write"
 	if *readOnly {
@@ -52,6 +65,25 @@ func handleWeb(profile string, args []string) {
 	}
 
 	effectiveProfile := session.GetEffectiveProfile(profile)
+
+	resolvedPushSubject := *pushVAPIDSubject
+	resolvedPushPublic := ""
+	resolvedPushPrivate := ""
+	if *pushEnabled {
+		var generated bool
+		var err error
+		resolvedPushPublic, resolvedPushPrivate, generated, err = web.EnsurePushVAPIDKeys(effectiveProfile, resolvedPushSubject)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to prepare web push keys: %v\n", err)
+			os.Exit(1)
+		}
+		if generated {
+			fmt.Println("Push keys: generated new VAPID keypair for profile")
+		} else {
+			fmt.Println("Push keys: using existing VAPID keypair for profile")
+		}
+	}
+
 	fmt.Printf("Starting Agent Deck web mode on http://%s\n", *listenAddr)
 	fmt.Printf("Profile: %s\n", effectiveProfile)
 	fmt.Printf("Mode: %s\n", mode)
@@ -62,13 +94,23 @@ func handleWeb(profile string, args []string) {
 	if *openBrowser {
 		fmt.Println("Note: --open is not implemented yet")
 	}
+	if *pushEnabled {
+		fmt.Println("Push: enabled")
+		if *pushTestEvery > 0 {
+			fmt.Printf("Push test: periodic notifications every %s\n", pushTestEvery.String())
+		}
+	}
 	fmt.Println("Press Ctrl+C to stop.")
 
 	server := web.NewServer(web.Config{
-		ListenAddr: *listenAddr,
-		Profile:    effectiveProfile,
-		ReadOnly:   *readOnly,
-		Token:      *token,
+		ListenAddr:          *listenAddr,
+		Profile:             effectiveProfile,
+		ReadOnly:            *readOnly,
+		Token:               *token,
+		PushVAPIDPublicKey:  resolvedPushPublic,
+		PushVAPIDPrivateKey: resolvedPushPrivate,
+		PushVAPIDSubject:    resolvedPushSubject,
+		PushTestInterval:    *pushTestEvery,
 	})
 
 	errCh := make(chan error, 1)

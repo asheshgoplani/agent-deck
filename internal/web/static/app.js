@@ -4,6 +4,9 @@
   const menuPanel = document.getElementById("menu-panel")
   const menuToggle = document.getElementById("menu-toggle")
   const menuBackdrop = document.getElementById("menu-backdrop")
+  const pushTools = document.getElementById("push-tools")
+  const pushToggle = document.getElementById("push-toggle")
+  const pushStatus = document.getElementById("push-status")
   const metaState = document.getElementById("meta-state")
   const terminalRoot = document.getElementById("terminal-root")
 
@@ -31,6 +34,14 @@
     menuOpen: false,
     keyboardOpen: false,
     viewportSyncFrame: 0,
+    swRegistrationPromise: null,
+    pushConfig: null,
+    pushAvailable: false,
+    pushBusy: false,
+    pushSubscribed: false,
+    pushEndpoint: "",
+    pushFocused: null,
+    pushPresenceTimer: null,
     mobileMenuQuery:
       typeof window.matchMedia === "function"
         ? window.matchMedia("(max-width: 900px)")
@@ -135,6 +146,344 @@
 
       scheduleFitAndResize(40)
     })
+  }
+
+  function registerServiceWorker() {
+    if (!("serviceWorker" in navigator)) {
+      return Promise.resolve(null)
+    }
+    if (state.swRegistrationPromise) {
+      return state.swRegistrationPromise
+    }
+
+    const doRegister = () =>
+      navigator.serviceWorker
+        .register("/sw.js", { scope: "/" })
+        .catch((error) => {
+          console.warn("service worker registration failed", error)
+          return null
+        })
+
+    if (document.readyState === "complete") {
+      state.swRegistrationPromise = doRegister()
+    } else {
+      state.swRegistrationPromise = new Promise((resolve) => {
+        window.addEventListener(
+          "load",
+          () => {
+            doRegister().then(resolve)
+          },
+          { once: true },
+        )
+      })
+    }
+    return state.swRegistrationPromise
+  }
+
+  function urlBase64ToUint8Array(base64) {
+    const padding = "=".repeat((4 - (base64.length % 4)) % 4)
+    const normalized = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/")
+    const raw = window.atob(normalized)
+    const output = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i += 1) {
+      output[i] = raw.charCodeAt(i)
+    }
+    return output
+  }
+
+  function renderPushControls() {
+    if (!pushTools || !pushToggle || !pushStatus) {
+      return
+    }
+
+    if (!state.pushConfig || !state.pushConfig.enabled) {
+      pushTools.hidden = true
+      return
+    }
+
+    pushTools.hidden = false
+    pushToggle.disabled = state.pushBusy
+    pushToggle.textContent = state.pushSubscribed
+      ? "Disable notifications"
+      : "Enable notifications"
+
+    if (state.pushBusy) {
+      pushStatus.textContent = "Updating notification preference..."
+      return
+    }
+
+    pushStatus.textContent = state.pushSubscribed
+      ? "Notifications enabled when browser is unfocused."
+      : "Notifications disabled."
+  }
+
+  async function fetchPushConfig() {
+    const headers = { Accept: "application/json" }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+
+    const response = await fetch(apiPathWithToken("/api/push/config"), {
+      method: "GET",
+      headers,
+    })
+    if (!response.ok) {
+      throw new Error(`push config request failed: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  async function subscribePush() {
+    const cfg = state.pushConfig
+    if (!cfg || !cfg.enabled || !cfg.vapidPublicKey) {
+      throw new Error("push is not configured on server")
+    }
+
+    const registration = await registerServiceWorker()
+    if (!registration || !registration.pushManager) {
+      throw new Error("service worker push manager unavailable")
+    }
+
+    let subscription = await registration.pushManager.getSubscription()
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(cfg.vapidPublicKey),
+      })
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+
+    const response = await fetch(apiPathWithToken("/api/push/subscribe"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(subscription.toJSON()),
+    })
+    if (!response.ok) {
+      throw new Error(`subscribe request failed: ${response.status}`)
+    }
+
+    state.pushSubscribed = true
+    state.pushEndpoint = subscription.endpoint || ""
+    await syncPushPresence()
+    return subscription
+  }
+
+  async function unsubscribePush() {
+    const registration = await registerServiceWorker()
+    if (!registration || !registration.pushManager) {
+      state.pushSubscribed = false
+      return
+    }
+
+    const subscription = await registration.pushManager.getSubscription()
+    if (!subscription) {
+      state.pushSubscribed = false
+      return
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+
+    const endpoint = subscription.endpoint || ""
+    const response = await fetch(apiPathWithToken("/api/push/unsubscribe"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ endpoint }),
+    })
+    if (!response.ok) {
+      throw new Error(`unsubscribe request failed: ${response.status}`)
+    }
+
+    await subscription.unsubscribe()
+    state.pushSubscribed = false
+    state.pushEndpoint = ""
+    state.pushFocused = null
+  }
+
+  function isScreenFocused() {
+    const visible = document.visibilityState === "visible"
+    const focused =
+      typeof document.hasFocus === "function" ? document.hasFocus() : true
+    return visible && focused
+  }
+
+  async function syncPushPresence(focusedOverride) {
+    if (!state.pushConfig || !state.pushConfig.enabled || !state.pushSubscribed) {
+      return
+    }
+
+    const registration = await registerServiceWorker()
+    if (!registration || !registration.pushManager) {
+      return
+    }
+
+    const subscription = await registration.pushManager.getSubscription()
+    if (!subscription) {
+      state.pushSubscribed = false
+      state.pushEndpoint = ""
+      state.pushFocused = null
+      return
+    }
+
+    const endpoint = subscription.endpoint || ""
+    if (!endpoint) {
+      return
+    }
+
+    const focused =
+      typeof focusedOverride === "boolean"
+        ? focusedOverride
+        : isScreenFocused()
+
+    if (state.pushEndpoint === endpoint && state.pushFocused === focused) {
+      return
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+
+    const response = await fetch(apiPathWithToken("/api/push/presence"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ endpoint, focused }),
+    })
+    if (!response.ok) {
+      throw new Error(`push presence request failed: ${response.status}`)
+    }
+
+    state.pushEndpoint = endpoint
+    state.pushFocused = focused
+  }
+
+  function schedulePushPresenceSync(delayMs) {
+    if (state.pushPresenceTimer) {
+      clearTimeout(state.pushPresenceTimer)
+      state.pushPresenceTimer = null
+    }
+
+    const delay = Math.max(0, Number(delayMs) || 0)
+    state.pushPresenceTimer = window.setTimeout(() => {
+      state.pushPresenceTimer = null
+      syncPushPresence().catch((_err) => {})
+    }, delay)
+  }
+
+  function sendPushPresenceBestEffort(focused) {
+    if (!state.pushConfig || !state.pushConfig.enabled) {
+      return
+    }
+    if (!state.pushSubscribed || !state.pushEndpoint) {
+      return
+    }
+
+    const body = JSON.stringify({
+      endpoint: state.pushEndpoint,
+      focused: !!focused,
+    })
+    const url = apiPathWithToken("/api/push/presence")
+
+    if (navigator.sendBeacon) {
+      try {
+        const blob = new Blob([body], { type: "application/json" })
+        navigator.sendBeacon(url, blob)
+        state.pushFocused = !!focused
+        return
+      } catch (_err) {}
+    }
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+    fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      keepalive: true,
+    }).catch(() => {})
+    state.pushFocused = !!focused
+  }
+
+  async function initPushNotifications() {
+    if (!pushTools || !pushToggle || !pushStatus) {
+      return
+    }
+
+    try {
+      const cfg = await fetchPushConfig()
+      state.pushConfig = cfg
+
+      const browserSupportsPush =
+        "serviceWorker" in navigator && "PushManager" in window
+
+      if (!cfg.enabled) {
+        pushTools.hidden = true
+        return
+      }
+      if (!browserSupportsPush) {
+        pushTools.hidden = false
+        pushToggle.disabled = true
+        pushStatus.textContent = "Push notifications are not supported in this browser."
+        return
+      }
+
+      const registration = await registerServiceWorker()
+      if (!registration || !registration.pushManager) {
+        pushTools.hidden = false
+        pushToggle.disabled = true
+        pushStatus.textContent = "Service worker unavailable for push."
+        return
+      }
+
+      const existing = await registration.pushManager.getSubscription()
+      state.pushSubscribed = !!existing
+      state.pushEndpoint = existing && existing.endpoint ? existing.endpoint : ""
+      state.pushFocused = null
+      state.pushAvailable = true
+      if (state.pushSubscribed && existing) {
+        try {
+          const headers = {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          }
+          if (state.authToken) {
+            headers.Authorization = `Bearer ${state.authToken}`
+          }
+          await fetch(apiPathWithToken("/api/push/subscribe"), {
+            method: "POST",
+            headers,
+            body: JSON.stringify(existing.toJSON()),
+          })
+          await syncPushPresence()
+        } catch (_err) {}
+      }
+      renderPushControls()
+    } catch (error) {
+      state.pushAvailable = false
+      pushTools.hidden = false
+      pushToggle.disabled = true
+      pushStatus.textContent = `Push setup failed: ${error.message}`
+    }
   }
 
   function connectMenuEvents() {
@@ -243,7 +592,15 @@
       }
     } catch (error) {
       setConnectionState("error", "menu unavailable")
-      menuRoot.textContent = `Failed to load menu: ${error.message}`
+      const msg = error && error.message ? error.message : "unknown error"
+      const serverUnavailable =
+        !navigator.onLine || /Failed to fetch/i.test(msg) || /NetworkError/i.test(msg)
+      if (serverUnavailable) {
+        menuRoot.textContent =
+          "Server unavailable. Start agent-deck web on this machine and refresh."
+      } else {
+        menuRoot.textContent = `Failed to load menu: ${msg}`
+      }
     }
   }
 
@@ -1203,6 +1560,7 @@
   }
 
   document.addEventListener("visibilitychange", () => {
+    schedulePushPresenceSync(0)
     if (document.visibilityState !== "visible") {
       return
     }
@@ -1210,6 +1568,19 @@
     if (!state.ws && state.selectedSessionId) {
       connectWS(state.selectedSessionId, { reconnecting: true })
     }
+  })
+
+  window.addEventListener("focus", () => {
+    schedulePushPresenceSync(0)
+  })
+
+  window.addEventListener("blur", () => {
+    sendPushPresenceBestEffort(false)
+    schedulePushPresenceSync(50)
+  })
+
+  window.addEventListener("pagehide", () => {
+    sendPushPresenceBestEffort(false)
   })
 
   window.addEventListener("popstate", () => {
@@ -1222,6 +1593,7 @@
   })
 
   window.addEventListener("beforeunload", () => {
+    sendPushPresenceBestEffort(false)
     disconnectMenuEvents()
     disconnectWS({ intentional: true })
   })
@@ -1243,6 +1615,28 @@
     })
   }
 
+  if (pushToggle) {
+    pushToggle.addEventListener("click", async () => {
+      if (state.pushBusy || !state.pushConfig || !state.pushConfig.enabled) {
+        return
+      }
+      state.pushBusy = true
+      renderPushControls()
+      try {
+        if (state.pushSubscribed) {
+          await unsubscribePush()
+        } else {
+          await subscribePush()
+        }
+      } catch (error) {
+        pushStatus.textContent = `Push error: ${error.message}`
+      } finally {
+        state.pushBusy = false
+        renderPushControls()
+      }
+    })
+  }
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       setMenuOpen(false)
@@ -1251,5 +1645,7 @@
 
   setMenuOpen(false)
   scheduleViewportSync()
+  registerServiceWorker()
+  initPushNotifications()
   loadMenu()
 })()

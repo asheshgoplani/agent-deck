@@ -172,6 +172,34 @@ body {
   margin-bottom: 10px;
 }
 
+.push-tools {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.push-toggle {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 0 10px;
+}
+
+.push-toggle:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.push-status {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
 .menu-filter {
   width: 100%;
   height: 36px;

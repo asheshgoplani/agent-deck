@@ -9,24 +9,36 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // Config defines runtime options for the web server.
 type Config struct {
-	ListenAddr string
-	Profile    string
-	ReadOnly   bool
-	Token      string
+	ListenAddr          string
+	Profile             string
+	ReadOnly            bool
+	Token               string
+	PushVAPIDPublicKey  string
+	PushVAPIDPrivateKey string
+	PushVAPIDSubject    string
+	PushTestInterval    time.Duration
 }
 
 // Server wraps an HTTP server for Agent Deck web mode.
 type Server struct {
-	cfg        Config
-	httpServer *http.Server
-	menuData   menuDataLoader
-	baseCtx    context.Context
-	cancelBase context.CancelFunc
+	cfg         Config
+	httpServer  *http.Server
+	menuData    menuDataLoader
+	push        pushServiceAPI
+	baseCtx     context.Context
+	cancelBase  context.CancelFunc
+	hookWatcher *session.StatusFileWatcher
+
+	menuSubscribersMu sync.Mutex
+	menuSubscribers   map[chan struct{}]struct{}
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -36,14 +48,22 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		menuData: NewSessionDataService(cfg.Profile),
+		cfg:             cfg,
+		menuData:        NewSessionDataService(cfg.Profile),
+		menuSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
+	if pushSvc, err := newPushService(cfg, s.menuData); err != nil {
+		log.Printf("web push disabled: %v", err)
+	} else {
+		s.push = pushSvc
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/s/", s.handleIndex)
+	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
+	mux.HandleFunc("/sw.js", s.handleServiceWorker)
 	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -62,6 +82,10 @@ func NewServer(cfg Config) *Server {
 	})
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
+	mux.HandleFunc("/api/push/config", s.handlePushConfig)
+	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)
+	mux.HandleFunc("/api/push/unsubscribe", s.handlePushUnsubscribe)
+	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
 
@@ -91,7 +115,26 @@ func (s *Server) Handler() http.Handler {
 // Start starts the HTTP server and blocks until shutdown or error.
 // Returns nil on graceful shutdown.
 func (s *Server) Start() error {
+	if watcher, err := session.NewStatusFileWatcher(func() {
+		s.notifyMenuChanged()
+		if s.push != nil {
+			s.push.TriggerSync()
+		}
+	}); err != nil {
+		log.Printf("web hooks watcher disabled: %v", err)
+	} else {
+		s.hookWatcher = watcher
+		go watcher.Start()
+	}
+
+	if s.push != nil {
+		s.push.Start(s.baseCtx)
+	}
 	err := s.httpServer.ListenAndServe()
+	if s.hookWatcher != nil {
+		s.hookWatcher.Stop()
+		s.hookWatcher = nil
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -103,6 +146,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.cancelBase != nil {
 		// Signal long-lived handlers (SSE/WS) to stop promptly.
 		s.cancelBase()
+	}
+	if s.hookWatcher != nil {
+		s.hookWatcher.Stop()
+		s.hookWatcher = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)
@@ -181,4 +228,35 @@ func (r *statusRecorder) Flush() {
 
 func (s *Server) String() string {
 	return fmt.Sprintf("web-server(addr=%s, profile=%s, readOnly=%t)", s.cfg.ListenAddr, s.cfg.Profile, s.cfg.ReadOnly)
+}
+
+func (s *Server) subscribeMenuChanges() chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.menuSubscribersMu.Lock()
+	s.menuSubscribers[ch] = struct{}{}
+	s.menuSubscribersMu.Unlock()
+	return ch
+}
+
+func (s *Server) unsubscribeMenuChanges(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	s.menuSubscribersMu.Lock()
+	if _, ok := s.menuSubscribers[ch]; ok {
+		delete(s.menuSubscribers, ch)
+		close(ch)
+	}
+	s.menuSubscribersMu.Unlock()
+}
+
+func (s *Server) notifyMenuChanged() {
+	s.menuSubscribersMu.Lock()
+	for ch := range s.menuSubscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	s.menuSubscribersMu.Unlock()
 }

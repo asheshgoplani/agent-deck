@@ -48,6 +48,9 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	menuChanges := s.subscribeMenuChanges()
+	defer s.unsubscribeMenuChanges(menuChanges)
+
 	pollTicker := time.NewTicker(menuEventsPollInterval)
 	defer pollTicker.Stop()
 
@@ -55,6 +58,25 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 	defer heartbeatTicker.Stop()
 
 	ctx := r.Context()
+	emitIfChanged := func() error {
+		nextSnapshot, err := s.menuData.LoadMenuSnapshot()
+		if err != nil {
+			log.Printf("web menu stream refresh failed: %v", err)
+			return nil
+		}
+
+		nextFingerprint := menuSnapshotFingerprint(nextSnapshot)
+		if nextFingerprint == lastFingerprint {
+			return nil
+		}
+
+		if err := writeSSEEvent(w, flusher, "menu", nextSnapshot); err != nil {
+			return err
+		}
+		lastFingerprint = nextFingerprint
+		return nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -63,22 +85,14 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 			if err := writeSSEComment(w, flusher, "keepalive"); err != nil {
 				return
 			}
-		case <-pollTicker.C:
-			nextSnapshot, err := s.menuData.LoadMenuSnapshot()
-			if err != nil {
-				log.Printf("web menu stream refresh failed: %v", err)
-				continue
-			}
-
-			nextFingerprint := menuSnapshotFingerprint(nextSnapshot)
-			if nextFingerprint == lastFingerprint {
-				continue
-			}
-
-			if err := writeSSEEvent(w, flusher, "menu", nextSnapshot); err != nil {
+		case <-menuChanges:
+			if err := emitIfChanged(); err != nil {
 				return
 			}
-			lastFingerprint = nextFingerprint
+		case <-pollTicker.C:
+			if err := emitIfChanged(); err != nil {
+				return
+			}
 		}
 	}
 }

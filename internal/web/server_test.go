@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHealthzEndpoint(t *testing.T) {
@@ -68,6 +69,9 @@ func TestIndexServed(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "menu-filter") {
 		t.Fatalf("expected filter input in shell html, got: %s", rr.Body.String())
 	}
+	if !strings.Contains(rr.Body.String(), "manifest.webmanifest") {
+		t.Fatalf("expected pwa manifest link in shell html, got: %s", rr.Body.String())
+	}
 }
 
 func TestSessionRouteServed(t *testing.T) {
@@ -107,5 +111,80 @@ func TestStaticCSSServed(t *testing.T) {
 
 	if !strings.Contains(rr.Body.String(), "--accent") {
 		t.Fatalf("expected css payload, got: %s", rr.Body.String())
+	}
+}
+
+func TestManifestServed(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "application/manifest+json") {
+		t.Fatalf("expected manifest content-type, got: %s", contentType)
+	}
+	if !strings.Contains(rr.Body.String(), "\"name\": \"Agent Deck Web\"") {
+		t.Fatalf("expected manifest payload, got: %s", rr.Body.String())
+	}
+}
+
+func TestServiceWorkerServed(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/sw.js", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "application/javascript") {
+		t.Fatalf("expected javascript content-type, got: %s", contentType)
+	}
+
+	swScope := rr.Header().Get("Service-Worker-Allowed")
+	if swScope != "/" {
+		t.Fatalf("expected Service-Worker-Allowed=/, got: %q", swScope)
+	}
+
+	if !strings.Contains(rr.Body.String(), "CACHE_VERSION") {
+		t.Fatalf("expected service worker payload, got: %s", rr.Body.String())
+	}
+}
+
+func TestMenuChangeBroadcastNotifiesAllSubscribers(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+	})
+
+	subA := srv.subscribeMenuChanges()
+	subB := srv.subscribeMenuChanges()
+	defer srv.unsubscribeMenuChanges(subA)
+	defer srv.unsubscribeMenuChanges(subB)
+
+	srv.notifyMenuChanged()
+
+	select {
+	case <-subA:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected subscriber A to receive menu change signal")
+	}
+
+	select {
+	case <-subB:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected subscriber B to receive menu change signal")
 	}
 }
