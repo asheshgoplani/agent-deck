@@ -340,7 +340,7 @@ type pushService struct {
 	subject    string
 	profile    string
 
-	menuData menuDataLoader
+	menuData MenuDataLoader
 	store    pushSubscriptionStore
 	sender   webPushSender
 
@@ -355,7 +355,7 @@ type pushService struct {
 	lastStatus  map[string]string
 }
 
-func newPushService(cfg Config, menuData menuDataLoader) (pushServiceAPI, error) {
+func newPushService(cfg Config, menuData MenuDataLoader) (pushServiceAPI, error) {
 	publicKey := strings.TrimSpace(cfg.PushVAPIDPublicKey)
 	privateKey := strings.TrimSpace(cfg.PushVAPIDPrivateKey)
 

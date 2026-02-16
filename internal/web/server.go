@@ -22,17 +22,23 @@ type Config struct {
 	Profile             string
 	ReadOnly            bool
 	Token               string
+	MenuData            MenuDataLoader
 	PushVAPIDPublicKey  string
 	PushVAPIDPrivateKey string
 	PushVAPIDSubject    string
 	PushTestInterval    time.Duration
 }
 
+// MenuDataLoader provides menu snapshots for web APIs and push notifications.
+type MenuDataLoader interface {
+	LoadMenuSnapshot() (*MenuSnapshot, error)
+}
+
 // Server wraps an HTTP server for Agent Deck web mode.
 type Server struct {
 	cfg         Config
 	httpServer  *http.Server
-	menuData    menuDataLoader
+	menuData    MenuDataLoader
 	push        pushServiceAPI
 	baseCtx     context.Context
 	cancelBase  context.CancelFunc
@@ -48,14 +54,19 @@ func NewServer(cfg Config) *Server {
 		cfg.ListenAddr = "127.0.0.1:8420"
 	}
 
+	menuData := cfg.MenuData
+	if menuData == nil {
+		menuData = NewSessionDataService(cfg.Profile)
+	}
+
 	s := &Server{
 		cfg:             cfg,
-		menuData:        NewSessionDataService(cfg.Profile),
+		menuData:        menuData,
 		menuSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
-	if pushSvc, err := newPushService(cfg, s.menuData); err != nil {
+	if pushSvc, err := newPushService(cfg, menuData); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))
 	} else {
 		s.push = pushSvc

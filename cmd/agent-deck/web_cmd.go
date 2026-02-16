@@ -12,7 +12,7 @@ import (
 
 // buildWebServer parses web-specific flags and returns a ready-to-start server.
 // The caller is responsible for calling server.Start() and server.Shutdown().
-func buildWebServer(profile string, args []string) (*web.Server, error) {
+func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) (*web.Server, error) {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
@@ -77,6 +77,7 @@ func buildWebServer(profile string, args []string) (*web.Server, error) {
 		Profile:             effectiveProfile,
 		ReadOnly:            *readOnly,
 		Token:               *token,
+		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
 		PushVAPIDPrivateKey: resolvedPushPrivate,
 		PushVAPIDSubject:    resolvedPushSubject,
@@ -85,4 +86,3 @@ func buildWebServer(profile string, args []string) (*web.Server, error) {
 
 	return server, nil
 }
-

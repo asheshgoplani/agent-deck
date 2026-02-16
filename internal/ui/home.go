@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 // Version is set by main.go for update checking
@@ -220,6 +221,10 @@ type Home struct {
 
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
+
+	// Optional in-memory web menu data sink for web mode.
+	webMenuData   *web.MemoryMenuData
+	webMenuDataMu sync.RWMutex
 
 	// System theme watcher (active when theme="system"; nil otherwise)
 	themeWatcher *ThemeWatcher
@@ -713,6 +718,70 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	return h
 }
 
+// SetWebMenuData configures an optional in-memory menu sink for web mode.
+func (h *Home) SetWebMenuData(menuData *web.MemoryMenuData) {
+	h.webMenuDataMu.Lock()
+	h.webMenuData = menuData
+	h.webMenuDataMu.Unlock()
+	if !h.initialLoading {
+		h.publishWebMenuSnapshot()
+	}
+}
+
+func (h *Home) getWebMenuData() *web.MemoryMenuData {
+	h.webMenuDataMu.RLock()
+	defer h.webMenuDataMu.RUnlock()
+	return h.webMenuData
+}
+
+func (h *Home) publishWebMenuSnapshot() {
+	menuData := h.getWebMenuData()
+	if menuData == nil || h.groupTree == nil {
+		return
+	}
+
+	h.instancesMu.RLock()
+	instancesCopy := make([]*session.Instance, len(h.instances))
+	copy(instancesCopy, h.instances)
+	h.instancesMu.RUnlock()
+
+	groupTreeCopy := h.groupTree.ShallowCopyForSave()
+	groupsData := make([]*session.GroupData, 0, len(groupTreeCopy.GroupList))
+	for _, g := range groupTreeCopy.GroupList {
+		if g == nil {
+			continue
+		}
+		groupsData = append(groupsData, &session.GroupData{
+			Name:        g.Name,
+			Path:        g.Path,
+			Expanded:    g.Expanded,
+			Order:       g.Order,
+			DefaultPath: g.DefaultPath,
+		})
+	}
+
+	menuData.SetSnapshot(web.BuildMenuSnapshot(h.profile, instancesCopy, groupsData, time.Now()))
+}
+
+func (h *Home) publishWebSessionStates(instances []*session.Instance) {
+	menuData := h.getWebMenuData()
+	if menuData == nil || len(instances) == 0 {
+		return
+	}
+
+	states := make(map[string]web.MenuSessionState, len(instances))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		states[inst.ID] = web.MenuSessionState{
+			Status: inst.GetStatusThreadSafe(),
+			Tool:   inst.GetToolThreadSafe(),
+		}
+	}
+	menuData.UpdateSessionStates(states, time.Now())
+}
+
 // preserveState captures current UI state before reload
 func (h *Home) preserveState() reloadState {
 	state := reloadState{
@@ -867,6 +936,9 @@ func (h *Home) rebuildFlatItems() {
 	}
 	// Adjust viewport if cursor is out of view
 	h.syncViewport()
+
+	// Publish an updated web snapshot when menu structure/session list changes.
+	h.publishWebMenuSnapshot()
 }
 
 // syncViewport ensures the cursor is visible within the viewport
@@ -1737,6 +1809,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Invalidate cache if status changed
 	if statusChanged.Load() {
 		h.cachedStatusCounts.valid.Store(false)
+		h.publishWebSessionStates(instances)
 	}
 
 	// SQLite sync: heartbeat, status writes, ack reads (enables multi-instance coordination)
@@ -2050,6 +2123,7 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 	// This reduces View() overhead by keeping cache valid when no changes occurred
 	if statusChanged {
 		h.cachedStatusCounts.valid.Store(false)
+		h.publishWebSessionStates(instancesCopy)
 	}
 }
 

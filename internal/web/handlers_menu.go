@@ -6,10 +6,6 @@ import (
 	"strings"
 )
 
-type menuDataLoader interface {
-	LoadMenuSnapshot() (*MenuSnapshot, error)
-}
-
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

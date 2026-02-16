@@ -27,6 +27,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
 const Version = "0.16.0"
@@ -401,10 +402,17 @@ func main() {
 		}()
 	}
 
+	// Start TUI with the specified profile
+	homeModel := ui.NewHomeWithProfileAndMode(profile)
+
 	// Start web server alongside TUI if "web" subcommand was used
 	if webEnabled {
 		effectiveProfile := session.GetEffectiveProfile(profile)
-		server, err := buildWebServer(effectiveProfile, webArgs)
+		fallbackMenuData := web.NewSessionDataService(effectiveProfile)
+		liveMenuData := web.NewMemoryMenuData(fallbackMenuData)
+		homeModel.SetWebMenuData(liveMenuData)
+
+		server, err := buildWebServer(effectiveProfile, webArgs, liveMenuData)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
 			os.Exit(1)
@@ -423,8 +431,6 @@ func main() {
 		}()
 	}
 
-	// Start TUI with the specified profile
-	homeModel := ui.NewHomeWithProfileAndMode(profile)
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),
