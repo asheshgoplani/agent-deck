@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -282,6 +283,72 @@ func TestMergeRawPatterns_DoesNotMutateInputs(t *testing.T) {
 	}
 	if len(extras.BusyPatterns) != 1 {
 		t.Error("extras mutated")
+	}
+}
+
+// TestClaudeBusyRegex_WelcomeBannerFalsePositive is a regression test for the bug
+// where the Claude BusyRegexp `[✳✽✶✻✢·]\s*.+…` false-positived on the welcome
+// banner line "Opus 4.6 is here · $50 free extra usage · Try fast mode or use i…".
+// The `·` (middle dot) matched the char class and `…` (ellipsis from terminal
+// truncation) matched the end, causing hasBusyIndicatorResolved to return true
+// for an idle session. This made `session send` timeout after 80s because
+// waitForAgentReady never saw "waiting" status.
+func TestClaudeBusyRegex_WelcomeBannerFalsePositive(t *testing.T) {
+	raw := DefaultRawPatterns("claude")
+	if raw == nil {
+		t.Fatal("expected non-nil patterns for claude")
+	}
+	resolved, err := CompilePatterns(raw)
+	if err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// This is the Claude Code v2.1.42 welcome banner line that gets truncated
+	// to 80 columns in a tmux pane. The `·` is a separator and `…` is truncation.
+	bannerLines := []string{
+		"Opus 4.6 is here · $50 free extra usage · Try fast mode or use i…",
+		"Opus 4.6 · Claude Max",
+		"~/.agent-deck/conductor/sre",
+		`❯ Try "create a util logging.py that..."`,
+		"⏵⏵ bypass permissions on (shift+tab to cycle)",
+	}
+	bannerContent := ""
+	for _, line := range bannerLines {
+		bannerContent += line + "\n"
+	}
+
+	// No BusyRegexp should match the welcome banner
+	for _, re := range resolved.BusyRegexps {
+		if re.MatchString(bannerContent) {
+			t.Errorf("BusyRegexp %q should NOT match welcome banner, but it does", re.String())
+		}
+	}
+
+	// No BusyString should match the welcome banner
+	for _, s := range resolved.BusyStrings {
+		if strings.Contains(bannerContent, s) {
+			t.Errorf("BusyString %q should NOT match welcome banner", s)
+		}
+	}
+
+	// Sanity: real busy lines SHOULD still match
+	busyLines := []string{
+		"✳ Clauding… (10s · ↓ 200 tokens)",
+		"✽ Brewing… (5s · ↑ 100 tokens)",
+		"✶ Thinking… (2s)",
+		"✢ Computing… (30s · ↓ 500 tokens)",
+	}
+	for _, line := range busyLines {
+		matched := false
+		for _, re := range resolved.BusyRegexps {
+			if re.MatchString(line) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("BusyRegexp should match real busy line %q, but none matched", line)
+		}
 	}
 }
 

@@ -607,7 +607,7 @@ func TestClaudeCode2125_ActiveDetection(t *testing.T) {
 		{
 			name:     "active - · spinner with ellipsis",
 			content:  "· Sublimating… (39s · ↓ 1.8k tokens)",
-			wantBusy: true, // BusyRegexp catches · with ellipsis as active work
+			wantBusy: true, // BusyRegexp catches · at line start with ellipsis as active work
 		},
 		{
 			name:     "active - ✶ spinner with ellipsis",
@@ -653,7 +653,7 @@ func TestClaudeCode2125_ActiveDetection(t *testing.T) {
 		{
 			name:     "active - multi-word task with ·",
 			content:  "· Installing package dependencies… (45s · ↑ 312 tokens)",
-			wantBusy: true, // BusyRegexp catches · with ellipsis as active work
+			wantBusy: true, // BusyRegexp catches · at line start with ellipsis as active work
 		},
 		{
 			name: "active - multi-word with surrounding content",
@@ -746,7 +746,7 @@ func TestClaudeCode2125_SpinnerActiveRegex(t *testing.T) {
 		{"✢ channelling…", true},
 		{"✶ Fixing Scanner Buffer Overflow…", true},  // multi-word task name
 		{"✻ Adding mcp-proxy subcommand…", true},     // multi-word with excluded spinner
-		{"· Installing package dependencies…", true}, // multi-word with excluded spinner
+		{"· Installing package dependencies…", true}, // multi-word with · at line start
 		{"✳ Running tests and building…", true},      // multi-word
 		{"✻ worked for 54s", false},                  // done state, no ellipsis
 		{"✻ churned for 47s", false},                 // done state, no ellipsis
@@ -1256,7 +1256,7 @@ func TestBusyPatternRegex_CatchesMidDotAndAsterisk(t *testing.T) {
 		want    bool
 	}{
 		{
-			name: "middot active (not in findSpinnerInContent set)",
+			name: "middot active at line start (not in findSpinnerInContent set, caught by BusyRegexp)",
 			content: `some output
 · Kneading… (9m 22s · ↓ 14.1k tokens · thought for 36s)
 ──────────────────

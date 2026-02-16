@@ -2579,7 +2579,8 @@ var (
 	// Claude Code 2.1.25+ active spinner: symbol + unicode ellipsis (U+2026)
 	// Matches: "✳ Gusting…", "✻ Adding mcp-proxy subcommand…" (single or multi-word)
 	// Does NOT match done state: "✻ Worked for 54s" (no ellipsis)
-	claudeSpinnerActivePattern = regexp.MustCompile(`[·✳✽✶✻✢]\s*.+…`)
+	// Anchored to line start to prevent mid-line · in welcome banner from false-positiving
+	claudeSpinnerActivePattern = regexp.MustCompile(`(?m)^[·✳✽✶✻✢]\s*.+…`)
 
 	// Matches whimsical thinking words with timing info (e.g., "⠋ Flibbertigibbeting... (25s · 340 tokens)")
 	// Requires spinner prefix to avoid matching normal English words like "processing" or "computing"
