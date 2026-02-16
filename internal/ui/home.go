@@ -6006,14 +6006,19 @@ func ensureExactHeight(content string, n int) string {
 // ensureExactWidth ensures each line in content has exactly the specified visual width.
 // This is essential for proper horizontal panel alignment in lipgloss.JoinHorizontal.
 //
-// Behavior:
-//   - Strips ANSI codes to measure true visual width
-//   - Pads short lines with spaces to reach target width
-//   - Truncates long lines with "..." suffix
-//   - Preserves ANSI styling where possible
+// CRITICAL: Uses lipgloss.Width() for measurement to stay consistent with
+// lipgloss.JoinHorizontal's internal width calculation. Using a different
+// measurement (e.g. runewidth.StringWidth after custom ANSI stripping) can
+// disagree by even 1 character, causing JoinHorizontal to pad all lines to
+// the wider measurement. This makes the joined output exceed terminal width,
+// lines wrap, and Bubble Tea's renderer loses cursor tracking — producing
+// duplicated/stacked content (the "scrolling artifact" bug).
 //
-// This fixes the "bleeding" issue where right panel content appears in left panel
-// due to inconsistent line widths causing JoinHorizontal misalignment.
+// Behavior:
+//   - Measures width using lipgloss.Width (same as JoinHorizontal)
+//   - Pads short lines with spaces to reach target width
+//   - Truncates long lines using lipgloss.MaxWidth (preserves ANSI where possible)
+//   - Guarantees every line is exactly `width` visual characters
 func ensureExactWidth(content string, width int) string {
 	if width <= 0 {
 		return content
@@ -6023,23 +6028,19 @@ func ensureExactWidth(content string, width int) string {
 	result := make([]string, len(lines))
 
 	for i, line := range lines {
-		// Measure visual width (excluding ANSI codes)
-		cleanLine := tmux.StripANSI(line)
-		displayWidth := runewidth.StringWidth(cleanLine)
+		// Measure visual width using lipgloss (same measurement as JoinHorizontal)
+		displayWidth := lipgloss.Width(line)
 
 		if displayWidth == width {
-			// Already correct width
 			result[i] = line
 		} else if displayWidth < width {
 			// Pad with spaces to reach target width
-			padding := width - displayWidth
-			result[i] = line + strings.Repeat(" ", padding)
+			result[i] = line + strings.Repeat(" ", width-displayWidth)
 		} else {
-			// Line too wide - truncate the clean version
-			// Note: This loses ANSI styling but prevents layout corruption
-			truncated := runewidth.Truncate(cleanLine, width-3, "...")
-			// Pad if truncation made it shorter
-			truncWidth := runewidth.StringWidth(truncated)
+			// Line too wide — truncate using lipgloss for consistent ANSI handling
+			truncated := lipgloss.NewStyle().MaxWidth(width).Render(line)
+			// Verify and pad if truncation left it short
+			truncWidth := lipgloss.Width(truncated)
 			if truncWidth < width {
 				truncated += strings.Repeat(" ", width-truncWidth)
 			}
@@ -6096,6 +6097,14 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 
 	// Join panels horizontally - all components have exact heights AND widths now
 	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
+
+	// Safety net: enforce per-line MaxWidth on the joined output.
+	// Even with ensureExactWidth, JoinHorizontal can produce lines wider than
+	// h.width due to separator ANSI codes or rounding. Any line that wraps in the
+	// terminal adds a visual line, which shifts Bubble Tea's cursor tracking and
+	// causes duplicated/stacked content on scroll.
+	mainContent = lipgloss.NewStyle().MaxWidth(h.width).Render(mainContent)
+
 	b.WriteString(mainContent)
 
 	return b.String()
@@ -8008,6 +8017,12 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			// Strip ANSI codes for accurate width measurement
 			cleanLine := tmux.StripANSI(line)
 
+			// Strip control characters (\r, \b, etc.) that can corrupt terminal
+			// rendering. tmux capture-pane output may contain carriage returns
+			// which, inside JoinHorizontal, move the cursor to column 0 and
+			// overwrite the left panel content on that line.
+			cleanLine = stripControlChars(cleanLine)
+
 			// Handle empty lines - preserve some for readability
 			trimmed := strings.TrimSpace(cleanLine)
 			if trimmed == "" {
@@ -8056,6 +8071,19 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	return strings.Join(truncatedLines, "\n")
+}
+
+// stripControlChars removes C0 control characters (except \n and \t) from a string.
+// tmux capture-pane output may include \r, \b, and other control characters that
+// corrupt terminal rendering when embedded inside styled TUI output (e.g. \r moves
+// the cursor to column 0, overwriting the left panel in a JoinHorizontal layout).
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' {
+			return -1 // Drop the character
+		}
+		return r
+	}, s)
 }
 
 // truncatePath shortens a path to fit within maxLen display width
