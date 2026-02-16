@@ -5,6 +5,19 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-02-17
+
+### Added
+
+- Add Codex notify hook integration for instant session status updates
+- Add notification show_all mode to display all notifications at once
+- Add automatic bridge.py updates when running `agent-deck update` (#178)
+
+### Fixed
+
+- Fix: handle error returns in test cleanup functions
+- Fix: bridge.py not updating with agent-deck binary updates (#178)
+
 ## [0.17.0] - 2026-02-16
 
 ### Added
