@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -68,7 +67,7 @@ func newTmuxPTYBridge(tmuxSession, sessionID string, writer *wsConnWriter) (*tmu
 		return nil, fmt.Errorf("%w: %s", ErrTmuxSessionNotFound, tmuxSession)
 	}
 
-	cmd := tmuxCommand("attach-session", "-t", tmuxSession)
+	cmd := tmuxAttachCommand(tmuxSession)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -145,17 +144,8 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return err
 	}
 
-	// Keep tmux window dimensions in sync for better wrapping behavior.
-	_ = tmuxCommand(
-		"resize-window",
-		"-t",
-		b.tmuxSession,
-		"-x",
-		strconv.Itoa(cols),
-		"-y",
-		strconv.Itoa(rows),
-	).Run()
-
+	// Do not call `tmux resize-window` here: that changes shared tmux window
+	// dimensions and causes web resizing to leak into other attached clients.
 	return nil
 }
 
@@ -213,6 +203,11 @@ func tmuxCommand(args ...string) *exec.Cmd {
 		cmd.Env = environWithoutTMUX(os.Environ())
 	}
 	return cmd
+}
+
+func tmuxAttachCommand(sessionName string) *exec.Cmd {
+	// Keep this web client from influencing other attached client sizes (for example, the local TUI).
+	return tmuxCommand("attach-session", "-f", "ignore-size", "-t", sessionName)
 }
 
 func tmuxSocketFromEnv() (string, bool) {
