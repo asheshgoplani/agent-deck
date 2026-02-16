@@ -672,8 +672,8 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		// Get repo root
-		repoRoot, err := git.GetRepoRoot(path)
+		// Get repo root (resolve through worktrees to prevent nesting)
+		repoRoot, err := git.GetWorktreeBaseRoot(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to get repo root: %v\n", err)
 			os.Exit(1)

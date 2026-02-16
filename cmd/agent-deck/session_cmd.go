@@ -457,7 +457,7 @@ func handleSessionFork(profile string, args []string) {
 			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		repoRoot, err := git.GetRepoRoot(inst.ProjectPath)
+		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)

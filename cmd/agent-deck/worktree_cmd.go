@@ -97,8 +97,8 @@ func handleWorktreeList(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Get repo root
-	repoRoot, err := git.GetRepoRoot(cwd)
+	// Get repo root (resolve through worktrees to prevent nesting)
+	repoRoot, err := git.GetWorktreeBaseRoot(cwd)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -332,7 +332,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 	var repoRoot string
 
 	if git.IsGitRepo(cwd) {
-		repoRoot, err = git.GetRepoRoot(cwd)
+		repoRoot, err = git.GetWorktreeBaseRoot(cwd)
 		if err == nil {
 			worktrees, err := git.ListWorktrees(repoRoot)
 			if err == nil {
