@@ -280,6 +280,34 @@ agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
 agent-deck session fork my-proj   # Fork a Claude session
 agent-deck mcp attach my-proj exa # Attach MCP to session
+agent-deck web                    # Start web UI on http://127.0.0.1:8420
+```
+
+### Web Mode
+
+Open the left menu + browser terminal UI:
+
+```bash
+agent-deck web
+```
+
+Read-only browser mode (output only):
+
+```bash
+agent-deck web --read-only
+```
+
+Change the listen address (default: `127.0.0.1:8420`):
+
+```bash
+agent-deck web --listen 127.0.0.1:9000
+```
+
+Protect API + WebSocket access with a bearer token:
+
+```bash
+agent-deck web --token my-secret
+# then open: http://127.0.0.1:8420/?token=my-secret
 ```
 
 ### Key Shortcuts

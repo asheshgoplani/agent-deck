@@ -74,7 +74,7 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 		subcommands := []string{
 			"add", "list", "ls", "remove", "rm", "status",
 			"session", "mcp", "group", "try", "worktree", "wt",
-			"profile", "update", "mcp-proxy", "uninstall",
+			"profile", "update", "mcp-proxy", "web", "uninstall",
 			"version", "--version", "-v",
 			"help", "--help", "-h",
 		}

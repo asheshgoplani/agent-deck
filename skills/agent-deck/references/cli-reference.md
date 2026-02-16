@@ -6,6 +6,7 @@ Complete reference for all agent-deck CLI commands.
 
 - [Global Options](#global-options)
 - [Basic Commands](#basic-commands)
+- [Web Command](#web-command)
 - [Session Commands](#session-commands)
 - [MCP Commands](#mcp-commands)
 - [Group Commands](#group-commands)
@@ -64,6 +65,34 @@ agent-deck status [-v|-q|--json]
 - Default: `2 waiting - 5 running - 3 idle`
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
+
+## Web Command
+
+### web - Start browser UI
+
+```bash
+agent-deck web [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--listen` | Listen address (default: `127.0.0.1:8420`) |
+| `--read-only` | Disable terminal input, stream output only |
+| `--token` | Require bearer token for API and WS access |
+| `--open` | Reserved placeholder (currently no-op) |
+
+```bash
+agent-deck web
+agent-deck web --read-only
+agent-deck web --token my-secret
+agent-deck -p work web --listen 127.0.0.1:9000
+```
+
+When token auth is enabled, open the web UI with:
+
+```bash
+http://127.0.0.1:8420/?token=my-secret
+```
 
 ## Session Commands
 

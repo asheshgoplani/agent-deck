@@ -236,6 +236,9 @@ func main() {
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
 			return
+		case "web":
+			handleWeb(profile, args[1:])
+			return
 		case "uninstall":
 			handleUninstall(args[1:])
 			return
@@ -1723,6 +1726,7 @@ func printHelp() {
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
+	fmt.Println("  web              Start web UI server (menu + terminal view)")
 	fmt.Println("  conductor        Manage conductor meta-agent orchestration")
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
@@ -1776,6 +1780,10 @@ func printHelp() {
 	fmt.Println("  agent-deck mcp list --json            # List MCPs as JSON")
 	fmt.Println("  agent-deck mcp attach my-app exa      # Attach MCP to session")
 	fmt.Println("  agent-deck group move my-app work     # Move session to group")
+	fmt.Println("  agent-deck web                        # Start web mode on 127.0.0.1:8420")
+	fmt.Println("  agent-deck web --read-only            # Stream output only (block input)")
+	fmt.Println("  agent-deck web --token secret         # Require token (open /?token=secret)")
+	fmt.Println("  agent-deck web --help                 # Show web command flags")
 	fmt.Println()
 	fmt.Println("Environment Variables:")
 	fmt.Println("  AGENTDECK_PROFILE    Default profile to use")

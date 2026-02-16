@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Deck Web</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">Agent Deck Web</div>
+        <div class="meta" id="meta-state">connecting</div>
+      </header>
+
+      <main class="layout">
+        <aside class="menu-panel">
+          <h2>Sessions</h2>
+          <div class="menu-tools">
+            <input
+              id="menu-filter"
+              class="menu-filter"
+              type="search"
+              placeholder="Filter sessions..."
+              autocomplete="off"
+            />
+          </div>
+          <div class="menu-list" id="menu-root">
+            <div class="menu-empty">Loading session menu...</div>
+          </div>
+        </aside>
+
+        <section class="terminal-panel">
+          <h2>Terminal</h2>
+          <div class="terminal-placeholder" id="terminal-root">
+            Select a session from the menu to start terminal streaming.
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
