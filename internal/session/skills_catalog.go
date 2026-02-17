@@ -31,6 +31,7 @@ var (
 	ErrSkillAmbiguous       = errors.New("skill reference is ambiguous")
 	ErrSkillAlreadyAttached = errors.New("skill already attached")
 	ErrSkillNotAttached     = errors.New("skill not attached")
+	ErrSkillTargetConflict  = errors.New("skill target path conflict")
 )
 
 // SkillSourceDef defines a named source path for discovering skills.
@@ -124,6 +125,21 @@ func expandSkillPath(path string) string {
 		}
 	}
 	return filepath.Clean(path)
+}
+
+func resolveSkillSourcePath(path string) (string, error) {
+	resolvedPath := expandSkillPath(path)
+	if resolvedPath == "" {
+		return "", fmt.Errorf("source path is required")
+	}
+	if !filepath.IsAbs(resolvedPath) {
+		absPath, err := filepath.Abs(resolvedPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve source path: %w", err)
+		}
+		resolvedPath = absPath
+	}
+	return filepath.Clean(resolvedPath), nil
 }
 
 func isContainedIn(basePath, targetPath string) bool {
@@ -261,9 +277,9 @@ func AddSkillSource(name, path, description string) error {
 		return fmt.Errorf("%w: %s", ErrSkillSourceExists, name)
 	}
 
-	resolvedPath := expandSkillPath(path)
-	if resolvedPath == "" {
-		return fmt.Errorf("source path is required")
+	resolvedPath, err := resolveSkillSourcePath(path)
+	if err != nil {
+		return err
 	}
 
 	info, err := os.Stat(resolvedPath)
@@ -953,24 +969,69 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 		return err
 	}
 
+	currentByID := make(map[string]ProjectSkillAttachment, len(manifest.Skills))
+	managedTargetOwner := make(map[string]string, len(manifest.Skills))
+	for _, attachment := range manifest.Skills {
+		normalized := normalizeAttachment(attachment)
+		id := normalizeSkillToken(skillIDForAttachment(normalized))
+		currentByID[id] = normalized
+		managedTargetOwner[normalizeSkillToken(normalized.TargetPath)] = id
+	}
+
 	desiredByID := make(map[string]SkillCandidate, len(desired))
+	desiredTargetByID := make(map[string]string, len(desired))
+	desiredTargetOwner := make(map[string]string, len(desired))
 	orderedIDs := make([]string, 0, len(desired))
 	for _, candidate := range desired {
-		id := buildSkillID(candidate.Source, candidate.Name)
+		id := normalizeSkillToken(buildSkillID(candidate.Source, candidate.Name))
 		if _, exists := desiredByID[id]; exists {
 			continue
 		}
+
 		desiredByID[id] = candidate
 		orderedIDs = append(orderedIDs, id)
+
+		targetRel := filepath.ToSlash(filepath.Join(filepath.FromSlash(projectClaudeSkillsDir), candidate.EntryName))
+		if current, exists := currentByID[id]; exists && strings.TrimSpace(current.TargetPath) != "" {
+			targetRel = current.TargetPath
+		}
+		targetRel = filepath.ToSlash(strings.TrimSpace(targetRel))
+		desiredTargetByID[id] = targetRel
+
+		targetKey := normalizeSkillToken(targetRel)
+		if existingOwner, exists := desiredTargetOwner[targetKey]; exists && existingOwner != id {
+			return fmt.Errorf("%w: %s and %s both map to %s", ErrSkillTargetConflict, existingOwner, id, targetRel)
+		}
+		desiredTargetOwner[targetKey] = id
 	}
 
-	currentByID := make(map[string]ProjectSkillAttachment, len(manifest.Skills))
-	for _, attachment := range manifest.Skills {
-		currentByID[skillIDForAttachment(attachment)] = normalizeAttachment(attachment)
+	// Preflight unmanaged target conflicts before removing/recreating anything.
+	for _, id := range orderedIDs {
+		if _, exists := currentByID[id]; exists {
+			continue
+		}
+
+		targetRel := desiredTargetByID[id]
+		targetKey := normalizeSkillToken(targetRel)
+		if ownerID, managed := managedTargetOwner[targetKey]; managed {
+			if _, ok := desiredByID[ownerID]; !ok {
+				// The current owner will be removed in this apply.
+				continue
+			}
+			// ownerStillDesired with another ID is blocked above by desiredTargetOwner collision.
+			continue
+		}
+
+		targetPath := resolveTargetPath(projectPath, targetRel)
+		if _, err := os.Lstat(targetPath); err == nil {
+			return fmt.Errorf("target already exists and is not managed: %s", targetPath)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
 	}
 
 	for _, attachment := range manifest.Skills {
-		id := skillIDForAttachment(attachment)
+		id := normalizeSkillToken(skillIDForAttachment(attachment))
 		if _, keep := desiredByID[id]; keep {
 			continue
 		}
