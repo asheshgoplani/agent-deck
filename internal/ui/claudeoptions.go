@@ -15,9 +15,10 @@ type ClaudeOptionsPanel struct {
 	// Resume session ID input (only for mode=resume)
 	resumeIDInput textinput.Model
 	// Checkbox states
-	skipPermissions bool
-	useChrome       bool
-	useTeammateMode bool
+	skipPermissions      bool
+	allowSkipPermissions bool
+	useChrome            bool
+	useTeammateMode      bool
 	// Focus tracking
 	focusIndex int
 	// Whether this panel is for fork dialog (fewer options)
@@ -65,6 +66,7 @@ func NewClaudeOptionsPanelForFork() *ClaudeOptionsPanel {
 func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 	if config != nil {
 		p.skipPermissions = config.Claude.GetDangerousMode()
+		p.allowSkipPermissions = config.Claude.AllowDangerousMode
 	}
 }
 
@@ -93,9 +95,10 @@ func (p *ClaudeOptionsPanel) AtTop() bool {
 // GetOptions returns current options as ClaudeOptions
 func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 	opts := &session.ClaudeOptions{
-		SkipPermissions: p.skipPermissions,
-		UseChrome:       p.useChrome,
-		UseTeammateMode: p.useTeammateMode,
+		SkipPermissions:      p.skipPermissions,
+		AllowSkipPermissions: p.allowSkipPermissions,
+		UseChrome:            p.useChrome,
+		UseTeammateMode:      p.useTeammateMode,
 	}
 
 	if !p.isForkMode {
