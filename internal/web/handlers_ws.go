@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,11 +34,21 @@ type wsServerMessage struct {
 var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin: func(_ *http.Request) bool {
-		// Token/auth checks are handled in authorizeWSRequest.
-		// For local-first development we allow all origins.
+	CheckOrigin:     allowWSOrigin,
+}
+
+func allowWSOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
 		return true
-	},
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Host == "" {
+		return false
+	}
+
+	return strings.EqualFold(originURL.Host, r.Host)
 }
 
 func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {

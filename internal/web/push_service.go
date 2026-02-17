@@ -339,6 +339,7 @@ type pushService struct {
 	privateKey string
 	subject    string
 	profile    string
+	token      string
 
 	menuData MenuDataLoader
 	store    pushSubscriptionStore
@@ -382,6 +383,7 @@ func newPushService(cfg Config, menuData MenuDataLoader) (pushServiceAPI, error)
 		privateKey:   privateKey,
 		subject:      subject,
 		profile:      session.GetEffectiveProfile(cfg.Profile),
+		token:        strings.TrimSpace(cfg.Token),
 		menuData:     menuData,
 		store:        store,
 		sender:       &vapidPushSender{subject: subject, publicKey: publicKey, privateKey: privateKey},
@@ -577,7 +579,7 @@ func (p *pushService) notifySubscribers(ctx context.Context, tr pushTransition) 
 		Session:    tr.Session.Title,
 		Status:     tr.Status,
 		Profile:    tr.Profile,
-		Path:       "/s/" + url.PathEscape(tr.Session.ID),
+		Path:       p.routePath("/s/" + url.PathEscape(tr.Session.ID)),
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 		RequireInt: tr.Status == "error",
 	}
@@ -642,7 +644,7 @@ func (p *pushService) sendTestPush(ctx context.Context) {
 		Tag:       fmt.Sprintf("agentdeck-test-%d", now.UnixNano()),
 		Renotify:  true,
 		Status:    "test",
-		Path:      "/",
+		Path:      p.routePath("/"),
 		Timestamp: now.Format(time.RFC3339),
 	}
 
@@ -739,4 +741,20 @@ func focusStateForLog(sub pushSubscription) string {
 		return "focused"
 	}
 	return "unfocused"
+}
+
+func (p *pushService) routePath(basePath string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" {
+		basePath = "/"
+	}
+	if p == nil || strings.TrimSpace(p.token) == "" {
+		return basePath
+	}
+
+	u := &url.URL{Path: basePath}
+	query := u.Query()
+	query.Set("token", p.token)
+	u.RawQuery = query.Encode()
+	return u.String()
 }

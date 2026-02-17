@@ -177,6 +177,75 @@ func TestPushServiceNotifiesOnWaitingTransition(t *testing.T) {
 	}
 }
 
+func TestPushServiceAddsTokenToNotificationPathWhenConfigured(t *testing.T) {
+	menu := &rotatingPushMenuData{
+		snapshots: []*MenuSnapshot{
+			{
+				Profile: "work",
+				Items: []MenuItem{
+					{
+						Type: MenuItemTypeSession,
+						Session: &MenuSession{
+							ID:     "sess-token",
+							Title:  "Token Bot",
+							Status: "running",
+						},
+					},
+				},
+			},
+			{
+				Profile: "work",
+				Items: []MenuItem{
+					{
+						Type: MenuItemTypeSession,
+						Session: &MenuSession{
+							ID:     "sess-token",
+							Title:  "Token Bot",
+							Status: "waiting",
+						},
+					},
+				},
+			},
+		},
+	}
+	store := newFakePushStore()
+	focused := false
+	_ = store.Upsert(context.Background(), pushSubscription{
+		Endpoint:      "https://push.example/sub-token",
+		ClientFocused: &focused,
+		Keys: pushSubscriptionKeys{
+			P256DH: "k1",
+			Auth:   "k2",
+		},
+	})
+	sender := &fakePushSender{}
+
+	push := &pushService{
+		enabled:      true,
+		token:        "secret-token",
+		menuData:     menu,
+		store:        store,
+		sender:       sender,
+		lastStatus:   make(map[string]string),
+		pollInterval: defaultPushPollInterval,
+	}
+
+	push.syncOnce(context.Background())
+	push.syncOnce(context.Background())
+
+	if len(sender.payloads) != 1 {
+		t.Fatalf("expected exactly 1 push payload, got %d", len(sender.payloads))
+	}
+
+	var msg pushMessage
+	if err := json.Unmarshal(sender.payloads[0], &msg); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if msg.Path != "/s/sess-token?token=secret-token" {
+		t.Fatalf("expected tokenized path, got %q", msg.Path)
+	}
+}
+
 func TestPushServiceRemovesExpiredSubscription(t *testing.T) {
 	menu := &rotatingPushMenuData{
 		snapshots: []*MenuSnapshot{

@@ -126,6 +126,43 @@ func TestWSEndpointAuthorizedWithBearerToken(t *testing.T) {
 	expectWSStatusEvent(t, conn, "connected")
 }
 
+func TestWSEndpointRejectsCrossOrigin(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Profile:    "work",
+	})
+	srv.menuData = &fakeMenuDataLoader{
+		snapshot: &MenuSnapshot{
+			Profile: "work",
+			Items: []MenuItem{
+				{
+					Type: MenuItemTypeSession,
+					Session: &MenuSession{
+						ID: "sess-origin",
+					},
+				},
+			},
+		},
+	}
+
+	testServer := httptest.NewServer(srv.Handler())
+	defer testServer.Close()
+
+	headers := http.Header{}
+	headers.Set("Origin", "https://evil.example")
+
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL(testServer.URL, "/ws/session/sess-origin"), headers)
+	if err == nil {
+		t.Fatal("expected websocket dial error for cross-origin request")
+	}
+	if resp == nil {
+		t.Fatal("expected HTTP response for rejected cross-origin websocket upgrade")
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
+	}
+}
+
 func TestWSEndpointSessionNotFound(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",
