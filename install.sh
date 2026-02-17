@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Agent Deck Installer
 # https://github.com/asheshgoplani/agent-deck
@@ -12,6 +12,7 @@
 #   --version <ver>     Specific version (default: latest)
 #   --skip-tmux-config  Skip tmux configuration prompt
 #   --non-interactive   Skip all prompts (for CI/automated installs)
+#   --pkg-manager <mgr> macOS package manager: 'brew' or 'port' (default: auto-detect)
 #
 # The installer will:
 #   1. Download and install the agent-deck binary
@@ -42,6 +43,10 @@ REPO="asheshgoplani/agent-deck"
 SKIP_TMUX_CONFIG=false
 SKIP_OPTIONAL_DEPS=false
 
+# macOS package manager configuration
+MACOS_SUPPORTED_PKG_MGRS=("brew" "port")  # Order matters for preference
+MACOS_PKG_MANAGER=""  # Will be auto-detected or set by user
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -66,6 +71,22 @@ while [[ $# -gt 0 ]]; do
             SKIP_OPTIONAL_DEPS=true
             shift
             ;;
+        --pkg-manager)
+            MACOS_PKG_MANAGER="$2"
+            # Validate against supported package managers
+            local valid=false
+            for mgr in "${MACOS_SUPPORTED_PKG_MGRS[@]}"; do
+                if [[ "$MACOS_PKG_MANAGER" == "$mgr" ]]; then
+                    valid=true
+                    break
+                fi
+            done
+            if [[ "$valid" != "true" ]]; then
+                echo -e "${RED}Error: --pkg-manager must be one of: ${MACOS_SUPPORTED_PKG_MGRS[*]}${NC}"
+                exit 1
+            fi
+            shift 2
+            ;;
         -h|--help)
             echo "Agent Deck Installer"
             echo ""
@@ -77,6 +98,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --version <ver>     Specific version (default: latest)"
             echo "  --skip-tmux-config  Skip tmux configuration prompt"
             echo "  --non-interactive   Skip all prompts (for CI/automated installs)"
+            echo "  --pkg-manager <mgr> macOS package manager: ${MACOS_SUPPORTED_PKG_MGRS[*]} (default: auto-detect)"
             echo "  -h, --help          Show this help message"
             exit 0
             ;;
@@ -128,6 +150,115 @@ else
     echo -e "Detected: ${GREEN}${OS}/${ARCH}${NC}"
 fi
 
+# macOS-specific package manager configuration
+if [[ "$OS" == "darwin" ]]; then
+    # Package manager configuration
+    declare -A MACOS_PKG_MGR_NAMES=(
+        ["brew"]="Homebrew"
+        ["port"]="MacPorts"
+    )
+
+    declare -A MACOS_PKG_MGR_COMMANDS=(
+        ["brew"]="brew"
+        ["port"]="port"
+    )
+
+    declare -A MACOS_PKG_MGR_INSTALL_CMDS=(
+        ["brew"]="brew install"
+        ["port"]="sudo port install"
+    )
+
+    declare -A MACOS_PKG_MGR_LINKS=(
+        ["brew"]="https://brew.sh"
+        ["port"]="https://www.macports.org/install.php"
+    )
+fi
+
+# Detect or select macOS package manager
+detect_macos_package_manager() {
+    # If user specified a package manager, verify it's available
+    if [[ -n "$MACOS_PKG_MANAGER" ]]; then
+        local cmd="${MACOS_PKG_MGR_COMMANDS[$MACOS_PKG_MANAGER]}"
+        local name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+        local link="${MACOS_PKG_MGR_LINKS[$MACOS_PKG_MANAGER]}"
+
+        if ! command -v "$cmd" &> /dev/null; then
+            echo -e "${RED}Error: $name not found but --pkg-manager=$MACOS_PKG_MANAGER was specified${NC}"
+            echo "Install $name: $link"
+            exit 1
+        fi
+        echo -e "Package manager: ${GREEN}${name}${NC} (user specified)"
+        return
+    fi
+
+    # Auto-detect: check for available package managers
+    local available_mgrs=()
+    for mgr in "${MACOS_SUPPORTED_PKG_MGRS[@]}"; do
+        if command -v "${MACOS_PKG_MGR_COMMANDS[$mgr]}" &> /dev/null; then
+            available_mgrs+=("$mgr")
+        fi
+    done
+
+    # Handle based on how many are available
+    if [[ ${#available_mgrs[@]} -eq 0 ]]; then
+        # None available
+        MACOS_PKG_MANAGER=""
+        echo -e "${YELLOW}No package manager detected (Homebrew or MacPorts)${NC}"
+        echo "You'll need to install dependencies manually or install a package manager first:"
+        for mgr in "${MACOS_SUPPORTED_PKG_MGRS[@]}"; do
+            echo "  • ${MACOS_PKG_MGR_NAMES[$mgr]}: ${MACOS_PKG_MGR_LINKS[$mgr]}"
+        done
+    elif [[ ${#available_mgrs[@]} -eq 1 ]]; then
+        # Only one available
+        MACOS_PKG_MANAGER="${available_mgrs[0]}"
+        echo -e "Package manager: ${GREEN}${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}${NC} (auto-detected)"
+    else
+        # Multiple available - ask user to choose
+        echo -e "${YELLOW}Multiple package managers are installed.${NC}"
+        if [[ "$SKIP_OPTIONAL_DEPS" == "true" ]]; then
+            # Non-interactive mode: use first in preference order
+            MACOS_PKG_MANAGER="${available_mgrs[0]}"
+            echo -e "Package manager: ${GREEN}${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}${NC} (auto-selected in non-interactive mode)"
+        else
+            echo "Which package manager would you like to use?"
+            local i=1
+            for mgr in "${available_mgrs[@]}"; do
+                echo "  $i) ${MACOS_PKG_MGR_NAMES[$mgr]} ($mgr)"
+                ((i++))
+            done
+            read -p "Enter choice [1-${#available_mgrs[@]}]: " -n 1 -r
+            echo
+
+            local choice=$((REPLY - 1))
+            if [[ $choice -ge 0 && $choice -lt ${#available_mgrs[@]} ]]; then
+                MACOS_PKG_MANAGER="${available_mgrs[$choice]}"
+                echo -e "Package manager: ${GREEN}${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}${NC}"
+            else
+                echo -e "${YELLOW}Invalid choice, defaulting to ${MACOS_PKG_MGR_NAMES[${available_mgrs[0]}]}${NC}"
+                MACOS_PKG_MANAGER="${available_mgrs[0]}"
+            fi
+        fi
+    fi
+}
+
+# Detect package manager on macOS
+if [[ "$OS" == "darwin" ]]; then
+    detect_macos_package_manager
+fi
+
+# Helper function to install packages on macOS
+# Usage: install_macos_package <package_name>
+# Note: Assumes package has same name across all package managers
+# Prerequisite: MACOS_PKG_MANAGER must be set (validated by detect_macos_package_manager)
+install_macos_package() {
+    local PACKAGE_NAME="$1"
+    local install_cmd="${MACOS_PKG_MGR_INSTALL_CMDS[$MACOS_PKG_MANAGER]}"
+    local mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+
+    echo -e "Installing $PACKAGE_NAME via $mgr_name..."
+    $install_cmd "$PACKAGE_NAME"
+}
+
 # Check for tmux and offer to install
 if ! command -v tmux &> /dev/null; then
     echo -e "${YELLOW}tmux is not installed.${NC}"
@@ -136,16 +267,11 @@ if ! command -v tmux &> /dev/null; then
 
     # Try to auto-install tmux
     if [[ "$OS" == "darwin" ]]; then
-        if command -v brew &> /dev/null; then
-            read -p "Install tmux via Homebrew? [Y/n] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                echo -e "Installing tmux..."
-                brew install tmux
-            fi
-        else
-            echo "Install tmux with: brew install tmux"
-            echo "(Install Homebrew first: https://brew.sh)"
+        mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+        read -p "Install tmux via $mgr_name? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            install_macos_package "tmux"
         fi
     else
         # Linux - try apt, dnf, or pacman
@@ -199,15 +325,12 @@ if ! command -v jq &> /dev/null && [[ "$SKIP_OPTIONAL_DEPS" != "true" ]]; then
 
     # Try to auto-install jq
     if [[ "$OS" == "darwin" ]]; then
-        if command -v brew &> /dev/null; then
-            read -p "Install jq via Homebrew? [Y/n] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                echo -e "Installing jq..."
-                brew install jq
-            fi
-        else
-            echo "Install jq with: brew install jq"
+        mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+
+        read -p "Install jq via $mgr_name? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            install_macos_package "jq"
         fi
     else
         if command -v apt-get &> /dev/null; then
