@@ -15,23 +15,26 @@ type NotificationEntry struct {
 	Title        string
 	AssignedKey  string
 	WaitingSince time.Time
+	Status       Status // For icon rendering when show_all enabled
 }
 
 // NotificationManager tracks waiting sessions for the notification bar
 type NotificationManager struct {
 	entries  []*NotificationEntry // Ordered: newest first
 	maxShown int
+	showAll  bool // Show all sessions vs only waiting
 	mu       sync.RWMutex
 }
 
 // NewNotificationManager creates a new notification manager
-func NewNotificationManager(maxShown int) *NotificationManager {
+func NewNotificationManager(maxShown int, showAll bool) *NotificationManager {
 	if maxShown <= 0 {
 		maxShown = 6
 	}
 	return &NotificationManager{
 		entries:  make([]*NotificationEntry, 0),
 		maxShown: maxShown,
+		showAll:  showAll,
 	}
 }
 
@@ -157,11 +160,35 @@ func (nm *NotificationManager) FormatBar() string {
 
 	var parts []string
 	for _, e := range nm.entries {
-		// No truncation - show full title, tmux will handle overflow
-		parts = append(parts, fmt.Sprintf("[%s] %s", e.AssignedKey, e.Title))
+		var formatted string
+		if nm.showAll {
+			// Show status icon when in show_all mode
+			icon := statusIcon(e.Status)
+			formatted = fmt.Sprintf("[%s] %s %s", e.AssignedKey, icon, e.Title)
+		} else {
+			// Original format without icons (backward compatible)
+			formatted = fmt.Sprintf("[%s] %s", e.AssignedKey, e.Title)
+		}
+		parts = append(parts, formatted)
 	}
 
 	return "⚡ " + strings.Join(parts, " ")
+}
+
+// statusIcon returns the Unicode icon for a given session status
+func statusIcon(status Status) string {
+	switch status {
+	case StatusRunning:
+		return "●"
+	case StatusWaiting:
+		return "◐"
+	case StatusIdle:
+		return "○"
+	case StatusError:
+		return "✕"
+	default:
+		return "○"
+	}
 }
 
 // SyncFromInstances updates notifications based on current instance states
@@ -170,28 +197,42 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
-	// Build set of currently waiting sessions (excluding current)
-	waitingSet := make(map[string]*Instance)
-	for _, inst := range instances {
-		if inst.GetStatusThreadSafe() == StatusWaiting && inst.ID != currentSessionID {
-			waitingSet[inst.ID] = inst
+	// Build set of sessions to show (based on showAll mode)
+	var sessionSet map[string]*Instance
+	if nm.showAll {
+		// Show all sessions (excluding current)
+		sessionSet = make(map[string]*Instance)
+		for _, inst := range instances {
+			if inst.ID != currentSessionID {
+				sessionSet[inst.ID] = inst
+			}
+		}
+	} else {
+		// Show only waiting sessions (backward compatible)
+		sessionSet = make(map[string]*Instance)
+		for _, inst := range instances {
+			if inst.GetStatusThreadSafe() == StatusWaiting && inst.ID != currentSessionID {
+				sessionSet[inst.ID] = inst
+			}
 		}
 	}
 
-	// Remove entries that are no longer waiting
+	// Remove entries that are no longer in the session set
 	newEntries := make([]*NotificationEntry, 0)
 	for _, e := range nm.entries {
-		if _, stillWaiting := waitingSet[e.SessionID]; stillWaiting {
+		if inst, stillPresent := sessionSet[e.SessionID]; stillPresent {
+			// Update status for existing entries
+			e.Status = inst.GetStatusThreadSafe()
 			newEntries = append(newEntries, e)
-			delete(waitingSet, e.SessionID) // Don't re-add
+			delete(sessionSet, e.SessionID) // Don't re-add
 		} else {
 			removed = append(removed, e.SessionID)
 		}
 	}
 	nm.entries = newEntries
 
-	// Add new waiting sessions to entries
-	for _, inst := range waitingSet {
+	// Add new sessions to entries
+	for _, inst := range sessionSet {
 		tmuxName := ""
 		if ts := inst.GetTmuxSession(); ts != nil {
 			tmuxName = ts.Name
@@ -201,6 +242,7 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 			TmuxName:     tmuxName,
 			Title:        inst.Title,
 			WaitingSince: inst.GetWaitingSince(),
+			Status:       inst.GetStatusThreadSafe(),
 		}
 		nm.entries = append(nm.entries, entry)
 		added = append(added, inst.ID)
@@ -212,7 +254,7 @@ func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentS
 		return nm.entries[i].WaitingSince.After(nm.entries[j].WaitingSince)
 	})
 
-	// Trim to maxShown (keeps the newest waiting sessions)
+	// Trim to maxShown (keeps the newest sessions)
 	if len(nm.entries) > nm.maxShown {
 		nm.entries = nm.entries[:nm.maxShown]
 	}

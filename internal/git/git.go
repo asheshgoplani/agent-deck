@@ -295,13 +295,29 @@ func GetMainWorktreePath(dir string) (string, error) {
 
 	commonDir := strings.TrimSpace(string(output))
 
+	// --git-common-dir may return a relative path; resolve it relative to dir
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Clean(filepath.Join(dir, commonDir))
+	}
+
 	// For worktrees, common-dir points to the main repo's .git directory
 	// We need to get the parent of that
 	if strings.HasSuffix(commonDir, ".git") {
-		return strings.TrimSuffix(commonDir, "/.git"), nil
+		return strings.TrimSuffix(commonDir, string(filepath.Separator)+".git"), nil
 	}
 
 	// If already in main repo, just get toplevel
+	return GetRepoRoot(dir)
+}
+
+// GetWorktreeBaseRoot returns the root of the main repository, resolving through
+// worktrees if necessary. When called from a normal repo, it behaves identically
+// to GetRepoRoot. When called from within a worktree, it follows --git-common-dir
+// back to the main repo root, preventing worktree nesting.
+func GetWorktreeBaseRoot(dir string) (string, error) {
+	if IsWorktree(dir) {
+		return GetMainWorktreePath(dir)
+	}
 	return GetRepoRoot(dir)
 }
 

@@ -2151,6 +2151,39 @@ func TestInstance_HookFastPath_Stale(t *testing.T) {
 	}
 }
 
+func TestInstance_HookFastPath_CodexRunningFreshness(t *testing.T) {
+	inst := NewInstanceWithTool("hook-codex-running", "/tmp/test", "codex")
+	inst.hookStatus = "running"
+	inst.hookLastUpdate = time.Now().Add(-10 * time.Second)
+
+	_, fresh := inst.GetHookStatus()
+	if !fresh {
+		t.Error("codex running hook should be fresh within running window")
+	}
+}
+
+func TestInstance_HookFastPath_CodexRunningStale(t *testing.T) {
+	inst := NewInstanceWithTool("hook-codex-running-stale", "/tmp/test", "codex")
+	inst.hookStatus = "running"
+	inst.hookLastUpdate = time.Now().Add(-30 * time.Second)
+
+	_, fresh := inst.GetHookStatus()
+	if fresh {
+		t.Error("codex running hook should be stale outside running window")
+	}
+}
+
+func TestInstance_HookFastPath_CodexWaitingFreshness(t *testing.T) {
+	inst := NewInstanceWithTool("hook-codex-waiting", "/tmp/test", "codex")
+	inst.hookStatus = "waiting"
+	inst.hookLastUpdate = time.Now().Add(-30 * time.Second)
+
+	_, fresh := inst.GetHookStatus()
+	if !fresh {
+		t.Error("codex waiting hook should be fresh for waiting window")
+	}
+}
+
 // TestInstance_UpdateHookStatus tests the UpdateHookStatus method.
 func TestInstance_UpdateHookStatus(t *testing.T) {
 	inst := NewInstanceWithTool("hook-update-test", "/tmp/test", "claude")

@@ -945,39 +945,6 @@ def create_slack_app(config: dict):
         conductors = discover_conductors()
         return conductors[0] if conductors else None
 
-    async def _fetch_thread_context(channel: str, thread_ts: str, current_ts: str) -> str:
-        """Fetch previous messages in a thread and format as context.
-
-        Returns a formatted string with thread history, or empty string if
-        not in a thread or fetch fails.
-        """
-        try:
-            result = await app.client.conversations_replies(
-                channel=channel, ts=thread_ts, limit=50,
-            )
-            messages = result.get("messages", [])
-            if len(messages) <= 1:
-                return ""  # Only the current message, no context needed
-
-            lines = []
-            for msg in messages:
-                # Skip the current message (will be sent separately)
-                if msg.get("ts") == current_ts:
-                    continue
-                user = msg.get("user", "bot")
-                txt = msg.get("text", "")
-                # Strip bot mentions for readability
-                txt = re.sub(r"<@[A-Z0-9]+>\s*", "", txt).strip()
-                if txt:
-                    lines.append(f"<@{user}>: {txt}")
-
-            if not lines:
-                return ""
-            return "[Thread context]\n" + "\n".join(lines) + "\n[New message]\n"
-        except Exception as e:
-            log.warning("Failed to fetch thread context: %s", e)
-            return ""
-
     async def _safe_say(say, **kwargs):
         """Wrapper around say() that catches network/API errors."""
         try:
@@ -985,7 +952,7 @@ def create_slack_app(config: dict):
         except Exception as e:
             log.error("Slack say() failed: %s", e)
 
-    async def _handle_slack_text(text: str, say, thread_ts: str = None, channel: str = None, current_ts: str = None):
+    async def _handle_slack_text(text: str, say, thread_ts: str = None):
         """Shared handler for Slack messages and mentions."""
         conductor_names = get_conductor_names()
         conductors = discover_conductors()
@@ -1021,12 +988,6 @@ def create_slack_app(config: dict):
                 thread_ts=thread_ts,
             )
             return
-
-        # Prepend thread context if replying in a thread
-        if channel and thread_ts and current_ts and thread_ts != current_ts:
-            context = await _fetch_thread_context(channel, thread_ts, current_ts)
-            if context:
-                cleaned_msg = context + cleaned_msg
 
         log.info("Slack message -> [%s]: %s", target["name"], cleaned_msg[:100])
         if not send_to_conductor(session_title, cleaned_msg, profile=profile):
@@ -1073,8 +1034,6 @@ def create_slack_app(config: dict):
         await _handle_slack_text(
             text, say,
             thread_ts=event.get("thread_ts") or event.get("ts"),
-            channel=event.get("channel"),
-            current_ts=event.get("ts"),
         )
 
     @app.event("app_mention")
@@ -1095,8 +1054,6 @@ def create_slack_app(config: dict):
         await _handle_slack_text(
             text, say,
             thread_ts=thread_ts,
-            channel=event.get("channel"),
-            current_ts=event.get("ts"),
         )
 
     @app.command("/ad-status")

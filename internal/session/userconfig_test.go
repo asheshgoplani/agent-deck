@@ -636,6 +636,66 @@ enabled = true
 	}
 }
 
+func TestGetNotificationsSettings_ShowAll(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	// Test with show_all = true
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	content := `
+[notifications]
+enabled = true
+max_shown = 6
+show_all = true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetNotificationsSettings()
+	if !settings.ShowAll {
+		t.Error("GetNotificationsSettings ShowAll: should be true from config")
+	}
+
+	// Test with show_all = false
+	content = `
+[notifications]
+enabled = true
+show_all = false
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings = GetNotificationsSettings()
+	if settings.ShowAll {
+		t.Error("GetNotificationsSettings ShowAll: should be false from config")
+	}
+
+	// Test default (show_all not specified)
+	content = `
+[notifications]
+enabled = true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings = GetNotificationsSettings()
+	if settings.ShowAll {
+		t.Error("GetNotificationsSettings ShowAll: should default to false (backward compatible)")
+	}
+}
+
 func TestGetTmuxSettings_InjectStatusLine_Default(t *testing.T) {
 	// Default (no config) should return true
 	tempDir := t.TempDir()

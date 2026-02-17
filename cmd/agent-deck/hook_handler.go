@@ -96,17 +96,24 @@ func handleHookHandler() {
 		return
 	}
 
-	// Ensure hooks directory exists
+	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+}
+
+// writeHookStatus writes a hook status file atomically for one instance.
+func writeHookStatus(instanceID, status, sessionID, event string) {
+	if instanceID == "" || status == "" {
+		return
+	}
+
 	hooksDir := getHooksDir()
 	if err := os.MkdirAll(hooksDir, 0755); err != nil {
 		return
 	}
 
-	// Build status file
 	statusFile := hookStatusFile{
 		Status:    status,
-		SessionID: payload.SessionID,
-		Event:     payload.HookEventName,
+		SessionID: sessionID,
+		Event:     event,
 		Timestamp: time.Now().Unix(),
 	}
 
@@ -115,7 +122,6 @@ func handleHookHandler() {
 		return
 	}
 
-	// Atomic write: temp file + rename
 	filePath := filepath.Join(hooksDir, instanceID+".json")
 	tmpPath := filePath + ".tmp"
 	if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {

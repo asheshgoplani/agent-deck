@@ -525,3 +525,58 @@ func extractBinaryFromTarGz(tarPath string) ([]byte, error) {
 
 	return nil, fmt.Errorf("agent-deck binary not found in archive")
 }
+
+// UpdateBridgePy downloads and updates the bridge.py file from GitHub
+func UpdateBridgePy() error {
+	// Get the conductor directory
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	conductorDir := filepath.Join(home, ".agent-deck", "conductor")
+	bridgePath := filepath.Join(conductorDir, "bridge.py")
+
+	// Check if conductor directory exists
+	if _, err := os.Stat(conductorDir); os.IsNotExist(err) {
+		// Conductor not installed, skip update
+		return nil
+	}
+
+	// Download bridge.py from GitHub
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/main/conductor/bridge.py", GitHubRepo)
+
+	fmt.Println("Updating bridge.py...")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download bridge.py: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download bridge.py: status %d", resp.StatusCode)
+	}
+
+	// Read the content
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read bridge.py content: %w", err)
+	}
+
+	// Backup existing bridge.py
+	if _, err := os.Stat(bridgePath); err == nil {
+		backupPath := bridgePath + ".backup"
+		if err := os.Rename(bridgePath, backupPath); err != nil {
+			return fmt.Errorf("failed to backup bridge.py: %w", err)
+		}
+	}
+
+	// Write new bridge.py
+	if err := os.WriteFile(bridgePath, content, 0755); err != nil {
+		return fmt.Errorf("failed to write bridge.py: %w", err)
+	}
+
+	fmt.Println("✓ bridge.py updated!")
+	return nil
+}

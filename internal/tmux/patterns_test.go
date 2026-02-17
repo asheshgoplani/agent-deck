@@ -58,6 +58,19 @@ func TestDefaultRawPatterns_Gemini(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_Codex(t *testing.T) {
+	raw := DefaultRawPatterns("codex")
+	if raw == nil {
+		t.Fatal("expected non-nil for codex")
+	}
+	if len(raw.BusyPatterns) == 0 {
+		t.Error("codex should have busy patterns")
+	}
+	if len(raw.PromptPatterns) == 0 {
+		t.Error("codex should have prompt patterns")
+	}
+}
+
 func TestDefaultRawPatterns_Unknown(t *testing.T) {
 	raw := DefaultRawPatterns("unknowntool")
 	if raw != nil {

@@ -261,6 +261,9 @@ type NotificationsConfig struct {
 
 	// MaxShown is the maximum number of sessions shown in the bar (default: 6)
 	MaxShown int `toml:"max_shown"`
+
+	// ShowAll displays all sessions (with status icons) instead of only waiting sessions (default: false)
+	ShowAll bool `toml:"show_all"`
 }
 
 // InstanceSettings configures multiple agent-deck instance behavior
@@ -1164,6 +1167,7 @@ func GetNotificationsSettings() NotificationsConfig {
 		return NotificationsConfig{
 			Enabled:  true,
 			MaxShown: 6,
+			ShowAll:  false,
 		}
 	}
 
@@ -1179,6 +1183,7 @@ func GetNotificationsSettings() NotificationsConfig {
 	if settings.MaxShown <= 0 {
 		settings.MaxShown = 6
 	}
+	// ShowAll defaults to false (backward compatible) - bool zero value handles this
 
 	return settings
 }

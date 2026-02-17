@@ -558,7 +558,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	notifSettings := session.GetNotificationsSettings()
 	if notifSettings.Enabled {
 		h.notificationsEnabled = true
-		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown)
+		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown, notifSettings.ShowAll)
 
 		// Initialize tmux status bar options for proper notification display
 		// Fixes truncation (default status-left-length is only 10 chars)
@@ -1737,7 +1737,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if inst.Tool == "claude" {
+			if inst.Tool == "claude" || inst.Tool == "codex" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
@@ -3465,7 +3465,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 
-			repoRoot, err := git.GetRepoRoot(path)
+			repoRoot, err := git.GetWorktreeBaseRoot(path)
 			if err != nil {
 				h.newDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
 				return h, nil
@@ -4605,7 +4605,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						h.forkDialog.SetError("Path is not a git repository")
 						return h, nil
 					}
-					repoRoot, err := git.GetRepoRoot(source.ProjectPath)
+					repoRoot, err := git.GetWorktreeBaseRoot(source.ProjectPath)
 					if err != nil {
 						h.forkDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
 						return h, nil

@@ -52,7 +52,7 @@ func TestIntegration_NotificationBarFlow(t *testing.T) {
 	}
 
 	// Create notification manager
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	// === PHASE 1: Initial sync - all waiting sessions should appear ===
 	t.Log("Phase 1: Initial sync")
@@ -129,7 +129,7 @@ func TestIntegration_NotificationBarFlow(t *testing.T) {
 		}
 	}
 
-	nm2 := NewNotificationManager(6)
+	nm2 := NewNotificationManager(6, false)
 	nm2.SyncFromInstances(manyInstances, "")
 
 	assert.Equal(t, 6, nm2.Count(), "Should limit to 6 sessions")
@@ -189,7 +189,7 @@ func TestIntegration_SignalFileAcknowledgment(t *testing.T) {
 //
 // This tests: switching to a session via Ctrl+b removes it from bar
 func TestIntegration_CtrlB1RemovesFromBar(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -269,7 +269,7 @@ func TestIntegration_CtrlB1RemovesFromBar(t *testing.T) {
 
 // TestIntegration_SwitchBackAndForth tests switching between sessions multiple times
 func TestIntegration_SwitchBackAndForth(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 

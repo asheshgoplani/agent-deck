@@ -10,7 +10,7 @@ import (
 )
 
 func TestNotificationManager_Add(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	inst := &Instance{
 		ID:     "abc123",
@@ -28,7 +28,7 @@ func TestNotificationManager_Add(t *testing.T) {
 }
 
 func TestNotificationManager_NewestFirst(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	// Add three sessions with delays
 	inst1 := &Instance{ID: "a", Title: "first", Status: StatusWaiting}
@@ -60,7 +60,7 @@ func TestNotificationManager_NewestFirst(t *testing.T) {
 }
 
 func TestNotificationManager_Remove(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	inst1 := &Instance{ID: "a", Title: "first", Status: StatusWaiting}
 	inst2 := &Instance{ID: "b", Title: "second", Status: StatusWaiting}
@@ -76,7 +76,7 @@ func TestNotificationManager_Remove(t *testing.T) {
 }
 
 func TestNotificationManager_MaxShown(t *testing.T) {
-	nm := NewNotificationManager(3) // Max 3
+	nm := NewNotificationManager(3, false) // Max 3
 
 	for i := 0; i < 5; i++ {
 		inst := &Instance{ID: string(rune('a' + i)), Title: string(rune('A' + i)), Status: StatusWaiting}
@@ -93,7 +93,7 @@ func TestNotificationManager_MaxShown(t *testing.T) {
 }
 
 func TestNotificationManager_FormatBar(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	// Empty bar
 	assert.Equal(t, "", nm.FormatBar())
@@ -112,7 +112,7 @@ func TestNotificationManager_FormatBar(t *testing.T) {
 }
 
 func TestNotificationManager_FullTitles(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	// Add 6 sessions with long names
 	for i := 0; i < 6; i++ {
@@ -132,7 +132,7 @@ func TestNotificationManager_FullTitles(t *testing.T) {
 }
 
 func TestNotificationManager_GetSessionByKey(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	inst1 := &Instance{ID: "a", Title: "first", Status: StatusWaiting}
 	inst2 := &Instance{ID: "b", Title: "second", Status: StatusWaiting}
@@ -155,7 +155,7 @@ func TestNotificationManager_GetSessionByKey(t *testing.T) {
 }
 
 func TestNotificationManager_Count(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	assert.Equal(t, 0, nm.Count())
 
@@ -170,7 +170,7 @@ func TestNotificationManager_Count(t *testing.T) {
 }
 
 func TestNotificationManager_Clear(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	_ = nm.Add(&Instance{ID: "a", Title: "first", Status: StatusWaiting})
 	_ = nm.Add(&Instance{ID: "b", Title: "second", Status: StatusWaiting})
@@ -182,7 +182,7 @@ func TestNotificationManager_Clear(t *testing.T) {
 }
 
 func TestNotificationManager_Has(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	_ = nm.Add(&Instance{ID: "a", Title: "first", Status: StatusWaiting})
 
@@ -191,7 +191,7 @@ func TestNotificationManager_Has(t *testing.T) {
 }
 
 func TestNotificationManager_DuplicateAdd(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	inst := &Instance{ID: "a", Title: "first", Status: StatusWaiting}
 	_ = nm.Add(inst)
@@ -202,7 +202,7 @@ func TestNotificationManager_DuplicateAdd(t *testing.T) {
 }
 
 func TestNotificationManager_SyncFromInstances(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	// Initial add
 	_ = nm.Add(&Instance{ID: "a", Title: "first", Status: StatusWaiting})
@@ -224,7 +224,7 @@ func TestNotificationManager_SyncFromInstances(t *testing.T) {
 }
 
 func TestNotificationManager_SyncFromInstances_RemovesNonWaiting(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	_ = nm.Add(&Instance{ID: "a", Title: "first", Status: StatusWaiting})
 	_ = nm.Add(&Instance{ID: "b", Title: "second", Status: StatusWaiting})
@@ -245,7 +245,7 @@ func TestNotificationManager_SyncFromInstances_RemovesNonWaiting(t *testing.T) {
 }
 
 func TestNotificationManager_SyncFromInstances_ExcludesCurrentSession(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	instances := []*Instance{
 		{ID: "current", Title: "current-session", Status: StatusWaiting},
@@ -263,7 +263,7 @@ func TestNotificationManager_SyncFromInstances_ExcludesCurrentSession(t *testing
 }
 
 func TestNotificationManager_DefaultMaxShown(t *testing.T) {
-	nm := NewNotificationManager(0) // Invalid value should default to 6
+	nm := NewNotificationManager(0, false) // Invalid value should default to 6
 
 	for i := 0; i < 10; i++ {
 		_ = nm.Add(&Instance{ID: string(rune('a' + i)), Title: string(rune('A' + i)), Status: StatusWaiting})
@@ -275,7 +275,7 @@ func TestNotificationManager_DefaultMaxShown(t *testing.T) {
 // TestNotificationManager_SyncFromInstances_NewestFirst verifies that SyncFromInstances
 // correctly sorts entries with newest waiting sessions first.
 func TestNotificationManager_SyncFromInstances_NewestFirst(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -304,7 +304,7 @@ func TestNotificationManager_SyncFromInstances_NewestFirst(t *testing.T) {
 // TestNotificationManager_SyncFromInstances_MixedNewAndExisting verifies sorting
 // works correctly when mixing new and existing entries
 func TestNotificationManager_SyncFromInstances_MixedNewAndExisting(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -345,7 +345,7 @@ func TestNotificationManager_SyncFromInstances_MixedNewAndExisting(t *testing.T)
 // (acknowledged), it gets removed from the notification bar on next sync.
 // ISSUE: Sessions not acknowledged when switching via Ctrl+b shortcuts
 func TestIssue1_AcknowledgmentRemovesFromBar(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -389,7 +389,7 @@ func TestIssue1_AcknowledgmentRemovesFromBar(t *testing.T) {
 // (not fewer due to bugs, not more due to config issues).
 // ISSUE: Only showing ~3 sessions instead of 6
 func TestIssue2_MaxSixSessionsShown(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -428,7 +428,7 @@ func TestIssue2_MaxSixSessionsShown(t *testing.T) {
 // session appears at position [1], not oldest.
 // ISSUE: Newest waiting sessions should appear first at position [1]
 func TestIssue3_NewestWaitingSessionFirst(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -463,7 +463,7 @@ func TestIssue3_NewestWaitingSessionFirst(t *testing.T) {
 // changes, it affects the notification bar for ALL sessions on the next sync.
 // ISSUE: Real-time updates across all sessions
 func TestIssue4_RealTimeUpdatesAcrossSessions(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -520,7 +520,7 @@ func TestIssue4_RealTimeUpdatesAcrossSessions(t *testing.T) {
 // TestNotificationManager_KeyReassignmentAfterRemoval verifies that keys are
 // correctly reassigned when sessions are removed from the middle.
 func TestNotificationManager_KeyReassignmentAfterRemoval(t *testing.T) {
-	nm := NewNotificationManager(6)
+	nm := NewNotificationManager(6, false)
 
 	now := time.Now()
 
@@ -553,4 +553,133 @@ func TestNotificationManager_KeyReassignmentAfterRemoval(t *testing.T) {
 	assert.Equal(t, "2", entries[1].AssignedKey)
 	assert.Equal(t, "a", entries[2].SessionID)
 	assert.Equal(t, "3", entries[2].AssignedKey)
+}
+
+// TestNotificationManager_ShowAll_DisplaysAllSessions verifies that show_all=true includes all sessions
+func TestNotificationManager_ShowAll_DisplaysAllSessions(t *testing.T) {
+	nm := NewNotificationManager(6, true) // show_all enabled
+
+	now := time.Now()
+	instances := []*Instance{
+		{ID: "running", Title: "running-session", Status: StatusRunning, CreatedAt: now},
+		{ID: "waiting", Title: "waiting-session", Status: StatusWaiting, CreatedAt: now.Add(-5 * time.Second)},
+		{ID: "idle", Title: "idle-session", Status: StatusIdle, CreatedAt: now.Add(-10 * time.Second)},
+		{ID: "error", Title: "error-session", Status: StatusError, CreatedAt: now.Add(-15 * time.Second)},
+	}
+
+	added, _ := nm.SyncFromInstances(instances, "")
+
+	// All sessions should be added (not just waiting)
+	assert.Len(t, added, 4)
+	assert.Equal(t, 4, nm.Count())
+
+	entries := nm.GetEntries()
+	// Verify all statuses are present
+	statuses := make(map[Status]bool)
+	for _, e := range entries {
+		statuses[e.Status] = true
+	}
+	assert.True(t, statuses[StatusRunning])
+	assert.True(t, statuses[StatusWaiting])
+	assert.True(t, statuses[StatusIdle])
+	assert.True(t, statuses[StatusError])
+}
+
+// TestNotificationManager_ShowAll_ExcludesCurrentSession verifies current session is excluded in show_all mode
+func TestNotificationManager_ShowAll_ExcludesCurrentSession(t *testing.T) {
+	nm := NewNotificationManager(6, true) // show_all enabled
+
+	now := time.Now()
+	instances := []*Instance{
+		{ID: "current", Title: "current-session", Status: StatusRunning, CreatedAt: now},
+		{ID: "other", Title: "other-session", Status: StatusRunning, CreatedAt: now.Add(-5 * time.Second)},
+	}
+
+	added, _ := nm.SyncFromInstances(instances, "current")
+
+	// Only the other session should be added
+	assert.Len(t, added, 1)
+	assert.Equal(t, "other", added[0])
+	assert.Equal(t, 1, nm.Count())
+	assert.False(t, nm.Has("current"))
+	assert.True(t, nm.Has("other"))
+}
+
+// TestNotificationManager_ShowAll_StatusIcons verifies status icons appear in bar format
+func TestNotificationManager_ShowAll_StatusIcons(t *testing.T) {
+	nm := NewNotificationManager(6, true) // show_all enabled
+
+	now := time.Now()
+	instances := []*Instance{
+		{ID: "running", Title: "running-session", Status: StatusRunning, CreatedAt: now},
+		{ID: "waiting", Title: "waiting-session", Status: StatusWaiting, CreatedAt: now.Add(-5 * time.Second)},
+		{ID: "idle", Title: "idle-session", Status: StatusIdle, CreatedAt: now.Add(-10 * time.Second)},
+		{ID: "error", Title: "error-session", Status: StatusError, CreatedAt: now.Add(-15 * time.Second)},
+	}
+
+	nm.SyncFromInstances(instances, "")
+	bar := nm.FormatBar()
+
+	// Verify bar contains status icons
+	assert.Contains(t, bar, "●") // Running
+	assert.Contains(t, bar, "◐") // Waiting
+	assert.Contains(t, bar, "○") // Idle
+	assert.Contains(t, bar, "✕") // Error
+
+	// Verify format: [key] icon title
+	assert.Contains(t, bar, "[1] ● running-session")
+	assert.Contains(t, bar, "[2] ◐ waiting-session")
+	assert.Contains(t, bar, "[3] ○ idle-session")
+	assert.Contains(t, bar, "[4] ✕ error-session")
+}
+
+// TestNotificationManager_DefaultMode_BackwardCompatible verifies show_all=false preserves original behavior
+func TestNotificationManager_DefaultMode_BackwardCompatible(t *testing.T) {
+	nm := NewNotificationManager(6, false) // Default mode
+
+	now := time.Now()
+	instances := []*Instance{
+		{ID: "running", Title: "running-session", Status: StatusRunning, CreatedAt: now},
+		{ID: "waiting", Title: "waiting-session", Status: StatusWaiting, CreatedAt: now.Add(-5 * time.Second)},
+		{ID: "idle", Title: "idle-session", Status: StatusIdle, CreatedAt: now.Add(-10 * time.Second)},
+	}
+
+	added, _ := nm.SyncFromInstances(instances, "")
+
+	// Only waiting session should be added (original behavior)
+	assert.Len(t, added, 1)
+	assert.Equal(t, "waiting", added[0])
+	assert.Equal(t, 1, nm.Count())
+
+	bar := nm.FormatBar()
+	// No icons in default mode
+	assert.NotContains(t, bar, "●")
+	assert.NotContains(t, bar, "◐")
+	assert.NotContains(t, bar, "○")
+	// Original format: [key] title (no icon)
+	assert.Contains(t, bar, "[1] waiting-session")
+	assert.NotContains(t, bar, "[1] ◐") // Icon should not be present
+}
+
+// TestNotificationManager_ShowAll_StatusUpdates verifies status field updates on sync
+func TestNotificationManager_ShowAll_StatusUpdates(t *testing.T) {
+	nm := NewNotificationManager(6, true) // show_all enabled
+
+	now := time.Now()
+	inst := &Instance{ID: "session1", Title: "test-session", Status: StatusRunning, CreatedAt: now}
+
+	nm.SyncFromInstances([]*Instance{inst}, "")
+	entries := nm.GetEntries()
+	assert.Equal(t, StatusRunning, entries[0].Status)
+
+	// Change status to waiting
+	inst.Status = StatusWaiting
+	nm.SyncFromInstances([]*Instance{inst}, "")
+	entries = nm.GetEntries()
+	assert.Equal(t, StatusWaiting, entries[0].Status)
+
+	// Verify bar format updated
+	bar := nm.FormatBar()
+	assert.Contains(t, bar, "◐")    // Waiting icon
+	assert.NotContains(t, bar, "●") // Running icon should be gone
 }

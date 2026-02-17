@@ -61,7 +61,13 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		return d.hasGeminiPrompt(content)
 
 	case "codex":
-		// Codex/OpenAI CLI patterns
+		// Codex/OpenAI CLI patterns.
+		// Busy indicators take priority over prompt markers.
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "ctrl+c to interrupt") {
+			return false
+		}
 		return strings.Contains(content, "codex>") ||
 			strings.Contains(content, "Continue?") ||
 			d.hasLineEndingWith(content, ">")

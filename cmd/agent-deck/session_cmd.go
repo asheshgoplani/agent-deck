@@ -457,7 +457,7 @@ func handleSessionFork(profile string, args []string) {
 			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		repoRoot, err := git.GetRepoRoot(inst.ProjectPath)
+		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -1269,6 +1269,8 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
+	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
+	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for completion (used with --wait)")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
@@ -1323,11 +1325,19 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	// Send message atomically (text + Enter in single tmux invocation)
-	// with retry to handle rare cases where Enter is still dropped
-	if err := sendWithRetry(tmuxSess, message); err != nil {
-		out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+	// Send message atomically (text + Enter in single tmux invocation).
+	// --no-wait: fire-and-forget, skip retry/verification overhead entirely.
+	// Otherwise: retry Enter if the agent doesn't start processing promptly.
+	if *noWait {
+		if err := tmuxSess.SendKeysAndEnter(message); err != nil {
+			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	} else {
+		if err := sendWithRetry(tmuxSess, message, false); err != nil {
+			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), map[string]interface{}{
@@ -1336,13 +1346,59 @@ func handleSessionSend(profile string, args []string) {
 		"session_title": inst.Title,
 		"message":       message,
 	})
+
+	// If --wait, block until the agent finishes processing, then print output
+	if *wait {
+		finalStatus, err := waitForCompletion(tmuxSess, *timeout)
+		if err != nil {
+			out.Error(fmt.Sprintf("timeout waiting for completion: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
+		// Refresh session ID: the instance was loaded before sending the message,
+		// so the ClaudeSessionID may be stale (e.g., PostStartSync timed out,
+		// TUI updated it during the wait, or /clear created a new session).
+		// First try tmux env (fast), then fall back to reloading from DB.
+		if inst.Tool == "claude" {
+			if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
+				inst.ClaudeSessionID = freshID
+				inst.ClaudeDetectedAt = time.Now()
+			}
+		}
+
+		// Fetch and print last response (like session output -q)
+		response, err := inst.GetLastResponse()
+		if err != nil {
+			// Fallback: reload session from DB in case tmux env was also stale
+			// (e.g., /clear created a new session that TUI or hooks detected)
+			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
+				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
+					response, err = freshInst.GetLastResponse()
+				}
+			}
+		}
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to get response: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		fmt.Println(response.Content)
+
+		// Exit 1 for error/inactive status
+		if finalStatus == "inactive" || finalStatus == "error" {
+			os.Exit(1)
+		}
+	}
 }
 
 // sendWithRetry sends a message atomically and retries Enter if the agent
 // doesn't start processing within a reasonable time.
-func sendWithRetry(tmuxSess *tmux.Session, message string) error {
+func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) error {
 	if err := tmuxSess.SendKeysAndEnter(message); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
+	}
+
+	if skipVerify {
+		return nil
 	}
 
 	// Verify: check if agent transitions to "active" (processing).
@@ -1403,6 +1459,48 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 	}
 
 	return fmt.Errorf("agent not ready after 80 seconds")
+}
+
+// statusChecker abstracts tmux status polling so waitForCompletion is testable.
+type statusChecker interface {
+	GetStatus() (string, error)
+}
+
+// waitForCompletion polls until the agent finishes processing (status leaves "active").
+// Returns the final status string ("waiting", "idle", "inactive") or an error on timeout.
+func waitForCompletion(checker statusChecker, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	const pollInterval = 2 * time.Second
+
+	// Initial grace period: wait for the agent to start processing.
+	// sendWithRetry already checks for "active", but give a small buffer.
+	time.Sleep(1 * time.Second)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("agent still running after %s", timeout)
+		default:
+		}
+
+		status, err := checker.GetStatus()
+		if err != nil {
+			// Transient tmux error, keep polling
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// "active" means still processing, keep waiting
+		if status == "active" {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		// Any non-active status means the agent is done
+		return status, nil
+	}
 }
 
 // handleSessionOutput gets the last response from a session

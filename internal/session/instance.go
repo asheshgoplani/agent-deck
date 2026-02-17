@@ -38,6 +38,12 @@ const (
 
 const wrapperPlaceholder = "{command}"
 
+const (
+	hookFastPathWindow             = 2 * time.Minute
+	codexHookRunningFastPathWindow = 20 * time.Second
+	codexHookWaitingFastPathWindow = 2 * time.Minute
+)
+
 // Instance represents a single agent/shell session
 type Instance struct {
 	ID                string `json:"id"`
@@ -613,6 +619,9 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
+		i.ID, i.Title, i.Tool)
+	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
 
@@ -628,7 +637,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		return envPrefix + "codex" + yoloFlag
 	}
 
-	// For custom commands (e.g., resume commands), return as-is
+	// For custom commands (e.g., resume commands), preserve env propagation.
 	return envPrefix + baseCommand
 }
 
@@ -826,7 +835,7 @@ func (i *Instance) detectCodexSessionAsync() {
 			time.Sleep(delay)
 		}
 
-		sessionID := i.queryCodexSession()
+		sessionID := i.queryCodexSession(i.collectOtherCodexSessionIDs(), true)
 		if sessionID != "" {
 			i.CodexSessionID = sessionID
 			i.CodexDetectedAt = time.Now()
@@ -848,51 +857,60 @@ func (i *Instance) detectCodexSessionAsync() {
 	sessionLog.Warn("codex_detection_failed", slog.Int("attempts", len(delays)))
 }
 
-// queryCodexSession scans the Codex sessions directory for the most recent session
-// Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
-// The UUID is embedded in the filename: session_<UUID>.jsonl
-func (i *Instance) queryCodexSession() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+func getCodexHomeDir() string {
+	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
+		return codexHome
 	}
 
-	sessionsDir := filepath.Join(home, ".codex", "sessions")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".codex")
+	}
+	return filepath.Join(home, ".codex")
+}
+
+// queryCodexSession scans Codex sessions and returns the best candidate.
+// Selection strategy:
+//  1. Prefer sessions whose JSONL metadata matches this instance's project path.
+//  2. Optionally allow unscoped fallback (no cwd metadata) for initial bootstrap.
+func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped bool) string {
+	sessionsDir := filepath.Join(getCodexHomeDir(), "sessions")
 	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
 		return ""
 	}
 
-	// UUID regex pattern
 	uuidPattern := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 
-	var bestMatch string
-	var bestMatchTime time.Time
+	var bestScopedID string
+	var bestScopedTime time.Time
+	var bestUnscopedID string
+	var bestUnscopedTime time.Time
 
-	// Walk through sessions directory (YYYY/MM/DD structure)
-	err = filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
+	normalizedProjectPath := normalizePath(i.ProjectPath)
+
+	err := filepath.WalkDir(sessionsDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
 
-		// Only process .jsonl files
 		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
 
-		// Extract UUID from filename
-		matches := uuidPattern.FindString(d.Name())
-		if matches == "" {
+		sessionID := uuidPattern.FindString(d.Name())
+		if sessionID == "" {
+			return nil
+		}
+		if excludeIDs != nil && excludeIDs[sessionID] {
 			return nil
 		}
 
-		// Get file info for modification time
 		info, err := d.Info()
 		if err != nil {
 			return nil
 		}
 
-		// Only consider sessions created after we started this instance
-		// This prevents picking up stale sessions from other projects
+		// Only consider sessions created after we started this instance.
 		if i.CodexStartedAt > 0 {
 			startTime := time.UnixMilli(i.CodexStartedAt)
 			if info.ModTime().Before(startTime) {
@@ -900,32 +918,172 @@ func (i *Instance) queryCodexSession() string {
 			}
 		}
 
-		// Pick the most recently modified session
-		if bestMatch == "" || info.ModTime().After(bestMatchTime) {
-			bestMatch = matches
-			bestMatchTime = info.ModTime()
+		matchesProject, hasProjectMetadata := codexSessionMatchesProject(path, normalizedProjectPath)
+		if matchesProject {
+			if bestScopedID == "" || info.ModTime().After(bestScopedTime) {
+				bestScopedID = sessionID
+				bestScopedTime = info.ModTime()
+			}
+			return nil
+		}
+
+		// Use unscoped records only when bootstrapping and metadata is unavailable.
+		if allowUnscoped && !hasProjectMetadata {
+			if bestUnscopedID == "" || info.ModTime().After(bestUnscopedTime) {
+				bestUnscopedID = sessionID
+				bestUnscopedTime = info.ModTime()
+			}
 		}
 
 		return nil
 	})
-
 	if err != nil {
 		sessionLog.Debug("codex_scan_error", slog.String("error", err.Error()))
 	}
 
-	return bestMatch
+	if bestScopedID != "" {
+		return bestScopedID
+	}
+	if allowUnscoped {
+		return bestUnscopedID
+	}
+	return ""
 }
 
-// UpdateCodexSession updates the Codex session ID from tmux environment
-// Fallback: filesystem scan for most recent session
+// codexSessionMatchesProject checks whether a Codex session file belongs to the
+// current project by inspecting JSONL metadata fields (cwd/workdir/path).
+// Returns:
+//   - match=true if project path matches
+//   - known=true if any project metadata field was found
+func codexSessionMatchesProject(sessionFilePath, normalizedProjectPath string) (match bool, known bool) {
+	if normalizedProjectPath == "" {
+		return false, false
+	}
+
+	file, err := os.Open(sessionFilePath)
+	if err != nil {
+		return false, false
+	}
+	defer file.Close()
+
+	const maxLines = 256
+
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	lineCount := 0
+	foundMetadata := false
+
+	for scanner.Scan() {
+		lineCount++
+		cwd := extractCodexCWDFromJSONLine(scanner.Bytes())
+		if cwd != "" {
+			foundMetadata = true
+			if normalizePath(cwd) == normalizedProjectPath {
+				return true, true
+			}
+		}
+		if lineCount >= maxLines {
+			break
+		}
+	}
+
+	return false, foundMetadata
+}
+
+// extractCodexCWDFromJSONLine extracts cwd-like project fields from one JSONL record.
+func extractCodexCWDFromJSONLine(line []byte) string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return ""
+	}
+
+	keys := []string{"cwd", "workdir", "working_dir", "directory", "path"}
+	for _, key := range keys {
+		if val := decodeJSONStringField(raw, key); val != "" {
+			return val
+		}
+	}
+
+	if payloadRaw, ok := raw["payload"]; ok && len(payloadRaw) > 0 {
+		var payloadObj map[string]json.RawMessage
+		if err := json.Unmarshal(payloadRaw, &payloadObj); err == nil {
+			for _, key := range keys {
+				if val := decodeJSONStringField(payloadObj, key); val != "" {
+					return val
+				}
+			}
+		}
+	}
+	if contextRaw, ok := raw["context"]; ok && len(contextRaw) > 0 {
+		var contextObj map[string]json.RawMessage
+		if err := json.Unmarshal(contextRaw, &contextObj); err == nil {
+			for _, key := range keys {
+				if val := decodeJSONStringField(contextObj, key); val != "" {
+					return val
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+func decodeJSONStringField(raw map[string]json.RawMessage, key string) string {
+	value, ok := raw[key]
+	if !ok || len(value) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(value, &s); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+// collectOtherCodexSessionIDs enumerates other managed tmux sessions and returns
+// the CODEX_SESSION_ID values they currently own.
+func (i *Instance) collectOtherCodexSessionIDs() map[string]bool {
+	exclude := make(map[string]bool)
+
+	tmuxSessions, err := tmux.ListAgentDeckSessions()
+	if err != nil {
+		return exclude
+	}
+
+	myTmuxName := ""
+	if i.tmuxSession != nil {
+		myTmuxName = i.tmuxSession.Name
+	}
+
+	for _, sessName := range tmuxSessions {
+		if sessName == myTmuxName {
+			continue
+		}
+		other := &tmux.Session{Name: sessName}
+		if id, err := other.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
+			exclude[id] = true
+		}
+	}
+
+	return exclude
+}
+
+// UpdateCodexSession updates the Codex session ID.
+// Primary source: tmux environment.
+// Fallback: project-aware filesystem scan.
 func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
 	if i.Tool != "codex" {
 		return
 	}
 
+	envSessionID := ""
+
 	// 1. Try to read from tmux environment first (authoritative if set)
 	if i.tmuxSession != nil {
 		if sessionID, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && sessionID != "" {
+			envSessionID = sessionID
 			if i.CodexSessionID != sessionID {
 				i.CodexSessionID = sessionID
 			}
@@ -933,9 +1091,10 @@ func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
 		}
 	}
 
-	// 2. ALWAYS scan filesystem for most recent session
-	// Krudony fix: user may have started a NEW session - don't use stale cached ID
-	if sessionID := i.queryCodexSession(); sessionID != "" {
+	// 2. Detect same-project session rotation (e.g. /new) from disk.
+	// Only allow unscoped fallback when we don't have a known session ID yet.
+	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
+	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
 		if sessionID != i.CodexSessionID {
 			sessionLog.Debug("codex_session_update", slog.String("old_id", i.CodexSessionID), slog.String("new_id", sessionID))
 		}
@@ -1194,13 +1353,19 @@ func (i *Instance) StartWithMessage(message string) error {
 	}
 
 	// Start session normally (no embedded message logic)
-	// Priority: built-in tools (claude, gemini) → custom tools from config.toml → raw command
+	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
 	var command string
 	switch i.Tool {
 	case "claude":
 		command = i.buildClaudeCommand(i.Command)
 	case "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case "opencode":
+		command = i.buildOpenCodeCommand(i.Command)
+		i.OpenCodeStartedAt = time.Now().UnixMilli()
+	case "codex":
+		command = i.buildCodexCommand(i.Command)
+		i.CodexStartedAt = time.Now().UnixMilli()
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -1243,6 +1408,14 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// New sessions start as STARTING
 	i.Status = StatusStarting
+
+	// Start async session ID detection for tools that persist IDs out-of-band.
+	if i.Tool == "opencode" {
+		go i.detectOpenCodeSessionAsync()
+	}
+	if i.Tool == "codex" {
+		go i.detectCodexSessionAsync()
+	}
 
 	// Send message synchronously (CLI will wait)
 	if message != "" {
@@ -1322,6 +1495,22 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 // instead of every 500ms tick, dramatically reducing subprocess spawns
 const errorRecheckInterval = 30 * time.Second
 
+func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
+	if tool != "codex" {
+		return hookFastPathWindow
+	}
+
+	// Codex hook events are turn-based and can be sparse depending on command mode.
+	// Keep running freshness short, but preserve completion/waiting signals longer so
+	// the user can reliably see attention-needed state.
+	switch hookStatus {
+	case "waiting":
+		return codexHookWaitingFastPathWindow
+	default:
+		return codexHookRunningFastPathWindow
+	}
+}
+
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
 func (i *Instance) UpdateStatus() error {
@@ -1382,11 +1571,11 @@ func (i *Instance) UpdateStatus() error {
 		i.lastKnownActivity = currentTS
 	}
 
-	// HOOK FAST PATH: Pure hook-based status for Claude sessions.
-	// No polling, no tmux checks. Hooks are deterministic and fire instantly.
-	// 2-minute timeout is only a safety net for Claude crashes (no events fire at all).
-	// Escape/interrupt doesn't fire Stop, but self-corrects on next UserPromptSubmit.
-	if i.Tool == "claude" && i.hookStatus != "" && time.Since(i.hookLastUpdate) < 2*time.Minute {
+	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
+	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
+	if (i.Tool == "claude" || i.Tool == "codex") &&
+		i.hookStatus != "" &&
+		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
 		case "running":
 			i.Status = StatusRunning
@@ -1397,20 +1586,40 @@ func (i *Instance) UpdateStatus() error {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		case "waiting":
-			// Check acknowledgment: orange (waiting) vs gray (idle)
-			// Acknowledge() is called when user attaches to a session.
-			// ResetAcknowledged() is called by u key or when new activity occurs.
-			if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
-				i.Status = StatusIdle
-			} else {
+			if i.Tool == "codex" {
+				// Codex completion should surface as attention-needed.
+				// Keep this as waiting and let tmux settle to idle if the user
+				// has acknowledged and no new activity appears.
+				if i.tmuxSession != nil {
+					i.tmuxSession.ResetAcknowledged()
+				}
 				i.Status = StatusWaiting
+			} else {
+				// Check acknowledgment: orange (waiting) vs gray (idle)
+				// Acknowledge() is called when user attaches to a session.
+				// ResetAcknowledged() is called by u key or when new activity occurs.
+				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
+					i.Status = StatusIdle
+				} else {
+					i.Status = StatusWaiting
+				}
 			}
 		case "dead":
 			i.Status = StatusError
 		}
-		if i.hookSessionID != "" && i.hookSessionID != i.ClaudeSessionID {
-			i.ClaudeSessionID = i.hookSessionID
-			i.ClaudeDetectedAt = time.Now()
+		if i.hookSessionID != "" {
+			switch i.Tool {
+			case "claude":
+				if i.hookSessionID != i.ClaudeSessionID {
+					i.ClaudeSessionID = i.hookSessionID
+					i.ClaudeDetectedAt = time.Now()
+				}
+			case "codex":
+				if i.hookSessionID != i.CodexSessionID {
+					i.CodexSessionID = i.hookSessionID
+					i.CodexDetectedAt = time.Now()
+				}
+			}
 		}
 		return nil
 	}
@@ -1458,7 +1667,11 @@ func (i *Instance) UpdateStatus() error {
 
 		// Update Codex session tracking (non-blocking, best-effort)
 		if i.Tool == "codex" {
-			i.UpdateCodexSession(nil)
+			var exclude map[string]bool
+			if i.CodexSessionID == "" {
+				exclude = i.collectOtherCodexSessionIDs()
+			}
+			i.UpdateCodexSession(exclude)
 		}
 	}
 
@@ -1608,10 +1821,18 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.hookStatus = status.Status
 	i.hookLastUpdate = status.UpdatedAt
 
-	// Sync session ID from hook if provided and different
-	if status.SessionID != "" && status.SessionID != i.ClaudeSessionID {
+	// Sync session ID from hook if provided.
+	if status.SessionID == "" {
+		return
+	}
+
+	switch i.Tool {
+	case "claude":
+		if status.SessionID == i.ClaudeSessionID {
+			return
+		}
 		// Quality gate: only accept if the hook session has conversation data,
-		// OR if the current session ID is empty (first detection)
+		// OR if the current session ID is empty (first detection).
 		if i.ClaudeSessionID == "" || sessionHasConversationData(status.SessionID, i.ProjectPath) {
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
@@ -1622,16 +1843,31 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			i.ClaudeDetectedAt = time.Now()
 			i.hookSessionID = status.SessionID
 
-			// Sync back to tmux environment
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", status.SessionID)
 			}
+		}
+	case "codex":
+		if status.SessionID == i.CodexSessionID {
+			return
+		}
+		sessionLog.Debug("codex_session_update_from_hook",
+			slog.String("old_id", i.CodexSessionID),
+			slog.String("new_id", status.SessionID),
+			slog.String("event", status.Event),
+		)
+		i.CodexSessionID = status.SessionID
+		i.CodexDetectedAt = time.Now()
+		i.hookSessionID = status.SessionID
+
+		if i.tmuxSession != nil && i.tmuxSession.Exists() {
+			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", status.SessionID)
 		}
 	}
 }
 
 // GetHookStatus returns the current hook-based status and its freshness.
-// Returns empty string if no hook data or data is stale (>5s old).
+// Freshness window is tool-specific.
 func (i *Instance) GetHookStatus() (string, bool) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -1639,7 +1875,7 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	if i.hookStatus == "" {
 		return "", false
 	}
-	fresh := time.Since(i.hookLastUpdate) < 2*time.Minute
+	fresh := time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus)
 	return i.hookStatus, fresh
 }
 
@@ -2636,15 +2872,9 @@ func (i *Instance) Restart() error {
 			}
 		}
 
-		codexYolo := i.resolveCodexYoloFlag()
-		var resumeCmd string
-		if i.CodexSessionID != "" {
-			// Resume with known session ID
-			resumeCmd = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex%s resume %s",
-				i.CodexSessionID, codexYolo, i.CodexSessionID)
-		} else {
+		resumeCmd := i.buildCodexCommand("codex")
+		if i.CodexSessionID == "" {
 			// No session ID yet, start fresh (will detect ID async)
-			resumeCmd = "codex" + codexYolo
 			// Re-record start time for async detection
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
@@ -2728,9 +2958,7 @@ func (i *Instance) Restart() error {
 		command = fmt.Sprintf("tmux set-environment OPENCODE_SESSION_ID %s && opencode -s %s",
 			i.OpenCodeSessionID, i.OpenCodeSessionID)
 	} else if i.Tool == "codex" && i.CodexSessionID != "" {
-		// Set CODEX_SESSION_ID in tmux env so detection works after restart
-		command = fmt.Sprintf("tmux set-environment CODEX_SESSION_ID %s; codex%s resume %s",
-			i.CodexSessionID, i.resolveCodexYoloFlag(), i.CodexSessionID)
+		command = i.buildCodexCommand("codex")
 	} else {
 		// Route to appropriate command builder based on tool
 		switch i.Tool {
