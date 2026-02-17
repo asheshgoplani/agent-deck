@@ -7,11 +7,15 @@ import (
 	"testing"
 )
 
-func TestExpandHomePath(t *testing.T) {
+func TestExpandPath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("Cannot get home directory")
 	}
+
+	// Set a known env var for testing
+	t.Setenv("AGENTDECK_TEST_DIR", "/tmp/testdir")
+	t.Setenv("AGENTDECK_RELATIVE_TEST_DIR", "tmp/relative/testdir")
 
 	tests := []struct {
 		name     string
@@ -23,19 +27,26 @@ func TestExpandHomePath(t *testing.T) {
 		{"tilde prefix", "~/.secrets", filepath.Join(home, ".secrets")},
 		{"just tilde", "~", home},
 		{"tilde in middle", "/path/~/.env", "/path/~/.env"},
+		{"$HOME expansion", "$HOME/.claude.env", filepath.Join(home, ".claude.env")},
+		{"${HOME} expansion", "${HOME}/.claude.env", filepath.Join(home, ".claude.env")},
+		{"custom env var", "$AGENTDECK_TEST_DIR/.env", "/tmp/testdir/.env"},
+		{"env var in middle", "/opt/$AGENTDECK_RELATIVE_TEST_DIR/file", "/opt/tmp/relative/testdir/file"},
+		{"tilde with env var after", "~/$AGENTDECK_TEST_DIR/.env", filepath.Join(home, "/tmp/testdir/.env")},
+		{"tilde with ${VAR} after", "~/${AGENTDECK_TEST_DIR}/.env", filepath.Join(home, "/tmp/testdir/.env")},
+		{"undefined env var", "$UNDEFINED_VAR/.env", "/.env"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := expandHomePath(tt.input)
+			result := ExpandPath(tt.input)
 			if result != tt.expected {
-				t.Errorf("expandHomePath(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("ExpandPath(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}
 }
 
-func TestResolveEnvFilePath(t *testing.T) {
+func TestResolvePath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("Cannot get home directory")
@@ -53,13 +64,15 @@ func TestResolveEnvFilePath(t *testing.T) {
 		{"home path", "~/.secrets", workDir, filepath.Join(home, ".secrets")},
 		{"relative path", ".env", workDir, "/projects/myapp/.env"},
 		{"relative subdir", "config/.env", workDir, "/projects/myapp/config/.env"},
+		{"$HOME env var", "$HOME/.claude.env", workDir, filepath.Join(home, ".claude.env")},
+		{"${HOME} env var", "${HOME}/.secrets", workDir, filepath.Join(home, ".secrets")},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := resolveEnvFilePath(tt.path, tt.workDir)
+			result := resolvePath(tt.path, tt.workDir)
 			if result != tt.expected {
-				t.Errorf("resolveEnvFilePath(%q, %q) = %q, want %q", tt.path, tt.workDir, result, tt.expected)
+				t.Errorf("resolvePath(%q, %q) = %q, want %q", tt.path, tt.workDir, result, tt.expected)
 			}
 		})
 	}

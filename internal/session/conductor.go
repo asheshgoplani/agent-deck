@@ -486,14 +486,8 @@ func SetupConductorProfile(profile string) error {
 // target: the symlink path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
 // source: the user's custom file path (e.g., ~/my/custom.md)
 func createSymlinkWithExpansion(target, source string) error {
-	// Expand ~ in source path
-	if strings.HasPrefix(source, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("failed to expand ~: %w", err)
-		}
-		source = filepath.Join(homeDir, source[2:])
-	}
+	// Expand environment variables and ~ in source path
+	source = ExpandPath(source)
 
 	// Validate source is absolute
 	if !filepath.IsAbs(source) {

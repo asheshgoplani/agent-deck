@@ -17,33 +17,12 @@ import (
 
 var storageLog = logging.ForComponent(logging.CompStorage)
 
-// expandTilde expands ~ to the user's home directory with path traversal protection
-// It also fixes malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
-func expandTilde(path string) string {
-	// Fix malformed paths that have ~ in the middle
-	// This can happen when textinput suggestion appends instead of replaces
+// fixMalformedTildePath fixes paths where the UI textinput suggestion appended
+// instead of replacing, producing paths like "/some/path~/actual/path".
+// Returns the path starting from the last "~/" occurrence.
+func fixMalformedTildePath(path string) string {
 	if idx := strings.Index(path, "~/"); idx > 0 {
-		path = path[idx:]
-	}
-
-	if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			// Clean the path to resolve .. and other special sequences
-			expanded := filepath.Join(home, path[2:])
-			cleaned := filepath.Clean(expanded)
-			// Verify the cleaned path is still under home directory (prevent path traversal)
-			if strings.HasPrefix(cleaned, home) {
-				return cleaned
-			}
-			// Path traversal detected - log and return original
-			storageLog.Warn("path_traversal_detected", slog.String("path", path))
-		}
-	} else if path == "~" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return home
-		}
+		return path[idx:]
 	}
 	return path
 }
@@ -630,7 +609,9 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 		}
 
 		// Expand tilde in project path (handles paths like ~/project saved from UI)
-		projectPath := expandTilde(instData.ProjectPath)
+		// fixMalformedTildePath handles the case where the textinput suggestion
+		// appended instead of replacing, producing "/some/path~/actual/path".
+		projectPath := ExpandPath(fixMalformedTildePath(instData.ProjectPath))
 
 		inst := &Instance{
 			ID:                 instData.ID,

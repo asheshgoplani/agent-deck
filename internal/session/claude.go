@@ -229,7 +229,7 @@ func getMCPInfoUncached(projectPath string) *MCPInfo {
 func GetClaudeConfigDir() string {
 	// 1. Check env var (highest priority)
 	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-		return expandTilde(envDir)
+		return ExpandPath(envDir)
 	}
 
 	// 2. Check user config (profile-specific first, then global)
@@ -240,7 +240,7 @@ func GetClaudeConfigDir() string {
 			return profileDir
 		}
 		if userConfig.Claude.ConfigDir != "" {
-			return expandTilde(userConfig.Claude.ConfigDir)
+			return ExpandPath(userConfig.Claude.ConfigDir)
 		}
 	}
 

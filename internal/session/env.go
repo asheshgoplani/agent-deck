@@ -26,7 +26,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 
 	// 1. Global env_files from [shell] section
 	for _, envFile := range config.Shell.EnvFiles {
-		resolved := resolveEnvFilePath(envFile, i.ProjectPath)
+		resolved := resolvePath(envFile, i.ProjectPath)
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
@@ -34,7 +34,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	if config.Shell.InitScript != "" {
 		script := config.Shell.InitScript
 		if isFilePath(script) {
-			resolved := expandHomePath(script)
+			resolved := ExpandPath(script)
 			sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 		} else {
 			// Inline command (e.g., 'eval "$(direnv hook bash)"')
@@ -45,7 +45,7 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// 3. Tool-specific env_file
 	toolEnvFile := i.getToolEnvFile()
 	if toolEnvFile != "" {
-		resolved := resolveEnvFilePath(toolEnvFile, i.ProjectPath)
+		resolved := resolvePath(toolEnvFile, i.ProjectPath)
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
@@ -72,24 +72,33 @@ func buildSourceCmd(path string, ignoreMissing bool) string {
 	return fmt.Sprintf(`source "%s"`, path)
 }
 
-// resolveEnvFilePath resolves an env file path.
-// - Expands ~ to home directory
-// - Absolute paths are returned as-is
-// - Relative paths are resolved relative to workDir
-func resolveEnvFilePath(path, workDir string) string {
-	expanded := expandHomePath(path)
+// resolvePath resolves a user-specified config file path:
+//   - Expands environment variables ($HOME, ${VAR}, etc.)
+//   - Expands ~ prefix to home directory
+//   - Absolute paths are returned as-is
+//   - Relative paths are resolved relative to workDir
+func resolvePath(path, workDir string) string {
+	expanded := ExpandPath(path)
 	if filepath.IsAbs(expanded) {
 		return filepath.Clean(expanded)
 	}
 	return filepath.Clean(filepath.Join(workDir, expanded))
 }
 
-// expandHomePath expands ~ prefix to the user's home directory.
-func expandHomePath(path string) string {
+// ExpandPath expands environment variables and ~ prefix in a path.
+// Use resolvePath when relative paths also need to be resolved against a working directory.
+func ExpandPath(path string) string {
+	// Step 1: Expand environment variables first.
+	// This ensures $HOME/.env becomes /home/user/.env before the tilde
+	// check, and handles ${VAR} in any position (including after ~/).
+	path = os.ExpandEnv(path)
+
+	// Step 2: Expand tilde prefix to home directory.
+	// After env var expansion, any remaining ~ is a genuine tilde.
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return path // Return unchanged if home dir unavailable
+			return path
 		}
 		return filepath.Join(home, path[2:])
 	}
@@ -100,6 +109,7 @@ func expandHomePath(path string) string {
 		}
 		return home
 	}
+
 	return path
 }
 
