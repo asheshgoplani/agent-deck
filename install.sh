@@ -72,9 +72,13 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --pkg-manager)
+            if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+                echo -e "${RED}Error: --pkg-manager requires a value (${MACOS_SUPPORTED_PKG_MGRS[*]})${NC}"
+                exit 1
+            fi
             MACOS_PKG_MANAGER="$2"
             # Validate against supported package managers
-            local valid=false
+            valid=false
             for mgr in "${MACOS_SUPPORTED_PKG_MGRS[@]}"; do
                 if [[ "$MACOS_PKG_MANAGER" == "$mgr" ]]; then
                     valid=true
@@ -259,6 +263,15 @@ install_macos_package() {
     $install_cmd "$PACKAGE_NAME"
 }
 
+# Helper function to print manual install commands on macOS
+print_macos_manual_install_help() {
+    local package_name="$1"
+    echo "Install $package_name manually with one of:"
+    for mgr in "${MACOS_SUPPORTED_PKG_MGRS[@]}"; do
+        echo "  ${MACOS_PKG_MGR_INSTALL_CMDS[$mgr]} $package_name"
+    done
+}
+
 # Check for tmux and offer to install
 if ! command -v tmux &> /dev/null; then
     echo -e "${YELLOW}tmux is not installed.${NC}"
@@ -267,11 +280,15 @@ if ! command -v tmux &> /dev/null; then
 
     # Try to auto-install tmux
     if [[ "$OS" == "darwin" ]]; then
-        mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
-        read -p "Install tmux via $mgr_name? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            install_macos_package "tmux"
+        if [[ -n "$MACOS_PKG_MANAGER" ]]; then
+            mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+            read -p "Install tmux via $mgr_name? [Y/n] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                install_macos_package "tmux"
+            fi
+        else
+            print_macos_manual_install_help "tmux"
         fi
     else
         # Linux - try apt, dnf, or pacman
@@ -325,12 +342,15 @@ if ! command -v jq &> /dev/null && [[ "$SKIP_OPTIONAL_DEPS" != "true" ]]; then
 
     # Try to auto-install jq
     if [[ "$OS" == "darwin" ]]; then
-        mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
-
-        read -p "Install jq via $mgr_name? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            install_macos_package "jq"
+        if [[ -n "$MACOS_PKG_MANAGER" ]]; then
+            mgr_name="${MACOS_PKG_MGR_NAMES[$MACOS_PKG_MANAGER]}"
+            read -p "Install jq via $mgr_name? [Y/n] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                install_macos_package "jq"
+            fi
+        else
+            print_macos_manual_install_help "jq"
         fi
     else
         if command -v apt-get &> /dev/null; then
