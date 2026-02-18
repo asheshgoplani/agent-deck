@@ -1639,7 +1639,11 @@ func (i *Instance) UpdateStatus() error {
 	case "active":
 		i.Status = StatusRunning
 	case "waiting":
-		i.Status = StatusWaiting
+		if i.Tool == "shell" {
+			i.Status = StatusIdle
+		} else {
+			i.Status = StatusWaiting
+		}
 	case "idle":
 		i.Status = StatusIdle
 	case "starting":
