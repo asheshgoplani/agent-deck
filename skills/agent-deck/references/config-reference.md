@@ -5,6 +5,7 @@ All options for `~/.agent-deck/config.toml`.
 ## Table of Contents
 
 - [Top-Level](#top-level)
+- [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
 - [[codex] Section](#codex-section)
 - [[logs] Section](#logs-section)
@@ -13,12 +14,39 @@ All options for `~/.agent-deck/config.toml`.
 - [[mcp_pool] Section](#mcp_pool-section)
 - [[mcps.*] Section](#mcps-section)
 - [[tools.*] Section](#tools-section)
+- [Path Resolution](#path-resolution)
 
 ## Top-Level
 
 ```toml
 default_tool = "claude"   # Pre-selected tool when creating sessions
 ```
+
+## [shell] Section
+
+Shell environment configuration applied to all sessions.
+
+```toml
+[shell]
+env_files = ["~/.agent-deck.env", ".env"]   # .env files to source for ALL sessions
+init_script = "~/.agent-deck/init.sh"       # Script or command to run before each session
+ignore_missing_env_files = true             # Silently skip missing .env files (default: true)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `env_files` | array of strings | `[]` | List of .env files to source for ALL sessions, in order. Later files override earlier ones. See [Path Resolution](#path-resolution). |
+| `init_script` | string | `""` | Shell script or inline command to run before each session. Useful for direnv, nvm, pyenv, etc. File paths (starting with `/`, `~/`, `./`, `../`) are sourced; anything else is treated as an inline command. |
+| `ignore_missing_env_files` | bool | `true` | When `true`, missing .env files are silently skipped using `[ -f file ] && source file`. When `false`, sessions will error if an env file doesn't exist. |
+
+### Sourcing order
+
+Environment sources are applied in this order (later overrides earlier):
+
+1. Global `[shell].env_files` (in order)
+2. `[shell].init_script`
+3. Tool-specific `env_file` (`[claude].env_file`, `[gemini].env_file`, `[tools.X].env_file`)
+4. Inline env vars from `[tools.X].env` (highest priority)
 
 ## [claude] Section
 
@@ -29,6 +57,7 @@ Claude Code integration settings.
 config_dir = "~/.claude"           # Path to Claude config directory
 dangerous_mode = true              # Enable --dangerously-skip-permissions
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
+env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
 [profiles.work.claude]
 config_dir = "~/.claude-work"      # Optional override for profile "work"
@@ -40,6 +69,7 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
 | `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `allow_dangerous_mode`. |
 | `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` is true. |
+| `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var
@@ -292,6 +322,8 @@ Define custom AI tools.
 command = "my-ai-assistant"
 icon = "🧠"
 busy_patterns = ["thinking...", "processing..."]
+env_file = "~/.my-ai.env"
+env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 ```
 
 | Key | Type | Required | Description |
@@ -299,17 +331,39 @@ busy_patterns = ["thinking...", "processing..."]
 | `command` | string | Yes | Command to run. |
 | `icon` | string | No | Emoji for TUI (default: 🐚). |
 | `busy_patterns` | array | No | Strings indicating busy state. |
+| `env_file` | string | No | A .env file sourced for this tool only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
+| `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
 
 **Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, cursor=📝, shell=🐚
+
+## Path Resolution
+
+All `env_file` and `env_files` path values support the following formats:
+
+| Format | Example | Resolves to |
+|--------|---------|-------------|
+| Absolute path | `/etc/agent-deck/.env` | Used as-is |
+| `~` (tilde) | `~/.claude.env` | Expanded to home directory (e.g., `/home/user/.claude.env`) |
+| Environment variables | `$HOME/.claude.env` | Expanded via `os.ExpandEnv` (e.g., `/home/user/.claude.env`) |
+| `${VAR}` syntax | `${XDG_CONFIG_HOME}/env` | Expanded via `os.ExpandEnv` |
+| Relative path | `.env`, `config/.env` | Resolved relative to the session's working directory |
+
+Environment variable expansion (`$HOME`, `$USER`, `${VAR}`, etc.) is applied before determining whether a path is absolute or relative. This means `$HOME/.env` correctly resolves to an absolute path rather than being treated as relative.
 
 ## Complete Example
 
 ```toml
 default_tool = "claude"
 
+[shell]
+env_files = ["~/.agent-deck.env"]
+init_script = "~/.agent-deck/init.sh"
+ignore_missing_env_files = true
+
 [claude]
 config_dir = "~/.claude"
 dangerous_mode = true
+env_file = "~/.claude.env"
 
 [profiles.work.claude]
 config_dir = "~/.claude-work"
