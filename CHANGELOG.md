@@ -5,6 +5,17 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.4] - 2026-02-18
+
+### Added
+
+- Add pool-focused type-to-jump navigation and scrolling in the Skills Manager (`P`) dialog for long lists.
+- Add stricter Skills Manager available list behavior so project attach/detach is driven by the managed pool source.
+
+### Changed
+
+- Update README and skill references with Skills Manager usage, skill CLI command coverage, and skills registry path documentation.
+
 ## [0.19.0] - 2026-02-17
 
 ### Added
