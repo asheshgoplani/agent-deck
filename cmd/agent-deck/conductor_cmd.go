@@ -68,12 +68,14 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
-	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
-	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	description := fs.String("description", "", "Description for this conductor")
+	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
+	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
+	claudeMD := fs.String("claude-md", "", "Custom CLAUDE.md for this conductor (e.g., ~/docs/conductor-ryan.md)")
+	policyMD := fs.String("policy-md", "", "Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
 	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
-	claudeMD := fs.String("claude-md", "", "Custom path for this conductor's CLAUDE.md (e.g., ~/docs/conductor-ryan.md)")
+	sharedPolicyMD := fs.String("shared-policy-md", "", "Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck [-p profile] conductor setup <name> [options]")
@@ -85,7 +87,28 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("  <name>    Conductor name (e.g., ryan, infra, monitor)")
 		fmt.Println()
 		fmt.Println("Options:")
-		fs.PrintDefaults()
+		fmt.Println("  -description string")
+		fmt.Println("        Description for this conductor")
+		fmt.Println("  -heartbeat")
+		fmt.Println("        Enable heartbeat for this conductor (default)")
+		fmt.Println("  -no-heartbeat")
+		fmt.Println("        Disable heartbeat for this conductor")
+		fmt.Println()
+		fmt.Println("Conductor-specific files:")
+		fmt.Println("  -claude-md string")
+		fmt.Println("        Custom CLAUDE.md for this conductor (e.g., ~/docs/conductor-ryan.md)")
+		fmt.Println("  -policy-md string")
+		fmt.Println("        Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
+		fmt.Println()
+		fmt.Println("Shared files (all conductors):")
+		fmt.Println("  -shared-claude-md string")
+		fmt.Println("        Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
+		fmt.Println("  -shared-policy-md string")
+		fmt.Println("        Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
+		fmt.Println()
+		fmt.Println("Output:")
+		fmt.Println("  -json")
+		fmt.Println("        Output as JSON")
 	}
 
 	name, extras, err := parseConductorSetupArgs(fs, args)
@@ -245,12 +268,21 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("[ok] Shared CLAUDE.md installed/updated")
 	}
 
+	// Step 3b: Install/update shared POLICY.md
+	if err := session.InstallPolicyMD(*sharedPolicyMD); err != nil {
+		fmt.Fprintf(os.Stderr, "Error installing POLICY.md: %v\n", err)
+		os.Exit(1)
+	}
+	if !*jsonOutput {
+		fmt.Println("[ok] Shared POLICY.md installed/updated")
+	}
+
 	// Step 4: Set up the named conductor
 	if !*jsonOutput {
 		fmt.Printf("\nSetting up conductor: %s (profile: %s)\n", name, resolvedProfile)
 	}
 
-	if err := session.SetupConductor(name, resolvedProfile, heartbeatEnabled, *description, *claudeMD); err != nil {
+	if err := session.SetupConductor(name, resolvedProfile, heartbeatEnabled, *description, *claudeMD, *policyMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}
@@ -563,6 +595,7 @@ func handleConductorTeardown(_ string, args []string) {
 			_ = os.Remove(filepath.Join(condDir, "bridge.py"))
 			_ = os.Remove(filepath.Join(condDir, "bridge.log"))
 			_ = os.Remove(filepath.Join(condDir, "CLAUDE.md"))
+			_ = os.Remove(filepath.Join(condDir, "POLICY.md"))
 			_ = os.Remove(condDir) // Remove dir if empty
 		}
 	}
