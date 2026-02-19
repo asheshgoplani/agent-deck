@@ -733,7 +733,11 @@ func (m *MCPDialog) View() string {
 	} else {
 		switch m.scope {
 		case MCPScopeLocal:
-			scopeDesc = DimStyle.Render("Writes to: .mcp.json (this project only)")
+			if !session.GetManageMCPJson() {
+				scopeDesc = lipgloss.NewStyle().Foreground(ColorYellow).Render("⚠ .mcp.json management disabled (manage_mcp_json = false in config.toml)")
+			} else {
+				scopeDesc = DimStyle.Render("Writes to: .mcp.json (this project only)")
+			}
 		case MCPScopeGlobal:
 			scopeDesc = DimStyle.Render("Writes to: Claude config (profile-specific)")
 		case MCPScopeUser:

@@ -37,6 +37,12 @@ type UserConfig struct {
 	// Valid values: "local" (default), "global", "user"
 	MCPDefaultScope string `toml:"mcp_default_scope"`
 
+	// ManageMCPJson controls whether agent-deck writes to .mcp.json in project directories.
+	// Set to false to prevent agent-deck from touching any .mcp.json files, which is useful
+	// when you manage that file manually or via another tool.
+	// Default: true (nil = true)
+	ManageMCPJson *bool `toml:"manage_mcp_json"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps"`
@@ -1405,6 +1411,11 @@ auto_cleanup = true
 # "user" writes to ~/.claude.json (all profiles)
 # mcp_default_scope = "local"
 
+# Disable ALL .mcp.json management (default: true)
+# Set to false if you manage .mcp.json manually or via another tool and don't
+# want agent-deck to touch it. LOCAL-scope MCP changes will be silently skipped.
+# manage_mcp_json = false
+
 # Tmux session settings
 # Controls how agent-deck configures tmux sessions
 # [tmux]
@@ -1594,6 +1605,19 @@ func GetMCPDefaultScope() string {
 	default:
 		return "local"
 	}
+}
+
+// GetManageMCPJson returns whether agent-deck should write to .mcp.json files.
+// Defaults to true when unset.
+func GetManageMCPJson() bool {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return true
+	}
+	if config.ManageMCPJson == nil {
+		return true
+	}
+	return *config.ManageMCPJson
 }
 
 // GetMCPDef returns a specific MCP definition by name

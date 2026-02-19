@@ -143,6 +143,11 @@ func readExistingLocalMCPServers(mcpFile string) map[string]json.RawMessage {
 // WriteMCPJsonFromConfig writes enabled MCPs from config.toml to project's .mcp.json
 // It preserves any existing entries not managed by agent-deck (not defined in config.toml)
 func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
+	if !GetManageMCPJson() {
+		mcpCatLog.Debug("mcp_json_management_disabled", slog.String("path", projectPath))
+		return nil
+	}
+
 	mcpFile := filepath.Join(projectPath, ".mcp.json")
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool() // Get pool instance (may be nil)
