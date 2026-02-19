@@ -213,6 +213,34 @@ If ` + "`" + `./POLICY.md` + "`" + ` does not exist, use ` + "`" + `../POLICY.md
 Read the policy file at the start of each interaction.
 `
 
+// conductorPerNameClaudeMDLegacyTemplate is the pre-policy-split per-conductor CLAUDE.md template.
+// It is kept only for migration matching and should not be used for new writes.
+const conductorPerNameClaudeMDLegacyTemplate = `# Conductor: {NAME} ({PROFILE} profile)
+
+You are **{NAME}**, a conductor for the **{PROFILE}** profile.
+
+## Your Identity
+
+- Your session title is ` + "`" + `conductor-{NAME}` + "`" + `
+- You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
+- You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
+- Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
+- The bridge (Telegram/Slack) sends you messages from the user and forwards your responses back
+- You receive periodic ` + "`" + `[HEARTBEAT]` + "`" + ` messages with system status
+- Other conductors may exist for different purposes. You only manage sessions in your profile.
+
+## Startup Checklist
+
+When you first start (or after a restart):
+
+1. Read ` + "`" + `./state.json` + "`" + ` if it exists (restore context)
+2. Run ` + "`" + `agent-deck -p {PROFILE} status --json` + "`" + ` to get the current state
+3. Run ` + "`" + `agent-deck -p {PROFILE} list --json` + "`" + ` to know what sessions exist
+4. Log startup in ` + "`" + `./task-log.md` + "`" + `
+5. If any sessions are in error state, try to restart them
+6. Reply: "Conductor {NAME} ({PROFILE}) online. N sessions tracked (X running, Y waiting)."
+`
+
 // conductorBridgePy is the Python bridge script that connects Telegram and/or Slack to conductor sessions.
 // This is embedded so the binary is self-contained.
 // Updated for multi-conductor: discovers conductors from meta.json files on disk.

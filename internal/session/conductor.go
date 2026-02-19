@@ -258,6 +258,23 @@ func ListConductorsForProfile(profile string) ([]ConductorMeta, error) {
 	return filtered, nil
 }
 
+func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
+	content := strings.ReplaceAll(baseTemplate, "{NAME}", name)
+	if profile == DefaultProfile {
+		// For default profile, show "default" in display text and omit -p flag in commands
+		content = strings.ReplaceAll(content, "{PROFILE}", "default")
+		content = strings.ReplaceAll(content, "agent-deck -p default ", "agent-deck ")
+		content = strings.ReplaceAll(content, "Always pass `-p default` to all CLI commands.", "Use CLI commands without `-p` flag (default profile).")
+	} else {
+		content = strings.ReplaceAll(content, "{PROFILE}", profile)
+	}
+	return content
+}
+
+func matchesTemplateContent(actual, expected string) bool {
+	return strings.TrimSuffix(actual, "\n") == strings.TrimSuffix(expected, "\n")
+}
+
 // SetupConductor creates the conductor directory, per-conductor CLAUDE.md, and meta.json.
 // If customClaudeMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
@@ -292,16 +309,7 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 		}
 	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		// No custom path - write default template (but preserve existing symlink)
-		content := strings.ReplaceAll(conductorPerNameClaudeMDTemplate, "{NAME}", name)
-		if profile == DefaultProfile {
-			// For default profile, show "default" in display text and omit -p flag in commands
-			content = strings.ReplaceAll(content, "{PROFILE}", "default")
-			content = strings.ReplaceAll(content, "agent-deck -p default ", "agent-deck ")
-			content = strings.ReplaceAll(content, "Always pass `-p default` to all CLI commands.", "Use CLI commands without `-p` flag (default profile).")
-		} else {
-			content = strings.ReplaceAll(content, "{PROFILE}", profile)
-		}
-
+		content := renderConductorClaudeTemplate(conductorPerNameClaudeMDTemplate, name, profile)
 		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("failed to write CLAUDE.md: %w", err)
 		}
@@ -647,6 +655,69 @@ func MigrateLegacyConductors() ([]string, error) {
 		}
 		migrated = append(migrated, name)
 	}
+	return migrated, nil
+}
+
+// MigrateConductorPolicySplit updates legacy generated per-conductor CLAUDE.md
+// templates to include POLICY.md instructions.
+// It only rewrites non-symlink CLAUDE.md files that exactly match the legacy generated template.
+func MigrateConductorPolicySplit() ([]string, error) {
+	base, err := ConductorDir()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(base); os.IsNotExist(err) {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read conductor directory: %w", err)
+	}
+
+	var migrated []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		claudePath := filepath.Join(base, name, "CLAUDE.md")
+
+		info, err := os.Lstat(claudePath)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+
+		meta, err := LoadConductorMeta(name)
+		if err != nil {
+			continue
+		}
+
+		contentBytes, err := os.ReadFile(claudePath)
+		if err != nil {
+			continue
+		}
+		content := string(contentBytes)
+
+		// Already on the new template format (or custom file with policy instructions).
+		if strings.Contains(content, "## Policy") && strings.Contains(content, "POLICY.md") {
+			continue
+		}
+
+		legacyTemplate := renderConductorClaudeTemplate(conductorPerNameClaudeMDLegacyTemplate, name, meta.Profile)
+		if !matchesTemplateContent(content, legacyTemplate) {
+			continue
+		}
+
+		updatedTemplate := renderConductorClaudeTemplate(conductorPerNameClaudeMDTemplate, name, meta.Profile)
+		if err := os.WriteFile(claudePath, []byte(updatedTemplate), 0o644); err != nil {
+			return migrated, fmt.Errorf("failed to migrate %s CLAUDE.md: %w", name, err)
+		}
+		migrated = append(migrated, name)
+	}
+
 	return migrated, nil
 }
 

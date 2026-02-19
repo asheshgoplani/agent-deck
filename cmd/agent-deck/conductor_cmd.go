@@ -42,13 +42,22 @@ func handleConductor(profile string, args []string) {
 
 // runAutoMigration runs legacy conductor migration and prints results
 func runAutoMigration(jsonOutput bool) {
-	migrated, err := session.MigrateLegacyConductors()
+	migratedLegacy, err := session.MigrateLegacyConductors()
 	if err != nil && !jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: migration check failed: %v\n", err)
 	}
+
+	migratedPolicy, err := session.MigrateConductorPolicySplit()
+	if err != nil && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: policy migration check failed: %v\n", err)
+	}
+
 	if !jsonOutput {
-		for _, name := range migrated {
+		for _, name := range migratedLegacy {
 			fmt.Printf("  [migrated] Legacy conductor: %s\n", name)
+		}
+		for _, name := range migratedPolicy {
+			fmt.Printf("  [migrated] Updated policy split: %s\n", name)
 		}
 	}
 }

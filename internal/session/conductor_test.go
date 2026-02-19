@@ -1069,3 +1069,138 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 		t.Error("reading through symlink should return custom content")
 	}
 }
+
+func TestMigrateConductorPolicySplit_RewritesLegacyGeneratedTemplate(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "legacy-policy-migrate"
+	profile := DefaultProfile
+	if err := SaveConductorMeta(&ConductorMeta{
+		Name:             name,
+		Profile:          profile,
+		HeartbeatEnabled: true,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	claudePath := filepath.Join(dir, "CLAUDE.md")
+	legacyContent := renderConductorClaudeTemplate(conductorPerNameClaudeMDLegacyTemplate, name, profile)
+	if err := os.WriteFile(claudePath, []byte(legacyContent), 0o644); err != nil {
+		t.Fatalf("failed to write legacy CLAUDE.md: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicySplit()
+	if err != nil {
+		t.Fatalf("unexpected migration error: %v", err)
+	}
+
+	found := false
+	for _, migratedName := range migrated {
+		if migratedName == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected %q to be migrated, got %v", name, migrated)
+	}
+
+	content, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatalf("failed to read migrated CLAUDE.md: %v", err)
+	}
+	if !strings.Contains(string(content), "## Policy") {
+		t.Fatal("migrated CLAUDE.md should contain policy section")
+	}
+	if !strings.Contains(string(content), "./POLICY.md") {
+		t.Fatal("migrated CLAUDE.md should reference ./POLICY.md")
+	}
+}
+
+func TestMigrateConductorPolicySplit_PreservesCustomClaudeMD(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "custom-claude-policy-migrate"
+	profile := "work"
+	if err := SaveConductorMeta(&ConductorMeta{
+		Name:             name,
+		Profile:          profile,
+		HeartbeatEnabled: true,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	claudePath := filepath.Join(dir, "CLAUDE.md")
+	customContent := "# Custom conductor instructions\nDo not overwrite this file.\n"
+	if err := os.WriteFile(claudePath, []byte(customContent), 0o644); err != nil {
+		t.Fatalf("failed to write custom CLAUDE.md: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicySplit()
+	if err != nil {
+		t.Fatalf("unexpected migration error: %v", err)
+	}
+	for _, migratedName := range migrated {
+		if migratedName == name {
+			t.Fatalf("custom CLAUDE.md should not be migrated, got %v", migrated)
+		}
+	}
+
+	content, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatalf("failed to read CLAUDE.md: %v", err)
+	}
+	if string(content) != customContent {
+		t.Fatal("custom CLAUDE.md content should be preserved")
+	}
+}
+
+func TestMigrateConductorPolicySplit_PreservesSymlinkedClaudeMD(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "symlink-claude-policy-migrate"
+	if err := SaveConductorMeta(&ConductorMeta{
+		Name:             name,
+		Profile:          DefaultProfile,
+		HeartbeatEnabled: true,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("failed to save meta: %v", err)
+	}
+
+	customPath := filepath.Join(t.TempDir(), "custom-claude.md")
+	if err := os.WriteFile(customPath, []byte("# custom"), 0o644); err != nil {
+		t.Fatalf("failed to write custom target: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	claudePath := filepath.Join(dir, "CLAUDE.md")
+	if err := os.Symlink(customPath, claudePath); err != nil {
+		t.Fatalf("failed to create CLAUDE.md symlink: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicySplit()
+	if err != nil {
+		t.Fatalf("unexpected migration error: %v", err)
+	}
+	for _, migratedName := range migrated {
+		if migratedName == name {
+			t.Fatalf("symlinked CLAUDE.md should not be migrated, got %v", migrated)
+		}
+	}
+
+	linkDest, err := os.Readlink(claudePath)
+	if err != nil {
+		t.Fatalf("CLAUDE.md should remain a symlink: %v", err)
+	}
+	if linkDest != customPath {
+		t.Fatalf("symlink destination changed to %q, want %q", linkDest, customPath)
+	}
+}
