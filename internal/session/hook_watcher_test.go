@@ -137,6 +137,38 @@ func TestStatusFileWatcher_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestConsumeCompactBlocked(t *testing.T) {
+	w := &StatusFileWatcher{
+		statuses: make(map[string]*HookStatus),
+	}
+
+	// No status yet: should return false
+	if w.ConsumeCompactBlocked("inst-1") {
+		t.Error("Expected false when no status exists")
+	}
+
+	// Set status to compact_blocked
+	w.statuses["inst-1"] = &HookStatus{
+		Status:    "compact_blocked",
+		SessionID: "s1",
+		Event:     "PreCompact",
+		UpdatedAt: time.Now(),
+	}
+
+	// First consume should return true and clear to "waiting"
+	if !w.ConsumeCompactBlocked("inst-1") {
+		t.Error("Expected true on first consume of compact_blocked")
+	}
+	if w.statuses["inst-1"].Status != "waiting" {
+		t.Errorf("Status after consume = %q, want waiting", w.statuses["inst-1"].Status)
+	}
+
+	// Second consume should return false (already cleared)
+	if w.ConsumeCompactBlocked("inst-1") {
+		t.Error("Expected false on second consume (already cleared)")
+	}
+}
+
 func TestStatusFileWatcher_UpdatesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	hooksDir := filepath.Join(tmpDir, "hooks")

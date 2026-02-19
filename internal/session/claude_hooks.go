@@ -26,11 +26,11 @@ type claudeHookMatcher struct {
 }
 
 // agentDeckHook returns the standard agent-deck hook entry.
-func agentDeckHook() claudeHookEntry {
+func agentDeckHook(async bool) claudeHookEntry {
 	return claudeHookEntry{
 		Type:    "command",
 		Command: agentDeckHookCommand,
-		Async:   true,
+		Async:   async,
 	}
 }
 
@@ -38,13 +38,15 @@ func agentDeckHook() claudeHookEntry {
 var hookEventConfigs = []struct {
 	Event   string
 	Matcher string // empty = no matcher
+	Async   bool   // false = synchronous (blocks via exit code)
 }{
-	{Event: "SessionStart"},
-	{Event: "UserPromptSubmit"},
-	{Event: "Stop"},
-	{Event: "PermissionRequest"},
-	{Event: "Notification", Matcher: "permission_prompt|elicitation_dialog"},
-	{Event: "SessionEnd"},
+	{Event: "SessionStart", Async: true},
+	{Event: "UserPromptSubmit", Async: true},
+	{Event: "Stop", Async: true},
+	{Event: "PermissionRequest", Async: true},
+	{Event: "Notification", Matcher: "permission_prompt|elicitation_dialog", Async: true},
+	{Event: "SessionEnd", Async: true},
+	{Event: "PreCompact", Async: false},
 }
 
 // InjectClaudeHooks injects agent-deck hook entries into Claude Code's settings.json.
@@ -85,7 +87,7 @@ func InjectClaudeHooks(configDir string) (bool, error) {
 
 	// Inject our hook entries for each event
 	for _, cfg := range hookEventConfigs {
-		existingHooks[cfg.Event] = mergeHookEvent(existingHooks[cfg.Event], cfg.Matcher)
+		existingHooks[cfg.Event] = mergeHookEvent(existingHooks[cfg.Event], cfg.Matcher, cfg.Async)
 	}
 
 	// Marshal hooks back into raw settings
@@ -250,7 +252,7 @@ func eventHasAgentDeckHook(raw json.RawMessage) bool {
 
 // mergeHookEvent adds agent-deck's hook to an existing event's matcher array.
 // Preserves all existing matchers and hooks.
-func mergeHookEvent(existing json.RawMessage, matcher string) json.RawMessage {
+func mergeHookEvent(existing json.RawMessage, matcher string, async bool) json.RawMessage {
 	var matchers []claudeHookMatcher
 
 	if existing != nil {
@@ -271,7 +273,7 @@ func mergeHookEvent(existing json.RawMessage, matcher string) json.RawMessage {
 				}
 			}
 			// Append our hook to existing matcher
-			matchers[i].Hooks = append(matchers[i].Hooks, agentDeckHook())
+			matchers[i].Hooks = append(matchers[i].Hooks, agentDeckHook(async))
 			result, _ := json.Marshal(matchers)
 			return result
 		}
@@ -280,7 +282,7 @@ func mergeHookEvent(existing json.RawMessage, matcher string) json.RawMessage {
 	// No matching matcher found; add a new one
 	newMatcher := claudeHookMatcher{
 		Matcher: matcher,
-		Hooks:   []claudeHookEntry{agentDeckHook()},
+		Hooks:   []claudeHookEntry{agentDeckHook(async)},
 	}
 	matchers = append(matchers, newMatcher)
 	result, _ := json.Marshal(matchers)

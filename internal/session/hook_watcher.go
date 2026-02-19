@@ -201,6 +201,20 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 }
 
+// ConsumeCompactBlocked atomically checks if an instance's status is "compact_blocked",
+// clears it to "waiting", and returns true. Returns false if the status is anything else.
+// This prevents duplicate /clear sends via lock-based check-and-clear.
+func (w *StatusFileWatcher) ConsumeCompactBlocked(instanceID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	hs := w.statuses[instanceID]
+	if hs == nil || hs.Status != "compact_blocked" {
+		return false
+	}
+	hs.Status = "waiting"
+	return true
+}
+
 // GetHooksDir returns the path to the hooks status directory.
 func GetHooksDir() string {
 	home, err := os.UserHomeDir()

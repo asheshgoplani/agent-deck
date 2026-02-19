@@ -1669,6 +1669,15 @@ func (h *Home) backgroundStatusUpdate() {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
+				// Detect compact_blocked: consume it atomically and send /clear
+				if h.hookWatcher.ConsumeCompactBlocked(inst.ID) {
+					if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+						go func() {
+							time.Sleep(500 * time.Millisecond)
+							tmuxSess.SendKeysAndEnter("/clear")
+						}()
+					}
+				}
 			}
 		}
 	}

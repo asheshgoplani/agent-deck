@@ -50,6 +50,8 @@ func mapEventToStatus(event string) string {
 		return ""
 	case "SessionEnd":
 		return "dead"
+	case "PreCompact":
+		return "compact_blocked"
 	default:
 		return ""
 	}
@@ -97,6 +99,13 @@ func handleHookHandler() {
 	}
 
 	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+
+	// PreCompact: block compaction by exiting with code 2.
+	// Claude Code interprets exit code 2 from a synchronous hook as "block this action".
+	if payload.HookEventName == "PreCompact" {
+		fmt.Fprintln(os.Stderr, "Compaction blocked by agent-deck. Context will be cleared instead.")
+		os.Exit(2)
+	}
 }
 
 // writeHookStatus writes a hook status file atomically for one instance.
