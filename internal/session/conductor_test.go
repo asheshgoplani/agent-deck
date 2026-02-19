@@ -883,6 +883,40 @@ func TestCreateSymlinkWithExpansion_RelativePathError(t *testing.T) {
 	}
 }
 
+func TestGenerateSystemdBridgeService_IncludesAgentDeckDir(t *testing.T) {
+	unit, err := GenerateSystemdBridgeService()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(unit, "__PATH__") {
+		t.Error("unit still contains __PATH__ placeholder")
+	}
+	agentDeck := findAgentDeck()
+	if agentDeck == "" {
+		t.Skip("agent-deck not found in PATH, skipping directory check")
+	}
+	if !strings.Contains(unit, filepath.Dir(agentDeck)) {
+		t.Errorf("systemd bridge unit PATH should contain agent-deck dir, unit:\n%s", unit)
+	}
+}
+
+func TestGenerateSystemdHeartbeatService_IncludesAgentDeckDir(t *testing.T) {
+	unit, err := GenerateSystemdHeartbeatService("test-conductor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(unit, "__PATH__") {
+		t.Error("unit still contains __PATH__ placeholder")
+	}
+	agentDeck := findAgentDeck()
+	if agentDeck == "" {
+		t.Skip("agent-deck not found in PATH, skipping directory check")
+	}
+	if !strings.Contains(unit, filepath.Dir(agentDeck)) {
+		t.Errorf("systemd heartbeat unit PATH should contain agent-deck dir, unit:\n%s", unit)
+	}
+}
+
 func TestGenerateHeartbeatPlist_IncludesAgentDeckDir(t *testing.T) {
 	plist, err := GenerateHeartbeatPlist("test-conductor", 15)
 	if err != nil {

@@ -787,7 +787,7 @@ RestartSec=10
 WorkingDirectory=__HOME__
 StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=__PATH__
 Environment=HOME=__HOME__
 
 [Install]
@@ -812,7 +812,7 @@ Description=Agent Deck Conductor Heartbeat (__NAME__)
 Type=oneshot
 ExecStart=/bin/bash __SCRIPT_PATH__
 WorkingDirectory=__HOME__
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=__PATH__
 Environment=HOME=__HOME__
 `
 
@@ -889,6 +889,8 @@ func GenerateSystemdBridgeService() (string, error) {
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
+	agentDeckPath := findAgentDeck()
+	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil
 }
 
@@ -914,6 +916,8 @@ func GenerateSystemdHeartbeatService(name string) (string, error) {
 	unit := strings.ReplaceAll(systemdHeartbeatServiceTemplate, "__NAME__", name)
 	unit = strings.ReplaceAll(unit, "__SCRIPT_PATH__", scriptPath)
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
+	agentDeckPath := findAgentDeck()
+	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil
 }
 
