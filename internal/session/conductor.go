@@ -689,6 +689,8 @@ func GenerateLaunchdPlist() (string, error) {
 	plist = strings.ReplaceAll(plist, "__BRIDGE_PATH__", bridgePath)
 	plist = strings.ReplaceAll(plist, "__LOG_PATH__", logPath)
 	plist = strings.ReplaceAll(plist, "__HOME__", homeDir)
+	agentDeckPath := findAgentDeck()
+	plist = strings.ReplaceAll(plist, "__PATH__", buildDaemonPath(agentDeckPath))
 
 	return plist, nil
 }
@@ -756,7 +758,7 @@ const conductorPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>__PATH__</string>
         <key>HOME</key>
         <string>__HOME__</string>
     </dict>

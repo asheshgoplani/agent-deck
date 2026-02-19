@@ -883,6 +883,26 @@ func TestCreateSymlinkWithExpansion_RelativePathError(t *testing.T) {
 	}
 }
 
+func TestGenerateLaunchdPlist_IncludesAgentDeckDir(t *testing.T) {
+	plist, err := GenerateLaunchdPlist()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Verify no __PATH__ placeholder remains
+	if strings.Contains(plist, "__PATH__") {
+		t.Error("plist still contains __PATH__ placeholder")
+	}
+	// The plist PATH should include the directory of the agent-deck binary
+	agentDeck := findAgentDeck()
+	if agentDeck == "" {
+		t.Skip("agent-deck not found in PATH, skipping directory check")
+	}
+	agentDeckDir := filepath.Dir(agentDeck)
+	if !strings.Contains(plist, agentDeckDir) {
+		t.Errorf("plist PATH should contain agent-deck dir %q, plist:\n%s", agentDeckDir, plist)
+	}
+}
+
 func TestBuildDaemonPath(t *testing.T) {
 	tests := []struct {
 		name          string
