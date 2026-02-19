@@ -883,6 +883,56 @@ func TestCreateSymlinkWithExpansion_RelativePathError(t *testing.T) {
 	}
 }
 
+func TestBuildDaemonPath(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentDeckPath string
+		wantPrefix    string
+		wantContains  string
+	}{
+		{
+			name:          "empty path falls back to standard",
+			agentDeckPath: "",
+			wantPrefix:    "/usr/local/bin",
+			wantContains:  "/usr/bin:/bin",
+		},
+		{
+			name:          "local bin prepended",
+			agentDeckPath: "/Users/someone/.local/bin/agent-deck",
+			wantPrefix:    "/Users/someone/.local/bin",
+			wantContains:  "/usr/local/bin",
+		},
+		{
+			name:          "homebrew path not duplicated",
+			agentDeckPath: "/opt/homebrew/bin/agent-deck",
+			wantPrefix:    "/usr/local/bin",
+			wantContains:  "/usr/bin:/bin",
+		},
+		{
+			name:          "custom path included",
+			agentDeckPath: "/custom/tools/bin/agent-deck",
+			wantPrefix:    "/custom/tools/bin",
+			wantContains:  "/opt/homebrew/bin",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := buildDaemonPath(tt.agentDeckPath)
+			if !strings.HasPrefix(result, tt.wantPrefix) {
+				t.Errorf("buildDaemonPath(%q) = %q, want prefix %q", tt.agentDeckPath, result, tt.wantPrefix)
+			}
+			if !strings.Contains(result, tt.wantContains) {
+				t.Errorf("buildDaemonPath(%q) = %q, want to contain %q", tt.agentDeckPath, result, tt.wantContains)
+			}
+			// Must never contain duplicate colons
+			if strings.Contains(result, "::") {
+				t.Errorf("buildDaemonPath(%q) = %q, contains double colon", tt.agentDeckPath, result)
+			}
+		})
+	}
+}
+
 func TestCreateSymlinkWithExpansion_MissingSourceError(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "link.md")

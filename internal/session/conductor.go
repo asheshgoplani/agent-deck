@@ -420,6 +420,25 @@ func findAgentDeck() string {
 	return ""
 }
 
+// buildDaemonPath returns a PATH string suitable for daemon environments.
+// If agentDeckPath is non-empty, its parent directory is prepended so daemon
+// processes (launchd, systemd) that don't inherit the user's shell PATH can
+// still find the agent-deck binary.
+func buildDaemonPath(agentDeckPath string) string {
+	base := "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+	if agentDeckPath == "" {
+		return base
+	}
+	dir := filepath.Dir(agentDeckPath)
+	// Avoid duplicating a directory already in base
+	for _, segment := range strings.Split(base, ":") {
+		if segment == dir {
+			return base
+		}
+	}
+	return dir + ":" + base
+}
+
 // conductorHeartbeatScript is the shell script that sends a heartbeat to a conductor session
 const conductorHeartbeatScript = `#!/bin/bash
 # Heartbeat for conductor: {NAME} (profile: {PROFILE})
