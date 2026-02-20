@@ -803,21 +803,24 @@ func LaunchdPlistPath() (string, error) {
 	return filepath.Join(homeDir, "Library", "LaunchAgents", LaunchdPlistName+".plist"), nil
 }
 
-// findPython3 looks for python3 in common locations
+// findPython3 resolves python3 for daemon configs.
+// Prefer the current PATH (so pyenv/asdf-selected interpreters win),
+// then fall back to common absolute locations for non-interactive environments.
 func findPython3() string {
+	// Respect the user's current shell environment first.
+	if p, err := exec.LookPath("python3"); err == nil {
+		if abs, absErr := filepath.Abs(p); absErr == nil {
+			return abs
+		}
+		return p
+	}
+
 	paths := []string{
 		"/opt/homebrew/bin/python3",
 		"/usr/local/bin/python3",
 		"/usr/bin/python3",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	// Try PATH lookup
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		p := filepath.Join(dir, "python3")
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

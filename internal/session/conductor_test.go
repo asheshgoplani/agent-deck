@@ -992,6 +992,22 @@ func TestGenerateLaunchdPlist_IncludesAgentDeckDir(t *testing.T) {
 	}
 }
 
+func TestFindPython3_PrefersPathLookup(t *testing.T) {
+	tmpBin := t.TempDir()
+	pythonPath := filepath.Join(tmpBin, "python3")
+
+	if err := os.WriteFile(pythonPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("failed to create fake python3: %v", err)
+	}
+
+	t.Setenv("PATH", tmpBin)
+
+	got := findPython3()
+	if got != pythonPath {
+		t.Fatalf("findPython3() = %q, want %q", got, pythonPath)
+	}
+}
+
 func TestBuildDaemonPath(t *testing.T) {
 	tests := []struct {
 		name          string
