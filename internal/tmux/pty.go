@@ -89,11 +89,14 @@ func (s *Session) Attach(ctx context.Context) error {
 	// Timeout to ignore initial terminal control sequences (50ms)
 	startTime := time.Now()
 	const controlSeqTimeout = 50 * time.Millisecond
+	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
+	outputDone := make(chan struct{})
 
 	// Goroutine 1: Copy PTY output to stdout
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		defer close(outputDone)
 		_, err := io.Copy(os.Stdout, ptmx)
 		if err != nil && err != io.EOF {
 			// Only report non-EOF errors (EOF is normal on PTY close)
@@ -157,28 +160,51 @@ func (s *Session) Attach(ctx context.Context) error {
 		cmdDone <- cmd.Wait()
 	}()
 
+	// Ensures we don't return to Bubble Tea while PTY output is still being written.
+	// This avoids terminal style leakage (for example underline/hyperlink state)
+	// from the attached client into the Agent Deck UI.
+	cleanupAttach := func() {
+		cancel()
+		_ = ptmx.Close()
+		select {
+		case <-outputDone:
+		case <-time.After(100 * time.Millisecond):
+		}
+		// Reset OSC-8 hyperlink state + SGR attributes before Bubble Tea redraws.
+		_, _ = os.Stdout.WriteString(terminalStyleReset)
+	}
+
 	// Wait for either detach (Ctrl+Q) or command completion
+	var attachErr error
 	select {
 	case <-detachCh:
 		// User pressed Ctrl+Q, detach gracefully
-		return nil
+		attachErr = nil
 	case err := <-cmdDone:
 		if err != nil {
 			// Check if it's a normal exit (tmux detach via Ctrl+B,D)
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				if exitErr.ExitCode() == 0 || exitErr.ExitCode() == 1 {
-					return nil
+					attachErr = nil
+				} else {
+					attachErr = err
 				}
+			} else {
+				attachErr = err
 			}
 			// Context cancelled is normal (from Ctrl+Q)
 			if ctx.Err() != nil {
-				return nil
+				attachErr = nil
 			}
+		} else {
+			attachErr = nil
 		}
-		return err
 	case <-ctx.Done():
-		return nil
+		attachErr = nil
 	}
+
+	cleanupAttach()
+	return attachErr
 }
 
 // Resize changes the terminal size of the tmux session
