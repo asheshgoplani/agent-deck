@@ -520,7 +520,7 @@ def send_to_conductor(
 ) -> bool:
     """Send a message to the conductor session. Returns True on success."""
     result = run_cli(
-        "session", "send", session, message, profile=profile, timeout=120
+        "session", "send", session, message, "--no-wait", profile=profile, timeout=30
     )
     if result.returncode != 0:
         log.error(
