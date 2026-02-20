@@ -692,12 +692,8 @@ func handleSessionShow(profile string, args []string) {
 		jsonData["can_fork"] = inst.CanFork()
 		jsonData["can_restart"] = inst.CanRestart()
 
-		if mcpInfo != nil && mcpInfo.HasAny() {
-			jsonData["mcps"] = map[string]interface{}{
-				"local":   mcpInfo.Local,
-				"global":  mcpInfo.Global,
-				"project": mcpInfo.Project,
-			}
+		if mcps := mcpInfoForJSON(mcpInfo); mcps != nil {
+			jsonData["mcps"] = mcps
 		}
 	}
 
@@ -771,6 +767,17 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	out.Print(sb.String(), jsonData)
+}
+
+func mcpInfoForJSON(mcpInfo *session.MCPInfo) map[string]interface{} {
+	if mcpInfo == nil || !mcpInfo.HasAny() {
+		return nil
+	}
+	return map[string]interface{}{
+		"local":   mcpInfo.Local(),
+		"global":  mcpInfo.Global,
+		"project": mcpInfo.Project,
+	}
 }
 
 // handleSessionSet updates a session property
