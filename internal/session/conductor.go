@@ -349,13 +349,10 @@ func InstallHeartbeatScript(name, profile string) error {
 	profile = normalizeConductorProfile(profile)
 
 	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
+	script = strings.ReplaceAll(script, "{PROFILE}", profile)
 	if profile == DefaultProfile {
 		// For default profile, omit -p flag entirely
-		script = strings.ReplaceAll(script, "{PROFILE}", "default")
 		script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
-		script = strings.ReplaceAll(script, `$PROFILE profile`, "default profile")
-	} else {
-		script = strings.ReplaceAll(script, "{PROFILE}", profile)
 	}
 	scriptPath := filepath.Join(dir, "heartbeat.sh")
 	return os.WriteFile(scriptPath, []byte(script), 0o755)
@@ -468,7 +465,7 @@ PROFILE="{PROFILE}"
 STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check all sessions in the $PROFILE profile. List any waiting sessions, auto-respond where safe, and report what needs my attention."
+    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check all sessions in the {PROFILE} profile. List any waiting sessions, auto-respond where safe, and report what needs my attention."
 fi
 `
 
