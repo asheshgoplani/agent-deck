@@ -5,6 +5,13 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.7] - 2026-02-20
+
+### Fixed
+
+- Fix heartbeat script profile text stamping so generated `heartbeat.sh` uses the real profile name in message text for non-default profiles (#207, contributed by @CoderNoveau).
+- Fix conductor bridge message delivery when the conductor session is idle by using non-blocking `session send --no-wait`, and apply this in the embedded runtime bridge template with regression coverage (#210, contributed by @sjoeboo).
+
 ## [0.19.6] - 2026-02-19
 
 ### Added
