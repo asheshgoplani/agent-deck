@@ -625,6 +625,21 @@ async def heartbeat_loop(bot: Bot, config: dict):
                     "Check if any need auto-response or user attention."
                 )
 
+                # Inject HEARTBEAT_RULES.md if present (per-profile, then global)
+                rules_text = None
+                for rules_path in [
+                    CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
+                    CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
+                ]:
+                    if rules_path.exists():
+                        try:
+                            rules_text = rules_path.read_text().strip()
+                        except Exception as e:
+                            log.warning("Failed to read %s: %s", rules_path, e)
+                        break
+                if rules_text:
+                    parts.append(f"\n\n{rules_text}")
+
                 heartbeat_msg = " ".join(parts)
 
                 # Ensure conductor is running for this profile
