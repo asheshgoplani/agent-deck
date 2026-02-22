@@ -343,7 +343,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so Claude's hook subprocesses
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	configDirPrefix = "unset CLAUDECODE; " + instanceIDPrefix + configDirPrefix
 
 	// Get options - either from instance or create defaults from config
 	opts := i.GetClaudeOptions()
@@ -375,7 +375,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				}
 				// Session was never interacted with - use --session-id with same UUID
 				// This handles the case where session was started but no message was sent
-				bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
+				bashExportPrefix := fmt.Sprintf("unset CLAUDECODE; export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
 				if IsClaudeConfigDirExplicit() {
 					configDir := GetClaudeConfigDir()
 					bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
@@ -399,7 +399,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 		// and shell aliases are not available in non-interactive bash shells.
 		//
-		bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
+		bashExportPrefix := fmt.Sprintf("unset CLAUDECODE; export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
 		if IsClaudeConfigDirExplicit() {
 			configDir := GetClaudeConfigDir()
 			bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
@@ -3085,7 +3085,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so hook subprocesses
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
-	configDirPrefix = instanceIDPrefix + configDirPrefix
+	configDirPrefix = "unset CLAUDECODE; " + instanceIDPrefix + configDirPrefix
 
 	// Get per-session permission settings (falls back to config if not persisted)
 	opts := i.GetClaudeOptions()
