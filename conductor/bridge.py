@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Conductor Bridge: Telegram <-> Agent-Deck conductor sessions (multi-profile).
+Conductor Bridge: Telegram & Slack <-> Agent-Deck conductor sessions (multi-conductor).
 
 A thin bridge that:
-  A) Forwards Telegram messages -> conductor session (via agent-deck CLI)
-  B) Forwards conductor responses -> Telegram
+  A) Forwards Telegram/Slack messages -> conductor session (via agent-deck CLI)
+  B) Forwards conductor responses -> Telegram/Slack
   C) Runs a periodic heartbeat to trigger conductor status checks
 
-Supports multiple profiles: each profile gets its own conductor session.
-The bridge aggregates status across all profiles.
+Discovers conductors dynamically from meta.json files in ~/.agent-deck/conductor/*/
+Each conductor has its own name, profile, and heartbeat settings.
 
-Dependencies: pip3 install aiogram toml
+Dependencies: pip3 install toml aiogram slack-bolt slack-sdk
+  - aiogram is only needed if Telegram is configured
+  - slack-bolt/slack-sdk are only needed if Slack is configured
 """
 
 import asyncio
@@ -24,8 +26,24 @@ import time
 from pathlib import Path
 
 import toml
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, CommandStart
+
+# Conditional imports for Telegram
+try:
+    from aiogram import Bot, Dispatcher, types
+    from aiogram.filters import Command, CommandStart
+    HAS_AIOGRAM = True
+except ImportError:
+    HAS_AIOGRAM = False
+
+# Conditional imports for Slack
+try:
+    from slack_bolt.async_app import AsyncApp
+    from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+    from slack_bolt.authorization import AuthorizeResult
+    from slack_sdk.web.async_client import AsyncWebClient
+    HAS_SLACK = True
+except ImportError:
+    HAS_SLACK = False
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -36,6 +54,9 @@ CONFIG_PATH = AGENT_DECK_DIR / "config.toml"
 CONDUCTOR_DIR = AGENT_DECK_DIR / "conductor"
 # Telegram message length limit
 TG_MAX_LENGTH = 4096
+
+# Slack message length limit
+SLACK_MAX_LENGTH = 40000
 
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
@@ -60,7 +81,11 @@ log = logging.getLogger("conductor-bridge")
 
 
 def load_config() -> dict:
-    """Load [conductor] section from config.toml."""
+    """Load [conductor] section from config.toml.
+
+    Returns a dict with nested 'telegram' and 'slack' sub-dicts,
+    each with a 'configured' flag.
+    """
     if not CONFIG_PATH.exists():
         log.error("Config not found: %s", CONFIG_PATH)
         sys.exit(1)
@@ -72,30 +97,79 @@ def load_config() -> dict:
         log.error("[conductor] section missing or not enabled in config.toml")
         sys.exit(1)
 
+    # Telegram config
     tg = conductor_cfg.get("telegram", {})
-    token = tg.get("token", "")
-    user_id = tg.get("user_id", 0)
+    tg_token = tg.get("token", "")
+    tg_user_id = tg.get("user_id", 0)
+    tg_configured = bool(tg_token and tg_user_id)
 
-    if not token:
-        log.error("conductor.telegram.token not set in config.toml")
-        sys.exit(1)
-    if not user_id:
-        log.error("conductor.telegram.user_id not set in config.toml")
-        sys.exit(1)
+    # Slack config
+    sl = conductor_cfg.get("slack", {})
+    sl_bot_token = sl.get("bot_token", "")
+    sl_app_token = sl.get("app_token", "")
+    sl_channel_id = sl.get("channel_id", "")
+    sl_listen_mode = sl.get("listen_mode", "mentions")  # "mentions" or "all"
+    sl_allowed_users = sl.get("allowed_user_ids", [])  # List of authorized Slack user IDs
+    sl_configured = bool(sl_bot_token and sl_app_token and sl_channel_id)
 
-    profiles = conductor_cfg.get("profiles", ["default"])
+    if not tg_configured and not sl_configured:
+        log.error(
+            "Neither Telegram nor Slack configured in config.toml. "
+            "Set [conductor.telegram] or [conductor.slack]."
+        )
+        sys.exit(1)
 
     return {
-        "token": token,
-        "user_id": int(user_id),
+        "telegram": {
+            "token": tg_token,
+            "user_id": int(tg_user_id) if tg_user_id else 0,
+            "configured": tg_configured,
+        },
+        "slack": {
+            "bot_token": sl_bot_token,
+            "app_token": sl_app_token,
+            "channel_id": sl_channel_id,
+            "listen_mode": sl_listen_mode,
+            "allowed_user_ids": sl_allowed_users,
+            "configured": sl_configured,
+        },
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
-        "profiles": profiles,
     }
 
 
-def conductor_session_title(profile: str) -> str:
-    """Return the conductor session title for a given profile."""
-    return f"conductor-{profile}"
+def discover_conductors() -> list[dict]:
+    """Discover all conductors by scanning meta.json files."""
+    conductors = []
+    if not CONDUCTOR_DIR.exists():
+        return conductors
+    for entry in CONDUCTOR_DIR.iterdir():
+        if entry.is_dir():
+            meta_path = entry / "meta.json"
+            if meta_path.exists():
+                try:
+                    with open(meta_path) as f:
+                        conductors.append(json.load(f))
+                except (json.JSONDecodeError, IOError) as e:
+                    log.warning("Failed to read %s: %s", meta_path, e)
+    return conductors
+
+
+def conductor_session_title(name: str) -> str:
+    """Return the conductor session title for a given conductor name."""
+    return f"conductor-{name}"
+
+
+def get_conductor_names() -> list[str]:
+    """Get list of all conductor names."""
+    return [c["name"] for c in discover_conductors()]
+
+
+def get_unique_profiles() -> list[str]:
+    """Get unique profile names from all conductors."""
+    profiles = set()
+    for c in discover_conductors():
+        profiles.add(c.get("profile", "default"))
+    return sorted(profiles)
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +205,7 @@ def run_cli(
 def get_session_status(session: str, profile: str | None = None) -> str:
     """Get the status of a session (running/waiting/idle/error)."""
     result = run_cli(
-        "session", "show", session, "--json", profile=profile, timeout=30
+        "session", "show", "--json", session, profile=profile, timeout=30
     )
     if result.returncode != 0:
         return "error"
@@ -162,27 +236,152 @@ def send_to_conductor(
     """Send a message to the conductor session.
 
     Returns (success, response_text). When wait_for_reply=False, response_text is "".
+
+    When wait_for_reply=False and the conductor is busy (running/active/starting),
+    the message is queued in-memory and delivered automatically once the conductor
+    returns to idle/waiting state (see _drain_queue). This prevents message loss
+    during long-running tool calls.
     """
-    if wait_for_reply:
-        # Single-call flow: send + wait + print raw response.
-        # Avoids extra status/output polling round-trips.
-        result = run_cli(
-            "session", "send", session, message,
-            "--wait", "--timeout", f"{response_timeout}s", "-q",
-            profile=profile,
-            timeout=max(response_timeout+30, 60),
-        )
-    else:
+    if not wait_for_reply:
+        # For non-blocking sends (user messages), check if conductor is busy
+        # and queue instead of dropping.
+        status = get_session_status(session, profile=profile)
+        if status in ("running", "active", "starting"):
+            log.info(
+                "Conductor %s is busy (%s), queueing message", session, status,
+            )
+            _enqueue_message(session, message, profile)
+            return True, ""  # queued, not failed
+
         result = run_cli(
             "session", "send", session, message, "--no-wait",
             profile=profile, timeout=30,
         )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            # If the conductor became busy between the status check and the send,
+            # queue instead of dropping.
+            if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+                log.info(
+                    "Conductor %s became busy during send, queueing message",
+                    session,
+                )
+                _enqueue_message(session, message, profile)
+                return True, ""
+            log.error("Failed to send to conductor: %s", stderr)
+            return False, ""
+        return True, ""
+
+    # wait_for_reply=True: single-call flow used by heartbeats.
+    # Send + wait + capture raw response. Avoids extra polling round-trips.
+    result = run_cli(
+        "session", "send", session, message,
+        "--wait", "--timeout", f"{response_timeout}s", "-q",
+        profile=profile,
+        timeout=max(response_timeout + 30, 60),
+    )
     if result.returncode != 0:
         log.error(
             "Failed to send to conductor: %s", result.stderr.strip()
         )
         return False, ""
     return True, result.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Message queue for busy conductors
+# ---------------------------------------------------------------------------
+
+# In-memory queue: {session_title: [(message, profile), ...]}
+_message_queue: dict[str, list[tuple[str, str | None]]] = {}
+_queue_lock = asyncio.Lock()
+_drain_task: asyncio.Task | None = None
+
+
+def _enqueue_message(session: str, message: str, profile: str | None) -> None:
+    """Add a message to the in-memory queue for a busy conductor."""
+    if session not in _message_queue:
+        _message_queue[session] = []
+    _message_queue[session].append((message, profile))
+    log.info(
+        "Queued message for %s (queue depth: %d)",
+        session, len(_message_queue[session]),
+    )
+    _ensure_drain_task()
+
+
+def _ensure_drain_task() -> None:
+    """Start the background drain task if it's not already running."""
+    global _drain_task
+    if _drain_task is None or _drain_task.done():
+        _drain_task = asyncio.ensure_future(_drain_queue())
+
+
+async def _drain_queue() -> None:
+    """Background loop that delivers queued messages once conductors are ready.
+
+    Polls every 5s. For each conductor with queued messages, checks its
+    status and delivers the oldest message when it becomes idle/waiting.
+    Stops when the queue is empty.
+    """
+    log.info("Queue drain task started")
+    while True:
+        await asyncio.sleep(5)
+
+        if not _message_queue:
+            log.info("Queue drain task finished (queue empty)")
+            return
+
+        # Snapshot keys to avoid mutation during iteration
+        sessions = list(_message_queue.keys())
+        for session in sessions:
+            items = _message_queue.get(session)
+            if not items:
+                _message_queue.pop(session, None)
+                continue
+
+            message, profile = items[0]
+            status = get_session_status(session, profile=profile)
+
+            if status in ("running", "active", "starting"):
+                continue  # still busy, try next cycle
+
+            if status == "error":
+                log.error(
+                    "Conductor %s in error state, dropping %d queued message(s)",
+                    session, len(items),
+                )
+                _message_queue.pop(session, None)
+                continue
+
+            # Conductor is ready — deliver the message
+            log.info(
+                "Conductor %s is %s, delivering queued message (%d remaining)",
+                session, status, len(items) - 1,
+            )
+            result = run_cli(
+                "session", "send", session, message,
+                profile=profile, timeout=120,
+            )
+            if result.returncode == 0:
+                items.pop(0)
+                if not items:
+                    _message_queue.pop(session, None)
+            else:
+                stderr = result.stderr.strip()
+                if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+                    log.info(
+                        "Conductor %s busy again during drain, will retry",
+                        session,
+                    )
+                else:
+                    log.error(
+                        "Failed to deliver queued message to %s: %s — dropping",
+                        session, stderr,
+                    )
+                    items.pop(0)
+                    if not items:
+                        _message_queue.pop(session, None)
 
 
 def get_status_summary(profile: str | None = None) -> dict:
@@ -233,15 +432,14 @@ def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
     return all_sessions
 
 
-def ensure_conductor_running(profile: str) -> bool:
-    """Ensure the conductor session for a profile exists and is running."""
-    session_title = conductor_session_title(profile)
+def ensure_conductor_running(name: str, profile: str) -> bool:
+    """Ensure the conductor session exists and is running."""
+    session_title = conductor_session_title(name)
     status = get_session_status(session_title, profile=profile)
 
     if status == "error":
         log.info(
-            "Conductor session for %s not running, attempting to start...",
-            profile,
+            "Conductor %s not running, attempting to start...", name,
         )
         # Try starting first (session might exist but be stopped)
         result = run_cli(
@@ -249,20 +447,20 @@ def ensure_conductor_running(profile: str) -> bool:
         )
         if result.returncode != 0:
             # Session might not exist, try creating it
-            log.info("Creating conductor session for %s...", profile)
-            session_path = str(CONDUCTOR_DIR / profile)
+            log.info("Creating conductor session for %s...", name)
+            session_path = str(CONDUCTOR_DIR / name)
             result = run_cli(
                 "add", session_path,
                 "-t", session_title,
                 "-c", "claude",
-                "-g", "infra",
+                "-g", "conductor",
                 profile=profile,
                 timeout=60,
             )
             if result.returncode != 0:
                 log.error(
-                    "Failed to create conductor for %s: %s",
-                    profile,
+                    "Failed to create conductor %s: %s",
+                    name,
                     result.stderr.strip(),
                 )
                 return False
@@ -279,14 +477,6 @@ def ensure_conductor_running(profile: str) -> bool:
         )
 
     return True
-
-
-def ensure_all_conductors_running(profiles: list[str]) -> dict[str, bool]:
-    """Ensure conductor sessions are running for all profiles."""
-    results = {}
-    for profile in profiles:
-        results[profile] = ensure_conductor_running(profile)
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -390,28 +580,18 @@ def invoke_hook(
 # ---------------------------------------------------------------------------
 
 
-def parse_profile_prefix(text: str, profiles: list[str]) -> tuple[str | None, str]:
-    """Parse profile prefix from user message.
+def parse_conductor_prefix(text: str, conductor_names: list[str]) -> tuple[str | None, str]:
+    """Parse conductor name prefix from user message.
 
     Supports formats:
-      /p <profile> <message>
-      <profile>: <message>
+      <name>: <message>
 
-    Returns (profile_or_None, cleaned_message).
+    Returns (name_or_None, cleaned_message).
     """
-    # Check /p <profile> <message>
-    if text.startswith("/p "):
-        parts = text[3:].strip().split(None, 1)
-        if len(parts) >= 2 and parts[0] in profiles:
-            return parts[0], parts[1]
-        if len(parts) == 1 and parts[0] in profiles:
-            return parts[0], ""
-
-    # Check <profile>: <message>
-    for profile in profiles:
-        prefix = f"{profile}:"
+    for name in conductor_names:
+        prefix = f"{name}:"
         if text.startswith(prefix):
-            return profile, text[len(prefix):].strip()
+            return name, text[len(prefix):].strip()
 
     return None, text
 
@@ -422,7 +602,7 @@ def parse_profile_prefix(text: str, profiles: list[str]) -> tuple[str | None, st
 
 
 def split_message(text: str, max_len: int = TG_MAX_LENGTH) -> list[str]:
-    """Split a long message into chunks that fit Telegram's limit."""
+    """Split a long message into chunks that fit the platform limit."""
     if len(text) <= max_len:
         return [text]
 
@@ -476,9 +656,18 @@ def md_to_tg_html(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
-    """Create and configure the Telegram bot."""
-    bot = Bot(token=config["token"])
+def create_telegram_bot(config: dict):
+    """Create and configure the Telegram bot.
+
+    Returns (bot, dp) or None if Telegram is not configured or aiogram is not available.
+    """
+    if not HAS_AIOGRAM:
+        log.warning("aiogram not installed, skipping Telegram bot")
+        return None
+    if not config["telegram"]["configured"]:
+        return None
+
+    bot = Bot(token=config["telegram"]["token"])
     dp = Dispatcher()
     authorized_user = config["user_id"]
     profiles = config["profiles"]
@@ -536,19 +725,22 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
     async def cmd_start(message: types.Message):
         if not is_authorized(message):
             return
-        profile_list = ", ".join(profiles)
+        conductors = discover_conductors()
+        names = [c["name"] for c in conductors]
+        default = names[0] if names else "none"
         await message.answer(
             "Conductor bridge active.\n"
-            f"Profiles: {profile_list}\n"
+            f"Conductors: {', '.join(names) if names else 'none'}\n"
             "Commands: /status /sessions /help /restart\n"
-            f"Route to profile: /p <profile> <message> or <profile>: <message>\n"
-            f"Default profile: {default_profile}"
+            f"Route to conductor: <name>: <message>\n"
+            f"Default conductor: {default}"
         )
 
     @dp.message(Command("status"))
     async def cmd_status(message: types.Message):
         if not is_authorized(message):
             return
+        profiles = get_unique_profiles()
         agg = get_status_summary_all(profiles)
         totals = agg["totals"]
 
@@ -576,6 +768,7 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
     async def cmd_sessions(message: types.Message):
         if not is_authorized(message):
             return
+        profiles = get_unique_profiles()
         all_sessions = get_sessions_list_all(profiles)
         if not all_sessions:
             await message.answer("No sessions found.")
@@ -602,16 +795,17 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
     async def cmd_help(message: types.Message):
         if not is_authorized(message):
             return
-        profile_list = ", ".join(profiles)
+        conductors = discover_conductors()
+        names = [c["name"] for c in conductors]
         await message.answer(
             "Conductor Commands:\n"
             "/status    - Aggregated status across all profiles\n"
             "/sessions  - List all sessions (all profiles)\n"
-            "/restart   - Restart a conductor (default or specify profile)\n"
+            "/restart   - Restart a conductor (specify name)\n"
             "/help      - This message\n\n"
-            f"Profiles: {profile_list}\n"
-            f"Route: /p <profile> <message> or <profile>: <message>\n"
-            f"Default: messages go to {default_profile} conductor"
+            f"Conductors: {', '.join(names) if names else 'none'}\n"
+            f"Route: <name>: <message>\n"
+            f"Default: messages go to first conductor"
         )
 
     @dp.message(Command("restart"))
@@ -619,24 +813,35 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
         if not is_authorized(message):
             return
 
-        # Parse optional profile argument: /restart work
+        # Parse optional conductor name: /restart ryan
         text = message.text.strip()
         parts = text.split(None, 1)
-        target_profile = default_profile
-        if len(parts) > 1 and parts[1] in profiles:
-            target_profile = parts[1]
+        conductor_names = get_conductor_names()
 
-        session_title = conductor_session_title(target_profile)
+        target = None
+        if len(parts) > 1 and parts[1] in conductor_names:
+            for c in discover_conductors():
+                if c["name"] == parts[1]:
+                    target = c
+                    break
+        if target is None:
+            target = get_default_conductor()
+
+        if target is None:
+            await message.answer("No conductors found.")
+            return
+
+        session_title = conductor_session_title(target["name"])
         await message.answer(
-            f"Restarting conductor for [{target_profile}]..."
+            f"Restarting conductor {target['name']}..."
         )
         result = run_cli(
             "session", "restart", session_title,
-            profile=target_profile, timeout=60,
+            profile=target["profile"], timeout=60,
         )
         if result.returncode == 0:
             await message.answer(
-                f"Conductor [{target_profile}] restarted."
+                f"Conductor {target['name']} restarted."
             )
         else:
             await message.answer(
@@ -663,10 +868,22 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
         target_profile, cleaned_msg = parse_profile_prefix(text, profiles)
         if target_profile is None:
             target_profile = default_profile
+
         if not cleaned_msg:
             cleaned_msg = text
 
-        session_title = conductor_session_title(target_profile)
+        # Find conductor for this profile
+        all_conductors = discover_conductors()
+        target_conductor = next(
+            (c for c in all_conductors if c["profile"] == target_profile), None
+        )
+        if target_conductor is None:
+            await message.answer(
+                f"[No conductor configured for profile {target_profile}. Run: agent-deck conductor setup]"
+            )
+            return
+
+        session_title = conductor_session_title(target_conductor["name"])
 
         # Run pre-message hook (can transform or gate the message)
         hook_result = invoke_hook(target_profile, "pre-message", {
@@ -683,16 +900,38 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
                 cleaned_msg = stdout
 
         # Ensure conductor is running for this profile
-        if not ensure_conductor_running(target_profile):
+        if not ensure_conductor_running(target_conductor["name"], target_profile):
             await message.answer(
                 f"[Could not start conductor for {target_profile}. Check agent-deck.]"
             )
             return
 
-        # Send to conductor
-        log.info(
-            "User message -> [%s]: %s", target_profile, cleaned_msg[:100]
-        )
+        profile_tag = f"[{target_profile}] " if len(profiles) > 1 else ""
+
+        # Check if conductor is busy; queue the message instead of blocking
+        conductor_status = get_session_status(session_title, profile=target_profile)
+        was_busy = conductor_status in ("running", "active", "starting")
+
+        log.info("User message -> [%s]: %s", target_profile, cleaned_msg[:100])
+
+        if was_busy:
+            ok, _ = send_to_conductor(
+                session_title,
+                cleaned_msg,
+                profile=target_profile,
+                wait_for_reply=False,
+            )
+            if not ok:
+                await message.answer(
+                    f"[Failed to send message to conductor [{target_profile}].]"
+                )
+                return
+            await message.answer(
+                f"{profile_tag}⏳ Conductor busy — message queued, will deliver when ready."
+            )
+            return
+
+        # Conductor is free — send and wait for reply synchronously
         ok, response = send_to_conductor(
             session_title,
             cleaned_msg,
@@ -707,9 +946,6 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
             return
 
         # Response is returned directly by `session send --wait`.
-        profile_tag = (
-            f"[{target_profile}] " if len(profiles) > 1 else ""
-        )
         await message.answer(f"{profile_tag}...")  # typing indicator
         log.info("Conductor [%s] response: %s", target_profile, response[:100])
 
@@ -728,6 +964,329 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
         })
 
     return bot, dp
+
+
+# ---------------------------------------------------------------------------
+# Slack app setup
+# ---------------------------------------------------------------------------
+
+
+def create_slack_app(config: dict):
+    """Create and configure the Slack app with Socket Mode.
+
+    Returns (app, channel_id) or None if Slack is not configured or slack-bolt is not available.
+    """
+    if not HAS_SLACK:
+        log.warning("slack-bolt not installed, skipping Slack app")
+        return None
+    if not config["slack"]["configured"]:
+        return None
+
+    bot_token = config["slack"]["bot_token"]
+    channel_id = config["slack"]["channel_id"]
+
+    # Cache auth.test() result to avoid calling it on every event.
+    # The default SingleTeamAuthorization middleware calls auth.test()
+    # per-event until it succeeds; if the Slack API is slow after a
+    # Socket Mode reconnect, this causes cascading TimeoutErrors.
+    _auth_cache: dict = {}
+    _auth_lock = asyncio.Lock()
+
+    async def _cached_authorize(**kwargs):
+        async with _auth_lock:
+            if "result" in _auth_cache:
+                return _auth_cache["result"]
+            client = AsyncWebClient(token=bot_token, timeout=30)
+            for attempt in range(3):
+                try:
+                    resp = await client.auth_test()
+                    _auth_cache["result"] = AuthorizeResult(
+                        enterprise_id=resp.get("enterprise_id"),
+                        team_id=resp.get("team_id"),
+                        bot_user_id=resp.get("user_id"),
+                        bot_id=resp.get("bot_id"),
+                        bot_token=bot_token,
+                    )
+                    return _auth_cache["result"]
+                except Exception as e:
+                    log.warning("Slack auth.test attempt %d/3 failed: %s", attempt + 1, e)
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+            raise RuntimeError("Slack auth.test failed after 3 attempts")
+
+    app = AsyncApp(token=bot_token, authorize=_cached_authorize)
+    listen_mode = config["slack"].get("listen_mode", "mentions")
+
+    # Authorization setup
+    allowed_users = config["slack"]["allowed_user_ids"]
+
+    def is_slack_authorized(user_id: str) -> bool:
+        """Check if Slack user is authorized to use the bot.
+
+        If allowed_user_ids is empty, allow all users (backward compatible).
+        Otherwise, only allow users in the list.
+        """
+        if not allowed_users:  # Empty list = no restrictions
+            return True
+        if user_id not in allowed_users:
+            log.warning("Unauthorized Slack message from user %s", user_id)
+            return False
+        return True
+
+    def get_default_conductor() -> dict | None:
+        """Get the first conductor (default target for messages)."""
+        conductors = discover_conductors()
+        return conductors[0] if conductors else None
+
+    async def _safe_say(say, **kwargs):
+        """Wrapper around say() that catches network/API errors."""
+        try:
+            await say(**kwargs)
+        except Exception as e:
+            log.error("Slack say() failed: %s", e)
+
+    async def _handle_slack_text(text: str, say, thread_ts: str = None):
+        """Shared handler for Slack messages and mentions."""
+        conductor_names = get_conductor_names()
+        conductors = discover_conductors()
+
+        target_name, cleaned_msg = parse_conductor_prefix(text, conductor_names)
+
+        target = None
+        if target_name:
+            for c in conductors:
+                if c["name"] == target_name:
+                    target = c
+                    break
+        if target is None:
+            target = get_default_conductor()
+        if target is None:
+            await _safe_say(
+                say,
+                text="[No conductors configured. Run: agent-deck conductor setup <name>]",
+                thread_ts=thread_ts,
+            )
+            return
+
+        if not cleaned_msg:
+            cleaned_msg = text
+
+        session_title = conductor_session_title(target["name"])
+        profile = target["profile"]
+
+        if not ensure_conductor_running(target["name"], profile):
+            await _safe_say(
+                say,
+                text=f"[Could not start conductor {target['name']}. Check agent-deck.]",
+                thread_ts=thread_ts,
+            )
+            return
+
+        # Check if conductor is busy before sending
+        conductor_status = get_session_status(session_title, profile=profile)
+        was_busy = conductor_status in ("running", "active", "starting")
+
+        log.info("Slack message -> [%s]: %s", target["name"], cleaned_msg[:100])
+        if not send_to_conductor(session_title, cleaned_msg, profile=profile):
+            await _safe_say(
+                say,
+                text=f"[Failed to send message to conductor {target['name']}.]",
+                thread_ts=thread_ts,
+            )
+            return
+
+        name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
+
+        if was_busy:
+            await _safe_say(
+                say,
+                text=f"{name_tag}⏳ Conductor busy — message queued, will deliver when ready.",
+                thread_ts=thread_ts,
+            )
+            return
+
+        await _safe_say(say, text=f"{name_tag}...", thread_ts=thread_ts)
+
+        response = await wait_for_response(session_title, profile=profile)
+        log.info("Conductor [%s] response: %s", target["name"], response[:100])
+
+        for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
+            prefixed = f"{name_tag}{chunk}" if name_tag else chunk
+            await _safe_say(say, text=prefixed, thread_ts=thread_ts)
+
+    @app.event("message")
+    async def handle_slack_message(event, say):
+        """Handle messages in the configured channel.
+
+        Only active when listen_mode is "all". Ignored in "mentions" mode.
+        """
+        if listen_mode != "all":
+            return
+        # Ignore bot messages
+        if event.get("bot_id") or event.get("subtype"):
+            return
+        # Only listen in configured channel
+        if event.get("channel") != channel_id:
+            return
+
+        # Authorization check
+        user_id = event.get("user", "")
+        if not is_slack_authorized(user_id):
+            return
+
+        text = event.get("text", "").strip()
+        if not text:
+            return
+        await _handle_slack_text(
+            text, say,
+            thread_ts=event.get("thread_ts") or event.get("ts"),
+        )
+
+    @app.event("app_mention")
+    async def handle_slack_mention(event, say):
+        """Handle @bot mentions in any channel the bot is in. Always active."""
+
+        # Authorization check
+        user_id = event.get("user", "")
+        if not is_slack_authorized(user_id):
+            return
+
+        text = event.get("text", "")
+        # Strip the bot mention (e.g., "<@U01234> message" -> "message")
+        text = re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
+        if not text:
+            return
+        thread_ts = event.get("thread_ts") or event.get("ts")
+        await _handle_slack_text(
+            text, say,
+            thread_ts=thread_ts,
+        )
+
+    @app.command("/ad-status")
+    async def slack_cmd_status(ack, respond, command):
+        """Handle /ad-status slash command."""
+        await ack()
+
+        # Authorization check
+        user_id = command.get("user_id", "")
+        if not is_slack_authorized(user_id):
+            await respond("⛔ Unauthorized. Contact your administrator.")
+            return
+
+        profiles = get_unique_profiles()
+        agg = get_status_summary_all(profiles)
+        totals = agg["totals"]
+
+        lines = [
+            f"Total: {totals['total']} sessions",
+            f"  Running: {totals['running']}",
+            f"  Waiting: {totals['waiting']}",
+            f"  Idle: {totals['idle']}",
+            f"  Error: {totals['error']}",
+        ]
+
+        if len(profiles) > 1:
+            lines.append("")
+            for profile in profiles:
+                p = agg["per_profile"][profile]
+                lines.append(
+                    f"[{profile}] {p['total']}s "
+                    f"({p['running']}R {p['waiting']}W {p['idle']}I {p['error']}E)"
+                )
+
+        await respond("\n".join(lines))
+
+    @app.command("/ad-sessions")
+    async def slack_cmd_sessions(ack, respond, command):
+        """Handle /ad-sessions slash command."""
+        await ack()
+
+        # Authorization check
+        user_id = command.get("user_id", "")
+        if not is_slack_authorized(user_id):
+            await respond("⛔ Unauthorized. Contact your administrator.")
+            return
+
+        profiles = get_unique_profiles()
+        all_sessions = get_sessions_list_all(profiles)
+        if not all_sessions:
+            await respond("No sessions found.")
+            return
+
+        lines = []
+        for profile, s in all_sessions:
+            title = s.get("title", "untitled")
+            status = s.get("status", "unknown")
+            tool = s.get("tool", "")
+            prefix = f"[{profile}] " if len(profiles) > 1 else ""
+            lines.append(f"  {prefix}{title} ({tool}) - {status}")
+
+        await respond("\n".join(lines))
+
+    @app.command("/ad-restart")
+    async def slack_cmd_restart(ack, respond, command):
+        """Handle /ad-restart slash command."""
+        await ack()
+
+        # Authorization check
+        user_id = command.get("user_id", "")
+        if not is_slack_authorized(user_id):
+            await respond("⛔ Unauthorized. Contact your administrator.")
+            return
+
+        target_name = command.get("text", "").strip()
+        conductor_names = get_conductor_names()
+
+        target = None
+        if target_name and target_name in conductor_names:
+            for c in discover_conductors():
+                if c["name"] == target_name:
+                    target = c
+                    break
+        if target is None:
+            target = get_default_conductor()
+
+        if target is None:
+            await respond("No conductors found.")
+            return
+
+        session_title = conductor_session_title(target["name"])
+        await respond(f"Restarting conductor {target['name']}...")
+        result = run_cli(
+            "session", "restart", session_title,
+            profile=target["profile"], timeout=60,
+        )
+        if result.returncode == 0:
+            await respond(f"Conductor {target['name']} restarted.")
+        else:
+            await respond(f"Restart failed: {result.stderr.strip()}")
+
+    @app.command("/ad-help")
+    async def slack_cmd_help(ack, respond, command):
+        """Handle /ad-help slash command."""
+        await ack()
+
+        # Authorization check
+        user_id = command.get("user_id", "")
+        if not is_slack_authorized(user_id):
+            await respond("⛔ Unauthorized. Contact your administrator.")
+            return
+
+        conductors = discover_conductors()
+        names = [c["name"] for c in conductors]
+        await respond(
+            "Conductor Commands:\n"
+            "/ad-status    - Aggregated status across all profiles\n"
+            "/ad-sessions  - List all sessions (all profiles)\n"
+            "/ad-restart   - Restart a conductor (specify name)\n"
+            "/ad-help      - This message\n\n"
+            f"Conductors: {', '.join(names) if names else 'none'}\n"
+            f"Route: <name>: <message>\n"
+            f"Default: messages go to first conductor"
+        )
+
+    log.info("Slack app initialized (Socket Mode, channel=%s)", channel_id)
+    return app, channel_id
 
 
 # ---------------------------------------------------------------------------
@@ -756,10 +1315,10 @@ def _os_heartbeat_daemon_installed() -> bool:
     return False
 
 
-async def heartbeat_loop(bot: Bot, config: dict):
-    """Periodic heartbeat: check status across all profiles and trigger conductors."""
-    interval_minutes = config["heartbeat_interval"]
-    if interval_minutes <= 0:
+async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_channel_id=None):
+    """Periodic heartbeat: check status for each conductor and trigger checks."""
+    global_interval = config["heartbeat_interval"]
+    if global_interval <= 0:
         log.info("Heartbeat disabled (interval=0)")
         return
 
@@ -767,24 +1326,28 @@ async def heartbeat_loop(bot: Bot, config: dict):
         log.info("OS heartbeat daemon detected, bridge heartbeat loop disabled (avoiding double-trigger)")
         return
 
-    interval_seconds = interval_minutes * 60
-    profiles = config["profiles"]
-    authorized_user = config["user_id"]
+    interval_seconds = global_interval * 60
+    tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
 
-    log.info(
-        "Heartbeat loop started (every %d minutes, %d profiles)",
-        interval_minutes,
-        len(profiles),
-    )
+    log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
         await asyncio.sleep(interval_seconds)
 
-        for profile in profiles:
+        conductors = discover_conductors()
+        for conductor in conductors:
             try:
-                session_title = conductor_session_title(profile)
+                name = conductor["name"]
+                profile = conductor["profile"]
 
-                # Get current status for this profile
+                # Skip conductors with heartbeat disabled
+                if not conductor.get("heartbeat_enabled", True):
+                    log.debug("Heartbeat skipped for %s (disabled)", name)
+                    continue
+
+                session_title = conductor_session_title(name)
+
+                # Get current status for this conductor's profile
                 summary = get_status_summary(profile)
                 waiting = summary.get("waiting", 0)
                 running = summary.get("running", 0)
@@ -792,8 +1355,8 @@ async def heartbeat_loop(bot: Bot, config: dict):
                 error = summary.get("error", 0)
 
                 log.info(
-                    "Heartbeat [%s]: %d waiting, %d running, %d idle, %d error",
-                    profile, waiting, running, idle, error,
+                    "Heartbeat [%s/%s]: %d waiting, %d running, %d idle, %d error",
+                    name, profile, waiting, running, idle, error,
                 )
 
                 # Only trigger conductor if there are waiting or error sessions
@@ -808,8 +1371,8 @@ async def heartbeat_loop(bot: Bot, config: dict):
                     s_title = s.get("title", "untitled")
                     s_status = s.get("status", "")
                     s_path = s.get("path", "")
-                    # Skip the conductor itself
-                    if s_title == session_title:
+                    # Skip conductor sessions
+                    if s_title.startswith("conductor-"):
                         continue
                     if s_status == "waiting":
                         waiting_details.append(
@@ -821,7 +1384,7 @@ async def heartbeat_loop(bot: Bot, config: dict):
                         )
 
                 parts = [
-                    f"[HEARTBEAT] [{profile}] Status: {waiting} waiting, "
+                    f"[HEARTBEAT] [{name}] Status: {waiting} waiting, "
                     f"{running} running, {idle} idle, {error} error."
                 ]
                 if waiting_details:
@@ -835,6 +1398,7 @@ async def heartbeat_loop(bot: Bot, config: dict):
                 # Append HEARTBEAT_RULES.md (per-profile, then global fallback)
                 rules_text = None
                 for rules_path in [
+                    CONDUCTOR_DIR / name / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
                 ]:
@@ -876,10 +1440,22 @@ async def heartbeat_loop(bot: Bot, config: dict):
                         heartbeat_msg = stdout
 
                 # Ensure conductor is running for this profile
-                if not ensure_conductor_running(profile):
+                if not ensure_conductor_running(name, profile):
                     log.error(
                         "Heartbeat [%s]: conductor not running, skipping",
-                        profile,
+                        name,
+                    )
+                    continue
+
+                # Check if conductor is busy — skip heartbeat if so
+                # (heartbeats are periodic; no point queueing them)
+                conductor_status = get_session_status(
+                    session_title, profile=profile
+                )
+                if conductor_status in ("running", "active", "starting"):
+                    log.info(
+                        "Heartbeat [%s]: conductor busy (%s), skipping this cycle",
+                        name, conductor_status,
                     )
                     continue
 
@@ -894,36 +1470,50 @@ async def heartbeat_loop(bot: Bot, config: dict):
                 if not ok:
                     log.error(
                         "Heartbeat [%s]: failed to send to conductor",
-                        profile,
+                        name,
                     )
                     continue
 
                 # Response is returned directly by `session send --wait`.
                 log.info(
                     "Heartbeat [%s] response: %s",
-                    profile, response[:200],
+                    name, response[:200],
                 )
 
-                # If conductor flagged items needing attention, notify via Telegram
+                # If conductor flagged items needing attention, notify via Telegram and Slack
                 has_alerts = "NEED:" in response
                 if has_alerts:
-                    try:
-                        prefix = (
-                            f"[{profile}] " if len(profiles) > 1 else ""
-                        )
-                        alert_html = md_to_tg_html(
-                            f"{prefix}Conductor alert:\n{response}"
-                        )
-                        for chunk in split_message(alert_html):
-                            await bot.send_message(
-                                authorized_user,
-                                chunk,
-                                parse_mode="HTML",
+                    all_conductors = discover_conductors()
+                    prefix = (
+                        f"[{name}] " if len(all_conductors) > 1 else ""
+                    )
+                    alert_text = f"{prefix}Conductor alert:\n{response}"
+
+                    # Notify via Telegram (with HTML formatting)
+                    if telegram_bot and tg_user_id:
+                        try:
+                            alert_html = md_to_tg_html(alert_text)
+                            for chunk in split_message(alert_html):
+                                await telegram_bot.send_message(
+                                    tg_user_id,
+                                    chunk,
+                                    parse_mode="HTML",
+                                )
+                        except Exception as e:
+                            log.error(
+                                "Failed to send Telegram notification: %s", e
                             )
-                    except Exception as e:
-                        log.error(
-                            "Failed to send Telegram notification: %s", e
-                        )
+
+                    # Notify via Slack
+                    if slack_app and slack_channel_id:
+                        try:
+                            await slack_app.client.chat_postMessage(
+                                channel=slack_channel_id, text=alert_text,
+                            )
+                        except Exception as e:
+                            log.error(
+                                "Failed to send Slack notification: %s", e
+                            )
 
                 # Run post-heartbeat hook (non-gating)
                 invoke_hook(profile, "post-heartbeat", {
@@ -933,7 +1523,7 @@ async def heartbeat_loop(bot: Bot, config: dict):
                 })
 
             except Exception as e:
-                log.error("Heartbeat [%s] error: %s", profile, e)
+                log.error("Heartbeat [%s] error: %s", conductor.get("name", "?"), e)
 
 
 # ---------------------------------------------------------------------------
@@ -945,24 +1535,85 @@ async def main():
     log.info("Loading config from %s", CONFIG_PATH)
     config = load_config()
 
+    conductors = discover_conductors()
+    conductor_names = [c["name"] for c in conductors]
+
+    # Verify at least one integration is configured and available
+    tg_ok = config["telegram"]["configured"] and HAS_AIOGRAM
+    sl_ok = config["slack"]["configured"] and HAS_SLACK
+
+    if not tg_ok and not sl_ok:
+        if config["telegram"]["configured"] and not HAS_AIOGRAM:
+            log.error("Telegram configured but aiogram not installed. pip install aiogram")
+        if config["slack"]["configured"] and not HAS_SLACK:
+            log.error("Slack configured but slack-bolt not installed. pip install slack-bolt slack-sdk")
+        if not config["telegram"]["configured"] and not config["slack"]["configured"]:
+            log.error("Neither Telegram nor Slack configured. Exiting.")
+        sys.exit(1)
+
+    platforms = []
+    if tg_ok:
+        platforms.append("Telegram")
+    if sl_ok:
+        platforms.append("Slack")
+
     log.info(
-        "Starting conductor bridge (user_id=%d, heartbeat=%dm, profiles=%s)",
-        config["user_id"],
+        "Starting conductor bridge (platforms=%s, heartbeat=%dm, conductors=%s)",
+        "+".join(platforms),
         config["heartbeat_interval"],
-        ", ".join(config["profiles"]),
+        ", ".join(conductor_names) if conductor_names else "none",
     )
 
-    bot, dp = create_bot(config)
+    # Create Telegram bot
+    telegram_bot, telegram_dp = None, None
+    if tg_ok:
+        result = create_telegram_bot(config)
+        if result:
+            telegram_bot, telegram_dp = result
+            log.info("Telegram bot initialized (user_id=%d)", config["telegram"]["user_id"])
 
-    # Run heartbeat in background
-    heartbeat_task = asyncio.create_task(heartbeat_loop(bot, config))
+    # Create Slack app
+    slack_app, slack_handler, slack_channel_id = None, None, None
+    if sl_ok:
+        result = create_slack_app(config)
+        if result:
+            slack_app, slack_channel_id = result
+            slack_handler = AsyncSocketModeHandler(slack_app, config["slack"]["app_token"])
+
+    # Pre-start all conductors so they're warm when messages arrive
+    for c in conductors:
+        if ensure_conductor_running(c["name"], c["profile"]):
+            log.info("Conductor %s is running", c["name"])
+        else:
+            log.warning("Failed to pre-start conductor %s", c["name"])
+
+    # Start heartbeat (shared, notifies both platforms)
+    heartbeat_task = asyncio.create_task(
+        heartbeat_loop(
+            config,
+            telegram_bot=telegram_bot,
+            slack_app=slack_app,
+            slack_channel_id=slack_channel_id,
+        )
+    )
+
+    # Run both concurrently
+    tasks = [heartbeat_task]
+    if telegram_dp and telegram_bot:
+        tasks.append(asyncio.create_task(telegram_dp.start_polling(telegram_bot)))
+        log.info("Telegram bot polling started")
+    if slack_handler:
+        tasks.append(asyncio.create_task(slack_handler.start_async()))
+        log.info("Slack Socket Mode handler started")
 
     try:
-        log.info("Telegram bot polling started")
-        await dp.start_polling(bot)
+        await asyncio.gather(*tasks)
     finally:
         heartbeat_task.cancel()
-        await bot.session.close()
+        if telegram_bot:
+            await telegram_bot.session.close()
+        if slack_handler:
+            await slack_handler.close_async()
 
 
 if __name__ == "__main__":
