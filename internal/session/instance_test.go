@@ -2255,28 +2255,6 @@ func writeCodexSessionFile(t *testing.T, codexHome, sessionID, cwd string) strin
 	return filePath
 }
 
-// TestInstance_UpdateHookStatus tests the UpdateHookStatus method.
-func TestInstance_UpdateHookStatus(t *testing.T) {
-	inst := NewInstanceWithTool("hook-update-test", "/tmp/test", "claude")
-
-	// Update with hook status
-	hookStatus := &HookStatus{
-		Status:    "waiting",
-		SessionID: "hook-session-123",
-		Event:     "PermissionRequest",
-		UpdatedAt: time.Now(),
-	}
-	inst.UpdateHookStatus(hookStatus)
-
-	// Verify fields were set
-	if inst.hookStatus != "waiting" {
-		t.Errorf("hookStatus = %q, want waiting", inst.hookStatus)
-	}
-	if inst.ClaudeSessionID != "hook-session-123" {
-		t.Errorf("ClaudeSessionID = %q, want hook-session-123", inst.ClaudeSessionID)
-	}
-}
-
 // TestInstance_UpdateHookStatus_Nil tests UpdateHookStatus with nil input.
 func TestInstance_UpdateHookStatus_Nil(t *testing.T) {
 	inst := NewInstanceWithTool("hook-nil-test", "/tmp/test", "claude")
@@ -2286,6 +2264,357 @@ func TestInstance_UpdateHookStatus_Nil(t *testing.T) {
 
 	if inst.hookStatus != "" {
 		t.Errorf("hookStatus should be empty, got %q", inst.hookStatus)
+	}
+}
+
+// TestInstance_UpdateHookStatus_Claude exercises the session ID quality gate
+// for Claude instances across all meaningful event/state combinations.
+func TestInstance_UpdateHookStatus_Claude(t *testing.T) {
+	tests := []struct {
+		name            string
+		existingID      string // pre-set ClaudeSessionID (empty = first detection)
+		hookSessionID   string // session ID in the incoming hook payload
+		hookEvent       string
+		hookStatusStr   string
+		wantSessionID   string // expected ClaudeSessionID after update
+		wantHookStatus  string // expected hookStatus after update
+		wantHookSessID  string // expected hookSessionID after update
+	}{
+		// --- First detection (empty existing ID) ---
+		{
+			name:           "first_detection_accepts_any_event",
+			existingID:     "",
+			hookSessionID:  "first-session",
+			hookEvent:      "PermissionRequest",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "first-session",
+			wantHookStatus: "waiting",
+			wantHookSessID: "first-session",
+		},
+		{
+			name:           "first_detection_session_start",
+			existingID:     "",
+			hookSessionID:  "brand-new",
+			hookEvent:      "SessionStart",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "brand-new",
+			wantHookStatus: "waiting",
+			wantHookSessID: "brand-new",
+		},
+
+		// --- SessionStart with new ID (the bug scenario) ---
+		{
+			name:           "session_start_accepts_fresh_session",
+			existingID:     "old-plan-session",
+			hookSessionID:  "new-impl-session",
+			hookEvent:      "SessionStart",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "new-impl-session",
+			wantHookStatus: "waiting",
+			wantHookSessID: "new-impl-session",
+		},
+		{
+			name:           "session_start_accepts_fresh_session_running",
+			existingID:     "old-session",
+			hookSessionID:  "restarted-session",
+			hookEvent:      "SessionStart",
+			hookStatusStr:  "running",
+			wantSessionID:  "restarted-session",
+			wantHookStatus: "running",
+			wantHookSessID: "restarted-session",
+		},
+
+		// --- Same session ID (no-op for session ID) ---
+		{
+			name:           "same_session_id_noop",
+			existingID:     "current-session",
+			hookSessionID:  "current-session",
+			hookEvent:      "Stop",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "current-session",
+			wantHookStatus: "waiting",
+			wantHookSessID: "", // hookSessionID not updated on same-ID early return
+		},
+
+		// --- Non-SessionStart events with new ID and no conversation data ---
+		// These should be REJECTED (quality gate blocks them) since
+		// /tmp/nonexistent-project won't have any .jsonl files.
+		{
+			name:           "stop_event_rejected_without_conversation_data",
+			existingID:     "existing-session",
+			hookSessionID:  "unknown-new-session",
+			hookEvent:      "Stop",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "existing-session", // unchanged
+			wantHookStatus: "waiting",           // status IS updated
+			wantHookSessID: "",                  // hookSessionID NOT updated
+		},
+		{
+			name:           "user_prompt_rejected_without_conversation_data",
+			existingID:     "existing-session",
+			hookSessionID:  "unknown-new-session",
+			hookEvent:      "UserPromptSubmit",
+			hookStatusStr:  "running",
+			wantSessionID:  "existing-session", // unchanged
+			wantHookStatus: "running",           // status IS updated
+			wantHookSessID: "",                  // hookSessionID NOT updated
+		},
+		{
+			name:           "permission_request_rejected_without_conversation_data",
+			existingID:     "existing-session",
+			hookSessionID:  "unknown-new-session",
+			hookEvent:      "PermissionRequest",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "existing-session",
+			wantHookStatus: "waiting",
+			wantHookSessID: "",
+		},
+
+		// --- Empty session ID in payload ---
+		{
+			name:           "empty_hook_session_id_skips_sync",
+			existingID:     "existing-session",
+			hookSessionID:  "",
+			hookEvent:      "Stop",
+			hookStatusStr:  "waiting",
+			wantSessionID:  "existing-session", // unchanged
+			wantHookStatus: "waiting",           // status IS updated
+			wantHookSessID: "",                  // not touched
+		},
+
+		// --- SessionEnd event ---
+		{
+			name:           "session_end_rejected_without_conversation_data",
+			existingID:     "existing-session",
+			hookSessionID:  "dying-session",
+			hookEvent:      "SessionEnd",
+			hookStatusStr:  "dead",
+			wantSessionID:  "existing-session", // unchanged
+			wantHookStatus: "dead",              // status IS updated
+			wantHookSessID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use a nonexistent project path so sessionHasConversationData returns false.
+			inst := NewInstanceWithTool("hook-test-"+tt.name, "/tmp/nonexistent-project-9999", "claude")
+			inst.ClaudeSessionID = tt.existingID
+			// Reset hookSessionID to empty so we can detect if it was set.
+			inst.hookSessionID = ""
+
+			now := time.Now()
+			inst.UpdateHookStatus(&HookStatus{
+				Status:    tt.hookStatusStr,
+				SessionID: tt.hookSessionID,
+				Event:     tt.hookEvent,
+				UpdatedAt: now,
+			})
+
+			if inst.ClaudeSessionID != tt.wantSessionID {
+				t.Errorf("ClaudeSessionID = %q, want %q", inst.ClaudeSessionID, tt.wantSessionID)
+			}
+			if inst.hookStatus != tt.wantHookStatus {
+				t.Errorf("hookStatus = %q, want %q", inst.hookStatus, tt.wantHookStatus)
+			}
+			if inst.hookSessionID != tt.wantHookSessID {
+				t.Errorf("hookSessionID = %q, want %q", inst.hookSessionID, tt.wantHookSessID)
+			}
+			// hookLastUpdate should always be set (even when session ID is rejected).
+			if inst.hookLastUpdate != now {
+				t.Errorf("hookLastUpdate not set to input time")
+			}
+		})
+	}
+}
+
+// TestInstance_UpdateHookStatus_Codex verifies that codex instances always
+// accept new session IDs without a quality gate.
+func TestInstance_UpdateHookStatus_Codex(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingID    string
+		hookSessionID string
+		hookEvent     string
+		wantSessionID string
+	}{
+		{
+			name:          "codex_first_detection",
+			existingID:    "",
+			hookSessionID: "codex-session-1",
+			hookEvent:     "SessionStart",
+			wantSessionID: "codex-session-1",
+		},
+		{
+			name:          "codex_accepts_new_id_on_any_event",
+			existingID:    "codex-old",
+			hookSessionID: "codex-new",
+			hookEvent:     "Stop",
+			wantSessionID: "codex-new",
+		},
+		{
+			name:          "codex_same_id_noop",
+			existingID:    "codex-current",
+			hookSessionID: "codex-current",
+			hookEvent:     "UserPromptSubmit",
+			wantSessionID: "codex-current",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inst := NewInstanceWithTool("codex-hook-"+tt.name, "/tmp/test", "codex")
+			inst.CodexSessionID = tt.existingID
+
+			inst.UpdateHookStatus(&HookStatus{
+				Status:    "running",
+				SessionID: tt.hookSessionID,
+				Event:     tt.hookEvent,
+				UpdatedAt: time.Now(),
+			})
+
+			if inst.CodexSessionID != tt.wantSessionID {
+				t.Errorf("CodexSessionID = %q, want %q", inst.CodexSessionID, tt.wantSessionID)
+			}
+		})
+	}
+}
+
+// TestInstance_UpdateHookStatus_UnknownTool verifies that unknown tool types
+// still get hookStatus/hookLastUpdate set but don't sync any session ID.
+func TestInstance_UpdateHookStatus_UnknownTool(t *testing.T) {
+	inst := NewInstanceWithTool("unknown-tool-test", "/tmp/test", "vim")
+	now := time.Now()
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: "some-session",
+		Event:     "UserPromptSubmit",
+		UpdatedAt: now,
+	})
+
+	if inst.hookStatus != "running" {
+		t.Errorf("hookStatus = %q, want running", inst.hookStatus)
+	}
+	if inst.hookLastUpdate != now {
+		t.Errorf("hookLastUpdate not set")
+	}
+	// Neither claude nor codex session ID should be set.
+	if inst.ClaudeSessionID != "" {
+		t.Errorf("ClaudeSessionID = %q, want empty", inst.ClaudeSessionID)
+	}
+	if inst.CodexSessionID != "" {
+		t.Errorf("CodexSessionID = %q, want empty", inst.CodexSessionID)
+	}
+}
+
+// TestInstance_UpdateHookStatus_SequentialTransitions simulates the full
+// lifecycle: SessionStart → UserPromptSubmit → Stop → /clear → SessionStart
+// (with new ID) → UserPromptSubmit. This is the exact plan→implement flow.
+func TestInstance_UpdateHookStatus_SequentialTransitions(t *testing.T) {
+	inst := NewInstanceWithTool("lifecycle-test", "/tmp/nonexistent-project-9999", "claude")
+
+	// 1. Initial SessionStart
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "plan-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	if inst.ClaudeSessionID != "plan-session" {
+		t.Fatalf("step 1: ClaudeSessionID = %q, want plan-session", inst.ClaudeSessionID)
+	}
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("step 1: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+
+	// 2. User starts planning
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "plan-session", Event: "UserPromptSubmit", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "running" {
+		t.Fatalf("step 2: hookStatus = %q, want running", inst.hookStatus)
+	}
+
+	// 3. Plan complete, Claude stops
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "plan-session", Event: "Stop", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("step 3: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+
+	// 4. User runs /clear → fresh context → NEW SessionStart with different ID
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "impl-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	if inst.ClaudeSessionID != "impl-session" {
+		t.Fatalf("step 4 (BUG SCENARIO): ClaudeSessionID = %q, want impl-session", inst.ClaudeSessionID)
+	}
+	if inst.hookSessionID != "impl-session" {
+		t.Fatalf("step 4: hookSessionID = %q, want impl-session", inst.hookSessionID)
+	}
+
+	// 5. User starts implementing in fresh context
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "impl-session", Event: "UserPromptSubmit", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "running" {
+		t.Fatalf("step 5: hookStatus = %q, want running", inst.hookStatus)
+	}
+	// Session ID should remain the impl session.
+	if inst.ClaudeSessionID != "impl-session" {
+		t.Fatalf("step 5: ClaudeSessionID = %q, want impl-session", inst.ClaudeSessionID)
+	}
+
+	// 6. Implementation done, Claude stops
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "impl-session", Event: "Stop", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("step 6: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+}
+
+// TestInstance_UpdateHookStatus_MultipleSessionStartsInSequence verifies
+// that rapid session restarts (multiple SessionStart events) all get accepted.
+func TestInstance_UpdateHookStatus_MultipleSessionStartsInSequence(t *testing.T) {
+	inst := NewInstanceWithTool("multi-restart-test", "/tmp/nonexistent-project-9999", "claude")
+
+	sessions := []string{"session-a", "session-b", "session-c", "session-d"}
+	for i, sid := range sessions {
+		inst.UpdateHookStatus(&HookStatus{
+			Status: "waiting", SessionID: sid, Event: "SessionStart", UpdatedAt: time.Now(),
+		})
+		if inst.ClaudeSessionID != sid {
+			t.Fatalf("after SessionStart %d: ClaudeSessionID = %q, want %q", i, inst.ClaudeSessionID, sid)
+		}
+		if inst.hookSessionID != sid {
+			t.Fatalf("after SessionStart %d: hookSessionID = %q, want %q", i, inst.hookSessionID, sid)
+		}
+	}
+}
+
+// TestInstance_UpdateHookStatus_StatusAlwaysUpdatedEvenWhenSessionRejected
+// verifies that hookStatus and hookLastUpdate are always set, even when the
+// session ID quality gate rejects the new session ID.
+func TestInstance_UpdateHookStatus_StatusAlwaysUpdatedEvenWhenSessionRejected(t *testing.T) {
+	inst := NewInstanceWithTool("status-always-test", "/tmp/nonexistent-project-9999", "claude")
+	inst.ClaudeSessionID = "existing"
+
+	now := time.Now()
+	// Stop event with unknown session ID and no conversation data → rejected.
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "unknown-session", Event: "Stop", UpdatedAt: now,
+	})
+
+	// Session ID should NOT have changed.
+	if inst.ClaudeSessionID != "existing" {
+		t.Errorf("ClaudeSessionID = %q, want existing (should be rejected)", inst.ClaudeSessionID)
+	}
+	// But hookStatus and hookLastUpdate MUST be updated.
+	if inst.hookStatus != "waiting" {
+		t.Errorf("hookStatus = %q, want waiting (should always be set)", inst.hookStatus)
+	}
+	if inst.hookLastUpdate != now {
+		t.Errorf("hookLastUpdate not set (should always be set)")
 	}
 }
 

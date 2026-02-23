@@ -1860,9 +1860,15 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if status.SessionID == i.ClaudeSessionID {
 			return
 		}
-		// Quality gate: only accept if the hook session has conversation data,
-		// OR if the current session ID is empty (first detection).
-		if i.ClaudeSessionID == "" || sessionHasConversationData(status.SessionID, i.ProjectPath) {
+		// Quality gate: accept new session ID if any of:
+		//   1. Current session ID is empty (first detection)
+		//   2. SessionStart event (fresh context / plan-to-implement transition)
+		//   3. New session has conversation data (resumed session)
+		// SessionStart is trusted unconditionally because Claude Code only fires
+		// it when a new session begins (e.g. after /clear or fresh context).
+		// Without this, transitions like plan mode → implement with fresh context
+		// would be rejected since the new session has no .jsonl data yet.
+		if i.ClaudeSessionID == "" || status.Event == "SessionStart" || sessionHasConversationData(status.SessionID, i.ProjectPath) {
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
 				slog.String("new_id", status.SessionID),
