@@ -42,6 +42,7 @@ var hookEventConfigs = []struct {
 	{Event: "SessionStart"},
 	{Event: "UserPromptSubmit"},
 	{Event: "Stop"},
+	{Event: "PreCompact"},
 	{Event: "PermissionRequest"},
 	{Event: "Notification", Matcher: "permission_prompt|elicitation_dialog"},
 	{Event: "SessionEnd"},

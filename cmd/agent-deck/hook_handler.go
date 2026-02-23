@@ -41,6 +41,8 @@ func mapEventToStatus(event string) string {
 		return "running" // User sent prompt, Claude is processing
 	case "Stop":
 		return "waiting" // Claude finished, back at prompt waiting for user
+	case "PreCompact":
+		return "running" // Compaction is active processing; keeps freshness alive
 	case "PermissionRequest":
 		return "waiting" // Claude needs permission approval
 	case "Notification":

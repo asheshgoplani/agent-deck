@@ -2324,6 +2324,18 @@ func TestInstance_UpdateHookStatus_Claude(t *testing.T) {
 			wantHookSessID: "restarted-session",
 		},
 
+		// --- PreCompact event (keeps running status, refreshes timestamp) ---
+		{
+			name:           "precompact_stays_running",
+			existingID:     "current-session",
+			hookSessionID:  "current-session",
+			hookEvent:      "PreCompact",
+			hookStatusStr:  "running",
+			wantSessionID:  "current-session",
+			wantHookStatus: "running",
+			wantHookSessID: "", // same ID, early return
+		},
+
 		// --- Same session ID (no-op for session ID) ---
 		{
 			name:           "same_session_id_noop",
@@ -2571,6 +2583,94 @@ func TestInstance_UpdateHookStatus_SequentialTransitions(t *testing.T) {
 	if inst.hookStatus != "waiting" {
 		t.Fatalf("step 6: hookStatus = %q, want waiting", inst.hookStatus)
 	}
+}
+
+// TestInstance_UpdateHookStatus_CompactLifecycle simulates the hook event
+// sequence during auto-compact: running → PreCompact → SessionStart (new ID) → Stop.
+// Verifies the status correctly transitions through compaction.
+func TestInstance_UpdateHookStatus_CompactLifecycle(t *testing.T) {
+	inst := NewInstanceWithTool("compact-lifecycle-test", "/tmp/nonexistent-project-9999", "claude")
+
+	// 1. User submits prompt
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "original-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "original-session", Event: "UserPromptSubmit", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "running" {
+		t.Fatalf("step 1: hookStatus = %q, want running", inst.hookStatus)
+	}
+
+	// 2. Auto-compact fires PreCompact → stays running (compaction is active processing)
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "original-session", Event: "PreCompact", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "running" {
+		t.Fatalf("step 2 (PreCompact): hookStatus = %q, want running", inst.hookStatus)
+	}
+
+	// 3. Compaction creates new session → SessionStart fires with new ID
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "compacted-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	if inst.ClaudeSessionID != "compacted-session" {
+		t.Fatalf("step 3: ClaudeSessionID = %q, want compacted-session", inst.ClaudeSessionID)
+	}
+	// Status transitions to waiting (compaction complete, new session started)
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("step 3: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+
+	// 4. Claude finishes responding → Stop
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "compacted-session", Event: "Stop", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("step 4 (Stop): hookStatus = %q, want waiting", inst.hookStatus)
+	}
+}
+
+// TestInstance_UpdateHookStatus_UserCompactLifecycle simulates the hook event
+// sequence for user-initiated /compact: SessionStart fires after compaction
+// but Stop does NOT fire (slash commands don't trigger Stop).
+func TestInstance_UpdateHookStatus_UserCompactLifecycle(t *testing.T) {
+	inst := NewInstanceWithTool("user-compact-test", "/tmp/nonexistent-project-9999", "claude")
+
+	// Previous turn ended, session is waiting
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "prev-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "prev-session", Event: "UserPromptSubmit", UpdatedAt: time.Now(),
+	})
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "prev-session", Event: "Stop", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("setup: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+
+	// User runs /compact → PreCompact fires
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "running", SessionID: "prev-session", Event: "PreCompact", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "running" {
+		t.Fatalf("PreCompact: hookStatus = %q, want running", inst.hookStatus)
+	}
+
+	// Compaction creates new session → SessionStart fires
+	inst.UpdateHookStatus(&HookStatus{
+		Status: "waiting", SessionID: "compacted-session", Event: "SessionStart", UpdatedAt: time.Now(),
+	})
+	if inst.hookStatus != "waiting" {
+		t.Fatalf("post-compact SessionStart: hookStatus = %q, want waiting", inst.hookStatus)
+	}
+	if inst.ClaudeSessionID != "compacted-session" {
+		t.Fatalf("post-compact: ClaudeSessionID = %q, want compacted-session", inst.ClaudeSessionID)
+	}
+	// No Stop fires for /compact (slash commands don't trigger Stop).
+	// Status should remain "waiting" — session correctly shows as idle/waiting.
 }
 
 // TestInstance_UpdateHookStatus_MultipleSessionStartsInSequence verifies
