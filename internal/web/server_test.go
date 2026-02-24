@@ -66,8 +66,8 @@ func TestIndexServed(t *testing.T) {
 	if !strings.Contains(rr.Body.String(), "Agent Deck") {
 		t.Fatalf("expected Agent Deck in html body, got: %s", rr.Body.String())
 	}
-	if !strings.Contains(rr.Body.String(), "filter-status") {
-		t.Fatalf("expected status filter in dashboard html, got: %s", rr.Body.String())
+	if !strings.Contains(rr.Body.String(), "filter-bar") {
+		t.Fatalf("expected filter bar in dashboard html, got: %s", rr.Body.String())
 	}
 	if !strings.Contains(rr.Body.String(), "manifest.webmanifest") {
 		t.Fatalf("expected pwa manifest link in html, got: %s", rr.Body.String())
