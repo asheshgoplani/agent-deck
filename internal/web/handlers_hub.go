@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 )
@@ -179,6 +181,12 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskHealth(w, taskID)
+	case "preview":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskPreview(w, r, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -416,6 +424,72 @@ func (s *Server) containerForProject(projectName string) string {
 		}
 	}
 	return ""
+}
+
+// handleTaskPreview serves GET /api/tasks/{id}/preview as an SSE stream.
+// Streams tmux output from the container's pipe-pane log file.
+func (s *Server) handleTaskPreview(w http.ResponseWriter, r *http.Request, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	if task.TmuxSession == "" || s.containerExec == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "no active session")
+		return
+	}
+
+	container := s.containerForProject(task.Project)
+	if container == "" {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "no container configured")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	logFile := fmt.Sprintf("/tmp/%s.log", task.TmuxSession)
+	ctx := r.Context()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastLen int
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			output, execErr := s.containerExec.Exec(ctx, container, "tail", "-n", "50", logFile)
+			if execErr != nil {
+				continue
+			}
+			if len(output) != lastLen {
+				lastLen = len(output)
+				if writeErr := writeSSEEvent(w, flusher, "preview", map[string]string{
+					"taskId": taskID,
+					"output": output,
+				}); writeErr != nil {
+					return
+				}
+			}
+		}
+	}
 }
 
 // handleProjects serves GET /api/projects.
