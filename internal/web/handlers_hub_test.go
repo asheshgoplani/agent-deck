@@ -459,6 +459,93 @@ func TestTaskInputEmptyInput(t *testing.T) {
 	}
 }
 
+func TestForkTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	parent := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		Branch:      "feat/auth",
+	}
+	if err := srv.hubTasks.Save(parent); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"description":"Try JWT approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+parent.ID+"/fork", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.ParentTaskID != parent.ID {
+		t.Fatalf("expected parentTaskId %s, got %s", parent.ID, resp.Task.ParentTaskID)
+	}
+	if resp.Task.Project != parent.Project {
+		t.Fatalf("expected project %s inherited from parent, got %s", parent.Project, resp.Task.Project)
+	}
+	if resp.Task.Description != "Try JWT approach" {
+		t.Fatalf("expected description 'Try JWT approach', got %s", resp.Task.Description)
+	}
+	if resp.Task.ID == parent.ID {
+		t.Fatal("child should have a different ID than parent")
+	}
+}
+
+func TestForkTaskDefaultDescription(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	parent := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(parent); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Empty body — should use default description.
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+parent.ID+"/fork", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Description != "Fix auth bug (fork)" {
+		t.Fatalf("expected default fork description, got %s", resp.Task.Description)
+	}
+}
+
+func TestForkTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/t-nonexistent/fork", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
 func TestDeleteTask(t *testing.T) {
 	srv := newTestServerWithHub(t)
 

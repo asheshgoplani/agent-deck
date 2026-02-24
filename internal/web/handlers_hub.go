@@ -264,8 +264,45 @@ func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID 
 	})
 }
 
+// handleTaskFork serves POST /api/tasks/{id}/fork.
 func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID string) {
-	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	parent, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "parent task not found")
+		return
+	}
+
+	var req createTaskRequest
+	if decodeErr := json.NewDecoder(r.Body).Decode(&req); decodeErr != nil {
+		req = createTaskRequest{}
+	}
+
+	description := req.Description
+	if description == "" {
+		description = parent.Description + " (fork)"
+	}
+
+	child := &hub.Task{
+		Project:      parent.Project,
+		Description:  description,
+		Phase:        parent.Phase,
+		Branch:       parent.Branch,
+		Status:       hub.TaskStatusIdle,
+		ParentTaskID: parent.ID,
+	}
+
+	if err := s.hubTasks.Save(child); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create fork")
+		return
+	}
+
+	s.notifyTaskChanged()
+	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: child})
 }
 
 // handleProjects serves GET /api/projects.
