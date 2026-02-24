@@ -11,6 +11,8 @@
   var detailBackdrop = document.getElementById("detail-backdrop")
   var detailBack = document.getElementById("detail-back")
   var detailBody = document.getElementById("detail-body")
+  var chatInput = document.getElementById("detail-chat-input")
+  var chatSend = document.getElementById("detail-chat-send")
   var newTaskBtn = document.getElementById("new-task-btn")
   var newTaskModal = document.getElementById("new-task-modal")
   var newTaskBackdrop = document.getElementById("new-task-backdrop")
@@ -428,6 +430,29 @@
     return days + "d " + (hours % 24) + "h"
   }
 
+  // ── Chat input ──────────────────────────────────────────────────
+  function sendChatInput() {
+    if (!state.selectedTaskId || !chatInput) return
+    var input = chatInput.value.trim()
+    if (!input) return
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks/" + state.selectedTaskId + "/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: input }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("send failed: " + r.status)
+        chatInput.value = ""
+      })
+      .catch(function (err) {
+        console.error("sendChatInput:", err)
+      })
+  }
+
   // ── New Task modal ───────────────────────────────────────────────
   function openNewTaskModal() {
     // Populate project selector from loaded projects.
@@ -497,6 +522,17 @@
     detailBackdrop.addEventListener("click", closeDetail)
   }
 
+  if (chatSend) {
+    chatSend.addEventListener("click", sendChatInput)
+  }
+  if (chatInput) {
+    chatInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault()
+        sendChatInput()
+      }
+    })
+  }
   if (newTaskBtn) {
     newTaskBtn.addEventListener("click", openNewTaskModal)
   }
