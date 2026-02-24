@@ -393,6 +393,48 @@ func TestUpdateTaskNotFound(t *testing.T) {
 	}
 }
 
+func TestDeleteTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusComplete,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+task.ID, nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, rr.Code, rr.Body.String())
+	}
+
+	// Verify task is gone.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID, nil)
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted task to return 404, got %d", getRR.Code)
+	}
+}
+
+func TestDeleteTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/t-nonexistent", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
 func TestProjectsEndpointEmpty(t *testing.T) {
 	srv := newTestServerWithHub(t)
 

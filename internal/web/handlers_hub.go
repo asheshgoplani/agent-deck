@@ -217,8 +217,20 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 	writeJSON(w, http.StatusOK, taskDetailResponse{Task: task})
 }
 
+// handleTaskDelete serves DELETE /api/tasks/{id}.
 func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
-	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	if err := s.hubTasks.Delete(taskID); err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	s.notifyTaskChanged()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID string) {
