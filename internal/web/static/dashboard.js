@@ -711,6 +711,83 @@
     }
   }
 
+  // ── Chat mode override menu ────────────────────────────────────────
+  function renderModeMenu() {
+    var existing = document.querySelector(".chat-mode-menu")
+    if (existing) existing.remove()
+
+    var menu = el("div", "chat-mode-menu open")
+
+    // "New in {project}" options for each project
+    for (var i = 0; i < state.projects.length; i++) {
+      var proj = state.projects[i]
+      var opt = el("button", "chat-mode-option")
+      var icon = el("span", "chat-mode-option-icon", "+")
+      icon.style.color = "var(--blue)"
+      opt.appendChild(icon)
+      opt.appendChild(document.createTextNode("New in " + proj.name))
+      opt.dataset.mode = "new"
+      opt.dataset.project = proj.name
+      opt.addEventListener("click", handleModeSelect)
+      menu.appendChild(opt)
+    }
+
+    // "New (auto-route)"
+    var autoOpt = el("button", "chat-mode-option")
+    var autoIcon = el("span", "chat-mode-option-icon", "+")
+    autoIcon.style.color = "var(--blue)"
+    autoOpt.appendChild(autoIcon)
+    autoOpt.appendChild(document.createTextNode("New (auto-route)"))
+    autoOpt.dataset.mode = "new"
+    autoOpt.dataset.project = ""
+    autoOpt.addEventListener("click", handleModeSelect)
+    menu.appendChild(autoOpt)
+
+    // "Back to auto" if overridden
+    if (state.chatModeOverride) {
+      var backOpt = el("button", "chat-mode-option")
+      var backIcon = el("span", "chat-mode-option-icon", "\u2190")
+      backOpt.appendChild(backIcon)
+      backOpt.appendChild(document.createTextNode("Back to: auto"))
+      backOpt.dataset.mode = "auto"
+      backOpt.addEventListener("click", handleModeSelect)
+      menu.appendChild(backOpt)
+    }
+
+    var chatBar = document.getElementById("chat-bar")
+    if (chatBar) {
+      chatBar.appendChild(menu)
+    }
+
+    // Close on outside click (deferred to avoid immediate close)
+    setTimeout(function () {
+      document.addEventListener("click", closeModeMenu)
+    }, 0)
+  }
+
+  function handleModeSelect(e) {
+    var btn = e.currentTarget
+    if (btn.dataset.mode === "auto") {
+      state.chatModeOverride = null
+    } else {
+      state.chatModeOverride = {
+        mode: btn.dataset.mode,
+        label: btn.dataset.project ? "+ " + btn.dataset.project : "+ auto-route",
+        icon: "+",
+        color: "var(--blue)",
+        project: btn.dataset.project,
+      }
+    }
+    closeModeMenu()
+    renderChatBar()
+  }
+
+  function closeModeMenu() {
+    var menu = document.querySelector(".chat-mode-menu")
+    if (menu) menu.remove()
+    document.removeEventListener("click", closeModeMenu)
+  }
+
   function sendChatMessage() {
     var input = document.getElementById("chat-input")
     if (!input) return
@@ -926,6 +1003,15 @@
   }
 
   // Chat bar
+  var chatModeBtn = document.getElementById("chat-mode-btn")
+  if (chatModeBtn) {
+    chatModeBtn.addEventListener("click", function (e) {
+      e.stopPropagation()
+      var existing = document.querySelector(".chat-mode-menu")
+      if (existing) { closeModeMenu(); return }
+      renderModeMenu()
+    })
+  }
   var chatSendBtn = document.getElementById("chat-send-btn")
   var chatInput = document.getElementById("chat-input")
   if (chatSendBtn) chatSendBtn.addEventListener("click", sendChatMessage)
