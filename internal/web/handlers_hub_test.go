@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -267,5 +268,110 @@ func TestProjectsEndpointMethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestRouteEndpoint(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Write projects.yaml
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords:
+      - api
+      - backend
+      - auth
+  - name: web-app
+    path: /home/user/code/web
+    keywords:
+      - frontend
+      - ui
+      - react
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	body := `{"message":"Fix the auth endpoint in the API"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/route", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp hub.RouteResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project != "api-service" {
+		t.Fatalf("expected api-service, got %s", resp.Project)
+	}
+	if resp.Confidence <= 0 {
+		t.Fatalf("expected positive confidence, got %f", resp.Confidence)
+	}
+}
+
+func TestRouteEndpointNoMatch(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	// Write projects.yaml with specific keywords.
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords:
+      - api
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	body := `{"message":"Update kubernetes deployment config"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/route", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp routeResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project != "" {
+		t.Fatalf("expected empty project for no match, got %s", resp.Project)
+	}
+}
+
+func TestRouteEndpointEmptyMessage(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"message":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/route", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestRouteEndpointMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/route", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rr.Code)
 	}
 }
