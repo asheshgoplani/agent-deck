@@ -423,7 +423,13 @@
 
 .detail-chat-send {
   height: 38px;
-  padding: 0 16px;
+}
+
+/* ── Primary button ────────────────────────────────────────────── */
+
+.hub-btn-primary {
+  height: 36px;
+  padding: 0 14px;
   border: 1px solid var(--accent);
   border-radius: 8px;
   background: var(--accent);
@@ -432,10 +438,140 @@
   font-size: 0.88rem;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.detail-chat-send:hover {
+.hub-btn-primary:hover {
   background: #0e6b63;
+}
+
+.hub-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hub-btn {
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.hub-btn:hover {
+  background: var(--bg);
+}
+
+/* ── Modal ──────────────────────────────────────────────────────── */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms;
+}
+
+.modal-backdrop.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.95);
+  z-index: 65;
+  width: min(440px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms, transform 200ms;
+}
+
+.modal.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.modal-field {
+  width: 100%;
+}
+
+.modal-textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: #fff;
+  resize: vertical;
+}
+
+.modal-textarea:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.2);
+  border-color: var(--accent);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
 }
 
 /* ── Mobile bottom nav ──────────────────────────────────────────── */

@@ -42,6 +42,7 @@
             <select id="filter-project" class="hub-select" aria-label="Filter by project">
               <option value="">All projects</option>
             </select>
+            <button id="new-task-btn" class="hub-btn-primary" type="button">+ New Task</button>
           </div>
         </div>
 
@@ -59,7 +60,37 @@
           <button class="detail-back" id="detail-back" type="button" aria-label="Close detail panel">&larr; Back</button>
         </div>
         <div class="detail-body" id="detail-body"></div>
+        <div class="detail-chat" id="detail-chat">
+          <input type="text" class="detail-chat-input" id="detail-chat-input" placeholder="Send message..." aria-label="Send message to task" />
+          <button class="hub-btn-primary detail-chat-send" id="detail-chat-send" type="button">Send</button>
+        </div>
       </aside>
+
+      <!-- New Task modal -->
+      <div class="modal-backdrop" id="new-task-backdrop"></div>
+      <div class="modal" id="new-task-modal" role="dialog" aria-label="Create new task" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">New Task</span>
+          <button class="modal-close" id="new-task-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <label class="modal-label" for="new-task-project">Project</label>
+          <select id="new-task-project" class="hub-select modal-field"></select>
+          <label class="modal-label" for="new-task-desc">Description</label>
+          <textarea id="new-task-desc" class="modal-textarea" rows="3" placeholder="What should the agent do?"></textarea>
+          <label class="modal-label" for="new-task-phase">Phase</label>
+          <select id="new-task-phase" class="hub-select modal-field">
+            <option value="execute">Execute</option>
+            <option value="brainstorm">Brainstorm</option>
+            <option value="plan">Plan</option>
+            <option value="review">Review</option>
+          </select>
+        </div>
+        <div class="modal-footer">
+          <button id="new-task-cancel" class="hub-btn" type="button">Cancel</button>
+          <button id="new-task-submit" class="hub-btn-primary" type="button">Create</button>
+        </div>
+      </div>
 
       <!-- Mobile bottom nav -->
       <nav class="mobile-nav" id="mobile-nav">

@@ -11,6 +11,17 @@
   var detailBackdrop = document.getElementById("detail-backdrop")
   var detailBack = document.getElementById("detail-back")
   var detailBody = document.getElementById("detail-body")
+  var chatInput = document.getElementById("detail-chat-input")
+  var chatSend = document.getElementById("detail-chat-send")
+  var newTaskBtn = document.getElementById("new-task-btn")
+  var newTaskModal = document.getElementById("new-task-modal")
+  var newTaskBackdrop = document.getElementById("new-task-backdrop")
+  var newTaskClose = document.getElementById("new-task-close")
+  var newTaskCancel = document.getElementById("new-task-cancel")
+  var newTaskSubmit = document.getElementById("new-task-submit")
+  var newTaskProject = document.getElementById("new-task-project")
+  var newTaskDesc = document.getElementById("new-task-desc")
+  var newTaskPhase = document.getElementById("new-task-phase")
 
   // ── State ───────────────────────────────────────────────────────
   var state = {
@@ -419,6 +430,94 @@
     return days + "d " + (hours % 24) + "h"
   }
 
+  // ── Chat input ──────────────────────────────────────────────────
+  function sendChatInput() {
+    if (!state.selectedTaskId || !chatInput) return
+    var input = chatInput.value.trim()
+    if (!input) return
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks/" + state.selectedTaskId + "/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: input }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("send failed: " + r.status)
+        chatInput.value = ""
+      })
+      .catch(function (err) {
+        console.error("sendChatInput:", err)
+      })
+  }
+
+  // ── New Task modal ───────────────────────────────────────────────
+  function openNewTaskModal() {
+    // Populate project selector from loaded projects.
+    clearChildren(newTaskProject)
+    var hasProjects = state.projects.length > 0
+    for (var i = 0; i < state.projects.length; i++) {
+      var opt = document.createElement("option")
+      opt.value = state.projects[i].name
+      opt.textContent = state.projects[i].name
+      newTaskProject.appendChild(opt)
+    }
+    if (!hasProjects) {
+      var placeholder = document.createElement("option")
+      placeholder.value = ""
+      placeholder.textContent = "No projects configured"
+      placeholder.disabled = true
+      placeholder.selected = true
+      newTaskProject.appendChild(placeholder)
+    }
+    if (newTaskDesc) newTaskDesc.value = ""
+    if (newTaskPhase) newTaskPhase.value = "execute"
+    if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
+
+    if (newTaskModal) newTaskModal.classList.add("open")
+    if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
+    if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "false")
+    if (newTaskDesc) newTaskDesc.focus()
+  }
+
+  function closeNewTaskModal() {
+    if (newTaskModal) newTaskModal.classList.remove("open")
+    if (newTaskBackdrop) newTaskBackdrop.classList.remove("open")
+    if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "true")
+  }
+
+  function submitNewTask() {
+    var project = newTaskProject ? newTaskProject.value : ""
+    var description = newTaskDesc ? newTaskDesc.value.trim() : ""
+    var phase = newTaskPhase ? newTaskPhase.value : "execute"
+
+    if (!project || !description) return
+
+    var body = JSON.stringify({ project: project, description: description, phase: phase })
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks"), {
+      method: "POST",
+      headers: headers,
+      body: body,
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("create failed: " + r.status)
+        return r.json()
+      })
+      .then(function (data) {
+        closeNewTaskModal()
+        fetchTasks()
+        if (data.task && data.task.id) openDetail(data.task.id)
+      })
+      .catch(function (err) {
+        console.error("submitNewTask:", err)
+      })
+  }
+
   // ── Event listeners ─────────────────────────────────────────────
   if (filterStatus) {
     filterStatus.addEventListener("change", renderTasks)
@@ -433,9 +532,40 @@
     detailBackdrop.addEventListener("click", closeDetail)
   }
 
+  if (chatSend) {
+    chatSend.addEventListener("click", sendChatInput)
+  }
+  if (chatInput) {
+    chatInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault()
+        sendChatInput()
+      }
+    })
+  }
+  if (newTaskBtn) {
+    newTaskBtn.addEventListener("click", openNewTaskModal)
+  }
+  if (newTaskClose) {
+    newTaskClose.addEventListener("click", closeNewTaskModal)
+  }
+  if (newTaskCancel) {
+    newTaskCancel.addEventListener("click", closeNewTaskModal)
+  }
+  if (newTaskBackdrop) {
+    newTaskBackdrop.addEventListener("click", closeNewTaskModal)
+  }
+  if (newTaskSubmit) {
+    newTaskSubmit.addEventListener("click", submitNewTask)
+  }
+
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && state.selectedTaskId) {
-      closeDetail()
+    if (e.key === "Escape") {
+      if (newTaskModal && newTaskModal.classList.contains("open")) {
+        closeNewTaskModal()
+      } else if (state.selectedTaskId) {
+        closeDetail()
+      }
     }
   })
 

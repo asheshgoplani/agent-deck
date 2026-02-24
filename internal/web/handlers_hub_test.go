@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,12 +142,171 @@ func TestTasksEndpointFilterByProject(t *testing.T) {
 func TestTasksEndpointMethodNotAllowed(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/tasks", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestCreateTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app","description":"Add dark mode"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Project != "web-app" {
+		t.Fatalf("expected project web-app, got %s", resp.Task.Project)
+	}
+	if resp.Task.Description != "Add dark mode" {
+		t.Fatalf("expected description 'Add dark mode', got %s", resp.Task.Description)
+	}
+	if resp.Task.ID == "" {
+		t.Fatal("expected auto-generated ID")
+	}
+	if resp.Task.Status != hub.TaskStatusIdle {
+		t.Fatalf("expected status idle, got %s", resp.Task.Status)
+	}
+	if resp.Task.Phase != hub.PhaseExecute {
+		t.Fatalf("expected default phase execute, got %s", resp.Task.Phase)
+	}
+}
+
+func TestCreateTaskWithPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app","description":"Research auth options","phase":"brainstorm"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Phase != hub.PhaseBrainstorm {
+		t.Fatalf("expected phase brainstorm, got %s", resp.Task.Phase)
+	}
+}
+
+func TestCreateTaskMissingProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"description":"Add dark mode"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTaskMissingDescription(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTaskInvalidJSON(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTaskInvalidPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app","description":"Add dark mode","phase":"notarealphase"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateTaskInvalidPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"phase":"notarealphase"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestUpdateTaskInvalidStatus(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"status":"notarealstatus"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
 	}
 }
 
@@ -211,6 +371,371 @@ func TestTaskByIDMissingID(t *testing.T) {
 	// /api/tasks/ with empty ID should return bad request
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestUpdateTaskPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"phase":"review"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Phase != hub.PhaseReview {
+		t.Fatalf("expected phase review, got %s", resp.Task.Phase)
+	}
+	if resp.Task.Description != "Fix auth bug" {
+		t.Fatalf("description should be unchanged, got %s", resp.Task.Description)
+	}
+}
+
+func TestUpdateTaskStatus(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"status":"complete"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Status != hub.TaskStatusComplete {
+		t.Fatalf("expected status complete, got %s", resp.Task.Status)
+	}
+}
+
+func TestUpdateTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"phase":"review"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/t-nonexistent", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestTaskInputAccepted(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusWaiting,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"input":"Use JWT tokens"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/input", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	if !strings.Contains(rr.Body.String(), `"status"`) {
+		t.Fatalf("expected status in response, got: %s", rr.Body.String())
+	}
+}
+
+func TestTaskInputNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"input":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/t-nonexistent/input", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestTaskInputEmptyInput(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusWaiting,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"input":""}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/input", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestForkTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	parent := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		Branch:      "feat/auth",
+	}
+	if err := srv.hubTasks.Save(parent); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"description":"Try JWT approach"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+parent.ID+"/fork", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.ParentTaskID != parent.ID {
+		t.Fatalf("expected parentTaskId %s, got %s", parent.ID, resp.Task.ParentTaskID)
+	}
+	if resp.Task.Project != parent.Project {
+		t.Fatalf("expected project %s inherited from parent, got %s", parent.Project, resp.Task.Project)
+	}
+	if resp.Task.Description != "Try JWT approach" {
+		t.Fatalf("expected description 'Try JWT approach', got %s", resp.Task.Description)
+	}
+	if resp.Task.ID == parent.ID {
+		t.Fatal("child should have a different ID than parent")
+	}
+}
+
+func TestForkTaskDefaultDescription(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	parent := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(parent); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Empty body — should use default description.
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+parent.ID+"/fork", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Description != "Fix auth bug (fork)" {
+		t.Fatalf("expected default fork description, got %s", resp.Task.Description)
+	}
+}
+
+func TestForkTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/t-nonexistent/fork", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestUpdateTaskInvalidJSON(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestTaskInputMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/input", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestTaskForkMethodNotAllowed(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/fork", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestTaskUnknownSubPath(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/unknown", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestDeleteTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusComplete,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+task.ID, nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, rr.Code, rr.Body.String())
+	}
+
+	// Verify task is gone.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID, nil)
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted task to return 404, got %d", getRR.Code)
+	}
+}
+
+func TestDeleteTaskNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/t-nonexistent", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
 	}
 }
 
