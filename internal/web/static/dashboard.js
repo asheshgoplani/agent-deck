@@ -476,6 +476,7 @@
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
     if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
+    if (routeSuggestion) routeSuggestion.textContent = ""
 
     if (newTaskModal) newTaskModal.classList.add("open")
     if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
@@ -484,6 +485,7 @@
   }
 
   function closeNewTaskModal() {
+    if (routeTimer) { clearTimeout(routeTimer); routeTimer = null }
     if (newTaskModal) newTaskModal.classList.remove("open")
     if (newTaskBackdrop) newTaskBackdrop.classList.remove("open")
     if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "true")
@@ -530,6 +532,7 @@
     }
 
     routeTimer = setTimeout(function () {
+      routeTimer = null
       var headers = authHeaders()
       headers["Content-Type"] = "application/json"
 

@@ -899,3 +899,16 @@ func TestRouteEndpointMethodNotAllowed(t *testing.T) {
 		t.Fatalf("expected %d, got %d", http.StatusMethodNotAllowed, rr.Code)
 	}
 }
+
+func TestRouteEndpointInvalidJSON(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/route", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}

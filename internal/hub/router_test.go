@@ -105,3 +105,33 @@ func TestRouteEmptyMessage(t *testing.T) {
 		t.Fatal("expected nil for empty message")
 	}
 }
+
+func TestRouteNoSubstringFalsePositive(t *testing.T) {
+	projects := []*Project{
+		{Name: "ui-app", Keywords: []string{"ui", "design"}},
+	}
+
+	// "build" contains "ui" as a substring — should NOT match.
+	result := Route("build the new service", projects)
+
+	if result != nil {
+		t.Fatalf("expected nil for substring-only match, got project=%s", result.Project)
+	}
+}
+
+func TestRouteTieBreakByConfidence(t *testing.T) {
+	projects := []*Project{
+		{Name: "big-project", Keywords: []string{"api", "backend", "auth", "deploy", "infra"}},
+		{Name: "small-project", Keywords: []string{"api"}},
+	}
+
+	// Both match "api" (1 keyword each), but small-project has higher confidence (1/1 vs 1/5).
+	result := Route("Fix the api", projects)
+
+	if result == nil {
+		t.Fatal("expected a route result")
+	}
+	if result.Project != "small-project" {
+		t.Fatalf("expected small-project (higher confidence), got %s", result.Project)
+	}
+}

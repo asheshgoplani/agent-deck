@@ -16,7 +16,7 @@ func Route(message string, projects []*Project) *RouteResult {
 
 	var bestProject string
 	var bestCount int
-	var bestTotal int
+	var bestConfidence float64
 	var bestKeywords []string
 
 	for _, p := range projects {
@@ -28,17 +28,18 @@ func Route(message string, projects []*Project) *RouteResult {
 		for _, kw := range p.Keywords {
 			kwLower := strings.ToLower(kw)
 			for _, w := range words {
-				if w == kwLower || strings.Contains(w, kwLower) {
+				if w == kwLower {
 					matched = append(matched, kw)
 					break
 				}
 			}
 		}
 
-		if len(matched) > bestCount {
+		confidence := float64(len(matched)) / float64(len(p.Keywords))
+		if len(matched) > bestCount || (len(matched) == bestCount && confidence > bestConfidence) {
 			bestProject = p.Name
 			bestCount = len(matched)
-			bestTotal = len(p.Keywords)
+			bestConfidence = confidence
 			bestKeywords = matched
 		}
 	}
@@ -49,7 +50,7 @@ func Route(message string, projects []*Project) *RouteResult {
 
 	return &RouteResult{
 		Project:         bestProject,
-		Confidence:      float64(bestCount) / float64(bestTotal),
+		Confidence:      bestConfidence,
 		MatchedKeywords: bestKeywords,
 	}
 }
