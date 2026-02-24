@@ -135,3 +135,26 @@ type taskDetailResponse struct {
 type projectsListResponse struct {
 	Projects []*hub.Project `json:"projects"`
 }
+
+type createTaskRequest struct {
+	Project     string `json:"project"`
+	Description string `json:"description"`
+	Phase       string `json:"phase,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+}
+
+type updateTaskRequest struct {
+	Description *string `json:"description,omitempty"`
+	Phase       *string `json:"phase,omitempty"`
+	Status      *string `json:"status,omitempty"`
+	Branch      *string `json:"branch,omitempty"`
+}
+
+type taskInputRequest struct {
+	Input string `json:"input"`
+}
+
+type taskInputResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
