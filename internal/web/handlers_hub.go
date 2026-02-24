@@ -1,23 +1,31 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 )
 
-// handleTasks serves GET /api/tasks with optional ?status= and ?project= filters.
+// handleTasks dispatches GET /api/tasks and POST /api/tasks.
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-		return
-	}
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
+	switch r.Method {
+	case http.MethodGet:
+		s.handleTasksList(w, r)
+	case http.MethodPost:
+		s.handleTasksCreate(w, r)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
 
+// handleTasksList serves GET /api/tasks with optional ?status= and ?project= filters.
+func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
 	if s.hubTasks == nil {
 		writeJSON(w, http.StatusOK, tasksListResponse{Tasks: []*hub.Task{}})
 		return
@@ -51,6 +59,50 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, tasksListResponse{Tasks: tasks})
+}
+
+// handleTasksCreate serves POST /api/tasks.
+func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	var req createTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Project == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project is required")
+		return
+	}
+	if req.Description == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "description is required")
+		return
+	}
+
+	phase := hub.PhaseExecute
+	if req.Phase != "" {
+		phase = hub.Phase(req.Phase)
+	}
+
+	task := &hub.Task{
+		Project:     req.Project,
+		Description: req.Description,
+		Phase:       phase,
+		Branch:      req.Branch,
+		Status:      hub.TaskStatusIdle,
+	}
+
+	if err := s.hubTasks.Save(task); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create task")
+		return
+	}
+
+	s.notifyTaskChanged()
+	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: task})
 }
 
 // handleTaskByID serves GET /api/tasks/{id}.

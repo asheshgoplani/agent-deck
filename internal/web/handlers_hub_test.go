@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,12 +142,109 @@ func TestTasksEndpointFilterByProject(t *testing.T) {
 func TestTasksEndpointMethodNotAllowed(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks", nil)
+	req := httptest.NewRequest(http.MethodPut, "/api/tasks", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
+	}
+}
+
+func TestCreateTask(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app","description":"Add dark mode"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Project != "web-app" {
+		t.Fatalf("expected project web-app, got %s", resp.Task.Project)
+	}
+	if resp.Task.Description != "Add dark mode" {
+		t.Fatalf("expected description 'Add dark mode', got %s", resp.Task.Description)
+	}
+	if resp.Task.ID == "" {
+		t.Fatal("expected auto-generated ID")
+	}
+	if resp.Task.Status != hub.TaskStatusIdle {
+		t.Fatalf("expected status idle, got %s", resp.Task.Status)
+	}
+	if resp.Task.Phase != hub.PhaseExecute {
+		t.Fatalf("expected default phase execute, got %s", resp.Task.Phase)
+	}
+}
+
+func TestCreateTaskWithPhase(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app","description":"Research auth options","phase":"brainstorm"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.Phase != hub.PhaseBrainstorm {
+		t.Fatalf("expected phase brainstorm, got %s", resp.Task.Phase)
+	}
+}
+
+func TestCreateTaskMissingProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"description":"Add dark mode"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTaskMissingDescription(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"project":"web-app"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTaskInvalidJSON(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
 	}
 }
 
