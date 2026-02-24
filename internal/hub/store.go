@@ -126,6 +126,36 @@ func (s *TaskStore) Delete(id string) error {
 	return nil
 }
 
+// oldStatusMigration maps legacy agent-level status values to the new
+// separated TaskStatus + AgentStatus pair.
+var oldStatusMigration = map[string]struct {
+	taskStatus  TaskStatus
+	agentStatus AgentStatus
+}{
+	"thinking": {TaskStatusRunning, AgentStatusThinking},
+	"waiting":  {TaskStatusPlanning, AgentStatusWaiting},
+	"running":  {TaskStatusRunning, AgentStatusRunning},
+	"idle":     {TaskStatusBacklog, AgentStatusIdle},
+	"error":    {TaskStatusRunning, AgentStatusError},
+	"complete": {TaskStatusDone, AgentStatusComplete},
+}
+
+// migrateTask detects old-format status values and migrates them.
+// Returns true if migration was applied.
+func migrateTask(task *Task) bool {
+	m, ok := oldStatusMigration[string(task.Status)]
+	if !ok {
+		return false
+	}
+	// Only migrate if AgentStatus is empty (old format didn't have it).
+	if task.AgentStatus != "" {
+		return false
+	}
+	task.Status = m.taskStatus
+	task.AgentStatus = m.agentStatus
+	return true
+}
+
 func (s *TaskStore) readTaskFile(filename string) (*Task, error) {
 	data, err := os.ReadFile(filepath.Join(s.taskDir, filename))
 	if err != nil {
@@ -135,6 +165,7 @@ func (s *TaskStore) readTaskFile(filename string) (*Task, error) {
 	if err := json.Unmarshal(data, &task); err != nil {
 		return nil, fmt.Errorf("unmarshal task %s: %w", filename, err)
 	}
+	migrateTask(&task)
 	return &task, nil
 }
 

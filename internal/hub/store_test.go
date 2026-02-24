@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -238,6 +239,104 @@ func TestNextIDSequence(t *testing.T) {
 	// Should be t-006 (max was t-005, not reusing t-003)
 	if task.ID != "t-006" {
 		t.Fatalf("expected ID t-006, got %s", task.ID)
+	}
+}
+
+func TestMigrateOldStatusOnRead(t *testing.T) {
+	store := newTestStore(t)
+
+	// Write old-format JSON directly to simulate legacy data.
+	oldJSON := `{
+		"id": "t-001",
+		"sessionId": "",
+		"status": "thinking",
+		"project": "api-service",
+		"description": "Legacy task",
+		"phase": "execute",
+		"createdAt": "2026-01-01T00:00:00Z",
+		"updatedAt": "2026-01-01T00:00:00Z"
+	}`
+	taskFile := filepath.Join(store.taskDir, "t-001.json")
+	if err := os.WriteFile(taskFile, []byte(oldJSON), 0o644); err != nil {
+		t.Fatalf("write old task: %v", err)
+	}
+
+	task, err := store.Get("t-001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if task.Status != TaskStatusRunning {
+		t.Fatalf("expected migrated status 'running', got %s", task.Status)
+	}
+	if task.AgentStatus != AgentStatusThinking {
+		t.Fatalf("expected migrated agentStatus 'thinking', got %s", task.AgentStatus)
+	}
+}
+
+func TestMigrateAllOldStatuses(t *testing.T) {
+	store := newTestStore(t)
+
+	cases := []struct {
+		oldStatus       string
+		wantTaskStatus  TaskStatus
+		wantAgentStatus AgentStatus
+	}{
+		{"thinking", TaskStatusRunning, AgentStatusThinking},
+		{"waiting", TaskStatusPlanning, AgentStatusWaiting},
+		{"running", TaskStatusRunning, AgentStatusRunning},
+		{"idle", TaskStatusBacklog, AgentStatusIdle},
+		{"error", TaskStatusRunning, AgentStatusError},
+		{"complete", TaskStatusDone, AgentStatusComplete},
+	}
+
+	for i, tc := range cases {
+		id := fmt.Sprintf("t-%03d", i+1)
+		raw := fmt.Sprintf(`{"id":"%s","status":"%s","project":"test","description":"test","phase":"execute","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`, id, tc.oldStatus)
+		if err := os.WriteFile(filepath.Join(store.taskDir, id+".json"), []byte(raw), 0o644); err != nil {
+			t.Fatalf("write %s: %v", id, err)
+		}
+
+		task, err := store.Get(id)
+		if err != nil {
+			t.Fatalf("Get %s: %v", id, err)
+		}
+		if task.Status != tc.wantTaskStatus {
+			t.Fatalf("%s: expected status %s, got %s", tc.oldStatus, tc.wantTaskStatus, task.Status)
+		}
+		if task.AgentStatus != tc.wantAgentStatus {
+			t.Fatalf("%s: expected agentStatus %s, got %s", tc.oldStatus, tc.wantAgentStatus, task.AgentStatus)
+		}
+	}
+}
+
+func TestNewStatusNotMigrated(t *testing.T) {
+	store := newTestStore(t)
+
+	// New-format JSON should not be modified.
+	newJSON := `{
+		"id": "t-001",
+		"status": "review",
+		"agentStatus": "thinking",
+		"project": "test",
+		"description": "New format",
+		"phase": "review",
+		"createdAt": "2026-01-01T00:00:00Z",
+		"updatedAt": "2026-01-01T00:00:00Z"
+	}`
+	if err := os.WriteFile(filepath.Join(store.taskDir, "t-001.json"), []byte(newJSON), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	task, err := store.Get("t-001")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if task.Status != TaskStatusReview {
+		t.Fatalf("expected status review, got %s", task.Status)
+	}
+	if task.AgentStatus != AgentStatusThinking {
+		t.Fatalf("expected agentStatus thinking, got %s", task.AgentStatus)
 	}
 }
 
