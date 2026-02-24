@@ -48,8 +48,9 @@ type Server struct {
 	menuSubscribers   map[chan struct{}]struct{}
 
 	// Hub dashboard state.
-	hubTasks    *hub.TaskStore
-	hubProjects *hub.ProjectRegistry
+	hubTasks      *hub.TaskStore
+	hubProjects   *hub.ProjectRegistry
+	containerExec hub.ContainerExecutor
 
 	taskSubscribersMu sync.Mutex
 	taskSubscribers   map[chan struct{}]struct{}

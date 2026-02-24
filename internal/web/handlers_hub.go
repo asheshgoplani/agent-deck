@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -159,6 +160,12 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleTaskFork(w, r, taskID)
+	case "health":
+		if r.Method != http.MethodGet {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskHealth(w, taskID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 	}
@@ -316,6 +323,72 @@ func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID s
 
 	s.notifyTaskChanged()
 	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: child})
+}
+
+type taskHealthResponse struct {
+	Healthy   bool   `json:"healthy"`
+	Container string `json:"container,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// handleTaskHealth serves GET /api/tasks/{id}/health.
+func (s *Server) handleTaskHealth(w http.ResponseWriter, taskID string) {
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	task, err := s.hubTasks.Get(taskID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	container := s.containerForProject(task.Project)
+	if container == "" {
+		writeJSON(w, http.StatusOK, taskHealthResponse{
+			Healthy: false,
+			Message: "no container configured for project",
+		})
+		return
+	}
+
+	if s.containerExec == nil {
+		writeJSON(w, http.StatusOK, taskHealthResponse{
+			Healthy:   false,
+			Container: container,
+			Message:   "container executor not configured",
+		})
+		return
+	}
+
+	healthy := s.containerExec.IsHealthy(context.Background(), container)
+	resp := taskHealthResponse{
+		Healthy:   healthy,
+		Container: container,
+	}
+	if !healthy {
+		resp.Message = "container not running"
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// containerForProject looks up the container name for a project from the registry.
+func (s *Server) containerForProject(projectName string) string {
+	if s.hubProjects == nil {
+		return ""
+	}
+	projects, err := s.hubProjects.List()
+	if err != nil {
+		return ""
+	}
+	for _, p := range projects {
+		if p.Name == projectName {
+			return p.Container
+		}
+	}
+	return ""
 }
 
 // handleProjects serves GET /api/projects.
