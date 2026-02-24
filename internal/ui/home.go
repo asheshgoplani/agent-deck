@@ -569,7 +569,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	notifSettings := session.GetNotificationsSettings()
 	if notifSettings.Enabled {
 		h.notificationsEnabled = true
-		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown, notifSettings.ShowAll)
+		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown, notifSettings.ShowAll, notifSettings.Minimal)
 
 		// Initialize tmux status bar options for proper notification display
 		// Fixes truncation (default status-left-length is only 10 chars)
@@ -1967,6 +1967,11 @@ func (h *Home) syncNotificationsBackground() {
 // updateKeyBindings updates tmux key bindings based on current notification entries.
 // Thread-safe via boundKeysMu. Can be called from both foreground and background.
 func (h *Home) updateKeyBindings() {
+	// Minimal mode shows counts only — no named slots, no key bindings to manage
+	if h.notificationManager.IsMinimal() {
+		return
+	}
+
 	entries := h.notificationManager.GetEntries()
 
 	// Phase 1: Collect binding info while holding instancesMu (read-only)

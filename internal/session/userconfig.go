@@ -287,6 +287,10 @@ type NotificationsConfig struct {
 
 	// ShowAll displays all sessions (with status icons) instead of only waiting sessions (default: false)
 	ShowAll bool `toml:"show_all"`
+
+	// Minimal shows a compact icon+count summary instead of session names: ● 2 │ ◐ 3 │ ○ 1
+	// When true, key bindings (Ctrl+b 1-6) are disabled. ShowAll is ignored. (default: false)
+	Minimal bool `toml:"minimal"`
 }
 
 // InstanceSettings configures multiple agent-deck instance behavior

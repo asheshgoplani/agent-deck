@@ -20,22 +20,32 @@ type NotificationEntry struct {
 
 // NotificationManager tracks waiting sessions for the notification bar
 type NotificationManager struct {
-	entries  []*NotificationEntry // Ordered: newest first
-	maxShown int
-	showAll  bool // Show all sessions vs only waiting
-	mu       sync.RWMutex
+	entries      []*NotificationEntry // Ordered: newest first
+	maxShown     int
+	showAll      bool // Show all sessions vs only waiting
+	minimal      bool // Show compact icon+count summary only (no names, no key bindings)
+	statusCounts map[Status]int // Per-status counts across all sessions (for minimal mode)
+	mu           sync.RWMutex
 }
 
 // NewNotificationManager creates a new notification manager
-func NewNotificationManager(maxShown int, showAll bool) *NotificationManager {
+func NewNotificationManager(maxShown int, showAll, minimal bool) *NotificationManager {
 	if maxShown <= 0 {
 		maxShown = 6
 	}
 	return &NotificationManager{
-		entries:  make([]*NotificationEntry, 0),
-		maxShown: maxShown,
-		showAll:  showAll,
+		entries:      make([]*NotificationEntry, 0),
+		maxShown:     maxShown,
+		showAll:      showAll,
+		minimal:      minimal,
+		statusCounts: make(map[Status]int),
 	}
+}
+
+// IsMinimal reports whether this manager is in minimal (icon+count) mode.
+// home.go uses this to skip key binding updates when minimal=true.
+func (nm *NotificationManager) IsMinimal() bool {
+	return nm.minimal
 }
 
 // Add registers a session as waiting (newest goes to position [0])
@@ -154,6 +164,10 @@ func (nm *NotificationManager) FormatBar() string {
 	nm.mu.RLock()
 	defer nm.mu.RUnlock()
 
+	if nm.minimal {
+		return nm.formatBarMinimal()
+	}
+
 	if len(nm.entries) == 0 {
 		return ""
 	}
@@ -173,6 +187,22 @@ func (nm *NotificationManager) FormatBar() string {
 	}
 
 	return "⚡ " + strings.Join(parts, " ")
+}
+
+// formatBarMinimal renders the compact icon+count format: ⚡ ● 2 │ ◐ 3 │ ○ 1
+// Called with nm.mu read lock already held.
+func (nm *NotificationManager) formatBarMinimal() string {
+	var parts []string
+	// Render in a consistent order: running, waiting, idle, error
+	for _, s := range []Status{StatusRunning, StatusWaiting, StatusIdle, StatusError} {
+		if n := nm.statusCounts[s]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", statusIcon(s), n))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "⚡ " + strings.Join(parts, " │ ") + "  "
 }
 
 // statusIcon returns the Unicode icon for a given session status
@@ -196,6 +226,20 @@ func statusIcon(status Status) string {
 func (nm *NotificationManager) SyncFromInstances(instances []*Instance, currentSessionID string) (added, removed []string) {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
+
+	// Always compute per-status counts across all non-current sessions (used by minimal mode)
+	counts := make(map[Status]int)
+	for _, inst := range instances {
+		if inst.ID != currentSessionID {
+			counts[inst.GetStatusThreadSafe()]++
+		}
+	}
+	nm.statusCounts = counts
+
+	// Minimal mode: counts are all we need; entries stay empty (no key bindings)
+	if nm.minimal {
+		return nil, nil
+	}
 
 	// Build set of sessions to show (based on showAll mode)
 	var sessionSet map[string]*Instance
