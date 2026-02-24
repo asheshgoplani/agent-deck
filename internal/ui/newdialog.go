@@ -29,9 +29,11 @@ type NewDialog struct {
 	commandCursor        int
 	parentGroupPath      string
 	parentGroupName      string
-	pathSuggestions      []string // stores all available path suggestions
+	pathSuggestions      []string // filtered subset of path suggestions shown in dropdown
+	allPathSuggestions   []string // full unfiltered set of path suggestions
 	pathSuggestionCursor int      // tracks selected suggestion in dropdown
 	suggestionNavigated  bool     // tracks if user explicitly navigated suggestions
+	pathSoftSelected     bool     // true when path text is "soft selected" (ready to replace on type)
 	// Worktree support
 	worktreeEnabled bool
 	branchInput     textinput.Model
@@ -65,7 +67,7 @@ func NewNewDialog() *NewDialog {
 	pathInput.Placeholder = "~/project/path"
 	pathInput.CharLimit = 256
 	pathInput.Width = 40
-	pathInput.ShowSuggestions = true // enable built-in suggestions
+	pathInput.ShowSuggestions = false // we use our own dropdown with filtering
 
 	// Get current working directory for default path
 	cwd, err := os.Getwd()
@@ -140,6 +142,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 			d.pathInput.SetValue(cwd)
 		}
 	}
+	d.pathSoftSelected = true // activate soft-select for pre-filled path
 	// Initialize tool options from global config
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
@@ -185,9 +188,28 @@ func (d *NewDialog) SetSize(width, height int) {
 
 // SetPathSuggestions sets the available path suggestions for autocomplete
 func (d *NewDialog) SetPathSuggestions(paths []string) {
+	d.allPathSuggestions = paths
 	d.pathSuggestions = paths
 	d.pathSuggestionCursor = 0
-	d.pathInput.SetSuggestions(paths)
+}
+
+// filterPathSuggestions filters allPathSuggestions by the current path input value
+func (d *NewDialog) filterPathSuggestions() {
+	query := strings.ToLower(strings.TrimSpace(d.pathInput.Value()))
+	if query == "" {
+		d.pathSuggestions = d.allPathSuggestions
+	} else {
+		filtered := make([]string, 0)
+		for _, p := range d.allPathSuggestions {
+			if strings.Contains(strings.ToLower(p), query) {
+				filtered = append(filtered, p)
+			}
+		}
+		d.pathSuggestions = filtered
+	}
+	if d.pathSuggestionCursor >= len(d.pathSuggestions) {
+		d.pathSuggestionCursor = 0
+	}
 }
 
 // Show makes the dialog visible (uses default group)
@@ -372,11 +394,19 @@ func (d *NewDialog) updateFocus() {
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 
+	// Manage soft-select: re-activate when entering path field with a value
+	d.pathSoftSelected = false
 	switch d.focusIndex {
 	case 0:
 		d.nameInput.Focus()
 	case 1:
-		d.pathInput.Focus()
+		if d.pathInput.Value() != "" {
+			d.pathSoftSelected = true
+			// Keep pathInput blurred — we render custom reverse-video style.
+			// pathInput.Focus() is called when soft-select exits.
+		} else {
+			d.pathInput.Focus()
+		}
 	case 2:
 		if d.commandCursor == 0 { // shell
 			d.commandInput.Focus()
@@ -416,6 +446,32 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Soft-select interception for path field
+		if d.focusIndex == 1 && d.pathSoftSelected {
+			switch msg.Type {
+			case tea.KeyRunes:
+				// Printable char: clear field, focus textinput, let rune fall through
+				d.pathSoftSelected = false
+				d.pathInput.SetValue("")
+				d.pathInput.SetCursor(0)
+				d.pathInput.Focus()
+				d.pathCycler.Reset()
+				// DON'T return — let the rune reach textinput.Update() below
+			case tea.KeyBackspace, tea.KeyDelete:
+				d.pathSoftSelected = false
+				d.pathInput.SetValue("")
+				d.pathInput.SetCursor(0)
+				d.pathInput.Focus()
+				d.pathCycler.Reset()
+				d.filterPathSuggestions()
+				return d, nil // consume the key
+			case tea.KeyLeft, tea.KeyRight:
+				d.pathSoftSelected = false
+				d.pathInput.Focus() // exit soft-select, allow editing
+			}
+			// Tab, Enter, Esc, Ctrl+N, Ctrl+P, Up, Down fall through to existing handlers
+		}
+
 		switch msg.String() {
 		case "tab":
 			// On path field: trigger autocomplete or cycle through matches
@@ -472,6 +528,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "ctrl+n":
 			// Next suggestion (when on path field)
 			if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+				d.pathSoftSelected = false
+				d.pathInput.Focus() // exit soft-select, focus for future input
 				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
 				d.suggestionNavigated = true // user explicitly navigated
 				return d, nil
@@ -480,6 +538,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "ctrl+p":
 			// Previous suggestion (when on path field)
 			if d.focusIndex == 1 && len(d.pathSuggestions) > 0 {
+				d.pathSoftSelected = false
+				d.pathInput.Focus() // exit soft-select, focus for future input
 				d.pathSuggestionCursor--
 				if d.pathSuggestionCursor < 0 {
 					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
@@ -590,6 +650,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.suggestionNavigated = false
 			d.pathSuggestionCursor = 0
 			d.pathCycler.Reset()
+			d.filterPathSuggestions()
 		}
 	case 2:
 		// Update custom command input when shell is selected
@@ -681,7 +742,15 @@ func (d *NewDialog) View() string {
 	}
 	content.WriteString("\n")
 	content.WriteString("  ")
-	content.WriteString(d.pathInput.View())
+	if d.focusIndex == 1 && d.pathSoftSelected && d.pathInput.Value() != "" {
+		// Render path in "selected" style (reverse video)
+		selectedStyle := lipgloss.NewStyle().
+			Background(ColorAccent).
+			Foreground(ColorBg)
+		content.WriteString(selectedStyle.Render(d.pathInput.Value()))
+	} else {
+		content.WriteString(d.pathInput.View())
+	}
 	content.WriteString("\n")
 
 	// Show path suggestions dropdown when path field is focused
@@ -712,8 +781,15 @@ func (d *NewDialog) View() string {
 			}
 		}
 
+		var headerText string
+		if len(d.pathSuggestions) < len(d.allPathSuggestions) {
+			headerText = fmt.Sprintf("─ recent paths (%d/%d matching, ^N/^P: cycle, Tab: accept) ─",
+				len(d.pathSuggestions), len(d.allPathSuggestions))
+		} else {
+			headerText = "─ recent paths (^N/^P: cycle, Tab: accept) ─"
+		}
 		content.WriteString("  ")
-		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render("─ recent paths (Ctrl+N/P: cycle, Tab: accept) ─"))
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(headerText))
 		content.WriteString("\n")
 
 		// Show "more above" indicator
@@ -840,7 +916,11 @@ func (d *NewDialog) View() string {
 		MarginTop(1)
 	helpText := "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
 	if d.focusIndex == 1 {
-		helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+		if d.pathSoftSelected {
+			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
+		} else {
+			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+		}
 	} else if d.focusIndex == 2 {
 		selectedCmd := d.GetSelectedCommand()
 		if selectedCmd == "gemini" || selectedCmd == "codex" {
