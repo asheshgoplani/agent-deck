@@ -233,8 +233,35 @@ func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleTaskInput serves POST /api/tasks/{id}/input.
+// Stub: accepts input, returns queued status. Phase 4 will wire this to docker exec tmux send-keys.
 func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID string) {
-	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+	if s.hubTasks == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	if _, err := s.hubTasks.Get(taskID); err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+
+	var req taskInputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Input == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "input is required")
+		return
+	}
+
+	// TODO: Phase 4 — send input to container tmux session via docker exec.
+	writeJSON(w, http.StatusOK, taskInputResponse{
+		Status:  "queued",
+		Message: "input accepted (session not connected)",
+	})
 }
 
 func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID string) {
