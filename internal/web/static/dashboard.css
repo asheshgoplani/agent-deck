@@ -574,6 +574,19 @@
   border-top: 1px solid var(--border);
 }
 
+/* ── Route suggestion ──────────────────────────────────────────── */
+
+.route-suggestion {
+  font-size: 0.82rem;
+  color: var(--accent);
+  padding: 4px 0;
+  min-height: 1.2em;
+}
+
+.route-suggestion-muted {
+  color: var(--muted);
+}
+
 /* ── Mobile bottom nav ──────────────────────────────────────────── */
 
 .mobile-nav {
