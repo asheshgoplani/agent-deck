@@ -42,6 +42,7 @@
             <select id="filter-project" class="hub-select" aria-label="Filter by project">
               <option value="">All projects</option>
             </select>
+            <button id="manage-projects-btn" class="hub-btn" type="button">Manage Projects</button>
             <button id="new-task-btn" class="hub-btn-primary" type="button">+ New Task</button>
           </div>
         </div>
@@ -90,6 +91,46 @@
         <div class="modal-footer">
           <button id="new-task-cancel" class="hub-btn" type="button">Cancel</button>
           <button id="new-task-submit" class="hub-btn-primary" type="button">Create</button>
+        </div>
+      </div>
+
+      <!-- Add Project modal -->
+      <div class="modal-backdrop" id="add-project-backdrop"></div>
+      <div class="modal" id="add-project-modal" role="dialog" aria-label="Add project" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">Add Project</span>
+          <button class="modal-close" id="add-project-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <label class="modal-label" for="add-project-repo">GitHub Repo</label>
+          <input type="text" id="add-project-repo" class="modal-input modal-field" placeholder="owner/repo-name" />
+          <label class="modal-label" for="add-project-name">Name</label>
+          <input type="text" id="add-project-name" class="modal-input modal-field" placeholder="Auto-filled from repo" />
+          <label class="modal-label" for="add-project-path">Path</label>
+          <input type="text" id="add-project-path" class="modal-input modal-field" placeholder="~/projects/repo-name" />
+          <label class="modal-label" for="add-project-keywords">Keywords</label>
+          <input type="text" id="add-project-keywords" class="modal-input modal-field" placeholder="api, backend, auth (comma-separated)" />
+          <label class="modal-label" for="add-project-container">Container</label>
+          <input type="text" id="add-project-container" class="modal-input modal-field" placeholder="Optional container name" />
+        </div>
+        <div class="modal-footer">
+          <button id="add-project-cancel" class="hub-btn" type="button">Cancel</button>
+          <button id="add-project-submit" class="hub-btn-primary" type="button">Create</button>
+        </div>
+      </div>
+
+      <!-- Manage Projects panel -->
+      <div class="modal-backdrop" id="manage-projects-backdrop"></div>
+      <div class="modal modal-wide" id="manage-projects-modal" role="dialog" aria-label="Manage projects" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">Projects</span>
+          <div class="modal-header-actions">
+            <button id="manage-projects-add" class="hub-btn-primary" type="button">+ Add</button>
+            <button class="modal-close" id="manage-projects-close" type="button" aria-label="Close">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body" id="manage-projects-body">
+          <div class="project-list-empty">No projects yet.</div>
         </div>
       </div>
 

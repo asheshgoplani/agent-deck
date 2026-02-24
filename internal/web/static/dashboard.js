@@ -23,6 +23,22 @@
   var newTaskDesc = document.getElementById("new-task-desc")
   var newTaskPhase = document.getElementById("new-task-phase")
   var routeSuggestion = document.getElementById("route-suggestion")
+  var manageProjectsBtn = document.getElementById("manage-projects-btn")
+  var manageProjectsModal = document.getElementById("manage-projects-modal")
+  var manageProjectsBackdrop = document.getElementById("manage-projects-backdrop")
+  var manageProjectsClose = document.getElementById("manage-projects-close")
+  var manageProjectsAdd = document.getElementById("manage-projects-add")
+  var manageProjectsBody = document.getElementById("manage-projects-body")
+  var addProjectModal = document.getElementById("add-project-modal")
+  var addProjectBackdrop = document.getElementById("add-project-backdrop")
+  var addProjectClose = document.getElementById("add-project-close")
+  var addProjectCancel = document.getElementById("add-project-cancel")
+  var addProjectSubmit = document.getElementById("add-project-submit")
+  var addProjectRepo = document.getElementById("add-project-repo")
+  var addProjectName = document.getElementById("add-project-name")
+  var addProjectPath = document.getElementById("add-project-path")
+  var addProjectKeywords = document.getElementById("add-project-keywords")
+  var addProjectContainer = document.getElementById("add-project-container")
 
   // ── State ───────────────────────────────────────────────────────
   var state = {
@@ -31,6 +47,8 @@
     selectedTaskId: null,
     authToken: readAuthTokenFromURL(),
     menuEvents: null,
+    addProjectFromNewTask: false,
+    editingProjectName: null,
   }
 
   // ── Status metadata ─────────────────────────────────────────────
@@ -459,19 +477,23 @@
     // Populate project selector from loaded projects.
     clearChildren(newTaskProject)
     var hasProjects = state.projects.length > 0
+
+    // Add "+ Add Project" option at the top.
+    var addOpt = document.createElement("option")
+    addOpt.value = "__add_project__"
+    addOpt.textContent = "+ Add Project..."
+    newTaskProject.appendChild(addOpt)
+
     for (var i = 0; i < state.projects.length; i++) {
       var opt = document.createElement("option")
       opt.value = state.projects[i].name
       opt.textContent = state.projects[i].name
       newTaskProject.appendChild(opt)
     }
-    if (!hasProjects) {
-      var placeholder = document.createElement("option")
-      placeholder.value = ""
-      placeholder.textContent = "No projects configured"
-      placeholder.disabled = true
-      placeholder.selected = true
-      newTaskProject.appendChild(placeholder)
+
+    // Select first real project if available.
+    if (hasProjects) {
+      newTaskProject.selectedIndex = 1
     }
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
@@ -575,6 +597,261 @@
     }, 300)
   }
 
+  // ── Manage Projects modal ─────────────────────────────────────────
+  function openManageProjects() {
+    renderProjectList()
+    if (manageProjectsModal) manageProjectsModal.classList.add("open")
+    if (manageProjectsBackdrop) manageProjectsBackdrop.classList.add("open")
+    if (manageProjectsModal) manageProjectsModal.setAttribute("aria-hidden", "false")
+  }
+
+  function closeManageProjects() {
+    if (manageProjectsModal) manageProjectsModal.classList.remove("open")
+    if (manageProjectsBackdrop) manageProjectsBackdrop.classList.remove("open")
+    if (manageProjectsModal) manageProjectsModal.setAttribute("aria-hidden", "true")
+  }
+
+  function renderProjectList() {
+    if (!manageProjectsBody) return
+    clearChildren(manageProjectsBody)
+
+    if (state.projects.length === 0) {
+      manageProjectsBody.appendChild(el("div", "project-list-empty", "No projects yet. Click + Add to create one."))
+      return
+    }
+
+    for (var i = 0; i < state.projects.length; i++) {
+      manageProjectsBody.appendChild(createProjectRow(state.projects[i]))
+    }
+  }
+
+  function createProjectRow(project) {
+    var row = el("div", "project-row")
+
+    var info = el("div", "project-row-info")
+    info.appendChild(el("div", "project-row-name", project.name))
+    info.appendChild(el("div", "project-row-path", project.path || "\u2014"))
+    if (project.keywords && project.keywords.length > 0) {
+      info.appendChild(el("div", "project-row-keywords", project.keywords.join(", ")))
+    }
+    row.appendChild(info)
+
+    var actions = el("div", "project-row-actions")
+
+    var editBtn = el("button", "", "Edit")
+    editBtn.addEventListener("click", function () {
+      openEditProject(project)
+    })
+    actions.appendChild(editBtn)
+
+    var deleteBtn = el("button", "btn-danger", "Delete")
+    deleteBtn.addEventListener("click", function () {
+      deleteProject(project.name)
+    })
+    actions.appendChild(deleteBtn)
+
+    row.appendChild(actions)
+    return row
+  }
+
+  // ── Add/Edit Project modal ──────────────────────────────────────────
+  function openAddProject(fromNewTask) {
+    state.addProjectFromNewTask = !!fromNewTask
+    state.editingProjectName = null
+    if (addProjectRepo) addProjectRepo.value = ""
+    if (addProjectName) { addProjectName.value = ""; delete addProjectName.dataset.userEdited }
+    if (addProjectPath) { addProjectPath.value = ""; delete addProjectPath.dataset.userEdited }
+    if (addProjectKeywords) addProjectKeywords.value = ""
+    if (addProjectContainer) addProjectContainer.value = ""
+    if (addProjectRepo) addProjectRepo.disabled = false
+
+    // Update modal title
+    var titleEl = addProjectModal ? addProjectModal.querySelector(".modal-title") : null
+    if (titleEl) titleEl.textContent = "Add Project"
+
+    // Update submit button text
+    if (addProjectSubmit) addProjectSubmit.textContent = "Create"
+
+    if (addProjectModal) addProjectModal.classList.add("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
+    if (addProjectRepo) addProjectRepo.focus()
+  }
+
+  function openEditProject(project) {
+    state.addProjectFromNewTask = false
+    state.editingProjectName = project.name
+    if (addProjectRepo) { addProjectRepo.value = project.repo || ""; addProjectRepo.disabled = true }
+    if (addProjectName) addProjectName.value = project.name
+    if (addProjectPath) addProjectPath.value = project.path || ""
+    if (addProjectKeywords) addProjectKeywords.value = (project.keywords || []).join(", ")
+    if (addProjectContainer) addProjectContainer.value = project.container || ""
+
+    var titleEl = addProjectModal ? addProjectModal.querySelector(".modal-title") : null
+    if (titleEl) titleEl.textContent = "Edit Project"
+
+    if (addProjectSubmit) addProjectSubmit.textContent = "Save"
+
+    if (addProjectModal) addProjectModal.classList.add("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
+    if (addProjectPath) addProjectPath.focus()
+  }
+
+  function closeAddProject() {
+    if (addProjectModal) addProjectModal.classList.remove("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.remove("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "true")
+  }
+
+  function submitProject() {
+    if (state.editingProjectName) {
+      submitProjectUpdate()
+    } else {
+      submitProjectCreate()
+    }
+  }
+
+  function submitProjectCreate() {
+    var repo = addProjectRepo ? addProjectRepo.value.trim() : ""
+    var name = addProjectName ? addProjectName.value.trim() : ""
+    var path = addProjectPath ? addProjectPath.value.trim() : ""
+    var keywordsStr = addProjectKeywords ? addProjectKeywords.value.trim() : ""
+    var container = addProjectContainer ? addProjectContainer.value.trim() : ""
+
+    if (!repo && !name) return
+
+    var keywords = keywordsStr ? keywordsStr.split(",").map(function (k) { return k.trim() }).filter(Boolean) : []
+
+    var payload = { repo: repo }
+    if (name) payload.name = name
+    if (path) payload.path = path
+    if (keywords.length > 0) payload.keywords = keywords
+    if (container) payload.container = container
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/projects"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.message || "create failed") })
+        return r.json()
+      })
+      .then(function (data) {
+        closeAddProject()
+        fetchProjects().then(function () {
+          renderProjectList()
+          if (state.addProjectFromNewTask && data.project) {
+            // Re-open new task modal with the new project selected.
+            openNewTaskModal()
+            if (newTaskProject) {
+              for (var i = 0; i < newTaskProject.options.length; i++) {
+                if (newTaskProject.options[i].value === data.project.name) {
+                  newTaskProject.selectedIndex = i
+                  break
+                }
+              }
+            }
+          }
+        })
+      })
+      .catch(function (err) {
+        console.error("submitProjectCreate:", err)
+        alert("Failed to create project: " + err.message)
+      })
+  }
+
+  function submitProjectUpdate() {
+    var path = addProjectPath ? addProjectPath.value.trim() : ""
+    var keywordsStr = addProjectKeywords ? addProjectKeywords.value.trim() : ""
+    var container = addProjectContainer ? addProjectContainer.value.trim() : ""
+
+    var keywords = keywordsStr ? keywordsStr.split(",").map(function (k) { return k.trim() }).filter(Boolean) : []
+
+    var payload = {}
+    if (path) payload.path = path
+    payload.keywords = keywords
+    payload.container = container
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/projects/" + state.editingProjectName), {
+      method: "PATCH",
+      headers: headers,
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.message || "update failed") })
+        return r.json()
+      })
+      .then(function () {
+        closeAddProject()
+        fetchProjects().then(function () {
+          renderProjectList()
+        })
+      })
+      .catch(function (err) {
+        console.error("submitProjectUpdate:", err)
+        alert("Failed to update project: " + err.message)
+      })
+  }
+
+  function deleteProject(name) {
+    if (!confirm("Delete project '" + name + "'? Tasks using this project will not be deleted.")) {
+      return
+    }
+
+    var headers = authHeaders()
+
+    fetch(apiPathWithToken("/api/projects/" + name), {
+      method: "DELETE",
+      headers: headers,
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("delete failed: " + r.status)
+        fetchProjects().then(function () {
+          renderProjectList()
+        })
+      })
+      .catch(function (err) {
+        console.error("deleteProject:", err)
+      })
+  }
+
+  // ── Auto-fill repo field ──────────────────────────────────────────
+  if (addProjectRepo) {
+    addProjectRepo.addEventListener("input", function () {
+      if (state.editingProjectName) return
+      var repo = addProjectRepo.value.trim()
+      if (!repo) return
+      var parts = repo.split("/")
+      var repoName = parts[parts.length - 1]
+      if (addProjectName && !addProjectName.dataset.userEdited) {
+        addProjectName.value = repoName
+      }
+      if (addProjectPath && !addProjectPath.dataset.userEdited) {
+        addProjectPath.value = "~/projects/" + repoName
+      }
+    })
+  }
+
+  // Track user edits to name/path so auto-fill doesn't overwrite.
+  if (addProjectName) {
+    addProjectName.addEventListener("input", function () {
+      addProjectName.dataset.userEdited = "true"
+    })
+  }
+  if (addProjectPath) {
+    addProjectPath.addEventListener("input", function () {
+      addProjectPath.dataset.userEdited = "true"
+    })
+  }
+
   // ── Event listeners ─────────────────────────────────────────────
   if (filterStatus) {
     filterStatus.addEventListener("change", renderTasks)
@@ -615,6 +892,40 @@
   if (newTaskSubmit) {
     newTaskSubmit.addEventListener("click", submitNewTask)
   }
+  if (newTaskProject) {
+    newTaskProject.addEventListener("change", function () {
+      if (newTaskProject.value === "__add_project__") {
+        closeNewTaskModal()
+        openAddProject(true)
+      }
+    })
+  }
+  if (manageProjectsBtn) {
+    manageProjectsBtn.addEventListener("click", openManageProjects)
+  }
+  if (manageProjectsClose) {
+    manageProjectsClose.addEventListener("click", closeManageProjects)
+  }
+  if (manageProjectsBackdrop) {
+    manageProjectsBackdrop.addEventListener("click", closeManageProjects)
+  }
+  if (manageProjectsAdd) {
+    manageProjectsAdd.addEventListener("click", function () {
+      openAddProject(false)
+    })
+  }
+  if (addProjectClose) {
+    addProjectClose.addEventListener("click", closeAddProject)
+  }
+  if (addProjectCancel) {
+    addProjectCancel.addEventListener("click", closeAddProject)
+  }
+  if (addProjectBackdrop) {
+    addProjectBackdrop.addEventListener("click", closeAddProject)
+  }
+  if (addProjectSubmit) {
+    addProjectSubmit.addEventListener("click", submitProject)
+  }
   if (newTaskDesc) {
     newTaskDesc.addEventListener("input", function () {
       suggestProject(newTaskDesc.value.trim())
@@ -623,7 +934,11 @@
 
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
-      if (newTaskModal && newTaskModal.classList.contains("open")) {
+      if (addProjectModal && addProjectModal.classList.contains("open")) {
+        closeAddProject()
+      } else if (manageProjectsModal && manageProjectsModal.classList.contains("open")) {
+        closeManageProjects()
+      } else if (newTaskModal && newTaskModal.classList.contains("open")) {
         closeNewTaskModal()
       } else if (state.selectedTaskId) {
         closeDetail()
