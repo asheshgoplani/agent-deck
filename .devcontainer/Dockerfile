@@ -1,4 +1,4 @@
-FROM golang:1.24
+FROM golang:1.25
 
 # System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,13 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Go dev tools
-RUN go install github.com/cosmtrek/air@latest \
-    && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+RUN go install github.com/air-verse/air@latest \
+    && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest \
+    && go install golang.org/x/tools/gopls@latest
 
 # Lefthook (git hooks manager)
-RUN ARCH=$(dpkg --print-architecture) \
-    && curl -fsSL "https://github.com/evilmartians/lefthook/releases/latest/download/lefthook_linux_${ARCH}" -o /usr/local/bin/lefthook \
-    && chmod +x /usr/local/bin/lefthook
+RUN go install github.com/evilmartians/lefthook@latest
 
 # Non-root user (standard devcontainer convention)
 ARG USERNAME=vscode
