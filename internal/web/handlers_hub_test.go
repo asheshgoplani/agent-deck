@@ -96,7 +96,7 @@ func TestTasksEndpointWithTasks(t *testing.T) {
 func TestTasksEndpointFilterByStatus(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	for _, s := range []hub.TaskStatus{hub.TaskStatusRunning, hub.TaskStatusComplete, hub.TaskStatusRunning} {
+	for _, s := range []hub.TaskStatus{hub.TaskStatusRunning, hub.TaskStatusDone, hub.TaskStatusRunning} {
 		task := &hub.Task{
 			Project:     "test",
 			Description: "task-" + string(s),
@@ -117,8 +117,8 @@ func TestTasksEndpointFilterByStatus(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
 	}
 	body := rr.Body.String()
-	if strings.Contains(body, `"status":"complete"`) {
-		t.Fatalf("should not contain complete tasks, got: %s", body)
+	if strings.Contains(body, `"status":"done"`) {
+		t.Fatalf("should not contain done tasks, got: %s", body)
 	}
 }
 
@@ -192,8 +192,11 @@ func TestCreateTask(t *testing.T) {
 	if resp.Task.ID == "" {
 		t.Fatal("expected auto-generated ID")
 	}
-	if resp.Task.Status != hub.TaskStatusIdle {
-		t.Fatalf("expected status idle, got %s", resp.Task.Status)
+	if resp.Task.Status != hub.TaskStatusBacklog {
+		t.Fatalf("expected status backlog, got %s", resp.Task.Status)
+	}
+	if resp.Task.AgentStatus != hub.AgentStatusIdle {
+		t.Fatalf("expected agentStatus idle, got %s", resp.Task.AgentStatus)
 	}
 	if resp.Task.Phase != hub.PhaseExecute {
 		t.Fatalf("expected default phase execute, got %s", resp.Task.Phase)
@@ -437,7 +440,7 @@ func TestUpdateTaskStatus(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	body := `{"status":"complete"}`
+	body := `{"status":"done"}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -451,8 +454,8 @@ func TestUpdateTaskStatus(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.Task.Status != hub.TaskStatusComplete {
-		t.Fatalf("expected status complete, got %s", resp.Task.Status)
+	if resp.Task.Status != hub.TaskStatusDone {
+		t.Fatalf("expected status done, got %s", resp.Task.Status)
 	}
 }
 
@@ -477,7 +480,8 @@ func TestTaskInputAccepted(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusWaiting,
+		Status:      hub.TaskStatusPlanning,
+		AgentStatus: hub.AgentStatusWaiting,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -519,7 +523,8 @@ func TestTaskInputEmptyInput(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusWaiting,
+		Status:      hub.TaskStatusPlanning,
+		AgentStatus: hub.AgentStatusWaiting,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -719,7 +724,8 @@ func TestDeleteTask(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusComplete,
+		Status:      hub.TaskStatusDone,
+		AgentStatus: hub.AgentStatusComplete,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -1001,8 +1007,11 @@ func TestCreateTaskLaunchesSession(t *testing.T) {
 	if resp.Task.TmuxSession == "" {
 		t.Fatal("expected tmuxSession to be set when container is available")
 	}
-	if resp.Task.Status != hub.TaskStatusThinking {
-		t.Fatalf("expected status thinking after launch, got %s", resp.Task.Status)
+	if resp.Task.Status != hub.TaskStatusRunning {
+		t.Fatalf("expected status running after launch, got %s", resp.Task.Status)
+	}
+	if resp.Task.AgentStatus != hub.AgentStatusThinking {
+		t.Fatalf("expected agentStatus thinking after launch, got %s", resp.Task.AgentStatus)
 	}
 }
 
@@ -1055,7 +1064,8 @@ func TestTaskInputSendsToContainer(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusWaiting,
+		Status:      hub.TaskStatusPlanning,
+		AgentStatus: hub.AgentStatusWaiting,
 		TmuxSession: "agent-t-001",
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
@@ -1076,6 +1086,67 @@ func TestTaskInputSendsToContainer(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskAgentStatus(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		AgentStatus: hub.AgentStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"agentStatus":"waiting","askQuestion":"Which auth method?"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.AgentStatus != hub.AgentStatusWaiting {
+		t.Fatalf("expected agentStatus waiting, got %s", resp.Task.AgentStatus)
+	}
+	if resp.Task.AskQuestion != "Which auth method?" {
+		t.Fatalf("expected askQuestion, got %s", resp.Task.AskQuestion)
+	}
+}
+
+func TestUpdateTaskInvalidAgentStatus(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	task := &hub.Task{
+		Project:     "api-service",
+		Description: "Fix auth bug",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusRunning,
+		AgentStatus: hub.AgentStatusRunning,
+	}
+	if err := srv.hubTasks.Save(task); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"agentStatus":"notreal"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
 func TestTaskPreviewNoSession(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
@@ -1083,7 +1154,8 @@ func TestTaskPreviewNoSession(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusIdle,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)

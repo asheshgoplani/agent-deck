@@ -101,7 +101,8 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Phase:       phase,
 		Branch:      req.Branch,
-		Status:      hub.TaskStatusIdle,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
 	}
 
 	if err := s.hubTasks.Save(task); err != nil {
@@ -116,7 +117,8 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 			sessionName, launchErr := s.sessionLauncher.Launch(r.Context(), container, task.ID)
 			if launchErr == nil {
 				task.TmuxSession = sessionName
-				task.Status = hub.TaskStatusThinking
+				task.Status = hub.TaskStatusRunning
+				task.AgentStatus = hub.AgentStatusThinking
 				_ = s.hubTasks.Save(task) // Update with session info.
 			} else {
 				slog.Warn("session_launch_failed",
@@ -241,6 +243,10 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid status value")
 		return
 	}
+	if req.AgentStatus != nil && !isValidAgentStatus(*req.AgentStatus) {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid agentStatus value")
+		return
+	}
 
 	if req.Description != nil {
 		task.Description = *req.Description
@@ -251,8 +257,14 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 	if req.Status != nil {
 		task.Status = hub.TaskStatus(*req.Status)
 	}
+	if req.AgentStatus != nil {
+		task.AgentStatus = hub.AgentStatus(*req.AgentStatus)
+	}
 	if req.Branch != nil {
 		task.Branch = *req.Branch
+	}
+	if req.AskQuestion != nil {
+		task.AskQuestion = *req.AskQuestion
 	}
 
 	if err := s.hubTasks.Save(task); err != nil {
@@ -358,7 +370,8 @@ func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID s
 		Description:  description,
 		Phase:        parent.Phase,
 		Branch:       parent.Branch,
-		Status:       hub.TaskStatusIdle,
+		Status:       hub.TaskStatusBacklog,
+		AgentStatus:  hub.AgentStatusIdle,
 		ParentTaskID: parent.ID,
 	}
 
@@ -579,7 +592,9 @@ type updateTaskRequest struct {
 	Description *string `json:"description,omitempty"`
 	Phase       *string `json:"phase,omitempty"`
 	Status      *string `json:"status,omitempty"`
+	AgentStatus *string `json:"agentStatus,omitempty"`
 	Branch      *string `json:"branch,omitempty"`
+	AskQuestion *string `json:"askQuestion,omitempty"`
 }
 
 type taskInputRequest struct {
@@ -601,8 +616,17 @@ func isValidPhase(p string) bool {
 
 func isValidStatus(s string) bool {
 	switch hub.TaskStatus(s) {
-	case hub.TaskStatusThinking, hub.TaskStatusWaiting, hub.TaskStatusRunning,
-		hub.TaskStatusIdle, hub.TaskStatusError, hub.TaskStatusComplete:
+	case hub.TaskStatusBacklog, hub.TaskStatusPlanning, hub.TaskStatusRunning,
+		hub.TaskStatusReview, hub.TaskStatusDone:
+		return true
+	}
+	return false
+}
+
+func isValidAgentStatus(s string) bool {
+	switch hub.AgentStatus(s) {
+	case hub.AgentStatusThinking, hub.AgentStatusWaiting, hub.AgentStatusRunning,
+		hub.AgentStatusIdle, hub.AgentStatusError, hub.AgentStatusComplete:
 		return true
 	}
 	return false
