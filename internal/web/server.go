@@ -69,10 +69,10 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:              cfg,
-		menuData:         menuData,
-		menuSubscribers:  make(map[chan struct{}]struct{}),
-		taskSubscribers:  make(map[chan struct{}]struct{}),
+		cfg:             cfg,
+		menuData:        menuData,
+		menuSubscribers: make(map[chan struct{}]struct{}),
+		taskSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
