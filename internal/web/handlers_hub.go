@@ -106,6 +106,19 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attempt to launch tmux session if container is configured.
+	if s.sessionLauncher != nil {
+		container := s.containerForProject(task.Project)
+		if container != "" {
+			sessionName, launchErr := s.sessionLauncher.Launch(r.Context(), container, task.ID)
+			if launchErr == nil {
+				task.TmuxSession = sessionName
+				task.Status = hub.TaskStatusThinking
+				_ = s.hubTasks.Save(task) // Update with session info.
+			}
+		}
+	}
+
 	s.notifyTaskChanged()
 	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: task})
 }

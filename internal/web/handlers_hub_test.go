@@ -966,6 +966,46 @@ func TestTaskHealthCheckHealthy(t *testing.T) {
 	}
 }
 
+func TestCreateTaskLaunchesSession(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	exec := &testExecutor{healthy: true, execOutput: ""}
+	srv.containerExec = exec
+	srv.sessionLauncher = &hub.SessionLauncher{Executor: exec}
+
+	// Write projects.yaml with container field.
+	hubDir := filepath.Dir(srv.hubProjects.FilePath())
+	yaml := `projects:
+  - name: api-service
+    path: /home/user/code/api
+    keywords: [api]
+    container: sandbox-api
+`
+	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatalf("write projects.yaml: %v", err)
+	}
+
+	body := `{"project":"api-service","description":"Fix auth bug"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp taskDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Task.TmuxSession == "" {
+		t.Fatal("expected tmuxSession to be set when container is available")
+	}
+	if resp.Task.Status != hub.TaskStatusThinking {
+		t.Fatalf("expected status thinking after launch, got %s", resp.Task.Status)
+	}
+}
+
 func TestTaskHealthCheckNoContainer(t *testing.T) {
 	srv := newTestServerWithHub(t)
 	srv.containerExec = &testExecutor{healthy: false}
