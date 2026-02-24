@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -45,6 +46,13 @@ type Server struct {
 
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
+
+	// Hub dashboard state.
+	hubTasks    *hub.TaskStore
+	hubProjects *hub.ProjectRegistry
+
+	taskSubscribersMu sync.Mutex
+	taskSubscribers   map[chan struct{}]struct{}
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -59,12 +67,25 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:             cfg,
-		menuData:        menuData,
-		menuSubscribers: make(map[chan struct{}]struct{}),
+		cfg:              cfg,
+		menuData:         menuData,
+		menuSubscribers:  make(map[chan struct{}]struct{}),
+		taskSubscribers:  make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
+
+	// Initialize hub task store and project registry.
+	if hubDir, err := hub.GetHubDir(); err != nil {
+		webLog.Warn("hub_disabled", slog.String("error", err.Error()))
+	} else {
+		if ts, err := hub.NewTaskStore(hubDir); err != nil {
+			webLog.Warn("hub_task_store_disabled", slog.String("error", err.Error()))
+		} else {
+			s.hubTasks = ts
+		}
+		s.hubProjects = hub.NewProjectRegistry(hubDir)
+	}
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
 		webLog.Warn("push_disabled", slog.String("error", err.Error()))
 	} else {
@@ -74,6 +95,7 @@ func NewServer(cfg Config) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/s/", s.handleIndex)
+	mux.HandleFunc("/terminal", s.handleTerminal)
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 	mux.HandleFunc("/sw.js", s.handleServiceWorker)
 	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
@@ -94,6 +116,9 @@ func NewServer(cfg Config) *Server {
 	})
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
+	mux.HandleFunc("/api/tasks", s.handleTasks)
+	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
+	mux.HandleFunc("/api/projects", s.handleProjects)
 	mux.HandleFunc("/api/push/config", s.handlePushConfig)
 	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)
 	mux.HandleFunc("/api/push/unsubscribe", s.handlePushUnsubscribe)
@@ -230,4 +255,35 @@ func (s *Server) notifyMenuChanged() {
 		}
 	}
 	s.menuSubscribersMu.Unlock()
+}
+
+func (s *Server) subscribeTaskChanges() chan struct{} {
+	ch := make(chan struct{}, 1)
+	s.taskSubscribersMu.Lock()
+	s.taskSubscribers[ch] = struct{}{}
+	s.taskSubscribersMu.Unlock()
+	return ch
+}
+
+func (s *Server) unsubscribeTaskChanges(ch chan struct{}) {
+	if ch == nil {
+		return
+	}
+	s.taskSubscribersMu.Lock()
+	if _, ok := s.taskSubscribers[ch]; ok {
+		delete(s.taskSubscribers, ch)
+		close(ch)
+	}
+	s.taskSubscribersMu.Unlock()
+}
+
+func (s *Server) notifyTaskChanged() {
+	s.taskSubscribersMu.Lock()
+	for ch := range s.taskSubscribers {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	s.taskSubscribersMu.Unlock()
 }

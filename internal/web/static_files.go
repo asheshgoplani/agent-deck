@@ -22,6 +22,7 @@ func (s *Server) staticFileServer() http.Handler {
 	return http.FileServer(http.FS(sub))
 }
 
+// handleIndex serves the dashboard as the default landing page.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
@@ -34,9 +35,32 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dashboard, err := embeddedStaticFiles.ReadFile("static/dashboard.html")
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(dashboard)
+}
+
+// handleTerminal serves the existing terminal-focused UI.
+func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+
+	if r.URL.Path != "/terminal" {
+		http.NotFound(w, r)
+		return
+	}
+
 	index, err := embeddedStaticFiles.ReadFile("static/index.html")
 	if err != nil {
-		http.Error(w, "index unavailable", http.StatusInternalServerError)
+		http.Error(w, "terminal unavailable", http.StatusInternalServerError)
 		return
 	}
 

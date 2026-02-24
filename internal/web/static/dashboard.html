@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Agent Deck" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/static/icons/logo.svg" sizes="120x80" />
+    <link rel="apple-touch-icon" href="/static/icons/logo.svg" />
+    <title>Agent Deck Hub</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-left">
+          <div class="brand">Agent Deck</div>
+        </div>
+        <nav class="topbar-nav">
+          <a href="/" class="nav-tab nav-tab--active" aria-current="page">Dashboard</a>
+          <a href="/terminal" class="nav-tab">Terminal</a>
+        </nav>
+        <div class="meta" id="meta-state">connecting</div>
+      </header>
+
+      <main class="hub-layout">
+        <div class="hub-toolbar">
+          <div class="hub-filters">
+            <select id="filter-status" class="hub-select" aria-label="Filter by status">
+              <option value="">All statuses</option>
+              <option value="thinking">Thinking</option>
+              <option value="waiting">Waiting</option>
+              <option value="running">Running</option>
+              <option value="idle">Idle</option>
+              <option value="error">Error</option>
+              <option value="complete">Complete</option>
+            </select>
+            <select id="filter-project" class="hub-select" aria-label="Filter by project">
+              <option value="">All projects</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="hub-content">
+          <div class="task-grid" id="task-grid">
+            <div class="task-grid-empty" id="task-empty">Loading tasks...</div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Task detail slide-over panel -->
+      <div class="detail-backdrop" id="detail-backdrop"></div>
+      <aside class="detail-panel" id="detail-panel" aria-hidden="true">
+        <div class="detail-header">
+          <button class="detail-back" id="detail-back" type="button" aria-label="Close detail panel">&larr; Back</button>
+        </div>
+        <div class="detail-body" id="detail-body"></div>
+      </aside>
+
+      <!-- Mobile bottom nav -->
+      <nav class="mobile-nav" id="mobile-nav">
+        <a href="/" class="mobile-nav-item mobile-nav-item--active" aria-current="page">
+          <span class="mobile-nav-icon">&#9632;</span>
+          <span class="mobile-nav-label">Dashboard</span>
+        </a>
+        <a href="/terminal" class="mobile-nav-item">
+          <span class="mobile-nav-icon">&#9654;</span>
+          <span class="mobile-nav-label">Terminal</span>
+        </a>
+      </nav>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="/static/dashboard.js"></script>
+  </body>
+</html>

@@ -53,6 +53,9 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 	menuChanges := s.subscribeMenuChanges()
 	defer s.unsubscribeMenuChanges(menuChanges)
 
+	taskChanges := s.subscribeTaskChanges()
+	defer s.unsubscribeTaskChanges(taskChanges)
+
 	pollTicker := time.NewTicker(menuEventsPollInterval)
 	defer pollTicker.Stop()
 
@@ -80,6 +83,19 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 
+	emitTasksSnapshot := func() error {
+		if s.hubTasks == nil {
+			return nil
+		}
+		tasks, err := s.hubTasks.List()
+		if err != nil {
+			logging.ForComponent(logging.CompWeb).Error("task_stream_refresh_failed",
+				slog.String("error", err.Error()))
+			return nil
+		}
+		return writeSSEEvent(w, flusher, "tasks", tasksSSEPayload{Tasks: tasks})
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -90,6 +106,10 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		case <-menuChanges:
 			if err := emitIfChanged(); err != nil {
+				return
+			}
+		case <-taskChanges:
+			if err := emitTasksSnapshot(); err != nil {
 				return
 			}
 		case <-pollTicker.C:
