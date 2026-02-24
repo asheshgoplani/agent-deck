@@ -275,9 +275,18 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 		logging.Aggregate(logging.CompPool, "client_disconnect", slog.String("mcp", p.name), slog.String("client", sessionID))
 	}()
 
+	const idleTimeout = 10 * time.Minute
+
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP requests
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max for MCP requests
+
+	// Set initial read deadline
+	conn.SetReadDeadline(time.Now().Add(idleTimeout))
+
 	for scanner.Scan() {
+		// Reset deadline on each successful read
+		conn.SetReadDeadline(time.Now().Add(idleTimeout))
+
 		line := scanner.Bytes()
 
 		var req JSONRPCRequest
@@ -298,7 +307,7 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 
 func (p *SocketProxy) broadcastResponses() {
 	scanner := bufio.NewScanner(p.mcpStdout)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP responses
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max for MCP responses
 	for scanner.Scan() {
 		line := scanner.Bytes()
 

@@ -131,6 +131,7 @@ func (w *StatusEventWatcher) Start() {
 func (w *StatusEventWatcher) Stop() {
 	w.cancel()
 	_ = w.watcher.Close()
+	close(w.eventCh)
 }
 
 // EventCh returns the channel that delivers parsed status events.

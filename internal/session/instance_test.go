@@ -2385,3 +2385,44 @@ func TestCurrentComposerPrompt_UsesBottomComposerBlock(t *testing.T) {
 		t.Fatalf("unexpected composer prompt.\nwant: %q\ngot:  %q", want, got)
 	}
 }
+
+// TestKillClearsCachedPrompt verifies that Kill() clears cached prompt data
+// so that memory is freed when Instance objects remain referenced in storage.
+func TestKillClearsCachedPrompt(t *testing.T) {
+	skipIfNoTmuxServer(t)
+
+	inst := NewInstance("test-kill-cache", "/tmp")
+	inst.Command = "echo test"
+
+	err := inst.Start()
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Populate cached fields that should be cleared on Kill()
+	inst.cachedPrompt = "Tell me about the architecture of this system"
+	inst.lastJSONLPath = "/home/user/.claude/projects/abc/session.jsonl"
+	inst.lastJSONLSize = 4096
+	inst.LatestPrompt = "Tell me about the architecture of this system"
+
+	err = inst.Kill()
+	if err != nil {
+		t.Fatalf("Kill failed: %v", err)
+	}
+
+	if inst.cachedPrompt != "" {
+		t.Errorf("cachedPrompt not cleared after Kill(), got: %q", inst.cachedPrompt)
+	}
+	if inst.lastJSONLPath != "" {
+		t.Errorf("lastJSONLPath not cleared after Kill(), got: %q", inst.lastJSONLPath)
+	}
+	if inst.lastJSONLSize != 0 {
+		t.Errorf("lastJSONLSize not cleared after Kill(), got: %d", inst.lastJSONLSize)
+	}
+	if inst.LatestPrompt != "" {
+		t.Errorf("LatestPrompt not cleared after Kill(), got: %q", inst.LatestPrompt)
+	}
+	if inst.Status != StatusError {
+		t.Errorf("Status should be StatusError after Kill(), got: %s", inst.Status)
+	}
+}

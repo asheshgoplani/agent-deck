@@ -218,6 +218,10 @@ func (d *TransitionDaemon) shutdown() {
 			_ = s.Close()
 		}
 	}
+	// Clear maps to release memory
+	d.storages = nil
+	d.lastStatus = nil
+	d.initialized = nil
 }
 
 func choosePollInterval(statuses map[string]string) time.Duration {

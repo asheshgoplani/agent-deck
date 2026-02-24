@@ -3058,6 +3058,13 @@ func (i *Instance) Kill() error {
 		return fmt.Errorf("failed to kill tmux session: %w", err)
 	}
 	i.Status = StatusError
+
+	// Clear cached data to free memory (Instance stays referenced in storage)
+	i.cachedPrompt = ""
+	i.lastJSONLPath = ""
+	i.lastJSONLSize = 0
+	i.LatestPrompt = ""
+
 	return nil
 }
 

@@ -41,11 +41,14 @@ type Task struct {
 
 // Project defines a workspace that tasks can be routed to.
 type Project struct {
-	Name        string   `json:"name"        yaml:"name"`
-	Path        string   `json:"path"        yaml:"path"`
-	Keywords    []string `json:"keywords"    yaml:"keywords"`
-	Container   string   `json:"container,omitempty"   yaml:"container,omitempty"`
-	DefaultMCPs []string `json:"defaultMcps,omitempty" yaml:"default_mcps,omitempty"`
+	Name        string    `json:"name"`
+	Repo        string    `json:"repo,omitempty"`
+	Path        string    `json:"path"`
+	Keywords    []string  `json:"keywords"`
+	Container   string    `json:"container,omitempty"`
+	DefaultMCPs []string  `json:"defaultMcps,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // RouteResult describes a keyword-match routing result.

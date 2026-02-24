@@ -134,6 +134,10 @@ func (w *StatusFileWatcher) Start() {
 func (w *StatusFileWatcher) Stop() {
 	w.cancel()
 	_ = w.watcher.Close()
+	// Clear statuses map to release memory
+	w.mu.Lock()
+	w.statuses = nil
+	w.mu.Unlock()
 }
 
 // GetHookStatus returns the hook status for an instance, or nil if not available.
