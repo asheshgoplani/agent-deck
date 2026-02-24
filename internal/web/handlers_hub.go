@@ -105,12 +105,8 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, taskDetailResponse{Task: task})
 }
 
-// handleTaskByID serves GET /api/tasks/{id}.
+// handleTaskByID dispatches /api/tasks/{id}, /api/tasks/{id}/input, /api/tasks/{id}/fork.
 func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-		return
-	}
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
@@ -121,12 +117,51 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
 		return
 	}
-	taskID := strings.TrimPrefix(r.URL.Path, prefix)
-	if taskID == "" || strings.Contains(taskID, "/") {
+
+	remaining := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.SplitN(remaining, "/", 2)
+	taskID := parts[0]
+	subPath := ""
+	if len(parts) > 1 {
+		subPath = parts[1]
+	}
+
+	if taskID == "" {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "task id is required")
 		return
 	}
 
+	switch subPath {
+	case "":
+		switch r.Method {
+		case http.MethodGet:
+			s.handleTaskGet(w, taskID)
+		case http.MethodPatch:
+			s.handleTaskUpdate(w, r, taskID)
+		case http.MethodDelete:
+			s.handleTaskDelete(w, taskID)
+		default:
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		}
+	case "input":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskInput(w, r, taskID)
+	case "fork":
+		if r.Method != http.MethodPost {
+			writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		s.handleTaskFork(w, r, taskID)
+	default:
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+	}
+}
+
+// handleTaskGet serves GET /api/tasks/{id}.
+func (s *Server) handleTaskGet(w http.ResponseWriter, taskID string) {
 	if s.hubTasks == nil {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 		return
@@ -139,6 +174,22 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, taskDetailResponse{Task: task})
+}
+
+func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID string) {
+	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+}
+
+func (s *Server) handleTaskDelete(w http.ResponseWriter, taskID string) {
+	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+}
+
+func (s *Server) handleTaskInput(w http.ResponseWriter, r *http.Request, taskID string) {
+	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
+}
+
+func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID string) {
+	writeAPIError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "not implemented")
 }
 
 // handleProjects serves GET /api/projects.
