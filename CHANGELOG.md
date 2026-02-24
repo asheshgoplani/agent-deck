@@ -5,6 +5,22 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.14] - 2026-02-24
+
+### Added
+
+- Add automatic heartbeat script migration for existing conductors so managed `heartbeat.sh` files are refreshed to the current generated template during conductor migration checks.
+- Add `--cmd` parsing support for tool commands with inline args in `add`/`launch` (for example `-c "codex --dangerously-bypass-approvals-and-sandbox"`), with automatic wrapper generation when needed.
+
+### Fixed
+
+- Switch generated conductor heartbeat sends to non-blocking `session send --no-wait -q`, eliminating recurring `agent not ready after 80 seconds` timeout churn for busy conductors.
+- Improve `add`/`launch` CLI help and JSON output to expose resolved command/wrapper details and avoid confusing launch behavior when mixing tool names with extra args.
+
+### Changed
+
+- Expand README and CLI reference guidance for conductor-launched sessions (`--no-parent` vs auto-parent), transition notifier behavior, and safe command patterns.
+
 ## [0.19.13] - 2026-02-24
 
 ### Added
