@@ -139,7 +139,11 @@
         updateAgentCount()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
-          if (task) renderRightPanel(task)
+          if (task) {
+            renderRightPanel(task)
+            renderChatBar()
+            renderAskBanner()
+          }
         }
       } catch (err) {
         console.error("tasks SSE parse error:", err)
@@ -436,6 +440,7 @@
     if (panels) panels.classList.add("detail-active")
 
     renderChatBar()
+    renderAskBanner()
   }
 
   // ── Right panel ───────────────────────────────────────────────────
@@ -709,6 +714,29 @@
     } else {
       if (input) input.placeholder = "Describe a new task..."
     }
+  }
+
+  // ── AskUserQuestion banner ─────────────────────────────────────────
+  function renderAskBanner() {
+    var existing = document.querySelector(".ask-banner")
+    if (existing) existing.remove()
+
+    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
+    if (!task || task.agentStatus !== "waiting" || !task.askQuestion) return
+
+    var banner = el("div", "ask-banner")
+    var icon = el("span", "ask-banner-icon", "\u25D0")
+    banner.appendChild(icon)
+    banner.appendChild(document.createTextNode("Agent is asking: " + task.askQuestion))
+
+    var chatBar = document.getElementById("chat-bar")
+    if (chatBar && chatBar.parentNode) {
+      chatBar.parentNode.insertBefore(banner, chatBar)
+    }
+
+    // Update placeholder to reflect the question
+    var input = document.getElementById("chat-input")
+    if (input) input.placeholder = "Answer: " + task.askQuestion
   }
 
   // ── Chat mode override menu ────────────────────────────────────────
