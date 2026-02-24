@@ -667,6 +667,7 @@
 
     renderTaskList()
     renderChatBar()
+    renderAskBanner()
   }
 
   // ── Chat mode detection ────────────────────────────────────────────

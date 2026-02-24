@@ -286,7 +286,6 @@ func (s *Server) unsubscribeTaskChanges(ch chan struct{}) {
 }
 
 // notifyTaskChanged broadcasts to SSE subscribers that task data changed.
-// TODO: Call this from POST/PATCH/DELETE task handlers when they are added in Phase 2.
 func (s *Server) notifyTaskChanged() {
 	s.taskSubscribersMu.Lock()
 	for ch := range s.taskSubscribers {
