@@ -130,22 +130,21 @@ func TestNewDialog_SetPathSuggestions(t *testing.T) {
 	d.SetPathSuggestions(paths)
 
 	if len(d.pathSuggestions) != 3 {
-		t.Errorf("expected 3 suggestions, got %d", len(d.pathSuggestions))
+		t.Errorf("expected 3 pathSuggestions, got %d", len(d.pathSuggestions))
 	}
 
-	// Verify suggestions are set on textinput
-	available := d.pathInput.AvailableSuggestions()
-	if len(available) != 3 {
-		t.Errorf("expected 3 available suggestions on pathInput, got %d", len(available))
+	// Verify full set is stored in allPathSuggestions
+	if len(d.allPathSuggestions) != 3 {
+		t.Errorf("expected 3 allPathSuggestions, got %d", len(d.allPathSuggestions))
 	}
 }
 
-func TestNewDialog_ShowSuggestionsEnabled(t *testing.T) {
+func TestNewDialog_ShowSuggestionsDisabled(t *testing.T) {
 	d := NewNewDialog()
 
-	// ShowSuggestions should be enabled by default
-	if !d.pathInput.ShowSuggestions {
-		t.Error("expected ShowSuggestions to be true on pathInput")
+	// ShowSuggestions should be disabled — we use our own dropdown with filtering
+	if d.pathInput.ShowSuggestions {
+		t.Error("expected ShowSuggestions to be false on pathInput (we use custom dropdown)")
 	}
 }
 
@@ -160,30 +159,24 @@ func TestNewDialog_SuggestionFiltering(t *testing.T) {
 
 	d.SetPathSuggestions(paths)
 
-	// Verify suggestions are available
-	available := d.pathInput.AvailableSuggestions()
-	if len(available) != 3 {
-		t.Errorf("expected 3 available suggestions, got %d", len(available))
+	// Type "project" to filter
+	d.pathInput.SetValue("project")
+	d.filterPathSuggestions()
+
+	if len(d.pathSuggestions) != 2 {
+		t.Errorf("expected 2 filtered suggestions for 'project', got %d", len(d.pathSuggestions))
 	}
 
-	// Verify specific suggestions are in the list
-	hasProjectAlpha := false
-	hasProjectBeta := false
-	hasOtherThing := false
-	for _, s := range available {
-		if s == "/Users/test/project-alpha" {
-			hasProjectAlpha = true
-		}
-		if s == "/Users/test/project-beta" {
-			hasProjectBeta = true
-		}
-		if s == "/Users/test/other-thing" {
-			hasOtherThing = true
+	// Verify the correct paths are in the filtered list
+	for _, s := range d.pathSuggestions {
+		if !strings.Contains(s, "project") {
+			t.Errorf("filtered suggestion %q should contain 'project'", s)
 		}
 	}
 
-	if !hasProjectAlpha || !hasProjectBeta || !hasOtherThing {
-		t.Error("not all expected suggestions are available")
+	// Full set should remain unchanged
+	if len(d.allPathSuggestions) != 3 {
+		t.Errorf("allPathSuggestions should still be 3, got %d", len(d.allPathSuggestions))
 	}
 }
 
@@ -775,5 +768,245 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 
 	if d.branchAutoSet {
 		t.Error("branchAutoSet should be reset to false on ShowInGroup")
+	}
+}
+
+// ===== Soft-Select Tests =====
+
+func TestNewDialog_SoftSelect_InitialState(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// After Show(), path is pre-filled and soft-selected
+	if !d.pathSoftSelected {
+		t.Error("pathSoftSelected should be true after Show()")
+	}
+	if d.pathInput.Value() == "" {
+		t.Error("path should be pre-filled with CWD after Show()")
+	}
+}
+
+func TestNewDialog_SoftSelect_TypeClearsField(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// Move focus to path field
+	d.focusIndex = 1
+	d.updateFocus()
+
+	originalPath := d.pathInput.Value()
+	if originalPath == "" {
+		t.Fatal("path should be pre-filled")
+	}
+	if !d.pathSoftSelected {
+		t.Fatal("pathSoftSelected should be true when focusing path with value")
+	}
+
+	// Type a character while soft-selected
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+
+	// Field should have only the typed character (old value cleared)
+	val := d.pathInput.Value()
+	if val != "x" {
+		t.Errorf("path = %q, want %q (old value should be replaced)", val, "x")
+	}
+	if d.pathSoftSelected {
+		t.Error("pathSoftSelected should be false after typing")
+	}
+}
+
+func TestNewDialog_SoftSelect_BackspaceClearsField(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	d.focusIndex = 1
+	d.updateFocus()
+
+	if !d.pathSoftSelected {
+		t.Fatal("pathSoftSelected should be true")
+	}
+
+	// Press backspace while soft-selected
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+
+	if d.pathInput.Value() != "" {
+		t.Errorf("path should be empty after backspace, got %q", d.pathInput.Value())
+	}
+	if d.pathSoftSelected {
+		t.Error("pathSoftSelected should be false after backspace")
+	}
+}
+
+func TestNewDialog_SoftSelect_MovementExits(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	d.focusIndex = 1
+	d.updateFocus()
+
+	originalPath := d.pathInput.Value()
+	if !d.pathSoftSelected {
+		t.Fatal("pathSoftSelected should be true")
+	}
+
+	// Press Left to exit soft-select
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyLeft})
+
+	// Value should be preserved
+	if d.pathInput.Value() != originalPath {
+		t.Errorf("path = %q, want %q (value should be preserved)", d.pathInput.Value(), originalPath)
+	}
+	if d.pathSoftSelected {
+		t.Error("pathSoftSelected should be false after Left key")
+	}
+}
+
+func TestNewDialog_SoftSelect_TabPreservesValue(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	d.focusIndex = 1
+	d.updateFocus()
+
+	originalPath := d.pathInput.Value()
+	if !d.pathSoftSelected {
+		t.Fatal("pathSoftSelected should be true")
+	}
+
+	// Press Tab to accept and move to next field
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	// Value should be preserved (Tab accepts as-is)
+	if d.pathInput.Value() != originalPath {
+		t.Errorf("path = %q, want %q (Tab should preserve value)", d.pathInput.Value(), originalPath)
+	}
+	// Focus should have moved forward
+	if d.focusIndex != 2 {
+		t.Errorf("focusIndex = %d, want 2 (should move to command)", d.focusIndex)
+	}
+}
+
+func TestNewDialog_SoftSelect_CtrlNExits(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	suggestions := []string{"/path/one", "/path/two"}
+	d.SetPathSuggestions(suggestions)
+
+	d.focusIndex = 1
+	d.updateFocus()
+
+	if !d.pathSoftSelected {
+		t.Fatal("pathSoftSelected should be true")
+	}
+
+	// Ctrl+N should exit soft-select and navigate suggestions
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+
+	if d.pathSoftSelected {
+		t.Error("pathSoftSelected should be false after Ctrl+N")
+	}
+	if !d.suggestionNavigated {
+		t.Error("suggestionNavigated should be true after Ctrl+N")
+	}
+}
+
+func TestNewDialog_SoftSelect_ReactivatesOnRefocus(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	d.focusIndex = 1
+	d.updateFocus()
+
+	// Exit soft-select by typing
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if d.pathSoftSelected {
+		t.Fatal("should not be soft-selected after typing")
+	}
+
+	// Set a value back and Tab away
+	d.pathInput.SetValue("/some/path")
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab}) // move to command
+
+	// Shift+Tab back to path
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+
+	if d.focusIndex != 1 {
+		t.Fatalf("focusIndex = %d, want 1", d.focusIndex)
+	}
+	if !d.pathSoftSelected {
+		t.Error("pathSoftSelected should reactivate when refocusing path field with value")
+	}
+}
+
+// ===== Filter Path Tests =====
+
+func TestNewDialog_FilterPaths_SubstringMatch(t *testing.T) {
+	d := NewNewDialog()
+	d.SetPathSuggestions([]string{
+		"/Users/test/skulk-project",
+		"/Users/test/other-project",
+		"/Users/test/skulking-around",
+	})
+
+	d.pathInput.SetValue("skulk")
+	d.filterPathSuggestions()
+
+	if len(d.pathSuggestions) != 2 {
+		t.Errorf("expected 2 matching paths for 'skulk', got %d", len(d.pathSuggestions))
+	}
+}
+
+func TestNewDialog_FilterPaths_CaseInsensitive(t *testing.T) {
+	d := NewNewDialog()
+	d.SetPathSuggestions([]string{
+		"/Users/test/MyProject",
+		"/Users/test/other",
+	})
+
+	d.pathInput.SetValue("MYPROJECT")
+	d.filterPathSuggestions()
+
+	if len(d.pathSuggestions) != 1 {
+		t.Errorf("expected 1 matching path for 'MYPROJECT' (case insensitive), got %d", len(d.pathSuggestions))
+	}
+}
+
+func TestNewDialog_FilterPaths_NoMatch(t *testing.T) {
+	d := NewNewDialog()
+	d.SetPathSuggestions([]string{
+		"/Users/test/project-alpha",
+		"/Users/test/project-beta",
+	})
+
+	d.pathInput.SetValue("zzz")
+	d.filterPathSuggestions()
+
+	if len(d.pathSuggestions) != 0 {
+		t.Errorf("expected 0 matching paths for 'zzz', got %d", len(d.pathSuggestions))
+	}
+}
+
+func TestNewDialog_FilterPaths_EmptyInput(t *testing.T) {
+	d := NewNewDialog()
+	paths := []string{
+		"/Users/test/project-alpha",
+		"/Users/test/project-beta",
+		"/Users/test/other-thing",
+	}
+	d.SetPathSuggestions(paths)
+
+	d.pathInput.SetValue("")
+	d.filterPathSuggestions()
+
+	if len(d.pathSuggestions) != 3 {
+		t.Errorf("expected all 3 suggestions for empty input, got %d", len(d.pathSuggestions))
 	}
 }
