@@ -1,71 +1,44 @@
 (function () {
   "use strict"
 
-  // ── DOM references ──────────────────────────────────────────────
-  var metaState = document.getElementById("meta-state")
-  var taskGrid = document.getElementById("task-grid")
-  var taskEmpty = document.getElementById("task-empty")
-  var filterStatus = document.getElementById("filter-status")
-  var filterProject = document.getElementById("filter-project")
-  var detailPanel = document.getElementById("detail-panel")
-  var detailBackdrop = document.getElementById("detail-backdrop")
-  var detailBack = document.getElementById("detail-back")
-  var detailBody = document.getElementById("detail-body")
-  var chatInput = document.getElementById("detail-chat-input")
-  var chatSend = document.getElementById("detail-chat-send")
-  var newTaskBtn = document.getElementById("new-task-btn")
-  var newTaskModal = document.getElementById("new-task-modal")
-  var newTaskBackdrop = document.getElementById("new-task-backdrop")
-  var newTaskClose = document.getElementById("new-task-close")
-  var newTaskCancel = document.getElementById("new-task-cancel")
-  var newTaskSubmit = document.getElementById("new-task-submit")
-  var newTaskProject = document.getElementById("new-task-project")
-  var newTaskDesc = document.getElementById("new-task-desc")
-  var newTaskPhase = document.getElementById("new-task-phase")
-  var routeSuggestion = document.getElementById("route-suggestion")
-  var manageProjectsBtn = document.getElementById("manage-projects-btn")
-  var manageProjectsModal = document.getElementById("manage-projects-modal")
-  var manageProjectsBackdrop = document.getElementById("manage-projects-backdrop")
-  var manageProjectsClose = document.getElementById("manage-projects-close")
-  var manageProjectsAdd = document.getElementById("manage-projects-add")
-  var manageProjectsBody = document.getElementById("manage-projects-body")
-  var addProjectModal = document.getElementById("add-project-modal")
-  var addProjectBackdrop = document.getElementById("add-project-backdrop")
-  var addProjectClose = document.getElementById("add-project-close")
-  var addProjectCancel = document.getElementById("add-project-cancel")
-  var addProjectSubmit = document.getElementById("add-project-submit")
-  var addProjectRepo = document.getElementById("add-project-repo")
-  var addProjectName = document.getElementById("add-project-name")
-  var addProjectPath = document.getElementById("add-project-path")
-  var addProjectKeywords = document.getElementById("add-project-keywords")
-  var addProjectContainer = document.getElementById("add-project-container")
-
   // ── State ───────────────────────────────────────────────────────
   var state = {
     tasks: [],
     projects: [],
     selectedTaskId: null,
+    activeView: "agents",
+    projectFilter: "",
     authToken: readAuthTokenFromURL(),
     menuEvents: null,
-    addProjectFromNewTask: false,
-    editingProjectName: null,
+    terminal: null,
+    terminalWs: null,
+    fitAddon: null,
+    chatMode: null,
+    chatModeOverride: null,
   }
 
   // ── Status metadata ─────────────────────────────────────────────
-  var STATUS_META = {
-    thinking: { icon: "\u25CF", label: "Thinking" },
-    waiting:  { icon: "\u25D0", label: "Waiting" },
-    running:  { icon: "\u27F3", label: "Running" },
-    idle:     { icon: "\u25CB", label: "Idle" },
-    error:    { icon: "\u2715", label: "Error" },
-    complete: { icon: "\u2713", label: "Complete" },
+  var AGENT_STATUS_META = {
+    thinking: { icon: "\u25CF", label: "Thinking", color: "var(--orange)" },
+    waiting:  { icon: "\u25D0", label: "Input needed", color: "var(--orange)" },
+    running:  { icon: "\u27F3", label: "Running", color: "var(--blue)" },
+    idle:     { icon: "\u25CB", label: "Idle", color: "var(--text-dim)" },
+    error:    { icon: "\u2715", label: "Error", color: "var(--red)" },
+    complete: { icon: "\u2713", label: "Complete", color: "var(--green)" },
+  }
+
+  var TASK_STATUS_COLORS = {
+    backlog:  "var(--text-dim)",
+    planning: "var(--phase-plan)",
+    running:  "var(--phase-execute)",
+    review:   "var(--phase-review)",
+    done:     "var(--phase-done)",
   }
 
   var PHASES = ["brainstorm", "plan", "execute", "review"]
   var PHASE_DOT_LABELS = { brainstorm: "B", plan: "P", execute: "E", review: "R" }
-  var PHASE_LABELS = { brainstorm: "Brainstorm", plan: "Plan", execute: "Execute", review: "Review" }
 
-  // ── Auth ────────────────────────────────────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────
   function readAuthTokenFromURL() {
     var params = new URLSearchParams(window.location.search || "")
     return String(params.get("token") || "").trim()
@@ -84,7 +57,7 @@
     return h
   }
 
-  // ── Helpers: safe DOM construction ──────────────────────────────
+  // ── Helpers: safe DOM construction ────────────────────────────────
   function el(tag, className, textContent) {
     var node = document.createElement(tag)
     if (className) node.className = className
@@ -96,7 +69,7 @@
     while (parent.firstChild) parent.removeChild(parent.firstChild)
   }
 
-  // ── Data fetching ───────────────────────────────────────────────
+  // ── Data fetching ─────────────────────────────────────────────────
   function fetchTasks() {
     return fetch(apiPathWithToken("/api/tasks"), { headers: authHeaders() })
       .then(function (r) {
@@ -105,17 +78,17 @@
       })
       .then(function (data) {
         state.tasks = data.tasks || []
-        renderTasks()
-        // Re-render open detail if task data changed
+        renderTaskList()
+        updateAgentCount()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
-          if (task) renderDetail(task)
+          if (task) renderRightPanel(task)
         }
       })
       .catch(function (err) {
         console.error("fetchTasks:", err)
         state.tasks = []
-        renderTasks()
+        renderTaskList()
       })
   }
 
@@ -127,7 +100,7 @@
       })
       .then(function (data) {
         state.projects = data.projects || []
-        renderProjectFilter()
+        renderFilterBar()
       })
       .catch(function (err) {
         console.error("fetchProjects:", err)
@@ -141,7 +114,7 @@
     return null
   }
 
-  // ── SSE ─────────────────────────────────────────────────────────
+  // ── SSE ───────────────────────────────────────────────────────────
   function connectSSE() {
     if (state.menuEvents) {
       state.menuEvents.close()
@@ -162,10 +135,15 @@
       try {
         var data = JSON.parse(e.data)
         state.tasks = data.tasks || []
-        renderTasks()
+        renderTaskList()
+        updateAgentCount()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
-          if (task) renderDetail(task)
+          if (task) {
+            renderRightPanel(task)
+            renderChatBar()
+            renderAskBanner()
+          }
         }
       } catch (err) {
         console.error("tasks SSE parse error:", err)
@@ -187,246 +165,691 @@
   }
 
   function setConnectionState(s) {
-    if (!metaState) return
-    metaState.textContent = s
-    metaState.className = "meta state-" + s
+    var dot = document.getElementById("sidebar-status-dot")
+    if (dot) {
+      dot.className = "sidebar-status-dot"
+      if (s === "connected") dot.classList.add("connected")
+      else if (s === "connecting" || s === "reconnecting") dot.classList.add("connecting")
+      else if (s === "error" || s === "closed") dot.classList.add("error")
+    }
   }
 
-  // ── Rendering: task cards ───────────────────────────────────────
-  function renderTasks() {
-    if (!taskGrid) return
+  function updateAgentCount() {
+    var countEl = document.getElementById("sidebar-agent-count")
+    if (!countEl) return
+    var active = 0
+    for (var i = 0; i < state.tasks.length; i++) {
+      if (state.tasks[i].status !== "done") active++
+    }
+    countEl.textContent = active
+  }
 
-    var statusVal = filterStatus ? filterStatus.value : ""
-    var projectVal = filterProject ? filterProject.value : ""
+  // ── Sidebar ───────────────────────────────────────────────────────
+  function renderSidebar() {
+    var icons = document.querySelectorAll(".sidebar-icon[data-view]")
+    for (var i = 0; i < icons.length; i++) {
+      if (icons[i].dataset.view === state.activeView) {
+        icons[i].classList.add("sidebar-icon--active")
+      } else {
+        icons[i].classList.remove("sidebar-icon--active")
+      }
+    }
+  }
 
+  function handleSidebarClick(e) {
+    var btn = e.currentTarget
+    var view = btn.dataset.view
+    if (!view) return
+    state.activeView = view
+    state.chatModeOverride = null
+    renderSidebar()
+    renderChatBar()
+  }
+
+  // ── Filter bar ────────────────────────────────────────────────────
+  function renderFilterBar() {
+    var filterBar = document.getElementById("filter-bar")
+    if (!filterBar) return
+
+    clearChildren(filterBar)
+
+    // "All" pill
+    var allPill = el("button", "filter-pill" + (state.projectFilter === "" ? " filter-pill--active" : ""), "All")
+    allPill.dataset.project = ""
+    allPill.addEventListener("click", handleFilterClick)
+    filterBar.appendChild(allPill)
+
+    // Project pills
+    for (var i = 0; i < state.projects.length; i++) {
+      var name = state.projects[i].name
+      var active = state.projectFilter === name
+      var pill = el("button", "filter-pill" + (active ? " filter-pill--active" : ""), name)
+      pill.dataset.project = name
+      pill.addEventListener("click", handleFilterClick)
+      filterBar.appendChild(pill)
+    }
+  }
+
+  function handleFilterClick(e) {
+    state.projectFilter = e.currentTarget.dataset.project || ""
+    state.chatModeOverride = null
+    renderFilterBar()
+    renderTaskList()
+    renderChatBar()
+  }
+
+  // ── Task list ─────────────────────────────────────────────────────
+  function renderTaskList() {
+    var taskList = document.getElementById("task-list")
+    var emptyEl = document.getElementById("task-list-empty")
+    if (!taskList) return
+
+    // Filter tasks
     var visible = state.tasks.filter(function (t) {
-      if (statusVal && t.status !== statusVal) return false
-      if (projectVal && t.project !== projectVal) return false
+      if (state.projectFilter && t.project !== state.projectFilter) return false
       return true
     })
 
-    // Remove existing cards
-    var cards = taskGrid.querySelectorAll(".task-card")
-    for (var i = 0; i < cards.length; i++) {
-      cards[i].remove()
+    // Remove existing cards and section headers
+    var existing = taskList.querySelectorAll(".agent-card, .task-section-header")
+    for (var i = 0; i < existing.length; i++) {
+      existing[i].remove()
     }
 
     if (visible.length === 0) {
-      if (taskEmpty) {
-        taskEmpty.style.display = ""
-        taskEmpty.textContent =
-          state.tasks.length === 0
-            ? "No tasks yet."
-            : "No tasks match the current filters."
+      if (emptyEl) {
+        emptyEl.style.display = ""
+        emptyEl.textContent = state.tasks.length === 0
+          ? "No agents yet."
+          : "No agents match the current filter."
       }
       return
     }
 
-    if (taskEmpty) taskEmpty.style.display = "none"
+    if (emptyEl) emptyEl.style.display = "none"
 
+    // Split into active and completed
+    var active = []
+    var completed = []
     for (var j = 0; j < visible.length; j++) {
-      taskGrid.appendChild(createTaskCard(visible[j]))
+      if (visible[j].status === "done") {
+        completed.push(visible[j])
+      } else {
+        active.push(visible[j])
+      }
+    }
+
+    // Active section
+    if (active.length > 0) {
+      var activeHeader = el("div", "task-section-header")
+      activeHeader.appendChild(el("span", null, "Active"))
+      activeHeader.appendChild(el("span", "task-section-count", active.length.toString()))
+      taskList.appendChild(activeHeader)
+
+      for (var a = 0; a < active.length; a++) {
+        taskList.appendChild(createAgentCard(active[a]))
+      }
+    }
+
+    // Completed section
+    if (completed.length > 0) {
+      var completedHeader = el("div", "task-section-header")
+      completedHeader.appendChild(el("span", null, "Completed"))
+      completedHeader.appendChild(el("span", "task-section-count", completed.length.toString()))
+      taskList.appendChild(completedHeader)
+
+      for (var c = 0; c < completed.length; c++) {
+        taskList.appendChild(createAgentCard(completed[c]))
+      }
     }
   }
 
-  function createTaskCard(task) {
-    var card = el("div", "task-card")
-    card.setAttribute("data-task-id", task.id)
+  // ── Agent card ────────────────────────────────────────────────────
+  function createAgentCard(task) {
+    var isSelected = state.selectedTaskId === task.id
+    var card = el("div", "agent-card" + (isSelected ? " agent-card--selected" : ""))
+    card.dataset.taskId = task.id
     card.setAttribute("role", "button")
     card.setAttribute("tabindex", "0")
 
-    var sm = STATUS_META[task.status] || STATUS_META.idle
+    // Left border color from task status
+    var borderColor = TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
+    card.style.borderLeftColor = borderColor
 
-    // Top row: status dot + project name
-    var top = el("div", "task-card-top")
-
-    var dot = el("span", "task-status-dot task-status--" + task.status)
-    dot.title = sm.label
-    top.appendChild(dot)
-
-    top.appendChild(el("span", "task-project", task.project || "\u2014"))
+    // Top row: project name + task id
+    var top = el("div", "agent-card-top")
+    top.appendChild(el("span", "agent-card-project", task.project || "\u2014"))
+    top.appendChild(el("span", "agent-card-id", task.id))
     card.appendChild(top)
-
-    // ID + phase row
-    card.appendChild(
-      el("div", "task-id-phase", task.id + " \u00B7 " + (task.phase || "\u2014"))
-    )
 
     // Description
     if (task.description) {
-      card.appendChild(el("div", "task-description", task.description))
+      card.appendChild(el("div", "agent-card-desc", task.description))
     }
 
-    // Footer: duration + branch
-    var footer = el("div", "task-footer")
-    footer.appendChild(el("span", "task-duration", formatDuration(task.createdAt)))
-    if (task.branch) {
-      footer.appendChild(el("span", "task-branch", task.branch))
+    // Footer: status badge + mini session chain
+    var footer = el("div", "agent-card-footer")
+    footer.appendChild(createAgentStatusBadge(task.agentStatus))
+
+    // Ask badge if waiting with question
+    if (task.agentStatus === "waiting" && task.askQuestion) {
+      var askBadge = el("span", "ask-badge", "\u25D0 INPUT")
+      footer.appendChild(askBadge)
     }
+
+    // Mini session chain
+    footer.appendChild(createMiniSessionChain(task))
     card.appendChild(footer)
 
     // Click handler
     card.addEventListener("click", function () {
-      openDetail(task.id)
+      selectTask(task.id)
     })
     card.addEventListener("keydown", function (e) {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault()
-        openDetail(task.id)
+        selectTask(task.id)
       }
     })
 
     return card
   }
 
-  // ── Rendering: project filter ───────────────────────────────────
-  function renderProjectFilter() {
-    if (!filterProject) return
+  // ── Agent status badge ────────────────────────────────────────────
+  function createAgentStatusBadge(agentStatus) {
+    var meta = AGENT_STATUS_META[agentStatus] || AGENT_STATUS_META.idle
+    var badge = el("span", "agent-status-badge")
+    var icon = el("span", "agent-status-badge-icon", meta.icon)
+    icon.style.color = meta.color
+    badge.appendChild(icon)
+    badge.appendChild(document.createTextNode(" " + meta.label))
+    return badge
+  }
 
-    while (filterProject.options.length > 1) {
-      filterProject.remove(1)
+  // ── Mini session chain (in card footer) ───────────────────────────
+  function createMiniSessionChain(task) {
+    var chain = el("div", "mini-session-chain")
+
+    // Use sessions array if available, otherwise fall back to phase
+    var phases = []
+    if (task.sessions && task.sessions.length > 0) {
+      for (var i = 0; i < task.sessions.length; i++) {
+        phases.push({
+          phase: task.sessions[i].phase,
+          status: task.sessions[i].status,
+        })
+      }
+    } else if (task.phase) {
+      var currentIdx = PHASES.indexOf(task.phase)
+      for (var j = 0; j < PHASES.length; j++) {
+        phases.push({
+          phase: PHASES[j],
+          status: j < currentIdx ? "complete" : (j === currentIdx ? "active" : "pending"),
+        })
+      }
     }
 
-    for (var i = 0; i < state.projects.length; i++) {
-      var opt = document.createElement("option")
-      opt.value = state.projects[i].name
-      opt.textContent = state.projects[i].name
-      filterProject.appendChild(opt)
+    for (var k = 0; k < phases.length; k++) {
+      if (k > 0) {
+        var conn = el("span", "mini-connector" + (phases[k - 1].status === "complete" ? " done" : ""))
+        chain.appendChild(conn)
+      }
+      var pipClass = "mini-pip"
+      if (phases[k].status === "complete") pipClass += " done"
+      else if (phases[k].status === "active") pipClass += " active"
+      var pip = el("span", pipClass)
+      pip.title = phases[k].phase
+      chain.appendChild(pip)
     }
+
+    return chain
   }
 
-  // ── Detail panel ────────────────────────────────────────────────
-  function openDetail(taskId) {
-    var task = findTask(taskId)
-    if (!task) return
+  // ── Task selection ────────────────────────────────────────────────
+  function selectTask(id) {
+    state.selectedTaskId = id
+    state.chatModeOverride = null
+    var task = findTask(id)
 
-    state.selectedTaskId = taskId
-    renderDetail(task)
+    // Update card selection styles
+    var cards = document.querySelectorAll(".agent-card")
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].dataset.taskId === id) {
+        cards[i].classList.add("agent-card--selected")
+        // Update border color
+        if (task) {
+          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
+        }
+      } else {
+        cards[i].classList.remove("agent-card--selected")
+        // Reset border to task's own color
+        var otherTask = findTask(cards[i].dataset.taskId)
+        if (otherTask) {
+          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[otherTask.status] || "var(--text-dim)"
+        }
+      }
+    }
 
-    if (detailPanel) detailPanel.classList.add("open")
-    if (detailBackdrop) detailBackdrop.classList.add("open")
-    if (detailPanel) detailPanel.setAttribute("aria-hidden", "false")
+    if (task) {
+      renderRightPanel(task)
+      connectTerminal(task)
+    }
+
+    // Mobile: show detail panel
+    var panels = document.getElementById("panels")
+    if (panels) panels.classList.add("detail-active")
+
+    renderChatBar()
+    renderAskBanner()
   }
 
-  function closeDetail() {
-    state.selectedTaskId = null
-    if (detailPanel) detailPanel.classList.remove("open")
-    if (detailBackdrop) detailBackdrop.classList.remove("open")
-    if (detailPanel) detailPanel.setAttribute("aria-hidden", "true")
+  // ── Right panel ───────────────────────────────────────────────────
+  function renderRightPanel(task) {
+    var emptyState = document.getElementById("empty-state")
+    var detailView = document.getElementById("detail-view")
+
+    if (!task) {
+      if (emptyState) emptyState.style.display = ""
+      if (detailView) detailView.style.display = "none"
+      return
+    }
+
+    if (emptyState) emptyState.style.display = "none"
+    if (detailView) detailView.style.display = ""
+
+    renderDetailHeader(task)
+    renderSessionChain(task)
+    renderPreviewHeader(task)
   }
 
-  function renderDetail(task) {
-    if (!detailBody) return
+  // ── Detail header ─────────────────────────────────────────────────
+  function renderDetailHeader(task) {
+    var header = document.getElementById("detail-header")
+    if (!header) return
 
-    var sm = STATUS_META[task.status] || STATUS_META.idle
+    clearChildren(header)
 
-    clearChildren(detailBody)
+    // Top row: back button + title + actions
+    var top = el("div", "detail-header-top")
 
-    // Title row
-    var title = el("div", "detail-title")
-    var titleDot = el("span", "task-status-dot task-status--" + task.status)
-    titleDot.style.display = "inline-block"
-    titleDot.style.verticalAlign = "middle"
-    titleDot.style.marginRight = "8px"
-    title.appendChild(titleDot)
-    title.appendChild(document.createTextNode(
-      (task.project || "\u2014") + " \u00B7 " + task.id
-    ))
-    detailBody.appendChild(title)
+    var backBtn = el("button", "detail-back-btn", "\u2190 Back")
+    backBtn.addEventListener("click", handleMobileBack)
+    top.appendChild(backBtn)
 
-    // Description
-    detailBody.appendChild(
-      el("div", "detail-meta", task.description || "No description")
-    )
+    top.appendChild(el("span", "detail-title", (task.project || "\u2014") + " \u00B7 " + task.id))
 
-    // Phase progress
-    var phaseSection = el("div", "detail-section")
-    phaseSection.appendChild(el("div", "detail-section-label", "Phase"))
-    phaseSection.appendChild(buildPhaseTrack(task.phase))
-    detailBody.appendChild(phaseSection)
+    var actions = el("div", "detail-actions")
+    actions.appendChild(createAgentStatusBadge(task.agentStatus))
+    top.appendChild(actions)
 
-    // Details section
-    var infoSection = el("div", "detail-section")
-    infoSection.appendChild(el("div", "detail-section-label", "Details"))
+    header.appendChild(top)
 
-    var infoGrid = el("div")
-    infoGrid.style.fontSize = "0.88rem"
-    infoGrid.style.lineHeight = "1.8"
-
-    appendInfoRow(infoGrid, "Status", sm.label)
-    if (task.branch) appendInfoRow(infoGrid, "Branch", task.branch)
-    appendInfoRow(infoGrid, "Duration", formatDuration(task.createdAt))
-    if (task.sessionId) appendInfoRow(infoGrid, "Session", task.sessionId)
-    if (task.parentTaskId) appendInfoRow(infoGrid, "Parent", task.parentTaskId)
-
-    infoSection.appendChild(infoGrid)
-    detailBody.appendChild(infoSection)
-
-    // Terminal preview placeholder
-    var termSection = el("div", "detail-section")
-    termSection.appendChild(el("div", "detail-section-label", "Terminal"))
-
-    var termBox = el("div", "detail-terminal")
-    var termPlaceholder = el("div", "detail-terminal-placeholder")
-    termPlaceholder.textContent = task.sessionId
-      ? "Terminal preview for session " + task.sessionId + "..."
-      : "No session attached."
-    termBox.appendChild(termPlaceholder)
-    termSection.appendChild(termBox)
-    detailBody.appendChild(termSection)
+    // Meta row: description + branch
+    var meta = el("div", "detail-meta")
+    if (task.description) {
+      meta.appendChild(document.createTextNode(task.description))
+    }
+    if (task.branch) {
+      var sep = el("span", null, "\u00B7")
+      sep.style.color = "var(--text-dim)"
+      meta.appendChild(sep)
+      meta.appendChild(el("span", null, task.branch))
+    }
+    header.appendChild(meta)
   }
 
-  function appendInfoRow(parent, label, value) {
-    var strong = document.createElement("strong")
-    strong.textContent = label + ": "
-    parent.appendChild(strong)
-    parent.appendChild(document.createTextNode(value))
-    parent.appendChild(document.createElement("br"))
-  }
+  // ── Session chain (detail panel) ──────────────────────────────────
+  function renderSessionChain(task) {
+    var container = document.getElementById("session-chain")
+    if (!container) return
 
-  function buildPhaseTrack(currentPhase) {
-    var currentIdx = PHASES.indexOf(currentPhase)
-    if (currentIdx < 0) currentIdx = -1
+    clearChildren(container)
 
-    var track = el("div", "phase-track")
+    // Use sessions array if available, otherwise fall back to phase pips
+    var phases = []
+    if (task.sessions && task.sessions.length > 0) {
+      for (var i = 0; i < task.sessions.length; i++) {
+        var s = task.sessions[i]
+        phases.push({
+          label: s.phase,
+          dotLabel: (s.phase || "?").charAt(0).toUpperCase(),
+          status: s.status === "complete" ? "done" : (s.status === "active" ? "active" : ""),
+          duration: s.duration || "",
+          artifact: s.artifact || "",
+        })
+      }
+    } else if (task.phase) {
+      var currentIdx = PHASES.indexOf(task.phase)
+      for (var j = 0; j < PHASES.length; j++) {
+        var st = ""
+        if (j < currentIdx) st = "done"
+        else if (j === currentIdx) st = "active"
+        phases.push({
+          label: PHASES[j],
+          dotLabel: PHASE_DOT_LABELS[PHASES[j]],
+          status: st,
+          duration: "",
+          artifact: "",
+        })
+      }
+    }
 
-    for (var i = 0; i < PHASES.length; i++) {
-      // Connector between phases
-      if (i > 0) {
-        var conn = el("div", i <= currentIdx ? "phase-connector done" : "phase-connector")
-        track.appendChild(conn)
+    for (var k = 0; k < phases.length; k++) {
+      // Connector
+      if (k > 0) {
+        var connClass = "session-chain-connector"
+        if (phases[k - 1].status === "done") connClass += " done"
+        container.appendChild(el("div", connClass))
       }
 
-      // Phase pip
-      var pip = el("div", "phase-pip")
+      // Pip
+      var pip = el("div", "session-chain-pip")
 
-      var dotClass = "phase-dot"
-      if (i < currentIdx) dotClass += " done"
-      else if (i === currentIdx) dotClass += " active"
+      var dotClass = "session-chain-dot"
+      if (phases[k].status === "done") dotClass += " done"
+      else if (phases[k].status === "active") dotClass += " active"
+      pip.appendChild(el("div", dotClass, phases[k].dotLabel))
 
-      var phaseDot = el("div", dotClass, PHASE_DOT_LABELS[PHASES[i]])
-      pip.appendChild(phaseDot)
-      track.appendChild(pip)
+      var lblClass = "session-chain-label"
+      if (phases[k].status === "active") lblClass += " active"
+      var lblText = phases[k].label
+      if (phases[k].duration) lblText += " " + phases[k].duration
+      pip.appendChild(el("div", lblClass, lblText))
+
+      container.appendChild(pip)
     }
-
-    // Labels row
-    var labelsRow = el("div")
-    labelsRow.style.display = "flex"
-    labelsRow.style.justifyContent = "space-between"
-
-    for (var j = 0; j < PHASES.length; j++) {
-      var lblClass = j === currentIdx ? "phase-label active" : "phase-label"
-      var lbl = el("div", lblClass, PHASE_LABELS[PHASES[j]])
-      labelsRow.appendChild(lbl)
-    }
-
-    var container = el("div")
-    container.appendChild(track)
-    container.appendChild(labelsRow)
-    return container
   }
 
-  // ── Utilities ───────────────────────────────────────────────────
+  // ── Preview header ────────────────────────────────────────────────
+  function renderPreviewHeader(task) {
+    var container = document.getElementById("preview-header")
+    if (!container) return
+
+    clearChildren(container)
+
+    var projLabel = el("span", "preview-header-project", task.project || "\u2014")
+    container.appendChild(projLabel)
+
+    var agentMeta = AGENT_STATUS_META[task.agentStatus] || AGENT_STATUS_META.idle
+    var statusSpan = el("span", "preview-header-status")
+    statusSpan.textContent = agentMeta.icon + " " + agentMeta.label
+    statusSpan.style.color = agentMeta.color
+    container.appendChild(statusSpan)
+  }
+
+  // ── Terminal management ───────────────────────────────────────────
+  function connectTerminal(task) {
+    disconnectTerminal()
+    var container = document.getElementById("terminal-container")
+    if (!container) return
+    clearChildren(container)
+
+    if (!task.tmuxSession) {
+      var placeholder = el("div", "terminal-placeholder", "No session attached.")
+      container.appendChild(placeholder)
+      return
+    }
+
+    // Check if Terminal (xterm.js) is available
+    if (typeof Terminal === "undefined") {
+      var fallback = el("div", "terminal-placeholder", "Terminal emulator not available. Check xterm.js assets.")
+      container.appendChild(fallback)
+      return
+    }
+
+    var term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "var(--font-mono)",
+      theme: {
+        background: "#080a0e",
+        foreground: "#c8d0dc",
+        cursor: "#e8a932",
+      },
+    })
+    var fitAddon = new FitAddon.FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(container)
+    fitAddon.fit()
+
+    state.terminal = term
+    state.fitAddon = fitAddon
+
+    var protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+    var wsUrl = protocol + "//" + window.location.host + "/ws/session/" + encodeURIComponent(task.tmuxSession)
+    if (state.authToken) wsUrl += "?token=" + encodeURIComponent(state.authToken)
+    var ws = new WebSocket(wsUrl)
+    state.terminalWs = ws
+
+    ws.binaryType = "arraybuffer"
+    ws.onmessage = function (e) {
+      if (e.data instanceof ArrayBuffer) {
+        term.write(new Uint8Array(e.data))
+      } else {
+        term.write(e.data)
+      }
+    }
+    ws.onclose = function () { state.terminalWs = null }
+    term.onData(function (data) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(data)
+    })
+  }
+
+  function disconnectTerminal() {
+    if (state.terminalWs) {
+      state.terminalWs.close()
+      state.terminalWs = null
+    }
+    if (state.terminal) {
+      state.terminal.dispose()
+      state.terminal = null
+    }
+    state.fitAddon = null
+  }
+
+  // ── Resize handler ────────────────────────────────────────────────
+  window.addEventListener("resize", function () {
+    if (state.fitAddon) state.fitAddon.fit()
+  })
+
+  // ── Mobile back ───────────────────────────────────────────────────
+  function handleMobileBack() {
+    state.selectedTaskId = null
+    disconnectTerminal()
+    var panels = document.getElementById("panels")
+    if (panels) panels.classList.remove("detail-active")
+
+    // Reset right panel to empty state
+    var emptyState = document.getElementById("empty-state")
+    var detailView = document.getElementById("detail-view")
+    if (emptyState) emptyState.style.display = ""
+    if (detailView) detailView.style.display = "none"
+
+    renderTaskList()
+    renderChatBar()
+  }
+
+  // ── Chat mode detection ────────────────────────────────────────────
+  function detectChatMode() {
+    if (state.chatModeOverride) return state.chatModeOverride
+
+    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
+
+    if (state.activeView === "agents" && task && task.agentStatus !== "complete" && task.agentStatus !== "idle") {
+      return {
+        mode: "reply",
+        label: "\u21A9 " + task.id + "/" + task.phase,
+        icon: "\u21A9",
+        color: "var(--accent)",
+      }
+    }
+
+    var project = ""
+    if (task) project = task.project
+    else if (state.projectFilter) project = state.projectFilter
+
+    return {
+      mode: "new",
+      label: project ? "+ " + project : "+ auto-route",
+      icon: "+",
+      color: "var(--blue)",
+    }
+  }
+
+  function renderChatBar() {
+    var mode = detectChatMode()
+    state.chatMode = mode
+
+    var modeBtn = document.getElementById("chat-mode-btn")
+    var modeIcon = document.getElementById("chat-mode-icon")
+    var modeLabel = document.getElementById("chat-mode-label")
+    var input = document.getElementById("chat-input")
+
+    if (modeBtn) modeBtn.style.borderColor = mode.color
+    if (modeIcon) { modeIcon.textContent = mode.icon; modeIcon.style.color = mode.color }
+    if (modeLabel) modeLabel.textContent = mode.label
+
+    if (mode.mode === "reply") {
+      if (input) input.placeholder = "Reply to " + state.selectedTaskId + "..."
+    } else {
+      if (input) input.placeholder = "Describe a new task..."
+    }
+  }
+
+  // ── AskUserQuestion banner ─────────────────────────────────────────
+  function renderAskBanner() {
+    var existing = document.querySelector(".ask-banner")
+    if (existing) existing.remove()
+
+    var task = state.selectedTaskId ? findTask(state.selectedTaskId) : null
+    if (!task || task.agentStatus !== "waiting" || !task.askQuestion) return
+
+    var banner = el("div", "ask-banner")
+    var icon = el("span", "ask-banner-icon", "\u25D0")
+    banner.appendChild(icon)
+    banner.appendChild(document.createTextNode("Agent is asking: " + task.askQuestion))
+
+    var chatBar = document.getElementById("chat-bar")
+    if (chatBar && chatBar.parentNode) {
+      chatBar.parentNode.insertBefore(banner, chatBar)
+    }
+
+    // Update placeholder to reflect the question
+    var input = document.getElementById("chat-input")
+    if (input) input.placeholder = "Answer: " + task.askQuestion
+  }
+
+  // ── Chat mode override menu ────────────────────────────────────────
+  function renderModeMenu() {
+    var existing = document.querySelector(".chat-mode-menu")
+    if (existing) existing.remove()
+
+    var menu = el("div", "chat-mode-menu open")
+
+    // "New in {project}" options for each project
+    for (var i = 0; i < state.projects.length; i++) {
+      var proj = state.projects[i]
+      var opt = el("button", "chat-mode-option")
+      var icon = el("span", "chat-mode-option-icon", "+")
+      icon.style.color = "var(--blue)"
+      opt.appendChild(icon)
+      opt.appendChild(document.createTextNode("New in " + proj.name))
+      opt.dataset.mode = "new"
+      opt.dataset.project = proj.name
+      opt.addEventListener("click", handleModeSelect)
+      menu.appendChild(opt)
+    }
+
+    // "New (auto-route)"
+    var autoOpt = el("button", "chat-mode-option")
+    var autoIcon = el("span", "chat-mode-option-icon", "+")
+    autoIcon.style.color = "var(--blue)"
+    autoOpt.appendChild(autoIcon)
+    autoOpt.appendChild(document.createTextNode("New (auto-route)"))
+    autoOpt.dataset.mode = "new"
+    autoOpt.dataset.project = ""
+    autoOpt.addEventListener("click", handleModeSelect)
+    menu.appendChild(autoOpt)
+
+    // "Back to auto" if overridden
+    if (state.chatModeOverride) {
+      var backOpt = el("button", "chat-mode-option")
+      var backIcon = el("span", "chat-mode-option-icon", "\u2190")
+      backOpt.appendChild(backIcon)
+      backOpt.appendChild(document.createTextNode("Back to: auto"))
+      backOpt.dataset.mode = "auto"
+      backOpt.addEventListener("click", handleModeSelect)
+      menu.appendChild(backOpt)
+    }
+
+    var chatBar = document.getElementById("chat-bar")
+    if (chatBar) {
+      chatBar.appendChild(menu)
+    }
+
+    // Close on outside click (deferred to avoid immediate close)
+    setTimeout(function () {
+      document.addEventListener("click", closeModeMenu)
+    }, 0)
+  }
+
+  function handleModeSelect(e) {
+    var btn = e.currentTarget
+    if (btn.dataset.mode === "auto") {
+      state.chatModeOverride = null
+    } else {
+      state.chatModeOverride = {
+        mode: btn.dataset.mode,
+        label: btn.dataset.project ? "+ " + btn.dataset.project : "+ auto-route",
+        icon: "+",
+        color: "var(--blue)",
+        project: btn.dataset.project,
+      }
+    }
+    closeModeMenu()
+    renderChatBar()
+  }
+
+  function closeModeMenu() {
+    var menu = document.querySelector(".chat-mode-menu")
+    if (menu) menu.remove()
+    document.removeEventListener("click", closeModeMenu)
+  }
+
+  function sendChatMessage() {
+    var input = document.getElementById("chat-input")
+    if (!input) return
+    var text = input.value.trim()
+    if (!text) return
+
+    var mode = state.chatMode || detectChatMode()
+
+    if (mode.mode === "reply" && state.selectedTaskId) {
+      sendTaskInput(state.selectedTaskId, text)
+    } else {
+      openNewTaskModalWithDescription(text)
+    }
+    input.value = ""
+  }
+
+  function sendTaskInput(taskId, text) {
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/tasks/" + taskId + "/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: text }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("send failed: " + r.status)
+      })
+      .catch(function (err) {
+        console.error("sendTaskInput:", err)
+      })
+  }
+
+  // ── Utilities ─────────────────────────────────────────────────────
   function formatDuration(isoDate) {
     if (!isoDate) return "\u2014"
     var created = new Date(isoDate)
@@ -449,51 +872,31 @@
     return days + "d " + (hours % 24) + "h"
   }
 
-  // ── Chat input ──────────────────────────────────────────────────
-  function sendChatInput() {
-    if (!state.selectedTaskId || !chatInput) return
-    var input = chatInput.value.trim()
-    if (!input) return
+  // ── New Task modal ────────────────────────────────────────────────
+  var newTaskModal = document.getElementById("new-task-modal")
+  var newTaskBackdrop = document.getElementById("new-task-backdrop")
+  var newTaskProject = document.getElementById("new-task-project")
+  var newTaskDesc = document.getElementById("new-task-desc")
+  var newTaskPhase = document.getElementById("new-task-phase")
+  var newTaskSubmit = document.getElementById("new-task-submit")
+  var routeSuggestion = document.getElementById("route-suggestion")
 
-    var headers = authHeaders()
-    headers["Content-Type"] = "application/json"
-
-    fetch(apiPathWithToken("/api/tasks/" + state.selectedTaskId + "/input"), {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify({ input: input }),
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error("send failed: " + r.status)
-        chatInput.value = ""
-      })
-      .catch(function (err) {
-        console.error("sendChatInput:", err)
-      })
-  }
-
-  // ── New Task modal ───────────────────────────────────────────────
   function openNewTaskModal() {
-    // Populate project selector from loaded projects.
     clearChildren(newTaskProject)
     var hasProjects = state.projects.length > 0
-
-    // Add "+ Add Project" option at the top.
-    var addOpt = document.createElement("option")
-    addOpt.value = "__add_project__"
-    addOpt.textContent = "+ Add Project..."
-    newTaskProject.appendChild(addOpt)
-
     for (var i = 0; i < state.projects.length; i++) {
       var opt = document.createElement("option")
       opt.value = state.projects[i].name
       opt.textContent = state.projects[i].name
       newTaskProject.appendChild(opt)
     }
-
-    // Select first real project if available.
-    if (hasProjects) {
-      newTaskProject.selectedIndex = 1
+    if (!hasProjects) {
+      var placeholder = document.createElement("option")
+      placeholder.value = ""
+      placeholder.textContent = "No projects configured"
+      placeholder.disabled = true
+      placeholder.selected = true
+      newTaskProject.appendChild(placeholder)
     }
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
@@ -504,6 +907,12 @@
     if (newTaskBackdrop) newTaskBackdrop.classList.add("open")
     if (newTaskModal) newTaskModal.setAttribute("aria-hidden", "false")
     if (newTaskDesc) newTaskDesc.focus()
+  }
+
+  function openNewTaskModalWithDescription(text) {
+    openNewTaskModal()
+    if (newTaskDesc) newTaskDesc.value = text
+    suggestProject(text)
   }
 
   function closeNewTaskModal() {
@@ -536,14 +945,14 @@
       .then(function (data) {
         closeNewTaskModal()
         fetchTasks()
-        if (data.task && data.task.id) openDetail(data.task.id)
+        if (data.task && data.task.id) selectTask(data.task.id)
       })
       .catch(function (err) {
         console.error("submitNewTask:", err)
       })
   }
 
-  // ── Auto-suggest project via routing ─────────────────────────────
+  // ── Auto-suggest project via routing ──────────────────────────────
   var routeTimer = null
 
   function suggestProject(message) {
@@ -581,7 +990,6 @@
               " (" + Math.round(data.confidence * 100) + "% match)"
             routeSuggestion.className = "route-suggestion"
           }
-          // Auto-select the suggested project in the dropdown.
           if (newTaskProject) {
             for (var i = 0; i < newTaskProject.options.length; i++) {
               if (newTaskProject.options[i].value === data.project) {
@@ -597,356 +1005,90 @@
     }, 300)
   }
 
-  // ── Manage Projects modal ─────────────────────────────────────────
-  function openManageProjects() {
-    renderProjectList()
-    if (manageProjectsModal) manageProjectsModal.classList.add("open")
-    if (manageProjectsBackdrop) manageProjectsBackdrop.classList.add("open")
-    if (manageProjectsModal) manageProjectsModal.setAttribute("aria-hidden", "false")
+  // ── Event listeners ───────────────────────────────────────────────
+
+  // Sidebar view icons
+  var sidebarIcons = document.querySelectorAll(".sidebar-icon[data-view]")
+  for (var si = 0; si < sidebarIcons.length; si++) {
+    sidebarIcons[si].addEventListener("click", handleSidebarClick)
   }
 
-  function closeManageProjects() {
-    if (manageProjectsModal) manageProjectsModal.classList.remove("open")
-    if (manageProjectsBackdrop) manageProjectsBackdrop.classList.remove("open")
-    if (manageProjectsModal) manageProjectsModal.setAttribute("aria-hidden", "true")
-  }
+  // New task button (sidebar +)
+  var newTaskBtn = document.getElementById("new-task-btn")
+  if (newTaskBtn) newTaskBtn.addEventListener("click", openNewTaskModal)
 
-  function renderProjectList() {
-    if (!manageProjectsBody) return
-    clearChildren(manageProjectsBody)
-
-    if (state.projects.length === 0) {
-      manageProjectsBody.appendChild(el("div", "project-list-empty", "No projects yet. Click + Add to create one."))
-      return
-    }
-
-    for (var i = 0; i < state.projects.length; i++) {
-      manageProjectsBody.appendChild(createProjectRow(state.projects[i]))
-    }
-  }
-
-  function createProjectRow(project) {
-    var row = el("div", "project-row")
-
-    var info = el("div", "project-row-info")
-    info.appendChild(el("div", "project-row-name", project.name))
-    info.appendChild(el("div", "project-row-path", project.path || "\u2014"))
-    if (project.keywords && project.keywords.length > 0) {
-      info.appendChild(el("div", "project-row-keywords", project.keywords.join(", ")))
-    }
-    row.appendChild(info)
-
-    var actions = el("div", "project-row-actions")
-
-    var editBtn = el("button", "", "Edit")
-    editBtn.addEventListener("click", function () {
-      openEditProject(project)
-    })
-    actions.appendChild(editBtn)
-
-    var deleteBtn = el("button", "btn-danger", "Delete")
-    deleteBtn.addEventListener("click", function () {
-      deleteProject(project.name)
-    })
-    actions.appendChild(deleteBtn)
-
-    row.appendChild(actions)
-    return row
-  }
-
-  // ── Add/Edit Project modal ──────────────────────────────────────────
-  function openAddProject(fromNewTask) {
-    state.addProjectFromNewTask = !!fromNewTask
-    state.editingProjectName = null
-    if (addProjectRepo) addProjectRepo.value = ""
-    if (addProjectName) { addProjectName.value = ""; delete addProjectName.dataset.userEdited }
-    if (addProjectPath) { addProjectPath.value = ""; delete addProjectPath.dataset.userEdited }
-    if (addProjectKeywords) addProjectKeywords.value = ""
-    if (addProjectContainer) addProjectContainer.value = ""
-    if (addProjectRepo) addProjectRepo.disabled = false
-
-    // Update modal title
-    var titleEl = addProjectModal ? addProjectModal.querySelector(".modal-title") : null
-    if (titleEl) titleEl.textContent = "Add Project"
-
-    // Update submit button text
-    if (addProjectSubmit) addProjectSubmit.textContent = "Create"
-
-    if (addProjectModal) addProjectModal.classList.add("open")
-    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
-    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
-    if (addProjectRepo) addProjectRepo.focus()
-  }
-
-  function openEditProject(project) {
-    state.addProjectFromNewTask = false
-    state.editingProjectName = project.name
-    if (addProjectRepo) { addProjectRepo.value = project.repo || ""; addProjectRepo.disabled = true }
-    if (addProjectName) addProjectName.value = project.name
-    if (addProjectPath) addProjectPath.value = project.path || ""
-    if (addProjectKeywords) addProjectKeywords.value = (project.keywords || []).join(", ")
-    if (addProjectContainer) addProjectContainer.value = project.container || ""
-
-    var titleEl = addProjectModal ? addProjectModal.querySelector(".modal-title") : null
-    if (titleEl) titleEl.textContent = "Edit Project"
-
-    if (addProjectSubmit) addProjectSubmit.textContent = "Save"
-
-    if (addProjectModal) addProjectModal.classList.add("open")
-    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
-    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
-    if (addProjectPath) addProjectPath.focus()
-  }
-
-  function closeAddProject() {
-    if (addProjectModal) addProjectModal.classList.remove("open")
-    if (addProjectBackdrop) addProjectBackdrop.classList.remove("open")
-    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "true")
-  }
-
-  function submitProject() {
-    if (state.editingProjectName) {
-      submitProjectUpdate()
-    } else {
-      submitProjectCreate()
-    }
-  }
-
-  function submitProjectCreate() {
-    var repo = addProjectRepo ? addProjectRepo.value.trim() : ""
-    var name = addProjectName ? addProjectName.value.trim() : ""
-    var path = addProjectPath ? addProjectPath.value.trim() : ""
-    var keywordsStr = addProjectKeywords ? addProjectKeywords.value.trim() : ""
-    var container = addProjectContainer ? addProjectContainer.value.trim() : ""
-
-    if (!repo && !name) return
-
-    var keywords = keywordsStr ? keywordsStr.split(",").map(function (k) { return k.trim() }).filter(Boolean) : []
-
-    var payload = { repo: repo }
-    if (name) payload.name = name
-    if (path) payload.path = path
-    if (keywords.length > 0) payload.keywords = keywords
-    if (container) payload.container = container
-
-    var headers = authHeaders()
-    headers["Content-Type"] = "application/json"
-
-    fetch(apiPathWithToken("/api/projects"), {
-      method: "POST",
-      headers: headers,
-      body: JSON.stringify(payload),
-    })
-      .then(function (r) {
-        if (!r.ok) return r.json().then(function (e) { throw new Error(e.message || "create failed") })
-        return r.json()
-      })
-      .then(function (data) {
-        closeAddProject()
-        fetchProjects().then(function () {
-          renderProjectList()
-          if (state.addProjectFromNewTask && data.project) {
-            // Re-open new task modal with the new project selected.
-            openNewTaskModal()
-            if (newTaskProject) {
-              for (var i = 0; i < newTaskProject.options.length; i++) {
-                if (newTaskProject.options[i].value === data.project.name) {
-                  newTaskProject.selectedIndex = i
-                  break
-                }
-              }
-            }
-          }
-        })
-      })
-      .catch(function (err) {
-        console.error("submitProjectCreate:", err)
-        alert("Failed to create project: " + err.message)
-      })
-  }
-
-  function submitProjectUpdate() {
-    var path = addProjectPath ? addProjectPath.value.trim() : ""
-    var keywordsStr = addProjectKeywords ? addProjectKeywords.value.trim() : ""
-    var container = addProjectContainer ? addProjectContainer.value.trim() : ""
-
-    var keywords = keywordsStr ? keywordsStr.split(",").map(function (k) { return k.trim() }).filter(Boolean) : []
-
-    var payload = {}
-    if (path) payload.path = path
-    payload.keywords = keywords
-    payload.container = container
-
-    var headers = authHeaders()
-    headers["Content-Type"] = "application/json"
-
-    fetch(apiPathWithToken("/api/projects/" + state.editingProjectName), {
-      method: "PATCH",
-      headers: headers,
-      body: JSON.stringify(payload),
-    })
-      .then(function (r) {
-        if (!r.ok) return r.json().then(function (e) { throw new Error(e.message || "update failed") })
-        return r.json()
-      })
-      .then(function () {
-        closeAddProject()
-        fetchProjects().then(function () {
-          renderProjectList()
-        })
-      })
-      .catch(function (err) {
-        console.error("submitProjectUpdate:", err)
-        alert("Failed to update project: " + err.message)
-      })
-  }
-
-  function deleteProject(name) {
-    if (!confirm("Delete project '" + name + "'? Tasks using this project will not be deleted.")) {
-      return
-    }
-
-    var headers = authHeaders()
-
-    fetch(apiPathWithToken("/api/projects/" + name), {
-      method: "DELETE",
-      headers: headers,
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error("delete failed: " + r.status)
-        fetchProjects().then(function () {
-          renderProjectList()
-        })
-      })
-      .catch(function (err) {
-        console.error("deleteProject:", err)
-      })
-  }
-
-  // ── Auto-fill repo field ──────────────────────────────────────────
-  if (addProjectRepo) {
-    addProjectRepo.addEventListener("input", function () {
-      if (state.editingProjectName) return
-      var repo = addProjectRepo.value.trim()
-      if (!repo) return
-      var parts = repo.split("/")
-      var repoName = parts[parts.length - 1]
-      if (addProjectName && !addProjectName.dataset.userEdited) {
-        addProjectName.value = repoName
-      }
-      if (addProjectPath && !addProjectPath.dataset.userEdited) {
-        addProjectPath.value = "~/projects/" + repoName
-      }
-    })
-  }
-
-  // Track user edits to name/path so auto-fill doesn't overwrite.
-  if (addProjectName) {
-    addProjectName.addEventListener("input", function () {
-      addProjectName.dataset.userEdited = "true"
-    })
-  }
-  if (addProjectPath) {
-    addProjectPath.addEventListener("input", function () {
-      addProjectPath.dataset.userEdited = "true"
-    })
-  }
-
-  // ── Event listeners ─────────────────────────────────────────────
-  if (filterStatus) {
-    filterStatus.addEventListener("change", renderTasks)
-  }
-  if (filterProject) {
-    filterProject.addEventListener("change", renderTasks)
-  }
-  if (detailBack) {
-    detailBack.addEventListener("click", closeDetail)
-  }
-  if (detailBackdrop) {
-    detailBackdrop.addEventListener("click", closeDetail)
-  }
-
-  if (chatSend) {
-    chatSend.addEventListener("click", sendChatInput)
-  }
-  if (chatInput) {
-    chatInput.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") {
-        e.preventDefault()
-        sendChatInput()
-      }
-    })
-  }
-  if (newTaskBtn) {
-    newTaskBtn.addEventListener("click", openNewTaskModal)
-  }
-  if (newTaskClose) {
-    newTaskClose.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskCancel) {
-    newTaskCancel.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskBackdrop) {
-    newTaskBackdrop.addEventListener("click", closeNewTaskModal)
-  }
-  if (newTaskSubmit) {
-    newTaskSubmit.addEventListener("click", submitNewTask)
-  }
-  if (newTaskProject) {
-    newTaskProject.addEventListener("change", function () {
-      if (newTaskProject.value === "__add_project__") {
-        closeNewTaskModal()
-        openAddProject(true)
-      }
-    })
-  }
-  if (manageProjectsBtn) {
-    manageProjectsBtn.addEventListener("click", openManageProjects)
-  }
-  if (manageProjectsClose) {
-    manageProjectsClose.addEventListener("click", closeManageProjects)
-  }
-  if (manageProjectsBackdrop) {
-    manageProjectsBackdrop.addEventListener("click", closeManageProjects)
-  }
-  if (manageProjectsAdd) {
-    manageProjectsAdd.addEventListener("click", function () {
-      openAddProject(false)
-    })
-  }
-  if (addProjectClose) {
-    addProjectClose.addEventListener("click", closeAddProject)
-  }
-  if (addProjectCancel) {
-    addProjectCancel.addEventListener("click", closeAddProject)
-  }
-  if (addProjectBackdrop) {
-    addProjectBackdrop.addEventListener("click", closeAddProject)
-  }
-  if (addProjectSubmit) {
-    addProjectSubmit.addEventListener("click", submitProject)
-  }
+  // Modal controls
+  var newTaskClose = document.getElementById("new-task-close")
+  var newTaskCancel = document.getElementById("new-task-cancel")
+  if (newTaskClose) newTaskClose.addEventListener("click", closeNewTaskModal)
+  if (newTaskCancel) newTaskCancel.addEventListener("click", closeNewTaskModal)
+  if (newTaskBackdrop) newTaskBackdrop.addEventListener("click", closeNewTaskModal)
+  if (newTaskSubmit) newTaskSubmit.addEventListener("click", submitNewTask)
   if (newTaskDesc) {
     newTaskDesc.addEventListener("input", function () {
       suggestProject(newTaskDesc.value.trim())
     })
   }
 
+  // Chat bar
+  var chatModeBtn = document.getElementById("chat-mode-btn")
+  if (chatModeBtn) {
+    chatModeBtn.addEventListener("click", function (e) {
+      e.stopPropagation()
+      var existing = document.querySelector(".chat-mode-menu")
+      if (existing) { closeModeMenu(); return }
+      renderModeMenu()
+    })
+  }
+  var chatSendBtn = document.getElementById("chat-send-btn")
+  var chatInput = document.getElementById("chat-input")
+  if (chatSendBtn) chatSendBtn.addEventListener("click", sendChatMessage)
+  if (chatInput) {
+    chatInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault()
+        sendChatMessage()
+      }
+    })
+  }
+
+  // Mobile bottom nav
+  var mobileNavItems = document.querySelectorAll(".mobile-nav-item[data-view]")
+  for (var mi = 0; mi < mobileNavItems.length; mi++) {
+    mobileNavItems[mi].addEventListener("click", function (e) {
+      e.preventDefault()
+      var view = e.currentTarget.dataset.view
+      if (!view) return
+      state.activeView = view
+
+      // Update active state on mobile nav
+      var items = document.querySelectorAll(".mobile-nav-item[data-view]")
+      for (var n = 0; n < items.length; n++) {
+        if (items[n].dataset.view === view) {
+          items[n].classList.add("mobile-nav-item--active")
+        } else {
+          items[n].classList.remove("mobile-nav-item--active")
+        }
+      }
+
+      renderSidebar()
+    })
+  }
+
+  // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
-      if (addProjectModal && addProjectModal.classList.contains("open")) {
-        closeAddProject()
-      } else if (manageProjectsModal && manageProjectsModal.classList.contains("open")) {
-        closeManageProjects()
-      } else if (newTaskModal && newTaskModal.classList.contains("open")) {
+      if (newTaskModal && newTaskModal.classList.contains("open")) {
         closeNewTaskModal()
       } else if (state.selectedTaskId) {
-        closeDetail()
+        handleMobileBack()
       }
     }
   })
 
-  // ── Init ────────────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────────
+  renderSidebar()
+  renderChatBar()
   fetchTasks()
   fetchProjects()
   connectSSE()

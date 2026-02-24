@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0f766e" />
+    <meta name="theme-color" content="#0b0d11" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Agent Deck" />
@@ -11,61 +11,90 @@
     <link rel="icon" href="/static/icons/logo.svg" sizes="120x80" />
     <link rel="apple-touch-icon" href="/static/icons/logo.svg" />
     <title>Agent Deck Hub</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
+    />
     <link rel="stylesheet" href="/static/styles.css" />
     <link rel="stylesheet" href="/static/dashboard.css" />
   </head>
   <body>
     <div class="app">
-      <header class="topbar">
-        <div class="topbar-left">
-          <div class="brand">Agent Deck</div>
+      <!-- Sidebar -->
+      <nav class="sidebar" id="sidebar">
+        <div class="sidebar-top">
+          <button class="sidebar-icon sidebar-icon--active" data-view="agents" title="Agents" aria-label="Agents view">
+            &#9632;
+          </button>
+          <button class="sidebar-icon" data-view="tasks" title="Tasks" aria-label="Tasks view">
+            &#9776;
+          </button>
+          <button class="sidebar-icon" data-view="timeline" title="Timeline" aria-label="Timeline view">
+            &#8987;
+          </button>
+          <button class="sidebar-icon" data-view="settings" title="Settings" aria-label="Settings view">
+            &#9881;
+          </button>
+          <button class="sidebar-icon" id="new-task-btn" title="New Task" aria-label="Create new task">
+            &#43;
+          </button>
         </div>
-        <nav class="topbar-nav">
-          <a href="/" class="nav-tab nav-tab--active" aria-current="page">Dashboard</a>
-          <a href="/terminal" class="nav-tab">Terminal</a>
-        </nav>
-        <div class="meta" id="meta-state">connecting</div>
-      </header>
+        <div class="sidebar-bottom">
+          <div class="sidebar-status" id="sidebar-status" title="Connection status">
+            <span class="sidebar-status-dot" id="sidebar-status-dot"></span>
+            <span class="sidebar-agent-count" id="sidebar-agent-count">0</span>
+          </div>
+        </div>
+      </nav>
 
-      <main class="hub-layout">
-        <div class="hub-toolbar">
-          <div class="hub-filters">
-            <select id="filter-status" class="hub-select" aria-label="Filter by status">
-              <option value="">All statuses</option>
-              <option value="thinking">Thinking</option>
-              <option value="waiting">Waiting</option>
-              <option value="running">Running</option>
-              <option value="idle">Idle</option>
-              <option value="error">Error</option>
-              <option value="complete">Complete</option>
-            </select>
-            <select id="filter-project" class="hub-select" aria-label="Filter by project">
-              <option value="">All projects</option>
-            </select>
-            <button id="manage-projects-btn" class="hub-btn" type="button">Manage Projects</button>
-            <button id="new-task-btn" class="hub-btn-primary" type="button">+ New Task</button>
+      <!-- Main content area -->
+      <div class="main-content">
+        <!-- Two-panel container -->
+        <div class="panels" id="panels">
+          <!-- Left panel: filter + task list -->
+          <div class="panel-left">
+            <div class="filter-bar" id="filter-bar">
+              <button class="filter-pill filter-pill--active" data-project="">All</button>
+            </div>
+            <div class="task-list" id="task-list">
+              <div class="task-list-empty" id="task-list-empty">Loading agents...</div>
+            </div>
+          </div>
+
+          <!-- Right panel: detail / empty state -->
+          <div class="panel-right" id="panel-right">
+            <div class="empty-state" id="empty-state">
+              <div class="empty-state-icon">&#9632;</div>
+              <div class="empty-state-text">Select an agent to preview</div>
+            </div>
+            <!-- Detail content (hidden until task selected) -->
+            <div class="detail-view" id="detail-view" style="display:none">
+              <div class="detail-header" id="detail-header"></div>
+              <div class="session-chain" id="session-chain"></div>
+              <div class="preview-header" id="preview-header"></div>
+              <div class="terminal-container" id="terminal-container"></div>
+            </div>
           </div>
         </div>
 
-        <div class="hub-content">
-          <div class="task-grid" id="task-grid">
-            <div class="task-grid-empty" id="task-empty">Loading tasks...</div>
-          </div>
+        <!-- Chat bar (pinned to bottom) -->
+        <div class="chat-bar" id="chat-bar">
+          <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
+            <span class="chat-mode-icon" id="chat-mode-icon">+</span>
+            <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
+          </button>
+          <input
+            type="text"
+            class="chat-input"
+            id="chat-input"
+            placeholder="Describe a new task..."
+            aria-label="Chat input"
+          />
+          <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">
+            &#10148;
+          </button>
         </div>
-      </main>
-
-      <!-- Task detail slide-over panel -->
-      <div class="detail-backdrop" id="detail-backdrop"></div>
-      <aside class="detail-panel" id="detail-panel" aria-hidden="true">
-        <div class="detail-header">
-          <button class="detail-back" id="detail-back" type="button" aria-label="Close detail panel">&larr; Back</button>
-        </div>
-        <div class="detail-body" id="detail-body"></div>
-        <div class="detail-chat" id="detail-chat">
-          <input type="text" class="detail-chat-input" id="detail-chat-input" placeholder="Send message..." aria-label="Send message to task" />
-          <button class="hub-btn-primary detail-chat-send" id="detail-chat-send" type="button">Send</button>
-        </div>
-      </aside>
+      </div>
 
       <!-- New Task modal -->
       <div class="modal-backdrop" id="new-task-backdrop"></div>
@@ -94,51 +123,15 @@
         </div>
       </div>
 
-      <!-- Add Project modal -->
-      <div class="modal-backdrop" id="add-project-backdrop"></div>
-      <div class="modal" id="add-project-modal" role="dialog" aria-label="Add project" aria-hidden="true">
-        <div class="modal-header">
-          <span class="modal-title">Add Project</span>
-          <button class="modal-close" id="add-project-close" type="button" aria-label="Close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <label class="modal-label" for="add-project-repo">GitHub Repo</label>
-          <input type="text" id="add-project-repo" class="modal-input modal-field" placeholder="owner/repo-name" />
-          <label class="modal-label" for="add-project-name">Name</label>
-          <input type="text" id="add-project-name" class="modal-input modal-field" placeholder="Auto-filled from repo" />
-          <label class="modal-label" for="add-project-path">Path</label>
-          <input type="text" id="add-project-path" class="modal-input modal-field" placeholder="~/projects/repo-name" />
-          <label class="modal-label" for="add-project-keywords">Keywords</label>
-          <input type="text" id="add-project-keywords" class="modal-input modal-field" placeholder="api, backend, auth (comma-separated)" />
-          <label class="modal-label" for="add-project-container">Container</label>
-          <input type="text" id="add-project-container" class="modal-input modal-field" placeholder="Optional container name" />
-        </div>
-        <div class="modal-footer">
-          <button id="add-project-cancel" class="hub-btn" type="button">Cancel</button>
-          <button id="add-project-submit" class="hub-btn-primary" type="button">Create</button>
-        </div>
-      </div>
-
-      <!-- Manage Projects panel -->
-      <div class="modal-backdrop" id="manage-projects-backdrop"></div>
-      <div class="modal modal-wide" id="manage-projects-modal" role="dialog" aria-label="Manage projects" aria-hidden="true">
-        <div class="modal-header">
-          <span class="modal-title">Projects</span>
-          <div class="modal-header-actions">
-            <button id="manage-projects-add" class="hub-btn-primary" type="button">+ Add</button>
-            <button class="modal-close" id="manage-projects-close" type="button" aria-label="Close">&times;</button>
-          </div>
-        </div>
-        <div class="modal-body" id="manage-projects-body">
-          <div class="project-list-empty">No projects yet.</div>
-        </div>
-      </div>
-
-      <!-- Mobile bottom nav -->
+      <!-- Mobile bottom nav (hidden on desktop) -->
       <nav class="mobile-nav" id="mobile-nav">
-        <a href="/" class="mobile-nav-item mobile-nav-item--active" aria-current="page">
+        <a href="#" class="mobile-nav-item mobile-nav-item--active" data-view="agents">
           <span class="mobile-nav-icon">&#9632;</span>
-          <span class="mobile-nav-label">Dashboard</span>
+          <span class="mobile-nav-label">Agents</span>
+        </a>
+        <a href="#" class="mobile-nav-item" data-view="tasks">
+          <span class="mobile-nav-icon">&#9776;</span>
+          <span class="mobile-nav-label">Tasks</span>
         </a>
         <a href="/terminal" class="mobile-nav-item">
           <span class="mobile-nav-icon">&#9654;</span>
@@ -147,6 +140,8 @@
       </nav>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <script src="/static/dashboard.js"></script>
   </body>
 </html>
