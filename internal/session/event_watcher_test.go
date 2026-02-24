@@ -165,6 +165,25 @@ func TestStatusEventWatcher_WaitForStatus(t *testing.T) {
 	}
 }
 
+func TestStatusEventWatcher_StopClosesChannel(t *testing.T) {
+	watcher, err := NewStatusEventWatcher("")
+	if err != nil {
+		t.Skipf("cannot create watcher: %v", err)
+	}
+
+	watcher.Stop()
+
+	// Channel should be closed — reading should return zero value immediately
+	select {
+	case _, ok := <-watcher.EventCh():
+		if ok {
+			t.Error("expected channel to be closed after Stop()")
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("channel read should not block after Stop()")
+	}
+}
+
 func TestStatusEventWatcher_WaitForStatus_Timeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	eventsDir := filepath.Join(tmpDir, "events")
