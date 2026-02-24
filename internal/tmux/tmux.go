@@ -942,6 +942,13 @@ func (s *Session) Start(command string) error {
 
 	// Send the command to the session
 	if command != "" {
+		// Wait for shell to be ready before sending the command.
+		// Without this, send-keys arrives before shells with slow initialization
+		// (zsh + Oh My Zsh, fish + plugins, bash + large .bashrc) finish loading,
+		// causing the command to be silently lost.
+		// See: https://github.com/anthropics/claude-code/issues/23513
+		s.WaitForShellPrompt(3 * time.Second)
+
 		cmdToSend := command
 		// IMPORTANT: Commands containing bash-specific syntax (like `session_id=$(...)`)
 		// must be wrapped in `bash -c` for fish shell compatibility (#47).
