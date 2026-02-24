@@ -8,19 +8,17 @@ import (
 )
 
 func TestScannerHandlesLargeMessages(t *testing.T) {
-	// Default bufio.Scanner fails on messages > 64KB
-	// MCP responses from tools like context7, firecrawl regularly exceed this
-	largeMessage := strings.Repeat("x", 100*1024) // 100KB
+	// MCP responses from tools like context7, firecrawl can exceed 64KB default
+	largeMessage := strings.Repeat("x", 512*1024) // 512KB
 
-	// This simulates what broadcastResponses does with our fix
 	scanner := bufio.NewScanner(strings.NewReader(largeMessage + "\n"))
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // Our fix: 10MB max
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // Match production: 1MB max
 
 	if !scanner.Scan() {
-		t.Fatalf("Scanner should handle 100KB message, got error: %v", scanner.Err())
+		t.Fatalf("Scanner should handle 512KB message, got error: %v", scanner.Err())
 	}
-	if len(scanner.Text()) != 100*1024 {
-		t.Errorf("Expected 100KB message, got %d bytes", len(scanner.Text()))
+	if len(scanner.Text()) != 512*1024 {
+		t.Errorf("Expected 512KB message, got %d bytes", len(scanner.Text()))
 	}
 }
 
@@ -36,6 +34,20 @@ func TestDefaultScannerFailsOnLargeMessages(t *testing.T) {
 	}
 	if scanner.Err() == nil {
 		t.Fatal("Expected bufio.ErrTooLong error")
+	}
+}
+
+func TestScannerHandles512KBMessages(t *testing.T) {
+	// 512KB is well above typical MCP messages but within our 1MB limit
+	message := strings.Repeat("x", 512*1024)
+	scanner := bufio.NewScanner(strings.NewReader(message + "\n"))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max (reduced from 10MB)
+
+	if !scanner.Scan() {
+		t.Fatalf("Scanner should handle 512KB message, got error: %v", scanner.Err())
+	}
+	if len(scanner.Text()) != 512*1024 {
+		t.Errorf("Expected 512KB message, got %d bytes", len(scanner.Text()))
 	}
 }
 

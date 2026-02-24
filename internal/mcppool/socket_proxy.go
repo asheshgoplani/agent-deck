@@ -276,7 +276,7 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 	}()
 
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP requests
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max for MCP requests
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
@@ -298,7 +298,7 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 
 func (p *SocketProxy) broadcastResponses() {
 	scanner := bufio.NewScanner(p.mcpStdout)
-	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // 10MB max for large MCP responses
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max for MCP responses
 	for scanner.Scan() {
 		line := scanner.Bytes()
 
