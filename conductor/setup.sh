@@ -44,6 +44,10 @@ cp "${SCRIPT_DIR}/bridge.py" "${CONDUCTOR_DIR}/bridge.py"
 chmod +x "${CONDUCTOR_DIR}/bridge.py"
 ok "bridge.py installed"
 
+# Copy default heartbeat rules (profiles can override with their own)
+cp "${SCRIPT_DIR}/HEARTBEAT_RULES.md" "${CONDUCTOR_DIR}/HEARTBEAT_RULES.md"
+ok "HEARTBEAT_RULES.md installed (default)"
+
 # --------------------------------------------------------------------------
 # Step 2: Install Python dependencies
 # --------------------------------------------------------------------------

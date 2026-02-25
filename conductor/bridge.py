@@ -615,9 +615,24 @@ async def heartbeat_loop(bot: Bot, config: dict):
                     parts.append(
                         f"Error sessions: {', '.join(error_details)}."
                     )
-                parts.append(
-                    "Check if any need auto-response or user attention."
-                )
+                # Append HEARTBEAT_RULES.md (per-profile, then global fallback)
+                rules_text = None
+                for rules_path in [
+                    CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
+                    CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
+                ]:
+                    if rules_path.exists():
+                        try:
+                            rules_text = rules_path.read_text().strip()
+                        except Exception as e:
+                            log.warning("Failed to read %s: %s", rules_path, e)
+                        break
+                if rules_text:
+                    parts.append(f"\n\n{rules_text}")
+                else:
+                    parts.append(
+                        "Check if any need auto-response or user attention."
+                    )
 
                 heartbeat_msg = " ".join(parts)
 
