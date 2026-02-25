@@ -167,6 +167,7 @@ type Home struct {
 	currentGeminiAnalytics *session.GeminiSessionAnalytics            // Current analytics for selected session (Gemini)
 	analyticsSessionID     string                                     // Session ID for current analytics
 	analyticsFetchingID    string                                     // ID currently being fetched (prevents duplicates)
+	analyticsCacheMu       sync.RWMutex                               // Protects analytics cache maps across UI + background workers
 	analyticsCache         map[string]*session.SessionAnalytics       // TTL cache: sessionID -> analytics (Claude)
 	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics // TTL cache: sessionID -> analytics (Gemini)
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
@@ -1310,6 +1311,7 @@ func (h *Home) pruneAnalyticsCache() {
 	const maxAge = 10 * time.Minute
 	now := time.Now()
 
+	h.analyticsCacheMu.Lock()
 	for id, t := range h.analyticsCacheTime {
 		if now.Sub(t) > maxAge {
 			delete(h.analyticsCache, id)
@@ -1317,6 +1319,7 @@ func (h *Home) pruneAnalyticsCache() {
 			delete(h.analyticsCacheTime, id)
 		}
 	}
+	h.analyticsCacheMu.Unlock()
 
 	h.logActivityMu.Lock()
 	for id, t := range h.lastLogActivity {
@@ -1532,11 +1535,13 @@ func (h *Home) getAnalyticsForSession(inst *session.Instance) *session.SessionAn
 		return nil
 	}
 
-	// Check cache
-	if cached, ok := h.analyticsCache[inst.ID]; ok {
-		if time.Since(h.analyticsCacheTime[inst.ID]) < analyticsCacheTTL {
-			return cached
-		}
+	// Check cache under lock (background status worker also reads this path).
+	h.analyticsCacheMu.RLock()
+	cached, ok := h.analyticsCache[inst.ID]
+	cacheTime, hasCacheTime := h.analyticsCacheTime[inst.ID]
+	h.analyticsCacheMu.RUnlock()
+	if ok && hasCacheTime && time.Since(cacheTime) < analyticsCacheTTL {
+		return cached
 	}
 
 	return nil // Will trigger async fetch
@@ -2547,9 +2552,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate preview cache for deleted session
 		h.invalidatePreviewCache(msg.deletedID)
 		// Clean up analytics caches for deleted session
+		h.analyticsCacheMu.Lock()
 		delete(h.analyticsCache, msg.deletedID)
 		delete(h.geminiAnalyticsCache, msg.deletedID)
 		delete(h.analyticsCacheTime, msg.deletedID)
+		h.analyticsCacheMu.Unlock()
 		h.logActivityMu.Lock()
 		delete(h.lastLogActivity, msg.deletedID)
 		h.logActivityMu.Unlock()
@@ -2905,11 +2912,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if tickTool == "gemini" {
 					// Check Gemini cache
 					var cached *session.GeminiSessionAnalytics
+					h.analyticsCacheMu.RLock()
 					if c, ok := h.geminiAnalyticsCache[inst.ID]; ok {
 						if time.Since(h.analyticsCacheTime[inst.ID]) < analyticsCacheTTL {
 							cached = c
 						}
 					}
+					h.analyticsCacheMu.RUnlock()
 
 					if cached != nil {
 						// Use cached analytics
@@ -2972,6 +2981,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.analyticsFetchingID = ""
 		if msg.err == nil && msg.sessionID != "" {
 			// Update cache timestamp
+			h.analyticsCacheMu.Lock()
 			h.analyticsCacheTime[msg.sessionID] = time.Now()
 
 			if msg.analytics != nil {
@@ -3000,6 +3010,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.analyticsPanel.SetAnalytics(nil)
 				}
 			}
+			h.analyticsCacheMu.Unlock()
 		}
 		return h, nil
 
@@ -3045,9 +3056,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate caches
 		h.cachedStatusCounts.valid.Store(false)
 		h.invalidatePreviewCache(msg.sessionID)
+		h.analyticsCacheMu.Lock()
 		delete(h.analyticsCache, msg.sessionID)
 		delete(h.geminiAnalyticsCache, msg.sessionID)
 		delete(h.analyticsCacheTime, msg.sessionID)
+		h.analyticsCacheMu.Unlock()
 		h.worktreeDirtyMu.Lock()
 		delete(h.worktreeDirtyCache, msg.sessionID)
 		delete(h.worktreeDirtyCacheTs, msg.sessionID)
