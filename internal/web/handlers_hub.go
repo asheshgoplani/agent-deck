@@ -113,10 +113,13 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-start phase session via bridge (local sessions).
-	// This takes precedence over container-based launch for projects with a local path.
+	// Bridge handles projects with a local path but no container.
+	// Container-based launch is preferred when a container is configured.
+	bridgeHandled := false
 	if s.hubBridge != nil {
-		if proj, projErr := s.hubProjects.Get(task.Project); projErr == nil && proj.Path != "" {
+		if proj, projErr := s.hubProjects.Get(task.Project); projErr == nil && proj.Path != "" && proj.Container == "" {
 			if _, bridgeErr := s.hubBridge.StartPhase(task.ID, phase); bridgeErr == nil {
+				bridgeHandled = true
 				// Re-read task to include session entry
 				if updated, getErr := s.hubTasks.Get(task.ID); getErr == nil {
 					task = updated
@@ -129,8 +132,8 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Attempt to launch tmux session if container is configured.
-	if s.sessionLauncher != nil {
+	// Attempt to launch tmux session if container is configured and bridge didn't handle it.
+	if !bridgeHandled && s.sessionLauncher != nil {
 		container := s.containerForProject(task.Project)
 		if container != "" {
 			sessionName, launchErr := s.sessionLauncher.Launch(r.Context(), container, task.ID)
@@ -892,7 +895,8 @@ func (s *Server) handleTaskStartPhase(w http.ResponseWriter, r *http.Request, ta
 
 	result, err := s.hubBridge.StartPhase(taskID, phase)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		slog.Error("start_phase_failed", slog.String("task", taskID), slog.String("error", err.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to start phase")
 		return
 	}
 
@@ -924,7 +928,8 @@ func (s *Server) handleTaskTransition(w http.ResponseWriter, r *http.Request, ta
 
 	result, err := s.hubBridge.TransitionPhase(taskID, hub.Phase(req.NextPhase), req.Summary)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		slog.Error("transition_phase_failed", slog.String("task", taskID), slog.String("error", err.Error()))
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to transition phase")
 		return
 	}
 

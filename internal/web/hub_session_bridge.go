@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -14,6 +15,7 @@ type HubSessionBridge struct {
 	projects    *hub.ProjectStore
 	openStorage storageOpener
 	profile     string
+	mu          sync.Mutex // serializes saveInstance to prevent load-append-save races
 }
 
 // NewHubSessionBridge creates a bridge for the given profile.
@@ -137,6 +139,9 @@ func (b *HubSessionBridge) TransitionPhase(taskID string, nextPhase hub.Phase, s
 }
 
 func (b *HubSessionBridge) saveInstance(inst *session.Instance) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	storage, err := b.openStorage(b.profile)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
@@ -144,7 +149,6 @@ func (b *HubSessionBridge) saveInstance(inst *session.Instance) error {
 	defer storage.Close()
 
 	// storageLoader may not implement Save (e.g. in tests with mocks).
-	// Real storage integration is handled in Task 10.
 	type saver interface {
 		Save([]*session.Instance) error
 	}
@@ -160,6 +164,7 @@ func (b *HubSessionBridge) saveInstance(inst *session.Instance) error {
 }
 
 // phasePrompt returns the initial prompt to send to a new session for the given phase.
+// TODO: Wire to tmux SendKeys / StartWithMessage when session launch is implemented.
 func phasePrompt(phase hub.Phase, description string) string {
 	switch phase {
 	case hub.PhaseBrainstorm:
@@ -191,8 +196,9 @@ func phaseLabel(p hub.Phase) string {
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }

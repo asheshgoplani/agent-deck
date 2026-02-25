@@ -28,7 +28,6 @@ func newTestBridge(t *testing.T) (*HubSessionBridge, *hub.TaskStore, *hub.Projec
 type mockStorageLoader struct {
 	instances []*session.Instance
 	groups    []*session.GroupData
-	saved     []*session.Instance
 }
 
 func (m *mockStorageLoader) LoadWithGroups() ([]*session.Instance, []*session.GroupData, error) {
