@@ -88,6 +88,7 @@
         state.tasks = data.tasks || []
         renderTaskList()
         updateAgentCount()
+        renderTopBar()
         if (state.selectedTaskId) {
           var task = findTask(state.selectedTaskId)
           if (task) renderRightPanel(task)
@@ -120,6 +121,11 @@
       if (state.tasks[i].id === id) return state.tasks[i]
     }
     return null
+  }
+
+  function getCardBorderColor(task) {
+    if (task.agentStatus === "waiting") return "var(--orange)"
+    return TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
   }
 
   // ── SSE ───────────────────────────────────────────────────────────
@@ -189,7 +195,6 @@
       if (state.tasks[i].status !== "done") active++
     }
     if (countEl) countEl.textContent = active + " agent" + (active !== 1 ? "s" : "")
-    renderTopBar()
   }
 
   // ── Sidebar ───────────────────────────────────────────────────────
@@ -249,14 +254,23 @@
     if (task && task.tmuxSession && !isMobile) {
       var attachBtn = el("button", "top-bar-action top-bar-action--attach", "\u25B6 Attach")
       attachBtn.title = "Attach to " + task.tmuxSession
+      attachBtn.addEventListener("click", function () {
+        window.open("/terminal?session=" + encodeURIComponent(task.tmuxSession), "_blank")
+      })
       rightEl.appendChild(attachBtn)
 
       var sshBtn = el("button", "top-bar-action", "\u229E SSH")
-      sshBtn.title = "SSH into " + task.project
+      sshBtn.title = "SSH — coming soon"
+      sshBtn.disabled = true
+      sshBtn.style.opacity = "0.4"
+      sshBtn.style.cursor = "default"
       rightEl.appendChild(sshBtn)
 
       var ideBtn = el("button", "top-bar-action", "\u27E8\u27E9 IDE")
-      ideBtn.title = "Open " + task.project + " in code-server"
+      ideBtn.title = "IDE — coming soon"
+      ideBtn.disabled = true
+      ideBtn.style.opacity = "0.4"
+      ideBtn.style.cursor = "default"
       rightEl.appendChild(ideBtn)
     }
 
@@ -293,6 +307,10 @@
   }
 
   function renderView() {
+    // Clean up any open popups from previous view
+    closeSlashPalette()
+    closeModeMenu()
+
     var panels = document.getElementById("panels")
     var placeholder = document.getElementById("view-placeholder")
     var conductorEl = document.getElementById("conductor-view")
@@ -776,9 +794,19 @@
 
     // Start / Stop button
     if (isRunning) {
-      actions.appendChild(el("button", "workspace-btn-stop", "Stop"))
+      var stopBtn = el("button", "workspace-btn-stop", "Stop")
+      stopBtn.title = "Stop — coming soon"
+      stopBtn.disabled = true
+      stopBtn.style.opacity = "0.5"
+      stopBtn.style.cursor = "default"
+      actions.appendChild(stopBtn)
     } else {
-      actions.appendChild(el("button", "workspace-btn-start", "Start"))
+      var startBtn = el("button", "workspace-btn-start", "Start")
+      startBtn.title = "Start — coming soon"
+      startBtn.disabled = true
+      startBtn.style.opacity = "0.5"
+      startBtn.style.cursor = "default"
+      actions.appendChild(startBtn)
     }
 
     top.appendChild(actions)
@@ -926,8 +954,7 @@
     card.setAttribute("tabindex", "0")
 
     // Left border color: orange for waiting agents, otherwise from task status
-    var isWaiting = task.agentStatus === "waiting"
-    var borderColor = isWaiting ? "var(--orange)" : (TASK_STATUS_COLORS[task.status] || "var(--text-dim)")
+    var borderColor = getCardBorderColor(task)
     card.style.borderLeftColor = borderColor
 
     // Top row: project name + task id
@@ -1040,16 +1067,14 @@
     for (var i = 0; i < cards.length; i++) {
       if (cards[i].dataset.taskId === id) {
         cards[i].classList.add("agent-card--selected")
-        // Update border color
         if (task) {
-          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[task.status] || "var(--text-dim)"
+          cards[i].style.borderLeftColor = getCardBorderColor(task)
         }
       } else {
         cards[i].classList.remove("agent-card--selected")
-        // Reset border to task's own color
         var otherTask = findTask(cards[i].dataset.taskId)
         if (otherTask) {
-          cards[i].style.borderLeftColor = TASK_STATUS_COLORS[otherTask.status] || "var(--text-dim)"
+          cards[i].style.borderLeftColor = getCardBorderColor(otherTask)
         }
       }
     }
@@ -1731,6 +1756,8 @@
 
     if (mode.mode === "reply" && state.selectedTaskId) {
       sendTaskInput(state.selectedTaskId, text)
+    } else if (mode.mode === "conductor") {
+      sendConductorMessage(text)
     } else {
       openNewTaskModalWithDescription(text)
     }
@@ -1753,6 +1780,23 @@
       })
       .catch(function (err) {
         console.error("sendTaskInput:", err)
+      })
+  }
+
+  function sendConductorMessage(text) {
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/conductor/input"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({ input: text }),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("conductor send failed: " + r.status)
+      })
+      .catch(function (err) {
+        console.error("sendConductorMessage:", err)
       })
   }
 
