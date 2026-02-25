@@ -5,6 +5,22 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.15] - 2026-02-25
+
+### Added
+
+- Add soft-select path editing and filterable recent-path suggestions in the New Session dialog, including matching-count hints and focused keyboard help text.
+- Add compact notifications mode (`[notifications].minimal = true`) with status icon/count summary in tmux status-left, including `starting` sessions in the active count.
+- Add conductor heartbeat rules externalization via `HEARTBEAT_RULES.md` (global default plus per-profile override support in the bridge runtime).
+- Add proactive conductor context management with `clear_on_compact` controls (`conductor setup --no-clear-on-compact` and per-conductor metadata) and synchronous `PreCompact` hook registration.
+
+### Fixed
+
+- Preserve ANSI color/styling in session preview rendering while keeping status/readiness parsing reliable by normalizing ANSI where plain-text matching is required.
+- Restore original tmux `status-left` correctly when clearing notifications, including intentionally empty original values.
+- Guard analytics cache map access across UI and background worker paths to avoid concurrent map read/write races during background status updates.
+- Prevent self-update prompts/flows on Homebrew-managed installs.
+
 ## [0.19.14] - 2026-02-24
 
 ### Added
