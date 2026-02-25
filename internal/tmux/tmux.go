@@ -3271,7 +3271,8 @@ func ClearStatusLeft(sessionName string) error {
 // instead of unsetting it, which would fall back to tmux's built-in default "[#{session_name}]".
 var savedStatusLeft struct {
 	sync.Once
-	value string
+	value    string
+	captured bool
 }
 
 // captureOriginalStatusLeft reads and stores the current global status-left value.
@@ -3280,6 +3281,7 @@ func captureOriginalStatusLeft() {
 	out, err := exec.Command("tmux", "show-option", "-gv", "status-left").Output()
 	if err == nil {
 		savedStatusLeft.value = strings.TrimRight(string(out), "\n")
+		savedStatusLeft.captured = true
 	}
 }
 
@@ -3299,7 +3301,7 @@ func SetStatusLeftGlobal(text string) error {
 // (e.g., tmux-oasis) is preserved. Falls back to unsetting the option only if
 // no original value was captured.
 func ClearStatusLeftGlobal() error {
-	if savedStatusLeft.value != "" {
+	if savedStatusLeft.captured {
 		escaped := strings.ReplaceAll(savedStatusLeft.value, "'", "'\\''")
 		return exec.Command("tmux", "set-option", "-g", "status-left", escaped).Run()
 	}
