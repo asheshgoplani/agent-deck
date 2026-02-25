@@ -24,31 +24,46 @@
       <nav class="sidebar" id="sidebar">
         <div class="sidebar-top">
           <button class="sidebar-icon sidebar-icon--active" data-view="agents" title="Agents" aria-label="Agents view">
-            &#9632;
+            <span class="sidebar-icon-glyph">&#x27D0;</span>
+            <span class="sidebar-icon-label">Agents</span>
           </button>
-          <button class="sidebar-icon" data-view="tasks" title="Tasks" aria-label="Tasks view">
-            &#9776;
+          <button class="sidebar-icon" data-view="kanban" title="Kanban" aria-label="Kanban view">
+            <span class="sidebar-icon-glyph">&#x25A6;</span>
+            <span class="sidebar-icon-label">Kanban</span>
           </button>
-          <button class="sidebar-icon" data-view="timeline" title="Timeline" aria-label="Timeline view">
-            &#8987;
+          <button class="sidebar-icon" data-view="conductor" title="Conductor" aria-label="Conductor view">
+            <span class="sidebar-icon-glyph">&#x25CE;</span>
+            <span class="sidebar-icon-label">Conductor</span>
           </button>
-          <button class="sidebar-icon" data-view="settings" title="Settings" aria-label="Settings view">
-            &#9881;
+          <button class="sidebar-icon" data-view="workspaces" title="Workspaces" aria-label="Workspaces view">
+            <span class="sidebar-icon-glyph">&#x25A3;</span>
+            <span class="sidebar-icon-label">Workspaces</span>
           </button>
-          <button class="sidebar-icon" id="new-task-btn" title="New Task" aria-label="Create new task">
-            &#43;
+          <button class="sidebar-icon sidebar-icon--backlog" data-view="brainstorm" title="Brainstorm" aria-label="Brainstorm view">
+            <span class="sidebar-icon-glyph">&#x25C7;</span>
+            <span class="sidebar-icon-label">Brainstorm</span>
           </button>
         </div>
         <div class="sidebar-bottom">
-          <div class="sidebar-status" id="sidebar-status" title="Connection status">
+          <div class="sidebar-status-line" id="sidebar-status" title="Connection status">
             <span class="sidebar-status-dot" id="sidebar-status-dot"></span>
-            <span class="sidebar-agent-count" id="sidebar-agent-count">0</span>
+            <span class="sidebar-status-label" id="sidebar-status-label">nuc</span>
           </div>
+          <div class="sidebar-agent-count" id="sidebar-agent-count">0 agents</div>
         </div>
       </nav>
 
       <!-- Main content area -->
       <div class="main-content">
+        <!-- Top bar -->
+        <div class="top-bar" id="top-bar">
+          <div class="top-bar-left" id="top-bar-left">
+            <span class="top-bar-view" id="top-bar-view">agents</span>
+          </div>
+          <div class="top-bar-right" id="top-bar-right">
+            <span class="top-bar-agent-indicator" id="top-bar-agent-indicator"><span class="top-bar-agent-dot"></span> 0</span>
+          </div>
+        </div>
         <!-- Two-panel container -->
         <div class="panels" id="panels">
           <!-- Left panel: filter + task list -->
@@ -72,6 +87,7 @@
               <div class="detail-header" id="detail-header"></div>
               <div class="session-chain" id="session-chain"></div>
               <div class="preview-header" id="preview-header"></div>
+              <div class="claude-meta" id="claude-meta"></div>
               <div class="terminal-container" id="terminal-container"></div>
             </div>
           </div>
@@ -79,20 +95,22 @@
 
         <!-- Chat bar (pinned to bottom) -->
         <div class="chat-bar" id="chat-bar">
-          <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
-            <span class="chat-mode-icon" id="chat-mode-icon">+</span>
-            <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
-          </button>
-          <input
-            type="text"
-            class="chat-input"
-            id="chat-input"
-            placeholder="Describe a new task..."
-            aria-label="Chat input"
-          />
-          <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">
-            &#10148;
-          </button>
+          <div class="chat-bar-inner" id="chat-bar-inner">
+            <button class="chat-mode-btn" id="chat-mode-btn" type="button" title="Change chat mode" aria-label="Chat mode">
+              <span class="chat-mode-icon" id="chat-mode-icon">+</span>
+              <span class="chat-mode-label" id="chat-mode-label">auto-route</span>
+              <span class="chat-mode-caret">&#x25BE;</span>
+            </button>
+            <input
+              type="text"
+              class="chat-input"
+              id="chat-input"
+              placeholder="Describe a new task..."
+              aria-label="Chat input"
+            />
+            <button class="chat-send-btn" id="chat-send-btn" type="button" aria-label="Send">Send</button>
+          </div>
+          <div class="chat-bar-hint" id="chat-bar-hint">via tmux send-keys &rarr; new session</div>
         </div>
       </div>
 
@@ -126,12 +144,12 @@
       <!-- Mobile bottom nav (hidden on desktop) -->
       <nav class="mobile-nav" id="mobile-nav">
         <a href="#" class="mobile-nav-item mobile-nav-item--active" data-view="agents">
-          <span class="mobile-nav-icon">&#9632;</span>
+          <span class="mobile-nav-icon">&#x27D0;</span>
           <span class="mobile-nav-label">Agents</span>
         </a>
-        <a href="#" class="mobile-nav-item" data-view="tasks">
-          <span class="mobile-nav-icon">&#9776;</span>
-          <span class="mobile-nav-label">Tasks</span>
+        <a href="#" class="mobile-nav-item" data-view="kanban">
+          <span class="mobile-nav-icon">&#x25A6;</span>
+          <span class="mobile-nav-label">Kanban</span>
         </a>
         <a href="/terminal" class="mobile-nav-item">
           <span class="mobile-nav-icon">&#9654;</span>
