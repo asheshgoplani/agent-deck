@@ -375,11 +375,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				}
 				// Session was never interacted with - use --session-id with same UUID
 				// This handles the case where session was started but no message was sent
-				bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-				if IsClaudeConfigDirExplicit() {
-					configDir := GetClaudeConfigDir()
-					bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
-				}
+				bashExportPrefix := i.buildBashExportPrefix()
 				return fmt.Sprintf(
 					`tmux set-environment CLAUDE_SESSION_ID "%s"; %sclaude --session-id "%s"%s`,
 					opts.ResumeSessionID, bashExportPrefix, opts.ResumeSessionID, extraFlags)
@@ -399,11 +395,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 		// and shell aliases are not available in non-interactive bash shells.
 		//
-		bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-		if IsClaudeConfigDirExplicit() {
-			configDir := GetClaudeConfigDir()
-			bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
-		}
+		bashExportPrefix := i.buildBashExportPrefix()
 
 		var baseCmd string
 		// Pre-generate UUID and use --session-id flag (instant, no API call)
@@ -436,6 +428,16 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 	// For custom commands (e.g., fork commands), return as-is
 	return baseCommand
+}
+
+// buildBashExportPrefix builds the export prefix used in bash -c commands.
+// It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
+func (i *Instance) buildBashExportPrefix() string {
+	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
+	if IsClaudeConfigDirExplicit() {
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", GetClaudeConfigDir())
+	}
+	return prefix
 }
 
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions

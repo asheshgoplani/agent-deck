@@ -93,6 +93,7 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
+	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Allow normal compaction instead of /clear when context fills up")
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
@@ -316,7 +317,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Printf("\nSetting up conductor: %s (profile: %s)\n", name, resolvedProfile)
 	}
 
-	if err := session.SetupConductor(name, resolvedProfile, heartbeatEnabled, *description, *claudeMD, *policyMD); err != nil {
+	clearOnCompact := !*noClearOnCompact
+	if err := session.SetupConductor(name, resolvedProfile, heartbeatEnabled, clearOnCompact, *description, *claudeMD, *policyMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}

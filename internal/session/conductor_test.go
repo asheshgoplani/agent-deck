@@ -724,7 +724,7 @@ func TestSetupConductor_DefaultTemplate(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup without custom path (uses default template)
-	err := SetupConductor(name, profile, true, "test description", "", "")
+	err := SetupConductor(name, profile, true, true, "test description", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -780,7 +780,7 @@ func TestSetupConductor_CustomSymlink(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom path (creates symlink)
-	err := SetupConductor(name, profile, true, "test description", customPath, "")
+	err := SetupConductor(name, profile, true, true, "test description", customPath, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -810,7 +810,7 @@ func TestSetupConductor_EmptyProfileNormalizesToDefault(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "default-profile-conductor"
-	if err := SetupConductor(name, "", true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "", true, true, "", "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -837,11 +837,11 @@ func TestSetupConductor_ProfileConflict(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "profile-conflict"
-	if err := SetupConductor(name, "work", true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "work", true, true, "", "", ""); err != nil {
 		t.Fatalf("first setup failed: %v", err)
 	}
 
-	err := SetupConductor(name, "personal", true, "", "", "")
+	err := SetupConductor(name, "personal", true, true, "", "", "")
 	if err == nil {
 		t.Fatal("expected conflict error when reusing conductor name across profiles")
 	}
@@ -1206,7 +1206,7 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom policy path (creates per-conductor symlink)
-	err := SetupConductor(name, profile, true, "test description", "", customPolicyPath)
+	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1697,5 +1697,68 @@ func TestMigrateConductorPolicySplit_PreservesSymlinkedClaudeMD(t *testing.T) {
 	}
 	if linkDest != customPath {
 		t.Fatalf("symlink destination changed to %q, want %q", linkDest, customPath)
+	}
+}
+
+func TestConductorMeta_GetClearOnCompact(t *testing.T) {
+	// nil (default) -> true
+	meta := &ConductorMeta{Name: "test"}
+	if !meta.GetClearOnCompact() {
+		t.Error("nil ClearOnCompact should default to true")
+	}
+
+	// explicitly true
+	trueVal := true
+	meta.ClearOnCompact = &trueVal
+	if !meta.GetClearOnCompact() {
+		t.Error("explicit true should return true")
+	}
+
+	// explicitly false
+	falseVal := false
+	meta.ClearOnCompact = &falseVal
+	if meta.GetClearOnCompact() {
+		t.Error("explicit false should return false")
+	}
+}
+
+func TestConductorClearOnCompact(t *testing.T) {
+	// Override HOME so LoadConductorMeta reads from our temp dir
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create conductor meta with clear_on_compact = true (default)
+	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor", "main")
+	if err := os.MkdirAll(condDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	meta := ConductorMeta{Name: "main", Profile: "default"}
+	data, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(condDir, "meta.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Conductor instance with matching title
+	inst := &Instance{Title: "conductor-main", GroupPath: "conductor"}
+	if !inst.ConductorClearOnCompact() {
+		t.Error("should return true for conductor with default ClearOnCompact")
+	}
+
+	// Now set clear_on_compact = false
+	falseVal := false
+	meta.ClearOnCompact = &falseVal
+	data, _ = json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(condDir, "meta.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if inst.ConductorClearOnCompact() {
+		t.Error("should return false when clear_on_compact is explicitly disabled")
+	}
+
+	// Non-conductor title should return false (not a conductor-prefixed session)
+	nonConductor := &Instance{Title: "my-session", GroupPath: "conductor"}
+	if nonConductor.ConductorClearOnCompact() {
+		t.Error("non-conductor-prefixed title should return false")
 	}
 }

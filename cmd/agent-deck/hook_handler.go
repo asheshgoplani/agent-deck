@@ -50,6 +50,8 @@ func mapEventToStatus(event string) string {
 		return ""
 	case "SessionEnd":
 		return "dead"
+	case "PreCompact":
+		return "" // Observability only; context-% monitoring handles /clear proactively
 	default:
 		return ""
 	}

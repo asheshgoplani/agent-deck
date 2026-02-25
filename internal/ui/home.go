@@ -71,6 +71,14 @@ const (
 	// analyticsCacheTTL - how long analytics data remains valid before refresh
 	// Analytics don't change frequently, so 5s is a good balance between freshness and performance
 	analyticsCacheTTL = 5 * time.Second
+
+	// clearOnCompactThreshold - context usage % at which conductor sessions get /clear
+	// Triggers before Claude's auto-compact (~95-98%), giving a clean slate via /clear
+	clearOnCompactThreshold = 80.0
+
+	// clearOnCompactCooldown - minimum time between /clear sends for the same session
+	// Prevents repeated /clear if context fills up again quickly
+	clearOnCompactCooldown = 60 * time.Second
 )
 
 // UI spacing constants (2-char grid system)
@@ -164,6 +172,7 @@ type Home struct {
 	currentGeminiAnalytics *session.GeminiSessionAnalytics            // Current analytics for selected session (Gemini)
 	analyticsSessionID     string                                     // Session ID for current analytics
 	analyticsFetchingID    string                                     // ID currently being fetched (prevents duplicates)
+	analyticsCacheMu       sync.RWMutex                               // Protects analytics cache maps across UI + background workers
 	analyticsCache         map[string]*session.SessionAnalytics       // TTL cache: sessionID -> analytics (Claude)
 	geminiAnalyticsCache   map[string]*session.GeminiSessionAnalytics // TTL cache: sessionID -> analytics (Gemini)
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
@@ -224,6 +233,9 @@ type Home struct {
 	// Hook-based status detection (Claude Code lifecycle hooks)
 	hookWatcher        *session.StatusFileWatcher
 	pendingHooksPrompt bool // True if user should be prompted to install hooks
+
+	// Context-% based /clear for conductor sessions with clear_on_compact
+	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
@@ -542,6 +554,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsCache:       make(map[string]*session.SessionAnalytics),
 		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:   make(map[string]time.Time),
+		clearOnCompactSent:   make(map[string]time.Time),
 		launchingSessions:    make(map[string]time.Time),
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
@@ -1303,6 +1316,7 @@ func (h *Home) pruneAnalyticsCache() {
 	const maxAge = 10 * time.Minute
 	now := time.Now()
 
+	h.analyticsCacheMu.Lock()
 	for id, t := range h.analyticsCacheTime {
 		if now.Sub(t) > maxAge {
 			delete(h.analyticsCache, id)
@@ -1310,6 +1324,7 @@ func (h *Home) pruneAnalyticsCache() {
 			delete(h.analyticsCacheTime, id)
 		}
 	}
+	h.analyticsCacheMu.Unlock()
 
 	h.logActivityMu.Lock()
 	for id, t := range h.lastLogActivity {
@@ -1532,11 +1547,13 @@ func (h *Home) getAnalyticsForSession(inst *session.Instance) *session.SessionAn
 		return nil
 	}
 
-	// Check cache
-	if cached, ok := h.analyticsCache[inst.ID]; ok {
-		if time.Since(h.analyticsCacheTime[inst.ID]) < analyticsCacheTTL {
-			return cached
-		}
+	// Check cache under lock (background status worker also reads this path).
+	h.analyticsCacheMu.RLock()
+	cached, ok := h.analyticsCache[inst.ID]
+	cacheTime, hasCacheTime := h.analyticsCacheTime[inst.ID]
+	h.analyticsCacheMu.RUnlock()
+	if ok && hasCacheTime && time.Since(cacheTime) < analyticsCacheTTL {
+		return cached
 	}
 
 	return nil // Will trigger async fetch
@@ -1756,6 +1773,46 @@ func (h *Home) backgroundStatusUpdate() {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
+			}
+		}
+	}
+
+	// Proactive context-% monitoring: send /clear before auto-compact triggers
+	// For conductor sessions with clear_on_compact enabled, check cached analytics
+	for _, inst := range instances {
+		if inst.Tool != "claude" || inst.GroupPath != "conductor" {
+			continue
+		}
+		if !inst.ConductorClearOnCompact() {
+			continue
+		}
+		// Debounce: skip if /clear was recently sent for this session
+		if lastSent, ok := h.clearOnCompactSent[inst.ID]; ok {
+			if time.Since(lastSent) < clearOnCompactCooldown {
+				continue
+			}
+		}
+		// Check cached analytics for context usage
+		cached := h.getAnalyticsForSession(inst)
+		if cached == nil {
+			continue
+		}
+		if cached.ContextPercent(0) >= clearOnCompactThreshold {
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				h.clearOnCompactSent[inst.ID] = time.Now()
+				conductorName := strings.TrimPrefix(inst.Title, "conductor-")
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					tmuxSess.SendKeysAndEnter("/clear")
+					// After /clear wipes context, immediately send heartbeat to restore orientation
+					time.Sleep(3 * time.Second)
+					profile := session.DefaultProfile
+					if meta, err := session.LoadConductorMeta(conductorName); err == nil {
+						profile = meta.Profile
+					}
+					msg := fmt.Sprintf("Heartbeat: Check all sessions in the %s profile. List any waiting sessions, auto-respond where safe, and report what needs my attention.", profile)
+					tmuxSess.SendKeysAndEnter(msg)
+				}()
 			}
 		}
 	}
@@ -2507,9 +2564,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate preview cache for deleted session
 		h.invalidatePreviewCache(msg.deletedID)
 		// Clean up analytics caches for deleted session
+		h.analyticsCacheMu.Lock()
 		delete(h.analyticsCache, msg.deletedID)
 		delete(h.geminiAnalyticsCache, msg.deletedID)
 		delete(h.analyticsCacheTime, msg.deletedID)
+		h.analyticsCacheMu.Unlock()
 		h.logActivityMu.Lock()
 		delete(h.lastLogActivity, msg.deletedID)
 		h.logActivityMu.Unlock()
@@ -2865,11 +2924,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if tickTool == "gemini" {
 					// Check Gemini cache
 					var cached *session.GeminiSessionAnalytics
+					h.analyticsCacheMu.RLock()
 					if c, ok := h.geminiAnalyticsCache[inst.ID]; ok {
 						if time.Since(h.analyticsCacheTime[inst.ID]) < analyticsCacheTTL {
 							cached = c
 						}
 					}
+					h.analyticsCacheMu.RUnlock()
 
 					if cached != nil {
 						// Use cached analytics
@@ -2932,6 +2993,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.analyticsFetchingID = ""
 		if msg.err == nil && msg.sessionID != "" {
 			// Update cache timestamp
+			h.analyticsCacheMu.Lock()
 			h.analyticsCacheTime[msg.sessionID] = time.Now()
 
 			if msg.analytics != nil {
@@ -2960,6 +3022,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.analyticsPanel.SetAnalytics(nil)
 				}
 			}
+			h.analyticsCacheMu.Unlock()
 		}
 		return h, nil
 
@@ -3005,9 +3068,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Invalidate caches
 		h.cachedStatusCounts.valid.Store(false)
 		h.invalidatePreviewCache(msg.sessionID)
+		h.analyticsCacheMu.Lock()
 		delete(h.analyticsCache, msg.sessionID)
 		delete(h.geminiAnalyticsCache, msg.sessionID)
 		delete(h.analyticsCacheTime, msg.sessionID)
+		h.analyticsCacheMu.Unlock()
 		h.worktreeDirtyMu.Lock()
 		delete(h.worktreeDirtyCache, msg.sessionID)
 		delete(h.worktreeDirtyCacheTs, msg.sessionID)

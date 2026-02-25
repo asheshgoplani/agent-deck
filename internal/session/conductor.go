@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,42 @@ type ConductorMeta struct {
 	HeartbeatInterval int    `json:"heartbeat_interval"` // 0 = use global default
 	Description       string `json:"description,omitempty"`
 	CreatedAt         string `json:"created_at"`
+
+	// ClearOnCompact blocks Claude's auto-compaction and sends /clear instead.
+	// When context fills up (~95%), Claude normally summarizes prior conversation (lossy).
+	// With this enabled, agent-deck blocks compaction and clears context entirely,
+	// relying on CLAUDE.md and conductor state for continuity.
+	// Default: true (nil = use default true via GetClearOnCompact)
+	ClearOnCompact *bool `json:"clear_on_compact,omitempty"`
+}
+
+// GetClearOnCompact returns whether to block compaction and send /clear instead, defaulting to true
+func (m *ConductorMeta) GetClearOnCompact() bool {
+	if m.ClearOnCompact == nil {
+		return true
+	}
+	return *m.ClearOnCompact
+}
+
+// ConductorClearOnCompact checks if this conductor instance has clear_on_compact enabled.
+// Extracts the conductor name from the session title ("conductor-{NAME}"),
+// loads meta.json, and returns the setting (defaults to true).
+// Returns false if the title doesn't match conductor format, since the caller
+// should not enable clear-on-compact for non-conductor sessions.
+func (i *Instance) ConductorClearOnCompact() bool {
+	name := strings.TrimPrefix(i.Title, "conductor-")
+	if name == "" || name == i.Title {
+		return false // not a conductor-prefixed title: don't enable
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		sessionLog.Warn("conductor_meta_load_failed",
+			slog.String("conductor", name),
+			slog.String("error", err.Error()),
+			slog.String("fallback", "clear_on_compact=true"))
+		return true // can't load meta: enable by default
+	}
+	return meta.GetClearOnCompact()
 }
 
 // conductorNameRegex validates conductor names: starts with alphanumeric, then alphanumeric/._-
@@ -280,7 +317,7 @@ func matchesTemplateContent(actual, expected string) bool {
 // If customClaudeMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductor(name, profile string, heartbeatEnabled bool, description string, customClaudeMD string, customPolicyMD string) error {
+func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string) error {
 	if err := ValidateConductorName(name); err != nil {
 		return err
 	}
@@ -331,6 +368,9 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 		HeartbeatEnabled: heartbeatEnabled,
 		Description:      description,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+	}
+	if !clearOnCompact {
+		meta.ClearOnCompact = &clearOnCompact
 	}
 	if err := SaveConductorMeta(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
@@ -520,7 +560,7 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, "", "", "")
+	return SetupConductor(profile, profile, true, true, "", "", "")
 }
 
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
