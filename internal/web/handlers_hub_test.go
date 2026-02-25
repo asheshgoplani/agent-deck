@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +35,10 @@ func newTestServerWithHub(t *testing.T) *Server {
 		t.Fatalf("NewTaskStore: %v", err)
 	}
 
-	projectReg := hub.NewProjectRegistry(hubDir)
+	projectStore, err := hub.NewProjectStore(hubDir)
+	if err != nil {
+		t.Fatalf("NewProjectStore: %v", err)
+	}
 
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",
@@ -45,7 +46,7 @@ func newTestServerWithHub(t *testing.T) *Server {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{Profile: "test-profile"}}
 	srv.hubTasks = taskStore
-	srv.hubProjects = projectReg
+	srv.hubProjects = projectStore
 	return srv
 }
 
@@ -96,7 +97,7 @@ func TestTasksEndpointWithTasks(t *testing.T) {
 func TestTasksEndpointFilterByStatus(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	for _, s := range []hub.TaskStatus{hub.TaskStatusRunning, hub.TaskStatusDone, hub.TaskStatusRunning} {
+	for _, s := range []hub.TaskStatus{hub.TaskStatusRunning, hub.TaskStatusComplete, hub.TaskStatusRunning} {
 		task := &hub.Task{
 			Project:     "test",
 			Description: "task-" + string(s),
@@ -117,8 +118,8 @@ func TestTasksEndpointFilterByStatus(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
 	}
 	body := rr.Body.String()
-	if strings.Contains(body, `"status":"done"`) {
-		t.Fatalf("should not contain done tasks, got: %s", body)
+	if strings.Contains(body, `"status":"complete"`) {
+		t.Fatalf("should not contain complete tasks, got: %s", body)
 	}
 }
 
@@ -192,11 +193,8 @@ func TestCreateTask(t *testing.T) {
 	if resp.Task.ID == "" {
 		t.Fatal("expected auto-generated ID")
 	}
-	if resp.Task.Status != hub.TaskStatusBacklog {
-		t.Fatalf("expected status backlog, got %s", resp.Task.Status)
-	}
-	if resp.Task.AgentStatus != hub.AgentStatusIdle {
-		t.Fatalf("expected agentStatus idle, got %s", resp.Task.AgentStatus)
+	if resp.Task.Status != hub.TaskStatusIdle {
+		t.Fatalf("expected status idle, got %s", resp.Task.Status)
 	}
 	if resp.Task.Phase != hub.PhaseExecute {
 		t.Fatalf("expected default phase execute, got %s", resp.Task.Phase)
@@ -440,7 +438,7 @@ func TestUpdateTaskStatus(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	body := `{"status":"done"}`
+	body := `{"status":"complete"}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -454,8 +452,8 @@ func TestUpdateTaskStatus(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.Task.Status != hub.TaskStatusDone {
-		t.Fatalf("expected status done, got %s", resp.Task.Status)
+	if resp.Task.Status != hub.TaskStatusComplete {
+		t.Fatalf("expected status complete, got %s", resp.Task.Status)
 	}
 }
 
@@ -480,8 +478,7 @@ func TestTaskInputAccepted(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusPlanning,
-		AgentStatus: hub.AgentStatusWaiting,
+		Status:      hub.TaskStatusWaiting,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -523,8 +520,7 @@ func TestTaskInputEmptyInput(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusPlanning,
-		AgentStatus: hub.AgentStatusWaiting,
+		Status:      hub.TaskStatusWaiting,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -724,8 +720,7 @@ func TestDeleteTask(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusDone,
-		AgentStatus: hub.AgentStatusComplete,
+		Status:      hub.TaskStatusComplete,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -778,17 +773,12 @@ func TestProjectsEndpointEmpty(t *testing.T) {
 func TestProjectsEndpointWithData(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	// Write a projects.yaml to the hub dir
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yamlContent := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords:
-      - api
-      - backend
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:     "api-service",
+		Path:     "/home/user/code/api",
+		Keywords: []string{"api", "backend"},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
@@ -804,39 +794,22 @@ func TestProjectsEndpointWithData(t *testing.T) {
 	}
 }
 
-func TestProjectsEndpointMethodNotAllowed(t *testing.T) {
-	srv := newTestServerWithHub(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/projects", nil)
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rr.Code)
-	}
-}
-
 func TestRouteEndpoint(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	// Write projects.yaml
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yaml := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords:
-      - api
-      - backend
-      - auth
-  - name: web-app
-    path: /home/user/code/web
-    keywords:
-      - frontend
-      - ui
-      - react
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:     "api-service",
+		Path:     "/home/user/code/api",
+		Keywords: []string{"api", "backend", "auth"},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:     "web-app",
+		Path:     "/home/user/code/web",
+		Keywords: []string{"frontend", "ui", "react"},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 
 	body := `{"message":"Fix the auth endpoint in the API"}`
@@ -864,16 +837,12 @@ func TestRouteEndpoint(t *testing.T) {
 func TestRouteEndpointNoMatch(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
-	// Write projects.yaml with specific keywords.
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yaml := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords:
-      - api
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:     "api-service",
+		Path:     "/home/user/code/api",
+		Keywords: []string{"api"},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 
 	body := `{"message":"Update kubernetes deployment config"}`
@@ -948,16 +917,13 @@ func TestTaskHealthCheckHealthy(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	// Write projects.yaml with container field.
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yaml := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords: [api]
-    container: sandbox-api
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:      "api-service",
+		Path:      "/home/user/code/api",
+		Keywords:  []string{"api"},
+		Container: "sandbox-api",
+	}); err != nil {
+		t.Fatalf("Save project: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/health", nil)
@@ -978,16 +944,13 @@ func TestCreateTaskLaunchesSession(t *testing.T) {
 	srv.containerExec = exec
 	srv.sessionLauncher = &hub.SessionLauncher{Executor: exec}
 
-	// Write projects.yaml with container field.
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yaml := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords: [api]
-    container: sandbox-api
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:      "api-service",
+		Path:      "/home/user/code/api",
+		Keywords:  []string{"api"},
+		Container: "sandbox-api",
+	}); err != nil {
+		t.Fatalf("Save project: %v", err)
 	}
 
 	body := `{"project":"api-service","description":"Fix auth bug"}`
@@ -1007,11 +970,8 @@ func TestCreateTaskLaunchesSession(t *testing.T) {
 	if resp.Task.TmuxSession == "" {
 		t.Fatal("expected tmuxSession to be set when container is available")
 	}
-	if resp.Task.Status != hub.TaskStatusRunning {
-		t.Fatalf("expected status running after launch, got %s", resp.Task.Status)
-	}
-	if resp.Task.AgentStatus != hub.AgentStatusThinking {
-		t.Fatalf("expected agentStatus thinking after launch, got %s", resp.Task.AgentStatus)
+	if resp.Task.Status != hub.TaskStatusThinking {
+		t.Fatalf("expected status thinking after launch, got %s", resp.Task.Status)
 	}
 }
 
@@ -1048,24 +1008,20 @@ func TestTaskInputSendsToContainer(t *testing.T) {
 	srv.containerExec = exec
 	srv.sessionLauncher = &hub.SessionLauncher{Executor: exec}
 
-	// Write projects.yaml with container.
-	hubDir := filepath.Dir(srv.hubProjects.FilePath())
-	yaml := `projects:
-  - name: api-service
-    path: /home/user/code/api
-    keywords: [api]
-    container: sandbox-api
-`
-	if err := os.WriteFile(filepath.Join(hubDir, "projects.yaml"), []byte(yaml), 0o644); err != nil {
-		t.Fatalf("write projects.yaml: %v", err)
+	if err := srv.hubProjects.Save(&hub.Project{
+		Name:      "api-service",
+		Path:      "/home/user/code/api",
+		Keywords:  []string{"api"},
+		Container: "sandbox-api",
+	}); err != nil {
+		t.Fatalf("Save project: %v", err)
 	}
 
 	task := &hub.Task{
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusPlanning,
-		AgentStatus: hub.AgentStatusWaiting,
+		Status:      hub.TaskStatusWaiting,
 		TmuxSession: "agent-t-001",
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
@@ -1086,67 +1042,6 @@ func TestTaskInputSendsToContainer(t *testing.T) {
 	}
 }
 
-func TestUpdateTaskAgentStatus(t *testing.T) {
-	srv := newTestServerWithHub(t)
-
-	task := &hub.Task{
-		Project:     "api-service",
-		Description: "Fix auth bug",
-		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusRunning,
-		AgentStatus: hub.AgentStatusRunning,
-	}
-	if err := srv.hubTasks.Save(task); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	body := `{"agentStatus":"waiting","askQuestion":"Which auth method?"}`
-	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
-	}
-
-	var resp taskDetailResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if resp.Task.AgentStatus != hub.AgentStatusWaiting {
-		t.Fatalf("expected agentStatus waiting, got %s", resp.Task.AgentStatus)
-	}
-	if resp.Task.AskQuestion != "Which auth method?" {
-		t.Fatalf("expected askQuestion, got %s", resp.Task.AskQuestion)
-	}
-}
-
-func TestUpdateTaskInvalidAgentStatus(t *testing.T) {
-	srv := newTestServerWithHub(t)
-
-	task := &hub.Task{
-		Project:     "api-service",
-		Description: "Fix auth bug",
-		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusRunning,
-		AgentStatus: hub.AgentStatusRunning,
-	}
-	if err := srv.hubTasks.Save(task); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	body := `{"agentStatus":"notreal"}`
-	req := httptest.NewRequest(http.MethodPatch, "/api/tasks/"+task.ID, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
-	}
-}
-
 func TestTaskPreviewNoSession(t *testing.T) {
 	srv := newTestServerWithHub(t)
 
@@ -1154,8 +1049,7 @@ func TestTaskPreviewNoSession(t *testing.T) {
 		Project:     "api-service",
 		Description: "Fix auth bug",
 		Phase:       hub.PhaseExecute,
-		Status:      hub.TaskStatusBacklog,
-		AgentStatus: hub.AgentStatusIdle,
+		Status:      hub.TaskStatusIdle,
 	}
 	if err := srv.hubTasks.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -1226,5 +1120,246 @@ func TestTaskPreviewMethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected %d, got %d: %s", http.StatusMethodNotAllowed, rr.Code, rr.Body.String())
+	}
+}
+
+// ── Project CRUD endpoint tests ─────────────────────────────────────────
+
+func TestCreateProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"repo":"C0ntr0lledCha0s/agent-deck"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp projectDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project.Name != "agent-deck" {
+		t.Fatalf("expected name agent-deck, got %s", resp.Project.Name)
+	}
+	if resp.Project.Repo != "C0ntr0lledCha0s/agent-deck" {
+		t.Fatalf("expected repo C0ntr0lledCha0s/agent-deck, got %s", resp.Project.Repo)
+	}
+}
+
+func TestCreateProjectWithOverrides(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"repo":"C0ntr0lledCha0s/agent-deck","name":"my-deck","path":"/custom/path","keywords":["cli","agents"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp projectDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project.Name != "my-deck" {
+		t.Fatalf("expected name my-deck, got %s", resp.Project.Name)
+	}
+	if resp.Project.Path != "/custom/path" {
+		t.Fatalf("expected path /custom/path, got %s", resp.Project.Path)
+	}
+	if len(resp.Project.Keywords) != 2 {
+		t.Fatalf("expected 2 keywords, got %d", len(resp.Project.Keywords))
+	}
+}
+
+func TestCreateProjectMissingRepoAndName(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"path":"/some/path"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d: %s", http.StatusBadRequest, rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateProjectDuplicate(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"repo":"org/my-project"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d on first create, got %d", http.StatusCreated, rr.Code)
+	}
+
+	// Try again — should conflict.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusConflict {
+		t.Fatalf("expected %d on duplicate, got %d: %s", http.StatusConflict, rr2.Code, rr2.Body.String())
+	}
+}
+
+func TestCreateProjectNameOnly(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"name":"standalone-project"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+
+	var resp projectDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project.Name != "standalone-project" {
+		t.Fatalf("expected name standalone-project, got %s", resp.Project.Name)
+	}
+}
+
+func TestGetProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	project := &hub.Project{Name: "test-proj", Path: "/test/path", Keywords: []string{"test"}}
+	if err := srv.hubProjects.Save(project); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/test-proj", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"name":"test-proj"`) {
+		t.Fatalf("expected project name in response, got: %s", rr.Body.String())
+	}
+}
+
+func TestGetProjectNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/nonexistent", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestUpdateProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	project := &hub.Project{Name: "test-proj", Path: "/original", Keywords: []string{"old"}}
+	if err := srv.hubProjects.Save(project); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	body := `{"path":"/updated","keywords":["new","updated"]}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/projects/test-proj", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d: %s", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var resp projectDetailResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Project.Path != "/updated" {
+		t.Fatalf("expected path /updated, got %s", resp.Project.Path)
+	}
+	if len(resp.Project.Keywords) != 2 {
+		t.Fatalf("expected 2 keywords, got %d", len(resp.Project.Keywords))
+	}
+}
+
+func TestUpdateProjectNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	body := `{"path":"/new"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/projects/nonexistent", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestDeleteProject(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	project := &hub.Project{Name: "to-delete", Path: "/path"}
+	if err := srv.hubProjects.Save(project); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/projects/to-delete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d: %s", http.StatusNoContent, rr.Code, rr.Body.String())
+	}
+
+	// Verify it's gone.
+	getReq := httptest.NewRequest(http.MethodGet, "/api/projects/to-delete", nil)
+	getRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted project to return 404, got %d", getRR.Code)
+	}
+}
+
+func TestDeleteProjectNotFound(t *testing.T) {
+	srv := newTestServerWithHub(t)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/projects/nonexistent", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected %d, got %d", http.StatusNotFound, rr.Code)
+	}
+}
+
+func TestProjectsEndpointUnauthorized(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	srv.cfg.Token = "secret"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rr.Code)
 	}
 }

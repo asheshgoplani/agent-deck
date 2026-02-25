@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,7 +76,7 @@ func TestSavePreservesExistingID(t *testing.T) {
 		Project:     "web-app",
 		Description: "Custom ID task",
 		Phase:       PhasePlan,
-		Status:      TaskStatusBacklog,
+		Status:      TaskStatusIdle,
 	}
 
 	if err := store.Save(task); err != nil {
@@ -95,8 +94,7 @@ func TestSaveUpdatesExistingTask(t *testing.T) {
 		Project:     "api-service",
 		Description: "Original",
 		Phase:       PhaseBrainstorm,
-		Status:      TaskStatusRunning,
-		AgentStatus: AgentStatusThinking,
+		Status:      TaskStatusThinking,
 	}
 	if err := store.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -173,7 +171,7 @@ func TestDelete(t *testing.T) {
 		Project:     "test",
 		Description: "To delete",
 		Phase:       PhaseExecute,
-		Status:      TaskStatusDone,
+		Status:      TaskStatusComplete,
 	}
 	if err := store.Save(task); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -239,191 +237,6 @@ func TestNextIDSequence(t *testing.T) {
 	// Should be t-006 (max was t-005, not reusing t-003)
 	if task.ID != "t-006" {
 		t.Fatalf("expected ID t-006, got %s", task.ID)
-	}
-}
-
-func TestMigrateOldStatusOnRead(t *testing.T) {
-	store := newTestStore(t)
-
-	// Write old-format JSON directly to simulate legacy data.
-	oldJSON := `{
-		"id": "t-001",
-		"sessionId": "",
-		"status": "thinking",
-		"project": "api-service",
-		"description": "Legacy task",
-		"phase": "execute",
-		"createdAt": "2026-01-01T00:00:00Z",
-		"updatedAt": "2026-01-01T00:00:00Z"
-	}`
-	taskFile := filepath.Join(store.taskDir, "t-001.json")
-	if err := os.WriteFile(taskFile, []byte(oldJSON), 0o644); err != nil {
-		t.Fatalf("write old task: %v", err)
-	}
-
-	task, err := store.Get("t-001")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-
-	if task.Status != TaskStatusRunning {
-		t.Fatalf("expected migrated status 'running', got %s", task.Status)
-	}
-	if task.AgentStatus != AgentStatusThinking {
-		t.Fatalf("expected migrated agentStatus 'thinking', got %s", task.AgentStatus)
-	}
-}
-
-func TestMigrateAllOldStatuses(t *testing.T) {
-	store := newTestStore(t)
-
-	cases := []struct {
-		oldStatus       string
-		wantTaskStatus  TaskStatus
-		wantAgentStatus AgentStatus
-	}{
-		{"thinking", TaskStatusRunning, AgentStatusThinking},
-		{"waiting", TaskStatusPlanning, AgentStatusWaiting},
-		{"running", TaskStatusRunning, AgentStatusRunning},
-		{"idle", TaskStatusBacklog, AgentStatusIdle},
-		{"error", TaskStatusRunning, AgentStatusError},
-		{"complete", TaskStatusDone, AgentStatusComplete},
-	}
-
-	for i, tc := range cases {
-		id := fmt.Sprintf("t-%03d", i+1)
-		raw := fmt.Sprintf(`{"id":"%s","status":"%s","project":"test","description":"test","phase":"execute","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`, id, tc.oldStatus)
-		if err := os.WriteFile(filepath.Join(store.taskDir, id+".json"), []byte(raw), 0o644); err != nil {
-			t.Fatalf("write %s: %v", id, err)
-		}
-
-		task, err := store.Get(id)
-		if err != nil {
-			t.Fatalf("Get %s: %v", id, err)
-		}
-		if task.Status != tc.wantTaskStatus {
-			t.Fatalf("%s: expected status %s, got %s", tc.oldStatus, tc.wantTaskStatus, task.Status)
-		}
-		if task.AgentStatus != tc.wantAgentStatus {
-			t.Fatalf("%s: expected agentStatus %s, got %s", tc.oldStatus, tc.wantAgentStatus, task.AgentStatus)
-		}
-	}
-}
-
-func TestNewStatusNotMigrated(t *testing.T) {
-	store := newTestStore(t)
-
-	// New-format JSON should not be modified.
-	newJSON := `{
-		"id": "t-001",
-		"status": "review",
-		"agentStatus": "thinking",
-		"project": "test",
-		"description": "New format",
-		"phase": "review",
-		"createdAt": "2026-01-01T00:00:00Z",
-		"updatedAt": "2026-01-01T00:00:00Z"
-	}`
-	if err := os.WriteFile(filepath.Join(store.taskDir, "t-001.json"), []byte(newJSON), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	task, err := store.Get("t-001")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if task.Status != TaskStatusReview {
-		t.Fatalf("expected status review, got %s", task.Status)
-	}
-	if task.AgentStatus != AgentStatusThinking {
-		t.Fatalf("expected agentStatus thinking, got %s", task.AgentStatus)
-	}
-}
-
-func TestNewTaskStatusValues(t *testing.T) {
-	store := newTestStore(t)
-
-	for _, tc := range []struct {
-		status TaskStatus
-		agent  AgentStatus
-	}{
-		{TaskStatusBacklog, AgentStatusIdle},
-		{TaskStatusPlanning, AgentStatusWaiting},
-		{TaskStatusRunning, AgentStatusRunning},
-		{TaskStatusReview, AgentStatusThinking},
-		{TaskStatusDone, AgentStatusComplete},
-	} {
-		task := &Task{
-			Project:     "test",
-			Description: "status " + string(tc.status),
-			Phase:       PhaseExecute,
-			Status:      tc.status,
-			AgentStatus: tc.agent,
-		}
-		if err := store.Save(task); err != nil {
-			t.Fatalf("Save %s: %v", tc.status, err)
-		}
-		got, err := store.Get(task.ID)
-		if err != nil {
-			t.Fatalf("Get %s: %v", tc.status, err)
-		}
-		if got.Status != tc.status {
-			t.Fatalf("expected status %s, got %s", tc.status, got.Status)
-		}
-		if got.AgentStatus != tc.agent {
-			t.Fatalf("expected agentStatus %s, got %s", tc.agent, got.AgentStatus)
-		}
-	}
-}
-
-func TestSaveAndGetNewFields(t *testing.T) {
-	store := newTestStore(t)
-
-	task := &Task{
-		Project:     "web-app",
-		Description: "Test new fields",
-		Phase:       PhaseExecute,
-		Status:      TaskStatusRunning,
-		AgentStatus: AgentStatusThinking,
-		Skills:      []string{"git", "docker"},
-		MCPs:        []string{"filesystem"},
-		Diff:        &DiffInfo{Files: 3, Add: 42, Del: 7},
-		Container:   "sandbox-web",
-		AskQuestion: "Which auth method?",
-		Sessions: []Session{
-			{ID: "s-1", Phase: PhasePlan, Status: "complete", Duration: "5m", Summary: "Planned approach"},
-			{ID: "s-2", Phase: PhaseExecute, Status: "active", Duration: "12m"},
-		},
-	}
-
-	if err := store.Save(task); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	got, err := store.Get(task.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got.AgentStatus != AgentStatusThinking {
-		t.Fatalf("expected agentStatus thinking, got %s", got.AgentStatus)
-	}
-	if len(got.Skills) != 2 || got.Skills[0] != "git" {
-		t.Fatalf("expected skills [git docker], got %v", got.Skills)
-	}
-	if got.Diff == nil || got.Diff.Files != 3 {
-		t.Fatalf("expected diff with 3 files, got %v", got.Diff)
-	}
-	if got.Container != "sandbox-web" {
-		t.Fatalf("expected container sandbox-web, got %s", got.Container)
-	}
-	if got.AskQuestion != "Which auth method?" {
-		t.Fatalf("expected askQuestion, got %s", got.AskQuestion)
-	}
-	if len(got.Sessions) != 2 {
-		t.Fatalf("expected 2 sessions, got %d", len(got.Sessions))
-	}
-	if got.Sessions[0].Summary != "Planned approach" {
-		t.Fatalf("expected session summary, got %s", got.Sessions[0].Summary)
 	}
 }
 

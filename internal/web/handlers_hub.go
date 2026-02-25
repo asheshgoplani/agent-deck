@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -101,8 +103,7 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Phase:       phase,
 		Branch:      req.Branch,
-		Status:      hub.TaskStatusBacklog,
-		AgentStatus: hub.AgentStatusIdle,
+		Status:      hub.TaskStatusIdle,
 	}
 
 	if err := s.hubTasks.Save(task); err != nil {
@@ -117,8 +118,7 @@ func (s *Server) handleTasksCreate(w http.ResponseWriter, r *http.Request) {
 			sessionName, launchErr := s.sessionLauncher.Launch(r.Context(), container, task.ID)
 			if launchErr == nil {
 				task.TmuxSession = sessionName
-				task.Status = hub.TaskStatusRunning
-				task.AgentStatus = hub.AgentStatusThinking
+				task.Status = hub.TaskStatusThinking
 				_ = s.hubTasks.Save(task) // Update with session info.
 			} else {
 				slog.Warn("session_launch_failed",
@@ -243,10 +243,6 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid status value")
 		return
 	}
-	if req.AgentStatus != nil && !isValidAgentStatus(*req.AgentStatus) {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid agentStatus value")
-		return
-	}
 
 	if req.Description != nil {
 		task.Description = *req.Description
@@ -257,14 +253,8 @@ func (s *Server) handleTaskUpdate(w http.ResponseWriter, r *http.Request, taskID
 	if req.Status != nil {
 		task.Status = hub.TaskStatus(*req.Status)
 	}
-	if req.AgentStatus != nil {
-		task.AgentStatus = hub.AgentStatus(*req.AgentStatus)
-	}
 	if req.Branch != nil {
 		task.Branch = *req.Branch
-	}
-	if req.AskQuestion != nil {
-		task.AskQuestion = *req.AskQuestion
 	}
 
 	if err := s.hubTasks.Save(task); err != nil {
@@ -370,8 +360,7 @@ func (s *Server) handleTaskFork(w http.ResponseWriter, r *http.Request, taskID s
 		Description:  description,
 		Phase:        parent.Phase,
 		Branch:       parent.Branch,
-		Status:       hub.TaskStatusBacklog,
-		AgentStatus:  hub.AgentStatusIdle,
+		Status:       hub.TaskStatusIdle,
 		ParentTaskID: parent.ID,
 	}
 
@@ -433,21 +422,16 @@ func (s *Server) handleTaskHealth(w http.ResponseWriter, r *http.Request, taskID
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// containerForProject looks up the container name for a project from the registry.
+// containerForProject looks up the container name for a project from the store.
 func (s *Server) containerForProject(projectName string) string {
 	if s.hubProjects == nil {
 		return ""
 	}
-	projects, err := s.hubProjects.List()
+	project, err := s.hubProjects.Get(projectName)
 	if err != nil {
 		return ""
 	}
-	for _, p := range projects {
-		if p.Name == projectName {
-			return p.Container
-		}
-	}
-	return ""
+	return project.Container
 }
 
 // handleTaskPreview serves GET /api/tasks/{id}/preview as an SSE stream.
@@ -524,17 +508,24 @@ func (s *Server) handleTaskPreview(w http.ResponseWriter, r *http.Request, taskI
 	}
 }
 
-// handleProjects serves GET /api/projects.
+// handleProjects dispatches GET /api/projects and POST /api/projects.
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleProjectsList(w, r)
+	case http.MethodPost:
+		s.handleProjectsCreate(w, r)
+	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-		return
 	}
+}
 
+// handleProjectsList serves GET /api/projects.
+func (s *Server) handleProjectsList(w http.ResponseWriter, r *http.Request) {
 	if s.hubProjects == nil {
 		writeJSON(w, http.StatusOK, projectsListResponse{Projects: []*hub.Project{}})
 		return
@@ -553,6 +544,168 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projectsListResponse{Projects: projects})
 }
 
+// handleProjectsCreate serves POST /api/projects.
+func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	var req createProjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	// Derive name from repo if not provided.
+	name := req.Name
+	if name == "" && req.Repo != "" {
+		parts := strings.Split(req.Repo, "/")
+		name = parts[len(parts)-1]
+	}
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "repo or name is required")
+		return
+	}
+
+	// Check for duplicates.
+	if existing, _ := s.hubProjects.Get(name); existing != nil {
+		writeAPIError(w, http.StatusConflict, "CONFLICT", "project already exists: "+name)
+		return
+	}
+
+	// Derive path if not provided.
+	path := req.Path
+	if path == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			homeDir = "/tmp"
+		}
+		path = filepath.Join(homeDir, "projects", name)
+	}
+
+	project := &hub.Project{
+		Name:        name,
+		Repo:        req.Repo,
+		Path:        path,
+		Keywords:    req.Keywords,
+		Container:   req.Container,
+		DefaultMCPs: req.DefaultMCPs,
+	}
+
+	if err := s.hubProjects.Save(project); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create project")
+		return
+	}
+
+	s.notifyTaskChanged()
+	writeJSON(w, http.StatusCreated, projectDetailResponse{Project: project})
+}
+
+// handleProjectByName dispatches /api/projects/{name} for GET, PATCH, DELETE.
+func (s *Server) handleProjectByName(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+
+	const prefix = "/api/projects/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "route not found")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, prefix)
+	if name == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "project name is required")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleProjectGet(w, name)
+	case http.MethodPatch:
+		s.handleProjectUpdate(w, r, name)
+	case http.MethodDelete:
+		s.handleProjectDelete(w, name)
+	default:
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+// handleProjectGet serves GET /api/projects/{name}.
+func (s *Server) handleProjectGet(w http.ResponseWriter, name string) {
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, projectDetailResponse{Project: project})
+}
+
+// handleProjectUpdate serves PATCH /api/projects/{name}.
+func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request, name string) {
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	project, err := s.hubProjects.Get(name)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	var req updateProjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	if req.Path != nil {
+		project.Path = *req.Path
+	}
+	if req.Keywords != nil {
+		project.Keywords = *req.Keywords
+	}
+	if req.Container != nil {
+		project.Container = *req.Container
+	}
+	if req.DefaultMCPs != nil {
+		project.DefaultMCPs = *req.DefaultMCPs
+	}
+
+	if err := s.hubProjects.Save(project); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update project")
+		return
+	}
+
+	s.notifyTaskChanged()
+	writeJSON(w, http.StatusOK, projectDetailResponse{Project: project})
+}
+
+// handleProjectDelete serves DELETE /api/projects/{name}.
+func (s *Server) handleProjectDelete(w http.ResponseWriter, name string) {
+	if s.hubProjects == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
+		return
+	}
+
+	if err := s.hubProjects.Delete(name); err != nil {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "project not found")
+		return
+	}
+
+	s.notifyTaskChanged()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // Response types for hub API endpoints and SSE events.
 
 type tasksListResponse struct {
@@ -569,6 +722,26 @@ type taskDetailResponse struct {
 
 type projectsListResponse struct {
 	Projects []*hub.Project `json:"projects"`
+}
+
+type projectDetailResponse struct {
+	Project *hub.Project `json:"project"`
+}
+
+type createProjectRequest struct {
+	Repo        string   `json:"repo"`
+	Name        string   `json:"name,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
+	Container   string   `json:"container,omitempty"`
+	DefaultMCPs []string `json:"defaultMcps,omitempty"`
+}
+
+type updateProjectRequest struct {
+	Path        *string   `json:"path,omitempty"`
+	Keywords    *[]string `json:"keywords,omitempty"`
+	Container   *string   `json:"container,omitempty"`
+	DefaultMCPs *[]string `json:"defaultMcps,omitempty"`
 }
 
 type routeRequest struct {
@@ -592,9 +765,7 @@ type updateTaskRequest struct {
 	Description *string `json:"description,omitempty"`
 	Phase       *string `json:"phase,omitempty"`
 	Status      *string `json:"status,omitempty"`
-	AgentStatus *string `json:"agentStatus,omitempty"`
 	Branch      *string `json:"branch,omitempty"`
-	AskQuestion *string `json:"askQuestion,omitempty"`
 }
 
 type taskInputRequest struct {
@@ -616,17 +787,8 @@ func isValidPhase(p string) bool {
 
 func isValidStatus(s string) bool {
 	switch hub.TaskStatus(s) {
-	case hub.TaskStatusBacklog, hub.TaskStatusPlanning, hub.TaskStatusRunning,
-		hub.TaskStatusReview, hub.TaskStatusDone:
-		return true
-	}
-	return false
-}
-
-func isValidAgentStatus(s string) bool {
-	switch hub.AgentStatus(s) {
-	case hub.AgentStatusThinking, hub.AgentStatusWaiting, hub.AgentStatusRunning,
-		hub.AgentStatusIdle, hub.AgentStatusError, hub.AgentStatusComplete:
+	case hub.TaskStatusThinking, hub.TaskStatusWaiting, hub.TaskStatusRunning,
+		hub.TaskStatusIdle, hub.TaskStatusError, hub.TaskStatusComplete:
 		return true
 	}
 	return false

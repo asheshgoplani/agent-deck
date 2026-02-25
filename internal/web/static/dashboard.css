@@ -3,6 +3,7 @@
 .app {
   height: var(--app-height);
   display: flex;
+  flex-direction: row;
   overflow: hidden;
 }
 
@@ -918,6 +919,10 @@
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
+  .app {
+    flex-direction: column;
+  }
+
   .sidebar {
     display: none;
   }

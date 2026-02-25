@@ -12,46 +12,17 @@ const (
 	PhaseReview     Phase = "review"
 )
 
-// TaskStatus represents the workflow stage of a task (kanban column).
+// TaskStatus represents the current state of a task.
 type TaskStatus string
 
 const (
-	TaskStatusBacklog  TaskStatus = "backlog"
-	TaskStatusPlanning TaskStatus = "planning"
+	TaskStatusThinking TaskStatus = "thinking"
+	TaskStatusWaiting  TaskStatus = "waiting"
 	TaskStatusRunning  TaskStatus = "running"
-	TaskStatusReview   TaskStatus = "review"
-	TaskStatusDone     TaskStatus = "done"
+	TaskStatusIdle     TaskStatus = "idle"
+	TaskStatusError    TaskStatus = "error"
+	TaskStatusComplete TaskStatus = "complete"
 )
-
-// AgentStatus represents what Claude is doing right now.
-type AgentStatus string
-
-const (
-	AgentStatusThinking AgentStatus = "thinking"
-	AgentStatusWaiting  AgentStatus = "waiting"
-	AgentStatusRunning  AgentStatus = "running"
-	AgentStatusIdle     AgentStatus = "idle"
-	AgentStatusError    AgentStatus = "error"
-	AgentStatusComplete AgentStatus = "complete"
-)
-
-// DiffInfo tracks file change statistics for a task.
-type DiffInfo struct {
-	Files int `json:"files"`
-	Add   int `json:"add"`
-	Del   int `json:"del"`
-}
-
-// Session represents one phase-session within a task's lifecycle.
-type Session struct {
-	ID              string `json:"id"`
-	Phase           Phase  `json:"phase"`
-	Status          string `json:"status"` // "active" | "complete"
-	Duration        string `json:"duration"`
-	Artifact        string `json:"artifact,omitempty"`
-	Summary         string `json:"summary,omitempty"`
-	ClaudeSessionID string `json:"claudeSessionId,omitempty"`
-}
 
 // Task wraps a session with orchestration metadata.
 type Task struct {
@@ -63,13 +34,6 @@ type Task struct {
 	Description  string     `json:"description"`
 	Phase        Phase      `json:"phase"`
 	Branch       string     `json:"branch,omitempty"`
-	Skills       []string    `json:"skills,omitempty"`
-	MCPs         []string    `json:"mcps,omitempty"`
-	Diff         *DiffInfo   `json:"diff,omitempty"`
-	Container    string      `json:"container,omitempty"`
-	AskQuestion  string      `json:"askQuestion,omitempty"`
-	AgentStatus  AgentStatus `json:"agentStatus"`
-	Sessions     []Session   `json:"sessions,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
 	ParentTaskID string     `json:"parentTaskId,omitempty"`
@@ -77,11 +41,14 @@ type Task struct {
 
 // Project defines a workspace that tasks can be routed to.
 type Project struct {
-	Name        string   `json:"name"        yaml:"name"`
-	Path        string   `json:"path"        yaml:"path"`
-	Keywords    []string `json:"keywords"    yaml:"keywords"`
-	Container   string   `json:"container,omitempty"   yaml:"container,omitempty"`
-	DefaultMCPs []string `json:"defaultMcps,omitempty" yaml:"default_mcps,omitempty"`
+	Name        string    `json:"name"`
+	Repo        string    `json:"repo,omitempty"`
+	Path        string    `json:"path"`
+	Keywords    []string  `json:"keywords"`
+	Container   string    `json:"container,omitempty"`
+	DefaultMCPs []string  `json:"defaultMcps,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 // RouteResult describes a keyword-match routing result.

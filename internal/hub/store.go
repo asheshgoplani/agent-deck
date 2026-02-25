@@ -101,8 +101,12 @@ func (s *TaskStore) Save(task *Task) error {
 	}
 
 	path := filepath.Join(s.taskDir, task.ID+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return fmt.Errorf("write task file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename task file: %w", err)
 	}
 
 	return nil
@@ -126,34 +130,20 @@ func (s *TaskStore) Delete(id string) error {
 	return nil
 }
 
-// oldStatusMigration maps legacy agent-level status values to the new
-// separated TaskStatus + AgentStatus pair.
-var oldStatusMigration = map[string]struct {
-	taskStatus  TaskStatus
-	agentStatus AgentStatus
-}{
-	"thinking": {TaskStatusRunning, AgentStatusThinking},
-	"waiting":  {TaskStatusPlanning, AgentStatusWaiting},
-	"running":  {TaskStatusRunning, AgentStatusRunning},
-	"idle":     {TaskStatusBacklog, AgentStatusIdle},
-	"error":    {TaskStatusRunning, AgentStatusError},
-	"complete": {TaskStatusDone, AgentStatusComplete},
+// oldStatusMigration maps legacy dual-model status values (from earlier versions
+// that used separate TaskStatus + AgentStatus) to the current single TaskStatus.
+var oldStatusMigration = map[string]TaskStatus{
+	"backlog":  TaskStatusIdle,
+	"planning": TaskStatusWaiting,
+	"review":   TaskStatusWaiting,
+	"done":     TaskStatusComplete,
 }
 
 // migrateTask detects old-format status values and migrates them.
-// Returns true if migration was applied.
-func migrateTask(task *Task) bool {
-	m, ok := oldStatusMigration[string(task.Status)]
-	if !ok {
-		return false
+func migrateTask(task *Task) {
+	if m, ok := oldStatusMigration[string(task.Status)]; ok {
+		task.Status = m
 	}
-	// Only migrate if AgentStatus is empty (old format didn't have it).
-	if task.AgentStatus != "" {
-		return false
-	}
-	task.Status = m.taskStatus
-	task.AgentStatus = m.agentStatus
-	return true
 }
 
 func (s *TaskStore) readTaskFile(filename string) (*Task, error) {

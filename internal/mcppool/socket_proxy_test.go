@@ -38,6 +38,20 @@ func TestDefaultScannerFailsOnLargeMessages(t *testing.T) {
 	}
 }
 
+func TestScannerHandles512KBMessages(t *testing.T) {
+	// 512KB is well above typical MCP messages but within our 1MB limit
+	message := strings.Repeat("x", 512*1024)
+	scanner := bufio.NewScanner(strings.NewReader(message + "\n"))
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024) // 1MB max (reduced from 10MB)
+
+	if !scanner.Scan() {
+		t.Fatalf("Scanner should handle 512KB message, got error: %v", scanner.Err())
+	}
+	if len(scanner.Text()) != 512*1024 {
+		t.Errorf("Expected 512KB message, got %d bytes", len(scanner.Text()))
+	}
+}
+
 func TestBroadcastResponsesClosesClientsOnFailure(t *testing.T) {
 	// When broadcastResponses exits (MCP died), all client connections
 	// should be closed so reconnecting proxies know to retry

@@ -49,7 +49,7 @@ type Server struct {
 
 	// Hub dashboard state.
 	hubTasks        *hub.TaskStore
-	hubProjects     *hub.ProjectRegistry
+	hubProjects     *hub.ProjectStore
 	containerExec   hub.ContainerExecutor
 	sessionLauncher *hub.SessionLauncher
 
@@ -69,10 +69,10 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:              cfg,
-		menuData:         menuData,
-		menuSubscribers:  make(map[chan struct{}]struct{}),
-		taskSubscribers:  make(map[chan struct{}]struct{}),
+		cfg:             cfg,
+		menuData:        menuData,
+		menuSubscribers: make(map[chan struct{}]struct{}),
+		taskSubscribers: make(map[chan struct{}]struct{}),
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
@@ -86,7 +86,11 @@ func NewServer(cfg Config) *Server {
 		} else {
 			s.hubTasks = ts
 		}
-		s.hubProjects = hub.NewProjectRegistry(hubDir)
+		if ps, err := hub.NewProjectStore(hubDir); err != nil {
+			webLog.Warn("hub_project_store_disabled", slog.String("error", err.Error()))
+		} else {
+			s.hubProjects = ps
+		}
 	}
 
 	// Initialize container executor for Docker-based task execution.
@@ -126,6 +130,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/tasks/", s.handleTaskByID)
 	mux.HandleFunc("/api/projects", s.handleProjects)
+	mux.HandleFunc("/api/projects/", s.handleProjectByName)
 	mux.HandleFunc("/api/route", s.handleRoute)
 	mux.HandleFunc("/api/push/config", s.handlePushConfig)
 	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)
