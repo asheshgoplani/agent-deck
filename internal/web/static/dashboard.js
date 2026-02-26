@@ -1958,6 +1958,12 @@
       placeholder.selected = true
       newTaskProject.appendChild(placeholder)
     }
+    // Add "+ Add Project..." option
+    var addOpt = document.createElement("option")
+    addOpt.value = "__add_project__"
+    addOpt.textContent = "+ Add Project..."
+    newTaskProject.appendChild(addOpt)
+
     if (newTaskDesc) newTaskDesc.value = ""
     if (newTaskPhase) newTaskPhase.value = "execute"
     if (newTaskSubmit) newTaskSubmit.disabled = !hasProjects
@@ -2065,6 +2071,114 @@
     }, 300)
   }
 
+  // ── Add Project modal ────────────────────────────────────────────
+  var addProjectModal = document.getElementById("add-project-modal")
+  var addProjectBackdrop = document.getElementById("add-project-backdrop")
+  var addProjectRepo = document.getElementById("add-project-repo")
+  var addProjectName = document.getElementById("add-project-name")
+  var addProjectPath = document.getElementById("add-project-path")
+  var addProjectKeywords = document.getElementById("add-project-keywords")
+  var addProjectContainer = document.getElementById("add-project-container")
+  var addProjectImage = document.getElementById("add-project-image")
+  var addProjectCpu = document.getElementById("add-project-cpu")
+  var addProjectMem = document.getElementById("add-project-mem")
+
+  function openAddProjectModal() {
+    if (addProjectRepo) addProjectRepo.value = ""
+    if (addProjectName) addProjectName.value = ""
+    if (addProjectPath) addProjectPath.value = ""
+    if (addProjectKeywords) addProjectKeywords.value = ""
+    if (addProjectContainer) addProjectContainer.value = ""
+    if (addProjectImage) addProjectImage.value = ""
+    if (addProjectCpu) addProjectCpu.value = "2"
+    if (addProjectMem) addProjectMem.value = "2"
+    // Reset radio to "none"
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = radios[i].value === "none"
+    }
+    updateContainerFields()
+    if (addProjectModal) addProjectModal.classList.add("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.add("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "false")
+    if (addProjectRepo) addProjectRepo.focus()
+  }
+
+  function closeAddProjectModal() {
+    if (addProjectModal) addProjectModal.classList.remove("open")
+    if (addProjectBackdrop) addProjectBackdrop.classList.remove("open")
+    if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "true")
+  }
+
+  function getContainerMode() {
+    var radios = document.querySelectorAll('input[name="container-mode"]')
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) return radios[i].value
+    }
+    return "none"
+  }
+
+  function updateContainerFields() {
+    var mode = getContainerMode()
+    var existingEl = document.getElementById("container-fields-existing")
+    var provisionEl = document.getElementById("container-fields-provision")
+    if (existingEl) existingEl.style.display = mode === "existing" ? "" : "none"
+    if (provisionEl) provisionEl.style.display = mode === "provision" ? "" : "none"
+  }
+
+  function submitAddProject() {
+    var repo = addProjectRepo ? addProjectRepo.value.trim() : ""
+    var name = addProjectName ? addProjectName.value.trim() : ""
+    var path = addProjectPath ? addProjectPath.value.trim() : ""
+    var keywords = addProjectKeywords ? addProjectKeywords.value.trim() : ""
+    var mode = getContainerMode()
+
+    if (!repo && !name) return
+
+    var body = { repo: repo, name: name, path: path }
+    if (keywords) body.keywords = keywords.split(",").map(function (k) { return k.trim() }).filter(Boolean)
+
+    if (mode === "existing") {
+      body.container = addProjectContainer ? addProjectContainer.value.trim() : ""
+    } else if (mode === "provision") {
+      body.image = addProjectImage ? addProjectImage.value.trim() : ""
+      body.cpuLimit = parseFloat(addProjectCpu ? addProjectCpu.value : "2") || 2
+      body.memoryLimit = Math.round((parseFloat(addProjectMem ? addProjectMem.value : "2") || 2) * 1024 * 1024 * 1024)
+    }
+
+    var headers = authHeaders()
+    headers["Content-Type"] = "application/json"
+
+    fetch(apiPathWithToken("/api/projects"), {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("create project failed: " + r.status)
+        return r.json()
+      })
+      .then(function () {
+        closeAddProjectModal()
+        fetchProjects()
+        fetchTasks()
+      })
+      .catch(function (err) {
+        console.error("submitAddProject:", err)
+      })
+  }
+
+  // Auto-derive name from repo
+  if (addProjectRepo) {
+    addProjectRepo.addEventListener("input", function () {
+      var val = addProjectRepo.value.trim()
+      var parts = val.split("/")
+      var derived = parts[parts.length - 1] || ""
+      if (addProjectName) addProjectName.value = derived
+      if (addProjectPath && derived) addProjectPath.value = "~/projects/" + derived
+    })
+  }
+
   // ── Event listeners ───────────────────────────────────────────────
 
   // Sidebar view icons
@@ -2087,6 +2201,33 @@
   if (newTaskDesc) {
     newTaskDesc.addEventListener("input", function () {
       suggestProject(newTaskDesc.value.trim())
+    })
+  }
+
+  // Add project modal controls
+  var addProjectBtn = document.getElementById("add-project-btn")
+  if (addProjectBtn) addProjectBtn.addEventListener("click", openAddProjectModal)
+  var addProjectClose = document.getElementById("add-project-close")
+  var addProjectCancel = document.getElementById("add-project-cancel")
+  var addProjectSubmitBtn = document.getElementById("add-project-submit")
+  if (addProjectClose) addProjectClose.addEventListener("click", closeAddProjectModal)
+  if (addProjectCancel) addProjectCancel.addEventListener("click", closeAddProjectModal)
+  if (addProjectBackdrop) addProjectBackdrop.addEventListener("click", closeAddProjectModal)
+  if (addProjectSubmitBtn) addProjectSubmitBtn.addEventListener("click", submitAddProject)
+
+  // Container mode radio changes
+  var containerModeRadios = document.querySelectorAll('input[name="container-mode"]')
+  for (var cmi = 0; cmi < containerModeRadios.length; cmi++) {
+    containerModeRadios[cmi].addEventListener("change", updateContainerFields)
+  }
+
+  // New task project dropdown: intercept "+ Add Project..." selection
+  if (newTaskProject) {
+    newTaskProject.addEventListener("change", function () {
+      if (newTaskProject.value === "__add_project__") {
+        closeNewTaskModal()
+        openAddProjectModal()
+      }
     })
   }
 
@@ -2151,7 +2292,9 @@
   // Escape key
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") {
-      if (newTaskModal && newTaskModal.classList.contains("open")) {
+      if (addProjectModal && addProjectModal.classList.contains("open")) {
+        closeAddProjectModal()
+      } else if (newTaskModal && newTaskModal.classList.contains("open")) {
         closeNewTaskModal()
       } else if (state.selectedTaskId) {
         handleMobileBack()
