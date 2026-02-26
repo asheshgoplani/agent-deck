@@ -55,8 +55,16 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 		}
 	case "opencode":
 		return &RawPatterns{
-			BusyPatterns:   []string{"esc interrupt"},
-			PromptPatterns: []string{"Ask anything"},
+			BusyPatterns: []string{
+				"esc interrupt",
+				"esc to exit",
+				"thinking...",
+				"generating...",
+				"building tool call...",
+				"waiting for tool response...",
+			},
+			PromptPatterns: []string{"Ask anything", "press enter to send"},
+			SpinnerChars:   []string{"█", "▓", "▒", "░"},
 		}
 	case "codex":
 		return &RawPatterns{

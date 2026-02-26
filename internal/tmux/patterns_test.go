@@ -59,6 +59,23 @@ func TestDefaultRawPatterns_Gemini(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_OpenCode(t *testing.T) {
+	raw := DefaultRawPatterns("opencode")
+	if raw == nil {
+		t.Fatal("expected non-nil for opencode")
+	}
+
+	if len(raw.BusyPatterns) == 0 {
+		t.Error("opencode should have busy patterns")
+	}
+	if len(raw.PromptPatterns) == 0 {
+		t.Error("opencode should have prompt patterns")
+	}
+	if len(raw.SpinnerChars) == 0 {
+		t.Error("opencode should define spinner chars")
+	}
+}
+
 func TestDefaultRawPatterns_Codex(t *testing.T) {
 	raw := DefaultRawPatterns("codex")
 	if raw == nil {

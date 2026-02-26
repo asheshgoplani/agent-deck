@@ -233,9 +233,6 @@ func TestPromptDetector(t *testing.T) {
 }
 
 func TestBusyIndicatorDetection(t *testing.T) {
-	sess := NewSession("test", "/tmp")
-	sess.Command = "claude"
-
 	// Busy detection should recognize explicit interrupt lines and spinner activity.
 	tests := []struct {
 		name     string
@@ -282,6 +279,49 @@ func TestBusyIndicatorDetection(t *testing.T) {
 			result := s.hasBusyIndicator(tt.content)
 			if result != tt.expected {
 				t.Errorf("hasBusyIndicator(%q) = %v, want %v", tt.name, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBusyIndicatorDetection_OpenCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected bool
+	}{
+		{
+			name: "pulse spinner with task text",
+			content: `┃ Conversation
+█ Thinking...
+┃ Ask anything`,
+			expected: true,
+		},
+		{
+			name: "esc to exit busy hint",
+			content: `Build  Plan
+press esc to exit cancel`,
+			expected: true,
+		},
+		{
+			name:     "waiting for tool response task text",
+			content:  `Waiting for tool response...`,
+			expected: true,
+		},
+		{
+			name: "idle prompt only",
+			content: `┃ Ask anything
+press enter to send the message`,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSession("test-opencode-"+tt.name, "/tmp")
+			s.Command = "opencode"
+			if got := s.hasBusyIndicator(tt.content); got != tt.expected {
+				t.Errorf("hasBusyIndicator(opencode %q) = %v, want %v", tt.name, got, tt.expected)
 			}
 		})
 	}
