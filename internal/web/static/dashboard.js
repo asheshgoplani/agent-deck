@@ -136,6 +136,8 @@
       })
       .catch(function (err) {
         console.error("fetchProjects:", err)
+        state.projects = []
+        renderFilterBar()
       })
   }
 
@@ -928,6 +930,13 @@
       pill.addEventListener("click", handleFilterClick)
       filterBar.appendChild(pill)
     }
+
+    // Re-add the "+ Project" button (cleared by clearChildren above)
+    var addBtn = el("button", "filter-btn", "+ Project")
+    addBtn.id = "add-project-btn"
+    addBtn.title = "Add Project"
+    addBtn.addEventListener("click", openAddProjectModal)
+    filterBar.appendChild(addBtn)
   }
 
   function handleFilterClick(e) {
