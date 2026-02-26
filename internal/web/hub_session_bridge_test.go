@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/hub"
@@ -17,7 +18,7 @@ func newTestBridge(t *testing.T) (*HubSessionBridge, *hub.TaskStore, *hub.Projec
 	ps, err := hub.NewProjectStore(hubDir)
 	require.NoError(t, err)
 
-	bridge := NewHubSessionBridge("_test", ts, ps)
+	bridge := NewHubSessionBridge("_test", ts, ps, nil)
 	// Override storage opener to return a mock that records calls
 	bridge.openStorage = func(profile string) (storageLoader, error) {
 		return &mockStorageLoader{}, nil
@@ -150,7 +151,7 @@ func TestSaveInstance_PersistsToStorage(t *testing.T) {
 	ps, err := hub.NewProjectStore(hubDir)
 	require.NoError(t, err)
 
-	bridge := NewHubSessionBridge("_test", ts, ps)
+	bridge := NewHubSessionBridge("_test", ts, ps, nil)
 	// Use real storage opener (defaultStorageOpener) — not mocked
 
 	proj := &hub.Project{Name: "test-proj", Path: t.TempDir(), Keywords: []string{"test"}}
@@ -199,4 +200,140 @@ func TestPhasePromptAllPhases(t *testing.T) {
 		prompt := phasePrompt(phase, "test task")
 		assert.NotEmpty(t, prompt, "phase %s should have a prompt", phase)
 	}
+}
+
+// sendKeysExecutor tracks SendInput calls made through the SessionLauncher.
+type sendKeysExecutor struct {
+	healthy            bool
+	sendKeysCalled     bool
+	lastContainer      string
+	lastSessionName    string
+	lastSendKeysInput  string
+}
+
+func (e *sendKeysExecutor) IsHealthy(_ context.Context, _ string) bool {
+	return e.healthy
+}
+
+func (e *sendKeysExecutor) Exec(_ context.Context, container string, cmd ...string) (string, error) {
+	// Track send-keys calls (the SessionLauncher calls Exec twice: once for
+	// the literal text, once for Enter). We capture the literal text call.
+	if len(cmd) >= 6 && cmd[0] == "tmux" && cmd[1] == "send-keys" && cmd[2] == "-l" {
+		e.sendKeysCalled = true
+		e.lastContainer = container
+		e.lastSessionName = cmd[4] // -t <session>
+		e.lastSendKeysInput = cmd[5]
+	}
+	return "", nil
+}
+
+func TestStartPhase_SendsPromptToContainer(t *testing.T) {
+	hubDir := t.TempDir()
+	ts, err := hub.NewTaskStore(hubDir)
+	require.NoError(t, err)
+	ps, err := hub.NewProjectStore(hubDir)
+	require.NoError(t, err)
+
+	exec := &sendKeysExecutor{healthy: true}
+	launcher := &hub.SessionLauncher{Executor: exec}
+
+	bridge := NewHubSessionBridge("_test", ts, ps, launcher)
+	bridge.openStorage = func(profile string) (storageLoader, error) {
+		return &mockStorageLoader{}, nil
+	}
+
+	// Create a project with a container.
+	proj := &hub.Project{
+		Name:      "web-app",
+		Path:      "/tmp/test-project",
+		Keywords:  []string{"web"},
+		Container: "sandbox-web",
+	}
+	require.NoError(t, ps.Save(proj))
+
+	// Create a task routed to that project.
+	task := &hub.Task{
+		Project:     "web-app",
+		Description: "Fix auth bug in login flow",
+		Phase:       hub.PhaseBrainstorm,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
+	}
+	require.NoError(t, ts.Save(task))
+
+	// Start the brainstorm phase — should send prompt to container.
+	result, err := bridge.StartPhase(task.ID, hub.PhaseBrainstorm)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.SessionID)
+
+	// Verify SendInput was called via the executor.
+	assert.True(t, exec.sendKeysCalled, "expected SendInput to be called for container session")
+	assert.Equal(t, "sandbox-web", exec.lastContainer)
+	assert.Equal(t, "agent-"+task.ID, exec.lastSessionName)
+	assert.Contains(t, exec.lastSendKeysInput, "Fix auth bug in login flow")
+}
+
+func TestStartPhase_NoPromptWithoutContainer(t *testing.T) {
+	hubDir := t.TempDir()
+	ts, err := hub.NewTaskStore(hubDir)
+	require.NoError(t, err)
+	ps, err := hub.NewProjectStore(hubDir)
+	require.NoError(t, err)
+
+	exec := &sendKeysExecutor{healthy: true}
+	launcher := &hub.SessionLauncher{Executor: exec}
+
+	bridge := NewHubSessionBridge("_test", ts, ps, launcher)
+	bridge.openStorage = func(profile string) (storageLoader, error) {
+		return &mockStorageLoader{}, nil
+	}
+
+	// Project without a container.
+	proj := &hub.Project{
+		Name:     "local-proj",
+		Path:     "/tmp/test-local",
+		Keywords: []string{"local"},
+	}
+	require.NoError(t, ps.Save(proj))
+
+	task := &hub.Task{
+		Project:     "local-proj",
+		Description: "Local task",
+		Phase:       hub.PhaseExecute,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
+	}
+	require.NoError(t, ts.Save(task))
+
+	_, err = bridge.StartPhase(task.ID, hub.PhaseExecute)
+	require.NoError(t, err)
+
+	// Should NOT have called SendInput since there's no container.
+	assert.False(t, exec.sendKeysCalled, "should not send prompt for non-container project")
+}
+
+func TestStartPhase_NilLauncherNoError(t *testing.T) {
+	bridge, ts, ps := newTestBridge(t)
+
+	proj := &hub.Project{
+		Name:      "web-app",
+		Path:      "/tmp/test-project",
+		Keywords:  []string{"web"},
+		Container: "sandbox-web",
+	}
+	require.NoError(t, ps.Save(proj))
+
+	task := &hub.Task{
+		Project:     "web-app",
+		Description: "Task with container but nil launcher",
+		Phase:       hub.PhasePlan,
+		Status:      hub.TaskStatusBacklog,
+		AgentStatus: hub.AgentStatusIdle,
+	}
+	require.NoError(t, ts.Save(task))
+
+	// Should succeed even with nil launcher — prompt sending is skipped.
+	result, err := bridge.StartPhase(task.ID, hub.PhasePlan)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.SessionID)
 }

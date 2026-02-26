@@ -54,7 +54,7 @@ func newTestServerWithHub(t *testing.T) *Server {
 	srv.hubProjects = projectStore
 
 	// Initialize bridge with mock storage for tests
-	srv.hubBridge = NewHubSessionBridge("_test", taskStore, projectStore)
+	srv.hubBridge = NewHubSessionBridge("_test", taskStore, projectStore, nil)
 	srv.hubBridge.openStorage = func(profile string) (storageLoader, error) {
 		return &testStorageLoader{}, nil
 	}

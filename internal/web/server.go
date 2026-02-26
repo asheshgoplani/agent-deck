@@ -107,7 +107,7 @@ func NewServer(cfg Config) *Server {
 
 	// Initialize hub-session bridge for local session orchestration.
 	if s.hubTasks != nil && s.hubProjects != nil {
-		s.hubBridge = NewHubSessionBridge(cfg.Profile, s.hubTasks, s.hubProjects)
+		s.hubBridge = NewHubSessionBridge(cfg.Profile, s.hubTasks, s.hubProjects, s.sessionLauncher)
 	}
 
 	if pushSvc, err := newPushService(cfg, menuData); err != nil {
