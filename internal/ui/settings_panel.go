@@ -61,9 +61,9 @@ type SettingsPanel struct {
 	globalSearchEnabled bool
 	searchTier          int // 0=auto, 1=instant, 2=balanced
 	recentDays          int
-	showOutput         bool
-	showAnalytics      bool
-	maintenanceEnabled bool
+	showOutput          bool
+	showAnalytics       bool
+	maintenanceEnabled  bool
 
 	// Text input state
 	editingText bool

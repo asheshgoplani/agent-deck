@@ -18,11 +18,11 @@ var maintLog = logging.ForComponent(logging.CompSession)
 
 // MaintenanceResult holds the outcome of a maintenance run.
 type MaintenanceResult struct {
-	PrunedLogs        int
-	PrunedBackups     int
-	ArchivedSessions  int
-	OrphanContainers  int
-	Duration          time.Duration
+	PrunedLogs       int
+	PrunedBackups    int
+	ArchivedSessions int
+	OrphanContainers int
+	Duration         time.Duration
 }
 
 // RunMaintenance executes all maintenance tasks and returns the result.

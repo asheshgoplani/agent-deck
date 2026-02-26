@@ -59,7 +59,7 @@ type NewDialog struct {
 	// Worktree support.
 	worktreeEnabled bool
 	branchInput     textinput.Model
-	branchAutoSet bool // true if branch was auto-derived from session name.
+	branchAutoSet   bool // true if branch was auto-derived from session name.
 	// Docker sandbox support.
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.

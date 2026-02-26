@@ -170,9 +170,9 @@ func TestSyncAgentConfig_FollowsSymlinks(t *testing.T) {
 	require.NoError(t, os.Symlink(realFile, filepath.Join(hostDir, "config.json")))
 
 	mount := AgentConfigMount{
-		hostRel:      ".claude",
-		copyDirs:     []string{"skills"},
-		skipEntries:  []string{"sandbox", "real-skills"},
+		hostRel:     ".claude",
+		copyDirs:    []string{"skills"},
+		skipEntries: []string{"sandbox", "real-skills"},
 	}
 	sandboxDir, err := SyncAgentConfig(homeDir, mount)
 	require.NoError(t, err)

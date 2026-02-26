@@ -482,6 +482,11 @@ type Session struct {
 	// Example: {"allow-passthrough": "all", "history-limit": "50000"}
 	OptionOverrides map[string]string
 
+	// RunCommandAsInitialProcess launches Start(command) as the pane's initial
+	// process instead of sending it via SendKeysAndEnter after session creation.
+	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
+	RunCommandAsInitialProcess bool
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -866,9 +871,9 @@ func sanitizeName(name string) string {
 }
 
 // Start creates and starts a tmux session.
-// The command is passed as a single string argument to tmux new-session, which
-// runs it via /bin/sh -c. Fish shell compatibility is maintained because callers
-// (e.g. wrapIgnoreSuspend) wrap the command in an explicit bash -c layer.
+// By default, command is sent after session creation (legacy behavior).
+// When RunCommandAsInitialProcess is true, command is passed directly to tmux
+// new-session and becomes the pane's initial process.
 func (s *Session) Start(command string) error {
 	s.Command = command
 	s.invalidateCache()
@@ -895,11 +900,11 @@ func (s *Session) Start(command string) error {
 	}
 
 	// Create new tmux session in detached mode.
-	// The command becomes the session's initial process. remain-on-exit keeps
-	// the pane alive after the process exits so the user can inspect output.
-	// The TUI's restartSession path handles re-launching dead sessions.
+	// Sandbox sessions launch command as the pane process for dead-pane restart.
+	// Non-sandbox sessions keep the legacy shell+send flow.
+	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
 	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
-	if command != "" {
+	if startWithInitialProcess {
 		args = append(args, command)
 	}
 	cmd := exec.Command("tmux", args...)
@@ -955,6 +960,19 @@ func (s *Session) Start(command string) error {
 	// Configure status bar with session info for easy identification
 	// Shows: session title on left, project folder on right
 	s.ConfigureStatusBar()
+
+	// Legacy behavior for non-sandbox sessions: start shell first, then send command.
+	if command != "" && !startWithInitialProcess {
+		cmdToSend := command
+		// Commands containing bash-specific syntax must be wrapped for fish users.
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
+			cmdToSend = fmt.Sprintf("bash -c '%s'", escapedCmd)
+		}
+		if err := s.SendKeysAndEnter(cmdToSend); err != nil {
+			return fmt.Errorf("failed to send command: %w", err)
+		}
+	}
 
 	// Connect control mode pipe for event-driven status detection
 	if pm := GetPipeManager(); pm != nil {

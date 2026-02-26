@@ -140,7 +140,6 @@ type ContainerConfig struct {
 
 	// memoryLimit is the memory cap (e.g. "4g").
 	memoryLimit string
-
 }
 
 // ContainerConfigOption customizes a ContainerConfig during NewContainerConfig.
