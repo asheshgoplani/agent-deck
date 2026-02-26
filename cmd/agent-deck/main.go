@@ -1943,11 +1943,15 @@ func handleUpdate(args []string) {
 		// Non-fatal: fall back to direct updater flow.
 		homebrewManaged = false
 	}
+	homebrewInstallCmd := homebrewUpgradeCmd
+	if homebrewManaged {
+		homebrewInstallCmd = fmt.Sprintf("brew update && %s", homebrewUpgradeCmd)
+	}
 
 	if *checkOnly {
 		if homebrewManaged {
 			fmt.Printf("\nHomebrew-managed install detected at %s\n", installPath)
-			fmt.Printf("Run `%s` to install.\n", homebrewUpgradeCmd)
+			fmt.Printf("Run `%s` to install.\n", homebrewInstallCmd)
 		} else {
 			fmt.Println("\nRun 'agent-deck update' to install.")
 		}
@@ -1956,7 +1960,7 @@ func handleUpdate(args []string) {
 
 	if homebrewManaged {
 		fmt.Printf("\nHomebrew-managed install detected at %s\n", installPath)
-		fmt.Printf("Will run: %s\n", homebrewUpgradeCmd)
+		fmt.Printf("Will run: %s\n", homebrewInstallCmd)
 	}
 
 	// Confirm update - drain any buffered input first to avoid garbage
@@ -1977,16 +1981,7 @@ func handleUpdate(args []string) {
 	// Perform update (direct binary replacement or Homebrew upgrade)
 	fmt.Println()
 	if homebrewManaged {
-		cmdParts := strings.Fields(homebrewUpgradeCmd)
-		if len(cmdParts) == 0 {
-			fmt.Println("Error installing update: empty Homebrew upgrade command")
-			os.Exit(1)
-		}
-		cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		if err := cmd.Run(); err != nil {
+		if err := runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd); err != nil {
 			fmt.Printf("Error installing update via Homebrew: %v\n", err)
 			os.Exit(1)
 		}
@@ -2005,6 +2000,32 @@ func handleUpdate(args []string) {
 
 	fmt.Printf("\n✓ Updated to v%s\n", info.LatestVersion)
 	fmt.Println("  Restart agent-deck to use the new version.")
+}
+
+func runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd string) error {
+	cmdParts := strings.Fields(homebrewUpgradeCmd)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty Homebrew upgrade command")
+	}
+
+	brewBin := cmdParts[0]
+	refreshCmd := exec.Command(brewBin, "update")
+	refreshCmd.Stdout = os.Stdout
+	refreshCmd.Stderr = os.Stderr
+	refreshCmd.Stdin = os.Stdin
+	if err := refreshCmd.Run(); err != nil {
+		return fmt.Errorf("failed to refresh Homebrew metadata: %w", err)
+	}
+
+	upgradeCmd := exec.Command(brewBin, cmdParts[1:]...)
+	upgradeCmd.Stdout = os.Stdout
+	upgradeCmd.Stderr = os.Stderr
+	upgradeCmd.Stdin = os.Stdin
+	if err := upgradeCmd.Run(); err != nil {
+		return fmt.Errorf("failed to run `%s`: %w", homebrewUpgradeCmd, err)
+	}
+
+	return nil
 }
 
 // displayChangelog fetches and displays changelog between versions
