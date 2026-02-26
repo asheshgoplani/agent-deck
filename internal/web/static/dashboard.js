@@ -2109,10 +2109,53 @@
   var addProjectName = document.getElementById("add-project-name")
   var addProjectPath = document.getElementById("add-project-path")
   var addProjectKeywords = document.getElementById("add-project-keywords")
-  var addProjectContainer = document.getElementById("add-project-container")
+  var addProjectContainer = document.getElementById("add-project-container")        // <select>
+  var addProjectContainerCustom = document.getElementById("add-project-container-custom")  // fallback text input
+  var addProjectStatus = document.getElementById("add-project-status")
   var addProjectImage = document.getElementById("add-project-image")
   var addProjectCpu = document.getElementById("add-project-cpu")
   var addProjectMem = document.getElementById("add-project-mem")
+
+  function setProjectStatus(msg, isError) {
+    if (!addProjectStatus) return
+    addProjectStatus.textContent = msg
+    addProjectStatus.className = "modal-status" + (msg ? (isError ? " modal-status--error" : " modal-status--ok") : "")
+  }
+
+  function populateContainerDropdown() {
+    if (!addProjectContainer) return
+    // Keep first "Select..." option, clear rest
+    while (addProjectContainer.options.length > 1) addProjectContainer.remove(1)
+
+    fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("fetch failed")
+        return r.json()
+      })
+      .then(function (data) {
+        var ws = data.workspaces || []
+        var hasContainers = false
+        for (var i = 0; i < ws.length; i++) {
+          if (ws[i].container) {
+            var opt = document.createElement("option")
+            opt.value = ws[i].container
+            opt.textContent = ws[i].name + " (" + ws[i].container + ")"
+            addProjectContainer.appendChild(opt)
+            hasContainers = true
+          }
+        }
+        // Add "Custom..." option to allow manual entry
+        var customOpt = document.createElement("option")
+        customOpt.value = "__custom__"
+        customOpt.textContent = hasContainers ? "Other (enter manually)..." : "No containers found — enter manually..."
+        addProjectContainer.appendChild(customOpt)
+      })
+      .catch(function () {
+        // API unavailable — show fallback text input instead
+        if (addProjectContainer) addProjectContainer.style.display = "none"
+        if (addProjectContainerCustom) addProjectContainerCustom.style.display = ""
+      })
+  }
 
   function openAddProjectModal() {
     if (addProjectRepo) addProjectRepo.value = ""
@@ -2120,9 +2163,11 @@
     if (addProjectPath) addProjectPath.value = ""
     if (addProjectKeywords) addProjectKeywords.value = ""
     if (addProjectContainer) addProjectContainer.value = ""
+    if (addProjectContainerCustom) addProjectContainerCustom.value = ""
     if (addProjectImage) addProjectImage.value = ""
     if (addProjectCpu) addProjectCpu.value = "2"
     if (addProjectMem) addProjectMem.value = "2"
+    setProjectStatus("")
     // Reset radio to "none"
     var radios = document.querySelectorAll('input[name="container-mode"]')
     for (var i = 0; i < radios.length; i++) {
@@ -2139,6 +2184,7 @@
     if (addProjectModal) addProjectModal.classList.remove("open")
     if (addProjectBackdrop) addProjectBackdrop.classList.remove("open")
     if (addProjectModal) addProjectModal.setAttribute("aria-hidden", "true")
+    setProjectStatus("")
   }
 
   function getContainerMode() {
@@ -2155,6 +2201,14 @@
     var provisionEl = document.getElementById("container-fields-provision")
     if (existingEl) existingEl.style.display = mode === "existing" ? "" : "none"
     if (provisionEl) provisionEl.style.display = mode === "provision" ? "" : "none"
+
+    // Populate container dropdown when "existing" is selected
+    if (mode === "existing") {
+      // Reset: show dropdown, hide custom input
+      if (addProjectContainer) addProjectContainer.style.display = ""
+      if (addProjectContainerCustom) addProjectContainerCustom.style.display = "none"
+      populateContainerDropdown()
+    }
   }
 
   function submitAddProject() {
@@ -2164,18 +2218,36 @@
     var keywords = addProjectKeywords ? addProjectKeywords.value.trim() : ""
     var mode = getContainerMode()
 
-    if (!repo && !name) return
+    if (!repo && !name) {
+      setProjectStatus("Repo or name is required", true)
+      return
+    }
 
     var body = { repo: repo, name: name, path: path }
     if (keywords) body.keywords = keywords.split(",").map(function (k) { return k.trim() }).filter(Boolean)
 
     if (mode === "existing") {
-      body.container = addProjectContainer ? addProjectContainer.value.trim() : ""
+      // Read from dropdown or fallback custom input
+      var dropVal = addProjectContainer ? addProjectContainer.value : ""
+      if (dropVal === "__custom__" || addProjectContainer.style.display === "none") {
+        body.container = addProjectContainerCustom ? addProjectContainerCustom.value.trim() : ""
+      } else {
+        body.container = dropVal
+      }
     } else if (mode === "provision") {
       body.image = addProjectImage ? addProjectImage.value.trim() : ""
+      if (!body.image) {
+        setProjectStatus("Docker image is required for auto-provision", true)
+        return
+      }
       body.cpuLimit = parseFloat(addProjectCpu ? addProjectCpu.value : "2") || 2
       body.memoryLimit = Math.round((parseFloat(addProjectMem ? addProjectMem.value : "2") || 2) * 1024 * 1024 * 1024)
     }
+
+    // Disable button while submitting
+    var submitBtn = document.getElementById("add-project-submit")
+    if (submitBtn) submitBtn.disabled = true
+    setProjectStatus("Creating project...", false)
 
     var headers = authHeaders()
     headers["Content-Type"] = "application/json"
@@ -2196,6 +2268,10 @@
       })
       .catch(function (err) {
         console.error("submitAddProject:", err)
+        setProjectStatus("Failed to create project — is the backend running?", true)
+      })
+      .finally(function () {
+        if (submitBtn) submitBtn.disabled = false
       })
   }
 
@@ -2250,6 +2326,20 @@
   var containerModeRadios = document.querySelectorAll('input[name="container-mode"]')
   for (var cmi = 0; cmi < containerModeRadios.length; cmi++) {
     containerModeRadios[cmi].addEventListener("change", updateContainerFields)
+  }
+
+  // Container dropdown: show custom text input when "Other" is selected
+  if (addProjectContainer) {
+    addProjectContainer.addEventListener("change", function () {
+      if (addProjectContainer.value === "__custom__") {
+        if (addProjectContainerCustom) {
+          addProjectContainerCustom.style.display = ""
+          addProjectContainerCustom.focus()
+        }
+      } else {
+        if (addProjectContainerCustom) addProjectContainerCustom.style.display = "none"
+      }
+    })
   }
 
   // New task project dropdown: intercept "+ Add Project..." selection

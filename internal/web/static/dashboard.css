@@ -1636,10 +1636,18 @@
 .modal-footer {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
 }
+
+.modal-status {
+  margin-right: auto;
+  font-size: 0.82rem;
+}
+.modal-status--error { color: var(--status-error, #f55); }
+.modal-status--ok { color: var(--status-idle, #4d4); }
 
 /* ── Route suggestion ──────────────────────────────────────────── */
 

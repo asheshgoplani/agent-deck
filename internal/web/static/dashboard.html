@@ -176,8 +176,11 @@
           </div>
           <div id="container-fields-existing" class="container-fields" style="display:none">
             <div class="form-group">
-              <label for="add-project-container">Container Name</label>
-              <input id="add-project-container" type="text" class="form-input" placeholder="my-container">
+              <label for="add-project-container">Workspace Container</label>
+              <select id="add-project-container" class="form-input">
+                <option value="">Select a container...</option>
+              </select>
+              <input id="add-project-container-custom" type="text" class="form-input" placeholder="my-container" style="display:none;margin-top:6px">
             </div>
           </div>
           <div id="container-fields-provision" class="container-fields" style="display:none">
@@ -198,6 +201,7 @@
           </div>
         </div>
         <div class="modal-footer">
+          <span id="add-project-status" class="modal-status"></span>
           <button id="add-project-cancel" class="hub-btn">Cancel</button>
           <button id="add-project-submit" class="hub-btn-primary">Create Project</button>
         </div>
