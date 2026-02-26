@@ -70,6 +70,7 @@
           <div class="panel-left">
             <div class="filter-bar" id="filter-bar">
               <button class="filter-pill filter-pill--active" data-project="">All</button>
+              <button id="add-project-btn" class="filter-btn" title="Add Project">+ Project</button>
             </div>
             <div class="task-list" id="task-list">
               <div class="task-list-empty" id="task-list-empty">Loading agents...</div>
@@ -138,6 +139,67 @@
         <div class="modal-footer">
           <button id="new-task-cancel" class="hub-btn" type="button">Cancel</button>
           <button id="new-task-submit" class="hub-btn-primary" type="button">Create</button>
+        </div>
+      </div>
+
+      <!-- Add Project modal -->
+      <div id="add-project-backdrop" class="modal-backdrop" aria-hidden="true"></div>
+      <div id="add-project-modal" class="modal" role="dialog" aria-hidden="true">
+        <div class="modal-header">
+          <span class="modal-title">Add Project</span>
+          <button id="add-project-close" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="add-project-repo">GitHub Repo</label>
+            <input id="add-project-repo" type="text" class="form-input" placeholder="org/repo-name">
+          </div>
+          <div class="form-group">
+            <label for="add-project-name">Name</label>
+            <input id="add-project-name" type="text" class="form-input" placeholder="auto-derived from repo">
+          </div>
+          <div class="form-group">
+            <label for="add-project-path">Path</label>
+            <input id="add-project-path" type="text" class="form-input" placeholder="~/projects/name">
+          </div>
+          <div class="form-group">
+            <label for="add-project-keywords">Keywords</label>
+            <input id="add-project-keywords" type="text" class="form-input" placeholder="comma-separated">
+          </div>
+          <div class="form-group">
+            <label>Container Mode</label>
+            <div class="radio-group" id="container-mode-group">
+              <label class="radio-label"><input type="radio" name="container-mode" value="none" checked> None (local)</label>
+              <label class="radio-label"><input type="radio" name="container-mode" value="existing"> Existing container</label>
+              <label class="radio-label"><input type="radio" name="container-mode" value="provision"> Auto-provision</label>
+            </div>
+          </div>
+          <div id="container-fields-existing" class="container-fields" style="display:none">
+            <div class="form-group">
+              <label for="add-project-container">Container Name</label>
+              <input id="add-project-container" type="text" class="form-input" placeholder="my-container">
+            </div>
+          </div>
+          <div id="container-fields-provision" class="container-fields" style="display:none">
+            <div class="form-group">
+              <label for="add-project-image">Docker Image</label>
+              <input id="add-project-image" type="text" class="form-input" placeholder="sandbox-image:latest">
+            </div>
+            <div class="form-group form-row">
+              <div class="form-col">
+                <label for="add-project-cpu">CPU Limit (cores)</label>
+                <input id="add-project-cpu" type="number" class="form-input" value="2" step="0.5" min="0.5">
+              </div>
+              <div class="form-col">
+                <label for="add-project-mem">Memory (GB)</label>
+                <input id="add-project-mem" type="number" class="form-input" value="2" step="0.5" min="0.5">
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="add-project-cancel" class="hub-btn">Cancel</button>
+          <button id="add-project-submit" class="hub-btn-primary">Create Project</button>
         </div>
       </div>
 

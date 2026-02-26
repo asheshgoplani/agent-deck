@@ -1692,6 +1692,66 @@
   display: none;
 }
 
+/* ── Add Project modal form elements ──────────────────────────── */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.form-input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--bg-panel);
+  box-sizing: border-box;
+}
+
+.form-input:focus {
+  outline: 2px solid rgba(232, 169, 50, 0.2);
+  border-color: var(--accent);
+}
+
+.radio-group { display: flex; gap: 12px; flex-wrap: wrap; }
+.radio-label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary, var(--text-dim)); cursor: pointer; }
+.radio-label input[type="radio"] { accent-color: var(--accent); }
+.form-row { display: flex; gap: 12px; }
+.form-col { flex: 1; }
+.container-fields { margin-top: 4px; }
+
+.filter-btn {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.56rem;
+  font-weight: 400;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: background 100ms, color 100ms;
+}
+
+.filter-btn:hover {
+  background: rgba(232, 169, 50, 0.12);
+  color: var(--accent);
+}
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
