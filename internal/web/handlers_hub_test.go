@@ -1692,3 +1692,35 @@ func TestWorkspacesListWithProject(t *testing.T) {
 	assert.Equal(t, "ubuntu:24.04", ws.Image)
 	assert.Equal(t, 1, ws.ActiveTasks)
 }
+
+func TestProjectCreateAutoProvision(t *testing.T) {
+	srv := newTestServerWithHub(t)
+	mock := &mockContainerRuntime{}
+	srv.containerRuntime = mock
+
+	body := strings.NewReader(`{
+		"repo": "github.com/org/auto-app",
+		"name": "auto-app",
+		"path": "/tmp/auto-app",
+		"image": "node:20",
+		"cpuLimit": 2.0,
+		"memoryLimit": 1073741824,
+		"keywords": ["auto"]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	// Verify the container runtime was called.
+	assert.Equal(t, 1, mock.createCalls, "expected Create to be called once")
+	assert.Equal(t, 1, mock.startCalls, "expected Start to be called once")
+
+	// Verify the project was saved with the container name.
+	var resp projectDetailResponse
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+	assert.Equal(t, "agentdeck-auto-app", resp.Project.Container)
+	assert.Equal(t, "node:20", resp.Project.Image)
+}

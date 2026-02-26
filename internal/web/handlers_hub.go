@@ -637,11 +637,65 @@ func (s *Server) handleProjectsCreate(w http.ResponseWriter, r *http.Request) {
 		Keywords:    req.Keywords,
 		Container:   req.Container,
 		DefaultMCPs: req.DefaultMCPs,
+		Image:       req.Image,
+		CPULimit:    req.CPULimit,
+		MemoryLimit: req.MemoryLimit,
+		Volumes:     req.Volumes,
+		Env:         req.Env,
 	}
 
 	if err := s.hubProjects.Save(project); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create project")
 		return
+	}
+
+	// Auto-provision container if an image is specified and a runtime is available.
+	if project.Image != "" && s.containerRuntime != nil {
+		containerName := workspace.ContainerNameForProject(project.Name)
+
+		// Build environment variables from map.
+		var envSlice []string
+		for k, v := range project.Env {
+			envSlice = append(envSlice, k+"="+v)
+		}
+
+		// Convert VolumeMount to workspace.Mount.
+		var mounts []workspace.Mount
+		for _, v := range project.Volumes {
+			mounts = append(mounts, workspace.Mount{
+				Source:   v.Host,
+				Target:   v.Container,
+				ReadOnly: v.ReadOnly,
+			})
+		}
+
+		opts := workspace.CreateOpts{
+			Name:     containerName,
+			Image:    project.Image,
+			Env:      envSlice,
+			Mounts:   mounts,
+			NanoCPUs: int64(project.CPULimit * 1e9),
+			Memory:   project.MemoryLimit,
+			Labels: map[string]string{
+				"agentdeck.project": project.Name,
+			},
+		}
+
+		if _, createErr := s.containerRuntime.Create(r.Context(), opts); createErr != nil {
+			slog.Warn("auto_provision_create_failed",
+				slog.String("project", project.Name),
+				slog.String("image", project.Image),
+				slog.String("error", createErr.Error()))
+		} else {
+			if startErr := s.containerRuntime.Start(r.Context(), containerName); startErr != nil {
+				slog.Warn("auto_provision_start_failed",
+					slog.String("project", project.Name),
+					slog.String("container", containerName),
+					slog.String("error", startErr.Error()))
+			}
+			project.Container = containerName
+			_ = s.hubProjects.Save(project) // Re-save with container name.
+		}
 	}
 
 	s.notifyTaskChanged()
@@ -673,7 +727,7 @@ func (s *Server) handleProjectByName(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		s.handleProjectUpdate(w, r, name)
 	case http.MethodDelete:
-		s.handleProjectDelete(w, name)
+		s.handleProjectDelete(w, r, name)
 	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
@@ -737,10 +791,22 @@ func (s *Server) handleProjectUpdate(w http.ResponseWriter, r *http.Request, nam
 }
 
 // handleProjectDelete serves DELETE /api/projects/{name}.
-func (s *Server) handleProjectDelete(w http.ResponseWriter, name string) {
+func (s *Server) handleProjectDelete(w http.ResponseWriter, r *http.Request, name string) {
 	if s.hubProjects == nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "hub not initialized")
 		return
+	}
+
+	// Optionally remove the associated container.
+	if r.URL.Query().Get("removeContainer") == "true" && s.containerRuntime != nil {
+		if project, err := s.hubProjects.Get(name); err == nil && project.Container != "" {
+			if rmErr := s.containerRuntime.Remove(r.Context(), project.Container, true); rmErr != nil {
+				slog.Warn("container_remove_on_project_delete",
+					slog.String("project", name),
+					slog.String("container", project.Container),
+					slog.String("error", rmErr.Error()))
+			}
+		}
 	}
 
 	if err := s.hubProjects.Delete(name); err != nil {
@@ -775,12 +841,17 @@ type projectDetailResponse struct {
 }
 
 type createProjectRequest struct {
-	Repo        string   `json:"repo"`
-	Name        string   `json:"name,omitempty"`
-	Path        string   `json:"path,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
-	Container   string   `json:"container,omitempty"`
-	DefaultMCPs []string `json:"defaultMcps,omitempty"`
+	Repo        string            `json:"repo"`
+	Name        string            `json:"name,omitempty"`
+	Path        string            `json:"path,omitempty"`
+	Keywords    []string          `json:"keywords,omitempty"`
+	Container   string            `json:"container,omitempty"`
+	DefaultMCPs []string          `json:"defaultMcps,omitempty"`
+	Image       string            `json:"image,omitempty"`
+	CPULimit    float64           `json:"cpuLimit,omitempty"`
+	MemoryLimit int64             `json:"memoryLimit,omitempty"`
+	Volumes     []hub.VolumeMount `json:"volumes,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
 }
 
 type updateProjectRequest struct {
