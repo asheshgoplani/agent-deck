@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -189,6 +190,44 @@ func TestIsDuplicateSession_MultipleExistingSessions(t *testing.T) {
 	}
 	if existing != nil {
 		t.Errorf("Expected nil existing instance for non-duplicate")
+	}
+}
+
+func TestIsWorktreeAlreadyExistsError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "git path exists error",
+			err:  errors.New("failed to create worktree: fatal: '/tmp/repo-feature' already exists"),
+			want: true,
+		},
+		{
+			name: "case insensitive match",
+			err:  errors.New("FAILED: ALREADY EXISTS"),
+			want: true,
+		},
+		{
+			name: "different git failure",
+			err:  errors.New("failed to create worktree: fatal: invalid reference: bad-branch"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isWorktreeAlreadyExistsError(tt.err)
+			if got != tt.want {
+				t.Errorf("isWorktreeAlreadyExistsError() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

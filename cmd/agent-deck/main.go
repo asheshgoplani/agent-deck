@@ -610,6 +610,16 @@ func generateUniqueTitle(instances []*session.Instance, baseTitle, path string) 
 	return fmt.Sprintf("%s (%d)", baseTitle, time.Now().Unix())
 }
 
+// isWorktreeAlreadyExistsError detects whether git worktree creation failed because
+// the destination path already exists. This preserves friendly UX while avoiding
+// TOCTOU race windows from separate filesystem pre-checks.
+func isWorktreeAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
+
 func resolveAutoParentInstance(instances []*session.Instance) *session.Instance {
 	candidates := []string{
 		strings.TrimSpace(os.Getenv("AGENT_DECK_SESSION_ID")),
@@ -906,15 +916,14 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		// Check if worktree already exists
-		if _, err := os.Stat(worktreePath); err == nil {
-			fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
-			fmt.Fprintf(os.Stderr, "Tip: Use 'agent-deck add %s' to add the existing worktree\n", worktreePath)
-			os.Exit(1)
-		}
-
-		// Create worktree
+		// Create worktree atomically (git handles existence checks).
+		// This avoids a TOCTOU race from separate check-then-create steps.
 		if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			if isWorktreeAlreadyExistsError(err) {
+				fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
+				fmt.Fprintf(os.Stderr, "Tip: Use 'agent-deck add %s' to add the existing worktree\n", worktreePath)
+				os.Exit(1)
+			}
 			fmt.Fprintf(os.Stderr, "Error: failed to create worktree: %v\n", err)
 			os.Exit(1)
 		}
