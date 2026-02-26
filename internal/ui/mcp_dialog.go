@@ -902,7 +902,8 @@ func (m *MCPDialog) renderColumn(title string, items []MCPItem, selectedIdx int,
 		for i, item := range items {
 			// Build transport/status prefix
 			prefix := "[S]" // Default: stdio
-			if item.Transport == "http" {
+			switch item.Transport {
+			case "http":
 				prefix = "[H]"
 				// Add server status indicator for HTTP MCPs
 				switch item.HTTPStatus {
@@ -915,9 +916,9 @@ func (m *MCPDialog) renderColumn(title string, items []MCPItem, selectedIdx int,
 				default:
 					prefix += " "
 				}
-			} else if item.Transport == "sse" {
+			case "sse":
 				prefix = "[E]"
-			} else {
+			default:
 				// stdio - add pool indicator
 				if item.IsPooled {
 					prefix += "●" // Green dot for pooled

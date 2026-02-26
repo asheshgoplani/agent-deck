@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
-	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // ForkDialog handles the fork session dialog
@@ -27,6 +28,8 @@ type ForkDialog struct {
 	worktreeEnabled bool
 	branchInput     textinput.Model
 	isGitRepo       bool
+	// Docker sandbox support
+	sandboxEnabled bool
 }
 
 // NewForkDialog creates a new fork dialog
@@ -67,8 +70,9 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	d.branchInput.Blur()
 	d.optionsPanel.Blur()
 
-	// Reset worktree fields
+	// Reset worktree fields.
 	d.worktreeEnabled = false
+	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
 
 	// Auto-suggest branch name based on fork title
@@ -76,9 +80,10 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	sanitized = strings.ReplaceAll(sanitized, " ", "-")
 	d.branchInput.SetValue("fork/" + sanitized)
 
-	// Initialize options with defaults from config
+	// Initialize options with defaults from config.
 	if config, err := session.LoadUserConfig(); err == nil {
 		d.optionsPanel.SetDefaults(config)
+		d.sandboxEnabled = config.Docker.DefaultEnabled
 	}
 }
 
@@ -129,6 +134,16 @@ func (d *ForkDialog) ToggleWorktree() {
 // IsWorktreeEnabled returns whether worktree mode is enabled
 func (d *ForkDialog) IsWorktreeEnabled() bool {
 	return d.worktreeEnabled
+}
+
+// IsSandboxEnabled returns whether Docker sandbox mode is enabled.
+func (d *ForkDialog) IsSandboxEnabled() bool {
+	return d.sandboxEnabled
+}
+
+// ToggleSandbox toggles Docker sandbox mode.
+func (d *ForkDialog) ToggleSandbox() {
+	d.sandboxEnabled = !d.sandboxEnabled
 }
 
 // optionsStartIndex returns the focus index where the options panel begins
@@ -232,13 +247,20 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			}
 
 		case "w":
-			// Toggle worktree when on group field (only if git repo)
+			// Toggle worktree when on group field (only if git repo).
 			if d.focusIndex == 1 && d.isGitRepo {
 				d.ToggleWorktree()
 				if d.worktreeEnabled {
 					d.focusIndex = 2
 					d.updateFocus()
 				}
+				return d, nil
+			}
+
+		case "s":
+			// Toggle sandbox when on group field.
+			if d.focusIndex == 1 {
+				d.ToggleSandbox()
 				return d, nil
 			}
 
@@ -327,13 +349,14 @@ func (d *ForkDialog) View() string {
 
 	// Build content
 	var nameLabel, groupLabel string
-	if d.focusIndex == 0 {
+	switch d.focusIndex {
+	case 0:
 		nameLabel = activeLabelStyle.Render("▶ Name:")
 		groupLabel = labelStyle.Render("  Group:")
-	} else if d.focusIndex == 1 {
+	case 1:
 		nameLabel = labelStyle.Render("  Name:")
 		groupLabel = activeLabelStyle.Render("▶ Group:")
-	} else {
+	default:
 		nameLabel = labelStyle.Render("  Name:")
 		groupLabel = labelStyle.Render("  Group:")
 	}
@@ -369,6 +392,22 @@ func (d *ForkDialog) View() string {
 		}
 	}
 
+	// Docker sandbox checkbox.
+	sandboxSection := ""
+	sandboxLabel := "Run in Docker sandbox"
+	if d.focusIndex == 1 {
+		sandboxLabel = "Run in Docker sandbox (press s)"
+	}
+	sandboxCb := "[ ]"
+	if d.sandboxEnabled {
+		sandboxCb = "[x]"
+	}
+	sandboxStyle := lipgloss.NewStyle().Foreground(ColorText)
+	if d.focusIndex == 1 {
+		sandboxStyle = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	}
+	sandboxSection = sandboxStyle.Render(fmt.Sprintf("  %s %s", sandboxCb, sandboxLabel)) + "\n"
+
 	errLine := ""
 	if d.validationErr != "" {
 		errStyle := lipgloss.NewStyle().Foreground(ColorRed).Bold(true)
@@ -380,11 +419,12 @@ func (d *ForkDialog) View() string {
 		"  " + d.nameInput.View() + "\n\n" +
 		groupLabel + "\n" +
 		"  " + d.groupInput.View() + "\n" +
-		worktreeSection + "\n" +
+		worktreeSection +
+		sandboxSection + "\n" +
 		d.optionsPanel.View() +
 		errLine + "\n" +
 		lipgloss.NewStyle().Foreground(ColorComment).
-			Render("Enter create │ Esc cancel │ Tab next │ Space toggle")
+			Render("Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle")
 
 	dialog := boxStyle.Render(content)
 

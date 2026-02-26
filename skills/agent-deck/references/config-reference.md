@@ -8,6 +8,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
 - [[codex] Section](#codex-section)
+- [[docker] Section](#docker-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[global_search] Section](#global_search-section)
@@ -121,6 +122,33 @@ yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+
+## [docker] Section
+
+Docker sandbox settings. Run sessions inside isolated containers. Toggle per-session when creating, or set defaults here. Access in TUI via `S` (Settings).
+
+```toml
+[docker]
+default_enabled = false        # Check "sandbox" by default in new session dialog
+default_image = ""             # Custom Docker image (default: built-in Ubuntu)
+cpu_limit = ""                 # CPU limit, e.g. "2.0"
+memory_limit = ""              # Memory limit, e.g. "4g"
+mount_ssh = false              # Mount ~/.ssh read-only into container
+auto_cleanup = true            # Remove containers on session kill
+environment = []               # Host env vars to pass into container
+volume_ignores = []            # Directories to exclude from project mount
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_enabled` | bool | `false` | Pre-check sandbox checkbox when creating sessions. |
+| `default_image` | string | `""` | Custom Docker image. Empty uses the built-in image. |
+| `cpu_limit` | string | `""` | Container CPU limit (e.g. `"2.0"` for 2 cores). |
+| `memory_limit` | string | `""` | Container memory limit (e.g. `"4g"`). |
+| `mount_ssh` | bool | `false` | Bind-mount `~/.ssh` read-only for git access inside containers. |
+| `auto_cleanup` | bool | `true` | Remove sandbox containers when sessions are killed. |
+| `environment` | array | `[]` | Host environment variable names to forward into containers. |
+| `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
 
 ## [logs] Section
 
@@ -392,6 +420,10 @@ config_dir = "~/.claude-work"
 
 [codex]
 yolo_mode = false
+
+[docker]
+default_enabled = false
+mount_ssh = true
 
 [logs]
 max_size_mb = 10

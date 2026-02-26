@@ -28,7 +28,8 @@ type ConfirmDialog struct {
 	targetName  string // Display name
 	width       int
 	height      int
-	mcpCount    int // Number of running MCPs (for quit confirmation)
+	mcpCount    int  // Number of running MCPs (for quit confirmation)
+	sandboxed   bool // Whether the session uses a Docker sandbox.
 
 	// Pending session creation data (for ConfirmCreateDirectory)
 	pendingSessionName      string
@@ -43,12 +44,13 @@ func NewConfirmDialog() *ConfirmDialog {
 	return &ConfirmDialog{}
 }
 
-// ShowDeleteSession shows confirmation for session deletion
-func (c *ConfirmDialog) ShowDeleteSession(sessionID, sessionName string) {
+// ShowDeleteSession shows confirmation for session deletion.
+func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, sandboxed bool) {
 	c.visible = true
 	c.confirmType = ConfirmDeleteSession
 	c.targetID = sessionID
 	c.targetName = sessionName
+	c.sandboxed = sandboxed
 }
 
 // ShowDeleteGroup shows confirmation for group deletion
@@ -68,8 +70,14 @@ func (c *ConfirmDialog) ShowQuitWithPool(mcpCount int) {
 	c.targetName = ""
 }
 
-// ShowCreateDirectory shows confirmation for creating a missing directory
-func (c *ConfirmDialog) ShowCreateDirectory(path, sessionName, command, groupPath string, toolOptionsJSON json.RawMessage) {
+// ShowCreateDirectory shows confirmation for creating a missing directory.
+func (c *ConfirmDialog) ShowCreateDirectory(
+	path string,
+	sessionName string,
+	command string,
+	groupPath string,
+	toolOptionsJSON json.RawMessage,
+) {
 	c.visible = true
 	c.confirmType = ConfirmCreateDirectory
 	c.targetID = path
@@ -94,11 +102,12 @@ func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath stri
 	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON
 }
 
-// Hide hides the dialog
+// Hide hides the dialog.
 func (c *ConfirmDialog) Hide() {
 	c.visible = false
 	c.targetID = ""
 	c.targetName = ""
+	c.sandboxed = false
 }
 
 // IsVisible returns whether the dialog is visible
@@ -147,8 +156,12 @@ func (c *ConfirmDialog) View() string {
 	switch c.confirmType {
 	case ConfirmDeleteSession:
 		title = "⚠️  Delete Session?"
-		warning = fmt.Sprintf("This will PERMANENTLY KILL the tmux session:\n\n  \"%s\"", c.targetName)
-		details = "• The tmux session will be terminated\n• Any running processes will be killed\n• Terminal history will be lost\n• Press Ctrl+Z after deletion to undo"
+		warning = fmt.Sprintf("This will permanently delete the session:\n\n  \"%s\"", c.targetName)
+		details = "• The tmux session will be terminated\n• Any running processes will be killed\n• Terminal history will be lost"
+		if c.sandboxed {
+			details += "\n• The Docker container will be removed"
+		}
+		details += "\n• Press Ctrl+Z after deletion to undo"
 		borderColor = ColorRed
 
 		buttonYes := lipgloss.NewStyle().

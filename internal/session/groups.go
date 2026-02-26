@@ -1047,6 +1047,11 @@ func mostRecentPathForSessions(sessions []*Instance) string {
 	}
 
 	if mostRecent != nil {
+		// Prefer the original repo root over a worktree path so the new-session
+		// dialog doesn't pre-populate with a path that may not exist.
+		if mostRecent.WorktreeRepoRoot != "" {
+			return mostRecent.WorktreeRepoRoot
+		}
 		return mostRecent.ProjectPath
 	}
 	return ""

@@ -294,7 +294,11 @@ func TestNewDialog_TabAppliesSuggestionWhenNavigated(t *testing.T) {
 
 	// Should be the second suggestion (Ctrl+N moved from 0 to 1)
 	if path != "/Users/test/project-2" {
-		t.Errorf("Tab should apply suggestion after Ctrl+N navigation\nGot: %q\nWant: %q", path, "/Users/test/project-2")
+		t.Errorf(
+			"Tab should apply suggestion after Ctrl+N navigation\nGot: %q\nWant: %q",
+			path,
+			"/Users/test/project-2",
+		)
 	}
 }
 
@@ -520,21 +524,24 @@ func TestNewDialog_BranchInputInitialized(t *testing.T) {
 func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
 	dialog.focusIndex = 2 // Command field
 
-	// Press 'w' to toggle worktree
+	// Press 'w' to toggle worktree.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 
 	if !dialog.worktreeEnabled {
 		t.Error("Worktree should be enabled after pressing 'w' on command field")
 	}
 
-	// Focus should move to branch field
-	if dialog.focusIndex != 3 {
-		t.Errorf("Focus should move to branch field (3), got %d", dialog.focusIndex)
+	// Focus should move to branch field.
+	if dialog.focusIndex != dialog.indexOf(focusBranch) {
+		t.Errorf("Focus should move to branch field (%d), got %d", dialog.indexOf(focusBranch), dialog.focusIndex)
 	}
 
-	// Press 'w' again to disable (need to be on command field)
+	// Press 'w' again to disable (need to be on command field).
 	dialog.focusIndex = 2
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 
@@ -546,51 +553,57 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 func TestNewDialog_TabNavigationWithWorktree(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
 	dialog.focusIndex = 0
 	dialog.worktreeEnabled = true
+	dialog.rebuildFocusTargets()
 
-	// Tab through all fields: 0 -> 1 -> 2 -> 3 -> 0
-	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if dialog.focusIndex != 1 {
-		t.Errorf("After first Tab, focusIndex = %d, want 1", dialog.focusIndex)
+	branchIdx := dialog.indexOf(focusBranch)
+	maxIdx := len(dialog.focusTargets) - 1
+
+	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> branchIdx(branch) -> 0.
+	for i := 1; i <= maxIdx; i++ {
+		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
+		want := i
+		if i == branchIdx {
+			want = branchIdx
+		}
+		if dialog.focusIndex != want {
+			t.Errorf("After Tab %d, focusIndex = %d, want %d", i, dialog.focusIndex, want)
+		}
 	}
 
-	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if dialog.focusIndex != 2 {
-		t.Errorf("After second Tab, focusIndex = %d, want 2", dialog.focusIndex)
-	}
-
-	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if dialog.focusIndex != 3 {
-		t.Errorf("After third Tab, focusIndex = %d, want 3 (branch field)", dialog.focusIndex)
-	}
-
+	// One more Tab should wrap to 0.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if dialog.focusIndex != 0 {
-		t.Errorf("After fourth Tab, focusIndex = %d, want 0 (wrap around)", dialog.focusIndex)
+		t.Errorf("After final Tab, focusIndex = %d, want 0 (wrap around)", dialog.focusIndex)
 	}
 }
 
 func TestNewDialog_TabNavigationWithoutWorktree(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
 	dialog.focusIndex = 0
 	dialog.worktreeEnabled = false
+	dialog.rebuildFocusTargets()
 
-	// Tab through fields: 0 -> 1 -> 2 -> 0 (no branch field)
-	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if dialog.focusIndex != 1 {
-		t.Errorf("After first Tab, focusIndex = %d, want 1", dialog.focusIndex)
+	maxIdx := len(dialog.focusTargets) - 1
+
+	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> 0.
+	for i := 1; i <= maxIdx; i++ {
+		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
+		if dialog.focusIndex != i {
+			t.Errorf("After Tab %d, focusIndex = %d, want %d", i, dialog.focusIndex, i)
+		}
 	}
 
-	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
-	if dialog.focusIndex != 2 {
-		t.Errorf("After second Tab, focusIndex = %d, want 2", dialog.focusIndex)
-	}
-
+	// One more Tab should wrap to 0.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if dialog.focusIndex != 0 {
-		t.Errorf("After third Tab, focusIndex = %d, want 0 (wrap around, skip branch)", dialog.focusIndex)
+		t.Errorf("After final Tab, focusIndex = %d, want 0 (wrap around)", dialog.focusIndex)
 	}
 }
 
@@ -602,14 +615,14 @@ func TestNewDialog_View_ShowsWorktreeCheckbox(t *testing.T) {
 
 	view := dialog.View()
 
-	// Should show worktree checkbox
+	// Should show worktree checkbox.
 	if !strings.Contains(view, "Create in worktree") {
 		t.Error("View should contain 'Create in worktree' checkbox")
 	}
 
-	// Should show hint when on command field
-	if !strings.Contains(view, "press w") {
-		t.Error("View should contain 'press w' hint when on command field")
+	// Should show shortcut hint when on command field.
+	if !strings.Contains(view, "(w)") {
+		t.Error("View should contain '(w)' hint when on command field")
 	}
 }
 
@@ -716,6 +729,82 @@ func TestNewDialog_ClearError_HidesFromView(t *testing.T) {
 
 	if strings.Contains(view, "Something went wrong") {
 		t.Error("View should not display the error after ClearError()")
+	}
+}
+
+// ===== Checkbox Focus Tests =====
+
+func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
+	dialog.focusIndex = 3 // Worktree checkbox
+
+	// Space toggles worktree on.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if !dialog.worktreeEnabled {
+		t.Error("Space on worktree checkbox should enable worktree")
+	}
+
+	// Focus should jump to branch field.
+	if dialog.focusIndex != dialog.indexOf(focusBranch) {
+		t.Errorf("Focus should move to branch field (%d), got %d", dialog.indexOf(focusBranch), dialog.focusIndex)
+	}
+
+	// Navigate back and space again to disable.
+	dialog.focusIndex = 3
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if dialog.worktreeEnabled {
+		t.Error("Space on worktree checkbox should disable worktree")
+	}
+}
+
+func TestNewDialog_SandboxCheckbox_SpaceToggle(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.sandboxEnabled = false // Ensure known initial state.
+	dialog.focusIndex = 4         // Sandbox checkbox
+
+	// Space toggles sandbox on.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if !dialog.sandboxEnabled {
+		t.Error("Space on sandbox checkbox should enable sandbox")
+	}
+
+	// Space again toggles off.
+	dialog.focusIndex = 4
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+
+	if dialog.sandboxEnabled {
+		t.Error("Space on sandbox checkbox should disable sandbox")
+	}
+}
+
+func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.SetSize(80, 40)
+	dialog.Show()
+
+	// Focus on worktree checkbox — only it should highlight.
+	dialog.focusIndex = 3
+	view := dialog.View()
+
+	// Worktree line should have the focus indicator.
+	if !strings.Contains(view, "Create in worktree") {
+		t.Error("View should contain worktree checkbox")
+	}
+
+	// Focus on sandbox checkbox — only it should highlight.
+	dialog.focusIndex = 4
+	view = dialog.View()
+
+	if !strings.Contains(view, "Run in Docker sandbox") {
+		t.Error("View should contain sandbox checkbox")
 	}
 }
 

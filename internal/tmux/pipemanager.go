@@ -225,7 +225,7 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, error) {
 		return nil, fmt.Errorf("no alive pipes available")
 	}
 
-	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}"`)
+	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}"`)
 	if err != nil {
 		return nil, fmt.Errorf("list-panes via pipe: %w", err)
 	}
@@ -235,14 +235,19 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) != 6 {
 			continue
 		}
-		// Keep last pane per session (most sessions have one pane)
+		// Only cache the primary pane (window 0, pane 0) per session to ensure
+		// IsPaneDead() checks the correct pane in multi-pane sessions.
+		if parts[4] != "0" || parts[5] != "0" {
+			continue
+		}
 		result[parts[0]] = PaneInfo{
 			Title:          parts[1],
 			CurrentCommand: parts[2],
+			Dead:           parts[3] == "1",
 		}
 	}
 	return result, nil

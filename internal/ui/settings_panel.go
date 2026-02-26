@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // SettingType identifies which setting is being edited
@@ -32,7 +33,7 @@ const (
 	SettingMaintenanceEnabled
 )
 
-// Total number of navigable settings
+// Total number of navigable settings.
 const settingsCount = 17
 
 // SettingsPanel displays and edits user configuration
@@ -76,16 +77,22 @@ type SettingsPanel struct {
 }
 
 // Tool names for radio selection
-var toolNames = []string{"Claude", "Gemini", "OpenCode", "Codex", "None"}
-var toolValues = []string{"claude", "gemini", "opencode", "codex", ""}
+var (
+	toolNames  = []string{"Claude", "Gemini", "OpenCode", "Codex", "None"}
+	toolValues = []string{"claude", "gemini", "opencode", "codex", ""}
+)
 
 // Search tier names for radio selection
-var tierNames = []string{"Auto", "Instant", "Balanced"}
-var tierValues = []string{"auto", "instant", "balanced"}
+var (
+	tierNames  = []string{"Auto", "Instant", "Balanced"}
+	tierValues = []string{"auto", "instant", "balanced"}
+)
 
 // Theme names for radio selection
-var themeNames = []string{"Dark", "Light", "System"}
-var themeValues = []string{"dark", "light", "system"}
+var (
+	themeNames  = []string{"Dark", "Light", "System"}
+	themeValues = []string{"dark", "light", "system"}
+)
 
 // NewSettingsPanel creates a new settings panel
 func NewSettingsPanel() *SettingsPanel {
@@ -215,7 +222,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showOutput = config.GetShowOutput()
 	s.showAnalytics = config.GetShowAnalytics()
 
-	// Maintenance settings
+	// Maintenance settings.
 	s.maintenanceEnabled = config.Maintenance.Enabled
 }
 
@@ -272,14 +279,15 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	showAnalytics := s.showAnalytics
 	config.Preview.ShowAnalytics = &showAnalytics
 
-	// Maintenance settings
+	// Maintenance settings.
 	config.Maintenance.Enabled = s.maintenanceEnabled
 
-	// Preserve original MCPs and Tools if we have them
+	// Preserve original MCPs, Tools, and Docker settings.
 	if s.originalConfig != nil {
 		config.MCPs = s.originalConfig.MCPs
 		config.Tools = s.originalConfig.Tools
 		config.MCPPool = s.originalConfig.MCPPool
+		config.Docker = s.originalConfig.Docker
 		config.Profiles = s.originalConfig.Profiles
 		// Keep global Claude config when editing profile-specific override.
 		if s.claudeConfigIsScope {
@@ -704,7 +712,10 @@ func (s *SettingsPanel) View() string {
 	content.WriteString(sectionStyle.Render("MAINTENANCE"))
 	content.WriteString("\n")
 
-	line = s.renderCheckbox("Auto-maintenance", s.maintenanceEnabled) + " - Prune logs, clean backups, archive large sessions"
+	line = s.renderCheckbox(
+		"Auto-maintenance",
+		s.maintenanceEnabled,
+	) + " - Prune logs, clean backups, archive large sessions"
 	if s.cursor == int(SettingMaintenanceEnabled) {
 		line = highlightStyle.Render(line)
 	}

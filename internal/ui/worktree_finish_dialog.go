@@ -180,10 +180,11 @@ func (d *WorktreeFinishDialog) HandleKey(key string) (action string) {
 
 	case " ":
 		// Toggle checkboxes
-		if d.focusIndex == 0 {
+		switch d.focusIndex {
+		case 0:
 			d.mergeEnabled = !d.mergeEnabled
 			// Tab handler already skips target input when merge is disabled
-		} else if d.focusIndex == 2 {
+		case 2:
 			d.keepBranch = !d.keepBranch
 		}
 		return ""

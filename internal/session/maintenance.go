@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -20,11 +21,12 @@ type MaintenanceResult struct {
 	PrunedLogs       int
 	PrunedBackups    int
 	ArchivedSessions int
+	OrphanContainers int
 	Duration         time.Duration
 }
 
 // RunMaintenance executes all maintenance tasks and returns the result.
-func RunMaintenance() MaintenanceResult {
+func RunMaintenance(ctx context.Context) MaintenanceResult {
 	start := time.Now()
 
 	deckDir, err := GetAgentDeckDir()
@@ -37,11 +39,13 @@ func RunMaintenance() MaintenanceResult {
 	prunedLogs := pruneGeminiLogs(geminiDir)
 	prunedBackups := cleanupDeckBackups(filepath.Join(deckDir, "profiles"))
 	archivedSessions := archiveBloatedSessions(deckDir)
+	orphanContainers := cleanupOrphanContainers(ctx)
 
 	return MaintenanceResult{
 		PrunedLogs:       prunedLogs,
 		PrunedBackups:    prunedBackups,
 		ArchivedSessions: archivedSessions,
+		OrphanContainers: orphanContainers,
 		Duration:         time.Since(start),
 	}
 }
@@ -53,7 +57,7 @@ func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResu
 	go func() {
 		// Immediate first run.
 		if GetMaintenanceSettings().Enabled {
-			result := RunMaintenance()
+			result := RunMaintenance(ctx)
 			if onComplete != nil {
 				onComplete(result)
 			}
@@ -68,7 +72,7 @@ func StartMaintenanceWorker(ctx context.Context, onComplete func(MaintenanceResu
 				return
 			case <-ticker.C:
 				if GetMaintenanceSettings().Enabled {
-					result := RunMaintenance()
+					result := RunMaintenance(ctx)
 					if onComplete != nil {
 						onComplete(result)
 					}
@@ -109,7 +113,11 @@ func pruneGeminiLogs(baseDir string) int {
 			}
 			fullPath := filepath.Join(dir, entry.Name())
 			if err := os.Remove(fullPath); err != nil {
-				maintLog.Warn("maintenance_file_remove_failed", slog.String("path", fullPath), slog.String("error", err.Error()))
+				maintLog.Warn(
+					"maintenance_file_remove_failed",
+					slog.String("path", fullPath),
+					slog.String("error", err.Error()),
+				)
 			} else {
 				pruned++
 			}
@@ -162,7 +170,11 @@ func cleanupDeckBackups(profilesDir string) int {
 		// Delete everything after the first 3.
 		for i := 3; i < len(sorted); i++ {
 			if err := os.Remove(sorted[i].path); err != nil {
-				maintLog.Warn("maintenance_backup_remove_failed", slog.String("path", sorted[i].path), slog.String("error", err.Error()))
+				maintLog.Warn(
+					"maintenance_backup_remove_failed",
+					slog.String("path", sorted[i].path),
+					slog.String("error", err.Error()),
+				)
 			} else {
 				pruned++
 			}
@@ -215,8 +227,12 @@ func archiveBloatedSessions(baseDir string) int {
 			}
 
 			archiveDir := filepath.Join(dir, "archive")
-			if err := os.MkdirAll(archiveDir, 0755); err != nil {
-				maintLog.Warn("archive_dir_creation_failed", slog.String("path", archiveDir), slog.String("error", err.Error()))
+			if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+				maintLog.Warn(
+					"archive_dir_creation_failed",
+					slog.String("path", archiveDir),
+					slog.String("error", err.Error()),
+				)
 				continue
 			}
 
@@ -269,4 +285,61 @@ func RestoreFromArchive(baseDir string) error {
 	}
 
 	return nil
+}
+
+// cleanupOrphanContainers removes stopped agent-deck containers.
+// Running containers are left alone — they may belong to active sessions.
+//
+// Safety: stopped containers are safe to remove because ensureContainerRunning
+// performs create+start atomically (a container is never left in a created-but-
+// not-started state intentionally), container names are derived from session IDs
+// (not persisted independently), and running containers are always skipped.
+func cleanupOrphanContainers(parent context.Context) int {
+	if !docker.IsDockerAvailable() {
+		return 0
+	}
+
+	dockerCfg := GetDockerSettings()
+	if !dockerCfg.GetAutoCleanup() {
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+
+	names, err := docker.ListManagedContainers(ctx)
+	if err != nil {
+		maintLog.Warn("orphan_container_list_failed", slog.String("error", err.Error()))
+		return 0
+	}
+
+	removed := 0
+	for _, name := range names {
+		// Per-container timeout prevents one slow Docker call from consuming
+		// the entire budget and skipping remaining containers.
+		perCtx, perCancel := context.WithTimeout(ctx, 5*time.Second)
+		ctr := docker.FromName(name)
+		running, err := ctr.IsRunning(perCtx)
+		if err != nil {
+			perCancel()
+			maintLog.Warn("orphan_container_check_failed",
+				slog.String("container", name), slog.String("error", err.Error()))
+			continue
+		}
+		if running {
+			perCancel()
+			continue // Active session — leave it alone.
+		}
+		if err := ctr.Remove(perCtx, false); err != nil {
+			perCancel()
+			maintLog.Warn("orphan_container_remove_failed",
+				slog.String("container", name), slog.String("error", err.Error()))
+			continue
+		}
+		perCancel()
+		maintLog.Info("orphan_container_removed", slog.String("container", name))
+		removed++
+	}
+
+	return removed
 }

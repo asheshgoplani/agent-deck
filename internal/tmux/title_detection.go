@@ -23,6 +23,7 @@ const (
 type PaneInfo struct {
 	Title          string
 	CurrentCommand string
+	Dead           bool
 }
 
 // Pane info cache - one list-panes call per tick instead of per-session queries.
@@ -49,7 +50,7 @@ func RefreshPaneInfoCache() {
 	}
 
 	// Subprocess fallback: list-panes -a
-	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_title}\t#{pane_current_command}")
+	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}")
 	output, err := cmd.Output()
 	if err != nil {
 		paneCacheMu.Lock()
@@ -64,15 +65,20 @@ func RefreshPaneInfoCache() {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) != 6 {
+			continue
+		}
+		// Only cache the primary pane (window 0, pane 0) per session to ensure
+		// IsPaneDead() checks the correct pane in multi-pane sessions.
+		if parts[4] != "0" || parts[5] != "0" {
 			continue
 		}
 		name := parts[0]
-		// Keep last pane info per session (most sessions have one pane)
 		newCache[name] = PaneInfo{
 			Title:          parts[1],
 			CurrentCommand: parts[2],
+			Dead:           parts[3] == "1",
 		}
 	}
 

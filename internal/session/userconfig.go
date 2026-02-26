@@ -105,6 +105,9 @@ type UserConfig struct {
 
 	// Tmux defines tmux option overrides applied to every session
 	Tmux TmuxSettings `toml:"tmux"`
+
+	// Docker defines Docker sandbox settings for containerized sessions
+	Docker DockerSettings `toml:"docker"`
 }
 
 // ProfileSettings defines per-profile configuration overrides.
@@ -725,12 +728,57 @@ type TmuxSettings struct {
 	Options map[string]string `toml:"options"`
 }
 
-// GetInjectStatusLine returns whether to inject status line, defaulting to true
+// GetInjectStatusLine returns whether to inject status line, defaulting to true.
 func (t TmuxSettings) GetInjectStatusLine() bool {
 	if t.InjectStatusLine == nil {
 		return true
 	}
 	return *t.InjectStatusLine
+}
+
+// DockerSettings defines Docker sandbox configuration.
+type DockerSettings struct {
+	// DefaultImage is the sandbox image to use when not specified per-session.
+	DefaultImage string `toml:"default_image"`
+
+	// DefaultEnabled enables sandbox by default for new sessions.
+	DefaultEnabled bool `toml:"default_enabled"`
+
+	// CPULimit is the default CPU limit for sandboxed containers (e.g. "2.0").
+	CPULimit string `toml:"cpu_limit"`
+
+	// MemoryLimit is the default memory limit for sandboxed containers (e.g. "4g").
+	MemoryLimit string `toml:"memory_limit"`
+
+	// VolumeIgnores is a list of directories to exclude from the project mount.
+	VolumeIgnores []string `toml:"volume_ignores"`
+
+	// Environment lists host environment variable names whose values are forwarded to the
+	// container at runtime via docker exec -e. The actual values are read from the host
+	// on each command invocation, so changes take effect without recreating the container.
+	Environment []string `toml:"environment"`
+
+	// ExtraVolumes maps host paths to container paths for additional bind mounts.
+	ExtraVolumes map[string]string `toml:"extra_volumes"`
+
+	// EnvironmentValues are static key=value pairs baked into the container at creation
+	// time via docker create -e. Unlike Environment (which forwards by name at runtime),
+	// these are fixed when the container is created.
+	EnvironmentValues map[string]string `toml:"environment_values"`
+
+	// MountSSH mounts ~/.ssh read-only inside the container.
+	MountSSH bool `toml:"mount_ssh"`
+
+	// AutoCleanup removes sandbox containers on session kill (default: true).
+	AutoCleanup *bool `toml:"auto_cleanup"`
+}
+
+// GetAutoCleanup returns whether to auto-remove sandbox containers, defaulting to true.
+func (d DockerSettings) GetAutoCleanup() bool {
+	if d.AutoCleanup == nil {
+		return true
+	}
+	return *d.AutoCleanup
 }
 
 type StatusSettings struct {
@@ -1242,6 +1290,15 @@ func GetStatusSettings() StatusSettings {
 		return StatusSettings{}
 	}
 	return config.Status
+}
+
+// GetDockerSettings returns docker sandbox settings with defaults applied.
+func GetDockerSettings() DockerSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return DockerSettings{}
+	}
+	return config.Docker
 }
 
 // GetTmuxSettings returns tmux option overrides from config

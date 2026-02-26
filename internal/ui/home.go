@@ -15,12 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -404,8 +403,10 @@ type updateCheckMsg struct {
 	info *update.UpdateInfo
 }
 
-type tickMsg time.Time
-type quitMsg bool
+type (
+	tickMsg time.Time
+	quitMsg bool
+)
 
 // previewFetchedMsg is sent when async preview content is ready
 type previewFetchedMsg struct {
@@ -1355,7 +1356,10 @@ func (h *Home) clearError() {
 
 // cleanupExpiredAnimations removes expired entries from an animation map
 // Returns list of IDs that were removed (for logging/debugging if needed)
-func (h *Home) cleanupExpiredAnimations(animMap map[string]time.Time, claudeTimeout, defaultTimeout time.Duration) []string {
+func (h *Home) cleanupExpiredAnimations(
+	animMap map[string]time.Time,
+	claudeTimeout, defaultTimeout time.Duration,
+) []string {
 	var toDelete []string
 	for sessionID, startTime := range animMap {
 		inst := h.instanceByID[sessionID]
@@ -1572,7 +1576,8 @@ func (h *Home) fetchAnalytics(inst *session.Instance) tea.Cmd {
 	sessionID := inst.ID
 
 	fetchTool := inst.GetToolThreadSafe()
-	if fetchTool == "claude" {
+	switch fetchTool {
+	case "claude":
 		claudeSessionID := inst.ClaudeSessionID
 		return func() tea.Msg {
 			// Get JSONL path for this session
@@ -1589,7 +1594,12 @@ func (h *Home) fetchAnalytics(inst *session.Instance) tea.Cmd {
 			// Parse the JSONL file
 			analytics, err := session.ParseSessionJSONL(jsonlPath)
 			if err != nil {
-				uiLog.Warn("analytics_parse_failed", slog.String("session_id", sessionID), slog.String("claude_session_id", claudeSessionID), slog.String("error", err.Error()))
+				uiLog.Warn(
+					"analytics_parse_failed",
+					slog.String("session_id", sessionID),
+					slog.String("claude_session_id", claudeSessionID),
+					slog.String("error", err.Error()),
+				)
 				return analyticsFetchedMsg{
 					sessionID: sessionID,
 					analytics: nil,
@@ -1603,7 +1613,7 @@ func (h *Home) fetchAnalytics(inst *session.Instance) tea.Cmd {
 				err:       nil,
 			}
 		}
-	} else if fetchTool == "gemini" {
+	case "gemini":
 		return func() tea.Msg {
 			// Gemini analytics are updated via UpdateGeminiSession which is called in background
 			// during UpdateStatus(). We just return the current snapshot.
@@ -1654,7 +1664,16 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 	if h.groupTree == nil {
 		return ""
 	}
-	return h.groupTree.DefaultPathForGroup(groupPath)
+	// Only use stored path if it still exists on disk.
+	// Stale paths (e.g. deleted worktrees) would cause the
+	// new-session dialog to prompt for directory creation.
+	p := h.groupTree.DefaultPathForGroup(groupPath)
+	if p != "" {
+		if _, err := os.Stat(p); err != nil {
+			return ""
+		}
+	}
+	return p
 }
 
 // statusWorker runs in a background goroutine with its own ticker
@@ -1862,7 +1881,12 @@ func (h *Home) backgroundStatusUpdate() {
 			newStatus := inst.GetStatusThreadSafe()
 			if newStatus != oldStatus {
 				statusChanged.Store(true)
-				notifLog.Debug("status_changed", slog.String("title", inst.Title), slog.String("old", string(oldStatus)), slog.String("new", string(newStatus)))
+				notifLog.Debug(
+					"status_changed",
+					slog.String("title", inst.Title),
+					slog.String("old", string(oldStatus)),
+					slog.String("new", string(newStatus)),
+				)
 			}
 			return nil
 		})
@@ -1871,7 +1895,11 @@ func (h *Home) backgroundStatusUpdate() {
 
 	statusDur := time.Since(statusStart)
 	if skipped > 0 {
-		perfLog.Debug("idle_sessions_skipped", slog.Int("skipped", skipped), slog.Int("checked", len(instances)-skipped))
+		perfLog.Debug(
+			"idle_sessions_skipped",
+			slog.Int("skipped", skipped),
+			slog.Int("checked", len(instances)-skipped),
+		)
 	}
 	if statusDur > 500*time.Millisecond {
 		perfLog.Info("slow_status_loop", slog.Duration("duration", statusDur), slog.Int("sessions", len(instances)))
@@ -1977,7 +2005,11 @@ func (h *Home) syncNotificationsBackground() {
 					_ = db.SetAcknowledged(inst.ID, true)
 				}
 				_ = inst.UpdateStatus()
-				notifLog.Debug("session_acknowledged", slog.String("title", inst.Title), slog.String("status", string(inst.Status)))
+				notifLog.Debug(
+					"session_acknowledged",
+					slog.String("title", inst.Title),
+					slog.String("status", string(inst.Status)),
+				)
 			}
 		}
 	}
@@ -1991,7 +2023,11 @@ func (h *Home) syncNotificationsBackground() {
 		currentSessionID = sessionToAcknowledgeID
 	}
 
-	notifLog.Debug("sync_state", slog.String("current_session_id", currentSessionID), slog.Int("instances", len(instances)))
+	notifLog.Debug(
+		"sync_state",
+		slog.String("current_session_id", currentSessionID),
+		slog.Int("instances", len(instances)),
+	)
 
 	// Sync notification manager with current states
 	h.notificationManager.SyncFromInstances(instances, currentSessionID)
@@ -2694,9 +2730,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Save the updated session state (new tmux session name)
 			h.saveInstances()
 		}
-		// NOTE: Do NOT delete from mcpLoadingSessions here!
-		// The animation should continue until Claude is ready (detected via preview content)
-		// or until the timeout expires (handled by cleanup logic in tickMsg handler)
+		// Clear animation so ENTER can attach immediately.
+		delete(h.resumingSessions, msg.sessionID)
 		return h, nil
 
 	case mcpRestartedMsg:
@@ -2736,6 +2771,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if r.ArchivedSessions > 0 {
 			parts = append(parts, fmt.Sprintf("%d sessions archived", r.ArchivedSessions))
+		}
+		if r.OrphanContainers > 0 {
+			parts = append(parts, fmt.Sprintf("%d orphan containers removed", r.OrphanContainers))
 		}
 		if len(parts) > 0 {
 			h.maintenanceMsg = "Maintenance: " + strings.Join(parts, ", ") + fmt.Sprintf(" (%s)", r.Duration.Round(time.Millisecond))
@@ -2912,7 +2950,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use TTL cache - only fetch if cache miss/expired and not already fetching
 			tickTool := inst.GetToolThreadSafe()
 			if (tickTool == "claude" || tickTool == "gemini") && h.analyticsFetchingID != inst.ID {
-				if tickTool == "claude" {
+				switch tickTool {
+				case "claude":
 					cached := h.getAnalyticsForSession(inst)
 					if cached != nil {
 						// Use cached analytics
@@ -2930,7 +2969,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							cmds = append(cmds, h.fetchAnalytics(inst))
 						}
 					}
-				} else if tickTool == "gemini" {
+				case "gemini":
 					// Check Gemini cache
 					var cached *session.GeminiSessionAnalytics
 					h.analyticsCacheMu.RLock()
@@ -3545,12 +3584,12 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Get values including worktree settings
+		// Get values including worktree settings.
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
-		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable
+		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 
-		// Handle worktree creation if enabled
+		// Handle worktree creation if enabled.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
 			// Validate path is a git repo
@@ -3576,7 +3615,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 
 			// Ensure parent directory exists (needed for subdirectory mode)
-			if err := os.MkdirAll(filepath.Dir(worktreePath), 0755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 				h.newDialog.SetError(fmt.Sprintf("Failed to create parent directory: %v", err))
 				return h, nil
 			}
@@ -3613,8 +3652,20 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.clearError()
 
 		geminiYoloMode := h.newDialog.IsGeminiYoloMode()
+		sandboxMode := h.newDialog.IsSandboxEnabled()
 
-		return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, branchName, geminiYoloMode, toolOptionsJSON)
+		return h, h.createSessionInGroupWithWorktreeAndOptions(
+			name,
+			path,
+			command,
+			groupPath,
+			worktreePath,
+			worktreeRepoRoot,
+			branchName,
+			geminiYoloMode,
+			sandboxMode,
+			toolOptionsJSON,
+		)
 
 	case "esc":
 		h.newDialog.Hide()
@@ -3767,8 +3818,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				if item.Session.Exists() {
+					// Pane dead (process exited) — restart instead of attaching to dead pane.
+					tmuxSess := item.Session.GetTmuxSession()
+					if tmuxSess != nil && tmuxSess.IsPaneDead() {
+						if !h.hasActiveAnimation(item.Session.ID) {
+							h.resumingSessions[item.Session.ID] = time.Now()
+							return h, h.restartSession(item.Session)
+						}
+						return h, nil
+					}
 					h.isAttaching.Store(true) // Prevent View() output during transition (atomic)
 					return h, h.attachSession(item.Session)
+				}
+				// Session exited (tmux session gone) — auto-restart it.
+				if !h.hasActiveAnimation(item.Session.ID) {
+					h.resumingSessions[item.Session.ID] = time.Now()
+					return h, h.restartSession(item.Session)
 				}
 			} else if item.Type == session.ItemTypeGroup {
 				// Toggle group on enter
@@ -3844,9 +3909,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Move item up
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeGroup {
+			switch item.Type {
+			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
-			} else if item.Type == session.ItemTypeSession {
+			case session.ItemTypeSession:
 				h.groupTree.MoveSessionUp(item.Session)
 			}
 			h.rebuildFlatItems()
@@ -3861,9 +3927,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Move item down
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeGroup {
+			switch item.Type {
+			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
-			} else if item.Type == session.ItemTypeSession {
+			case session.ItemTypeSession:
 				h.groupTree.MoveSessionDown(item.Session)
 			}
 			h.rebuildFlatItems()
@@ -4053,6 +4120,24 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.settingsPanel.SetSize(h.width, h.height)
 		return h, nil
 
+	case "E":
+		// Exec an interactive shell inside the sandbox container.
+		if selected := h.getSelectedSession(); selected != nil && selected.IsSandboxed() &&
+			selected.SandboxContainer != "" {
+			tmuxName, shellErr := selected.OpenContainerShell()
+			if shellErr != nil {
+				h.setError(shellErr)
+				return h, nil
+			}
+			termSession := &tmux.Session{Name: tmuxName}
+			h.isAttaching.Store(true)
+			return h, tea.Exec(attachCmd{session: termSession}, func(err error) tea.Msg {
+				h.isAttaching.Store(false)
+				return statusUpdateMsg{}
+			})
+		}
+		return h, nil
+
 	case "n":
 		// Collect unique project paths sorted by most recently accessed
 		type pathInfo struct {
@@ -4064,19 +4149,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if inst.ProjectPath == "" {
 				continue
 			}
-			existing, ok := pathMap[inst.ProjectPath]
+			// Prefer the original repo root over worktree paths so suggestions
+			// don't show ephemeral worktree directories.
+			p := inst.ProjectPath
+			if inst.WorktreeRepoRoot != "" {
+				p = inst.WorktreeRepoRoot
+			}
+			existing, ok := pathMap[p]
 			if !ok {
-				// First time seeing this path
+				// First time seeing this path.
 				accessTime := inst.LastAccessedAt
 				if accessTime.IsZero() {
-					accessTime = inst.CreatedAt // Fall back to creation time
+					accessTime = inst.CreatedAt // Fall back to creation time.
 				}
-				pathMap[inst.ProjectPath] = &pathInfo{
-					path:           inst.ProjectPath,
+				pathMap[p] = &pathInfo{
+					path:           p,
 					lastAccessedAt: accessTime,
 				}
 			} else {
-				// Update if this instance was accessed more recently
+				// Update if this instance was accessed more recently.
 				accessTime := inst.LastAccessedAt
 				if accessTime.IsZero() {
 					accessTime = inst.CreatedAt
@@ -4111,10 +4202,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		groupName := session.DefaultGroupName
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeGroup {
+			switch item.Type {
+			case session.ItemTypeGroup:
 				groupPath = item.Group.Path
 				groupName = item.Group.Name
-			} else if item.Type == session.ItemTypeSession {
+			case session.ItemTypeSession:
 				// Use the session's group
 				groupPath = item.Path
 				if group, exists := h.groupTree.Groups[groupPath]; exists {
@@ -4135,7 +4227,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title)
+				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
 			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			}
@@ -4193,7 +4285,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				inst.GeminiYoloMode = &newYolo
 				h.saveInstances()
 				// If session is running, it needs restart to apply
-				if inst.GetStatusThreadSafe() == session.StatusRunning || inst.GetStatusThreadSafe() == session.StatusWaiting {
+				if inst.GetStatusThreadSafe() == session.StatusRunning ||
+					inst.GetStatusThreadSafe() == session.StatusWaiting {
 					h.resumingSessions[inst.ID] = time.Now()
 					return h, h.restartSession(inst)
 				}
@@ -4365,11 +4458,22 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y", "Y":
 			name, path, command, groupPath, pendingToolOpts := h.confirmDialog.GetPendingSession()
 			h.confirmDialog.Hide()
-			if err := os.MkdirAll(path, 0755); err != nil {
+			if err := os.MkdirAll(path, 0o755); err != nil {
 				h.setError(fmt.Errorf("failed to create directory: %w", err))
 				return h, nil
 			}
-			return h, h.createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, "", "", "", false, pendingToolOpts)
+			return h, h.createSessionInGroupWithWorktreeAndOptions(
+				name,
+				path,
+				command,
+				groupPath,
+				"",
+				"",
+				"",
+				false,
+				false,
+				pendingToolOpts,
+			)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
 			return h, nil
@@ -4563,7 +4667,11 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// O(1) lookup - no lock needed as Update() runs on main goroutine
 			targetInst := h.getInstanceByID(sessionID)
 			if targetInst != nil {
-				mcpUILog.Debug("dialog_session_found", slog.String("session_id", targetInst.ID), slog.String("title", targetInst.Title))
+				mcpUILog.Debug(
+					"dialog_session_found",
+					slog.String("session_id", targetInst.ID),
+					slog.String("title", targetInst.Title),
+				)
 			}
 
 			if targetInst != nil {
@@ -4749,7 +4857,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						Template:  wtSettings.Template(),
 					})
 
-					if err := os.MkdirAll(filepath.Dir(worktreePath), 0755); err != nil {
+					if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 						h.forkDialog.SetError(fmt.Sprintf("Failed to create directory: %v", err))
 						return h, nil
 					}
@@ -4766,7 +4874,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts)
+				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled())
 			}
 		}
 		h.forkDialog.Hide()
@@ -4842,12 +4950,28 @@ func (h *Home) saveInstancesWithForce(force bool) {
 		// This prevents catastrophic cross-profile contamination
 		expectedPath, err := session.GetDBPathForProfile(h.profile)
 		if err != nil {
-			uiLog.Warn("save_expected_path_failed", slog.String("profile", h.profile), slog.String("error", err.Error()))
+			uiLog.Warn(
+				"save_expected_path_failed",
+				slog.String("profile", h.profile),
+				slog.String("error", err.Error()),
+			)
 			return
 		}
 		if h.storage.Path() != expectedPath {
-			uiLog.Error("save_path_mismatch", slog.String("profile", h.profile), slog.String("expected", expectedPath), slog.String("got", h.storage.Path()))
-			h.setError(fmt.Errorf("storage path mismatch (profile=%s): expected %s, got %s", h.profile, expectedPath, h.storage.Path()))
+			uiLog.Error(
+				"save_path_mismatch",
+				slog.String("profile", h.profile),
+				slog.String("expected", expectedPath),
+				slog.String("got", h.storage.Path()),
+			)
+			h.setError(
+				fmt.Errorf(
+					"storage path mismatch (profile=%s): expected %s, got %s",
+					h.profile,
+					expectedPath,
+					h.storage.Path(),
+				),
+			)
 			return
 		}
 
@@ -4859,7 +4983,13 @@ func (h *Home) saveInstancesWithForce(force bool) {
 		instanceCount := len(h.instances)
 		h.instancesMu.RUnlock()
 
-		uiLog.Debug("save_instances", slog.Int("count", instanceCount), slog.String("profile", h.profile), slog.String("path", h.storage.Path()), slog.Bool("force", force))
+		uiLog.Debug(
+			"save_instances",
+			slog.Int("count", instanceCount),
+			slog.String("profile", h.profile),
+			slog.String("path", h.storage.Path()),
+			slog.Bool("force", force),
+		)
 
 		// DEFENSIVE: Never save empty instances if storage file has data
 		// This prevents catastrophic data loss from transient load failures
@@ -4983,8 +5113,13 @@ func (h *Home) loadUIState() {
 	h.pendingCursorRestore = &state
 }
 
-// createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode and tool options
-func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string, geminiYoloMode bool, toolOptionsJSON json.RawMessage) tea.Cmd {
+// createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
+func (h *Home) createSessionInGroupWithWorktreeAndOptions(
+	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
+	geminiYoloMode bool,
+	sandboxEnabled bool,
+	toolOptionsJSON json.RawMessage,
+) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
@@ -5037,9 +5172,21 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(name, path, command, g
 			inst.ToolOptionsJSON = toolOptionsJSON
 		}
 
+		// Apply sandbox config.
+		if sandboxEnabled {
+			inst.Sandbox = session.NewSandboxConfig("")
+		}
+
+		uiLog.Info("session_create_starting",
+			slog.String("tool", inst.Tool),
+			slog.String("path", inst.ProjectPath),
+			slog.Bool("sandbox", inst.IsSandboxed()),
+		)
 		if err := inst.Start(); err != nil {
+			uiLog.Error("session_create_failed", slog.String("error", err.Error()))
 			return sessionCreatedMsg{err: err}
 		}
+		uiLog.Info("session_create_succeeded", slog.String("id", inst.ID))
 		return sessionCreatedMsg{instance: inst}
 	}
 }
@@ -5153,7 +5300,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	return h.createSessionInGroupWithWorktreeAndOptions(
 		name, projectPath, command, groupPath,
 		"", "", "", // no worktree
-		geminiYoloMode, toolOptionsJSON,
+		geminiYoloMode, false, toolOptionsJSON,
 	)
 }
 
@@ -5190,12 +5337,17 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil)
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false)
 }
 
-// forkSessionCmdWithOptions creates a forked session with the given title, group, and Claude options
-// Shows immediate UI feedback by tracking the source session in forkingSessions
-func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) tea.Cmd {
+// forkSessionCmdWithOptions creates a forked session with the given title, group, Claude options, and optional sandbox.
+// Shows immediate UI feedback by tracking the source session in forkingSessions.
+func (h *Home) forkSessionCmdWithOptions(
+	source *session.Instance,
+	title, groupPath string,
+	opts *session.ClaudeOptions,
+	sandboxEnabled bool,
+) tea.Cmd {
 	if source == nil {
 		return nil
 	}
@@ -5222,6 +5374,11 @@ func (h *Home) forkSessionCmdWithOptions(source *session.Instance, title, groupP
 		}
 		if err != nil {
 			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
+		}
+
+		// Apply sandbox config to forked instance.
+		if sandboxEnabled {
+			inst.Sandbox = session.NewSandboxConfig("")
 		}
 
 		if err := inst.Start(); err != nil {
@@ -5265,7 +5422,7 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	}
 }
 
-// sessionRestartedMsg signals that a session was restarted
+// sessionRestartedMsg signals that a session was restarted.
 type sessionRestartedMsg struct {
 	sessionID string
 	err       error
@@ -5277,10 +5434,15 @@ type mcpRestartedMsg struct {
 	err     error
 }
 
-// restartSession restarts a dead/errored session by creating a new tmux session
+// restartSession restarts a dead/errored session by creating a new tmux session.
 func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
-	mcpUILog.Debug("restart_session_called", slog.String("id", inst.ID), slog.String("title", inst.Title), slog.String("tool", inst.Tool))
+	mcpUILog.Debug(
+		"restart_session_called",
+		slog.String("id", inst.ID),
+		slog.String("title", inst.Title),
+		slog.String("tool", inst.Tool),
+	)
 	return func() tea.Msg {
 		mcpUILog.Debug("restart_session_executing", slog.String("id", id))
 
@@ -5711,16 +5873,28 @@ func (h *Home) View() string {
 	statsSep := lipgloss.NewStyle().Foreground(ColorBorder).Render(" • ")
 
 	if running > 0 {
-		statsParts = append(statsParts, lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)))
+		statsParts = append(
+			statsParts,
+			lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)),
+		)
 	}
 	if waiting > 0 {
-		statsParts = append(statsParts, lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)))
+		statsParts = append(
+			statsParts,
+			lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)),
+		)
 	}
 	if idle > 0 {
-		statsParts = append(statsParts, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("○ %d idle", idle)))
+		statsParts = append(
+			statsParts,
+			lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("○ %d idle", idle)),
+		)
 	}
 	if errored > 0 {
-		statsParts = append(statsParts, lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("✕ %d error", errored)))
+		statsParts = append(
+			statsParts,
+			lipgloss.NewStyle().Foreground(ColorRed).Render(fmt.Sprintf("✕ %d error", errored)),
+		)
 	}
 
 	// Fallback if no sessions
@@ -6578,7 +6752,15 @@ func (h *Home) renderHelpBarMinimal() string {
 	// Context-specific keys (left side)
 	var contextKeys string
 	if len(h.flatItems) == 0 {
-		contextKeys = keyStyle.Render("n") + " " + keyStyle.Render("N") + " " + keyStyle.Render("i") + " " + keyStyle.Render("g")
+		contextKeys = keyStyle.Render(
+			"n",
+		) + " " + keyStyle.Render(
+			"N",
+		) + " " + keyStyle.Render(
+			"i",
+		) + " " + keyStyle.Render(
+			"g",
+		)
 	} else if h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
@@ -6600,7 +6782,7 @@ func (h *Home) renderHelpBarMinimal() string {
 	// Global keys (right side)
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	globalKeys := globalStyle.Render("↑↓") + " " + globalStyle.Render("/") + " " +
-		globalStyle.Render("?") + " " + globalStyle.Render("q")
+		globalStyle.Render("S") + " " + globalStyle.Render("?") + " " + globalStyle.Render("q")
 
 	// Calculate padding
 	leftPart := contextKeys
@@ -6670,6 +6852,7 @@ func (h *Home) renderHelpBarCompact() string {
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	globalHints := globalStyle.Render("↑↓ Nav") + " " +
 		globalStyle.Render("/") + " " +
+		globalStyle.Render("S") + " " +
 		globalStyle.Render("?") + " " +
 		globalStyle.Render("q")
 
@@ -6761,6 +6944,9 @@ func (h *Home) renderHelpBarFull() string {
 			if item.Session != nil && item.Session.Tool == "claude" {
 				primaryHints = append(primaryHints, h.helpKey("s", "Skills"))
 			}
+			if item.Session != nil && item.Session.IsSandboxed() {
+				primaryHints = append(primaryHints, h.helpKey("E", "Exec"))
+			}
 			primaryHints = append(primaryHints, h.helpKey("c", "Copy"))
 			primaryHints = append(primaryHints, h.helpKey("x", "Send"))
 			secondaryHints = []string{
@@ -6809,7 +6995,7 @@ func (h *Home) renderHelpBarFull() string {
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	globalHints := globalStyle.Render("↑↓ Nav") + sep +
 		globalStyle.Render("/ Search  G Global") + sep +
-		globalStyle.Render("? Help  q Quit")
+		globalStyle.Render("S Settings  ? Help  q Quit")
 
 	// Calculate spacing between left (context) and right (global) portions
 	leftPart := contextLabel + " " + shortcutsLine
@@ -6985,7 +7171,15 @@ func (h *Home) renderGroupItem(b *strings.Builder, item session.Item, selected b
 	}
 
 	// Build the row: [indent][hotkey][expand] [name](count) [status]
-	row := fmt.Sprintf("%s%s%s %s%s%s", indent, hotkeyStr, expandIcon, nameStyle.Render(group.Name), countStr, statusStr)
+	row := fmt.Sprintf(
+		"%s%s%s %s%s%s",
+		indent,
+		hotkeyStr,
+		expandIcon,
+		nameStyle.Render(group.Name),
+		countStr,
+		statusStr,
+	)
 	b.WriteString(row)
 	b.WriteString("\n")
 }
@@ -7117,7 +7311,7 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		yoloBadge = yoloStyle.Render(" [YOLO]")
 	}
 
-	// Worktree branch badge for sessions running in git worktrees
+	// Worktree branch badge for sessions running in git worktrees.
 	worktreeBadge := ""
 	if inst.IsWorktree() && inst.WorktreeBranch != "" {
 		branch := inst.WorktreeBranch
@@ -7131,10 +7325,31 @@ func (h *Home) renderSessionItem(b *strings.Builder, item session.Item, selected
 		worktreeBadge = wtStyle.Render(" [" + branch + "]")
 	}
 
-	// Build row: [baseIndent][selection][tree][status] [title] [tool] [yolo] [worktree]
+	// Sandbox badge for containerized sessions.
+	sandboxBadge := ""
+	if inst.IsSandboxed() {
+		sbStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		if selected {
+			sbStyle = SessionStatusSelStyle
+		}
+		sandboxBadge = sbStyle.Render(" [sandbox]")
+	}
+
+	// Build row: [baseIndent][selection][tree][status] [title] [tool] [yolo] [worktree] [sandbox]
 	// Format: " ├─ ● session-name tool" or "▶└─ ● session-name tool"
 	// Sub-sessions get extra indent: "   ├─◐ sub-session tool"
-	row := fmt.Sprintf("%s%s%s %s %s%s%s%s", baseIndent, selectionPrefix, treeStyle.Render(treeConnector), status, title, tool, yoloBadge, worktreeBadge)
+	row := fmt.Sprintf(
+		"%s%s%s %s %s%s%s%s%s",
+		baseIndent,
+		selectionPrefix,
+		treeStyle.Render(treeConnector),
+		status,
+		title,
+		tool,
+		yoloBadge,
+		worktreeBadge,
+		sandboxBadge,
+	)
 	b.WriteString(row)
 	b.WriteString("\n")
 }
@@ -7426,7 +7641,9 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	}
 
 	// Created date
-	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Created:"), valueStyle.Render(inst.CreatedAt.Format("Jan 2 15:04"))))
+	b.WriteString(
+		fmt.Sprintf("%s %s\n", labelStyle.Render("Created:"), valueStyle.Render(inst.CreatedAt.Format("Jan 2 15:04"))),
+	)
 
 	return b.String()
 }
@@ -7813,7 +8030,11 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		valueStyle := lipgloss.NewStyle().Foreground(ColorText)
 
 		// Debug: log what value we're seeing
-		uiLog.Debug("opencode_rendering_preview", slog.String("title", selected.Title), slog.String("session_id", selected.OpenCodeSessionID))
+		uiLog.Debug(
+			"opencode_rendering_preview",
+			slog.String("title", selected.Title),
+			slog.String("session_id", selected.OpenCodeSessionID),
+		)
 
 		if selected.OpenCodeSessionID != "" {
 			statusStyle := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true)
@@ -7869,7 +8090,8 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	// Custom tool info (tools defined in config.toml that aren't built-in)
-	if selected.Tool != "claude" && selected.Tool != "gemini" && selected.Tool != "opencode" && selected.Tool != "codex" {
+	if selected.Tool != "claude" && selected.Tool != "gemini" && selected.Tool != "opencode" &&
+		selected.Tool != "codex" {
 		if toolDef := session.GetToolDef(selected.Tool); toolDef != nil {
 			toolName := selected.Tool
 			if toolDef.Icon != "" {
@@ -7969,7 +8191,8 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Check preview settings for what to show
 	config, _ := session.LoadUserConfig()
-	showAnalytics := config != nil && config.GetShowAnalytics() && (selected.Tool == "claude" || selected.Tool == "gemini")
+	showAnalytics := config != nil && config.GetShowAnalytics() &&
+		(selected.Tool == "claude" || selected.Tool == "gemini")
 	showOutput := config == nil || config.GetShowOutput() // Default to true if config fails
 
 	// Apply preview mode override (v key cycles through modes)
@@ -8382,10 +8605,16 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	// Compact status line (inline, not badges)
 	var statuses []string
 	if running > 0 {
-		statuses = append(statuses, lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)))
+		statuses = append(
+			statuses,
+			lipgloss.NewStyle().Foreground(ColorGreen).Render(fmt.Sprintf("● %d running", running)),
+		)
 	}
 	if waiting > 0 {
-		statuses = append(statuses, lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)))
+		statuses = append(
+			statuses,
+			lipgloss.NewStyle().Foreground(ColorYellow).Render(fmt.Sprintf("◐ %d waiting", waiting)),
+		)
 	}
 	if idle > 0 {
 		statuses = append(statuses, lipgloss.NewStyle().Foreground(ColorText).Render(fmt.Sprintf("○ %d idle", idle)))
@@ -8479,10 +8708,7 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	b.WriteString(hintStyle.Render("Tab toggle • R rename • d delete • g subgroup"))
 
 	// CRITICAL: Enforce width constraint on ALL lines to prevent overflow into left panel
-	maxWidth := width - 2
-	if maxWidth < 20 {
-		maxWidth = 20
-	}
+	maxWidth := max(width-2, 20)
 
 	result := b.String()
 	lines := strings.Split(result, "\n")

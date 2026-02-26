@@ -140,6 +140,24 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
 
+### Docker Sandbox
+
+Run sessions inside isolated Docker containers. The project directory is bind-mounted read-write, so agents work on your code while the rest of the system stays protected.
+
+- Check "Run in Docker sandbox" when creating a session, or set `default_enabled = true` in config
+- Press `T` on a sandboxed session to open a container shell
+- `agent-deck try "task description"` runs a one-shot sandboxed session
+
+Host tool auth (Claude, Gemini, Codex, etc.) is automatically shared into containers via shared sandbox directories — no re-authentication needed. On macOS, Keychain credentials are extracted too.
+
+```toml
+[docker]
+default_enabled = true
+mount_ssh = true
+```
+
+See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the full reference including overlay details, custom images, and troubleshooting.
+
 ### Conductor
 
 Conductors are persistent Claude Code sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
@@ -354,6 +372,8 @@ agent-deck web --token my-secret
 | `/` / `G` | Search / Global search |
 | `r` | Restart session |
 | `d` | Delete |
+| `S` | Settings |
+| `T` | Container shell (sandboxed sessions) |
 | `?` | Full help |
 
 See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
@@ -363,7 +383,8 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 | Guide | What's Inside |
 |-------|---------------|
 | [CLI Reference](skills/agent-deck/references/cli-reference.md) | Commands, flags, scripting examples |
-| [Configuration](skills/agent-deck/references/config-reference.md) | config.toml, MCP setup, custom tools, socket pool, skills registry paths |
+| [Configuration](skills/agent-deck/references/config-reference.md) | config.toml, MCP setup, custom tools, socket pool, skills registry paths, docker |
+| [Docker Sandbox](skills/agent-deck/references/sandbox.md) | Containers, overlays, custom images, troubleshooting |
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
 

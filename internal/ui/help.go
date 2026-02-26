@@ -126,6 +126,7 @@ func (h *HelpOverlay) View() string {
 				{"F", "Fork with options (Claude only)"},
 				{"c", "Copy output to clipboard"},
 				{"x", "Send output to session"},
+				{"E", "Exec shell in sandbox container"},
 			},
 		},
 		{

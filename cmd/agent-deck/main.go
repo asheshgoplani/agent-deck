@@ -15,11 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/term"
-
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -529,6 +528,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"-w":        true, "--worktree": true,
 		"--location":       true,
 		"--resume-session": true,
+		"--sandbox-image":  true,
 	}
 
 	var flags []string
@@ -677,7 +677,11 @@ func handleAdd(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group path (short)")
 	command := fs.String("cmd", "", "Tool/command to run (e.g., 'claude' or 'codex --dangerously-bypass-approvals-and-sandbox')")
 	commandShort := fs.String("c", "", "Tool/command to run (short)")
-	wrapper := fs.String("wrapper", "", "Wrapper command (use {command} to include tool command; auto-generated when --cmd includes extra args)")
+	wrapper := fs.String(
+		"wrapper",
+		"",
+		"Wrapper command (use {command} to include tool command, e.g., 'nvim +\"terminal {command}\"')",
+	)
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking")
@@ -700,6 +704,10 @@ func handleAdd(profile string, args []string) {
 		mcpFlags = append(mcpFlags, s)
 		return nil
 	})
+
+	// Sandbox flags
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
+	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
@@ -988,6 +996,11 @@ func handleAdd(profile string, args []string) {
 		newInstance.WorktreeBranch = wtBranch
 	}
 
+	// Apply sandbox config if requested.
+	if *sandbox {
+		newInstance.Sandbox = session.NewSandboxConfig(*sandboxImage)
+	}
+
 	// Handle --resume-session: set Claude session ID and resume mode
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
@@ -1113,6 +1126,16 @@ func handleAdd(profile string, args []string) {
 	}
 	if *resumeSession != "" {
 		jsonData["resume_session"] = *resumeSession
+	}
+	if *sandbox {
+		jsonData["sandbox"] = true
+		humanLines = append(humanLines[:len(humanLines)-3],
+			"  Sandbox: enabled",
+		)
+		humanLines = append(humanLines, "", "Next steps:",
+			fmt.Sprintf("  agent-deck session start %s   # Start the session", sessionTitle),
+			"  agent-deck                         # Open TUI and press Enter to attach",
+		)
 	}
 
 	out.Success(humanLines[0], jsonData)

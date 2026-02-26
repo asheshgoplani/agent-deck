@@ -363,6 +363,8 @@ func handleSessionFork(profile string, args []string) {
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
 	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
+	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
@@ -505,6 +507,11 @@ func handleSessionFork(profile string, args []string) {
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	// Apply sandbox config if requested.
+	if *sandbox {
+		forkedInst.Sandbox = session.NewSandboxConfig(*sandboxImage)
 	}
 
 	// Start the forked session

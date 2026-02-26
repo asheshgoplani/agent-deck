@@ -22,6 +22,7 @@ func handleTry(profile string, args []string) {
 	tool := fs.String("cmd", "", "AI tool to use (defaults to config)")
 	toolShort := fs.String("c", "", "AI tool to use (short)")
 	noSession := fs.Bool("no-session", false, "Create folder only, don't start session")
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck try <name> [options]")
@@ -146,6 +147,11 @@ func handleTry(profile string, args []string) {
 	newInst := session.NewInstanceWithGroup(exp.Name, exp.Path, "experiments")
 	newInst.Command = selectedTool
 	newInst.Tool = detectTool(selectedTool)
+
+	// Apply sandbox config if requested.
+	if *sandbox {
+		newInst.Sandbox = session.NewSandboxConfig("")
+	}
 
 	instances = append(instances, newInst)
 

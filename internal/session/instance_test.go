@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestNewSessionStatusFlicker tests for green flicker on new session creation
@@ -295,7 +297,10 @@ func TestNewInstanceWithTool(t *testing.T) {
 	// Claude tool should NOT have pre-assigned ID (detection happens later)
 	claudeInst := NewInstanceWithTool("claude-test", "/tmp/test", "claude")
 	if claudeInst.ClaudeSessionID != "" {
-		t.Errorf("Claude session should NOT have pre-assigned ClaudeSessionID (detection-based), got: %s", claudeInst.ClaudeSessionID)
+		t.Errorf(
+			"Claude session should NOT have pre-assigned ClaudeSessionID (detection-based), got: %s",
+			claudeInst.ClaudeSessionID,
+		)
 	}
 	if claudeInst.Tool != "claude" {
 		t.Errorf("Tool = %s, want claude", claudeInst.Tool)
@@ -414,14 +419,14 @@ func TestBuildClaudeCommand_CustomAlias(t *testing.T) {
 
 	// Create ~/.agent-deck/config.toml with custom command
 	configDir := filepath.Join(tmpDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
 	configContent := `[claude]
 command = "cdw"
 config_dir = "~/.claude-work"
 `
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(configContent), 0o644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
 
@@ -988,12 +993,15 @@ func TestInstance_UpdateGeminiSession_UsesLatestFromFilesystem(t *testing.T) {
 
 	// With no sessions on filesystem, existing ID is preserved as fallback
 	if inst.GeminiSessionID != existingID {
-		t.Errorf("GeminiSessionID should preserve cached ID when no sessions on filesystem, got %q", inst.GeminiSessionID)
+		t.Errorf(
+			"GeminiSessionID should preserve cached ID when no sessions on filesystem, got %q",
+			inst.GeminiSessionID,
+		)
 	}
 
 	// Now create a "newer" session file on filesystem using correct directory structure
 	sessionsDir := GetGeminiSessionsDir(projectPath)
-	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
 		t.Fatalf("Failed to create sessions dir: %v", err)
 	}
 
@@ -1005,7 +1013,7 @@ func TestInstance_UpdateGeminiSession_UsesLatestFromFilesystem(t *testing.T) {
 		"lastUpdated": "2025-01-25T10:30:00.000Z",
 		"messages": [{"id": "1", "type": "user", "content": "hello"}]
 	}`, newSessionID)
-	if err := os.WriteFile(sessionFile, []byte(sessionContent), 0644); err != nil {
+	if err := os.WriteFile(sessionFile, []byte(sessionContent), 0o644); err != nil {
 		t.Fatalf("Failed to write session file: %v", err)
 	}
 
@@ -1014,7 +1022,11 @@ func TestInstance_UpdateGeminiSession_UsesLatestFromFilesystem(t *testing.T) {
 
 	// Krudony fix: filesystem session should override cached ID
 	if inst.GeminiSessionID != newSessionID {
-		t.Errorf("GeminiSessionID should be updated to filesystem session %q, got %q", newSessionID, inst.GeminiSessionID)
+		t.Errorf(
+			"GeminiSessionID should be updated to filesystem session %q, got %q",
+			newSessionID,
+			inst.GeminiSessionID,
+		)
 	}
 
 	// Timestamp should be updated
@@ -1300,7 +1312,7 @@ func TestInstance_RegenerateMCPConfig_ReturnsError(t *testing.T) {
 
 	// Create an empty .mcp.json
 	mcpPath := filepath.Join(tmpDir, ".mcp.json")
-	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+	if err := os.WriteFile(mcpPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
 		t.Fatalf("failed to write .mcp.json: %v", err)
 	}
 
@@ -1313,7 +1325,7 @@ func TestInstance_RegenerateMCPConfig_ReturnsError(t *testing.T) {
 	// Test case 3: .mcp.json with MCPs but not in config.toml - returns nil
 	// (Local() returns MCP names, but WriteMCPJsonFromConfig skips unknown MCPs)
 	mcpJSON := `{"mcpServers":{"unknown-mcp":{"command":"echo","args":["hello"]}}}`
-	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0644); err != nil {
+	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0o644); err != nil {
 		t.Fatalf("failed to write .mcp.json: %v", err)
 	}
 
@@ -1344,7 +1356,7 @@ func TestInstance_RegenerateMCPConfig_WriteFailure(t *testing.T) {
 	}
 	defer func() {
 		// Restore permissions before cleanup
-		_ = os.Chmod(tmpDir, 0755)
+		_ = os.Chmod(tmpDir, 0o755)
 		_ = os.RemoveAll(tmpDir)
 	}()
 
@@ -1366,12 +1378,12 @@ func TestInstance_RegenerateMCPConfig_WriteFailure(t *testing.T) {
 	}
 
 	mcpJSON := `{"mcpServers":{"` + mcpName + `":{"command":"echo","args":["hello"]}}}`
-	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0644); err != nil {
+	if err := os.WriteFile(mcpPath, []byte(mcpJSON), 0o644); err != nil {
 		t.Fatalf("failed to write .mcp.json: %v", err)
 	}
 
 	// Make directory read-only AFTER writing .mcp.json
-	if err := os.Chmod(tmpDir, 0555); err != nil {
+	if err := os.Chmod(tmpDir, 0o555); err != nil {
 		t.Fatalf("failed to make directory read-only: %v", err)
 	}
 
@@ -1652,7 +1664,7 @@ func TestInstance_Restart_SkipMCPRegenerate(t *testing.T) {
 	// Write a marker file to detect if regenerateMCPConfig was called
 	mcpFile := filepath.Join(inst.ProjectPath, ".mcp.json")
 	originalContent := `{"mcpServers":{"marker":{"command":"test"}}}`
-	if err := os.WriteFile(mcpFile, []byte(originalContent), 0644); err != nil {
+	if err := os.WriteFile(mcpFile, []byte(originalContent), 0o644); err != nil {
 		t.Fatalf("failed to write marker file: %v", err)
 	}
 
@@ -1680,7 +1692,11 @@ func TestInstance_Restart_SkipMCPRegenerate(t *testing.T) {
 	}
 
 	if string(content) != originalContent {
-		t.Errorf("MCP config was modified when it should have been skipped.\nOriginal: %s\nActual: %s", originalContent, string(content))
+		t.Errorf(
+			"MCP config was modified when it should have been skipped.\nOriginal: %s\nActual: %s",
+			originalContent,
+			string(content),
+		)
 	}
 }
 
@@ -1757,7 +1773,10 @@ func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 
 		// Should NOT have --dangerously-skip-permissions when config is false
 		if strings.Contains(cmd, "--dangerously-skip-permissions") {
-			t.Errorf("Fork command should NOT include --dangerously-skip-permissions when dangerous_mode=false.\nGot: %s", cmd)
+			t.Errorf(
+				"Fork command should NOT include --dangerously-skip-permissions when dangerous_mode=false.\nGot: %s",
+				cmd,
+			)
 		}
 	})
 
@@ -1785,7 +1804,10 @@ func TestInstance_Fork_RespectsDangerousMode(t *testing.T) {
 
 		// SHOULD have --dangerously-skip-permissions when config is true
 		if !strings.Contains(cmd, "--dangerously-skip-permissions") {
-			t.Errorf("Fork command should include --dangerously-skip-permissions when dangerous_mode=true.\nGot: %s", cmd)
+			t.Errorf(
+				"Fork command should include --dangerously-skip-permissions when dangerous_mode=true.\nGot: %s",
+				cmd,
+			)
 		}
 	})
 }
@@ -1828,7 +1850,7 @@ func TestInstance_GetJSONLPath(t *testing.T) {
 		// Create a temp directory structure that mimics Claude's layout
 		tempDir := t.TempDir()
 		projectPath := filepath.Join(tempDir, "myproject")
-		if err := os.MkdirAll(projectPath, 0755); err != nil {
+		if err := os.MkdirAll(projectPath, 0o755); err != nil {
 			t.Fatalf("Failed to create project dir: %v", err)
 		}
 
@@ -1842,14 +1864,14 @@ func TestInstance_GetJSONLPath(t *testing.T) {
 		claudeDir := filepath.Join(tempDir, ".claude")
 		projectDirName := ConvertToClaudeDirName(resolvedPath)
 		claudeProjectDir := filepath.Join(claudeDir, "projects", projectDirName)
-		if err := os.MkdirAll(claudeProjectDir, 0755); err != nil {
+		if err := os.MkdirAll(claudeProjectDir, 0o755); err != nil {
 			t.Fatalf("Failed to create claude project dir: %v", err)
 		}
 
 		// Create a mock JSONL file
 		sessionID := "test-session-123"
 		jsonlFile := filepath.Join(claudeProjectDir, sessionID+".jsonl")
-		if err := os.WriteFile(jsonlFile, []byte(`{"type":"assistant"}`), 0644); err != nil {
+		if err := os.WriteFile(jsonlFile, []byte(`{"type":"assistant"}`), 0o644); err != nil {
 			t.Fatalf("Failed to create jsonl file: %v", err)
 		}
 
@@ -1930,7 +1952,7 @@ func TestSessionHasConversationData(t *testing.T) {
 	encodedPath := "-test-project"
 
 	projectsDir := filepath.Join(tmpDir, "projects", encodedPath)
-	_ = os.MkdirAll(projectsDir, 0755)
+	_ = os.MkdirAll(projectsDir, 0o755)
 
 	// Override config dir for test
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
@@ -1945,7 +1967,7 @@ func TestSessionHasConversationData(t *testing.T) {
 		content := `{"type":"summary","leafUuid":"abc"}
 {"type":"queue-operation","sessionId":"has-session-id","timestamp":"2026-01-01"}
 {"type":"user","sessionId":"has-session-id","text":"hello"}`
-		_ = os.WriteFile(filePath, []byte(content), 0644)
+		_ = os.WriteFile(filePath, []byte(content), 0o644)
 
 		if !sessionHasConversationData(sessionID, projectPath) {
 			t.Error("Expected true for file with sessionId")
@@ -1957,7 +1979,7 @@ func TestSessionHasConversationData(t *testing.T) {
 		filePath := filepath.Join(projectsDir, sessionID+".jsonl")
 		content := `{"type":"summary","leafUuid":"abc"}
 {"type":"summary","leafUuid":"def"}`
-		_ = os.WriteFile(filePath, []byte(content), 0644)
+		_ = os.WriteFile(filePath, []byte(content), 0o644)
 
 		if sessionHasConversationData(sessionID, projectPath) {
 			t.Error("Expected false for file without sessionId")
@@ -1986,7 +2008,7 @@ func TestRegenerate_MCPConfig_InvalidatesCache(t *testing.T) {
 
 	// Step 1: Write initial .mcp.json with one MCP
 	initialJSON := `{"mcpServers":{"mcp-a":{"command":"echo","args":["a"]}}}`
-	if err := os.WriteFile(mcpPath, []byte(initialJSON), 0644); err != nil {
+	if err := os.WriteFile(mcpPath, []byte(initialJSON), 0o644); err != nil {
 		t.Fatalf("failed to write initial .mcp.json: %v", err)
 	}
 
@@ -2002,7 +2024,7 @@ func TestRegenerate_MCPConfig_InvalidatesCache(t *testing.T) {
 
 	// Step 3: Externally modify .mcp.json to add a second MCP (within 30s cache window)
 	updatedJSON := `{"mcpServers":{"mcp-a":{"command":"echo","args":["a"]},"mcp-b":{"command":"echo","args":["b"]}}}`
-	if err := os.WriteFile(mcpPath, []byte(updatedJSON), 0644); err != nil {
+	if err := os.WriteFile(mcpPath, []byte(updatedJSON), 0o644); err != nil {
 		t.Fatalf("failed to write updated .mcp.json: %v", err)
 	}
 
@@ -2036,6 +2058,108 @@ func TestRegenerate_MCPConfig_InvalidatesCache(t *testing.T) {
 	if !foundB {
 		t.Errorf("expected cache to contain 'mcp-b' after regeneration "+
 			"(cache should have been invalidated), got: %v", localNames2)
+	}
+}
+
+func TestWrapIgnoreSuspend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wraps simple command", func(t *testing.T) {
+		t.Parallel()
+		wrapped := wrapIgnoreSuspend("claude --session-id abc")
+		require.Equal(t, "bash -c 'stty susp undef; claude --session-id abc'", wrapped)
+	})
+
+	t.Run("wraps sandbox docker exec command", func(t *testing.T) {
+		t.Parallel()
+		// docker exec with shell-quoted env value from buildExecCommand/ShellJoinArgs.
+		sandboxCmd := `docker exec -it -e TERM=xterm-256color agent-deck-a1b2c3d4 claude --session-id abc`
+		wrapped := wrapIgnoreSuspend(sandboxCmd)
+		// Single bash -c layer wrapping the shell-quoted docker exec.
+		require.Equal(t,
+			`bash -c 'stty susp undef; docker exec -it -e TERM=xterm-256color agent-deck-a1b2c3d4 claude --session-id abc'`,
+			wrapped,
+		)
+	})
+
+	t.Run("escapes single quotes in command", func(t *testing.T) {
+		t.Parallel()
+		wrapped := wrapIgnoreSuspend("echo 'hello world'")
+		require.Equal(t, `bash -c 'stty susp undef; echo '"'"'hello world'"'"''`, wrapped)
+	})
+}
+
+func TestCollectDockerEnvVars(t *testing.T) {
+	// Cannot use t.Parallel() because t.Setenv mutates process env.
+
+	tests := []struct {
+		name     string
+		envSetup map[string]string // env vars to set for this test.
+		names    []string
+		wantKeys []string // expected keys in result (terminal defaults + names).
+	}{
+		{
+			name:     "includes terminal vars when set",
+			envSetup: map[string]string{"TERM": "xterm-256color"},
+			names:    nil,
+			wantKeys: []string{"TERM"},
+		},
+		{
+			name:     "merges user-configured names",
+			envSetup: map[string]string{"TERM": "xterm", "MY_KEY": "secret"},
+			names:    []string{"MY_KEY"},
+			wantKeys: []string{"TERM", "MY_KEY"},
+		},
+		{
+			name:     "skips unset vars",
+			envSetup: map[string]string{"TERM": "xterm"},
+			names:    []string{"UNSET_VAR"},
+			wantKeys: []string{"TERM"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.envSetup {
+				t.Setenv(k, v)
+			}
+			result := collectDockerEnvVars(tc.names)
+			for _, key := range tc.wantKeys {
+				require.Contains(t, result, key)
+			}
+		})
+	}
+}
+
+func TestNewSandboxConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		imageOverride string
+		wantEnabled   bool
+	}{
+		{
+			name:          "uses default image when override empty",
+			imageOverride: "",
+			wantEnabled:   true,
+		},
+		{
+			name:          "uses override image when provided",
+			imageOverride: "custom:v1",
+			wantEnabled:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := NewSandboxConfig(tc.imageOverride)
+			require.Equal(t, tc.wantEnabled, cfg.Enabled)
+			if tc.imageOverride != "" {
+				require.Equal(t, tc.imageOverride, cfg.Image)
+			}
+		})
 	}
 }
 

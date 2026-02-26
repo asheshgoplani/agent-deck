@@ -3,12 +3,14 @@ package session
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,12 +20,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-var sessionLog = logging.ForComponent(logging.CompSession)
-var mcpLog = logging.ForComponent(logging.CompMCP)
+var (
+	sessionLog = logging.ForComponent(logging.CompSession)
+	mcpLog     = logging.ForComponent(logging.CompMCP)
+)
 
 // Status represents the current state of a session
 type Status string
@@ -99,6 +104,10 @@ type Instance struct {
 	lastJSONLPath string
 	cachedPrompt  string
 
+	// Docker sandbox support.
+	Sandbox          *SandboxConfig `json:"sandbox,omitempty"`
+	SandboxContainer string         `json:"sandbox_container,omitempty"` // Container name when running in sandbox.
+
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
@@ -137,6 +146,51 @@ type Instance struct {
 	// Set by MCP dialog Apply() to avoid race condition where Apply writes
 	// config then Restart immediately overwrites it with different pool state
 	SkipMCPRegenerate bool `json:"-"` // Don't persist, transient flag
+}
+
+// SandboxConfig holds per-session Docker sandbox settings.
+type SandboxConfig struct {
+	// Enabled indicates the session runs inside a container.
+	Enabled bool `json:"enabled"`
+
+	// Image is the Docker image name (e.g. "ghcr.io/asheshgoplani/agent-deck-sandbox:latest").
+	Image string `json:"image"`
+
+	// CPULimit is the optional CPU quota for the container (e.g. "2.0").
+	CPULimit *string `json:"cpu_limit,omitempty"`
+
+	// MemoryLimit is the optional memory cap for the container (e.g. "4g").
+	MemoryLimit *string `json:"memory_limit,omitempty"`
+
+	// ExtraVolumes maps host paths to container paths for additional bind mounts.
+	ExtraVolumes map[string]string `json:"extra_volumes,omitempty"`
+}
+
+// IsSandboxed returns true if this instance is configured to run in a Docker sandbox.
+func (inst *Instance) IsSandboxed() bool {
+	return inst.Sandbox != nil && inst.Sandbox.Enabled
+}
+
+// NewSandboxConfig builds a SandboxConfig from CLI flags and user settings.
+// imageOverride takes precedence; when empty the global default image is used.
+// CPU and memory limits are applied from DockerSettings when configured.
+func NewSandboxConfig(imageOverride string) *SandboxConfig {
+	dockerSettings := GetDockerSettings()
+	image := dockerSettings.DefaultImage
+	if imageOverride != "" {
+		image = imageOverride
+	}
+	cfg := &SandboxConfig{
+		Enabled: true,
+		Image:   image,
+	}
+	if dockerSettings.CPULimit != "" {
+		cfg.CPULimit = &dockerSettings.CPULimit
+	}
+	if dockerSettings.MemoryLimit != "" {
+		cfg.MemoryLimit = &dockerSettings.MemoryLimit
+	}
+	return cfg
 }
 
 // GetStatusThreadSafe returns the session status with read-lock protection.
@@ -520,13 +574,25 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 	if baseCommand == "gemini" {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
-			return envPrefix + fmt.Sprintf("tmux set-environment GEMINI_YOLO_MODE %s; tmux set-environment GEMINI_SESSION_ID %s; gemini --resume %s%s%s", yoloEnv, i.GeminiSessionID, i.GeminiSessionID, yoloFlag, modelFlag)
+			return envPrefix + fmt.Sprintf(
+				"tmux set-environment GEMINI_YOLO_MODE %s; tmux set-environment GEMINI_SESSION_ID %s; gemini --resume %s%s%s",
+				yoloEnv,
+				i.GeminiSessionID,
+				i.GeminiSessionID,
+				yoloFlag,
+				modelFlag,
+			)
 		}
 
 		// Start Gemini fresh - session ID will be captured when user interacts
 		// The previous capture-resume approach (gemini --output-format json ".") would hang
 		// because Gemini processes the "." prompt which takes too long
-		return envPrefix + fmt.Sprintf(`tmux set-environment GEMINI_YOLO_MODE %s; gemini%s%s`, yoloEnv, yoloFlag, modelFlag)
+		return envPrefix + fmt.Sprintf(
+			`tmux set-environment GEMINI_YOLO_MODE %s; gemini%s%s`,
+			yoloEnv,
+			yoloFlag,
+			modelFlag,
+		)
 	}
 
 	// For custom commands (e.g., resume commands), return as-is
@@ -663,11 +729,20 @@ func (i *Instance) detectOpenCodeSessionAsync() {
 
 		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
 			i.setOpenCodeSession(sessionID)
-			sessionLog.Debug("opencode_session_detected", slog.String("session_id", sessionID), slog.String("phase", "quick"), slog.Int("attempt", attempt+1))
+			sessionLog.Debug(
+				"opencode_session_detected",
+				slog.String("session_id", sessionID),
+				slog.String("phase", "quick"),
+				slog.Int("attempt", attempt+1),
+			)
 			return
 		}
 
-		sessionLog.Debug("opencode_session_not_found", slog.Int("attempt", attempt+1), slog.Int("total", len(quickDelays)))
+		sessionLog.Debug(
+			"opencode_session_not_found",
+			slog.Int("attempt", attempt+1),
+			slog.Int("total", len(quickDelays)),
+		)
 	}
 
 	// Phase 2: Long-running background watcher for new sessions
@@ -697,7 +772,11 @@ func (i *Instance) watchForOpenCodeSession() {
 
 		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
 			i.setOpenCodeSession(sessionID)
-			sessionLog.Debug("opencode_watcher_detected", slog.String("session_id", sessionID), slog.Int("attempt", attempt))
+			sessionLog.Debug(
+				"opencode_watcher_detected",
+				slog.String("session_id", sessionID),
+				slog.Int("attempt", attempt),
+			)
 			return
 		}
 
@@ -772,7 +851,14 @@ func (i *Instance) queryOpenCodeSession() string {
 		normalizedSessDir := normalizePath(sessDir)
 		normalizedProjectPath := normalizePath(projectPath)
 
-		sessionLog.Debug("opencode_session_compare", slog.String("session_id", sess.ID), slog.String("sess_dir", sessDir), slog.String("project_path", projectPath), slog.Int64("created", sess.Created), slog.Int64("updated", sess.Updated))
+		sessionLog.Debug(
+			"opencode_session_compare",
+			slog.String("session_id", sess.ID),
+			slog.String("sess_dir", sessDir),
+			slog.String("project_path", projectPath),
+			slog.Int64("created", sess.Created),
+			slog.Int64("updated", sess.Updated),
+		)
 
 		// Normalize both paths for comparison
 		if sessDir == "" || normalizedSessDir != normalizedProjectPath {
@@ -786,7 +872,11 @@ func (i *Instance) queryOpenCodeSession() string {
 			updatedAt = sess.Created // Fallback to created if updated not available
 		}
 
-		sessionLog.Debug("opencode_session_dir_match", slog.String("session_id", sess.ID), slog.Int64("updated", updatedAt))
+		sessionLog.Debug(
+			"opencode_session_dir_match",
+			slog.String("session_id", sess.ID),
+			slog.Int64("updated", updatedAt),
+		)
 
 		if bestMatch == "" || updatedAt > bestMatchTime {
 			bestMatch = sess.ID
@@ -852,7 +942,11 @@ func (i *Instance) detectCodexSessionAsync() {
 				}
 			}
 
-			sessionLog.Debug("codex_session_detected", slog.String("session_id", sessionID), slog.Int("attempt", attempt+1))
+			sessionLog.Debug(
+				"codex_session_detected",
+				slog.String("session_id", sessionID),
+				slog.Int("attempt", attempt+1),
+			)
 			return
 		}
 
@@ -1122,7 +1216,11 @@ func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
 		changed := sessionID != i.CodexSessionID
 		if sessionID != i.CodexSessionID {
-			sessionLog.Debug("codex_session_update", slog.String("old_id", i.CodexSessionID), slog.String("new_id", sessionID))
+			sessionLog.Debug(
+				"codex_session_update",
+				slog.String("old_id", i.CodexSessionID),
+				slog.String("new_id", sessionID),
+			)
 		}
 		i.CodexSessionID = sessionID
 		i.CodexDetectedAt = time.Now()
@@ -1287,6 +1385,25 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 	}
 }
 
+// buildTmuxOptionOverrides returns tmux option overrides from user config,
+// adding remain-on-exit for sandbox sessions (needed for dead-pane detection).
+// Returns nil if no overrides apply.
+func (i *Instance) buildTmuxOptionOverrides() map[string]string {
+	var overrides map[string]string
+	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+		overrides = maps.Clone(tmuxCfg.Options)
+	}
+	// Sandbox sessions need remain-on-exit so dead-pane detection works.
+	// Non-sandbox sessions use default tmux behaviour (pane closes on exit).
+	if i.IsSandboxed() {
+		if overrides == nil {
+			overrides = make(map[string]string)
+		}
+		overrides["remain-on-exit"] = "on"
+	}
+	return overrides
+}
+
 // Start starts the session in tmux
 func (i *Instance) Start() error {
 	if i.tmuxSession == nil {
@@ -1318,19 +1435,23 @@ func (i *Instance) Start() error {
 		}
 	}
 
+	var containerName string
 	var err error
-	command, err = i.applyWrapper(command)
+	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
 		return err
+	}
+	if containerName != "" {
+		i.SandboxContainer = containerName
 	}
 
 	// Load custom patterns for status detection
 	i.loadCustomPatternsFromConfig()
 
-	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
-	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
-		i.tmuxSession.OptionOverrides = tmuxCfg.Options
-	}
+	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
+	// Sandbox sessions also get remain-on-exit for dead-pane detection.
+	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -1402,19 +1523,23 @@ func (i *Instance) StartWithMessage(message string) error {
 		}
 	}
 
+	var containerName string
 	var err error
-	command, err = i.applyWrapper(command)
+	command, containerName, err = i.prepareCommand(command)
 	if err != nil {
 		return err
 	}
+	if containerName != "" {
+		i.SandboxContainer = containerName
+	}
 
-	// Load custom patterns for status detection
+	// Load custom patterns for status detection.
 	i.loadCustomPatternsFromConfig()
 
-	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
-	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
-		i.tmuxSession.OptionOverrides = tmuxCfg.Options
-	}
+	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
+	// Sandbox sessions also get remain-on-exit for dead-pane detection.
+	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2238,7 +2363,11 @@ func (i *Instance) syncGeminiSessionFromDisk() {
 	// Pick the most recent session (list is sorted by LastUpdated desc)
 	mostRecent := sessions[0]
 	if mostRecent.SessionID != i.GeminiSessionID {
-		sessionLog.Debug("gemini_session_update", slog.String("old_id", i.GeminiSessionID), slog.String("new_id", mostRecent.SessionID))
+		sessionLog.Debug(
+			"gemini_session_update",
+			slog.String("old_id", i.GeminiSessionID),
+			slog.String("new_id", mostRecent.SessionID),
+		)
 	}
 	i.GeminiSessionID = mostRecent.SessionID
 	i.GeminiDetectedAt = time.Now()
@@ -3048,16 +3177,43 @@ func parseGenericOutput(content, tool string) (*ResponseOutput, error) {
 	}, nil
 }
 
-// Kill terminates the tmux session
+// Kill terminates the tmux session and cleans up sandbox container if present.
 func (i *Instance) Kill() error {
-	if i.tmuxSession == nil {
-		return fmt.Errorf("tmux session not initialized")
+	// Kill tmux session first, but always continue to container cleanup.
+	var tmuxErr error
+	if i.tmuxSession != nil {
+		tmuxErr = i.tmuxSession.Kill()
 	}
 
-	if err := i.tmuxSession.Kill(); err != nil {
-		return fmt.Errorf("failed to kill tmux session: %w", err)
+	// Clean up sandbox container (only if name matches our prefix convention).
+	// Runs regardless of tmux kill result to avoid orphaned containers.
+	if i.SandboxContainer != "" && docker.IsManagedContainer(i.SandboxContainer) {
+		dockerCfg := GetDockerSettings()
+		if dockerCfg.GetAutoCleanup() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			ctr := docker.FromName(i.SandboxContainer)
+			_ = ctr.Remove(ctx, true) // Force remove, ignore errors.
+			i.SandboxContainer = ""
+		} else {
+			sessionLog.Info("sandbox_container_kept", slog.String("container", i.SandboxContainer))
+		}
 	}
+
+	// Remove plaintext keychain credential files extracted during sandbox sync.
+	// Gated on IsSandboxed() (not SandboxContainer) so cleanup runs even if
+	// container creation failed after credential extraction.
+	if i.IsSandboxed() {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			docker.CleanupKeychainCredentials(homeDir)
+		}
+	}
+
 	i.Status = StatusError
+
+	if tmuxErr != nil {
+		return fmt.Errorf("failed to kill tmux session: %w", tmuxErr)
+	}
 	return nil
 }
 
@@ -3065,7 +3221,13 @@ func (i *Instance) Kill() error {
 // For Claude sessions with known ID: sends Ctrl+C twice and resume command to existing session
 // For dead sessions or unknown ID: recreates the tmux session
 func (i *Instance) Restart() error {
-	mcpLog.Debug("restart_called", slog.String("tool", i.Tool), slog.String("claude_session_id", i.ClaudeSessionID), slog.Bool("tmux_session", i.tmuxSession != nil), slog.Bool("tmux_exists", i.tmuxSession != nil && i.tmuxSession.Exists()))
+	mcpLog.Debug(
+		"restart_called",
+		slog.String("tool", i.Tool),
+		slog.String("claude_session_id", i.ClaudeSessionID),
+		slog.Bool("tmux_session", i.tmuxSession != nil),
+		slog.Bool("tmux_exists", i.tmuxSession != nil && i.tmuxSession.Exists()),
+	)
 
 	// Clear flag immediately to prevent it staying set if restart fails
 	skipRegen := i.SkipMCPRegenerate
@@ -3087,13 +3249,14 @@ func (i *Instance) Restart() error {
 		i.syncClaudeSessionFromDisk()
 	}
 
-	// If Claude session with known ID AND tmux session exists, use respawn-pane
+	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if i.Tool == "claude" && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		// Build the resume command with proper config
-		resumeCmd := i.buildClaudeResumeCommand()
-		resumeCmd, err := i.applyWrapper(resumeCmd)
+		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
 		if err != nil {
 			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
 		}
 		mcpLog.Debug("respawn_pane_claude", slog.String("command", resumeCmd))
 
@@ -3121,12 +3284,14 @@ func (i *Instance) Restart() error {
 		i.UpdateGeminiSession(nil)
 	}
 
-	// If Gemini session with known ID AND tmux session exists, use respawn-pane
+	// If Gemini session with known ID AND tmux session exists, use respawn-pane.
 	if i.Tool == "gemini" && i.GeminiSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
-		resumeCmd := i.buildGeminiCommand("gemini")
-		resumeCmd, err := i.applyWrapper(resumeCmd)
+		resumeCmd, containerName, err := i.prepareCommand(i.buildGeminiCommand("gemini"))
 		if err != nil {
 			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
 		}
 		sessionLog.Info("restart_gemini_respawn", slog.String("command", resumeCmd))
 
@@ -3152,20 +3317,20 @@ func (i *Instance) Restart() error {
 			}
 		}
 
-		var resumeCmd string
+		var rawCmd string
 		if i.OpenCodeSessionID != "" {
-			// Resume with known session ID
-			resumeCmd = fmt.Sprintf("tmux set-environment OPENCODE_SESSION_ID %s && opencode -s %s",
+			rawCmd = fmt.Sprintf("tmux set-environment OPENCODE_SESSION_ID %s && opencode -s %s",
 				i.OpenCodeSessionID, i.OpenCodeSessionID)
 		} else {
-			// No session ID yet, start fresh (will detect ID async)
-			resumeCmd = "opencode"
-			// Re-record start time for async detection
+			rawCmd = "opencode"
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
 		}
-		resumeCmd, err := i.applyWrapper(resumeCmd)
+		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
 		}
 		sessionLog.Info("restart_opencode_respawn", slog.String("command", resumeCmd))
 
@@ -3201,15 +3366,15 @@ func (i *Instance) Restart() error {
 			}
 		}
 
-		resumeCmd := i.buildCodexCommand("codex")
 		if i.CodexSessionID == "" {
-			// No session ID yet, start fresh (will detect ID async)
-			// Re-record start time for async detection
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
-		resumeCmd, err := i.applyWrapper(resumeCmd)
+		resumeCmd, containerName, err := i.prepareCommand(i.buildCodexCommand("codex"))
 		if err != nil {
 			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
 		}
 		sessionLog.Info("restart_codex_respawn", slog.String("command", resumeCmd))
 
@@ -3228,31 +3393,37 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
-	// If custom tool with session resume support AND tmux session exists, use respawn-pane
+	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
 	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
 		sessionID := i.GetGenericSessionID()
 
-		// Build resume command for custom tool
-		var resumeCmd string
+		var rawCmd string
 		if toolDef.DangerousMode && toolDef.DangerousFlag != "" {
-			resumeCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s %s",
+			rawCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s %s",
 				toolDef.SessionIDEnv, sessionID,
 				i.Command, toolDef.ResumeFlag, sessionID, toolDef.DangerousFlag)
 		} else {
-			resumeCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s",
+			rawCmd = fmt.Sprintf("tmux set-environment %s %s && %s %s %s",
 				toolDef.SessionIDEnv, sessionID,
 				i.Command, toolDef.ResumeFlag, sessionID)
 		}
-		resumeCmd, err := i.applyWrapper(resumeCmd)
+		resumeCmd, containerName, err := i.prepareCommand(rawCmd)
 		if err != nil {
 			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
 		}
 
 		sessionLog.Info("restart_generic_respawn", slog.String("tool", i.Tool), slog.String("command", resumeCmd))
 
 		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
-			sessionLog.Info("restart_generic_respawn_failed", slog.String("tool", i.Tool), slog.String("error", err.Error()))
+			sessionLog.Info(
+				"restart_generic_respawn_failed",
+				slog.String("tool", i.Tool),
+				slog.String("error", err.Error()),
+			)
 			return fmt.Errorf("failed to restart %s session: %w", i.Tool, err)
 		}
 
@@ -3312,18 +3483,21 @@ func (i *Instance) Restart() error {
 			}
 		}
 	}
-	command, err := i.applyWrapper(command)
+	command, containerName, err := i.prepareCommand(command)
 	if err != nil {
 		return err
 	}
+	if containerName != "" {
+		i.SandboxContainer = containerName
+	}
 
-	// Load custom patterns for status detection (for custom tools)
+	// Load custom patterns for status detection (for custom tools).
 	i.loadCustomPatternsFromConfig()
 
-	// Apply user tmux option overrides from config (e.g. allow-passthrough = "all")
-	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
-		i.tmuxSession.OptionOverrides = tmuxCfg.Options
-	}
+	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
+	// Sandbox sessions also get remain-on-exit for dead-pane detection.
+	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 
@@ -3399,7 +3573,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// Check if session has actual conversation data
 	// If not, use --session-id instead of --resume to avoid "No conversation found" error
 	useResume := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
-	sessionLog.Debug("session_data_build_resume", slog.String("session_id", i.ClaudeSessionID), slog.String("path", i.ProjectPath), slog.Bool("use_resume", useResume))
+	sessionLog.Debug(
+		"session_data_build_resume",
+		slog.String("session_id", i.ClaudeSessionID),
+		slog.String("path", i.ProjectPath),
+		slog.Bool("use_resume", useResume),
+	)
 
 	// Build dangerous mode flag (--dangerously-skip-permissions wins over --allow-...)
 	dangerousFlag := ""
@@ -3409,22 +3588,29 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		dangerousFlag = " --allow-dangerously-skip-permissions"
 	}
 
-	// Build the command with tmux environment update
+	// Build the command with tmux environment update.
 	// This ensures CLAUDE_SESSION_ID is set in tmux env after restart,
-	// so GetSessionIDFromTmux() works correctly and detects the session
+	// so GetSessionIDFromTmux() works correctly and detects the session.
+	// Use ";" (not "&&") so the tool command runs even if tmux set-environment
+	// fails — inside a Docker sandbox there is no tmux server.
 	if useResume {
-		return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --resume %s%s",
+		return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s 2>/dev/null; %s%s --resume %s%s",
 			i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 	}
-	// Session was never interacted with - use --session-id to create fresh session
-	return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --session-id %s%s",
+	// Session was never interacted with - use --session-id to create fresh session.
+	return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s 2>/dev/null; %s%s --session-id %s%s",
 		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.
 func (i *Instance) SetGeminiModel(model string) error {
 	i.GeminiModel = model
-	sessionLog.Debug("gemini_model_set", slog.String("model", model), slog.String("session_id", i.ID), slog.String("title", i.Title))
+	sessionLog.Debug(
+		"gemini_model_set",
+		slog.String("model", model),
+		slog.String("session_id", i.ID),
+		slog.String("title", i.Title),
+	)
 
 	// Restart if the session is running so it picks up the new model
 	if i.Exists() {
@@ -3584,7 +3770,10 @@ func (i *Instance) CreateForkedInstance(newTitle, newGroupPath string) (*Instanc
 }
 
 // CreateForkedInstanceWithOptions creates a new Instance configured for forking with custom options
-func (i *Instance) CreateForkedInstanceWithOptions(newTitle, newGroupPath string, opts *ClaudeOptions) (*Instance, string, error) {
+func (i *Instance) CreateForkedInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
 	cmd, err := i.ForkWithOptions(newTitle, newGroupPath, opts)
 	if err != nil {
 		return nil, "", err
@@ -3704,7 +3893,7 @@ opencode -s "$new_id"%s
 		return "", err
 	}
 
-	if err := f.Chmod(0755); err != nil {
+	if err := f.Chmod(0o755); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}
@@ -3719,7 +3908,10 @@ func (i *Instance) CreateForkedOpenCodeInstance(newTitle, newGroupPath string) (
 }
 
 // CreateForkedOpenCodeInstanceWithOptions creates a new Instance configured for forking with custom options
-func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (*Instance, string, error) {
+func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *OpenCodeOptions,
+) (*Instance, string, error) {
 	cmd, err := i.ForkOpenCodeWithOptions(newTitle, newGroupPath, opts)
 	if err != nil {
 		return nil, "", err
@@ -3926,7 +4118,11 @@ func (i *Instance) regenerateMCPConfig() error {
 			mcpLog.Debug("regen_global_mcp_failed", slog.String("error", err.Error()))
 			return fmt.Errorf("failed to regenerate global MCP config: %w", err)
 		}
-		mcpLog.Debug("regen_global_mcp_succeeded", slog.String("title", i.Title), slog.Int("mcp_count", len(globalMCPs)))
+		mcpLog.Debug(
+			"regen_global_mcp_succeeded",
+			slog.String("title", i.Title),
+			slog.Int("mcp_count", len(globalMCPs)),
+		)
 	case "user":
 		userMCPs := GetUserMCPNames()
 		if len(userMCPs) == 0 {
@@ -4006,7 +4202,11 @@ func sessionHasConversationData(sessionID string, projectPath string) bool {
 	file, err := os.Open(sessionFile)
 	if err != nil {
 		// Error opening - safe fallback to --resume
-		sessionLog.Debug("session_data_open_error", slog.String("error", err.Error()), slog.String("fallback", "use_resume"))
+		sessionLog.Debug(
+			"session_data_open_error",
+			slog.String("error", err.Error()),
+			slog.String("fallback", "use_resume"),
+		)
 		return true
 	}
 	defer file.Close()
@@ -4028,7 +4228,11 @@ func sessionHasConversationData(sessionID string, projectPath string) bool {
 
 	if err := scanner.Err(); err != nil {
 		// Error reading - safe fallback to --resume
-		sessionLog.Debug("session_data_scanner_error", slog.String("error", err.Error()), slog.String("fallback", "use_resume"))
+		sessionLog.Debug(
+			"session_data_scanner_error",
+			slog.String("error", err.Error()),
+			slog.String("fallback", "use_resume"),
+		)
 		return true
 	}
 
@@ -4076,6 +4280,280 @@ func findSessionFileInAllProjects(sessionID string) string {
 	return ""
 }
 
+// OpenContainerShell creates a tmux session running an interactive shell inside
+// the sandbox container. Returns the tmux session name for attaching.
+// Uses /bin/sh for portability (not all images have bash).
+func (i *Instance) OpenContainerShell() (string, error) {
+	if !i.IsSandboxed() {
+		return "", fmt.Errorf("session %s is not sandboxed", i.ID)
+	}
+	if i.SandboxContainer == "" || !docker.IsManagedContainer(i.SandboxContainer) {
+		return "", fmt.Errorf("no valid sandbox container for session %s", i.ID)
+	}
+
+	// Verify the container is still running before attempting docker exec.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ctr := docker.FromName(i.SandboxContainer)
+	running, err := ctr.IsRunning(ctx)
+	if err != nil {
+		return "", fmt.Errorf("checking container %s: %w", i.SandboxContainer, err)
+	}
+	if !running {
+		return "", fmt.Errorf("sandbox container %s is not running", i.SandboxContainer)
+	}
+
+	// Reuse the GenerateName prefix logic for consistency.
+	tmuxName := "ad-term-" + docker.GenerateName(i.ID, i.Title)[len("agent-deck-"):]
+
+	// Kill any existing terminal session to prevent orphans from repeated T presses.
+	killCtx, killCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer killCancel()
+	_ = exec.CommandContext(killCtx, "tmux", "kill-session", "-t", tmuxName).Run()
+
+	// Omit -w flag: the container's workdir was set during create (respects worktree path).
+	// Pass the docker exec command as discrete tmux args to avoid shell interpolation of
+	// the container name (defence-in-depth against state file tampering).
+	newCtx, newCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer newCancel()
+	out, err := exec.CommandContext(newCtx,
+		"tmux", "new-session", "-d", "-s", tmuxName,
+		"docker", "exec", "-it", i.SandboxContainer, "/bin/sh",
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("creating terminal session: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return tmuxName, nil
+}
+
+// wrapForSandbox wraps command in docker exec if the instance is sandboxed.
+// Returns the wrapped command and the container name. The caller is responsible
+// for persisting the container name to i.SandboxContainer.
+func (i *Instance) wrapForSandbox(command string) (string, string, error) {
+	if !i.IsSandboxed() {
+		return command, "", nil
+	}
+
+	userCfg, cfgErr := LoadUserConfig()
+	if cfgErr != nil {
+		sessionLog.Warn("load_user_config_for_sandbox", slog.String("error", cfgErr.Error()))
+	}
+
+	wrappedCmd, containerName, err := ensureSandboxContainer(i, userCfg, command)
+	if err != nil {
+		return "", "", err
+	}
+	return wrappedCmd, containerName, nil
+}
+
+// prepareCommand applies the full command wrapping chain: user wrapper → sandbox → ignore-suspend.
+// Returns the wrapped command, the sandbox container name (empty if not sandboxed), and an error.
+// All code paths that launch or respawn a tmux pane should use this instead of calling
+// applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
+func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	wrapped, err := i.applyWrapper(cmd)
+	if err != nil {
+		return "", "", err
+	}
+	wrapped, containerName, err := i.wrapForSandbox(wrapped)
+	if err != nil {
+		return "", "", err
+	}
+	if wrapped != "" {
+		wrapped = wrapIgnoreSuspend(wrapped)
+	}
+	return wrapped, containerName, nil
+}
+
+// terminalEnvVars are always passed through to containers for proper UI/theming.
+var terminalEnvVars = []string{"TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"}
+
+// collectDockerEnvVars returns host environment variables to forward to containers.
+// Each call reads fresh values from the host environment via os.LookupEnv so that
+// changes between session starts (e.g. updated TERM) are picked up immediately.
+// Terminal-related variables (TERM, COLORTERM, FORCE_COLOR, NO_COLOR) are always
+// included when set. Additional names from DockerSettings.Environment are appended.
+func collectDockerEnvVars(names []string) map[string]string {
+	env := make(map[string]string, len(terminalEnvVars)+len(names))
+	for _, name := range terminalEnvVars {
+		if val, ok := os.LookupEnv(name); ok {
+			env[name] = val
+		}
+	}
+	for _, name := range names {
+		if val, ok := os.LookupEnv(name); ok {
+			env[name] = val
+		}
+	}
+	return env
+}
+
+// ensureSandboxContainer creates and starts the Docker container if needed,
+// then returns the tool command wrapped in "docker exec" and the container name.
+// The userCfg parameter avoids a redundant LoadUserConfig call — the caller
+// (wrapForSandbox) already loaded it.
+func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand string) (string, string, error) {
+	// Use a bounded context to prevent indefinite hangs if Docker is unresponsive.
+	// Image pulls may take longer, but CheckAvailability/Exists/Create/Start should be fast.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	if err := docker.CheckAvailability(ctx); err != nil {
+		return "", "", fmt.Errorf("sandbox unavailable: %w", err)
+	}
+
+	if err := docker.EnsureImage(ctx, inst.Sandbox.Image); err != nil {
+		return "", "", fmt.Errorf("ensuring sandbox image: %w", err)
+	}
+
+	containerName := docker.GenerateName(inst.ID, inst.Title)
+	ctr := docker.NewContainer(containerName, inst.Sandbox.Image)
+
+	homeDir, homeErr := os.UserHomeDir()
+	if homeErr != nil {
+		sessionLog.Warn("user_home_dir", slog.String("error", homeErr.Error()))
+	}
+
+	// Skip agent config sync when home directory is unavailable — RefreshAgentConfigs
+	// would produce broken paths rooted at "/" with an empty homeDir.
+	var bindMounts []docker.VolumeMount
+	var homeMounts []docker.VolumeMount
+	if homeDir != "" {
+		bindMounts, homeMounts = docker.RefreshAgentConfigs(homeDir, "")
+	}
+
+	if err := ensureContainerRunning(ctx, inst, ctr, userCfg, homeDir, bindMounts, homeMounts); err != nil {
+		return "", "", err
+	}
+
+	return buildExecCommand(ctr, userCfg, toolCommand), containerName, nil
+}
+
+// ensureContainerRunning creates and starts the container if it doesn't exist or is stopped.
+func ensureContainerRunning(
+	ctx context.Context,
+	inst *Instance,
+	ctr *docker.Container,
+	userCfg *UserConfig,
+	homeDir string,
+	bindMounts []docker.VolumeMount,
+	homeMounts []docker.VolumeMount,
+) error {
+	exists, err := ctr.Exists(ctx)
+	if err != nil {
+		return fmt.Errorf("checking sandbox container: %w", err)
+	}
+
+	if !exists {
+		cfg := buildSandboxConfig(inst, userCfg, homeDir, bindMounts, homeMounts)
+		if _, createErr := ctr.Create(ctx, cfg); createErr != nil {
+			return fmt.Errorf("creating sandbox container: %w", createErr)
+		}
+	}
+
+	running, err := ctr.IsRunning(ctx)
+	if err != nil {
+		return fmt.Errorf("checking sandbox container status: %w", err)
+	}
+	if !running {
+		if startErr := ctr.Start(ctx); startErr != nil {
+			return fmt.Errorf("starting sandbox container: %w", startErr)
+		}
+	}
+
+	return nil
+}
+
+// buildSandboxConfig assembles the ContainerConfig from session and user settings.
+func buildSandboxConfig(
+	inst *Instance,
+	userCfg *UserConfig,
+	homeDir string,
+	bindMounts []docker.VolumeMount,
+	homeMounts []docker.VolumeMount,
+) *docker.ContainerConfig {
+	var cpuLimit, memLimit string
+	if inst.Sandbox.CPULimit != nil {
+		cpuLimit = *inst.Sandbox.CPULimit
+	}
+	if inst.Sandbox.MemoryLimit != nil {
+		memLimit = *inst.Sandbox.MemoryLimit
+	}
+	if cpuLimit == "" && userCfg != nil {
+		cpuLimit = userCfg.Docker.CPULimit
+	}
+	if memLimit == "" && userCfg != nil {
+		memLimit = userCfg.Docker.MemoryLimit
+	}
+
+	configOpts := []docker.ContainerConfigOption{
+		docker.WithCPULimit(cpuLimit),
+		docker.WithMemoryLimit(memLimit),
+		docker.WithAgentConfigs(bindMounts, homeMounts),
+	}
+
+	// Note: Docker.Environment names (e.g. TERM) are NOT forwarded at create time.
+	// They are forwarded at exec time via buildExecCommand with fresh host values.
+	// Only Docker.EnvironmentValues (static key=value pairs) are baked into the container.
+
+	if homeDir != "" {
+		gitconfigPath := filepath.Join(homeDir, ".gitconfig")
+		if _, statErr := os.Stat(gitconfigPath); statErr == nil {
+			configOpts = append(configOpts, docker.WithGitConfig(gitconfigPath))
+		}
+	}
+
+	if userCfg != nil && userCfg.Docker.MountSSH && homeDir != "" {
+		sshPath := filepath.Join(homeDir, ".ssh")
+		if _, statErr := os.Stat(sshPath); statErr == nil {
+			configOpts = append(configOpts, docker.WithSSH(sshPath))
+		}
+	}
+
+	if userCfg != nil && len(userCfg.Docker.VolumeIgnores) > 0 {
+		configOpts = append(configOpts, docker.WithVolumeIgnores(userCfg.Docker.VolumeIgnores))
+	}
+
+	if userCfg != nil && len(userCfg.Docker.ExtraVolumes) > 0 {
+		configOpts = append(configOpts, docker.WithExtraVolumes(userCfg.Docker.ExtraVolumes))
+	}
+
+	if userCfg != nil && len(userCfg.Docker.EnvironmentValues) > 0 {
+		configOpts = append(configOpts, docker.WithEnvironment(userCfg.Docker.EnvironmentValues))
+	}
+
+	return docker.NewContainerConfig(inst.ProjectPath, configOpts...)
+}
+
+// buildExecCommand returns a shell-safe "docker exec ... bash -c toolCommand" string.
+// The two-layer bash -c architecture:
+//  1. Inner: docker exec ... bash -c <toolCommand> — runs the agent command inside
+//     the container, properly shell-quoted by ShellJoinArgs.
+//  2. Outer: wrapIgnoreSuspend wraps the entire string in bash -c with stty susp undef,
+//     which tmux then delivers via its implicit /bin/sh -c.
+//
+// This prevents shell injection: toolCommand (which may contain user-controlled text
+// like session IDs) is passed as a single quoted argument to bash -c inside the container.
+func buildExecCommand(ctr *docker.Container, userCfg *UserConfig, toolCommand string) string {
+	// Always collect terminal env vars; append user-configured env var names.
+	var userNames []string
+	if userCfg != nil {
+		userNames = userCfg.Docker.Environment
+	}
+	runtimeEnv := collectDockerEnvVars(userNames)
+
+	var prefix []string
+	if len(runtimeEnv) > 0 {
+		prefix = ctr.ExecPrefixWithEnv(runtimeEnv)
+	} else {
+		prefix = ctr.ExecPrefix()
+	}
+	// Wrap toolCommand in bash -c inside the container so it is passed as a single
+	// shell-quoted argument, preventing injection of shell metacharacters.
+	return docker.ShellJoinArgs(append(prefix, "bash", "-c", toolCommand))
+}
+
 // generateID generates a unique session ID
 func generateID() string {
 	return fmt.Sprintf("%s-%d", randomString(8), time.Now().Unix())
@@ -4119,4 +4597,20 @@ func UpdateClaudeSessionsWithDedup(instances []*Instance) {
 	}
 	// No re-detection step - tmux env is the authoritative source
 	// Sessions will get their IDs from UpdateClaudeSession() during normal status updates
+}
+
+// wrapIgnoreSuspend wraps cmd in a bash -c invocation that disables CTRL+Z
+// suspension before running the command. This is the sole bash -c layer
+// in the command chain — ensureSandboxContainer returns a plain docker exec
+// string, matching AoE's single-wrapper pattern.
+//
+// No `exec` is used: compound commands (&&, ||, pipes) must remain valid
+// when passed through Restart() resume paths. The extra shell process is
+// negligible overhead.
+func wrapIgnoreSuspend(cmd string) string {
+	// Escape single quotes for safe embedding inside a single-quoted string.
+	// Pattern: end quote, add double-quoted literal quote, restart quote.
+	// Example: it's -> it'"'"'s -> bash sees: it's.
+	escaped := strings.ReplaceAll(cmd, `'`, `'"'"'`)
+	return "bash -c 'stty susp undef; " + escaped + "'"
 }
