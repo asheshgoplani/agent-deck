@@ -75,6 +75,13 @@ type Task struct {
 	ParentTaskID string     `json:"parentTaskId,omitempty"`
 }
 
+// VolumeMount describes a bind mount for container provisioning.
+type VolumeMount struct {
+	Host      string `json:"host"`
+	Container string `json:"container"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+}
+
 // Project defines a workspace that tasks can be routed to.
 type Project struct {
 	Name        string    `json:"name"`
@@ -85,6 +92,16 @@ type Project struct {
 	DefaultMCPs []string  `json:"defaultMcps,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
+
+	// Container provisioning config.
+	Image       string            `json:"image,omitempty"`
+	CPULimit    float64           `json:"cpuLimit,omitempty"`
+	MemoryLimit int64             `json:"memoryLimit,omitempty"`
+	Volumes     []VolumeMount     `json:"volumes,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+
+	// Runtime state (not persisted, populated at query time).
+	ContainerStatus string `json:"containerStatus,omitempty"`
 }
 
 // RouteResult describes a keyword-match routing result.

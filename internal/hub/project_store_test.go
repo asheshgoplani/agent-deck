@@ -204,6 +204,53 @@ func TestProjectStoreGetNotFound(t *testing.T) {
 	}
 }
 
+func TestProjectStoreRoundTripContainerConfig(t *testing.T) {
+	store := newTestProjectStore(t)
+
+	p := &Project{
+		Name:        "myapp",
+		Repo:        "org/myapp",
+		Path:        "/workspace/myapp",
+		Image:       "sandbox-image:latest",
+		CPULimit:    2.0,
+		MemoryLimit: 2 * 1024 * 1024 * 1024,
+		Volumes: []VolumeMount{
+			{Host: "/home/user/.ssh", Container: "/tmp/host-ssh", ReadOnly: true},
+		},
+		Env: map[string]string{"NODE_ENV": "development"},
+	}
+
+	if err := store.Save(p); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := store.Get("myapp")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if loaded.Image != "sandbox-image:latest" {
+		t.Fatalf("expected image sandbox-image:latest, got %s", loaded.Image)
+	}
+	if loaded.CPULimit != 2.0 {
+		t.Fatalf("expected cpuLimit 2.0, got %f", loaded.CPULimit)
+	}
+	if loaded.MemoryLimit != 2*1024*1024*1024 {
+		t.Fatalf("expected memoryLimit 2GB, got %d", loaded.MemoryLimit)
+	}
+	if len(loaded.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(loaded.Volumes))
+	}
+	if loaded.Volumes[0].Host != "/home/user/.ssh" {
+		t.Fatalf("expected volume host /home/user/.ssh, got %s", loaded.Volumes[0].Host)
+	}
+	if !loaded.Volumes[0].ReadOnly {
+		t.Fatal("expected volume to be read-only")
+	}
+	if loaded.Env["NODE_ENV"] != "development" {
+		t.Fatalf("expected env NODE_ENV=development, got %s", loaded.Env["NODE_ENV"])
+	}
+}
+
 func TestProjectStoreConcurrentAccess(t *testing.T) {
 	store := newTestProjectStore(t)
 	var wg sync.WaitGroup
