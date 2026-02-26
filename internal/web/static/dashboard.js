@@ -346,6 +346,8 @@
     // Clean up any open popups from previous view
     closeSlashPalette()
     closeModeMenu()
+    // Stop workspace polling when switching away
+    if (state.activeView !== "workspaces") stopWorkspacePolling()
 
     var panels = document.getElementById("panels")
     var placeholder = document.getElementById("view-placeholder")
@@ -740,6 +742,8 @@
   }
 
   // ── Workspaces view ──────────────────────────────────────────────
+  var workspacePollInterval = null
+
   function renderWorkspacesView() {
     var chatBar = document.getElementById("chat-bar")
     var wsEl = document.getElementById("workspaces-view")
@@ -758,7 +762,23 @@
     clearChildren(wsEl)
     wsEl.style.display = ""
 
-    // Fetch workspaces from API (graceful fallback to projects)
+    // Start polling
+    stopWorkspacePolling()
+    workspacePollInterval = setInterval(function () {
+      if (state.activeView === "workspaces") fetchWorkspaces(wsEl)
+    }, 5000)
+
+    fetchWorkspaces(wsEl)
+  }
+
+  function stopWorkspacePolling() {
+    if (workspacePollInterval) {
+      clearInterval(workspacePollInterval)
+      workspacePollInterval = null
+    }
+  }
+
+  function fetchWorkspaces(wsEl) {
     fetch(apiPathWithToken("/api/workspaces"), { headers: authHeaders() })
       .then(function (r) {
         if (!r.ok) throw new Error("workspaces fetch failed: " + r.status)
@@ -768,17 +788,16 @@
         buildWorkspacesContent(wsEl, data.workspaces || [])
       })
       .catch(function () {
-        // No workspaces API — derive from projects
+        // Fallback to projects
         var workspaces = (state.projects || []).map(function (p) {
           return {
             name: p.name,
             desc: p.description || "",
-            template: p.template || "claude-sandbox",
-            status: p.containerStatus || "running",
+            image: p.image || "",
+            containerStatus: p.containerStatus || "not_created",
             path: p.path || "/workspace/" + p.name,
-            cpu: p.cpu || "2.0",
-            mem: p.mem || "2GB",
-            container: p.container || "coder-" + p.name,
+            container: p.container || "",
+            activeTasks: 0,
           }
         })
         buildWorkspacesContent(wsEl, workspaces)
@@ -787,14 +806,12 @@
 
   function buildWorkspacesContent(container, workspaces) {
     clearChildren(container)
-
-    // Section header
-    container.appendChild(el("div", "workspaces-header", "Workspaces \u00B7 OpenTofu"))
+    container.appendChild(el("div", "workspaces-header", "Workspaces"))
 
     if (!workspaces || !workspaces.length) {
       var emptyCard = el("div", "workspace-card")
       emptyCard.appendChild(el("div", "workspace-card-name", "No workspaces configured"))
-      emptyCard.appendChild(el("div", "workspace-card-desc", "Provision a workspace to get started"))
+      emptyCard.appendChild(el("div", "workspace-card-desc", "Add a project to get started"))
       container.appendChild(emptyCard)
     } else {
       for (var i = 0; i < workspaces.length; i++) {
@@ -802,85 +819,90 @@
       }
     }
 
-    // Provision button
-    var provBtn = el("button", "workspace-provision-btn", "+ Provision new workspace (tofu apply)")
+    var provBtn = el("button", "workspace-provision-btn", "+ Add Workspace")
+    provBtn.addEventListener("click", openAddProjectModal)
     container.appendChild(provBtn)
   }
 
   function createWorkspaceCard(ws) {
     var card = el("div", "workspace-card")
-
-    // Top row: name + status badge + start/stop button
     var top = el("div", "workspace-card-top")
-
     top.appendChild(el("span", "workspace-card-name", ws.name))
 
     var actions = el("div", "workspace-card-actions")
+    var isRunning = ws.containerStatus === "running"
+    var isStopped = ws.containerStatus === "stopped"
 
-    // Status badge
-    var isRunning = ws.status === "running"
     var badge = el("span", "workspace-badge")
-    var badgeIcon = el("span", "")
-    badgeIcon.style.color = isRunning ? "var(--accent)" : "var(--text-dim)"
-    badgeIcon.textContent = isRunning ? "\u27F3" : "\u25CB"
-    badge.appendChild(badgeIcon)
-    badge.appendChild(document.createTextNode(" " + (ws.status || "stopped")))
     badge.style.color = isRunning ? "var(--accent)" : "var(--text-dim)"
+    badge.textContent = (isRunning ? "\u27F3 " : "\u25CB ") + (ws.containerStatus || "unknown")
     actions.appendChild(badge)
 
-    // Start / Stop button
     if (isRunning) {
       var stopBtn = el("button", "workspace-btn-stop", "Stop")
-      stopBtn.title = "Stop — coming soon"
-      stopBtn.disabled = true
-      stopBtn.style.opacity = "0.5"
-      stopBtn.style.cursor = "default"
+      stopBtn.addEventListener("click", function () { workspaceAction(ws.name, "stop") })
       actions.appendChild(stopBtn)
-    } else {
+    } else if (isStopped || ws.containerStatus === "not_found") {
       var startBtn = el("button", "workspace-btn-start", "Start")
-      startBtn.title = "Start — coming soon"
-      startBtn.disabled = true
-      startBtn.style.opacity = "0.5"
-      startBtn.style.cursor = "default"
+      startBtn.addEventListener("click", function () { workspaceAction(ws.name, "start") })
       actions.appendChild(startBtn)
     }
 
     top.appendChild(actions)
     card.appendChild(top)
 
-    // Description
-    if (ws.desc) {
-      card.appendChild(el("div", "workspace-card-desc", ws.desc))
+    // Info rows
+    if (ws.image) card.appendChild(el("div", "workspace-card-desc", "Image: " + ws.image))
+
+    // Stats bars (only for running containers)
+    if (isRunning && ws.memLimit > 0) {
+      var memPercent = Math.round((ws.memUsage / ws.memLimit) * 100)
+      var statsRow = el("div", "workspace-card-stats")
+      statsRow.appendChild(el("span", "", "CPU: " + (ws.cpuPercent || 0).toFixed(1) + "%"))
+      statsRow.appendChild(el("span", "", "Mem: " + formatBytes(ws.memUsage) + " / " + formatBytes(ws.memLimit) + " (" + memPercent + "%)"))
+      card.appendChild(statsRow)
     }
 
-    // Stats row
-    var stats = el("div", "workspace-card-stats")
-    stats.appendChild(el("span", "", "template: " + (ws.template || "n/a")))
-    stats.appendChild(el("span", "", "cpu: " + (ws.cpu || "n/a")))
-    stats.appendChild(el("span", "", "mem: " + (ws.mem || "n/a")))
-    card.appendChild(stats)
-
-    // Container + path
-    var pathLine = el("div", "workspace-card-path")
-    pathLine.textContent = "container: " + (ws.container || "n/a") + " \u00B7 path: " + (ws.path || "n/a")
-    card.appendChild(pathLine)
-
-    // Active agents count
-    var tasks = state.tasks || []
-    var agentCount = 0
-    for (var j = 0; j < tasks.length; j++) {
-      var t = tasks[j]
-      if (t.project === ws.name && t.tmuxSession && t.status !== "done" && t.status !== "backlog") {
-        agentCount++
-      }
+    // Path
+    if (ws.path) {
+      var pathLine = el("div", "workspace-card-path")
+      pathLine.textContent = ws.path
+      card.appendChild(pathLine)
     }
-    if (agentCount > 0) {
-      card.appendChild(el("div", "workspace-card-agents",
-        agentCount + " active tmux session" + (agentCount > 1 ? "s" : "")
-      ))
+
+    // Active tasks
+    if (ws.activeTasks > 0) {
+      card.appendChild(el("div", "workspace-card-agents", ws.activeTasks + " active task" + (ws.activeTasks !== 1 ? "s" : "")))
     }
 
     return card
+  }
+
+  function workspaceAction(name, action) {
+    var headers = authHeaders()
+    fetch(apiPathWithToken("/api/workspaces/" + encodeURIComponent(name) + "/" + action), {
+      method: "POST",
+      headers: headers,
+    })
+      .then(function () {
+        // Refresh workspace view
+        if (state.activeView === "workspaces") {
+          var wsEl = document.getElementById("workspaces-view")
+          if (wsEl) fetchWorkspaces(wsEl)
+        }
+      })
+      .catch(function (err) {
+        console.error("workspaceAction " + action + ":", err)
+      })
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return "0 B"
+    var units = ["B", "KB", "MB", "GB"]
+    var i = 0
+    var val = bytes
+    while (val >= 1024 && i < units.length - 1) { val /= 1024; i++ }
+    return val.toFixed(i > 1 ? 1 : 0) + " " + units[i]
   }
 
   // ── Filter bar ────────────────────────────────────────────────────
