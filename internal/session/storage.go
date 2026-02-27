@@ -533,6 +533,42 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 	return s.convertToInstances(data)
 }
 
+// SaveRecentSession captures a deleted session's config for quick re-creation.
+func (s *Storage) SaveRecentSession(inst *Instance) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	row := &statedb.RecentSessionRow{
+		Title:          inst.Title,
+		ProjectPath:    inst.ProjectPath,
+		GroupPath:      inst.GroupPath,
+		Command:        inst.Command,
+		Wrapper:        inst.Wrapper,
+		Tool:           inst.Tool,
+		ToolOptions:    inst.ToolOptionsJSON,
+		SandboxEnabled: inst.Sandbox != nil,
+		GeminiYoloMode: inst.GeminiYoloMode,
+	}
+
+	return s.db.SaveRecentSession(row)
+}
+
+// LoadRecentSessions returns recently deleted session configs for the picker.
+func (s *Storage) LoadRecentSessions() ([]*statedb.RecentSessionRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return nil, fmt.Errorf("storage database not initialized")
+	}
+
+	return s.db.LoadRecentSessions()
+}
+
 // GetDBPathForProfile returns the path to the state.db file for a specific profile.
 func GetDBPathForProfile(profile string) (string, error) {
 	if profile == "" {

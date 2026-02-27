@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // focusTarget identifies a focusable element in the new session dialog.
@@ -67,6 +69,26 @@ type NewDialog struct {
 	// Inline validation error displayed inside the dialog.
 	validationErr string
 	pathCycler    session.CompletionCycler // Path autocomplete state.
+	// Recent sessions picker.
+	recentSessions      []*statedb.RecentSessionRow
+	recentSessionCursor int
+	showRecentPicker    bool
+	recentSnapshot      *dialogSnapshot // saved state to restore on Esc
+}
+
+// dialogSnapshot captures form state so the recent picker can restore on cancel.
+type dialogSnapshot struct {
+	name            string
+	path            string
+	commandCursor   int
+	commandInput    string
+	sandboxEnabled  bool
+	worktreeEnabled bool
+	branch          string
+	branchAutoSet   bool
+	claudeOptions   *session.ClaudeOptions
+	geminiYolo      bool
+	codexYolo       bool
 }
 
 // buildPresetCommands returns the list of commands for the picker,
@@ -179,6 +201,8 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.suggestionNavigated = false // reset on show
 	d.pathSuggestionCursor = 0    // reset cursor too
 	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
+	d.showRecentPicker = false    // reset recent picker
+	d.recentSessionCursor = 0
 	d.pathInput.Blur()
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
@@ -254,6 +278,125 @@ func (d *NewDialog) SetPathSuggestions(paths []string) {
 	d.allPathSuggestions = paths
 	d.pathSuggestions = paths
 	d.pathSuggestionCursor = 0
+}
+
+// IsRecentPickerOpen returns whether the recent sessions picker is visible.
+func (d *NewDialog) IsRecentPickerOpen() bool {
+	return d.showRecentPicker && len(d.recentSessions) > 0
+}
+
+// SetRecentSessions sets the list of recently deleted session configs.
+func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
+	d.recentSessions = sessions
+	d.recentSessionCursor = 0
+	d.showRecentPicker = false
+}
+
+// saveSnapshot captures current form state so the picker can restore on cancel.
+func (d *NewDialog) saveSnapshot() *dialogSnapshot {
+	claudeOpts := d.claudeOptions.GetOptions()
+	if claudeOpts != nil {
+		copy := *claudeOpts
+		claudeOpts = &copy
+	}
+
+	return &dialogSnapshot{
+		name:            d.nameInput.Value(),
+		path:            d.pathInput.Value(),
+		commandCursor:   d.commandCursor,
+		commandInput:    d.commandInput.Value(),
+		sandboxEnabled:  d.sandboxEnabled,
+		worktreeEnabled: d.worktreeEnabled,
+		branch:          d.branchInput.Value(),
+		branchAutoSet:   d.branchAutoSet,
+		claudeOptions:   claudeOpts,
+		geminiYolo:      d.geminiOptions.GetYoloMode(),
+		codexYolo:       d.codexOptions.GetYoloMode(),
+	}
+}
+
+// restoreSnapshot restores form state from a snapshot.
+func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
+	d.nameInput.SetValue(s.name)
+	d.pathInput.SetValue(s.path)
+	d.commandCursor = s.commandCursor
+	d.commandInput.SetValue(s.commandInput)
+	d.sandboxEnabled = s.sandboxEnabled
+	d.worktreeEnabled = s.worktreeEnabled
+	d.branchInput.SetValue(s.branch)
+	d.branchAutoSet = s.branchAutoSet
+	if s.claudeOptions != nil {
+		d.claudeOptions.SetFromOptions(s.claudeOptions)
+	}
+	d.geminiOptions.SetDefaults(s.geminiYolo)
+	d.codexOptions.SetDefaults(s.codexYolo)
+	d.updateToolOptions()
+	d.rebuildFocusTargets()
+}
+
+// previewRecentSession pre-fills the dialog from a recent session row (keeps picker open).
+func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
+	d.nameInput.SetValue(rs.Title)
+	d.pathInput.SetValue(rs.ProjectPath)
+
+	// Default to shell/custom command mode.
+	d.commandCursor = 0
+	d.commandInput.SetValue("")
+
+	// Set command/tool.
+	if rs.Tool == "" || rs.Tool == "shell" {
+		d.commandInput.SetValue(strings.TrimSpace(rs.Command))
+	} else {
+		matched := false
+		for i, cmd := range d.presetCommands {
+			if cmd == rs.Tool {
+				d.commandCursor = i
+				matched = true
+				break
+			}
+		}
+		// If the saved tool no longer exists, fall back to shell/custom command.
+		if !matched {
+			d.commandCursor = 0
+			d.commandInput.SetValue(strings.TrimSpace(rs.Command))
+		}
+	}
+	d.updateToolOptions()
+
+	// Apply tool-specific options
+	if len(rs.ToolOptions) > 0 && string(rs.ToolOptions) != "{}" {
+		switch rs.Tool {
+		case "claude":
+			var wrapper session.ToolOptionsWrapper
+			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "claude" {
+				var opts session.ClaudeOptions
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					d.claudeOptions.SetFromOptions(&opts)
+				}
+			}
+		case "gemini":
+			if rs.GeminiYoloMode != nil {
+				d.geminiOptions.SetDefaults(*rs.GeminiYoloMode)
+			}
+		case "codex":
+			var wrapper session.ToolOptionsWrapper
+			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "codex" {
+				var opts session.CodexOptions
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.YoloMode != nil {
+					d.codexOptions.SetDefaults(*opts.YoloMode)
+				}
+			}
+		}
+	}
+
+	d.sandboxEnabled = rs.SandboxEnabled
+
+	// Reset worktree (ephemeral, never pre-filled)
+	d.worktreeEnabled = false
+	d.branchInput.SetValue("")
+	d.branchAutoSet = false
+
+	d.rebuildFocusTargets()
 }
 
 // filterPathSuggestions filters allPathSuggestions by the current path input value
@@ -543,6 +686,47 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Recent sessions picker handling
+		if d.showRecentPicker && len(d.recentSessions) > 0 {
+			switch msg.String() {
+			case "ctrl+n", "down":
+				d.recentSessionCursor = (d.recentSessionCursor + 1) % len(d.recentSessions)
+				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
+				return d, nil
+			case "ctrl+p", "up":
+				d.recentSessionCursor--
+				if d.recentSessionCursor < 0 {
+					d.recentSessionCursor = len(d.recentSessions) - 1
+				}
+				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
+				return d, nil
+			case "enter":
+				// Fields already applied via preview — just close picker.
+				d.showRecentPicker = false
+				d.recentSnapshot = nil
+				d.pathSoftSelected = true
+				return d, nil
+			case "esc", "ctrl+r":
+				// Cancel — restore original form state.
+				if d.recentSnapshot != nil {
+					d.restoreSnapshot(d.recentSnapshot)
+					d.recentSnapshot = nil
+				}
+				d.showRecentPicker = false
+				return d, nil
+			}
+			return d, nil // Consume all other keys while picker is open
+		}
+
+		// Toggle recent sessions picker
+		if msg.String() == "ctrl+r" && len(d.recentSessions) > 0 {
+			d.recentSnapshot = d.saveSnapshot()
+			d.showRecentPicker = true
+			d.recentSessionCursor = 0
+			d.previewRecentSession(d.recentSessions[0])
+			return d, nil
+		}
+
 		// Soft-select interception for path field
 		if d.focusIndex == 1 && d.pathSoftSelected {
 			switch msg.Type {
@@ -840,7 +1024,68 @@ func (d *NewDialog) View() string {
 	content.WriteString("\n")
 	groupInfoStyle := lipgloss.NewStyle().Foreground(ColorPurple) // Purple for group context
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+
+	// Recent sessions picker
+	if d.showRecentPicker && len(d.recentSessions) > 0 {
+		pickerHeaderStyle := lipgloss.NewStyle().Foreground(ColorComment)
+		pickerSelectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+		pickerItemStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+		content.WriteString("\n")
+		content.WriteString(pickerHeaderStyle.Render(
+			fmt.Sprintf("─ Recent Sessions (%d) ─ ↑↓ navigate │ Enter apply │ Esc close ─", len(d.recentSessions)),
+		))
+		content.WriteString("\n")
+
+		maxShow := 5
+		total := len(d.recentSessions)
+		startIdx := 0
+		endIdx := total
+		if total > maxShow {
+			startIdx = d.recentSessionCursor - maxShow/2
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			endIdx = startIdx + maxShow
+			if endIdx > total {
+				endIdx = total
+				startIdx = endIdx - maxShow
+			}
+		}
+
+		if startIdx > 0 {
+			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
+			content.WriteString("\n")
+		}
+
+		for i := startIdx; i < endIdx; i++ {
+			rs := d.recentSessions[i]
+			// Format: Name  (tool @ ~/shortened/path)
+			shortPath := rs.ProjectPath
+			if home, err := os.UserHomeDir(); err == nil {
+				shortPath = strings.Replace(shortPath, home, "~", 1)
+			}
+			toolLabel := rs.Tool
+			if toolLabel == "" {
+				toolLabel = "shell"
+			}
+			entry := fmt.Sprintf("%s  (%s @ %s)", rs.Title, toolLabel, shortPath)
+
+			if i == d.recentSessionCursor {
+				content.WriteString(pickerSelectedStyle.Render("  ▶ " + entry))
+			} else {
+				content.WriteString(pickerItemStyle.Render("    " + entry))
+			}
+			content.WriteString("\n")
+		}
+
+		if endIdx < total {
+			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
+			content.WriteString("\n")
+		}
+	}
+	content.WriteString("\n")
 
 	// Name input
 	if cur == focusName {
@@ -1074,7 +1319,11 @@ func (d *NewDialog) View() string {
 	helpStyle := lipgloss.NewStyle().
 		Foreground(ColorComment). // Use consistent theme color
 		MarginTop(1)
-	helpText := "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
+	recentPrefix := ""
+	if len(d.recentSessions) > 0 {
+		recentPrefix = "^R recent │ "
+	}
+	helpText := recentPrefix + "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
 	if cur == focusPath {
 		if d.pathSoftSelected {
 			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"

@@ -70,6 +70,28 @@ func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 	}
 }
 
+// SetFromOptions applies persisted ClaudeOptions to the panel fields.
+func (p *ClaudeOptionsPanel) SetFromOptions(opts *session.ClaudeOptions) {
+	if opts == nil {
+		return
+	}
+	switch opts.SessionMode {
+	case "continue":
+		p.sessionMode = 1
+	case "resume":
+		p.sessionMode = 2
+		p.resumeIDInput.SetValue(opts.ResumeSessionID)
+	default:
+		p.sessionMode = 0
+	}
+	p.skipPermissions = opts.SkipPermissions
+	p.allowSkipPermissions = opts.AllowSkipPermissions
+	p.useChrome = opts.UseChrome
+	p.useTeammateMode = opts.UseTeammateMode
+	p.updateInputFocus()
+	p.focusCount = p.getFocusCount()
+}
+
 // Focus sets focus to this panel
 func (p *ClaudeOptionsPanel) Focus() {
 	p.focusIndex = 0

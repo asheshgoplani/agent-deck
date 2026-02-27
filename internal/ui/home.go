@@ -2602,6 +2602,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Push to undo stack before removing from group tree
 		if deletedInstance != nil {
 			h.pushUndoStack(deletedInstance)
+			// Save to recent sessions for quick re-creation
+			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
+				uiLog.Warn("save_recent_session_err", slog.String("id", msg.deletedID), slog.String("err", err.Error()))
+			}
 		}
 
 		// Invalidate status counts cache
@@ -3576,6 +3580,13 @@ func (h *Home) getCurrentGroupPath() string {
 
 // handleNewDialogKey handles keys when new dialog is visible
 func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When the recent sessions picker is open, let the dialog handle all keys first.
+	if h.newDialog.IsRecentPickerOpen() {
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
+	}
+
 	switch msg.String() {
 	case "enter":
 		// Validate before creating session
@@ -4182,6 +4193,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			paths[i] = info.path
 		}
 		h.newDialog.SetPathSuggestions(paths)
+
+		// Load recent sessions for the picker
+		if recents, err := h.storage.LoadRecentSessions(); err == nil {
+			h.newDialog.SetRecentSessions(recents)
+		}
 
 		// Apply user's preferred default tool from config
 		h.newDialog.SetDefaultTool(session.GetDefaultTool())

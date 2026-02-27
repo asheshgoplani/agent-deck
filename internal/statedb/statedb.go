@@ -1,11 +1,14 @@
 package statedb
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +18,7 @@ import (
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -60,6 +63,21 @@ type StatusRow struct {
 	Status       string
 	Tool         string
 	Acknowledged bool
+}
+
+// RecentSessionRow captures the config of a deleted session for quick re-creation.
+type RecentSessionRow struct {
+	ID             string // SHA-256 dedup key (title+path+tool+group)
+	Title          string
+	ProjectPath    string
+	GroupPath      string
+	Command        string
+	Wrapper        string
+	Tool           string
+	ToolOptions    json.RawMessage // serialized ToolOptionsWrapper
+	SandboxEnabled bool
+	GeminiYoloMode *bool
+	DeletedAt      time.Time
 }
 
 // global singleton for cross-package access (status writes from background worker)
@@ -194,6 +212,25 @@ func (s *StateDB) Migrate() error {
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create heartbeats: %w", err)
+	}
+
+	// recent_sessions table (schema v2)
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS recent_sessions (
+			id              TEXT PRIMARY KEY,
+			title           TEXT NOT NULL,
+			project_path    TEXT NOT NULL,
+			group_path      TEXT NOT NULL DEFAULT '',
+			command         TEXT NOT NULL DEFAULT '',
+			wrapper         TEXT NOT NULL DEFAULT '',
+			tool            TEXT NOT NULL DEFAULT '',
+			tool_options    TEXT NOT NULL DEFAULT '{}',
+			sandbox_enabled INTEGER NOT NULL DEFAULT 0,
+			gemini_yolo     INTEGER,
+			deleted_at      INTEGER NOT NULL
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create recent_sessions: %w", err)
 	}
 
 	// Set schema version only when missing or changed.
@@ -630,4 +667,126 @@ func (s *StateDB) LastModified() (int64, error) {
 	var ts int64
 	_, err = fmt.Sscanf(val, "%d", &ts)
 	return ts, err
+}
+
+// --- Recent Sessions ---
+
+// recentSessionDedupID returns a deterministic key for deduplication.
+// It includes all persisted recreation fields so different launch configs do
+// not overwrite each other.
+func recentSessionDedupID(row *RecentSessionRow) string {
+	toolOpts := "{}"
+	if len(row.ToolOptions) > 0 {
+		toolOpts = string(row.ToolOptions)
+	}
+
+	geminiYolo := "unset"
+	if row.GeminiYoloMode != nil {
+		geminiYolo = strconv.FormatBool(*row.GeminiYoloMode)
+	}
+
+	payload := strings.Join([]string{
+		row.Title,
+		row.ProjectPath,
+		row.GroupPath,
+		row.Command,
+		row.Wrapper,
+		row.Tool,
+		toolOpts,
+		strconv.FormatBool(row.SandboxEnabled),
+		geminiYolo,
+	}, "\x00")
+
+	h := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(h[:16]) // 32-char hex
+}
+
+// SaveRecentSession inserts or replaces a recent session entry, then prunes to 20.
+func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
+	id := recentSessionDedupID(row)
+
+	toolOpts := row.ToolOptions
+	if len(toolOpts) == 0 {
+		toolOpts = json.RawMessage("{}")
+	}
+
+	sandbox := 0
+	if row.SandboxEnabled {
+		sandbox = 1
+	}
+
+	var geminiYolo *int
+	if row.GeminiYoloMode != nil {
+		v := 0
+		if *row.GeminiYoloMode {
+			v = 1
+		}
+		geminiYolo = &v
+	}
+
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO recent_sessions (
+			id, title, project_path, group_path,
+			command, wrapper, tool, tool_options,
+			sandbox_enabled, gemini_yolo, deleted_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		id, row.Title, row.ProjectPath, row.GroupPath,
+		row.Command, row.Wrapper, row.Tool, string(toolOpts),
+		sandbox, geminiYolo, time.Now().Unix(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return s.pruneRecentSessions(20)
+}
+
+// LoadRecentSessions returns all recent sessions ordered by most recently deleted.
+func (s *StateDB) LoadRecentSessions() ([]*RecentSessionRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, title, project_path, group_path,
+			command, wrapper, tool, tool_options,
+			sandbox_enabled, gemini_yolo, deleted_at
+		FROM recent_sessions ORDER BY deleted_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*RecentSessionRow
+	for rows.Next() {
+		r := &RecentSessionRow{}
+		var toolOptsStr string
+		var sandbox int
+		var geminiYolo *int
+		var deletedUnix int64
+		if err := rows.Scan(
+			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath,
+			&r.Command, &r.Wrapper, &r.Tool, &toolOptsStr,
+			&sandbox, &geminiYolo, &deletedUnix,
+		); err != nil {
+			return nil, err
+		}
+		r.ToolOptions = json.RawMessage(toolOptsStr)
+		r.SandboxEnabled = sandbox != 0
+		if geminiYolo != nil {
+			v := *geminiYolo != 0
+			r.GeminiYoloMode = &v
+		}
+		r.DeletedAt = time.Unix(deletedUnix, 0)
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// pruneRecentSessions keeps only the maxCount most recent entries.
+func (s *StateDB) pruneRecentSessions(maxCount int) error {
+	_, err := s.db.Exec(`
+		DELETE FROM recent_sessions WHERE id NOT IN (
+			SELECT id FROM recent_sessions ORDER BY deleted_at DESC LIMIT ?
+		)
+	`, maxCount)
+	return err
 }

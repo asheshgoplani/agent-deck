@@ -609,3 +609,75 @@ func TestGlobalSingleton(t *testing.T) {
 		t.Error("Expected nil after clearing")
 	}
 }
+
+func TestRecentSessions_DedupUsesFullConfig(t *testing.T) {
+	db := newTestDB(t)
+
+	common := RecentSessionRow{
+		Title:       "same-title",
+		ProjectPath: "/tmp/project",
+		GroupPath:   "default",
+		Tool:        "claude",
+	}
+	rowA := common
+	rowA.Command = "claude --one"
+	rowA.ToolOptions = json.RawMessage(`{"tool":"claude","options":{"skip_permissions":true}}`)
+
+	rowB := common
+	rowB.Command = "claude --two" // differs from rowA
+	rowB.ToolOptions = json.RawMessage(`{"tool":"claude","options":{"skip_permissions":true}}`)
+
+	rowC := common
+	rowC.Command = "claude --one"
+	rowC.ToolOptions = json.RawMessage(`{"tool":"claude","options":{"skip_permissions":false}}`) // differs from rowA
+
+	if err := db.SaveRecentSession(&rowA); err != nil {
+		t.Fatalf("SaveRecentSession(rowA): %v", err)
+	}
+	if err := db.SaveRecentSession(&rowB); err != nil {
+		t.Fatalf("SaveRecentSession(rowB): %v", err)
+	}
+	if err := db.SaveRecentSession(&rowC); err != nil {
+		t.Fatalf("SaveRecentSession(rowC): %v", err)
+	}
+
+	rows, err := db.LoadRecentSessions()
+	if err != nil {
+		t.Fatalf("LoadRecentSessions: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 distinct rows, got %d", len(rows))
+	}
+}
+
+func TestRecentSessions_DedupIdenticalConfig(t *testing.T) {
+	db := newTestDB(t)
+
+	yolo := true
+	row := &RecentSessionRow{
+		Title:          "same-title",
+		ProjectPath:    "/tmp/project",
+		GroupPath:      "default",
+		Command:        "claude --resume abc",
+		Wrapper:        "wrapper.sh",
+		Tool:           "claude",
+		ToolOptions:    json.RawMessage(`{"tool":"claude","options":{"session_mode":"resume","resume_session_id":"abc"}}`),
+		SandboxEnabled: true,
+		GeminiYoloMode: &yolo,
+	}
+
+	if err := db.SaveRecentSession(row); err != nil {
+		t.Fatalf("SaveRecentSession(first): %v", err)
+	}
+	if err := db.SaveRecentSession(row); err != nil {
+		t.Fatalf("SaveRecentSession(second): %v", err)
+	}
+
+	rows, err := db.LoadRecentSessions()
+	if err != nil {
+		t.Fatalf("LoadRecentSessions: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected deduped row count 1, got %d", len(rows))
+	}
+}
