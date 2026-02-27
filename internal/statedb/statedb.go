@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,7 +67,7 @@ type StatusRow struct {
 
 // RecentSessionRow captures the config of a deleted session for quick re-creation.
 type RecentSessionRow struct {
-	ID             string          // SHA-256 dedup key (title+path+tool+group)
+	ID             string // SHA-256 dedup key (title+path+tool+group)
 	Title          string
 	ProjectPath    string
 	GroupPath      string
@@ -671,14 +672,38 @@ func (s *StateDB) LastModified() (int64, error) {
 // --- Recent Sessions ---
 
 // recentSessionDedupID returns a deterministic key for deduplication.
-func recentSessionDedupID(title, path, tool, group string) string {
-	h := sha256.Sum256([]byte(title + "\x00" + path + "\x00" + tool + "\x00" + group))
+// It includes all persisted recreation fields so different launch configs do
+// not overwrite each other.
+func recentSessionDedupID(row *RecentSessionRow) string {
+	toolOpts := "{}"
+	if len(row.ToolOptions) > 0 {
+		toolOpts = string(row.ToolOptions)
+	}
+
+	geminiYolo := "unset"
+	if row.GeminiYoloMode != nil {
+		geminiYolo = strconv.FormatBool(*row.GeminiYoloMode)
+	}
+
+	payload := strings.Join([]string{
+		row.Title,
+		row.ProjectPath,
+		row.GroupPath,
+		row.Command,
+		row.Wrapper,
+		row.Tool,
+		toolOpts,
+		strconv.FormatBool(row.SandboxEnabled),
+		geminiYolo,
+	}, "\x00")
+
+	h := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(h[:16]) // 32-char hex
 }
 
 // SaveRecentSession inserts or replaces a recent session entry, then prunes to 20.
 func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
-	id := recentSessionDedupID(row.Title, row.ProjectPath, row.Tool, row.GroupPath)
+	id := recentSessionDedupID(row)
 
 	toolOpts := row.ToolOptions
 	if len(toolOpts) == 0 {

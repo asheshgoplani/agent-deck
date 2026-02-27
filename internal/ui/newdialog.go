@@ -78,13 +78,17 @@ type NewDialog struct {
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
 type dialogSnapshot struct {
-	name           string
-	path           string
-	commandCursor  int
-	sandboxEnabled bool
+	name            string
+	path            string
+	commandCursor   int
+	commandInput    string
+	sandboxEnabled  bool
 	worktreeEnabled bool
-	branch         string
-	branchAutoSet  bool
+	branch          string
+	branchAutoSet   bool
+	claudeOptions   *session.ClaudeOptions
+	geminiYolo      bool
+	codexYolo       bool
 }
 
 // buildPresetCommands returns the list of commands for the picker,
@@ -290,14 +294,24 @@ func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
 
 // saveSnapshot captures current form state so the picker can restore on cancel.
 func (d *NewDialog) saveSnapshot() *dialogSnapshot {
+	claudeOpts := d.claudeOptions.GetOptions()
+	if claudeOpts != nil {
+		copy := *claudeOpts
+		claudeOpts = &copy
+	}
+
 	return &dialogSnapshot{
 		name:            d.nameInput.Value(),
 		path:            d.pathInput.Value(),
 		commandCursor:   d.commandCursor,
+		commandInput:    d.commandInput.Value(),
 		sandboxEnabled:  d.sandboxEnabled,
 		worktreeEnabled: d.worktreeEnabled,
 		branch:          d.branchInput.Value(),
 		branchAutoSet:   d.branchAutoSet,
+		claudeOptions:   claudeOpts,
+		geminiYolo:      d.geminiOptions.GetYoloMode(),
+		codexYolo:       d.codexOptions.GetYoloMode(),
 	}
 }
 
@@ -306,10 +320,16 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.nameInput.SetValue(s.name)
 	d.pathInput.SetValue(s.path)
 	d.commandCursor = s.commandCursor
+	d.commandInput.SetValue(s.commandInput)
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
 	d.branchInput.SetValue(s.branch)
 	d.branchAutoSet = s.branchAutoSet
+	if s.claudeOptions != nil {
+		d.claudeOptions.SetFromOptions(s.claudeOptions)
+	}
+	d.geminiOptions.SetDefaults(s.geminiYolo)
+	d.codexOptions.SetDefaults(s.codexYolo)
 	d.updateToolOptions()
 	d.rebuildFocusTargets()
 }
@@ -319,11 +339,26 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	d.nameInput.SetValue(rs.Title)
 	d.pathInput.SetValue(rs.ProjectPath)
 
-	// Set command/tool
-	for i, cmd := range d.presetCommands {
-		if cmd == rs.Tool {
-			d.commandCursor = i
-			break
+	// Default to shell/custom command mode.
+	d.commandCursor = 0
+	d.commandInput.SetValue("")
+
+	// Set command/tool.
+	if rs.Tool == "" || rs.Tool == "shell" {
+		d.commandInput.SetValue(strings.TrimSpace(rs.Command))
+	} else {
+		matched := false
+		for i, cmd := range d.presetCommands {
+			if cmd == rs.Tool {
+				d.commandCursor = i
+				matched = true
+				break
+			}
+		}
+		// If the saved tool no longer exists, fall back to shell/custom command.
+		if !matched {
+			d.commandCursor = 0
+			d.commandInput.SetValue(strings.TrimSpace(rs.Command))
 		}
 	}
 	d.updateToolOptions()

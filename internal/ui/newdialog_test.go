@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -341,6 +343,97 @@ func TestNewDialog_TypingResetsSuggestionNavigation(t *testing.T) {
 
 	if path != "/my/new/path" {
 		t.Errorf("Typing should reset suggestion navigation\nGot: %q\nWant: %q", path, "/my/new/path")
+	}
+}
+
+func TestNewDialog_PreviewRecentSession_ShellCommand(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	d.commandCursor = 2 // non-shell
+	d.commandInput.SetValue("old-command")
+
+	rs := &statedb.RecentSessionRow{
+		Title:       "recent-shell",
+		ProjectPath: "/tmp/recent-shell",
+		Tool:        "shell",
+		Command:     "uv run agent",
+	}
+	d.previewRecentSession(rs)
+
+	if d.commandCursor != 0 {
+		t.Fatalf("commandCursor = %d, want 0 (shell)", d.commandCursor)
+	}
+	if got := d.commandInput.Value(); got != "uv run agent" {
+		t.Fatalf("commandInput = %q, want %q", got, "uv run agent")
+	}
+	if d.nameInput.Value() != "recent-shell" {
+		t.Fatalf("nameInput = %q, want %q", d.nameInput.Value(), "recent-shell")
+	}
+}
+
+func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	originalClaude := &session.ClaudeOptions{
+		SessionMode:          "resume",
+		ResumeSessionID:      "abc123",
+		SkipPermissions:      true,
+		AllowSkipPermissions: false,
+		UseChrome:            true,
+		UseTeammateMode:      true,
+	}
+	d.nameInput.SetValue("orig-name")
+	d.pathInput.SetValue("/tmp/orig")
+	d.commandCursor = 0
+	d.commandInput.SetValue("echo original")
+	d.claudeOptions.SetFromOptions(originalClaude)
+	d.geminiOptions.SetDefaults(true)
+	d.codexOptions.SetDefaults(true)
+
+	snapshot := d.saveSnapshot()
+
+	// Mutate state to ensure restore actually rewinds everything.
+	d.nameInput.SetValue("mutated-name")
+	d.pathInput.SetValue("/tmp/mutated")
+	d.commandCursor = 1
+	d.commandInput.SetValue("echo mutated")
+	d.claudeOptions.SetFromOptions(&session.ClaudeOptions{SessionMode: "new"})
+	d.geminiOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false)
+
+	d.restoreSnapshot(snapshot)
+
+	if got := d.nameInput.Value(); got != "orig-name" {
+		t.Fatalf("nameInput = %q, want %q", got, "orig-name")
+	}
+	if got := d.pathInput.Value(); got != "/tmp/orig" {
+		t.Fatalf("pathInput = %q, want %q", got, "/tmp/orig")
+	}
+	if d.commandCursor != 0 {
+		t.Fatalf("commandCursor = %d, want 0", d.commandCursor)
+	}
+	if got := d.commandInput.Value(); got != "echo original" {
+		t.Fatalf("commandInput = %q, want %q", got, "echo original")
+	}
+
+	restoredClaude := d.claudeOptions.GetOptions()
+	if restoredClaude == nil {
+		t.Fatal("restored Claude options are nil")
+	}
+	if restoredClaude.SessionMode != "resume" || restoredClaude.ResumeSessionID != "abc123" {
+		t.Fatalf("restored Claude session mode/id = %q/%q, want resume/abc123",
+			restoredClaude.SessionMode, restoredClaude.ResumeSessionID)
+	}
+	if !restoredClaude.SkipPermissions || !restoredClaude.UseChrome || !restoredClaude.UseTeammateMode {
+		t.Fatalf("restored Claude toggles incorrect: %+v", restoredClaude)
+	}
+	if !d.geminiOptions.GetYoloMode() {
+		t.Fatal("gemini yolo mode was not restored")
+	}
+	if !d.codexOptions.GetYoloMode() {
+		t.Fatal("codex yolo mode was not restored")
 	}
 }
 
