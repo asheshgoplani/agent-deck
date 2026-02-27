@@ -108,6 +108,10 @@ type Instance struct {
 	Sandbox          *SandboxConfig `json:"sandbox,omitempty"`
 	SandboxContainer string         `json:"sandbox_container,omitempty"` // Container name when running in sandbox.
 
+	// SSH remote support
+	SSHHost       string `json:"ssh_host,omitempty"`
+	SSHRemotePath string `json:"ssh_remote_path,omitempty"`
+
 	// MCP tracking - which MCPs were loaded when session started/restarted
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
@@ -169,6 +173,11 @@ type SandboxConfig struct {
 // IsSandboxed returns true if this instance is configured to run in a Docker sandbox.
 func (inst *Instance) IsSandboxed() bool {
 	return inst.Sandbox != nil && inst.Sandbox.Enabled
+}
+
+// IsSSH returns true if this instance runs on a remote host via SSH.
+func (inst *Instance) IsSSH() bool {
+	return inst.SSHHost != ""
 }
 
 // NewSandboxConfig builds a SandboxConfig from CLI flags and user settings.
@@ -4327,6 +4336,37 @@ func (i *Instance) OpenContainerShell() (string, error) {
 	return tmuxName, nil
 }
 
+// wrapForSSH wraps the command in an SSH invocation if the instance targets a remote host.
+// Uses ControlMaster for connection multiplexing to avoid repeated handshakes.
+func (i *Instance) wrapForSSH(command string) string {
+	if !i.IsSSH() {
+		return command
+	}
+
+	// Ensure ControlMaster socket directory exists
+	sshDir := "/tmp/agent-deck-ssh"
+	_ = os.MkdirAll(sshDir, 0700)
+
+	remoteCmd := command
+	if i.SSHRemotePath != "" {
+		// Escape single quotes in the remote path and command
+		escapedPath := strings.ReplaceAll(i.SSHRemotePath, "'", "'\\''")
+		escapedCmd := strings.ReplaceAll(command, "'", "'\\''")
+		remoteCmd = fmt.Sprintf("cd '%s' && %s", escapedPath, escapedCmd)
+	}
+
+	return fmt.Sprintf(
+		"ssh -t -o ControlMaster=auto -o ControlPath=/tmp/agent-deck-ssh/%%r@%%h:%%p -o ControlPersist=600 %s %s",
+		i.SSHHost,
+		shellQuote(remoteCmd),
+	)
+}
+
+// shellQuote wraps a string in single quotes, escaping embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // wrapForSandbox wraps command in docker exec if the instance is sandboxed.
 // Returns the wrapped command and the container name. The caller is responsible
 // for persisting the container name to i.SandboxContainer.
@@ -4356,6 +4396,7 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	wrapped = i.wrapForSSH(wrapped)
 	wrapped, containerName, err := i.wrapForSandbox(wrapped)
 	if err != nil {
 		return "", "", err

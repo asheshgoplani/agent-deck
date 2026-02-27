@@ -81,6 +81,10 @@ type InstanceData struct {
 
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
+
+	// SSH remote support
+	SSHHost       string `json:"ssh_host,omitempty"`
+	SSHRemotePath string `json:"ssh_remote_path,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -262,6 +266,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.CodexSessionID, inst.CodexDetectedAt,
 			inst.LatestPrompt, inst.LoadedMCPNames,
 			inst.ToolOptionsJSON,
+			inst.SSHHost, inst.SSHRemotePath,
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -401,7 +406,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			opencodeSID, opencodeAt,
 			codexSID, codexAt,
 			latestPrompt, loadedMCPs,
-			toolOpts := statedb.UnmarshalToolData(r.ToolData)
+			toolOpts,
+			sshHost2, sshRemotePath2 := statedb.UnmarshalToolData(r.ToolData)
 
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -433,6 +439,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			ToolOptionsJSON:    toolOpts,
 			LoadedMCPNames:     loadedMCPs,
+			SSHHost:            sshHost2,
+			SSHRemotePath:      sshRemotePath2,
 		}
 	}
 
@@ -483,7 +491,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			opencodeSID, opencodeAt,
 			codexSID, codexAt,
 			latestPrompt, loadedMCPs,
-			toolOpts := statedb.UnmarshalToolData(r.ToolData)
+			toolOpts,
+			sshHost, sshRemotePath := statedb.UnmarshalToolData(r.ToolData)
 
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -515,6 +524,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			ToolOptionsJSON:    toolOpts,
 			LoadedMCPNames:     loadedMCPs,
+			SSHHost:            sshHost,
+			SSHRemotePath:      sshRemotePath,
 		}
 	}
 
@@ -708,6 +719,8 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ToolOptionsJSON:    instData.ToolOptionsJSON,
 			LatestPrompt:       instData.LatestPrompt,
 			LoadedMCPNames:     instData.LoadedMCPNames,
+			SSHHost:            instData.SSHHost,
+			SSHRemotePath:      instData.SSHRemotePath,
 			tmuxSession:        tmuxSess,
 		}
 

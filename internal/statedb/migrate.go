@@ -77,6 +77,8 @@ type toolDataBlob struct {
 	LatestPrompt       string          `json:"latest_prompt,omitempty"`
 	LoadedMCPNames     []string        `json:"loaded_mcp_names,omitempty"`
 	ToolOptions        json.RawMessage `json:"tool_options,omitempty"`
+	SSHHost            string          `json:"ssh_host,omitempty"`
+	SSHRemotePath      string          `json:"ssh_remote_path,omitempty"`
 }
 
 // MigrateFromJSON reads a sessions.json file and inserts all data into the StateDB.
@@ -180,6 +182,7 @@ func MarshalToolData(
 	codexSessionID string, codexDetectedAt time.Time,
 	latestPrompt string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
+	sshHost string, sshRemotePath string,
 ) json.RawMessage {
 	td := toolDataBlob{
 		ClaudeSessionID:   claudeSessionID,
@@ -191,6 +194,8 @@ func MarshalToolData(
 		LatestPrompt:      latestPrompt,
 		LoadedMCPNames:    loadedMCPNames,
 		ToolOptions:       toolOptionsJSON,
+		SSHHost:           sshHost,
+		SSHRemotePath:     sshRemotePath,
 	}
 	if !claudeDetectedAt.IsZero() {
 		td.ClaudeDetectedAt = claudeDetectedAt.Unix()
@@ -218,6 +223,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	codexSessionID string, codexDetectedAt time.Time,
 	latestPrompt string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
+	sshHost string, sshRemotePath string,
 ) {
 	if len(data) == 0 {
 		return
@@ -247,5 +253,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	latestPrompt = td.LatestPrompt
 	loadedMCPNames = td.LoadedMCPNames
 	toolOptionsJSON = td.ToolOptions
+	sshHost = td.SSHHost
+	sshRemotePath = td.SSHRemotePath
 	return
 }

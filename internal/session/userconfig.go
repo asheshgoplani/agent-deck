@@ -108,6 +108,37 @@ type UserConfig struct {
 
 	// Docker defines Docker sandbox settings for containerized sessions
 	Docker DockerSettings `toml:"docker"`
+
+	// Remotes defines named SSH remote agent-deck instances
+	Remotes map[string]RemoteConfig `toml:"remotes"`
+}
+
+// RemoteConfig defines a remote agent-deck instance accessible via SSH.
+type RemoteConfig struct {
+	// Host is the SSH destination (e.g., "user@host" or "user@host:port")
+	Host string `toml:"host"`
+
+	// AgentDeckPath is the path to agent-deck binary on the remote (default: "agent-deck")
+	AgentDeckPath string `toml:"agent_deck_path"`
+
+	// Profile is the remote profile to use (default: "default")
+	Profile string `toml:"profile"`
+}
+
+// GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".
+func (rc RemoteConfig) GetAgentDeckPath() string {
+	if rc.AgentDeckPath != "" {
+		return rc.AgentDeckPath
+	}
+	return "agent-deck"
+}
+
+// GetProfile returns the remote profile, defaulting to "default".
+func (rc RemoteConfig) GetProfile() string {
+	if rc.Profile != "" {
+		return rc.Profile
+	}
+	return "default"
 }
 
 // ProfileSettings defines per-profile configuration overrides.
