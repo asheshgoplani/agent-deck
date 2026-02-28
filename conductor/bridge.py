@@ -26,6 +26,9 @@ import toml
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandStart
 
+from voice_transcriber import is_available as voice_is_available
+from voice_transcriber import transcribe_voice
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -87,11 +90,19 @@ def load_config() -> dict:
 
     profiles = conductor_cfg.get("profiles", ["default"])
 
+    voice_cfg = tg.get("voice", {})
+    voice = {
+        "enabled": voice_cfg.get("enabled", False),
+        "openai_api_key": voice_cfg.get("openai_api_key", os.environ.get("OPENAI_API_KEY", "")),
+        "model": voice_cfg.get("model", "whisper-1"),
+    }
+
     return {
         "token": token,
         "user_id": int(user_id),
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
         "profiles": profiles,
+        "voice": voice,
     }
 
 
@@ -440,6 +451,7 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
         if not is_authorized(message):
             return
         profile_list = ", ".join(profiles)
+        voice_status = "on" if voice_is_available(config) else "off"
         await message.answer(
             "Conductor Commands:\n"
             "/status    - Aggregated status across all profiles\n"
@@ -448,7 +460,8 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
             "/help      - This message\n\n"
             f"Profiles: {profile_list}\n"
             f"Route: /p <profile> <message> or <profile>: <message>\n"
-            f"Default: messages go to {default_profile} conductor"
+            f"Default: messages go to {default_profile} conductor\n"
+            f"Voice messages: {voice_status}"
         )
 
     @dp.message(Command("restart"))
@@ -482,20 +495,34 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
 
     @dp.message()
     async def handle_message(message: types.Message):
-        """Forward any text message to the conductor and return its response."""
+        """Forward text or voice messages to the conductor and return its response."""
         if not is_authorized(message):
             return
-        if not message.text:
+
+        user_text: str | None = None
+
+        if message.voice and voice_is_available(config):
+            await message.answer("[Transcribing voice...]")
+            user_text = await transcribe_voice(bot, message.voice.file_id, config)
+            if not user_text:
+                await message.answer("[Could not transcribe voice message. Try again or send text.]")
+                return
+            await message.answer(f"[Heard: {user_text}]")
+
+        elif message.text:
+            user_text = message.text
+
+        if not user_text:
             return
 
         # Determine target profile from message prefix
         target_profile, cleaned_msg = parse_profile_prefix(
-            message.text, profiles
+            user_text, profiles
         )
         if target_profile is None:
             target_profile = default_profile
         if not cleaned_msg:
-            cleaned_msg = message.text
+            cleaned_msg = user_text
 
         session_title = conductor_session_title(target_profile)
 
@@ -699,6 +726,11 @@ async def main():
         config["heartbeat_interval"],
         ", ".join(config["profiles"]),
     )
+
+    if voice_is_available(config):
+        log.info("Voice transcription enabled (model=%s)", config["voice"]["model"])
+    else:
+        log.info("Voice transcription disabled")
 
     bot, dp = create_bot(config)
 
