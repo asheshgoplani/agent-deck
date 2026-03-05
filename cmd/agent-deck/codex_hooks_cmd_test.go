@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestMapCodexNotifyToStatus(t *testing.T) {
@@ -131,6 +133,40 @@ func TestHandleCodexNotify_JSONRPCMethodPayload(t *testing.T) {
 	}
 	if hook.SessionID != "thr-42" {
 		t.Fatalf("hook session_id = %q, want thr-42", hook.SessionID)
+	}
+}
+
+func TestHandleCodexNotify_EmptyTailEventKeepsJSONEmptyAndPersistsAnchor(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("AGENTDECK_INSTANCE_ID", "inst-sticky")
+	t.Setenv("CODEX_SESSION_ID", "")
+
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+
+	// Seed sticky mapping with a thread_id-bearing event.
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/started","thread_id":"thr-sticky"}`}
+	handleCodexNotify()
+
+	// Tail event has no session_id/thread_id; should backfill from sticky store.
+	os.Args = []string{"agent-deck", "codex-notify", `{"event":"turn/completed"}`}
+	handleCodexNotify()
+
+	hookPath := filepath.Join(getHooksDir(), "inst-sticky.json")
+	data, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("read hook file: %v", err)
+	}
+	var hook hookStatusFile
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("unmarshal hook: %v", err)
+	}
+	if hook.SessionID != "" {
+		t.Fatalf("hook session_id = %q, want empty for compatibility", hook.SessionID)
+	}
+	if got := session.ReadHookSessionAnchor("inst-sticky"); got != "thr-sticky" {
+		t.Fatalf("session anchor = %q, want thr-sticky", got)
 	}
 }
 

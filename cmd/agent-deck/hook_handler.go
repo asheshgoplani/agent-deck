@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -112,6 +113,13 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 		return
 	}
 
+	sessionID = strings.TrimSpace(sessionID)
+	// Preserve legacy hook JSON semantics: empty stays empty.
+	// Persist non-empty session IDs in a sidecar, to be used only when reading.
+	if sessionID != "" {
+		session.WriteHookSessionAnchor(instanceID, sessionID)
+	}
+
 	statusFile := hookStatusFile{
 		Status:    status,
 		SessionID: sessionID,
@@ -130,6 +138,71 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 		return
 	}
 	_ = os.Rename(tmpPath, filePath)
+
+	// Clear sticky session mapping when the upstream session is explicitly ended.
+	if isTerminalHookEvent(event) {
+		session.ClearHookSessionAnchor(instanceID)
+	}
+}
+
+func isTerminalHookEvent(event string) bool {
+	e := strings.ToLower(strings.TrimSpace(event))
+	if e == "" {
+		return false
+	}
+	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/", " ", "/").Replace(e)
+	compact := strings.NewReplacer("/", "", "-", "", "_", "", ".", "", " ", "").Replace(e)
+
+	if hasTerminalSuffixForSubject(canon, "session/") || hasTerminalSuffixForSubject(canon, "thread/") {
+		return true
+	}
+	// Fallback for formats without separators (e.g. SessionEnd, ThreadClosed).
+	if hasTerminalCompactForSubject(compact, "session") || hasTerminalCompactForSubject(compact, "thread") {
+		return true
+	}
+	return false
+}
+
+func hasTerminalSuffixForSubject(canon, subject string) bool {
+	idx := strings.Index(canon, subject)
+	if idx < 0 {
+		return false
+	}
+	tail := canon[idx+len(subject):]
+	return isTerminalTail(tail)
+}
+
+func hasTerminalCompactForSubject(compact, subject string) bool {
+	if !strings.HasPrefix(compact, subject) {
+		return false
+	}
+	tail := strings.TrimPrefix(compact, subject)
+	return isTerminalTail(tail)
+}
+
+func isTerminalTail(tail string) bool {
+	tail = strings.TrimSpace(tail)
+	if tail == "" {
+		return false
+	}
+	// Guard against false-positive state transitions.
+	if strings.Contains(tail, "suspend") || strings.Contains(tail, "pending") {
+		return false
+	}
+	terminalKeywords := []string{
+		"end", "ended",
+		"stop", "stopped",
+		"terminate", "terminated",
+		"close", "closed",
+		"done",
+		"exit", "exited",
+	}
+	for _, kw := range terminalKeywords {
+		if strings.Contains(tail, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // getHooksDir returns the path to the hooks status directory.
@@ -151,7 +224,8 @@ func cleanStaleHookFiles() {
 
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		ext := filepath.Ext(entry.Name())
+		if entry.IsDir() || (ext != ".json" && ext != ".sid") {
 			continue
 		}
 		info, err := entry.Info()

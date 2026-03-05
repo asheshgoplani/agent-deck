@@ -2435,47 +2435,51 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.hookStatus = status.Status
 	i.hookLastUpdate = status.UpdatedAt
 
-	// Sync session ID from hook if provided.
-	if status.SessionID == "" {
+	// Resolve session ID from hook payload first, then sidecar anchor.
+	sessionID := strings.TrimSpace(status.SessionID)
+	if sessionID == "" {
+		sessionID = ReadHookSessionAnchor(i.ID)
+	}
+	if sessionID == "" {
 		return
 	}
 
 	switch {
 	case IsClaudeCompatible(i.Tool):
-		if status.SessionID == i.ClaudeSessionID {
+		if sessionID == i.ClaudeSessionID {
 			return
 		}
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
-		if i.ClaudeSessionID == "" || sessionHasConversationData(status.SessionID, i.ProjectPath) {
+		if i.ClaudeSessionID == "" || sessionHasConversationData(sessionID, i.ProjectPath) {
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
-				slog.String("new_id", status.SessionID),
+				slog.String("new_id", sessionID),
 				slog.String("event", status.Event),
 			)
-			i.ClaudeSessionID = status.SessionID
+			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
-			i.hookSessionID = status.SessionID
+			i.hookSessionID = sessionID
 
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
-				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", status.SessionID)
+				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 			}
 		}
 	case i.Tool == "codex":
-		if status.SessionID == i.CodexSessionID {
+		if sessionID == i.CodexSessionID {
 			return
 		}
 		sessionLog.Debug("codex_session_update_from_hook",
 			slog.String("old_id", i.CodexSessionID),
-			slog.String("new_id", status.SessionID),
+			slog.String("new_id", sessionID),
 			slog.String("event", status.Event),
 		)
-		i.CodexSessionID = status.SessionID
+		i.CodexSessionID = sessionID
 		i.CodexDetectedAt = time.Now()
-		i.hookSessionID = status.SessionID
+		i.hookSessionID = sessionID
 
 		if i.tmuxSession != nil && i.tmuxSession.Exists() {
-			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", status.SessionID)
+			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
 		}
 	}
 }

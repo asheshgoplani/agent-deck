@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestMapEventToStatus(t *testing.T) {
@@ -162,5 +164,92 @@ func TestHookPayload_Unmarshal(t *testing.T) {
 				t.Errorf("SessionID = %q, want %q", p.SessionID, tt.session)
 			}
 		})
+	}
+}
+
+func TestWriteHookStatus_EmptyEventDoesNotBackfillJSON(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	instanceID := "inst-sticky"
+	writeHookStatus(instanceID, "waiting", "sess-1", "SessionStart")
+	writeHookStatus(instanceID, "running", "", "UserPromptSubmit")
+
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
+	if err != nil {
+		t.Fatalf("read hook file: %v", err)
+	}
+	var hook hookStatusFile
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("unmarshal hook: %v", err)
+	}
+	if hook.SessionID != "" {
+		t.Fatalf("hook session_id = %q, want empty for compatibility", hook.SessionID)
+	}
+	if got := session.ReadHookSessionAnchor(instanceID); got != "sess-1" {
+		t.Fatalf("session anchor = %q, want sess-1", got)
+	}
+}
+
+func TestWriteHookStatus_ClearsStickySessionOnSessionEnd(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	instanceID := "inst-end"
+	writeHookStatus(instanceID, "waiting", "sess-2", "SessionStart")
+	writeHookStatus(instanceID, "dead", "", "SessionEnd")
+	writeHookStatus(instanceID, "waiting", "", "Stop")
+
+	data, err := os.ReadFile(filepath.Join(getHooksDir(), instanceID+".json"))
+	if err != nil {
+		t.Fatalf("read hook file: %v", err)
+	}
+	var hook hookStatusFile
+	if err := json.Unmarshal(data, &hook); err != nil {
+		t.Fatalf("unmarshal hook: %v", err)
+	}
+	if hook.SessionID != "" {
+		t.Fatalf("hook session_id = %q, want empty after SessionEnd cleanup", hook.SessionID)
+	}
+	if got := session.ReadHookSessionAnchor(instanceID); got != "" {
+		t.Fatalf("session anchor = %q, want empty after SessionEnd cleanup", got)
+	}
+}
+
+func TestWriteHookStatus_StopDoesNotClearStickySession(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	instanceID := "inst-stop"
+	writeHookStatus(instanceID, "waiting", "sess-3", "SessionStart")
+	writeHookStatus(instanceID, "waiting", "", "Stop")
+
+	if got := session.ReadHookSessionAnchor(instanceID); got != "sess-3" {
+		t.Fatalf("session anchor = %q, want sess-3", got)
+	}
+}
+
+func TestIsTerminalHookEvent(t *testing.T) {
+	tests := []struct {
+		event  string
+		expect bool
+	}{
+		{event: "SessionEnd", expect: true},
+		{event: "session_end", expect: true},
+		{event: "session.closed", expect: true},
+		{event: "ThreadClosed", expect: true},
+		{event: "thread/terminated", expect: true},
+		{event: "thread_done", expect: true},
+		{event: "thread-exit", expect: true},
+		{event: "Stop", expect: false},
+		{event: "UserPromptSubmit", expect: false},
+		{event: "thread_suspended", expect: false},
+		{event: "session_pending", expect: false},
+	}
+
+	for _, tt := range tests {
+		if got := isTerminalHookEvent(tt.event); got != tt.expect {
+			t.Fatalf("isTerminalHookEvent(%q) = %v, want %v", tt.event, got, tt.expect)
+		}
 	}
 }

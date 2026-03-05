@@ -2599,6 +2599,44 @@ func TestInstance_UpdateHookStatus_Nil(t *testing.T) {
 	}
 }
 
+func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_Claude(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	inst := NewInstanceWithTool("hook-anchor-claude", "/tmp/test", "claude")
+	WriteHookSessionAnchor(inst.ID, "anchor-claude-1")
+
+	hookStatus := &HookStatus{
+		Status:    "waiting",
+		SessionID: "",
+		Event:     "Stop",
+		UpdatedAt: time.Now(),
+	}
+	inst.UpdateHookStatus(hookStatus)
+
+	if inst.ClaudeSessionID != "anchor-claude-1" {
+		t.Fatalf("ClaudeSessionID = %q, want anchor-claude-1", inst.ClaudeSessionID)
+	}
+}
+
+func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_Codex(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	inst := NewInstanceWithTool("hook-anchor-codex", "/tmp/test", "codex")
+	WriteHookSessionAnchor(inst.ID, "anchor-codex-1")
+
+	hookStatus := &HookStatus{
+		Status:    "waiting",
+		SessionID: "",
+		Event:     "turn/completed",
+		UpdatedAt: time.Now(),
+	}
+	inst.UpdateHookStatus(hookStatus)
+
+	if inst.CodexSessionID != "anchor-codex-1" {
+		t.Fatalf("CodexSessionID = %q, want anchor-codex-1", inst.CodexSessionID)
+	}
+}
+
 func TestInstance_SetAcknowledgedFromShared_RunningIgnored(t *testing.T) {
 	inst := NewInstanceWithTool("ack-shared-running", "/tmp/test", "codex")
 	inst.Status = StatusRunning
