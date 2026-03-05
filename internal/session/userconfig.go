@@ -121,7 +121,9 @@ type OpenClawSettings struct {
 	// GatewayURL is the WebSocket URL of the OpenClaw gateway (default: "ws://127.0.0.1:31337")
 	GatewayURL string `toml:"gateway_url"`
 
-	// Password is the gateway authentication password
+	// Password is the gateway authentication password.
+	// Supports env var references (e.g. "$OPENCLAW_PASSWORD" or "${OPENCLAW_PASSWORD}").
+	// Falls back to OPENCLAW_PASSWORD env var if not set.
 	Password string `toml:"password"`
 
 	// AutoSync syncs OpenClaw agents as agent-deck sessions on TUI startup

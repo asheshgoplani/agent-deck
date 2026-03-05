@@ -377,11 +377,20 @@ func loadOpenClawConfig() *session.OpenClawSettings {
 	if err != nil || config == nil {
 		return &session.OpenClawSettings{
 			GatewayURL: openclaw.DefaultGatewayURL,
+			Password:   os.Getenv("OPENCLAW_PASSWORD"),
 		}
 	}
 	cfg := &config.OpenClaw
 	if cfg.GatewayURL == "" {
 		cfg.GatewayURL = openclaw.DefaultGatewayURL
+	}
+	// Expand env var references in password (e.g. "$OPENCLAW_PASSWORD")
+	if strings.HasPrefix(cfg.Password, "$") {
+		cfg.Password = os.ExpandEnv(cfg.Password)
+	}
+	// Fall back to env var if password is still empty
+	if cfg.Password == "" {
+		cfg.Password = os.Getenv("OPENCLAW_PASSWORD")
 	}
 	return cfg
 }
