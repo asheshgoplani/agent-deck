@@ -278,6 +278,9 @@ func main() {
 		case "codex-hooks":
 			handleCodexHooks(args[1:])
 			return
+		case "gemini-hooks":
+			handleGeminiHooks(args[1:])
+			return
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
 			return
@@ -2157,6 +2160,7 @@ func printHelp() {
 	fmt.Println("  mcp              Manage MCP servers")
 	fmt.Println("  skill            Manage Claude skills")
 	fmt.Println("  codex-hooks      Manage Codex notify hook integration")
+	fmt.Println("  gemini-hooks     Manage Gemini hook integration")
 	fmt.Println("  group            Manage groups")
 	fmt.Println("  worktree, wt     Manage git worktrees")
 	fmt.Println("  web              Start TUI with web UI server running alongside")
@@ -2192,6 +2196,9 @@ func printHelp() {
 	fmt.Println("  codex-hooks install       Install or upgrade Codex notify hook")
 	fmt.Println("  codex-hooks uninstall     Remove Codex notify hook")
 	fmt.Println("  codex-hooks status        Show Codex hook install status")
+	fmt.Println("  gemini-hooks install      Install Gemini hooks")
+	fmt.Println("  gemini-hooks uninstall    Remove Gemini hooks")
+	fmt.Println("  gemini-hooks status       Show Gemini hooks install status")
 	fmt.Println()
 	fmt.Println("Group Commands:")
 	fmt.Println("  group list                List all groups")

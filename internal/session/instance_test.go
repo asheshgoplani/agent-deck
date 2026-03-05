@@ -2637,6 +2637,60 @@ func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_Codex(t *t
 	}
 }
 
+func TestInstance_UpdateHookStatus_GeminiRejectsCandidateWithoutConversationData(t *testing.T) {
+	tmpDir := t.TempDir()
+	geminiConfigDirOverride = tmpDir
+	defer func() { geminiConfigDirOverride = "" }()
+
+	inst := NewInstanceWithTool("hook-gemini-reject", "/tmp/test", "gemini")
+	inst.GeminiSessionID = "current-gemini-session"
+
+	hookStatus := &HookStatus{
+		Status:    "waiting",
+		SessionID: "candidate-no-data",
+		Event:     "AfterAgent",
+		UpdatedAt: time.Now(),
+	}
+	inst.UpdateHookStatus(hookStatus)
+
+	if inst.GeminiSessionID != "current-gemini-session" {
+		t.Fatalf("GeminiSessionID = %q, want current-gemini-session", inst.GeminiSessionID)
+	}
+}
+
+func TestInstance_UpdateHookStatus_GeminiAcceptsCandidateWithConversationData(t *testing.T) {
+	tmpDir := t.TempDir()
+	geminiConfigDirOverride = tmpDir
+	defer func() { geminiConfigDirOverride = "" }()
+
+	projectPath := "/tmp/test-gemini-project"
+	inst := NewInstanceWithTool("hook-gemini-accept", projectPath, "gemini")
+	inst.GeminiSessionID = "current-gemini-session"
+
+	candidateID := "11111111-2222-3333-4444-555555555555"
+	sessionsDir := GetGeminiSessionsDir(projectPath)
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		t.Fatalf("mkdir sessions dir: %v", err)
+	}
+	filePath := filepath.Join(sessionsDir, "session-2026-03-05T10-00-"+candidateID[:8]+".json")
+	content := `{"sessionId":"` + candidateID + `","messages":[{"type":"user","content":"hi"}]}`
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	hookStatus := &HookStatus{
+		Status:    "waiting",
+		SessionID: candidateID,
+		Event:     "AfterAgent",
+		UpdatedAt: time.Now(),
+	}
+	inst.UpdateHookStatus(hookStatus)
+
+	if inst.GeminiSessionID != candidateID {
+		t.Fatalf("GeminiSessionID = %q, want %q", inst.GeminiSessionID, candidateID)
+	}
+}
+
 func TestInstance_SetAcknowledgedFromShared_RunningIgnored(t *testing.T) {
 	inst := NewInstanceWithTool("ack-shared-running", "/tmp/test", "codex")
 	inst.Status = StatusRunning

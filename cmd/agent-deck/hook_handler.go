@@ -34,10 +34,18 @@ type hookStatusFile struct {
 //   - "running" = Claude is actively processing (green)
 //   - "waiting" = Claude is at the prompt, waiting for user input (orange)
 //   - "dead"    = Session ended
+//
+// Gemini mappings:
+//   - "BeforeAgent" = running
+//   - "AfterAgent"  = waiting
 func mapEventToStatus(event string) string {
 	switch event {
 	case "SessionStart":
 		return "waiting" // Claude at initial prompt, waiting for user input
+	case "BeforeAgent":
+		return "running" // Gemini received user input and is processing
+	case "AfterAgent":
+		return "waiting" // Gemini completed response, back to waiting
 	case "UserPromptSubmit":
 		return "running" // User sent prompt, Claude is processing
 	case "Stop":
@@ -146,63 +154,21 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 }
 
 func isTerminalHookEvent(event string) bool {
-	e := strings.ToLower(strings.TrimSpace(event))
-	if e == "" {
+	norm := strings.ToLower(strings.TrimSpace(event))
+	if norm == "" {
 		return false
 	}
-	canon := strings.NewReplacer(".", "/", "-", "/", "_", "/", " ", "/").Replace(e)
-	compact := strings.NewReplacer("/", "", "-", "", "_", "", ".", "", " ", "").Replace(e)
-
-	if hasTerminalSuffixForSubject(canon, "session/") || hasTerminalSuffixForSubject(canon, "thread/") {
+	norm = strings.NewReplacer(".", "", "-", "", "_", "", "/", "", " ", "").Replace(norm)
+	// Explicit terminal event allowlist. Keep this narrow to avoid clearing
+	// sidecar on ordinary non-terminal "Stop"/turn-complete style events.
+	switch norm {
+	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
+		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
+		"threaddone", "threadexit", "threadexited":
 		return true
-	}
-	// Fallback for formats without separators (e.g. SessionEnd, ThreadClosed).
-	if hasTerminalCompactForSubject(compact, "session") || hasTerminalCompactForSubject(compact, "thread") {
-		return true
-	}
-	return false
-}
-
-func hasTerminalSuffixForSubject(canon, subject string) bool {
-	idx := strings.Index(canon, subject)
-	if idx < 0 {
+	default:
 		return false
 	}
-	tail := canon[idx+len(subject):]
-	return isTerminalTail(tail)
-}
-
-func hasTerminalCompactForSubject(compact, subject string) bool {
-	if !strings.HasPrefix(compact, subject) {
-		return false
-	}
-	tail := strings.TrimPrefix(compact, subject)
-	return isTerminalTail(tail)
-}
-
-func isTerminalTail(tail string) bool {
-	tail = strings.TrimSpace(tail)
-	if tail == "" {
-		return false
-	}
-	// Guard against false-positive state transitions.
-	if strings.Contains(tail, "suspend") || strings.Contains(tail, "pending") {
-		return false
-	}
-	terminalKeywords := []string{
-		"end", "ended",
-		"stop", "stopped",
-		"terminate", "terminated",
-		"close", "closed",
-		"done",
-		"exit", "exited",
-	}
-	for _, kw := range terminalKeywords {
-		if strings.Contains(tail, kw) {
-			return true
-		}
-	}
-	return false
 }
 
 // getHooksDir returns the path to the hooks status directory.

@@ -2149,7 +2149,9 @@ func (i *Instance) UpdateStatus() error {
 
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
-	if (IsClaudeCompatible(i.Tool) || i.Tool == "codex") &&
+	// When this path is stale/missing, control naturally falls through to tmux
+	// polling and tool-specific session sync (tmux env/process-files/disk).
+	if (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -2194,6 +2196,11 @@ func (i *Instance) UpdateStatus() error {
 				if i.hookSessionID != i.CodexSessionID {
 					i.CodexSessionID = i.hookSessionID
 					i.CodexDetectedAt = time.Now()
+				}
+			case i.Tool == "gemini":
+				if i.hookSessionID != i.GeminiSessionID {
+					i.GeminiSessionID = i.hookSessionID
+					i.GeminiDetectedAt = time.Now()
 				}
 			}
 		}
@@ -2480,6 +2487,26 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 		if i.tmuxSession != nil && i.tmuxSession.Exists() {
 			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
+		}
+	case i.Tool == "gemini":
+		if sessionID == i.GeminiSessionID {
+			return
+		}
+		// Quality gate: only accept when candidate session appears valid on disk,
+		// OR when current session is empty (first detection/bootstrap).
+		if i.GeminiSessionID == "" || geminiSessionHasConversationData(sessionID, i.ProjectPath) {
+			sessionLog.Debug("gemini_session_update_from_hook",
+				slog.String("old_id", i.GeminiSessionID),
+				slog.String("new_id", sessionID),
+				slog.String("event", status.Event),
+			)
+			i.GeminiSessionID = sessionID
+			i.GeminiDetectedAt = time.Now()
+			i.hookSessionID = sessionID
+
+			if i.tmuxSession != nil && i.tmuxSession.Exists() {
+				_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", sessionID)
+			}
 		}
 	}
 }
@@ -4391,6 +4418,47 @@ func (i *Instance) regenerateMCPConfig() error {
 		mcpLog.Debug("regen_local_mcp_succeeded", slog.String("title", i.Title), slog.Int("mcp_count", len(localMCPs)))
 	}
 	return nil
+}
+
+// geminiSessionHasConversationData checks whether a Gemini session file exists
+// and contains at least one message record.
+//
+// Returns true on read/parse errors as a safe fallback, matching Claude quality-gate
+// behavior (avoid dropping potentially valid sessions due to transient I/O issues).
+func geminiSessionHasConversationData(sessionID, projectPath string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || len(sessionID) < 8 {
+		return false
+	}
+
+	sessionsDir := GetGeminiSessionsDir(projectPath)
+	pattern := filepath.Join(sessionsDir, "session-*-"+sessionID[:8]+".json")
+	filePath, _ := findNewestFile(pattern)
+	if filePath == "" {
+		filePath = findGeminiSessionInAllProjects(sessionID)
+	}
+	if filePath == "" {
+		return false
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return true
+	}
+
+	var payload struct {
+		SessionID string            `json:"sessionId"`
+		Messages  []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return true
+	}
+
+	// If full ID is present in file and mismatches, treat candidate as invalid.
+	if payload.SessionID != "" && payload.SessionID != sessionID {
+		return false
+	}
+	return len(payload.Messages) > 0
 }
 
 // sessionHasConversationData checks if a Claude session file contains actual

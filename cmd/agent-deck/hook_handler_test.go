@@ -16,6 +16,8 @@ func TestMapEventToStatus(t *testing.T) {
 		expect string
 	}{
 		{"SessionStart", "waiting"},
+		{"BeforeAgent", "running"},
+		{"AfterAgent", "waiting"},
 		{"UserPromptSubmit", "running"},
 		{"Stop", "waiting"},
 		{"PermissionRequest", "waiting"},
