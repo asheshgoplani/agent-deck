@@ -163,13 +163,13 @@ For any other text, treat it as a conversational message from the user. They mig
 When messages arrive from Slack, the bridge tags them with sender and channel context:
 
 ` + "```" + `
-[from:alice] [channel:#bugs] the login button is broken
-[from:bob] [dm] can you check the API?
-[from:charlie] [channel:#feature-requests] add dark mode support
+[from:alice (U12345)] [channel:#bugs (C67890)] the login button is broken
+[from:bob (U11111)] [dm] can you check the API?
+[from:charlie (U22222)] [channel:#feature-requests (C33333)] add dark mode support
 ` + "```" + `
 
-- ` + "`" + `[from:<name>]` + "`" + ` — The Slack display name of the sender
-- ` + "`" + `[channel:#<name>]` + "`" + ` — The Slack channel the message came from
+- ` + "`" + `[from:<name> (<user_id>)]` + "`" + ` — The Slack display name and stable user ID of the sender
+- ` + "`" + `[channel:#<name> (<channel_id>)]` + "`" + ` — The Slack channel name and stable channel ID
 - ` + "`" + `[dm]` + "`" + ` — The message was sent via direct message
 
 Use these tags to:
@@ -177,7 +177,7 @@ Use these tags to:
 - **Route by channel** — messages from #bugs are likely bug reports, #ideas are feature requests
 - **Include sender context in escalations** — e.g., "NEED: @alice (#bugs): login button broken"
 
-If the bridge cannot resolve a name, the raw Slack ID appears instead (e.g., ` + "`" + `[from:U12345]` + "`" + `, ` + "`" + `[channel:C99999]` + "`" + `).
+If the bridge cannot resolve a name (temporary API failure), the raw Slack ID appears alone (e.g., ` + "`" + `[from:U12345 (U12345)]` + "`" + `, ` + "`" + `[channel:C99999]` + "`" + `). Failed lookups are retried automatically after 5 minutes.
 
 ## Important Notes
 
@@ -1133,31 +1133,46 @@ def create_slack_app(config: dict):
         return True
 
     # Caches for Slack user/channel name resolution.
-    _user_cache: dict[str, str] = {}
-    _channel_cache: dict[str, str] = {}
+    # Entries: (value: str, expires_at: float | None).
+    # Successful lookups never expire; failures expire after 5 minutes.
+    _NEGATIVE_TTL = 300  # seconds
+    _user_cache: dict[str, tuple[str, float | None]] = {}
+    _channel_cache: dict[str, tuple[str, float | None]] = {}
+
+    def _cache_get(cache: dict, key: str) -> str | None:
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if expires_at is not None and time.monotonic() > expires_at:
+            del cache[key]
+            return None
+        return value
 
     async def resolve_slack_username(user_id: str) -> str:
         """Resolve a Slack user ID to a display name, with caching."""
-        if user_id in _user_cache:
-            return _user_cache[user_id]
+        cached = _cache_get(_user_cache, user_id)
+        if cached is not None:
+            return cached
         try:
             resp = await app.client.users_info(user=user_id)
             profile = resp["user"]["profile"]
             name = profile.get("display_name") or profile.get("real_name") or user_id
-            _user_cache[user_id] = name
+            _user_cache[user_id] = (name, None)
             return name
         except Exception as e:
             log.warning("Failed to resolve Slack user %s: %s", user_id, e)
-            _user_cache[user_id] = user_id
+            _user_cache[user_id] = (user_id, time.monotonic() + _NEGATIVE_TTL)
             return user_id
 
     async def resolve_slack_channel(event_channel: str) -> str:
         """Resolve a Slack channel ID to a context tag.
 
-        Returns '[channel:#name]' for channels or '[dm]' for direct messages.
+        Returns '[channel:#name (ID)]' for channels or '[dm]' for DMs.
         """
-        if event_channel in _channel_cache:
-            return _channel_cache[event_channel]
+        cached = _cache_get(_channel_cache, event_channel)
+        if cached is not None:
+            return cached
         try:
             resp = await app.client.conversations_info(channel=event_channel)
             ch = resp["channel"]
@@ -1165,13 +1180,13 @@ def create_slack_app(config: dict):
                 tag = "[dm]"
             else:
                 name = ch.get("name", event_channel)
-                tag = f"[channel:#{name}]"
-            _channel_cache[event_channel] = tag
+                tag = f"[channel:#{name} ({event_channel})]"
+            _channel_cache[event_channel] = (tag, None)
             return tag
         except Exception as e:
             log.warning("Failed to resolve Slack channel %s: %s", event_channel, e)
             tag = f"[channel:{event_channel}]"
-            _channel_cache[event_channel] = tag
+            _channel_cache[event_channel] = (tag, time.monotonic() + _NEGATIVE_TTL)
             return tag
 
     def get_default_conductor() -> dict | None:
@@ -1217,10 +1232,17 @@ def create_slack_app(config: dict):
 
         # Enrich message with sender and channel context for the conductor.
         prefix_parts = []
-        if user_id:
+        if user_id and event_channel:
+            username, channel_tag = await asyncio.gather(
+                resolve_slack_username(user_id),
+                resolve_slack_channel(event_channel),
+            )
+            prefix_parts.append(f"[from:{username} ({user_id})]")
+            prefix_parts.append(channel_tag)
+        elif user_id:
             username = await resolve_slack_username(user_id)
-            prefix_parts.append(f"[from:{username}]")
-        if event_channel:
+            prefix_parts.append(f"[from:{username} ({user_id})]")
+        elif event_channel:
             channel_tag = await resolve_slack_channel(event_channel)
             prefix_parts.append(channel_tag)
         if prefix_parts:

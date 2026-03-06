@@ -173,13 +173,13 @@ For any other text, treat it as a conversational message from the user. They mig
 When messages arrive from Slack, the bridge tags them with sender and channel context:
 
 ```
-[from:alice] [channel:#bugs] the login button is broken
-[from:bob] [dm] can you check the API?
-[from:charlie] [channel:#feature-requests] add dark mode support
+[from:alice (U12345)] [channel:#bugs (C67890)] the login button is broken
+[from:bob (U11111)] [dm] can you check the API?
+[from:charlie (U22222)] [channel:#feature-requests (C33333)] add dark mode support
 ```
 
-- `[from:<name>]` — The Slack display name of the sender
-- `[channel:#<name>]` — The Slack channel the message came from
+- `[from:<name> (<user_id>)]` — The Slack display name and stable user ID of the sender
+- `[channel:#<name> (<channel_id>)]` — The Slack channel name and stable channel ID
 - `[dm]` — The message was sent via direct message
 
 Use these tags to:
@@ -187,7 +187,7 @@ Use these tags to:
 - **Route by channel** — messages from #bugs are likely bug reports, #ideas are feature requests
 - **Include sender context in escalations** — e.g., "NEED: @alice (#bugs): login button broken"
 
-If the bridge cannot resolve a name, the raw Slack ID appears instead (e.g., `[from:U12345]`, `[channel:C99999]`).
+If the bridge cannot resolve a name (temporary API failure), the raw Slack ID appears alone (e.g., `[from:U12345 (U12345)]`, `[channel:C99999]`). Failed lookups are retried automatically after 5 minutes.
 
 ## Startup Checklist
 
