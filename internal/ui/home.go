@@ -3173,6 +3173,31 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
+	case remoteSessionDeletedMsg:
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to delete remote session: %w", msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("deleted '%s' on %s", msg.title, msg.remoteName))
+		// Refresh remote sessions to reflect the change
+		return h, h.fetchRemoteSessions
+
+	case remoteSessionClosedMsg:
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to close remote session: %w", msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("closed '%s' on %s", msg.title, msg.remoteName))
+		return h, h.fetchRemoteSessions
+
+	case remoteSessionRestartedMsg:
+		if msg.err != nil {
+			h.setError(fmt.Errorf("failed to restart remote session: %w", msg.err))
+			return h, nil
+		}
+		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
+		return h, h.fetchRemoteSessions
+
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
 			return maintenanceCompleteMsg{result: msg.Result}
@@ -4862,6 +4887,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			}
@@ -4874,6 +4901,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
 				h.confirmDialog.ShowCloseSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				h.confirmDialog.ShowCloseRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -4960,6 +4989,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.resumingSessions[item.Session.ID] = time.Now()
 					return h, h.restartSession(item.Session)
 				}
+			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+				return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
 		}
 		return h, nil
@@ -5209,6 +5240,19 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.instancesMu.Unlock()
 				h.rebuildFlatItems()
 				h.saveInstances()
+			case ConfirmDeleteRemoteSession:
+				sessionID := h.confirmDialog.GetTargetID()
+				remoteName := h.confirmDialog.GetRemoteName()
+				// Find the title from current flat items for the feedback message
+				title := h.confirmDialog.targetName
+				h.confirmDialog.Hide()
+				return h, h.deleteRemoteSession(remoteName, sessionID, title)
+			case ConfirmCloseRemoteSession:
+				sessionID := h.confirmDialog.GetTargetID()
+				remoteName := h.confirmDialog.GetRemoteName()
+				title := h.confirmDialog.targetName
+				h.confirmDialog.Hide()
+				return h, h.closeRemoteSession(remoteName, sessionID, title)
 			}
 			h.confirmDialog.Hide()
 			return h, nil
@@ -6215,6 +6259,87 @@ func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 			err:       err,
 			warning:   current.ConsumeCodexRestartWarning(),
 		}
+	}
+}
+
+// remoteSessionDeletedMsg signals that a remote session was deleted.
+type remoteSessionDeletedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	err        error
+}
+
+// remoteSessionClosedMsg signals that a remote session process was stopped.
+type remoteSessionClosedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	err        error
+}
+
+// remoteSessionRestartedMsg signals that a remote session was restarted.
+type remoteSessionRestartedMsg struct {
+	remoteName string
+	sessionID  string
+	title      string
+	err        error
+}
+
+// deleteRemoteSession deletes a session on a remote host.
+func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteSessionDeletedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("failed to load remote config")}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteSessionDeletedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("remote '%s' not found", remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err = runner.DeleteSession(ctx, sessionID)
+		return remoteSessionDeletedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
+	}
+}
+
+// closeRemoteSession stops a session process on a remote host without deleting metadata.
+func (h *Home) closeRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteSessionClosedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("failed to load remote config")}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteSessionClosedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("remote '%s' not found", remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		err = runner.StopSession(ctx, sessionID)
+		return remoteSessionClosedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
+	}
+}
+
+// restartRemoteSession restarts a session on a remote host.
+func (h *Home) restartRemoteSession(remoteName, sessionID, title string) tea.Cmd {
+	return func() tea.Msg {
+		config, err := session.LoadUserConfig()
+		if err != nil || config == nil || config.Remotes == nil {
+			return remoteSessionRestartedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("failed to load remote config")}
+		}
+		rc, ok := config.Remotes[remoteName]
+		if !ok {
+			return remoteSessionRestartedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: fmt.Errorf("remote '%s' not found", remoteName)}
+		}
+		runner := session.NewSSHRunner(remoteName, rc)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err = runner.RestartSession(ctx, sessionID)
+		return remoteSessionRestartedMsg{remoteName: remoteName, sessionID: sessionID, title: title, err: err}
 	}
 }
 

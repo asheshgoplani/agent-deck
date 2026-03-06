@@ -302,6 +302,24 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 	return result.ID, nil
 }
 
+// DeleteSession removes a session on the remote host.
+func (r *SSHRunner) DeleteSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "remove", sessionID)
+	return err
+}
+
+// StopSession stops (closes) a session process on the remote host without deleting metadata.
+func (r *SSHRunner) StopSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "stop", sessionID)
+	return err
+}
+
+// RestartSession restarts a session on the remote host.
+func (r *SSHRunner) RestartSession(ctx context.Context, sessionID string) error {
+	_, err := r.Run(ctx, "session", "restart", sessionID)
+	return err
+}
+
 // RemoteSessionInfo represents a session from a remote agent-deck instance.
 type RemoteSessionInfo struct {
 	ID        string `json:"id"`

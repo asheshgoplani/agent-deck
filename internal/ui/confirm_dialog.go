@@ -19,6 +19,8 @@ const (
 	ConfirmQuitWithPool
 	ConfirmCreateDirectory
 	ConfirmInstallHooks
+	ConfirmDeleteRemoteSession
+	ConfirmCloseRemoteSession
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -31,6 +33,9 @@ type ConfirmDialog struct {
 	height      int
 	mcpCount    int  // Number of running MCPs (for quit confirmation)
 	sandboxed   bool // Whether the session uses a Docker sandbox.
+
+	// Remote session data (for ConfirmDeleteRemoteSession / ConfirmCloseRemoteSession)
+	remoteName string
 
 	// Pending session creation data (for ConfirmCreateDirectory)
 	pendingSessionName      string
@@ -61,6 +66,29 @@ func (c *ConfirmDialog) ShowCloseSession(sessionID string, sessionName string, s
 	c.targetID = sessionID
 	c.targetName = sessionName
 	c.sandboxed = sandboxed
+}
+
+// ShowDeleteRemoteSession shows confirmation for deleting a remote session.
+func (c *ConfirmDialog) ShowDeleteRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmDeleteRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
+}
+
+// ShowCloseRemoteSession shows confirmation for closing a remote session.
+func (c *ConfirmDialog) ShowCloseRemoteSession(remoteName, sessionID, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmCloseRemoteSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.remoteName = remoteName
+}
+
+// GetRemoteName returns the remote name for remote session confirmations.
+func (c *ConfirmDialog) GetRemoteName() string {
+	return c.remoteName
 }
 
 // ShowDeleteGroup shows confirmation for group deletion
@@ -118,6 +146,7 @@ func (c *ConfirmDialog) Hide() {
 	c.targetID = ""
 	c.targetName = ""
 	c.sandboxed = false
+	c.remoteName = ""
 }
 
 // IsVisible returns whether the dialog is visible
@@ -279,6 +308,52 @@ func (c *ConfirmDialog) View() string {
 		buttonNo := lipgloss.NewStyle().
 			Foreground(ColorBg).
 			Background(ColorRed).
+			Padding(0, 2).
+			Bold(true).
+			Render("n Cancel")
+		escHint := lipgloss.NewStyle().
+			Foreground(ColorTextDim).
+			Render("(Esc to cancel)")
+		buttons = lipgloss.JoinHorizontal(lipgloss.Center, buttonYes, "  ", buttonNo, "  ", escHint)
+
+	case ConfirmDeleteRemoteSession:
+		title = "⚠  Delete Remote Session?"
+		warning = fmt.Sprintf("This will permanently delete the remote session:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+		details = "• The remote tmux session will be terminated\n• Any running processes on the remote will be killed\n• Terminal history will be lost"
+		borderColor = ColorRed
+
+		buttonYes := lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorRed).
+			Padding(0, 2).
+			Bold(true).
+			Render("y Delete")
+		buttonNo := lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorAccent).
+			Padding(0, 2).
+			Bold(true).
+			Render("n Cancel")
+		escHint := lipgloss.NewStyle().
+			Foreground(ColorTextDim).
+			Render("(Esc to cancel)")
+		buttons = lipgloss.JoinHorizontal(lipgloss.Center, buttonYes, "  ", buttonNo, "  ", escHint)
+
+	case ConfirmCloseRemoteSession:
+		title = "Close Remote Session?"
+		warning = fmt.Sprintf("This will close the running process for:\n\n  \"%s\" on %s", c.targetName, c.remoteName)
+		details = "• The remote tmux session will be terminated\n• Session metadata will be kept on the remote\n• You can restart later"
+		borderColor = ColorYellow
+
+		buttonYes := lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorYellow).
+			Padding(0, 2).
+			Bold(true).
+			Render("y Close")
+		buttonNo := lipgloss.NewStyle().
+			Foreground(ColorBg).
+			Background(ColorAccent).
 			Padding(0, 2).
 			Bold(true).
 			Render("n Cancel")
