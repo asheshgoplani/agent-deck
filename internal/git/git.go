@@ -20,19 +20,19 @@ type Worktree struct {
 	Bare   bool   // Whether this is the bare repository
 }
 
-// IsGitRepo checks if the given directory is inside a git repository
+// IsGitRepo checks if the given directory is inside a VCS repository
 func IsGitRepo(dir string) bool {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--git-dir")
 	err := cmd.Run()
 	return err == nil
 }
 
-// GetRepoRoot returns the root directory of the git repository containing dir
+// GetRepoRoot returns the root directory of the VCS repository containing dir
 func GetRepoRoot(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("not a git repository: %w", err)
+		return "", fmt.Errorf("not a VCS repository: %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -146,7 +146,7 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 
 	// Check if it's a git repo
 	if !IsGitRepo(repoDir) {
-		return errors.New("not a git repository")
+		return errors.New("not a VCS repository")
 	}
 
 	var cmd *exec.Cmd
@@ -170,7 +170,7 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 // ListWorktrees returns all worktrees for the repository at repoDir
 func ListWorktrees(repoDir string) ([]Worktree, error) {
 	if !IsGitRepo(repoDir) {
-		return nil, errors.New("not a git repository")
+		return nil, errors.New("not a VCS repository")
 	}
 
 	cmd := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain")
@@ -229,7 +229,7 @@ func parseWorktreeList(output string) []Worktree {
 // If force is true, it will remove even if there are uncommitted changes
 func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	if !IsGitRepo(repoDir) {
-		return errors.New("not a git repository")
+		return errors.New("not a VCS repository")
 	}
 
 	args := []string{"-C", repoDir, "worktree", "remove"}

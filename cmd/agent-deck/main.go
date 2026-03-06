@@ -20,12 +20,12 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
@@ -900,29 +900,31 @@ func handleAdd(profile string, args []string) {
 	}
 
 	// Handle worktree creation
-	var worktreePath, worktreeRepoRoot string
+	var worktreePath, worktreeRepoRoot, vcsType string
 	if wtBranch != "" {
-		// Validate path is a git repo
-		if !git.IsGitRepo(path) {
-			fmt.Fprintf(os.Stderr, "Error: %s is not a git repository\n", path)
+		// Validate path is a VCS repo
+		backend := vcs.Detect(path)
+		if backend == nil {
+			fmt.Fprintf(os.Stderr, "Error: %s is not a VCS repository\n", path)
 			os.Exit(1)
 		}
+		vcsType = string(backend.Type())
 
 		// Get repo root (resolve through worktrees to prevent nesting)
-		repoRoot, err := git.GetWorktreeBaseRoot(path)
+		repoRoot, err := backend.GetWorktreeBaseRoot(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: failed to get repo root: %v\n", err)
 			os.Exit(1)
 		}
 
 		// Pre-validate branch name for better error messages
-		if err := git.ValidateBranchName(wtBranch); err != nil {
+		if err := vcs.ValidateBranchName(wtBranch); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid branch name: %v\n", err)
 			os.Exit(1)
 		}
 
 		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
-		branchExists := git.BranchExists(repoRoot, wtBranch)
+		branchExists := backend.BranchExists(repoRoot, wtBranch)
 		if createNewBranch && branchExists {
 			fmt.Fprintf(
 				os.Stderr,
@@ -940,11 +942,11 @@ func handleAdd(profile string, args []string) {
 		}
 
 		// Generate worktree path
-		worktreePath = git.WorktreePath(git.WorktreePathOptions{
+		worktreePath = vcs.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
 			RepoDir:   repoRoot,
-			SessionID: git.GeneratePathID(),
+			SessionID: vcs.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
@@ -956,7 +958,7 @@ func handleAdd(profile string, args []string) {
 
 		// Create worktree atomically (git handles existence checks).
 		// This avoids a TOCTOU race from separate check-then-create steps.
-		if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+		if err := backend.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
 			if isWorktreeAlreadyExistsError(err) {
 				fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
 				fmt.Fprintf(os.Stderr, "Tip: Use 'agent-deck add %s' to add the existing worktree\n", worktreePath)
@@ -1024,6 +1026,7 @@ func handleAdd(profile string, args []string) {
 		newInstance.WorktreePath = worktreePath
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
 		newInstance.WorktreeBranch = wtBranch
+		newInstance.VCSType = vcsType
 	}
 
 	// Apply sandbox config if requested.
@@ -1471,12 +1474,18 @@ func handleRemove(profile string, args []string) {
 
 	// Clean up worktree directory if this is a worktree session
 	if inst.IsWorktree() {
-		if err := git.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, false); err != nil {
+		if backend, err := inst.Backend(); err != nil {
 			if !*jsonOutput {
-				fmt.Printf("Warning: failed to remove worktree: %v\n", err)
+				fmt.Printf("Warning: failed to detect VCS backend: %v\n", err)
 			}
+		} else {
+			if err := backend.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, false); err != nil {
+				if !*jsonOutput {
+					fmt.Printf("Warning: failed to remove worktree: %v\n", err)
+				}
+			}
+			_ = backend.PruneWorktrees(inst.WorktreeRepoRoot)
 		}
-		_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
 	}
 
 	// Direct SQL DELETE first to prevent resurrection by concurrent TUI force saves.

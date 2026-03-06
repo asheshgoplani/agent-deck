@@ -26,6 +26,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 var (
@@ -69,10 +70,11 @@ type Instance struct {
 	ParentSessionID   string `json:"parent_session_id,omitempty"`   // Links to parent session (makes this a sub-session)
 	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
 
-	// Git worktree support
+	// VCS worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
+	VCSType          string `json:"vcs_type,omitempty"`           // "git" or "" (auto-detect)
 
 	Command        string    `json:"command"`
 	Wrapper        string    `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
@@ -284,6 +286,15 @@ func (inst *Instance) GetWaitingSince() time.Time {
 // IsSubSession returns true if this session has a parent
 func (inst *Instance) IsSubSession() bool {
 	return inst.ParentSessionID != ""
+}
+
+// Backend returns the backend for this instance
+func (inst *Instance) Backend() (vcs.Backend, error) {
+	switch inst.VCSType {
+	case string(vcs.Git), "":
+		return &vcs.GitBackend{}, nil
+	}
+	return nil, fmt.Errorf("Unrecognized VCS type: %s", inst.VCSType)
 }
 
 // IsWorktree returns true if this session is running in a git worktree
@@ -4204,6 +4215,9 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 			forked.WorktreePath = opts.WorktreePath
 			forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
 			forked.WorktreeBranch = opts.WorktreeBranch
+		}
+		if opts.VCSType != "" {
+			forked.VCSType = opts.VCSType
 		}
 	}
 

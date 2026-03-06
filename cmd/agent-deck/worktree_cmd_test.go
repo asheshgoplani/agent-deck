@@ -16,7 +16,7 @@ import (
 // =============================================================================
 
 // TestWorktreeListInNonGitRepo verifies that worktree list fails gracefully
-// when run outside a git repository.
+// when run outside a VCS repository.
 func TestWorktreeListInNonGitRepo(t *testing.T) {
 	// Create temp non-git directory
 	tmpDir := t.TempDir()
@@ -66,7 +66,7 @@ func TestWorktreeListInGitRepo(t *testing.T) {
 		t.Fatal("Expected git directory to exist")
 	}
 
-	t.Logf("Test directory %s is correctly a git repository", tmpDir)
+	t.Logf("Test directory %s is correctly a VCS repository", tmpDir)
 }
 
 // TestWorktreeListWithWorktrees verifies listing works when worktrees exist.

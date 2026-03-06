@@ -15,7 +15,7 @@ var gitRepoEnvKeys = []string{
 	"GIT_PREFIX",
 }
 
-// UnsetGitRepoEnv removes git repository-routing env vars from the current process.
+// UnsetGitRepoEnv removes VCS repository-routing env vars from the current process.
 // This prevents subprocess git commands from accidentally targeting the caller's repo.
 func UnsetGitRepoEnv() {
 	for _, k := range gitRepoEnvKeys {
@@ -23,7 +23,7 @@ func UnsetGitRepoEnv() {
 	}
 }
 
-// CleanGitEnv returns a copy of base with git repository-routing env vars removed.
+// CleanGitEnv returns a copy of base with VCS repository-routing env vars removed.
 func CleanGitEnv(base []string) []string {
 	out := make([]string, 0, len(base))
 	for _, kv := range base {

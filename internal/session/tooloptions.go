@@ -35,6 +35,7 @@ type ClaudeOptions struct {
 	WorktreePath     string `json:"-"`
 	WorktreeRepoRoot string `json:"-"`
 	WorktreeBranch   string `json:"-"`
+	VCSType          string `json:"-"` // transient, for worktree fork
 }
 
 // ToolName returns "claude"

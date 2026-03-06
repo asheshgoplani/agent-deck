@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // DefaultGroupName is the display name for the default group where ungrouped sessions go
@@ -1098,11 +1098,12 @@ func resolveGroupDefaultPath(defaultPath string) string {
 		return defaultPath
 	}
 
-	if !git.IsGitRepo(defaultPath) {
+	backend := vcs.Detect(defaultPath)
+	if backend == nil {
 		return defaultPath
 	}
 
-	baseRoot, err := git.GetWorktreeBaseRoot(defaultPath)
+	baseRoot, err := backend.GetWorktreeBaseRoot(defaultPath)
 	if err != nil || baseRoot == "" {
 		return defaultPath
 	}

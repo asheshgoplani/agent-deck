@@ -245,7 +245,7 @@ func WithVolumeIgnores(dirs []string) ContainerConfigOption {
 }
 
 // WithWorktree mounts the full repository root and adjusts workingDir to the worktree subdirectory.
-// repoRoot is the absolute host path to the git repository root.
+// repoRoot is the absolute host path to the VCS repository root.
 // relativePath is the worktree path relative to repoRoot.
 func WithWorktree(repoRoot string, relativePath string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {

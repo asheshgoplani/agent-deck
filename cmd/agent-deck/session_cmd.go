@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleSession dispatches session subcommands
@@ -469,27 +469,28 @@ func handleSessionFork(profile string, args []string) {
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
 	if wtBranch != "" {
-		if !git.IsGitRepo(inst.ProjectPath) {
-			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
+		backend := vcs.Detect(inst.ProjectPath)
+		if backend == nil {
+			out.Error("session path is not a VCS repository", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
+		repoRoot, err := backend.GetWorktreeBaseRoot(inst.ProjectPath)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
+		if !createNewBranch && !backend.BranchExists(repoRoot, wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
 		wtSettings := session.GetWorktreeSettings()
-		worktreePath := git.WorktreePath(git.WorktreePathOptions{
+		worktreePath := vcs.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  wtSettings.DefaultLocation,
 			RepoDir:   repoRoot,
-			SessionID: git.GeneratePathID(),
+			SessionID: vcs.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
@@ -503,7 +504,7 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+		if err := backend.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
 			out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -514,6 +515,7 @@ func handleSessionFork(profile string, args []string) {
 		opts.WorktreePath = worktreePath
 		opts.WorktreeRepoRoot = repoRoot
 		opts.WorktreeBranch = wtBranch
+		opts.VCSType = string(backend.Type())
 	}
 
 	// Create the forked instance
