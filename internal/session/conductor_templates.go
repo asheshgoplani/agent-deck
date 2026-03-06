@@ -158,6 +158,27 @@ The bridge may forward these special commands from Telegram or Slack:
 
 For any other text, treat it as a conversational message from the user. They might ask about session progress, give instructions for specific sessions, or ask you to create/manage sessions.
 
+## Slack Message Format
+
+When messages arrive from Slack, the bridge tags them with sender and channel context:
+
+` + "```" + `
+[from:alice] [channel:#bugs] the login button is broken
+[from:bob] [dm] can you check the API?
+[from:charlie] [channel:#feature-requests] add dark mode support
+` + "```" + `
+
+- ` + "`" + `[from:<name>]` + "`" + ` — The Slack display name of the sender
+- ` + "`" + `[channel:#<name>]` + "`" + ` — The Slack channel the message came from
+- ` + "`" + `[dm]` + "`" + ` — The message was sent via direct message
+
+Use these tags to:
+- **Identify the requester** when logging actions or escalating
+- **Route by channel** — messages from #bugs are likely bug reports, #ideas are feature requests
+- **Include sender context in escalations** — e.g., "NEED: @alice (#bugs): login button broken"
+
+If the bridge cannot resolve a name, the raw Slack ID appears instead (e.g., ` + "`" + `[from:U12345]` + "`" + `, ` + "`" + `[channel:C99999]` + "`" + `).
+
 ## Important Notes
 
 - This project is ` + "`" + `asheshgoplani/agent-deck` + "`" + ` on GitHub. When referencing GitHub issues or PRs, always use owner ` + "`" + `asheshgoplani` + "`" + ` and repo ` + "`" + `agent-deck` + "`" + `. Never use ` + "`" + `anthropics` + "`" + ` as the owner.
@@ -1111,6 +1132,48 @@ def create_slack_app(config: dict):
             return False
         return True
 
+    # Caches for Slack user/channel name resolution.
+    _user_cache: dict[str, str] = {}
+    _channel_cache: dict[str, str] = {}
+
+    async def resolve_slack_username(user_id: str) -> str:
+        """Resolve a Slack user ID to a display name, with caching."""
+        if user_id in _user_cache:
+            return _user_cache[user_id]
+        try:
+            resp = await app.client.users_info(user=user_id)
+            profile = resp["user"]["profile"]
+            name = profile.get("display_name") or profile.get("real_name") or user_id
+            _user_cache[user_id] = name
+            return name
+        except Exception as e:
+            log.warning("Failed to resolve Slack user %s: %s", user_id, e)
+            _user_cache[user_id] = user_id
+            return user_id
+
+    async def resolve_slack_channel(event_channel: str) -> str:
+        """Resolve a Slack channel ID to a context tag.
+
+        Returns '[channel:#name]' for channels or '[dm]' for direct messages.
+        """
+        if event_channel in _channel_cache:
+            return _channel_cache[event_channel]
+        try:
+            resp = await app.client.conversations_info(channel=event_channel)
+            ch = resp["channel"]
+            if ch.get("is_im"):
+                tag = "[dm]"
+            else:
+                name = ch.get("name", event_channel)
+                tag = f"[channel:#{name}]"
+            _channel_cache[event_channel] = tag
+            return tag
+        except Exception as e:
+            log.warning("Failed to resolve Slack channel %s: %s", event_channel, e)
+            tag = f"[channel:{event_channel}]"
+            _channel_cache[event_channel] = tag
+            return tag
+
     def get_default_conductor() -> dict | None:
         """Get the first conductor (default target for messages)."""
         conductors = discover_conductors()
@@ -1123,7 +1186,10 @@ def create_slack_app(config: dict):
         except Exception as e:
             log.error("Slack say() failed: %s", e)
 
-    async def _handle_slack_text(text: str, say, thread_ts: str = None):
+    async def _handle_slack_text(
+        text: str, say, thread_ts: str = None,
+        user_id: str = None, event_channel: str = None,
+    ):
         """Shared handler for Slack messages and mentions."""
         conductor_names = get_conductor_names()
         conductors = discover_conductors()
@@ -1148,6 +1214,17 @@ def create_slack_app(config: dict):
 
         if not cleaned_msg:
             cleaned_msg = text
+
+        # Enrich message with sender and channel context for the conductor.
+        prefix_parts = []
+        if user_id:
+            username = await resolve_slack_username(user_id)
+            prefix_parts.append(f"[from:{username}]")
+        if event_channel:
+            channel_tag = await resolve_slack_channel(event_channel)
+            prefix_parts.append(channel_tag)
+        if prefix_parts:
+            cleaned_msg = " ".join(prefix_parts) + " " + cleaned_msg
 
         session_title = conductor_session_title(target["name"])
         profile = target["profile"]
@@ -1212,6 +1289,8 @@ def create_slack_app(config: dict):
         await _handle_slack_text(
             text, say,
             thread_ts=event.get("thread_ts") or event.get("ts"),
+            user_id=user_id,
+            event_channel=event.get("channel"),
         )
 
     @app.event("app_mention")
@@ -1232,6 +1311,8 @@ def create_slack_app(config: dict):
         await _handle_slack_text(
             text, say,
             thread_ts=thread_ts,
+            user_id=user_id,
+            event_channel=event.get("channel"),
         )
 
     @app.command("/ad-status")
