@@ -74,7 +74,7 @@ type Instance struct {
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
-	VCSType          string `json:"vcs_type,omitempty"`           // "git" or "" (auto-detect)
+	VCSType          string `json:"vcs_type,omitempty"`           // "git", "jujutsu", or "" (auto-detect)
 
 	Command        string    `json:"command"`
 	Wrapper        string    `json:"wrapper,omitempty"` // Optional wrapper command with {command} placeholder
@@ -293,6 +293,8 @@ func (inst *Instance) Backend() (vcs.Backend, error) {
 	switch inst.VCSType {
 	case string(vcs.Git), "":
 		return &vcs.GitBackend{}, nil
+	case string(vcs.Jujutsu):
+		return &vcs.JJBackend{}, nil
 	}
 	return nil, fmt.Errorf("Unrecognized VCS type: %s", inst.VCSType)
 }

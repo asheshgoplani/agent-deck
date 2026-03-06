@@ -9,6 +9,7 @@ import (
 // TestInterfaceConformance verifies both backends implement the Backend interface.
 func TestInterfaceConformance(t *testing.T) {
 	var _ Backend = (*GitBackend)(nil)
+	var _ Backend = (*JJBackend)(nil)
 }
 
 func TestDetect_GitRepo(t *testing.T) {
@@ -26,6 +27,48 @@ func TestDetect_GitRepo(t *testing.T) {
 	}
 	if b.Type() != Git {
 		t.Fatalf("expected Git type, got %s", b.Type())
+	}
+}
+
+func TestDetect_JJRepo(t *testing.T) {
+	ClearCache()
+	dir := t.TempDir()
+
+	// Create .jj directory (jj repos have both .jj and .git)
+	if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := Detect(dir)
+	if b == nil {
+		t.Fatal("expected jj backend, got nil")
+	}
+	if b.Type() != Jujutsu {
+		t.Fatalf("expected Jujutsu type, got %s", b.Type())
+	}
+}
+
+func TestDetect_JJTakesPrecedence(t *testing.T) {
+	ClearCache()
+	dir := t.TempDir()
+
+	// Both .jj and .git present — jj should win
+	if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := Detect(dir)
+	if b == nil {
+		t.Fatal("expected jj backend, got nil")
+	}
+	if b.Type() != Jujutsu {
+		t.Fatalf("expected Jujutsu when both .jj and .git present, got %s", b.Type())
 	}
 }
 

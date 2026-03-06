@@ -1,19 +1,21 @@
 // Package vcs provides a VCS-agnostic interface for worktree/workspace operations.
+// It supports git worktrees and jj (Jujutsu) workspaces behind a unified Backend interface.
 package vcs
 
 // VCSType identifies which version control system is in use.
 type VCSType string
 
 const (
-	Git VCSType = "git"
+	Git     VCSType = "git"
+	Jujutsu VCSType = "jujutsu"
 )
 
-// Worktree represents a VCS worktree
+// Worktree represents a git worktree or jj workspace.
 type Worktree struct {
 	Path   string // Filesystem path to the worktree
-	Branch string // Branch name
-	Commit string // HEAD commit SHA
-	Bare   bool   // Whether this is the bare repository
+	Branch string // Branch name (git) or bookmark (jj)
+	Commit string // HEAD commit SHA or jj change ID
+	Bare   bool   // Whether this is the bare repository (always false for jj)
 }
 
 // Backend defines the VCS operations needed for worktree management.

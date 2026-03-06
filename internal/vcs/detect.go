@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 )
 
 var (
@@ -39,6 +40,10 @@ func Detect(dir string) Backend {
 }
 
 func detect(dir string) Backend {
+	// Must detect jj first because jj can be colocated with git repositories
+	if jujutsu.IsJJRepo(dir) {
+		return &JJBackend{}
+	}
 	if git.IsGitRepo(dir) {
 		return &GitBackend{}
 	}
