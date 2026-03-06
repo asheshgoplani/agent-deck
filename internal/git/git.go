@@ -12,6 +12,8 @@ import (
 	"strings"
 )
 
+var consecutiveDashesRe = regexp.MustCompile(`-+`)
+
 // Worktree represents a git worktree
 type Worktree struct {
 	Path   string // Filesystem path to the worktree
@@ -350,8 +352,7 @@ func SanitizeBranchName(name string) string {
 	}
 
 	// Remove consecutive dashes
-	re := regexp.MustCompile(`-+`)
-	sanitized = re.ReplaceAllString(sanitized, "-")
+	sanitized = consecutiveDashesRe.ReplaceAllString(sanitized, "-")
 
 	// Remove leading/trailing dashes
 	sanitized = strings.Trim(sanitized, "-")
