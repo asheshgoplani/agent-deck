@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
@@ -12,7 +13,11 @@ import (
 // string to store on the session Instance.
 func detectAndCreateBackend(dir string) (vcs.Backend, error) {
 	var b vcs.Backend
-	b, err := git.NewGitBackend(dir)
+	b, err := jujutsu.NewJJBackend(dir)
+	if err == nil {
+		return b, nil
+	}
+	b, err = git.NewGitBackend(dir)
 	if err == nil {
 		return b, nil
 	}
