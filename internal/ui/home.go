@@ -31,12 +31,14 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -7903,6 +7905,19 @@ func (h *Home) loadUIState() {
 	h.pendingCursorRestore = &state
 }
 
+// detectVCSBackend detects the VCS type for the given directory and creates the
+// appropriate backend. It tries jujutsu first (since jj repos also contain a git
+// store that would match git detection), then falls back to git.
+func detectVCSBackend(dir string) (vcs.Backend, error) {
+	if b, err := jujutsu.NewJJBackend(dir); err == nil {
+		return b, nil
+	}
+	if b, err := git.NewGitBackend(dir); err == nil {
+		return b, nil
+	}
+	return nil, fmt.Errorf("no supported VCS found in %s", dir)
+}
+
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
@@ -7926,9 +7941,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			// Single-repo worktree: create here. Multi-repo worktrees are handled below.
 			//
 			// Check for an existing worktree for this branch before creating a new one.
-			wtBackend, err := git.NewGitBackend(worktreeRepoRoot)
+			wtBackend, err := detectVCSBackend(worktreeRepoRoot)
 			if err != nil {
-				return sessionCreatedMsg{err: fmt.Errorf("failed to initialize git: %w", err)}
+				return sessionCreatedMsg{err: fmt.Errorf("failed to initialize VCS backend: %w", err)}
 			}
 			if existingPath, err := wtBackend.GetWorktreeForBranch(worktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", worktreeBranch), slog.String("path", existingPath))
@@ -7964,6 +7979,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.WorktreePath = worktreePath
 			inst.WorktreeRepoRoot = worktreeRepoRoot
 			inst.WorktreeBranch = worktreeBranch
+
+			worktreeType := vcs.TypeGit
+			if jujutsu.IsJJRepo(worktreeRepoRoot) {
+				worktreeType = vcs.TypeJujutsu
+			}
+			inst.WorktreeType = string(worktreeType)
 		}
 
 		applyCreateSessionToolOverrides(inst, tool, geminiYoloMode)
@@ -8022,8 +8043,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 					// path too (#742). Without this, a .bare layout
 					// silently fell through to os.Symlink below,
 					// skipping worktree creation AND the setup hook.
-					if git.IsGitRepoOrBareProjectRoot(p) {
-						repoRoot, rootErr := git.GetWorktreeBaseRoot(p)
+					if jujutsu.IsJJRepo(p) || git.IsGitRepoOrBareProjectRoot(p) {
+						var repoRoot string
+						var rootErr error
+						if jujutsu.IsJJRepo(p) {
+							repoRoot, rootErr = jujutsu.GetWorktreeBaseRoot(p)
+						} else {
+							repoRoot, rootErr = git.GetWorktreeBaseRoot(p)
+						}
 						if rootErr != nil {
 							uiLog.Warn("multi_repo_worktree_skip", slog.String("path", p), slog.String("error", rootErr.Error()))
 							// Copy path as-is into the parent dir via symlink
@@ -8035,7 +8062,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 							}
 							continue
 						}
-						mrBackend, mrErr := git.NewGitBackend(repoRoot)
+						mrBackend, mrErr := detectVCSBackend(repoRoot)
 						if mrErr != nil {
 							uiLog.Warn("multi_repo_worktree_create_fail", slog.String("path", p), slog.String("error", mrErr.Error()))
 							_ = os.Symlink(p, wtPath)
@@ -8483,9 +8510,9 @@ func (h *Home) forkSessionCmdWithOptions(
 			// so the TUI remains responsive.
 			//
 			// Check for an existing worktree for this branch before creating a new one.
-			forkWtBackend, err := git.NewGitBackend(opts.WorktreeRepoRoot)
+			forkWtBackend, err := detectVCSBackend(opts.WorktreeRepoRoot)
 			if err != nil {
-				return sessionForkedMsg{err: fmt.Errorf("failed to initialize git: %w", err), sourceID: sourceID}
+				return sessionForkedMsg{err: fmt.Errorf("failed to initialize VCS backend: %w", err), sourceID: sourceID}
 			}
 			if existingPath, err := forkWtBackend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))

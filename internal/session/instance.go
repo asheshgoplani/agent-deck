@@ -27,6 +27,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -74,7 +75,8 @@ const (
 type WorktreeType string
 
 const (
-	WorktreeTypeGit WorktreeType = "git"
+	WorktreeTypeGit     WorktreeType = "git"
+	WorktreeTypeJujutsu WorktreeType = "jujutsu"
 )
 
 // Instance represents a single agent/shell session
@@ -100,7 +102,7 @@ type Instance struct {
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
-	WorktreeType     string `json:"worktree_type,omitempty"`      // "git" or "" (auto-detect)
+	WorktreeType     string `json:"worktree_type,omitempty"`      // "git", "jujutsu", or "" (auto-detect)
 
 	// Multi-repo support
 	MultiRepoEnabled   bool                `json:"multi_repo_enabled,omitempty"`
@@ -473,6 +475,8 @@ func (inst *Instance) Backend() (vcs.Backend, error) {
 	switch inst.WorktreeType {
 	case string(WorktreeTypeGit), "":
 		return git.NewGitBackend(inst.WorktreePath)
+	case string(WorktreeTypeJujutsu):
+		return jujutsu.NewJJBackend(inst.WorktreePath)
 	}
 	return nil, fmt.Errorf("Unrecognized VCS type: %s", inst.WorktreeType)
 }

@@ -21,7 +21,8 @@ type WorktreePathOptions struct {
 type Type string
 
 const (
-	TypeGit Type = "git"
+	TypeGit     Type = "git"
+	TypeJujutsu Type = "jujutsu"
 )
 
 // Backend abstracts version control operations scoped to a repository.
