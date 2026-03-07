@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -426,6 +427,44 @@ func TestWorktreePath(t *testing.T) {
 		})
 		// Falls back to GenerateWorktreePath.
 		expected := "..-feature-branch"
+		require.Equal(t, expected, result)
+	})
+}
+
+func TestGitBackend_WorktreePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses template via backend", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		backend, err := NewGitBackend(dir)
+		require.NoError(t, err)
+
+		result := backend.WorktreePath(vcs.WorktreePathOptions{
+			Branch:    "feature-branch",
+			Location:  "sibling",
+			SessionID: "a1b2c3d4",
+			Template:  "{repo-root}/.worktrees/{branch}",
+		})
+		expected := filepath.Join(backend.RepoDir(), ".worktrees", "feature-branch")
+		require.Equal(t, expected, result)
+	})
+
+	t.Run("falls back to location without template", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		backend, err := NewGitBackend(dir)
+		require.NoError(t, err)
+
+		result := backend.WorktreePath(vcs.WorktreePathOptions{
+			Branch:   "feature-branch",
+			Location: "sibling",
+		})
+		expected := backend.RepoDir() + "-feature-branch"
 		require.Equal(t, expected, result)
 	})
 }

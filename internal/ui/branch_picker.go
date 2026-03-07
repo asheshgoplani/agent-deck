@@ -61,12 +61,12 @@ func (c *branchPickerExecCmd) Run() error {
 		return errors.New("project path is empty")
 	}
 
-	repoRoot, err := git.GetWorktreeBaseRoot(projectPath)
+	backend, err := git.NewGitBackend(projectPath)
 	if err != nil {
 		return errors.New("path is not a git repository")
 	}
 
-	branches, err := git.ListBranchCandidates(repoRoot)
+	branches, err := backend.ListBranchCandidates()
 	if err != nil {
 		return err
 	}
