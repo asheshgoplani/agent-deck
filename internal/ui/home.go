@@ -9280,7 +9280,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 
 	// Worktree info section (for sessions running in git worktrees)
 	if selected.IsWorktree() {
-		wtHeader := renderSectionDivider("Worktree", width-4)
+		var sectionHeader string
+		switch selected.VCSType {
+		case string(vcs.Git), "":
+			sectionHeader = "Git Worktree"
+		case string(vcs.Jujutsu):
+			sectionHeader = "Jujutsu Workspace"
+		}
+		wtHeader := renderSectionDivider(sectionHeader, width-4)
 		b.WriteString(wtHeader)
 		b.WriteString("\n")
 
