@@ -7333,12 +7333,7 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 
 	// Build right panel (preview) with styled title
 	rightTitle := h.renderPanelTitle("PREVIEW", rightWidth)
-	rightContent := ""
-	if h.shouldDeferPreviewPane() {
-		rightContent = h.renderDeferredPreview(rightWidth, panelContentHeight)
-	} else {
-		rightContent = h.renderPreviewPane(rightWidth, panelContentHeight)
-	}
+	rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
 	// CRITICAL: Ensure right content has exactly panelContentHeight lines
 	rightContent = ensureExactHeight(rightContent, panelContentHeight)
 	rightPanel := rightTitle + "\n" + rightContent
@@ -7406,34 +7401,13 @@ func (h *Home) renderStackedLayout(totalHeight int) string {
 
 	// Preview (full width)
 	previewTitle := h.renderPanelTitle("PREVIEW", h.width)
-	previewContent := ""
-	if h.shouldDeferPreviewPane() {
-		previewContent = h.renderDeferredPreview(h.width, previewHeight-2)
-	} else {
-		previewContent = h.renderPreviewPane(h.width, previewHeight-2) // -2 for title
-	}
+	previewContent := h.renderPreviewPane(h.width, previewHeight-2) // -2 for title
 	previewContent = ensureExactHeight(previewContent, previewHeight-2)
 	b.WriteString(previewTitle)
 	b.WriteString("\n")
 	b.WriteString(previewContent)
 
 	return b.String()
-}
-
-// shouldDeferPreviewPane reports whether preview pane rendering should be temporarily
-// deferred to prioritize navigation responsiveness.
-func (h *Home) shouldDeferPreviewPane() bool {
-	if h.isNavigating {
-		return true
-	}
-	return time.Since(h.lastNavigationTime) < 450*time.Millisecond
-}
-
-// renderDeferredPreview renders a lightweight placeholder while navigation is active.
-func (h *Home) renderDeferredPreview(width, height int) string {
-	style := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
-	content := style.Render("Preview paused while navigating...")
-	return ensureExactHeight(content, height)
 }
 
 // renderSingleColumnLayout renders list only for narrow terminals (<50 cols)
@@ -9182,20 +9156,6 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	pvKey := selected.ID
 	if item.Type == session.ItemTypeWindow {
 		pvKey = previewCacheKey(selected.ID, item.WindowIndex)
-	}
-
-	// Attach-return fast path: prioritize immediate list navigation and defer preview work.
-	if !h.lastAttachReturn.IsZero() && time.Since(h.lastAttachReturn) < 900*time.Millisecond {
-		quickStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
-		return quickStyle.Render("Returned from session... refreshing preview")
-	}
-
-	// Navigation-first fast path: while user is moving quickly, defer expensive preview
-	// rendering and show a lightweight placeholder instead. This keeps j/k responsive
-	// even when the selected session has large/expensive preview content.
-	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
-		quickStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
-		return quickStyle.Render("Moving... preview updating")
 	}
 
 	// Session info header box
