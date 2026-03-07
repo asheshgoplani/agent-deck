@@ -175,7 +175,7 @@ func (h *HelpOverlay) View() string {
 		{
 			title: "SESSIONS",
 			items: [][2]string{
-				{newKeys, "New / quick create"},
+				{newKeys, "New / quicktemp (auto-delete)"},
 				{renameKey, "Rename session"},
 				{restartKey, "Restart session"},
 				{deleteKey, "Delete session"},

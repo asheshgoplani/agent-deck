@@ -2911,3 +2911,115 @@ func TestForkCommandNoUuidgen(t *testing.T) {
 		t.Errorf("Fork command must NOT use $( shell substitution:\n  cmd: %q", cmd)
 	}
 }
+
+func writeInstanceLimitConfigForTest(t *testing.T, maxActive int, policy string) {
+	t.Helper()
+
+	origHome := os.Getenv("HOME")
+	homeDir := t.TempDir()
+	os.Setenv("HOME", homeDir)
+	t.Cleanup(func() {
+		os.Setenv("HOME", origHome)
+	})
+
+	configDir := filepath.Join(homeDir, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("failed to create config directory: %v", err)
+	}
+
+	configPath := filepath.Join(configDir, UserConfigFileName)
+	content := fmt.Sprintf("[instances]\nmax_active_sessions = %d\nmax_active_sessions_policy = %q\n", maxActive, policy)
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+}
+
+func startActiveSessionForLimitTest(t *testing.T, title string) *Instance {
+	t.Helper()
+
+	inst := NewInstance(title, "/tmp")
+	if err := inst.Start(); err != nil {
+		t.Fatalf("failed to start session %q: %v", title, err)
+	}
+	t.Cleanup(func() {
+		_ = inst.Kill()
+	})
+
+	return inst
+}
+
+func TestEnforceActiveSessionLimitWarn(t *testing.T) {
+	skipIfNoTmuxServer(t)
+	writeInstanceLimitConfigForTest(t, 1, MaxActiveSessionsPolicyWarn)
+
+	inst := startActiveSessionForLimitTest(t, fmt.Sprintf("limit-warn-%d", time.Now().UnixNano()))
+
+	warning, err := EnforceActiveSessionLimit([]*Instance{inst}, "")
+	if err != nil {
+		t.Fatalf("EnforceActiveSessionLimit() returned error: %v", err)
+	}
+	if !strings.Contains(warning, "max active sessions reached (1/1)") {
+		t.Fatalf("warning %q missing limit context", warning)
+	}
+	if !strings.Contains(warning, "policy=warn") {
+		t.Fatalf("warning %q missing warn policy hint", warning)
+	}
+}
+
+func TestEnforceActiveSessionLimitDeny(t *testing.T) {
+	skipIfNoTmuxServer(t)
+	writeInstanceLimitConfigForTest(t, 1, MaxActiveSessionsPolicyDeny)
+
+	inst := startActiveSessionForLimitTest(t, fmt.Sprintf("limit-deny-%d", time.Now().UnixNano()))
+
+	warning, err := EnforceActiveSessionLimit([]*Instance{inst}, "")
+	if warning != "" {
+		t.Fatalf("warning = %q, want empty for deny policy", warning)
+	}
+	if err == nil {
+		t.Fatal("EnforceActiveSessionLimit() should error for deny policy")
+	}
+	if !strings.Contains(err.Error(), "policy=deny") {
+		t.Fatalf("deny error %q missing policy marker", err)
+	}
+}
+
+func TestEnforceActiveSessionLimitCloseOldest(t *testing.T) {
+	skipIfNoTmuxServer(t)
+	writeInstanceLimitConfigForTest(t, 1, MaxActiveSessionsPolicyCloseOldest)
+
+	oldestTitle := fmt.Sprintf("limit-oldest-%d", time.Now().UnixNano())
+	newerTitle := fmt.Sprintf("limit-newer-%d", time.Now().UnixNano())
+	oldest := startActiveSessionForLimitTest(t, oldestTitle)
+	time.Sleep(10 * time.Millisecond)
+	newer := startActiveSessionForLimitTest(t, newerTitle)
+
+	warning, err := EnforceActiveSessionLimit([]*Instance{oldest, newer}, "")
+	if err != nil {
+		t.Fatalf("EnforceActiveSessionLimit() returned error: %v", err)
+	}
+	if !strings.Contains(warning, "closed oldest session '") || !strings.Contains(warning, oldestTitle) {
+		t.Fatalf("warning %q should mention closed oldest session %q", warning, oldestTitle)
+	}
+	if !newer.Exists() {
+		t.Fatal("newer session should remain running after close_oldest policy")
+	}
+}
+
+func TestEnforceActiveSessionLimitExcludeID(t *testing.T) {
+	skipIfNoTmuxServer(t)
+	writeInstanceLimitConfigForTest(t, 1, MaxActiveSessionsPolicyDeny)
+
+	inst := startActiveSessionForLimitTest(t, fmt.Sprintf("limit-exclude-%d", time.Now().UnixNano()))
+
+	warning, err := EnforceActiveSessionLimit([]*Instance{inst}, inst.ID)
+	if err != nil {
+		t.Fatalf("EnforceActiveSessionLimit() with excludeID returned error: %v", err)
+	}
+	if warning != "" {
+		t.Fatalf("warning = %q, want empty when session is excluded", warning)
+	}
+}

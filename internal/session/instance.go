@@ -144,6 +144,10 @@ type Instance struct {
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
 
+	// AutoDeleteOnClose removes this session from agent-deck metadata when the
+	// underlying process exits or the session is explicitly closed.
+	AutoDeleteOnClose bool `json:"auto_delete_on_close,omitempty"`
+
 	tmuxSession *tmux.Session // Internal tmux session
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
@@ -330,6 +334,61 @@ func (inst *Instance) SetToolThreadSafe(t string) {
 // MarkAccessed updates the LastAccessedAt timestamp to now
 func (inst *Instance) MarkAccessed() {
 	inst.LastAccessedAt = time.Now()
+}
+
+// EnforceActiveSessionLimit applies [instances].max_active_sessions policy.
+//
+// excludeID lets callers ignore one session ID when needed.
+// Returns a non-empty warning when policy is "warn" or "close_oldest".
+func EnforceActiveSessionLimit(instances []*Instance, excludeID string) (string, error) {
+	settings := GetInstanceSettings()
+	maxActive := settings.GetMaxActiveSessions()
+	if maxActive <= 0 {
+		return "", nil
+	}
+
+	active := make([]*Instance, 0, len(instances))
+	for _, inst := range instances {
+		if inst == nil || inst.ID == excludeID {
+			continue
+		}
+		if inst.Exists() {
+			active = append(active, inst)
+		}
+	}
+
+	if len(active) < maxActive {
+		return "", nil
+	}
+
+	policy := settings.GetMaxActiveSessionsPolicy()
+	count := len(active)
+	baseMsg := fmt.Sprintf("max active sessions reached (%d/%d)", count, maxActive)
+
+	switch policy {
+	case MaxActiveSessionsPolicyDeny:
+		return "", fmt.Errorf("%s; policy=%s", baseMsg, MaxActiveSessionsPolicyDeny)
+
+	case MaxActiveSessionsPolicyCloseOldest:
+		sort.SliceStable(active, func(i, j int) bool {
+			if active[i].CreatedAt.Equal(active[j].CreatedAt) {
+				return active[i].ID < active[j].ID
+			}
+			return active[i].CreatedAt.Before(active[j].CreatedAt)
+		})
+
+		oldest := active[0]
+		if err := oldest.Kill(); err != nil {
+			return "", fmt.Errorf("%s; failed to close oldest session '%s': %w", baseMsg, oldest.Title, err)
+		}
+
+		return fmt.Sprintf("%s; closed oldest session '%s'", baseMsg, oldest.Title), nil
+
+	case MaxActiveSessionsPolicyWarn:
+		fallthrough
+	default:
+		return baseMsg + "; policy=warn (continuing)", nil
+	}
 }
 
 // GetLastActivityTime returns when the session was last active (content changed)

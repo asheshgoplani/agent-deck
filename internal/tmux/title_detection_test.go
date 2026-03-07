@@ -136,6 +136,9 @@ func TestRefreshPaneInfoCache(t *testing.T) {
 	if info.CurrentCommand == "" {
 		t.Error("Expected non-empty CurrentCommand for test session")
 	}
+	if info.CurrentPath == "" {
+		t.Error("Expected non-empty CurrentPath for test session")
+	}
 
 	// Verify a non-existent session is not in cache
 	_, ok = GetCachedPaneInfo("nonexistent_session_xyz")

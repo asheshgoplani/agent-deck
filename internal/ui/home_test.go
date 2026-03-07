@@ -1184,6 +1184,85 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
+func TestCloseSessionAutoDeleteReturnsDeleteMsg(t *testing.T) {
+	home := NewHome()
+	inst := session.NewInstance("auto-delete", t.TempDir())
+	inst.AutoDeleteOnClose = true
+
+	cmd := home.closeSession(inst)
+	if cmd == nil {
+		t.Fatal("closeSession should return a command")
+	}
+
+	msg := cmd()
+	deleted, ok := msg.(sessionDeletedMsg)
+	if !ok {
+		t.Fatalf("closeSession message type = %T, want sessionDeletedMsg", msg)
+	}
+	if deleted.deletedID != inst.ID {
+		t.Fatalf("deletedID = %q, want %q", deleted.deletedID, inst.ID)
+	}
+	if !deleted.skipUndo {
+		t.Fatal("auto-delete close should skip undo stack")
+	}
+}
+
+func TestNextAutoDeleteSessionID(t *testing.T) {
+	home := NewHome()
+
+	normal := session.NewInstance("normal", t.TempDir())
+	auto := session.NewInstance("temp", t.TempDir())
+	auto.AutoDeleteOnClose = true
+
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{normal, auto}
+	home.instanceByID[normal.ID] = normal
+	home.instanceByID[auto.ID] = auto
+	home.instancesMu.Unlock()
+
+	home.launchingSessions[auto.ID] = time.Now()
+	if got := home.nextAutoDeleteSessionID(); got != "" {
+		t.Fatalf("nextAutoDeleteSessionID() with active animation = %q, want empty", got)
+	}
+	delete(home.launchingSessions, auto.ID)
+
+	if got := home.nextAutoDeleteSessionID(); got != auto.ID {
+		t.Fatalf("nextAutoDeleteSessionID() = %q, want %q", got, auto.ID)
+	}
+}
+
+func TestSessionDeletedMsgSkipUndoSkipsUndoStack(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := session.NewInstance("temporary-session", t.TempDir())
+	inst.AutoDeleteOnClose = true
+
+	home.instancesMu.Lock()
+	home.instances = []*session.Instance{inst}
+	home.instanceByID[inst.ID] = inst
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTree(home.instances)
+	home.rebuildFlatItems()
+
+	model, _ := home.Update(sessionDeletedMsg{deletedID: inst.ID, skipUndo: true})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("Update should return *Home")
+	}
+
+	if len(h.undoStack) != 0 {
+		t.Fatalf("undoStack length = %d, want 0", len(h.undoStack))
+	}
+	if h.err == nil || !strings.Contains(h.err.Error(), "removed temporary session") {
+		t.Fatalf("expected temporary session removal message, got %v", h.err)
+	}
+	if got := h.getInstanceByID(inst.ID); got != nil {
+		t.Fatal("deleted temporary session should be removed from instance map")
+	}
+}
+
 func TestRenderHelpBarTiny(t *testing.T) {
 	home := NewHome()
 	home.width = 45 // Tiny mode (<50 cols)

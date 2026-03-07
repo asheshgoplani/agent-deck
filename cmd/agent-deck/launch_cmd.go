@@ -84,7 +84,17 @@ func handleLaunch(profile string, args []string) {
 
 	// Resolve path
 	path := strings.Trim(fs.Arg(0), "'\"")
-	if path == "" || path == "." {
+	if path == "" {
+		path = resolveQuickDefaultPathForCLI()
+		if path == "" {
+			var err error
+			path, err = os.Getwd()
+			if err != nil {
+				out.Error(fmt.Sprintf("failed to get current directory: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
+	} else if path == "." {
 		var err error
 		path, err = os.Getwd()
 		if err != nil {
@@ -209,6 +219,15 @@ func handleLaunch(profile string, args []string) {
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
+	}
+
+	limitWarning, limitErr := session.EnforceActiveSessionLimit(instances, "")
+	if limitErr != nil {
+		out.Error(fmt.Sprintf("cannot launch session: %v", limitErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if limitWarning != "" && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", limitWarning)
 	}
 
 	// Resolve parent session if specified
@@ -386,6 +405,9 @@ func handleLaunch(profile string, args []string) {
 	if initialMessage != "" {
 		jsonData["message"] = initialMessage
 		jsonData["message_pending"] = *noWait
+	}
+	if limitWarning != "" {
+		jsonData["warning"] = limitWarning
 	}
 	if len(mcpFlags) > 0 {
 		jsonData["mcps"] = mcpFlags

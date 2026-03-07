@@ -33,10 +33,14 @@ const (
 	SettingShowOutput
 	SettingShowAnalytics
 	SettingMaintenanceEnabled
+	SettingFollowCwdOnAttach
+	SettingQuickDefaultPath
+	SettingMaxActiveSessions
+	SettingMaxActiveSessionsPolicy
 )
 
 // Total number of navigable settings.
-const settingsCount = 17
+const settingsCount = 21
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -70,6 +74,10 @@ type SettingsPanel struct {
 	showOutput          bool
 	showAnalytics       bool
 	maintenanceEnabled  bool
+	followCwdOnAttach   bool
+	quickDefaultPath    string
+	maxActiveSessions   int
+	maxActivePolicy     int // 0=warn, 1=deny, 2=close_oldest
 
 	// Text input state
 	editingText bool
@@ -99,6 +107,16 @@ var (
 var (
 	themeNames  = []string{"Dark", "Light", "System"}
 	themeValues = []string{"dark", "light", "system"}
+)
+
+// Active session limit policy names for radio selection.
+var (
+	limitPolicyNames  = []string{"Warn", "Deny", "CloseOldest"}
+	limitPolicyValues = []string{
+		session.MaxActiveSessionsPolicyWarn,
+		session.MaxActiveSessionsPolicyDeny,
+		session.MaxActiveSessionsPolicyCloseOldest,
+	}
 )
 
 // NewSettingsPanel creates a new settings panel
@@ -250,6 +268,19 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Maintenance settings.
 	s.maintenanceEnabled = config.Maintenance.Enabled
+
+	// Instance settings.
+	s.followCwdOnAttach = config.Instances.GetFollowCwdOnAttach()
+	s.quickDefaultPath = strings.TrimSpace(config.Instances.QuickDefaultPath)
+	s.maxActiveSessions = config.Instances.GetMaxActiveSessions()
+	s.maxActivePolicy = 0
+	policy := config.Instances.GetMaxActiveSessionsPolicy()
+	for i, val := range limitPolicyValues {
+		if val == policy {
+			s.maxActivePolicy = i
+			break
+		}
+	}
 }
 
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
@@ -348,10 +379,26 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.Preview.NotesOutputSplit = s.originalConfig.Preview.NotesOutputSplit
 		config.Preview.Analytics = s.originalConfig.Preview.Analytics
 		config.Profiles = s.originalConfig.Profiles
+		config.Instances = s.originalConfig.Instances
 		// Keep global Claude config when editing profile-specific override.
 		if s.claudeConfigIsScope {
 			config.Claude.ConfigDir = s.originalConfig.Claude.ConfigDir
 		}
+	}
+
+	// Instance settings.
+	followCwdOnAttach := s.followCwdOnAttach
+	config.Instances.FollowCwdOnAttach = &followCwdOnAttach
+	config.Instances.QuickDefaultPath = strings.TrimSpace(s.quickDefaultPath)
+	if s.maxActiveSessions < 0 {
+		config.Instances.MaxActiveSessions = 0
+	} else {
+		config.Instances.MaxActiveSessions = s.maxActiveSessions
+	}
+	if s.maxActivePolicy >= 0 && s.maxActivePolicy < len(limitPolicyValues) {
+		config.Instances.MaxActiveSessionsPolicy = limitPolicyValues[s.maxActivePolicy]
+	} else {
+		config.Instances.MaxActiveSessionsPolicy = session.MaxActiveSessionsPolicyWarn
 	}
 
 	// Apply profile-specific Claude override after original profile map is restored.
@@ -467,6 +514,20 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 			s.needsRestart = true
 		}
+
+	case SettingMaxActiveSessions:
+		newVal := s.maxActiveSessions + delta
+		if newVal >= 0 {
+			s.maxActiveSessions = newVal
+			changed = true
+		}
+
+	case SettingMaxActiveSessionsPolicy:
+		newVal := s.maxActivePolicy + delta
+		if newVal >= 0 && newVal < len(limitPolicyNames) {
+			s.maxActivePolicy = newVal
+			changed = true
+		}
 	}
 
 	return changed
@@ -517,6 +578,10 @@ func (s *SettingsPanel) toggleValue() bool {
 	case SettingMaintenanceEnabled:
 		s.maintenanceEnabled = !s.maintenanceEnabled
 		return true
+
+	case SettingFollowCwdOnAttach:
+		s.followCwdOnAttach = !s.followCwdOnAttach
+		return true
 	}
 
 	return false
@@ -524,7 +589,8 @@ func (s *SettingsPanel) toggleValue() bool {
 
 // isTextSetting returns true if current setting uses text input
 func (s *SettingsPanel) isTextSetting() bool {
-	return SettingType(s.cursor) == SettingClaudeConfigDir
+	setting := SettingType(s.cursor)
+	return setting == SettingClaudeConfigDir || setting == SettingQuickDefaultPath
 }
 
 // startTextEdit begins text editing for current setting
@@ -532,6 +598,11 @@ func (s *SettingsPanel) startTextEdit() {
 	setting := SettingType(s.cursor)
 	if setting == SettingClaudeConfigDir {
 		s.textBuffer = s.claudeConfigDir
+		s.editingText = true
+		return
+	}
+	if setting == SettingQuickDefaultPath {
+		s.textBuffer = s.quickDefaultPath
 		s.editingText = true
 	}
 }
@@ -545,6 +616,9 @@ func (s *SettingsPanel) handleTextEdit(msg tea.KeyMsg) (*SettingsPanel, tea.Cmd,
 		// Save the text
 		if SettingType(s.cursor) == SettingClaudeConfigDir {
 			s.claudeConfigDir = s.textBuffer
+		}
+		if SettingType(s.cursor) == SettingQuickDefaultPath {
+			s.quickDefaultPath = s.textBuffer
 		}
 		s.editingText = false
 		return s, nil, true
@@ -780,12 +854,56 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	hotkeys := resolveHotkeys(session.GetHotkeyOverrides())
+
+	// INSTANCE BEHAVIOR
+	content.WriteString(sectionStyle.Render("INSTANCE BEHAVIOR"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Follow pane CWD on attach", s.followCwdOnAttach) + " - Sync session project path from tmux"
+	if s.cursor == int(SettingFollowCwdOnAttach) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Quick default path: "
+	if s.editingText && s.cursor == int(SettingQuickDefaultPath) {
+		line += "[" + s.textBuffer + "|]"
+	} else if strings.TrimSpace(s.quickDefaultPath) == "" {
+		line += dimStyle.Render("(empty = current directory)")
+	} else {
+		line += s.quickDefaultPath
+	}
+	if s.cursor == int(SettingQuickDefaultPath) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderNumber("Max active sessions:", s.maxActiveSessions, "(0 = unlimited)")
+	if s.cursor == int(SettingMaxActiveSessions) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Limit policy: " + s.renderRadioGroup(limitPolicyNames, s.maxActivePolicy, s.cursor == int(SettingMaxActiveSessionsPolicy))
+	if s.cursor == int(SettingMaxActiveSessionsPolicy) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	quickKey := actionHotkey(hotkeys, hotkeyQuickCreate)
+	quickHint := "  Quicktemp hotkey is unbound."
+	if quickKey != "" {
+		quickHint = fmt.Sprintf("  Press %s for quicktemp sessions (auto-delete on close).", quickKey)
+	}
+	content.WriteString(dimStyle.Render(quickHint))
+	content.WriteString("\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
 	content.WriteString(dimStyle.Render("  Edit ~/.agent-deck/config.toml to configure MCPs and tools."))
 	content.WriteString("\n")
-	hotkeys := resolveHotkeys(session.GetHotkeyOverrides())
 	mcpKey := actionHotkey(hotkeys, hotkeyMCPManager)
 	mcpHint := "  MCP Manager hotkey is unbound."
 	if mcpKey != "" {
@@ -830,6 +948,10 @@ func (s *SettingsPanel) View() string {
 			34, // SettingShowOutput
 			35, // SettingShowAnalytics
 			38, // SettingMaintenanceEnabled
+			41, // SettingFollowCwdOnAttach
+			42, // SettingQuickDefaultPath
+			43, // SettingMaxActiveSessions
+			44, // SettingMaxActiveSessionsPolicy
 		}
 		cursorLine := cursorToLine[s.cursor]
 

@@ -453,12 +453,14 @@ type loadSessionsMsg struct {
 type sessionCreatedMsg struct {
 	instance *session.Instance
 	err      error
+	warning  string
 }
 
 type sessionForkedMsg struct {
 	instance *session.Instance
 	sourceID string // ID of the source session that was forked (for cleanup)
 	err      error
+	warning  string
 }
 
 type refreshMsg struct{}
@@ -2051,6 +2053,60 @@ func (h *Home) getDefaultPathForGroup(groupPath string) string {
 	return p
 }
 
+func (h *Home) resolveQuickDefaultPath() string {
+	settings := session.GetInstanceSettings()
+	path := settings.GetQuickDefaultPath()
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+
+	if !filepath.IsAbs(path) {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		path = absPath
+	}
+
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return ""
+	}
+
+	return filepath.Clean(path)
+}
+
+func joinWarnings(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		joined = append(joined, part)
+	}
+	return strings.Join(joined, "; ")
+}
+
+func normalizeFollowedProjectPath(rawPath string) string {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return ""
+	}
+
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+
+	return path
+}
+
 // statusWorker runs in a background goroutine with its own ticker
 // This ensures status updates continue even when TUI is paused (tea.Exec)
 func (h *Home) statusWorker() {
@@ -2164,6 +2220,8 @@ func (h *Home) backgroundStatusUpdate() {
 	instances := make([]*session.Instance, len(h.instances))
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
+
+	h.syncProjectPathsFromPaneCache(instances)
 
 	// PERFORMANCE: Gradually configure unconfigured sessions in background
 	// Configure one session per tick to avoid blocking the status update
@@ -2974,6 +3032,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use forceSave to bypass mtime check - new session creation MUST persist
 			h.forceSaveInstances()
 
+			if msg.warning != "" {
+				h.setError(fmt.Errorf("created '%s' (%s)", msg.instance.Title, msg.warning))
+			}
+
 			// Start fetching preview for the new session
 			return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
 		}
@@ -3041,6 +3103,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use forceSave to bypass mtime check - forked session MUST persist
 			h.forceSaveInstances()
 
+			if msg.warning != "" {
+				h.setError(fmt.Errorf("forked '%s' (%s)", msg.instance.Title, msg.warning))
+			}
+
 			// Start fetching preview for the forked session
 			return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
 		}
@@ -3075,7 +3141,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.instancesMu.Unlock()
 
 		// Push to undo stack before removing from group tree
-		if deletedInstance != nil {
+		if deletedInstance != nil && !msg.skipUndo {
 			h.pushUndoStack(deletedInstance)
 			// Save to recent sessions for quick re-creation
 			if err := h.storage.SaveRecentSession(deletedInstance); err != nil {
@@ -3113,10 +3179,14 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Show undo hint (using setError as a transient message)
 		if deletedInstance != nil {
-			if undoKey := h.actionKey(hotkeyUndoDelete); undoKey != "" {
-				h.setError(fmt.Errorf("deleted '%s'. %s to undo", deletedInstance.Title, undoKey))
+			if msg.skipUndo {
+				h.setError(fmt.Errorf("removed temporary session '%s'", deletedInstance.Title))
 			} else {
-				h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
+				if undoKey := h.actionKey(hotkeyUndoDelete); undoKey != "" {
+					h.setError(fmt.Errorf("deleted '%s'. %s to undo", deletedInstance.Title, undoKey))
+				} else {
+					h.setError(fmt.Errorf("deleted '%s'", deletedInstance.Title))
+				}
 			}
 		}
 		return h, nil
@@ -3838,6 +3908,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Cache expires after 2 seconds to show live terminal updates without excessive fetching
 		const previewCacheTTL = 2 * time.Second
 		var previewCmd tea.Cmd
+		var autoDeleteCmd tea.Cmd
 		selectedInst, selectedKey, selectedWinIdx := h.selectedPreviewTarget()
 		if selectedInst != nil {
 			h.previewCacheMu.Lock()
@@ -3850,7 +3921,14 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			h.previewCacheMu.Unlock()
 		}
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd}
+
+		if autoDeleteID := h.nextAutoDeleteSessionID(); autoDeleteID != "" {
+			autoDeleteCmd = func() tea.Msg {
+				return sessionDeletedMsg{deletedID: autoDeleteID, skipUndo: true}
+			}
+		}
+
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, autoDeleteCmd}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}
@@ -4263,6 +4341,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			multiRepoEnabled,
 			additionalPaths,
+			false,
 		)
 
 	case "esc":
@@ -5024,11 +5103,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "D":
-		// Close session process without deleting metadata from the list/storage.
+		// Close session process (or remove metadata too for temporary sessions).
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				h.confirmDialog.ShowCloseSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
+				h.confirmDialog.ShowCloseSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.AutoDeleteOnClose)
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowCloseRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			}
@@ -5329,6 +5408,7 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				pendingToolOpts,
 				false,
 				nil,
+				false,
 			)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
@@ -6026,10 +6106,21 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	multiRepoEnabled bool,
 	additionalPaths []string,
+	autoDeleteOnClose bool,
 ) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
+			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err)}
+		}
+
+		h.instancesMu.RLock()
+		existing := make([]*session.Instance, len(h.instances))
+		copy(existing, h.instances)
+		h.instancesMu.RUnlock()
+
+		limitWarning, err := session.EnforceActiveSessionLimit(existing, "")
+		if err != nil {
 			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err)}
 		}
 
@@ -6098,6 +6189,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		if sandboxEnabled {
 			inst.Sandbox = session.NewSandboxConfig("")
 		}
+		inst.AutoDeleteOnClose = autoDeleteOnClose
 
 		// Apply multi-repo config.
 		if multiRepoEnabled && len(additionalPaths) > 0 {
@@ -6218,7 +6310,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			return sessionCreatedMsg{err: err}
 		}
 		uiLog.Info("session_create_succeeded", slog.String("id", inst.ID))
-		return sessionCreatedMsg{instance: inst}
+		return sessionCreatedMsg{instance: inst, warning: limitWarning}
 	}
 }
 
@@ -6312,6 +6404,9 @@ func (h *Home) quickCreateSession() tea.Cmd {
 
 	// Fallback for path
 	if projectPath == "" {
+		projectPath = h.resolveQuickDefaultPath()
+	}
+	if projectPath == "" {
 		var err error
 		projectPath, err = os.Getwd()
 		if err != nil {
@@ -6342,6 +6437,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"", "", "", // no worktree
 		geminiYoloMode, false, toolOptionsJSON,
 		false, nil, // no multi-repo
+		true, // autoDeleteOnClose
 	)
 }
 
@@ -6402,6 +6498,16 @@ func (h *Home) forkSessionCmdWithOptions(
 		// Check tmux availability before forking
 		if err := tmux.IsTmuxAvailable(); err != nil {
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
+		}
+
+		h.instancesMu.RLock()
+		existing := make([]*session.Instance, len(h.instances))
+		copy(existing, h.instances)
+		h.instancesMu.RUnlock()
+
+		limitWarning, limitErr := session.EnforceActiveSessionLimit(existing, "")
+		if limitErr != nil {
+			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", limitErr), sourceID: sourceID}
 		}
 
 		if opts != nil && opts.WorktreePath != "" && opts.WorktreeRepoRoot != "" && opts.WorktreeBranch != "" {
@@ -6488,7 +6594,7 @@ func (h *Home) forkSessionCmdWithOptions(
 			go inst.DetectOpenCodeSession()
 		}
 
-		return sessionForkedMsg{instance: inst, sourceID: sourceID}
+		return sessionForkedMsg{instance: inst, sourceID: sourceID, warning: limitWarning}
 	}
 }
 
@@ -6496,6 +6602,7 @@ func (h *Home) forkSessionCmdWithOptions(
 type sessionDeletedMsg struct {
 	deletedID string
 	killErr   error // Error from Kill() if any
+	skipUndo  bool
 }
 
 // sessionClosedMsg signals that a session process was closed without deleting metadata.
@@ -6513,6 +6620,10 @@ type sessionRestoredMsg struct {
 
 // deleteSession deletes a session
 func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
+	return h.deleteSessionWithOptions(inst, false)
+}
+
+func (h *Home) deleteSessionWithOptions(inst *session.Instance, skipUndo bool) tea.Cmd {
 	id := inst.ID
 	isWorktree := inst.IsWorktree()
 	worktreePath := inst.WorktreePath
@@ -6537,17 +6648,41 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 				_ = git.PruneWorktrees(wt.RepoRoot)
 			}
 		}
-		return sessionDeletedMsg{deletedID: id, killErr: killErr}
+		return sessionDeletedMsg{deletedID: id, killErr: killErr, skipUndo: skipUndo}
 	}
 }
 
-// closeSession stops a session process but keeps metadata in list/storage.
+// closeSession stops a session process.
+// Sessions marked AutoDeleteOnClose are removed from metadata as part of close.
 func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
+	if inst.AutoDeleteOnClose {
+		return h.deleteSessionWithOptions(inst, true)
+	}
+
 	id := inst.ID
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
+}
+
+func (h *Home) nextAutoDeleteSessionID() string {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+
+	for _, inst := range h.instances {
+		if inst == nil || !inst.AutoDeleteOnClose {
+			continue
+		}
+		if h.hasActiveAnimation(inst.ID) {
+			continue
+		}
+		if !inst.Exists() {
+			return inst.ID
+		}
+	}
+
+	return ""
 }
 
 // sessionRestartedMsg signals that a session was restarted.
@@ -6586,12 +6721,24 @@ func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 			return sessionRestartedMsg{sessionID: id, err: err}
 		}
 
+		h.instancesMu.RLock()
+		existing := make([]*session.Instance, len(h.instances))
+		copy(existing, h.instances)
+		h.instancesMu.RUnlock()
+
+		limitWarning, limitErr := session.EnforceActiveSessionLimit(existing, id)
+		if limitErr != nil {
+			err := fmt.Errorf("cannot restart session: %w", limitErr)
+			mcpUILog.Debug("restart_session_result", slog.String("id", id), slog.Any("error", err))
+			return sessionRestartedMsg{sessionID: id, err: err}
+		}
+
 		err := current.Restart()
 		mcpUILog.Debug("restart_session_result", slog.String("id", id), slog.Any("error", err))
 		return sessionRestartedMsg{
 			sessionID: id,
 			err:       err,
-			warning:   current.ConsumeCodexRestartWarning(),
+			warning:   joinWarnings(limitWarning, current.ConsumeCodexRestartWarning()),
 		}
 	}
 }
@@ -6768,13 +6915,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	})
 }
 
-func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
-	if msg.attachedSessionID == "" {
-		return
-	}
-
-	workDir := strings.TrimSpace(msg.attachedWorkDir)
-	if workDir == "" {
+func (h *Home) syncProjectPathsFromPaneCache(instances []*session.Instance) {
+	if len(instances) == 0 {
 		return
 	}
 
@@ -6783,26 +6925,49 @@ func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
 		return
 	}
 
-	workDir = filepath.Clean(workDir)
-	if !filepath.IsAbs(workDir) {
-		return
+	updatedAny := false
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		tmuxSess := inst.GetTmuxSession()
+		if tmuxSess == nil {
+			continue
+		}
+		paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name)
+		if !ok {
+			continue
+		}
+		if h.applyObservedCwd(inst.ID, paneInfo.CurrentPath, "poll") {
+			updatedAny = true
+		}
 	}
 
-	info, err := os.Stat(workDir)
-	if err != nil || !info.IsDir() {
-		return
+	if updatedAny {
+		h.saveInstances()
+	}
+}
+
+func (h *Home) applyObservedCwd(sessionID, observedWorkDir, source string) bool {
+	if sessionID == "" {
+		return false
+	}
+
+	workDir := normalizeFollowedProjectPath(observedWorkDir)
+	if workDir == "" {
+		return false
 	}
 
 	h.instancesMu.RLock()
-	inst := h.instanceByID[msg.attachedSessionID]
+	inst := h.instanceByID[sessionID]
 	h.instancesMu.RUnlock()
 	if inst == nil {
-		return
+		return false
 	}
 
 	oldPath := strings.TrimSpace(inst.ProjectPath)
 	if oldPath == workDir {
-		return
+		return false
 	}
 
 	inst.ProjectPath = workDir
@@ -6810,14 +6975,27 @@ func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
 		tmuxSess.WorkDir = workDir
 	}
 	h.invalidatePreviewCache(inst.ID)
-	h.saveInstances()
 
 	uiLog.Info(
-		"attach_follow_cwd_updated",
+		"follow_cwd_updated",
+		slog.String("source", source),
 		slog.String("session_id", inst.ID),
 		slog.String("old_path", oldPath),
 		slog.String("new_path", workDir),
 	)
+
+	return true
+}
+
+func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
+	instanceSettings := session.GetInstanceSettings()
+	if !instanceSettings.GetFollowCwdOnAttach() {
+		return
+	}
+
+	if h.applyObservedCwd(msg.attachedSessionID, msg.attachedWorkDir, "attach_return") {
+		h.saveInstances()
+	}
 }
 
 // attachCmd implements tea.ExecCommand for custom PTY attach
@@ -8445,7 +8623,7 @@ func (h *Home) renderHelpBarFull() string {
 	if len(h.flatItems) == 0 {
 		contextTitle = "Empty"
 		if newQuickKey != "" {
-			primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Quick"))
+			primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Temp"))
 		}
 		if key := h.actionKey(hotkeyImport); key != "" {
 			primaryHints = append(primaryHints, h.helpKey(key, "Import"))
@@ -8459,7 +8637,7 @@ func (h *Home) renderHelpBarFull() string {
 			contextTitle = "Group"
 			primaryHints = append(primaryHints, h.helpKey("Tab", "Toggle"))
 			if newQuickKey != "" {
-				primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Quick"))
+				primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Temp"))
 			}
 			if groupKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(groupKey, "Group"))
@@ -8474,7 +8652,7 @@ func (h *Home) renderHelpBarFull() string {
 			contextTitle = "Session"
 			primaryHints = append(primaryHints, h.helpKey("Enter", "Attach"))
 			if newQuickKey != "" {
-				primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Quick"))
+				primaryHints = append(primaryHints, h.helpKey(newQuickKey, "New/Temp"))
 			}
 			if groupKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(groupKey, "Group"))

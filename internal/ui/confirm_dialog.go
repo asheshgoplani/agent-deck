@@ -33,6 +33,7 @@ type ConfirmDialog struct {
 	height      int
 	mcpCount    int  // Number of running MCPs (for quit confirmation)
 	sandboxed   bool // Whether the session uses a Docker sandbox.
+	autoDelete  bool // Whether close removes session metadata too.
 
 	remoteName string // Remote name for remote session confirmations.
 
@@ -59,12 +60,13 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 }
 
 // ShowCloseSession shows confirmation for non-destructive session close.
-func (c *ConfirmDialog) ShowCloseSession(sessionID string, sessionName string, sandboxed bool) {
+func (c *ConfirmDialog) ShowCloseSession(sessionID string, sessionName string, sandboxed bool, autoDelete bool) {
 	c.visible = true
 	c.confirmType = ConfirmCloseSession
 	c.targetID = sessionID
 	c.targetName = sessionName
 	c.sandboxed = sandboxed
+	c.autoDelete = autoDelete
 }
 
 // ShowDeleteRemoteSession shows confirmation for deleting a remote session.
@@ -141,6 +143,7 @@ func (c *ConfirmDialog) Hide() {
 	c.targetName = ""
 	c.sandboxed = false
 	c.remoteName = ""
+	c.autoDelete = false
 }
 
 // IsVisible returns whether the dialog is visible
@@ -222,7 +225,12 @@ func (c *ConfirmDialog) View() string {
 	case ConfirmCloseSession:
 		title = "Close Session?"
 		warning = fmt.Sprintf("This will close the running process for:\n\n  \"%s\"", c.targetName)
-		details = "• The tmux session will be terminated\n• Session metadata will be kept in the list\n• You can restart later from the session list"
+		details = "• The tmux session will be terminated"
+		if c.autoDelete {
+			details += "\n• Session metadata will be removed (temporary session)"
+		} else {
+			details += "\n• Session metadata will be kept in the list\n• You can restart later from the session list"
+		}
 		if c.sandboxed {
 			details += "\n• The Docker container will be removed"
 		}

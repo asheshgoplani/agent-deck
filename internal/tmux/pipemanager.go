@@ -195,7 +195,7 @@ func (pm *PipeManager) RefreshAllActivities() (map[string]int64, map[string][]Wi
 }
 
 // RefreshAllPaneInfo sends a single list-panes command through any available
-// pipe to get pane titles and current commands for ALL sessions. This provides
+// pipe to get pane metadata for ALL sessions. This provides
 // the data needed for title-based state detection without subprocess spawns.
 // Also returns per-window tool detection data for enriching the window cache.
 func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map[int]string, error) {
@@ -213,7 +213,7 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map
 		return nil, nil, fmt.Errorf("no alive pipes available")
 	}
 
-	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}"`)
+	output, err := pipe.SendCommand(`list-panes -a -F "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{pane_current_path}\t#{window_index}\t#{pane_index}"`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list-panes via pipe: %w", err)
 	}
@@ -225,18 +225,18 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) != 6 {
+		parts := strings.SplitN(line, "\t", 7)
+		if len(parts) != 7 {
 			continue
 		}
 		name := parts[0]
 
 		// Collect tool info for the first pane of each window (handles any base-index).
-		windowKey := name + "\t" + parts[4]
+		windowKey := name + "\t" + parts[5]
 		if !seenWindowTool[windowKey] {
 			seenWindowTool[windowKey] = true
 			var winIdx int
-			_, _ = fmt.Sscanf(parts[4], "%d", &winIdx)
+			_, _ = fmt.Sscanf(parts[5], "%d", &winIdx)
 			tool := detectToolFromCommand(parts[2])
 			if tool == "" {
 				tool = detectToolFromCommand(parts[1])
@@ -255,6 +255,7 @@ func (pm *PipeManager) RefreshAllPaneInfo() (map[string]PaneInfo, map[string]map
 				Title:          parts[1],
 				CurrentCommand: parts[2],
 				Dead:           parts[3] == "1",
+				CurrentPath:    parts[4],
 			}
 		}
 	}

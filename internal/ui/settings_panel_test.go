@@ -152,6 +152,34 @@ func TestSettingsPanel_LoadConfig_ProfileClaudeOverride(t *testing.T) {
 	}
 }
 
+func TestSettingsPanel_LoadConfig_InstanceSettings(t *testing.T) {
+	follow := true
+	config := &session.UserConfig{
+		Instances: session.InstanceSettings{
+			FollowCwdOnAttach:       &follow,
+			QuickDefaultPath:        "~/workspace",
+			MaxActiveSessions:       7,
+			MaxActiveSessionsPolicy: session.MaxActiveSessionsPolicyCloseOldest,
+		},
+	}
+
+	panel := NewSettingsPanel()
+	panel.LoadConfig(config)
+
+	if !panel.followCwdOnAttach {
+		t.Fatal("followCwdOnAttach should be true after LoadConfig")
+	}
+	if panel.quickDefaultPath != "~/workspace" {
+		t.Fatalf("quickDefaultPath = %q, want %q", panel.quickDefaultPath, "~/workspace")
+	}
+	if panel.maxActiveSessions != 7 {
+		t.Fatalf("maxActiveSessions = %d, want 7", panel.maxActiveSessions)
+	}
+	if panel.maxActivePolicy != 2 {
+		t.Fatalf("maxActivePolicy = %d, want 2 (close_oldest)", panel.maxActivePolicy)
+	}
+}
+
 func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 	panel := NewSettingsPanel()
 
@@ -290,6 +318,33 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 	if config.GlobalSearch.RecentDays != 45 {
 		t.Errorf("RecentDays: got %d, want 45", config.GlobalSearch.RecentDays)
+	}
+}
+
+func TestSettingsPanel_GetConfig_InstanceSettings(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.followCwdOnAttach = true
+	panel.quickDefaultPath = "~/src"
+	panel.maxActiveSessions = 3
+	panel.maxActivePolicy = 1 // deny
+
+	config := panel.GetConfig()
+
+	if config.Instances.FollowCwdOnAttach == nil || !*config.Instances.FollowCwdOnAttach {
+		t.Fatal("FollowCwdOnAttach should be true in config")
+	}
+	if config.Instances.QuickDefaultPath != "~/src" {
+		t.Fatalf("QuickDefaultPath = %q, want %q", config.Instances.QuickDefaultPath, "~/src")
+	}
+	if config.Instances.MaxActiveSessions != 3 {
+		t.Fatalf("MaxActiveSessions = %d, want 3", config.Instances.MaxActiveSessions)
+	}
+	if config.Instances.MaxActiveSessionsPolicy != session.MaxActiveSessionsPolicyDeny {
+		t.Fatalf(
+			"MaxActiveSessionsPolicy = %q, want %q",
+			config.Instances.MaxActiveSessionsPolicy,
+			session.MaxActiveSessionsPolicyDeny,
+		)
 	}
 }
 
@@ -486,6 +541,73 @@ func TestSettingsPanel_Update_ToggleCheckbox(t *testing.T) {
 	}
 }
 
+func TestSettingsPanel_Update_InstanceSettingsControls(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+
+	// Toggle follow CWD checkbox.
+	panel.cursor = int(SettingFollowCwdOnAttach)
+	initialFollow := panel.followCwdOnAttach
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("follow CWD toggle should report changed=true")
+	}
+	if panel.followCwdOnAttach == initialFollow {
+		t.Fatal("follow CWD setting should toggle")
+	}
+
+	// Adjust max active sessions with arrow keys.
+	panel.cursor = int(SettingMaxActiveSessions)
+	panel.maxActiveSessions = 0
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.maxActiveSessions != 1 {
+		t.Fatalf("maxActiveSessions after right = %d, want 1", panel.maxActiveSessions)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if panel.maxActiveSessions != 0 {
+		t.Fatalf("maxActiveSessions after left = %d, want 0", panel.maxActiveSessions)
+	}
+
+	// Policy radio selection cycles with h/l.
+	panel.cursor = int(SettingMaxActiveSessionsPolicy)
+	panel.maxActivePolicy = 0
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.maxActivePolicy != 1 {
+		t.Fatalf("maxActivePolicy after right = %d, want 1", panel.maxActivePolicy)
+	}
+	panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if panel.maxActivePolicy != 2 {
+		t.Fatalf("maxActivePolicy after second right = %d, want 2", panel.maxActivePolicy)
+	}
+}
+
+func TestSettingsPanel_Update_QuickDefaultPathTextEdit(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+	panel.cursor = int(SettingQuickDefaultPath)
+
+	// Start editing.
+	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !panel.editingText {
+		t.Fatal("quick default path should enter text editing mode on Enter")
+	}
+
+	// Type a simple path and save.
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'~'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if panel.editingText {
+		t.Fatal("quick default path edit mode should exit on Enter")
+	}
+	if panel.quickDefaultPath == "" {
+		t.Fatal("quickDefaultPath should persist edited value")
+	}
+}
+
 func TestSettingsPanel_Update_RadioSelection(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
@@ -635,6 +757,9 @@ func TestSettingsPanel_View_Visible(t *testing.T) {
 		"UPDATES",
 		"LOGS",
 		"GLOBAL SEARCH",
+		"INSTANCE BEHAVIOR",
+		"Follow pane CWD on attach",
+		"Max active sessions",
 	}
 
 	for _, elem := range expectedElements {
@@ -939,5 +1064,31 @@ func TestSettingsPanel_ViewShowsUnboundMCPHotkeyHint(t *testing.T) {
 	view := panel.View()
 	if !containsString(view, "MCP Manager hotkey is unbound.") {
 		t.Fatalf("settings view should show unbound MCP key hint, got %q", view)
+	}
+}
+
+func TestSettingsPanel_ViewUsesConfiguredQuicktempHotkeyHint(t *testing.T) {
+	setSettingsPanelHotkeyConfigForTest(t, "[hotkeys]\nquick_create = \"ctrl+n\"\n")
+
+	panel := NewSettingsPanel()
+	panel.SetSize(100, 80)
+	panel.Show()
+
+	view := panel.View()
+	if !containsString(view, "Press ctrl+n for quicktemp sessions") || !containsString(view, "auto-delete on") {
+		t.Fatalf("settings view should show configured quicktemp key hint, got %q", view)
+	}
+}
+
+func TestSettingsPanel_ViewShowsUnboundQuicktempHotkeyHint(t *testing.T) {
+	setSettingsPanelHotkeyConfigForTest(t, "[hotkeys]\nquick_create = \"\"\n")
+
+	panel := NewSettingsPanel()
+	panel.SetSize(100, 80)
+	panel.Show()
+
+	view := panel.View()
+	if !containsString(view, "Quicktemp hotkey is unbound.") {
+		t.Fatalf("settings view should show unbound quicktemp key hint, got %q", view)
 	}
 }

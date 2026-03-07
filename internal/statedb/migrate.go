@@ -48,12 +48,13 @@ type jsonInstanceData struct {
 	CodexSessionID  string    `json:"codex_session_id,omitempty"`
 	CodexDetectedAt time.Time `json:"codex_detected_at,omitempty"`
 
-	LatestPrompt     string          `json:"latest_prompt,omitempty"`
-	Notes            string          `json:"notes,omitempty"`
-	ToolOptionsJSON  json.RawMessage `json:"tool_options,omitempty"`
-	LoadedMCPNames   []string        `json:"loaded_mcp_names,omitempty"`
-	Sandbox          json.RawMessage `json:"sandbox,omitempty"`
-	SandboxContainer string          `json:"sandbox_container,omitempty"`
+	LatestPrompt      string          `json:"latest_prompt,omitempty"`
+	Notes             string          `json:"notes,omitempty"`
+	ToolOptionsJSON   json.RawMessage `json:"tool_options,omitempty"`
+	LoadedMCPNames    []string        `json:"loaded_mcp_names,omitempty"`
+	Sandbox           json.RawMessage `json:"sandbox,omitempty"`
+	SandboxContainer  string          `json:"sandbox_container,omitempty"`
+	AutoDeleteOnClose bool            `json:"auto_delete_on_close,omitempty"`
 }
 
 // jsonGroupData mirrors session.GroupData for migration.
@@ -90,6 +91,7 @@ type toolDataBlob struct {
 	AdditionalPaths    []string                `json:"additional_paths,omitempty"`
 	MultiRepoTempDir   string                  `json:"multi_repo_temp_dir,omitempty"`
 	MultiRepoWorktrees []multiRepoWorktreeBlob `json:"multi_repo_worktrees,omitempty"`
+	AutoDeleteOnClose  bool                    `json:"auto_delete_on_close,omitempty"`
 }
 
 // multiRepoWorktreeBlob is the JSON representation of a multi-repo worktree in tool_data.
@@ -129,6 +131,7 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 			ToolOptions:       inst.ToolOptionsJSON,
 			Sandbox:           inst.Sandbox,
 			SandboxContainer:  inst.SandboxContainer,
+			AutoDeleteOnClose: inst.AutoDeleteOnClose,
 		}
 		if !inst.ClaudeDetectedAt.IsZero() {
 			td.ClaudeDetectedAt = inst.ClaudeDetectedAt.Unix()
@@ -216,6 +219,7 @@ func MarshalToolData(
 	sshHost string, sshRemotePath string,
 	multiRepoEnabled bool, additionalPaths []string,
 	multiRepoTempDir string, multiRepoWorktrees []MultiRepoWorktreeData,
+	autoDeleteOnClose bool,
 ) json.RawMessage {
 	td := toolDataBlob{
 		ClaudeSessionID:   claudeSessionID,
@@ -235,6 +239,7 @@ func MarshalToolData(
 		MultiRepoEnabled:  multiRepoEnabled,
 		AdditionalPaths:   additionalPaths,
 		MultiRepoTempDir:  multiRepoTempDir,
+		AutoDeleteOnClose: autoDeleteOnClose,
 	}
 	for _, wt := range multiRepoWorktrees {
 		td.MultiRepoWorktrees = append(td.MultiRepoWorktrees, multiRepoWorktreeBlob(wt))
@@ -269,6 +274,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	sshHost string, sshRemotePath string,
 	multiRepoEnabled bool, additionalPaths []string,
 	multiRepoTempDir string, multiRepoWorktrees []MultiRepoWorktreeData,
+	autoDeleteOnClose bool,
 ) {
 	if len(data) == 0 {
 		return
@@ -309,5 +315,6 @@ func UnmarshalToolData(data json.RawMessage) (
 	for _, wt := range td.MultiRepoWorktrees {
 		multiRepoWorktrees = append(multiRepoWorktrees, MultiRepoWorktreeData(wt))
 	}
+	autoDeleteOnClose = td.AutoDeleteOnClose
 	return
 }

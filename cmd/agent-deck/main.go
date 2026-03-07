@@ -880,9 +880,13 @@ func handleAdd(profile string, args []string) {
 			}
 		}
 	} else {
-		// No explicit path provided: use group default path first, then cwd fallback.
+		// No explicit path provided: use group default path first,
+		// then quick default path, then cwd fallback.
 		if sessionGroup != "" {
 			path = groupTree.DefaultPathForGroup(sessionGroup)
+		}
+		if path == "" {
+			path = resolveQuickDefaultPathForCLI()
 		}
 		if path == "" {
 			path, err = os.Getwd()

@@ -120,7 +120,18 @@ func handleTry(profile string, args []string) {
 	for _, inst := range instances {
 		if inst.ProjectPath == exp.Path {
 			// Session exists - just start it if not running
+			limitWarning := ""
 			if !inst.Exists() {
+				var limitErr error
+				limitWarning, limitErr = session.EnforceActiveSessionLimit(instances, inst.ID)
+				if limitErr != nil {
+					out.Error(fmt.Sprintf("cannot start session: %v", limitErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if limitWarning != "" && !*jsonOutput {
+					fmt.Fprintf(os.Stderr, "Warning: %s\n", limitWarning)
+				}
+
 				if err := inst.Start(); err != nil {
 					out.Error(fmt.Sprintf("starting session: %v", err), ErrCodeInvalidOperation)
 					os.Exit(1)
@@ -129,18 +140,32 @@ func handleTry(profile string, args []string) {
 				// Save updated state with session ID
 				_ = saveSessionData(storage, instances)
 			}
+
+			jsonData := map[string]interface{}{
+				"action":  "existing",
+				"session": inst.Title,
+				"id":      inst.ID[:8],
+				"path":    exp.Path,
+				"tool":    inst.Tool,
+			}
+			if limitWarning != "" {
+				jsonData["warning"] = limitWarning
+			}
 			out.Print(
 				fmt.Sprintf("Session: %s (%s)\nPath: %s\n", inst.Title, inst.ID[:8], exp.Path),
-				map[string]interface{}{
-					"action":  "existing",
-					"session": inst.Title,
-					"id":      inst.ID[:8],
-					"path":    exp.Path,
-					"tool":    inst.Tool,
-				},
+				jsonData,
 			)
 			return
 		}
+	}
+
+	limitWarning, limitErr := session.EnforceActiveSessionLimit(instances, "")
+	if limitErr != nil {
+		out.Error(fmt.Sprintf("cannot start session: %v", limitErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if limitWarning != "" && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", limitWarning)
 	}
 
 	// Create new session
@@ -176,16 +201,21 @@ func handleTry(profile string, args []string) {
 		action = "Found"
 	}
 
+	jsonData := map[string]interface{}{
+		"action":  strings.ToLower(action),
+		"name":    exp.Name,
+		"path":    exp.Path,
+		"session": newInst.Title,
+		"id":      newInst.ID[:8],
+		"tool":    selectedTool,
+	}
+	if limitWarning != "" {
+		jsonData["warning"] = limitWarning
+	}
+
 	out.Success(
 		fmt.Sprintf("%s experiment: %s", action, exp.Name),
-		map[string]interface{}{
-			"action":  strings.ToLower(action),
-			"name":    exp.Name,
-			"path":    exp.Path,
-			"session": newInst.Title,
-			"id":      newInst.ID[:8],
-			"tool":    selectedTool,
-		},
+		jsonData,
 	)
 }
 

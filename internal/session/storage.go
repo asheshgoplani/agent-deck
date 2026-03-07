@@ -78,7 +78,8 @@ type InstanceData struct {
 	Notes        string `json:"notes,omitempty"`
 
 	// Tool-specific launch options (generic for all tools: claude, codex, etc.)
-	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
+	ToolOptionsJSON   json.RawMessage `json:"tool_options,omitempty"`
+	AutoDeleteOnClose bool            `json:"auto_delete_on_close,omitempty"`
 
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
@@ -298,6 +299,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.SSHHost, inst.SSHRemotePath,
 			inst.MultiRepoEnabled, inst.AdditionalPaths,
 			inst.MultiRepoTempDir, mrWorktrees,
+			inst.AutoDeleteOnClose,
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -441,7 +443,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			sandboxJSON, sandboxContainer,
 			sshHost2, sshRemotePath2,
 			mrEnabled2, addPaths2,
-			mrTempDir2, mrWorktrees2 := statedb.UnmarshalToolData(r.ToolData)
+			mrTempDir2, mrWorktrees2,
+			autoDeleteOnClose := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		instances[i] = &InstanceData{
@@ -474,6 +477,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			Notes:              notes,
 			ToolOptionsJSON:    toolOpts,
+			AutoDeleteOnClose:  autoDeleteOnClose,
 			LoadedMCPNames:     loadedMCPs,
 			Sandbox:            sandboxCfg,
 			SandboxContainer:   sandboxContainer,
@@ -537,7 +541,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			sandboxJSON, sandboxContainer,
 			sshHost, sshRemotePath,
 			mrEnabled, addPaths,
-			mrTempDir, mrWorktrees := statedb.UnmarshalToolData(r.ToolData)
+			mrTempDir, mrWorktrees,
+			autoDeleteOnClose := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
@@ -570,6 +575,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			Notes:              notes,
 			ToolOptionsJSON:    toolOpts,
+			AutoDeleteOnClose:  autoDeleteOnClose,
 			LoadedMCPNames:     loadedMCPs,
 			Sandbox:            sandboxCfg,
 			SandboxContainer:   sandboxContainer,

@@ -712,12 +712,63 @@ func TestInstanceSettingsFollowCwdOnAttach(t *testing.T) {
 	}
 }
 
+func TestInstanceSettingsQuickDefaultPath(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	homeDir := t.TempDir()
+	os.Setenv("HOME", homeDir)
+	defer os.Setenv("HOME", origHome)
+
+	settings := InstanceSettings{QuickDefaultPath: "  ~/projects/agent-deck  "}
+	want := filepath.Join(homeDir, "projects", "agent-deck")
+	if got := settings.GetQuickDefaultPath(); got != want {
+		t.Fatalf("GetQuickDefaultPath() = %q, want %q", got, want)
+	}
+
+	settings.QuickDefaultPath = "   "
+	if got := settings.GetQuickDefaultPath(); got != "" {
+		t.Fatalf("GetQuickDefaultPath() blank = %q, want empty", got)
+	}
+}
+
+func TestInstanceSettingsMaxActiveSessionsAndPolicy(t *testing.T) {
+	settings := InstanceSettings{}
+	if got := settings.GetMaxActiveSessions(); got != 0 {
+		t.Fatalf("GetMaxActiveSessions default = %d, want 0", got)
+	}
+	if got := settings.GetMaxActiveSessionsPolicy(); got != MaxActiveSessionsPolicyWarn {
+		t.Fatalf("GetMaxActiveSessionsPolicy default = %q, want %q", got, MaxActiveSessionsPolicyWarn)
+	}
+
+	settings.MaxActiveSessions = 3
+	if got := settings.GetMaxActiveSessions(); got != 3 {
+		t.Fatalf("GetMaxActiveSessions configured = %d, want 3", got)
+	}
+
+	settings.MaxActiveSessionsPolicy = "  CLOSE_OLDEST  "
+	if got := settings.GetMaxActiveSessionsPolicy(); got != MaxActiveSessionsPolicyCloseOldest {
+		t.Fatalf("GetMaxActiveSessionsPolicy close_oldest = %q, want %q", got, MaxActiveSessionsPolicyCloseOldest)
+	}
+
+	settings.MaxActiveSessionsPolicy = "deny"
+	if got := settings.GetMaxActiveSessionsPolicy(); got != MaxActiveSessionsPolicyDeny {
+		t.Fatalf("GetMaxActiveSessionsPolicy deny = %q, want %q", got, MaxActiveSessionsPolicyDeny)
+	}
+
+	settings.MaxActiveSessionsPolicy = "unsupported"
+	if got := settings.GetMaxActiveSessionsPolicy(); got != MaxActiveSessionsPolicyWarn {
+		t.Fatalf("GetMaxActiveSessionsPolicy invalid = %q, want %q", got, MaxActiveSessionsPolicyWarn)
+	}
+}
+
 func TestUserConfigParseFollowCwdOnAttach(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	content := `
 [instances]
 follow_cwd_on_attach = true
+quick_default_path = "~/projects"
+max_active_sessions = 4
+max_active_sessions_policy = "deny"
 `
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
@@ -730,6 +781,15 @@ follow_cwd_on_attach = true
 
 	if !config.Instances.GetFollowCwdOnAttach() {
 		t.Fatal("instances.follow_cwd_on_attach should parse as true")
+	}
+	if got := config.Instances.GetQuickDefaultPath(); got == "" {
+		t.Fatal("instances.quick_default_path should parse as non-empty")
+	}
+	if got := config.Instances.GetMaxActiveSessions(); got != 4 {
+		t.Fatalf("instances.max_active_sessions = %d, want 4", got)
+	}
+	if got := config.Instances.GetMaxActiveSessionsPolicy(); got != MaxActiveSessionsPolicyDeny {
+		t.Fatalf("instances.max_active_sessions_policy = %q, want %q", got, MaxActiveSessionsPolicyDeny)
 	}
 }
 
