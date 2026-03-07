@@ -10,6 +10,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleWorktree dispatches worktree subcommands
@@ -91,22 +92,14 @@ func handleWorktreeList(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Check if in a git repo (or a bare-repo project root)
-	if !git.IsGitRepoOrBareProjectRoot(cwd) {
-		out.Error("not in a git repository", ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
-	// Get repo root (resolve through worktrees to prevent nesting; also
-	// handles bare-repo project roots by returning the parent of .bare/).
-	repoRoot, err := git.GetWorktreeBaseRoot(cwd)
+	backend, err := detectAndCreateBackend(cwd)
 	if err != nil {
-		out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
+		out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	// List worktrees
-	worktrees, err := git.ListWorktrees(repoRoot)
+	worktrees, err := backend.ListWorktrees()
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to list worktrees: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -161,7 +154,7 @@ func handleWorktreeList(profile string, args []string) {
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
-			"repo_root": repoRoot,
+			"repo_root": backend.RepoDir(),
 			"worktrees": results,
 			"count":     len(results),
 		})
@@ -174,7 +167,7 @@ func handleWorktreeList(profile string, args []string) {
 		return
 	}
 
-	fmt.Printf("Repository: %s\n\n", FormatPath(repoRoot))
+	fmt.Printf("Repository: %s\n\n", FormatPath(backend.RepoDir()))
 	fmt.Printf("%-40s  %-20s  %-10s  %s\n", "PATH", "BRANCH", "TYPE", "SESSION")
 	fmt.Printf("%-40s  %-20s  %-10s  %s\n", strings.Repeat("-", 40), strings.Repeat("-", 20), strings.Repeat("-", 10), strings.Repeat("-", 20))
 
@@ -329,31 +322,29 @@ func handleWorktreeCleanup(profile string, args []string) {
 	}
 
 	// Find orphaned worktrees (exist but no session points to them)
-	var orphanedWorktrees []git.Worktree
-	var repoRoot string
+	var orphanedWorktrees []vcs.Worktree
+	var cleanupBackend vcs.Backend
 
-	if git.IsGitRepoOrBareProjectRoot(cwd) {
-		repoRoot, err = git.GetWorktreeBaseRoot(cwd)
-		if err == nil {
-			worktrees, err := git.ListWorktrees(repoRoot)
-			if err == nil {
-				// Build set of paths that sessions use
-				sessionPaths := make(map[string]bool)
-				for _, inst := range instances {
-					sessionPaths[inst.ProjectPath] = true
-					if inst.WorktreePath != "" {
-						sessionPaths[inst.WorktreePath] = true
-					}
+	if cleanupB, bErr := detectAndCreateBackend(cwd); bErr == nil {
+		cleanupBackend = cleanupB
+		worktrees, wErr := cleanupBackend.ListWorktrees()
+		if wErr == nil {
+			// Build set of paths that sessions use
+			sessionPaths := make(map[string]bool)
+			for _, inst := range instances {
+				sessionPaths[inst.ProjectPath] = true
+				if inst.WorktreePath != "" {
+					sessionPaths[inst.WorktreePath] = true
 				}
+			}
 
-				// Check each worktree (skip the first one which is usually the main repo)
-				for i, wt := range worktrees {
-					if i == 0 {
-						continue // Skip main repo
-					}
-					if !sessionPaths[wt.Path] {
-						orphanedWorktrees = append(orphanedWorktrees, wt)
-					}
+			// Check each worktree (skip the first one which is usually the main repo)
+			for i, wt := range worktrees {
+				if i == 0 {
+					continue // Skip main repo
+				}
+				if !sessionPaths[wt.Path] {
+					orphanedWorktrees = append(orphanedWorktrees, wt)
 				}
 			}
 		}
@@ -470,7 +461,11 @@ func handleWorktreeCleanup(profile string, args []string) {
 	// Remove orphaned worktrees
 	removedWorktrees := 0
 	for _, wt := range orphanedWorktrees {
-		if err := git.RemoveWorktree(repoRoot, wt.Path, false); err != nil {
+		if cleanupBackend == nil {
+			fmt.Fprintf(os.Stderr, "Warning: no VCS backend for worktree removal\n")
+			break
+		}
+		if err := cleanupBackend.RemoveWorktree(wt.Path, false); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree %s: %v\n", wt.Path, err)
 			continue
 		}
@@ -548,7 +543,13 @@ func handleWorktreeFinish(profile string, args []string) {
 	worktreePath := inst.WorktreePath
 	worktreeBranch := inst.WorktreeBranch
 
-	// Check for uncommitted changes
+	finishBackend, err := inst.Backend()
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to initialize VCS: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	// Check for uncommitted changes (uses worktree path, not repoDir — stays standalone)
 	if !*force {
 		dirty, err := git.HasUncommittedChanges(worktreePath)
 		if err != nil {
@@ -570,7 +571,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	// Determine target branch
 	targetBranch := *into
 	if targetBranch == "" && !*noMerge {
-		targetBranch, err = git.GetDefaultBranch(repoRoot)
+		targetBranch, err = finishBackend.GetDefaultBranch()
 		if err != nil {
 			out.Error(fmt.Sprintf("could not determine target branch: %v\nUse --into <branch> to specify", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -624,7 +625,7 @@ func handleWorktreeFinish(profile string, args []string) {
 		}
 
 		// Merge the worktree branch
-		if err := git.MergeBranch(repoRoot, worktreeBranch); err != nil {
+		if err := finishBackend.MergeBranch(worktreeBranch); err != nil {
 			// Abort the merge to leave things clean
 			abortCmd := exec.Command("git", "-C", repoRoot, "merge", "--abort")
 			_ = abortCmd.Run()
@@ -637,18 +638,18 @@ func handleWorktreeFinish(profile string, args []string) {
 	// Step 2: Remove worktree
 	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
 		fmt.Printf("Removing worktree at %s...\n", FormatPath(worktreePath))
-		if err := git.RemoveWorktree(repoRoot, worktreePath, *force); err != nil {
+		if err := finishBackend.RemoveWorktree(worktreePath, *force); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to remove worktree: %v\n", err)
 		} else {
 			fmt.Printf("  %s Worktree removed\n", successSymbol)
 		}
 	}
-	_ = git.PruneWorktrees(repoRoot)
+	_ = finishBackend.PruneWorktrees()
 
 	// Step 3: Delete branch (if not --keep-branch)
 	if !*keepBranch {
 		fmt.Printf("Deleting branch %s...\n", worktreeBranch)
-		if err := git.DeleteBranch(repoRoot, worktreeBranch, *force); err != nil {
+		if err := finishBackend.DeleteBranch(worktreeBranch, *force); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to delete branch: %v\n", err)
 		} else {
 			fmt.Printf("  %s Branch deleted\n", successSymbol)

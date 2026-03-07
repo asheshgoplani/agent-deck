@@ -121,8 +121,12 @@ func TestIsBareRepoWorktree_FalseForNormalWorktree(t *testing.T) {
 	dir := t.TempDir()
 	createTestRepo(t, dir)
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
 	wtPath := filepath.Join(t.TempDir(), "regular-wt")
-	if err := CreateWorktree(dir, wtPath, "feature-regular"); err != nil {
+	if err := backend.CreateWorktree(wtPath, "feature-regular"); err != nil {
 		t.Fatalf("failed to create worktree: %v", err)
 	}
 
@@ -220,8 +224,12 @@ func TestFindWorktreeSetupScript_BareRepo(t *testing.T) {
 func TestCreateWorktree_FromBareProjectRoot(t *testing.T) {
 	projectRoot, _, _ := createBareRepoLayout(t, "worktree1")
 
+	backend, err := NewGitBackend(projectRoot)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
 	newWorktreePath := filepath.Join(projectRoot, "worktree-new")
-	if err := CreateWorktree(projectRoot, newWorktreePath, "feature-new"); err != nil {
+	if err := backend.CreateWorktree(newWorktreePath, "feature-new"); err != nil {
 		t.Fatalf("CreateWorktree(projectRoot=%q) failed: %v", projectRoot, err)
 	}
 
@@ -252,9 +260,13 @@ echo "bare-setup done"
 		t.Fatal(err)
 	}
 
+	bareBackend, err := NewGitBackend(projectRoot)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
 	newWorktreePath := filepath.Join(projectRoot, "worktree-feat")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(projectRoot, newWorktreePath, "feature-bare-e2e", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(bareBackend, newWorktreePath, "feature-bare-e2e", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("CreateWorktreeWithSetup failed: %v (stderr: %s)", err, stderr.String())
 	}
@@ -281,7 +293,11 @@ echo "bare-setup done"
 func TestListWorktrees_BareRepo(t *testing.T) {
 	projectRoot, _, _ := createBareRepoLayout(t, "worktree1", "worktree2", "worktree3")
 
-	wts, err := ListWorktrees(projectRoot)
+	backend, err := NewGitBackend(projectRoot)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+	wts, err := backend.ListWorktrees()
 	if err != nil {
 		t.Fatalf("ListWorktrees(projectRoot) failed: %v", err)
 	}
@@ -310,16 +326,20 @@ func TestListWorktrees_BareRepo(t *testing.T) {
 func TestBranchExists_FromBareProjectRoot(t *testing.T) {
 	projectRoot, _, _ := createBareRepoLayout(t, "worktree1", "worktree2")
 
+	backend, err := NewGitBackend(projectRoot)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
 	// main branch (from the seed commit) should exist.
-	if !BranchExists(projectRoot, "main") {
+	if !backend.BranchExists("main") {
 		t.Errorf("BranchExists(%q, main) = false; want true", projectRoot)
 	}
 	// feature-worktree2 branch was auto-created by the fixture.
-	if !BranchExists(projectRoot, "feature-worktree2") {
+	if !backend.BranchExists("feature-worktree2") {
 		t.Errorf("BranchExists(%q, feature-worktree2) = false; want true", projectRoot)
 	}
 	// Non-existent branches should report false, not error out.
-	if BranchExists(projectRoot, "never-existed") {
+	if backend.BranchExists("never-existed") {
 		t.Errorf("BranchExists(%q, never-existed) = true; want false", projectRoot)
 	}
 }

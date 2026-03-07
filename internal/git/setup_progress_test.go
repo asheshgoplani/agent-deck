@@ -29,9 +29,14 @@ func TestCreateWorktreeWithSetup_ProgressMessages_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+
 	worktreePath := filepath.Join(dir, ".worktrees", "progress-ok")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "progress-ok", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(backend, worktreePath, "progress-ok", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -61,9 +66,14 @@ func TestCreateWorktreeWithSetup_ProgressMessages_Failure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+
 	worktreePath := filepath.Join(dir, ".worktrees", "progress-fail")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "progress-fail", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(backend, worktreePath, "progress-fail", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation should succeed even when setup fails: %v", err)
 	}

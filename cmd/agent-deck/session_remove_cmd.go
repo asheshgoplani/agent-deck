@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -174,10 +173,12 @@ func removeAllErrored(
 func pruneSessionWorktree(inst *session.Instance) {
 	_ = inst.KillAndWait()
 	if inst.IsWorktree() {
-		if err := git.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, true); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
+		if backend, err := detectAndCreateBackend(inst.WorktreeRepoRoot); err == nil {
+			if err := backend.RemoveWorktree(inst.WorktreePath, true); err != nil {
+				fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
+			}
+			_ = backend.PruneWorktrees()
 		}
-		_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
 	}
 }
 
