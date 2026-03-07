@@ -8,8 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // ForkDialog handles the fork session dialog
@@ -73,7 +73,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	// Reset worktree fields.
 	d.worktreeEnabled = false
 	d.sandboxEnabled = false
-	d.isGitRepo = git.IsGitRepo(projectPath)
+	d.isGitRepo = vcs.Detect(projectPath) != nil
 
 	// Auto-suggest branch name based on fork title
 	sanitized := strings.ToLower(originalName)
@@ -169,7 +169,7 @@ func (d *ForkDialog) Validate() string {
 		if branch == "" {
 			return "Branch name required for worktree"
 		}
-		if err := git.ValidateBranchName(branch); err != nil {
+		if err := vcs.ValidateBranchName(branch); err != nil {
 			return err.Error()
 		}
 	}

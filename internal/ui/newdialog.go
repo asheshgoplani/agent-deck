@@ -10,9 +10,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // focusTarget identifies a focusable element in the new session dialog.
@@ -571,7 +571,7 @@ func (d *NewDialog) Validate() string {
 		if branch == "" {
 			return "Branch name required for worktree"
 		}
-		if err := git.ValidateBranchName(branch); err != nil {
+		if err := vcs.ValidateBranchName(branch); err != nil {
 			return err.Error()
 		}
 	}

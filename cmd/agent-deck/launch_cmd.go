@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleLaunch combines add + start + optional send into a single command.
@@ -141,25 +141,27 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Handle worktree creation
-	var worktreePath, worktreeRepoRoot string
+	var worktreePath, worktreeRepoRoot, vcsType string
 	if wtBranch != "" {
-		if !git.IsGitRepo(path) {
-			out.Error(fmt.Sprintf("%s is not a git repository", path), ErrCodeInvalidOperation)
+		backend := vcs.Detect(path)
+		if backend == nil {
+			out.Error(fmt.Sprintf("%s is not a VCS repository", path), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		vcsType = string(backend.Type())
 
-		repoRoot, err := git.GetWorktreeBaseRoot(path)
+		repoRoot, err := backend.GetWorktreeBaseRoot(path)
 		if err != nil {
 			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
-		if err := git.ValidateBranchName(wtBranch); err != nil {
+		if err := vcs.ValidateBranchName(wtBranch); err != nil {
 			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
-		branchExists := git.BranchExists(repoRoot, wtBranch)
+		branchExists := backend.BranchExists(repoRoot, wtBranch)
 		if createNewBranch && branchExists {
 			out.Error(fmt.Sprintf("branch '%s' already exists (remove -b flag to use existing branch)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -171,11 +173,11 @@ func handleLaunch(profile string, args []string) {
 			location = *worktreeLocation
 		}
 
-		worktreePath = git.WorktreePath(git.WorktreePathOptions{
+		worktreePath = vcs.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
 			RepoDir:   repoRoot,
-			SessionID: git.GeneratePathID(),
+			SessionID: vcs.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
@@ -189,7 +191,7 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+		if err := backend.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
 			out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -272,6 +274,7 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreePath = worktreePath
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
 		newInstance.WorktreeBranch = wtBranch
+		newInstance.VCSType = vcsType
 	}
 
 	if *resumeSession != "" {
