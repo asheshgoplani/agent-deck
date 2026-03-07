@@ -10101,14 +10101,32 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Background(ColorCyan).
 		Padding(0, 1).
 		Render(selected.GroupPath)
+	vcsBadgeText := string(vcs.TypeGit)
+	if selected.WorktreeType != "" {
+		vcsBadgeText = string(selected.WorktreeType)
+	}
+	vcsBadge := lipgloss.NewStyle().
+		Foreground(ColorBg).
+		Background(ColorOrange).
+		Padding(0, 1).
+		Render(vcsBadgeText)
 	b.WriteString(toolBadge)
 	b.WriteString(" ")
 	b.WriteString(groupBadge)
+	b.WriteString(" ")
+	b.WriteString(vcsBadge)
 	b.WriteString("\n")
 
 	// Worktree info section (for sessions running in git worktrees)
 	if selected.IsWorktree() {
-		wtHeader := renderSectionDivider("Worktree", width-4)
+		var sectionHeader string
+		switch selected.WorktreeType {
+		case string(vcs.TypeGit), "":
+			sectionHeader = "Git Worktree"
+		case string(vcs.TypeJujutsu):
+			sectionHeader = "Jujutsu Workspace"
+		}
+		wtHeader := renderSectionDivider(sectionHeader, width-4)
 		b.WriteString(wtHeader)
 		b.WriteString("\n")
 
