@@ -299,6 +299,10 @@ type PreviewSettings struct {
 	// Default: false (pointer to distinguish "not set" from "explicitly false")
 	ShowAnalytics *bool `toml:"show_analytics"`
 
+	// ShowNotes shows session notes section in preview pane
+	// Default: true (pointer to distinguish "not set" from "explicitly false")
+	ShowNotes *bool `toml:"show_notes"`
+
 	// Analytics configures which sections to show in the analytics panel
 	Analytics AnalyticsDisplaySettings `toml:"analytics"`
 
@@ -434,6 +438,14 @@ func (p *PreviewSettings) GetAnalyticsSettings() AnalyticsDisplaySettings {
 	return p.Analytics
 }
 
+// GetShowNotes returns whether to show notes section, defaulting to true
+func (p *PreviewSettings) GetShowNotes() bool {
+	if p.ShowNotes == nil {
+		return true // Default: notes ON
+	}
+	return *p.ShowNotes
+}
+
 // GetNotesOutputSplit returns notes/output split ratio, clamped to sane bounds.
 func (p *PreviewSettings) GetNotesOutputSplit() float64 {
 	if p.NotesOutputSplit <= 0 {
@@ -496,6 +508,11 @@ func (c *UserConfig) GetShowOutput() bool {
 // GetShowAnalytics returns whether to show analytics panel, defaulting to false
 func (c *UserConfig) GetShowAnalytics() bool {
 	return c.Preview.GetShowAnalytics()
+}
+
+// GetShowNotes returns whether to show notes section, defaulting to true
+func (c *UserConfig) GetShowNotes() bool {
+	return c.Preview.GetShowNotes()
 }
 
 // ClaudeSettings defines Claude Code configuration
@@ -1590,8 +1607,9 @@ func CreateExampleConfig() error {
 # [instances]
 # follow_cwd_on_attach = true
 
-# Preview notes/output split (optional)
+# Preview settings (optional)
 # [preview]
+# show_notes = true
 # notes_output_split = 0.33
 
 # Claude Code integration

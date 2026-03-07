@@ -4991,6 +4991,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "e":
+		if config, _ := session.LoadUserConfig(); config != nil && !config.GetShowNotes() {
+			return h, nil
+		}
 		if h.getLayoutMode() == LayoutModeSingle {
 			h.setError(fmt.Errorf("notes editor is unavailable in single-column layout"))
 			return h, nil
@@ -7681,6 +7684,9 @@ func (h *Home) renderHelpBarMinimal() string {
 	mcpKey := h.actionKey(hotkeyMCPManager)
 	skillsKey := h.actionKey(hotkeySkillsManager)
 	notesKey := h.actionKey(hotkeyEditNotes)
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
+		notesKey = ""
+	}
 	if h.jumpMode {
 		contextKeys = keyStyle.Render("a-z") + " " + keyStyle.Render("esc")
 		if h.jumpBuffer != "" {
@@ -7915,6 +7921,9 @@ func (h *Home) renderHelpBarFull() string {
 	sendKey := h.actionKey(hotkeySendOutput)
 	execShellKey := h.actionKey(hotkeyExecShell)
 	notesKey := h.actionKey(hotkeyEditNotes)
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
+		notesKey = ""
+	}
 	undoKey := h.actionKey(hotkeyUndoDelete)
 
 	// Determine context-specific hints grouped by action type
@@ -9630,6 +9639,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	showAnalytics := config != nil && config.GetShowAnalytics() &&
 		(session.IsClaudeCompatible(selected.Tool) || selected.Tool == "gemini")
 	showOutput := config == nil || config.GetShowOutput() // Default to true if config fails
+	showNotes := config == nil || config.GetShowNotes()   // Default to true if config fails
 	notesOutputSplit := 0.33
 	if config != nil {
 		notesOutputSplit = config.Preview.GetNotesOutputSplit()
@@ -9737,10 +9747,12 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	}
 
 	remainingLines := height - (strings.Count(b.String(), "\n") + 1)
-	notesLines := notesSectionLineBudget(remainingLines, showOutput || isStartingUp, notesOutputSplit)
-	if notesLines > 0 {
-		b.WriteString(h.renderNotesSection(selected, width, notesLines))
-		b.WriteString("\n")
+	if showNotes {
+		notesLines := notesSectionLineBudget(remainingLines, showOutput || isStartingUp, notesOutputSplit)
+		if notesLines > 0 {
+			b.WriteString(h.renderNotesSection(selected, width, notesLines))
+			b.WriteString("\n")
+		}
 	}
 
 	// If output is disabled AND not starting up, return early
