@@ -20,11 +20,12 @@ const (
 	TitleStateDone                      // Done marker detected, fall through to prompt detection
 )
 
-// PaneInfo holds pane title and current command for a tmux session.
+// PaneInfo holds cached pane metadata for a tmux session.
 type PaneInfo struct {
 	Title          string
 	CurrentCommand string
 	Dead           bool
+	CurrentPath    string
 }
 
 // WindowInfo holds basic info about a tmux window within a session.
@@ -120,7 +121,7 @@ func RefreshPaneInfoCache() {
 	}
 
 	// Subprocess fallback: list-panes -a
-	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}")
+	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{pane_current_path}\t#{window_index}\t#{pane_index}")
 	output, err := cmd.Output()
 	if err != nil {
 		paneCacheMu.Lock()
@@ -137,19 +138,19 @@ func RefreshPaneInfoCache() {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 6)
-		if len(parts) != 6 {
+		parts := strings.SplitN(line, "\t", 7)
+		if len(parts) != 7 {
 			continue
 		}
 		name := parts[0]
 
 		// Collect tool info for the first pane of each window (handles any base-index).
 		// list-panes outputs panes sorted by window then pane index, so first hit = primary.
-		windowKey := name + "\t" + parts[4]
+		windowKey := name + "\t" + parts[5]
 		if !seenWindowTool[windowKey] {
 			seenWindowTool[windowKey] = true
 			var winIdx int
-			_, _ = fmt.Sscanf(parts[4], "%d", &winIdx)
+			_, _ = fmt.Sscanf(parts[5], "%d", &winIdx)
 			// Try pane_current_command first, then pane_title (Claude shows as "bash"
 			// in command but "Claude Code" in title via OSC escape sequences).
 			tool := detectToolFromCommand(parts[2])
@@ -171,6 +172,7 @@ func RefreshPaneInfoCache() {
 				Title:          parts[1],
 				CurrentCommand: parts[2],
 				Dead:           parts[3] == "1",
+				CurrentPath:    parts[4],
 			}
 		}
 	}

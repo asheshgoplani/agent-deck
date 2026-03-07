@@ -365,11 +365,38 @@ type InstanceSettings struct {
 	// When false, only one instance can run per profile
 	AllowMultiple *bool `toml:"allow_multiple"`
 
-	// FollowCwdOnAttach updates the session's ProjectPath from tmux pane_current_path
-	// after returning from attach, and persists the new path.
+	// FollowCwdOnAttach updates the session's ProjectPath from the last observed
+	// tmux pane_current_path.
+	//
+	// When enabled, agent-deck syncs path changes after attach returns and during
+	// background status polling while the session is running.
 	// Default: false
 	FollowCwdOnAttach *bool `toml:"follow_cwd_on_attach"`
+
+	// QuickDefaultPath is a default directory used by quick session creation when
+	// no session/group path context is available.
+	//
+	// Empty = fall back to current working directory behavior.
+	QuickDefaultPath string `toml:"quick_default_path"`
+
+	// MaxActiveSessions caps concurrently active sessions.
+	//
+	// 0 or less disables the limit.
+	MaxActiveSessions int `toml:"max_active_sessions"`
+
+	// MaxActiveSessionsPolicy determines behavior when opening a session beyond
+	// MaxActiveSessions.
+	//
+	// Valid values: "warn", "deny", "close_oldest".
+	// Default: "warn".
+	MaxActiveSessionsPolicy string `toml:"max_active_sessions_policy"`
 }
+
+const (
+	MaxActiveSessionsPolicyWarn        = "warn"
+	MaxActiveSessionsPolicyDeny        = "deny"
+	MaxActiveSessionsPolicyCloseOldest = "close_oldest"
+)
 
 // GetAllowMultiple returns whether multiple instances are allowed, defaulting to true
 func (i *InstanceSettings) GetAllowMultiple() bool {
@@ -385,6 +412,41 @@ func (i *InstanceSettings) GetFollowCwdOnAttach() bool {
 		return false
 	}
 	return *i.FollowCwdOnAttach
+}
+
+// GetQuickDefaultPath returns the configured quick-session default path.
+// Empty means no override.
+func (i *InstanceSettings) GetQuickDefaultPath() string {
+	path := strings.TrimSpace(i.QuickDefaultPath)
+	if path == "" {
+		return ""
+	}
+	return ExpandPath(path)
+}
+
+// GetMaxActiveSessions returns the configured active session limit.
+// 0 means unlimited.
+func (i *InstanceSettings) GetMaxActiveSessions() int {
+	if i.MaxActiveSessions <= 0 {
+		return 0
+	}
+	return i.MaxActiveSessions
+}
+
+// GetMaxActiveSessionsPolicy returns the configured limit policy,
+// normalized with defaults.
+func (i *InstanceSettings) GetMaxActiveSessionsPolicy() string {
+	policy := strings.TrimSpace(strings.ToLower(i.MaxActiveSessionsPolicy))
+	switch policy {
+	case MaxActiveSessionsPolicyDeny:
+		return MaxActiveSessionsPolicyDeny
+	case MaxActiveSessionsPolicyCloseOldest:
+		return MaxActiveSessionsPolicyCloseOldest
+	case "", MaxActiveSessionsPolicyWarn:
+		return MaxActiveSessionsPolicyWarn
+	default:
+		return MaxActiveSessionsPolicyWarn
+	}
 }
 
 // ShellSettings defines shell environment configuration for sessions
@@ -1586,9 +1648,17 @@ func CreateExampleConfig() error {
 # close_session = "D"
 # restart = "R"
 
-# Attach-return project path sync (optional)
+# Session behavior (optional)
 # [instances]
+# Keep project path synced with last observed tmux pane_current_path
 # follow_cwd_on_attach = true
+# Default directory for quick create when no group/session path context exists
+# quick_default_path = "~/src"
+# Maximum active sessions (0 = unlimited)
+# max_active_sessions = 5
+# What to do when trying to exceed max_active_sessions:
+# "warn" | "deny" | "close_oldest"
+# max_active_sessions_policy = "warn"
 
 # Preview notes/output split (optional)
 # [preview]

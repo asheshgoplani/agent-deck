@@ -177,6 +177,15 @@ func handleSessionStart(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	limitWarning, limitErr := session.EnforceActiveSessionLimit(instances, inst.ID)
+	if limitErr != nil {
+		out.Error(fmt.Sprintf("cannot start session: %v", limitErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if limitWarning != "" && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", limitWarning)
+	}
+
 	// Start the session (with or without initial message)
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
@@ -215,8 +224,14 @@ func handleSessionStart(profile string, args []string) {
 	if initialMessage != "" {
 		jsonData["message"] = initialMessage
 		jsonData["message_pending"] = false
+		if limitWarning != "" {
+			jsonData["warning"] = limitWarning
+		}
 		out.Success(fmt.Sprintf("Started session: %s (message sent)", inst.Title), jsonData)
 	} else {
+		if limitWarning != "" {
+			jsonData["warning"] = limitWarning
+		}
 		out.Success(fmt.Sprintf("Started session: %s", inst.Title), jsonData)
 	}
 }
@@ -331,12 +346,18 @@ func handleSessionRestart(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	limitWarning, limitErr := session.EnforceActiveSessionLimit(instances, inst.ID)
+	if limitErr != nil {
+		out.Error(fmt.Sprintf("cannot restart session: %v", limitErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Restart the session
 	if err := inst.Restart(); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	warning := inst.ConsumeCodexRestartWarning()
+	warning := joinWarnings(limitWarning, inst.ConsumeCodexRestartWarning())
 	if warning != "" && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
@@ -450,6 +471,15 @@ func handleSessionFork(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	limitWarning, limitErr := session.EnforceActiveSessionLimit(instances, "")
+	if limitErr != nil {
+		out.Error(fmt.Sprintf("cannot fork session: %v", limitErr), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if limitWarning != "" && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", limitWarning)
+	}
+
 	// Default title if not provided
 	if forkTitle == "" {
 		forkTitle = inst.Title + "-fork"
@@ -554,14 +584,19 @@ func handleSessionFork(profile string, args []string) {
 	}
 
 	// Output success
+	jsonData := map[string]interface{}{
+		"success":   true,
+		"parent_id": inst.ID,
+		"new_id":    forkedInst.ID,
+		"new_title": forkedInst.Title,
+	}
+	if limitWarning != "" {
+		jsonData["warning"] = limitWarning
+	}
+
 	out.Success(
 		fmt.Sprintf("Forked session: %s -> %s (%s)", inst.Title, forkedInst.Title, TruncateID(forkedInst.ID)),
-		map[string]interface{}{
-			"success":   true,
-			"parent_id": inst.ID,
-			"new_id":    forkedInst.ID,
-			"new_title": forkedInst.Title,
-		},
+		jsonData,
 	)
 }
 
