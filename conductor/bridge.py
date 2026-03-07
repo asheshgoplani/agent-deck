@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -359,6 +360,14 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
     authorized_user = config["user_id"]
     profiles = config["profiles"]
     default_profile = profiles[0]
+    bot_info = {"username": ""}
+
+    async def ensure_bot_info(bot_instance: Bot):
+        """Lazy-init bot username on first message."""
+        if not bot_info["username"]:
+            me = await bot_instance.get_me()
+            bot_info["username"] = me.username.lower()
+            log.info("Bot username: @%s", bot_info["username"])
 
     def is_authorized(message: types.Message) -> bool:
         """Check if message is from the authorized user."""
@@ -368,6 +377,37 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
             )
             return False
         return True
+
+    def is_bot_addressed(message: types.Message) -> bool:
+        """Check if message is directed at the bot (mention or reply in groups)."""
+        if message.chat.type == "private":
+            return True
+        # Reply to the bot's own message
+        if message.reply_to_message and message.reply_to_message.from_user:
+            reply_username = message.reply_to_message.from_user.username
+            if reply_username and reply_username.lower() == bot_info["username"]:
+                return True
+        # @mention in message entities
+        if message.entities and message.text:
+            for entity in message.entities:
+                if entity.type == "mention":
+                    mentioned = message.text[
+                        entity.offset : entity.offset + entity.length
+                    ].lower()
+                    if mentioned == f"@{bot_info['username']}":
+                        return True
+        return False
+
+    def strip_bot_mention(text: str) -> str:
+        """Remove @botusername from message text."""
+        if not bot_info["username"]:
+            return text
+        return re.sub(
+            rf"@{re.escape(bot_info['username'])}\b",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
 
     @dp.message(CommandStart())
     async def cmd_start(message: types.Message):
@@ -487,15 +527,21 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
             return
         if not message.text:
             return
+        await ensure_bot_info(message.bot)
+        if not is_bot_addressed(message):
+            return
+
+        # Strip @botname mention from group messages
+        text = strip_bot_mention(message.text)
+        if not text:
+            return
 
         # Determine target profile from message prefix
-        target_profile, cleaned_msg = parse_profile_prefix(
-            message.text, profiles
-        )
+        target_profile, cleaned_msg = parse_profile_prefix(text, profiles)
         if target_profile is None:
             target_profile = default_profile
         if not cleaned_msg:
-            cleaned_msg = message.text
+            cleaned_msg = text
 
         session_title = conductor_session_title(target_profile)
 
