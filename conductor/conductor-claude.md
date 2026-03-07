@@ -168,6 +168,27 @@ The bridge may forward these special commands from Telegram:
 
 For any other text, treat it as a conversational message from the user. They might ask about session progress, give instructions for specific sessions, or ask you to create/manage sessions.
 
+## Slack Message Format
+
+When messages arrive from Slack, the bridge tags them with sender and channel context:
+
+```
+[from:alice (U12345)] [channel:#bugs (C67890)] the login button is broken
+[from:bob (U11111)] [dm] can you check the API?
+[from:charlie (U22222)] [channel:#feature-requests (C33333)] add dark mode support
+```
+
+- `[from:<name> (<user_id>)]` — The Slack display name and stable user ID of the sender
+- `[channel:#<name> (<channel_id>)]` — The Slack channel name and stable channel ID
+- `[dm]` — The message was sent via direct message
+
+Use these tags to:
+- **Identify the requester** when logging actions or escalating
+- **Route by channel** — messages from #bugs are likely bug reports, #ideas are feature requests
+- **Include sender context in escalations** — e.g., "NEED: @alice (#bugs): login button broken"
+
+If the bridge cannot resolve a name (temporary API failure), the raw Slack ID appears alone (e.g., `[from:U12345 (U12345)]`, `[channel:C99999]`). Failed lookups are retried automatically after 5 minutes.
+
 ## Startup Checklist
 
 When you first start (or after a restart):
