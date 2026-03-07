@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -65,6 +66,41 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func joinWarnings(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		joined = append(joined, part)
+	}
+	return strings.Join(joined, "; ")
+}
+
+func resolveQuickDefaultPathForCLI() string {
+	settings := session.GetInstanceSettings()
+	path := strings.TrimSpace(settings.GetQuickDefaultPath())
+	if path == "" {
+		return ""
+	}
+
+	if !filepath.IsAbs(path) {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		path = absPath
+	}
+
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+
+	return filepath.Clean(path)
 }
 
 // resolveSessionCommand normalizes the user-provided --cmd/-c input.

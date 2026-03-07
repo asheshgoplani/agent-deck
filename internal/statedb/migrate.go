@@ -48,10 +48,11 @@ type jsonInstanceData struct {
 	CodexSessionID  string    `json:"codex_session_id,omitempty"`
 	CodexDetectedAt time.Time `json:"codex_detected_at,omitempty"`
 
-	LatestPrompt    string          `json:"latest_prompt,omitempty"`
-	Notes           string          `json:"notes,omitempty"`
-	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
-	LoadedMCPNames  []string        `json:"loaded_mcp_names,omitempty"`
+	LatestPrompt      string          `json:"latest_prompt,omitempty"`
+	Notes             string          `json:"notes,omitempty"`
+	ToolOptionsJSON   json.RawMessage `json:"tool_options,omitempty"`
+	LoadedMCPNames    []string        `json:"loaded_mcp_names,omitempty"`
+	AutoDeleteOnClose bool            `json:"auto_delete_on_close,omitempty"`
 }
 
 // jsonGroupData mirrors session.GroupData for migration.
@@ -81,6 +82,7 @@ type toolDataBlob struct {
 	ToolOptions        json.RawMessage `json:"tool_options,omitempty"`
 	SSHHost            string          `json:"ssh_host,omitempty"`
 	SSHRemotePath      string          `json:"ssh_remote_path,omitempty"`
+	AutoDeleteOnClose  bool            `json:"auto_delete_on_close,omitempty"`
 }
 
 // MigrateFromJSON reads a sessions.json file and inserts all data into the StateDB.
@@ -110,6 +112,7 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 			Notes:             inst.Notes,
 			LoadedMCPNames:    inst.LoadedMCPNames,
 			ToolOptions:       inst.ToolOptionsJSON,
+			AutoDeleteOnClose: inst.AutoDeleteOnClose,
 		}
 		if !inst.ClaudeDetectedAt.IsZero() {
 			td.ClaudeDetectedAt = inst.ClaudeDetectedAt.Unix()
@@ -186,6 +189,7 @@ func MarshalToolData(
 	latestPrompt string, notes string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
 	sshHost string, sshRemotePath string,
+	autoDeleteOnClose bool,
 ) json.RawMessage {
 	td := toolDataBlob{
 		ClaudeSessionID:   claudeSessionID,
@@ -200,6 +204,7 @@ func MarshalToolData(
 		ToolOptions:       toolOptionsJSON,
 		SSHHost:           sshHost,
 		SSHRemotePath:     sshRemotePath,
+		AutoDeleteOnClose: autoDeleteOnClose,
 	}
 	if !claudeDetectedAt.IsZero() {
 		td.ClaudeDetectedAt = claudeDetectedAt.Unix()
@@ -228,6 +233,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	latestPrompt string, notes string, loadedMCPNames []string,
 	toolOptionsJSON json.RawMessage,
 	sshHost string, sshRemotePath string,
+	autoDeleteOnClose bool,
 ) {
 	if len(data) == 0 {
 		return
@@ -260,5 +266,6 @@ func UnmarshalToolData(data json.RawMessage) (
 	toolOptionsJSON = td.ToolOptions
 	sshHost = td.SSHHost
 	sshRemotePath = td.SSHRemotePath
+	autoDeleteOnClose = td.AutoDeleteOnClose
 	return
 }
