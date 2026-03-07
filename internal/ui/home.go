@@ -9158,12 +9158,6 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		pvKey = previewCacheKey(selected.ID, item.WindowIndex)
 	}
 
-	// Attach-return fast path: prioritize immediate list navigation and defer preview work.
-	if !h.lastAttachReturn.IsZero() && time.Since(h.lastAttachReturn) < 900*time.Millisecond {
-		quickStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
-		return quickStyle.Render("Returned from session... refreshing preview")
-	}
-
 	// Session info header box
 	statusIcon := "○"
 	statusColor := ColorTextDim
