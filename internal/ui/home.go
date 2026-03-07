@@ -4991,6 +4991,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "e":
+		if config, _ := session.LoadUserConfig(); config != nil && !config.GetShowNotes() {
+			return h, nil
+		}
 		if h.getLayoutMode() == LayoutModeSingle {
 			h.setError(fmt.Errorf("notes editor is unavailable in single-column layout"))
 			return h, nil
@@ -7707,6 +7710,9 @@ func (h *Home) renderHelpBarMinimal() string {
 	mcpKey := h.actionKey(hotkeyMCPManager)
 	skillsKey := h.actionKey(hotkeySkillsManager)
 	notesKey := h.actionKey(hotkeyEditNotes)
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
+		notesKey = ""
+	}
 	if h.jumpMode {
 		contextKeys = keyStyle.Render("a-z") + " " + keyStyle.Render("esc")
 		if h.jumpBuffer != "" {
@@ -7941,6 +7947,9 @@ func (h *Home) renderHelpBarFull() string {
 	sendKey := h.actionKey(hotkeySendOutput)
 	execShellKey := h.actionKey(hotkeyExecShell)
 	notesKey := h.actionKey(hotkeyEditNotes)
+	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
+		notesKey = ""
+	}
 	undoKey := h.actionKey(hotkeyUndoDelete)
 
 	// Determine context-specific hints grouped by action type
