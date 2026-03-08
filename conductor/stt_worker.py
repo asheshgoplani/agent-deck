@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-STT worker: transcribes an audio file using parakeet-mlx.
+STT worker: transcribes an audio file using parakeet-mlx CLI.
 Runs as a subprocess to isolate inference from the bridge event loop.
 
 Usage:
@@ -14,47 +14,31 @@ import sys
 import tempfile
 from pathlib import Path
 
-MODEL_ID = "mlx-community/parakeet-tdt-0.6b-v3"
-# Local cache (downloaded via curl to avoid Python 3.14 SSL issues)
-MODEL_LOCAL = Path.home() / ".cache" / "parakeet-mlx" / "mlx-community--parakeet-tdt-0.6b-v3"
-
-
-def normalize_audio(input_path: str) -> str:
-    """Convert audio to mono 16kHz WAV using ffmpeg."""
-    fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="stt_")
-    os.close(fd)
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", input_path,
-            "-ac", "1", "-ar", "16000",
-            "-f", "wav", wav_path,
-        ],
-        capture_output=True, text=True, timeout=30,
-    )
-    if result.returncode != 0:
-        print(f"ffmpeg error: {result.stderr}", file=sys.stderr)
-        sys.exit(1)
-    return wav_path
-
-
-def get_model_path() -> str:
-    """Return model path: prefer local cache, fall back to HuggingFace ID."""
-    if MODEL_LOCAL.exists() and (MODEL_LOCAL / "config.json").exists():
-        return str(MODEL_LOCAL)
-    return MODEL_ID
+VENV_BIN = Path.home() / ".agent-deck" / "conductor" / ".venv" / "bin"
+PARAKEET_CLI = str(VENV_BIN / "parakeet-mlx")
 
 
 def transcribe(audio_path: str) -> str:
-    """Transcribe audio file using parakeet-mlx."""
-    import parakeet_mlx as pmx
+    """Transcribe audio file using parakeet-mlx CLI."""
+    with tempfile.TemporaryDirectory(prefix="stt_") as tmp_dir:
+        result = subprocess.run(
+            [
+                PARAKEET_CLI, audio_path,
+                "--output-format", "txt",
+                "--output-dir", tmp_dir,
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            print(f"parakeet-mlx error: {result.stderr}", file=sys.stderr)
+            sys.exit(1)
 
-    wav_path = normalize_audio(audio_path)
-    try:
-        model = pmx.from_pretrained(get_model_path())
-        result = pmx.transcribe(model, wav_path)
-        return result["text"]
-    finally:
-        Path(wav_path).unlink(missing_ok=True)
+        # Read the output txt file
+        txt_files = list(Path(tmp_dir).glob("*.txt"))
+        if not txt_files:
+            print("No transcription output file found", file=sys.stderr)
+            sys.exit(1)
+        return txt_files[0].read_text().strip()
 
 
 def main():
@@ -63,12 +47,15 @@ def main():
         sys.exit(1)
 
     if sys.argv[1] == "--warmup":
-        # Load model to verify weights are cached and working
-        print("Warming up parakeet-mlx model...", file=sys.stderr)
-        import parakeet_mlx as pmx
-        pmx.from_pretrained(get_model_path())
-        print("Model cached.", file=sys.stderr)
-        print("")  # empty transcript on stdout
+        print("Warming up parakeet-mlx...", file=sys.stderr)
+        # Just check the CLI is accessible
+        result = subprocess.run(
+            [PARAKEET_CLI, "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            print("CLI accessible.", file=sys.stderr)
+        print("")
         return
 
     audio_path = sys.argv[1]
