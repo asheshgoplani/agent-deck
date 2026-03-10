@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-03-11
+
+### Added
+- Add `preview.show_notes` support so the notes section can be hidden from the preview pane while keeping the main session view intact.
+- Add Gemini hook management commands and hook-based Gemini session/status sync, including install, uninstall, and status flows.
+- Add remote-session lifecycle actions in the TUI so remote sessions can be restarted, closed, or deleted directly from the session list.
+- Add richer Slack bridge context so forwarded messages include stable sender/channel enrichment.
+
+### Fixed
+- Preserve hook-derived session identity across empty hook payloads by persisting a read-time session-id anchor fallback.
+- Improve Telegram bot mention stripping and username handling so bridge messages route more reliably in group chats.
+- Avoid repeated regexp compilation in hot paths by hoisting `regexp.MustCompile` calls to package-level variables.
+
 ## [0.24.1] - 2026-03-07
 
 ### Fixed
