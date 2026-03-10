@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -348,6 +349,63 @@ def split_message(text: str, max_len: int = TG_MAX_LENGTH) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Voice transcription (local parakeet-mlx via subprocess)
+# ---------------------------------------------------------------------------
+
+# Path to the STT worker script (next to this file)
+STT_WORKER = Path(__file__).parent / "stt_worker.py"
+# Python interpreter in the bridge venv (venv lives alongside bridge.py)
+VENV_PYTHON = Path(__file__).parent / ".venv" / "bin" / "python3"
+
+
+async def transcribe_voice(voice: types.Voice, bot: Bot) -> str | None:
+    """Transcribe a Telegram voice message using local parakeet-mlx."""
+    tmp_path = None
+    try:
+        # Download voice file via Telegram Bot API
+        file = await bot.get_file(voice.file_id)
+        bio = await bot.download_file(file.file_path)
+        audio_data = bio.read()
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(
+            suffix=".ogg", prefix="voice_", delete=False
+        ) as tmp:
+            tmp.write(audio_data)
+            tmp_path = tmp.name
+
+        # Run STT worker as subprocess (crash-isolated, off the event loop)
+        proc = await asyncio.create_subprocess_exec(
+            str(VENV_PYTHON), str(STT_WORKER), tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=60
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            log.error("STT worker timed out (60s)")
+            return None
+
+        if proc.returncode != 0:
+            log.error("STT worker failed: %s", stderr.decode().strip())
+            return None
+
+        text = stdout.decode().strip()
+        return text if text else None
+
+    except Exception as e:
+        log.error("Voice transcription error: %s", e)
+        return None
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Telegram bot setup
 # ---------------------------------------------------------------------------
 
@@ -482,20 +540,33 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
 
     @dp.message()
     async def handle_message(message: types.Message):
-        """Forward any text message to the conductor and return its response."""
+        """Forward text or voice messages to the conductor and return its response."""
         if not is_authorized(message):
             return
-        if not message.text:
+
+        text = message.text
+
+        # Transcribe voice messages
+        if message.voice and not text:
+            await message.answer("Transcribing...")
+            text = await transcribe_voice(message.voice, bot)
+            if not text:
+                await message.answer(
+                    "[Could not transcribe voice message.]"
+                )
+                return
+
+        if not text:
             return
 
         # Determine target profile from message prefix
         target_profile, cleaned_msg = parse_profile_prefix(
-            message.text, profiles
+            text, profiles
         )
         if target_profile is None:
             target_profile = default_profile
         if not cleaned_msg:
-            cleaned_msg = message.text
+            cleaned_msg = text
 
         session_title = conductor_session_title(target_profile)
 
