@@ -78,7 +78,8 @@ type InstanceData struct {
 	Notes        string `json:"notes,omitempty"`
 
 	// Tool-specific launch options (generic for all tools: claude, codex, etc.)
-	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
+	ToolOptionsJSON   json.RawMessage `json:"tool_options,omitempty"`
+	AutoDeleteOnClose bool            `json:"auto_delete_on_close,omitempty"`
 
 	// MCP tracking (persisted for sync status display)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
@@ -268,6 +269,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.LatestPrompt, inst.Notes, inst.LoadedMCPNames,
 			inst.ToolOptionsJSON,
 			inst.SSHHost, inst.SSHRemotePath,
+			inst.AutoDeleteOnClose,
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -408,7 +410,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			codexSID, codexAt,
 			latestPrompt, notes, loadedMCPs,
 			toolOpts,
-			sshHost2, sshRemotePath2 := statedb.UnmarshalToolData(r.ToolData)
+			sshHost2, sshRemotePath2,
+			autoDeleteOnClose := statedb.UnmarshalToolData(r.ToolData)
 
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -440,6 +443,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			Notes:              notes,
 			ToolOptionsJSON:    toolOpts,
+			AutoDeleteOnClose:  autoDeleteOnClose,
 			LoadedMCPNames:     loadedMCPs,
 			SSHHost:            sshHost2,
 			SSHRemotePath:      sshRemotePath2,
@@ -494,7 +498,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			codexSID, codexAt,
 			latestPrompt, notes, loadedMCPs,
 			toolOpts,
-			sshHost, sshRemotePath := statedb.UnmarshalToolData(r.ToolData)
+			sshHost, sshRemotePath,
+			autoDeleteOnClose := statedb.UnmarshalToolData(r.ToolData)
 
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
@@ -526,6 +531,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			LatestPrompt:       latestPrompt,
 			Notes:              notes,
 			ToolOptionsJSON:    toolOpts,
+			AutoDeleteOnClose:  autoDeleteOnClose,
 			LoadedMCPNames:     loadedMCPs,
 			SSHHost:            sshHost,
 			SSHRemotePath:      sshRemotePath,

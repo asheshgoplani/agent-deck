@@ -2,8 +2,12 @@ package main
 
 import (
 	"flag"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestNormalizeArgs(t *testing.T) {
@@ -357,4 +361,73 @@ func TestResolveGroupSelection(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeQuickDefaultPathConfigForTest(t *testing.T, value string) string {
+	t.Helper()
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	configDir := filepath.Join(homeDir, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("failed to create config directory: %v", err)
+	}
+
+	content := "[instances]\n"
+	if value != "" {
+		content += "quick_default_path = \"" + value + "\"\n"
+	}
+
+	configPath := filepath.Join(configDir, session.UserConfigFileName)
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	return homeDir
+}
+
+func TestJoinWarnings(t *testing.T) {
+	got := joinWarnings("  ", "limit reached", "", "  closing oldest  ")
+	want := "limit reached; closing oldest"
+	if got != want {
+		t.Fatalf("joinWarnings() = %q, want %q", got, want)
+	}
+
+	if got := joinWarnings("", "  "); got != "" {
+		t.Fatalf("joinWarnings empty = %q, want empty", got)
+	}
+}
+
+func TestResolveQuickDefaultPathForCLI(t *testing.T) {
+	t.Run("returns cleaned absolute existing directory", func(t *testing.T) {
+		targetDir := filepath.Join(t.TempDir(), "workspace")
+		if err := os.MkdirAll(targetDir, 0o755); err != nil {
+			t.Fatalf("failed to create target directory: %v", err)
+		}
+
+		homeDir := writeQuickDefaultPathConfigForTest(t, "~/"+filepath.Base(targetDir))
+		movedDir := filepath.Join(homeDir, filepath.Base(targetDir))
+		if err := os.Rename(targetDir, movedDir); err != nil {
+			t.Fatalf("failed to move target directory under HOME: %v", err)
+		}
+
+		got := resolveQuickDefaultPathForCLI()
+		want := filepath.Clean(movedDir)
+		if got != want {
+			t.Fatalf("resolveQuickDefaultPathForCLI() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("returns empty when configured path does not exist", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing-dir")
+		writeQuickDefaultPathConfigForTest(t, missing)
+
+		if got := resolveQuickDefaultPathForCLI(); got != "" {
+			t.Fatalf("resolveQuickDefaultPathForCLI() = %q, want empty", got)
+		}
+	})
 }
