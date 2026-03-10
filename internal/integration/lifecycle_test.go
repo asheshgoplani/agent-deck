@@ -41,7 +41,7 @@ func TestLifecycleStart_StatusTransition(t *testing.T) {
 }
 
 // TestLifecycleStop_TerminatesSession verifies that Kill() terminates the tmux
-// session and sets StatusError. (LIFE-02)
+// session and sets StatusStopped. (LIFE-02)
 func TestLifecycleStop_TerminatesSession(t *testing.T) {
 	h := NewTmuxHarness(t)
 
@@ -57,7 +57,7 @@ func TestLifecycleStop_TerminatesSession(t *testing.T) {
 	require.NotEmpty(t, tmuxName, "tmux session name must be set before Kill()")
 
 	require.NoError(t, inst.Kill())
-	assert.Equal(t, session.StatusError, inst.Status, "status should be error after Kill()")
+	assert.Equal(t, session.StatusStopped, inst.Status, "status should be stopped after Kill()")
 
 	WaitForCondition(t, 3*time.Second, 200*time.Millisecond,
 		"session to not exist",
