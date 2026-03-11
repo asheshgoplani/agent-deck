@@ -101,6 +101,9 @@ const (
 	minTerminalHeight = 12 // Reduced from 20 - supports smaller screens
 )
 
+// Mouse interaction thresholds
+const doubleClickThreshold = 500 * time.Millisecond
+
 // Layout mode breakpoints for responsive design
 const (
 	layoutBreakpointSingle  = 50 // Below: single column, no preview
@@ -304,6 +307,11 @@ type Home struct {
 
 	// Vi-style gg to jump to top (#38)
 	lastGTime time.Time // When 'g' was last pressed (double-tap within 500ms jumps to top)
+
+	// Mouse double-click tracking
+	lastClickTime   time.Time // When left button was last pressed
+	lastClickIndex  int       // flatItems index of last click (-1 = none)
+	lastClickItemID string    // Session ID or group path at last click (guards against stale index)
 
 	// Navigation tracking (PERFORMANCE: suspend background updates during rapid navigation)
 	lastNavigationTime time.Time // When user last navigated (up/down/j/k)
@@ -660,6 +668,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		boundKeys:            make(map[string]string),
 		undoStack:            make([]deletedSessionEntry, 0, 10),
 		pendingTitleChanges:  make(map[string]string),
+		lastClickIndex:       -1,
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -685,7 +694,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		// Initialize tmux status bar options for proper notification display
 		// Fixes truncation (default status-left-length is only 10 chars)
 		_ = tmux.InitializeStatusBarOptions()
+
 	}
+
+	// Bind mouse click on status-right to detach (click the "ctrl+q/click detach" hint)
+	// This is unconditional — the status-right always shows the detach hint
+	_ = tmux.BindMouseStatusRightDetach()
 
 	// Initialize event-driven status detection
 	// Output callback: invoked when PipeManager detects %output from a session
@@ -1151,6 +1165,9 @@ func (h *Home) rebuildFlatItems() {
 		}
 	}
 
+	// Invalidate mouse double-click tracking (item indices may have shifted)
+	h.lastClickIndex = -1
+
 	// Ensure cursor is valid
 	if h.cursor >= len(h.flatItems) {
 		h.cursor = len(h.flatItems) - 1
@@ -1308,6 +1325,9 @@ func (h *Home) getAttachedSessionID() string {
 
 // cleanupNotifications removes all notification bar state on exit
 func (h *Home) cleanupNotifications() {
+	// Always unbind status-right mouse click (bound unconditionally at init)
+	tmux.UnbindMouseStatusClicks()
+
 	if !h.manageTmuxNotifications || !h.notificationsEnabled || h.notificationManager == nil {
 		return
 	}
@@ -3352,7 +3372,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		reloading := h.isReloading
 		h.reloadMu.Unlock()
 		if reloading {
-			return h, nil
+			return h, tea.EnableMouseCellMotion
 		}
 
 		h.followAttachReturnCwd(msg)
@@ -3362,7 +3382,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Combine with periodic save instead of saving on every attach/detach.
 		// We'll let the next tickMsg handle background save if needed.
 
-		return h, nil
+		// Re-enable mouse mode after returning from tea.Exec.
+		// tmux detach-client sends terminal reset sequences that disable mouse reporting,
+		// and Bubble Tea doesn't re-enable it automatically after exec returns.
+		return h, tea.EnableMouseCellMotion
 
 	case previewDebounceMsg:
 		// PERFORMANCE: Debounce period elapsed - check if this fetch is still relevant
@@ -3752,6 +3775,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, cmd
 		}
 		return h, nil
+
+	case tea.MouseMsg:
+		return h.handleMouse(msg)
 
 	case tea.KeyMsg:
 		// Track user activity for adaptive status updates
@@ -4282,6 +4308,163 @@ func (h *Home) handleJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.jumpBuffer = ""
 		return h.handleMainKey(msg)
 	}
+}
+
+// hasModalVisible returns true if any modal dialog or overlay is currently visible
+func (h *Home) hasModalVisible() bool {
+	return h.initialLoading || h.isQuitting || h.notesEditing || h.jumpMode ||
+		h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
+		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
+		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
+		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
+		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
+		h.worktreeFinishDialog.IsVisible()
+}
+
+// markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command
+func (h *Home) markNavigationAndFetchPreview() tea.Cmd {
+	h.lastNavigationTime = time.Now()
+	h.isNavigating = true
+	return h.fetchSelectedPreview()
+}
+
+// clickedItemID returns a stable identifier for the item at the given flatItems index
+func (h *Home) clickedItemID(index int) string {
+	if index < 0 || index >= len(h.flatItems) {
+		return ""
+	}
+	item := h.flatItems[index]
+	if item.Type == session.ItemTypeSession && item.Session != nil {
+		return "session:" + item.Session.ID
+	}
+	if item.Type == session.ItemTypeGroup {
+		return "group:" + item.Path
+	}
+	return ""
+}
+
+// handleMouse handles mouse events (click to select, double-click to activate)
+func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if h.hasModalVisible() {
+		return h, nil
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return h, nil
+		}
+
+		// Check if click is in the session list panel
+		if h.getLayoutMode() == LayoutModeDual {
+			leftWidth := int(float64(h.width) * 0.35)
+			if msg.X >= leftWidth {
+				return h, nil
+			}
+		}
+
+		itemIndex := h.mouseYToItemIndex(msg.Y)
+		if itemIndex < 0 || itemIndex >= len(h.flatItems) {
+			return h, nil
+		}
+
+		h.lastUserInputTime = time.Now()
+
+		// Double-click detection: same item within threshold, verified by stable ID
+		now := time.Now()
+		clickedID := h.clickedItemID(itemIndex)
+		isDoubleClick := itemIndex == h.lastClickIndex &&
+			clickedID == h.lastClickItemID &&
+			time.Since(h.lastClickTime) < doubleClickThreshold
+		h.lastClickTime = now
+		h.lastClickIndex = itemIndex
+		h.lastClickItemID = clickedID
+
+		if isDoubleClick {
+			h.lastClickIndex = -1 // Reset to prevent triple-click
+			item := h.flatItems[itemIndex]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if h.hasActiveAnimation(item.Session.ID) {
+					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
+				if item.Session.Exists() {
+					h.isAttaching.Store(true) // Prevent View() output during transition (atomic)
+					return h, h.attachSession(item.Session)
+				}
+			} else if item.Type == session.ItemTypeGroup {
+				groupPath := item.Path
+				h.groupTree.ToggleGroup(groupPath)
+				h.rebuildFlatItems()
+				for i, fi := range h.flatItems {
+					if fi.Type == session.ItemTypeGroup && fi.Path == groupPath {
+						h.cursor = i
+						break
+					}
+				}
+				h.saveGroupState()
+			}
+			return h, nil
+		}
+
+		// Single click: select item
+		h.cursor = itemIndex
+		h.syncViewport()
+		return h, h.markNavigationAndFetchPreview()
+	}
+
+	return h, nil
+}
+
+// getListContentStartY returns the Y coordinate where list items begin rendering
+func (h *Home) getListContentStartY() int {
+	// Header: 1 line, Filter bar: 1 line
+	startY := 2
+	if h.updateInfo != nil && h.updateInfo.Available {
+		startY++ // Update banner
+	}
+	if h.maintenanceMsg != "" {
+		startY++ // Maintenance banner
+	}
+	// Panel title: 2 lines (title + underline)
+	startY += 2
+	return startY
+}
+
+// mouseYToItemIndex maps a mouse Y coordinate to a flatItems index, or -1 if not on an item
+func (h *Home) mouseYToItemIndex(y int) int {
+	if len(h.flatItems) == 0 {
+		return -1
+	}
+
+	lineInList := y - h.getListContentStartY()
+	if lineInList < 0 {
+		return -1
+	}
+
+	// Account for "more above" indicator
+	if h.viewOffset > 0 {
+		if lineInList == 0 {
+			return -1 // Clicked on the "more above" indicator itself
+		}
+		lineInList-- // Shift down past the indicator
+	}
+
+	// Reject clicks beyond the visible list area (e.g. in the preview section of stacked layout)
+	// When scrolled, the "more above" indicator takes 1 render line, reducing visible items by 1.
+	maxVisible := h.getVisibleHeight()
+	if h.viewOffset > 0 {
+		maxVisible--
+	}
+	if lineInList >= maxVisible {
+		return -1
+	}
+
+	itemIndex := h.viewOffset + lineInList
+	if itemIndex >= len(h.flatItems) {
+		return -1
+	}
+	return itemIndex
 }
 
 // handleMainKey handles keys in main view

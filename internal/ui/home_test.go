@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/update"
 )
 
 func TestNewHome(t *testing.T) {
@@ -1589,6 +1590,342 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	result = home.renderHelpBar()
 	if !strings.Contains(result, "Undo") {
 		t.Errorf("Help bar should show Undo when undo stack is non-empty\nGot: %q", result)
+	}
+}
+
+// newTestHomeWithItems creates a Home with flatItems populated, initial loading disabled, and sized.
+func newTestHomeWithItems(width, height int, items []session.Item) *Home {
+	home := NewHome()
+	home.width = width
+	home.height = height
+	home.initialLoading = false
+	home.flatItems = items
+	home.lastClickIndex = -1
+	return home
+}
+
+func TestMouseYToItemIndex(t *testing.T) {
+	// Standard layout: header(1) + filter(1) + panelTitle(2) = startY 4
+	// No banners, no scroll offset
+	items := []session.Item{
+		{Type: session.ItemTypeGroup, Path: "group-a", Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "Session 1"}, Level: 1},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "Session 2"}, Level: 1},
+	}
+
+	tests := []struct {
+		name       string
+		y          int
+		viewOffset int
+		wantIndex  int
+		banners    bool // enable update + maintenance banners
+	}{
+		{"click on first item", 4, 0, 0, false},
+		{"click on second item", 5, 0, 1, false},
+		{"click on third item", 6, 0, 2, false},
+		{"click above list", 3, 0, -1, false},
+		{"click way below items", 20, 0, -1, false},
+		{"with banners first item", 6, 0, 0, true},
+		{"with banners second item", 7, 0, 1, true},
+		{"scrolled down click first visible", 5, 1, 1, false}, // line 4 = "more above", line 5 = first item
+		{"scrolled down click more-above indicator", 4, 1, -1, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := newTestHomeWithItems(100, 30, items)
+			home.viewOffset = tc.viewOffset
+			if tc.banners {
+				home.updateInfo = &update.UpdateInfo{Available: true, CurrentVersion: "1.0", LatestVersion: "2.0"}
+				home.maintenanceMsg = "test maintenance"
+			}
+
+			got := home.mouseYToItemIndex(tc.y)
+			if got != tc.wantIndex {
+				t.Errorf("mouseYToItemIndex(y=%d, viewOffset=%d) = %d, want %d", tc.y, tc.viewOffset, got, tc.wantIndex)
+			}
+		})
+	}
+}
+
+func TestMouseYToItemIndexEmptyList(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, nil)
+
+	if got := home.mouseYToItemIndex(5); got != -1 {
+		t.Errorf("mouseYToItemIndex on empty list = %d, want -1", got)
+	}
+}
+
+func TestMouseClickXBoundaryPerLayout(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "S1"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "S2"}, Level: 0},
+	}
+
+	tests := []struct {
+		name        string
+		width       int
+		x           int
+		wantChanged bool // whether cursor should move from 0 to 1
+	}{
+		{"dual layout click in list", 100, 10, true},
+		{"dual layout click in preview", 100, 50, false},
+		{"stacked layout click anywhere", 65, 50, true},
+		{"single layout click anywhere", 45, 10, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := newTestHomeWithItems(tc.width, 30, items)
+			home.cursor = 0
+
+			msg := tea.MouseMsg{X: tc.x, Y: 5, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+			model, _ := home.Update(msg)
+			h := model.(*Home)
+
+			changed := h.cursor != 0
+			if changed != tc.wantChanged {
+				t.Errorf("cursor changed=%v, want changed=%v (cursor=%d)", changed, tc.wantChanged, h.cursor)
+			}
+		})
+	}
+}
+
+func TestMouseSingleClickSelectsItem(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeGroup, Path: "group-a", Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "Session 1"}, Level: 1},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "Session 2"}, Level: 1},
+	}
+
+	home := newTestHomeWithItems(100, 30, items)
+	home.cursor = 0
+
+	// Click on second item (y=5 in standard layout)
+	msg := tea.MouseMsg{
+		X:      5,
+		Y:      5,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+
+	if h.cursor != 1 {
+		t.Errorf("cursor = %d after click, want 1", h.cursor)
+	}
+}
+
+func TestMouseDoubleClickActivatesSession(t *testing.T) {
+	inst := session.NewInstance("test-session", "/tmp/project")
+	items := []session.Item{
+		{Type: session.ItemTypeGroup, Path: "my-sessions", Level: 0},
+		{Type: session.ItemTypeSession, Session: inst, Level: 1},
+	}
+
+	home := newTestHomeWithItems(100, 30, items)
+	home.cursor = 1 // Already on the session
+
+	clickMsg := tea.MouseMsg{
+		X:      5,
+		Y:      5,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+
+	// First click: selects item
+	model, _ := home.Update(clickMsg)
+	h := model.(*Home)
+
+	// Second click within 500ms: should trigger attach (returns a command)
+	model, cmd := h.Update(clickMsg)
+	h = model.(*Home)
+
+	// Double-click on a session should attempt attach (produces a command)
+	// The session doesn't have a tmux session, so attachSession returns nil cmd,
+	// but the double-click path resets lastClickIndex
+	if h.lastClickIndex != -1 {
+		t.Errorf("lastClickIndex = %d after double-click, want -1 (reset)", h.lastClickIndex)
+	}
+	_ = cmd // cmd may be nil since test session has no tmux backing
+}
+
+func TestMouseDoubleClickTogglesGroup(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+	home.initialLoading = false
+
+	// Create a real group tree so ToggleGroup works
+	home.groupTree = session.NewGroupTree([]*session.Instance{})
+	home.groupTree.CreateGroup("test-group")
+	home.rebuildFlatItems()
+
+	if len(home.flatItems) == 0 {
+		t.Fatal("flatItems should have at least one group")
+	}
+
+	// Verify group starts expanded
+	wasExpanded := home.flatItems[0].Group.Expanded
+
+	// y=4 = first item in list (header:1 + filter:1 + panel title:2)
+	clickMsg := tea.MouseMsg{
+		X:      5,
+		Y:      4,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+
+	// First click
+	model, _ := home.Update(clickMsg)
+	h := model.(*Home)
+
+	// Second click (double-click to toggle)
+	model, _ = h.Update(clickMsg)
+	h = model.(*Home)
+
+	// Find the group again after rebuild
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeGroup && item.Path == "test-group" {
+			if item.Group.Expanded == wasExpanded {
+				t.Error("Group expanded state should have toggled after double-click")
+			}
+			return
+		}
+	}
+	t.Error("test-group not found in flatItems after double-click")
+}
+
+func TestMouseClickIgnoredInPreviewPanel(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "S1"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "S2"}, Level: 0},
+	}
+
+	home := newTestHomeWithItems(100, 30, items) // dual layout (width >= 80)
+	home.cursor = 0
+
+	// Click in preview panel (x=50, well past 35% of 100)
+	msg := tea.MouseMsg{
+		X:      50,
+		Y:      5,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+	if h.cursor != 0 {
+		t.Errorf("cursor = %d after click in preview panel, want 0 (unchanged)", h.cursor)
+	}
+}
+
+func TestMouseReleaseIgnored(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "S1"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "S2"}, Level: 0},
+	}
+
+	home := newTestHomeWithItems(100, 30, items)
+	home.cursor = 0
+
+	// Mouse release should not move cursor
+	msg := tea.MouseMsg{
+		X:      5,
+		Y:      5,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionRelease,
+	}
+
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+	if h.cursor != 0 {
+		t.Errorf("cursor = %d after mouse release, want 0 (unchanged)", h.cursor)
+	}
+}
+
+func TestMouseIgnoredWhenDialogVisible(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "S1"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "S2"}, Level: 0},
+	}
+
+	home := newTestHomeWithItems(100, 30, items)
+	home.cursor = 0
+
+	// Show search overlay
+	home.search.Show()
+
+	msg := tea.MouseMsg{
+		X:      5,
+		Y:      5,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	}
+
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+	if h.cursor != 0 {
+		t.Errorf("cursor = %d after click with search visible, want 0 (unchanged)", h.cursor)
+	}
+}
+
+func TestMouseClickInStackedPreviewAreaIgnored(t *testing.T) {
+	// Generate enough items to fill the list area
+	items := make([]session.Item, 30)
+	for i := range items {
+		items[i] = session.Item{
+			Type:    session.ItemTypeSession,
+			Session: &session.Instance{ID: fmt.Sprintf("s%d", i), Title: fmt.Sprintf("Session %d", i)},
+			Level:   0,
+		}
+	}
+
+	// Stacked layout: width 65, height 40
+	// contentHeight = 40 - 1(header) - 2(help) - 1(filter) = 36
+	// listHeight = (36 * 60) / 100 = 21, list content = 21 - 2(title) = 19 lines
+	// List content starts at y=4, ends around y=22
+	// y=25 should be in the preview section
+	home := newTestHomeWithItems(65, 40, items)
+	home.cursor = 0
+
+	msg := tea.MouseMsg{X: 10, Y: 25, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	model, _ := home.Update(msg)
+	h := model.(*Home)
+
+	if h.cursor != 0 {
+		t.Errorf("cursor = %d after click in stacked preview area, want 0 (unchanged)", h.cursor)
+	}
+}
+
+func TestMouseDoubleClickVerifiesItemIdentity(t *testing.T) {
+	items := []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "Session 1"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "Session 2"}, Level: 0},
+	}
+
+	home := newTestHomeWithItems(100, 30, items)
+
+	// Click on index 0 (session s1)
+	clickMsg := tea.MouseMsg{X: 5, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	model, _ := home.Update(clickMsg)
+	h := model.(*Home)
+
+	// Now swap items so index 0 is a different session (simulates rebuildFlatItems shifting items)
+	h.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s2", Title: "Session 2"}, Level: 0},
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Title: "Session 1"}, Level: 0},
+	}
+
+	// Second click at same position — same index but different item, should NOT double-click
+	model, _ = h.Update(clickMsg)
+	h = model.(*Home)
+
+	// If it were a false double-click, lastClickIndex would be -1 (reset).
+	// Since the item ID mismatches, it should be treated as a single click.
+	if h.lastClickIndex == -1 {
+		t.Error("click on different item at same index should not trigger double-click")
 	}
 }
 
