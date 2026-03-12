@@ -201,6 +201,37 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 }
 
+// ReadHookStatusFile reads a hook status file from disk for a given instance ID.
+// This is the standalone equivalent of StatusFileWatcher.processFile, intended for
+// CLI commands that don't run a persistent filesystem watcher.
+func ReadHookStatusFile(instanceID string) *HookStatus {
+	if instanceID == "" {
+		return nil
+	}
+	filePath := filepath.Join(GetHooksDir(), instanceID+".json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+
+	var status struct {
+		Status    string `json:"status"`
+		SessionID string `json:"session_id"`
+		Event     string `json:"event"`
+		Timestamp int64  `json:"ts"`
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return nil
+	}
+
+	return &HookStatus{
+		Status:    status.Status,
+		SessionID: status.SessionID,
+		Event:     status.Event,
+		UpdatedAt: time.Unix(status.Timestamp, 0),
+	}
+}
+
 // GetHooksDir returns the path to the hooks status directory.
 func GetHooksDir() string {
 	home, err := os.UserHomeDir()

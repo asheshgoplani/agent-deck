@@ -2163,6 +2163,30 @@ func (i *Instance) UpdateStatus() error {
 		i.lastKnownActivity = currentTS
 	}
 
+	// COLD HOOK LOAD: CLI commands don't run StatusFileWatcher, so hookStatus
+	// is never populated via fsnotify. Read the hook file from disk once per
+	// UpdateStatus() call to give CLI the same hook fast path as the TUI.
+	if (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") &&
+		i.hookStatus == "" {
+		if hs := ReadHookStatusFile(i.ID); hs != nil {
+			i.hookStatus = hs.Status
+			i.hookLastUpdate = hs.UpdatedAt
+			if hs.SessionID != "" {
+				i.hookSessionID = hs.SessionID
+			} else if sid := ReadHookSessionAnchor(i.ID); sid != "" {
+				i.hookSessionID = sid
+			}
+			// In the TUI, a running→waiting transition resets acknowledged via
+			// the "running" case in the hook fast path. CLI loads from SQLite
+			// (often "idle" with acknowledged=true) and never sees the "running"
+			// transition. Reset acknowledged here so fresh hook "waiting" status
+			// isn't downgraded to "idle" by the acknowledgment check below.
+			if hs.Status == "waiting" && i.tmuxSession != nil {
+				i.tmuxSession.ResetAcknowledged()
+			}
+		}
+	}
+
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
@@ -3536,6 +3560,11 @@ func (i *Instance) Restart() error {
 		}
 
 		mcpLog.Debug("respawn_pane_claude_succeeded")
+
+		// Persist .sid sidecar so hook events after restart can be correlated
+		// with this instance. Without this, the hook handler writes status files
+		// that UpdateHookStatus() can't resolve to a session.
+		WriteHookSessionAnchor(i.ID, i.ClaudeSessionID)
 
 		// Re-capture MCPs after restart (they may have changed since session started)
 		i.CaptureLoadedMCPs()
