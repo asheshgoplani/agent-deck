@@ -50,7 +50,7 @@ Original scope had Phases 11-15. Rescoped after #320 and #318 closed, and new cr
 - [ ] **Phase 11: MCP Proxy Reliability** - Fix request ID collisions in shared MCP socket proxy (#324)
 - [x] **Phase 12: Session List & Resume UX** - Stopped sessions visible with distinct styling; resume deduplication (#307, #224) (completed 2026-03-13)
 - [ ] **Phase 13: Auto-Start & Platform** - WSL/Linux TTY fix for non-interactive auto-start (#311)
-- [ ] **Phase 14: Detection & Sandbox** - Docker tmux set-environment fix (#266); OpenCode waiting status (#255)
+- [x] **Phase 14: Detection & Sandbox** - Docker tmux set-environment fix (#266); OpenCode waiting status (#255) (completed 2026-03-13)
 - [ ] **Phase 15: Mouse, Theme & Polish** - Mouse scroll, light theme fix, docs, heartbeat cleanup, worktree reuse (#262, #254, #322, #228, #225, #216)
 - [ ] **Phase 16: Comprehensive Testing** - Integration tests for all v1.3 fixes, regression suite
 
@@ -108,7 +108,7 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. tmux set-environment inside a Docker sandbox session sets environment variables that are visible to spawned processes
   2. OpenCode's question tool prompt triggers the "waiting" status detection, transitioning the session from "running" to "waiting"
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 14-01-PLAN.md — Remove tmux set-environment from command strings, use host-side SetEnvironment (DET-01)
 - [ ] 14-02-PLAN.md — OpenCode question tool prompt detection with false-positive prevention (DET-02)
@@ -165,6 +165,6 @@ Plans:
 | 11. MCP Proxy Reliability | v1.3 | 0/1 | Not started | - |
 | 12. Session List & Resume UX | v1.3 | 2/2 | Complete | 2026-03-13 |
 | 13. Auto-Start & Platform | v1.3 | 0/2 | Not started | - |
-| 14. Detection & Sandbox | 1/2 | In Progress|  | - |
+| 14. Detection & Sandbox | 2/2 | Complete   | 2026-03-13 | - |
 | 15. Mouse, Theme & Polish | 2/3 | In Progress|  | - |
 | 16. Comprehensive Testing | v1.3 | 0/TBD | Not started | - |
