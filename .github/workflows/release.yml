@@ -1,0 +1,49 @@
+# Automated release via GoReleaser when a version tag is pushed.
+# Replaces the manual `make release-local` step that was previously
+# required after tagging, preventing empty releases (see #332).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate tag matches code version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CODE=$(grep 'const Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$TAG" != "$CODE" ]; then
+            echo "ERROR: Tag v$TAG does not match code Version $CODE"
+            exit 1
+          fi
+          echo "Version: $CODE"
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

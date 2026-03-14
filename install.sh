@@ -469,12 +469,27 @@ if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/agent-deck.tar.gz"; then
     echo -e "${RED}Error: Download failed${NC}"
     echo "URL: $DOWNLOAD_URL"
     echo ""
-    echo "This could mean:"
-    echo "  - The version doesn't exist"
-    echo "  - The release hasn't been published yet"
-    echo "  - Network issues"
+
+    # Check if the release exists but has no assets (common when GoReleaser didn't run)
+    ASSET_COUNT=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}" 2>/dev/null | grep -c '"browser_download_url"' || true)
+    if [[ "$ASSET_COUNT" -eq 0 ]]; then
+        echo "The release ${VERSION} exists but has no downloadable binaries."
+        echo "This usually means the release build hasn't completed yet."
+    else
+        echo "This could mean:"
+        echo "  - The version doesn't exist"
+        echo "  - Network issues"
+    fi
     echo ""
-    echo "Try building from source instead:"
+
+    # Suggest Homebrew first if available (most reliable)
+    if [[ "$OS" == "darwin" ]] && command -v brew &> /dev/null; then
+        echo "Install via Homebrew instead (recommended):"
+        echo "  brew install asheshgoplani/tap/agent-deck"
+        echo ""
+    fi
+
+    echo "Or build from source:"
     echo "  git clone https://github.com/${REPO}.git"
     echo "  cd agent-deck && make install"
     exit 1
