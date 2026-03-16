@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -111,6 +110,7 @@ func handleHookHandler() {
 	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
 
 	// Write cost event if this hook contains usage data
+	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)
 }
 
@@ -310,44 +310,170 @@ type costEventFile struct {
 	Timestamp        int64  `json:"ts"`
 }
 
-// writeCostEvent parses a hook payload for usage data and writes cost event files.
+// stopHookPayload extracts transcript_path from the Stop hook payload.
+type stopHookPayload struct {
+	HookEventName  string `json:"hook_event_name"`
+	TranscriptPath string `json:"transcript_path"`
+}
+
+// transcriptMessage is the last line of the transcript JSONL file (assistant turn).
+type transcriptMessage struct {
+	Type    string `json:"type"`
+	Message struct {
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+// writeCostEvent reads usage from the Claude transcript file on Stop events.
 func writeCostEvent(instanceID string, rawPayload []byte) {
-	parser := &costs.ClaudeHookParser{}
-	events, err := parser.Parse(string(rawPayload))
-	if err != nil || len(events) == 0 {
+	logCostDebug("writeCostEvent called for instance=%s", instanceID)
+
+	var stop stopHookPayload
+	if err := json.Unmarshal(rawPayload, &stop); err != nil {
+		logCostDebug("payload parse error: %v", err)
 		return
 	}
+	if stop.HookEventName != "Stop" {
+		logCostDebug("not a Stop event, skipping")
+		return
+	}
+	if stop.TranscriptPath == "" {
+		logCostDebug("no transcript_path in Stop payload")
+		return
+	}
+	logCostDebug("transcript_path: %s", stop.TranscriptPath)
+
+	lastLine, err := readLastLine(stop.TranscriptPath)
+	if err != nil {
+		logCostDebug("read transcript failed: %v", err)
+		return
+	}
+
+	var msg transcriptMessage
+	if err := json.Unmarshal([]byte(lastLine), &msg); err != nil {
+		logCostDebug("parse transcript line failed: %v", err)
+		return
+	}
+
+	if msg.Type != "assistant" {
+		logCostDebug("last line type=%s, not assistant", msg.Type)
+		return
+	}
+
+	usage := msg.Message.Usage
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+		logCostDebug("no token usage in transcript")
+		return
+	}
+
+	logCostDebug("found usage: model=%s in=%d out=%d cache_read=%d cache_write=%d",
+		msg.Message.Model, usage.InputTokens, usage.OutputTokens,
+		usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	costDir := getCostEventsDir()
 	if err := os.MkdirAll(costDir, 0755); err != nil {
 		return
 	}
 
-	for _, ev := range events {
-		cf := costEventFile{
-			InstanceID:       instanceID,
-			Model:            ev.Model,
-			InputTokens:      ev.InputTokens,
-			OutputTokens:     ev.OutputTokens,
-			CacheReadTokens:  ev.CacheReadTokens,
-			CacheWriteTokens: ev.CacheWriteTokens,
-			Timestamp:        time.Now().UnixNano(),
-		}
-
-		jsonData, err := json.Marshal(cf)
-		if err != nil {
-			continue
-		}
-
-		filename := fmt.Sprintf("%s_%d.json", instanceID, cf.Timestamp)
-		tmpPath := filepath.Join(costDir, filename+".tmp")
-		finalPath := filepath.Join(costDir, filename)
-
-		if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
-			continue
-		}
-		os.Rename(tmpPath, finalPath)
+	ts := time.Now().UnixNano()
+	cf := costEventFile{
+		InstanceID:       instanceID,
+		Model:            msg.Message.Model,
+		InputTokens:      usage.InputTokens,
+		OutputTokens:     usage.OutputTokens,
+		CacheReadTokens:  usage.CacheReadInputTokens,
+		CacheWriteTokens: usage.CacheCreationInputTokens,
+		Timestamp:        ts,
 	}
+
+	jsonData, err := json.Marshal(cf)
+	if err != nil {
+		return
+	}
+
+	filename := fmt.Sprintf("%s_%d.json", instanceID, ts)
+	tmpPath := filepath.Join(costDir, filename+".tmp")
+	finalPath := filepath.Join(costDir, filename)
+
+	if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
+		logCostDebug("write failed: %v", err)
+		return
+	}
+	os.Rename(tmpPath, finalPath)
+	logCostDebug("wrote cost event: %s model=%s in=%d out=%d", finalPath, cf.Model, cf.InputTokens, cf.OutputTokens)
+}
+
+// readLastLine reads the last non-empty line from a file.
+func readLastLine(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+
+	size := stat.Size()
+	if size == 0 {
+		return "", fmt.Errorf("empty file")
+	}
+
+	buf := make([]byte, 0, 8192)
+	offset := size
+	for offset > 0 {
+		readSize := int64(8192)
+		if readSize > offset {
+			readSize = offset
+		}
+		offset -= readSize
+
+		chunk := make([]byte, readSize)
+		if _, err := f.ReadAt(chunk, offset); err != nil {
+			return "", err
+		}
+		buf = append(chunk, buf...)
+
+		nlCount := 0
+		for i := len(buf) - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				nlCount++
+				if nlCount == 2 {
+					line := strings.TrimSpace(string(buf[i+1:]))
+					if line != "" {
+						return line, nil
+					}
+				}
+			}
+		}
+	}
+
+	return strings.TrimSpace(string(buf)), nil
+}
+
+// logCostDebug writes debug messages to ~/.agent-deck/cost-debug.log
+// TODO: remove after cost tracking is validated
+func logCostDebug(format string, args ...any) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logPath := filepath.Join(home, ".agent-deck", "cost-debug.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
 }
 
 // getCostEventsDir returns the path to the cost events directory.
