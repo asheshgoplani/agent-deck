@@ -692,6 +692,19 @@ func (d *NewDialog) currentTarget() focusTarget {
 	return d.focusTargets[d.focusIndex]
 }
 
+// isTextInputFocused returns true when a text input field is actively receiving keystrokes.
+func (d *NewDialog) isTextInputFocused() bool {
+	cur := d.currentTarget()
+	switch cur {
+	case focusName, focusPath, focusBranch:
+		return true
+	case focusCommand:
+		return d.commandCursor == 0
+	default:
+		return false
+	}
+}
+
 // indexOf returns the index of target in focusTargets, or -1 if absent.
 func (d *NewDialog) indexOf(target focusTarget) int {
 	for i, t := range d.focusTargets {
@@ -1030,7 +1043,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "w":
-			if cur == focusCommand {
+			if cur == focusCommand && !d.isTextInputFocused() {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
 				if d.worktreeEnabled {
@@ -1043,7 +1056,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "s":
-			if cur == focusCommand {
+			if cur == focusCommand && !d.isTextInputFocused() {
 				d.ToggleSandbox()
 				if !d.sandboxEnabled {
 					d.inheritedExpanded = false
@@ -1053,7 +1066,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "m":
-			if cur == focusCommand {
+			if cur == focusCommand && !d.isTextInputFocused() {
 				d.ToggleMultiRepo()
 				d.rebuildFocusTargets()
 				return d, nil
@@ -1103,7 +1116,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		case "y":
 			selectedCmd := d.GetSelectedCommand()
-			if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex") && d.toolOptions != nil {
+			if cur == focusCommand && !d.isTextInputFocused() && (selectedCmd == "gemini" || selectedCmd == "codex") && d.toolOptions != nil {
 				d.toolOptions.Update(msg)
 				return d, nil
 			}

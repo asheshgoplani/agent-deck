@@ -621,6 +621,7 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 	dialog.inheritedSettings = nil
 	dialog.rebuildFocusTargets()
 	dialog.focusIndex = 3 // Command field
+	dialog.commandCursor = 1 // Preset command (not custom/shell text input)
 
 	// Press 'w' to toggle worktree.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
@@ -636,6 +637,7 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 
 	// Press 'w' again to disable (need to be on command field).
 	dialog.focusIndex = 3
+	dialog.commandCursor = 1 // Preset command (not custom/shell text input)
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 
 	if dialog.worktreeEnabled {
@@ -1240,5 +1242,47 @@ func TestNewDialog_ToggleWorktree_CustomPrefix(t *testing.T) {
 
 	if got := d.branchInput.Value(); got != "dev/cool-feature" {
 		t.Errorf("expected branch %q, got %q", "dev/cool-feature", got)
+	}
+}
+
+func TestNewDialog_ShortcutsSkippedWhenTextInputFocused(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.visible = true
+	d.rebuildFocusTargets()
+
+	// Focus on the Name field (a text input).
+	d.focusIndex = d.indexOf(focusName)
+
+	// Record initial toggle states.
+	sandbox := d.sandboxEnabled
+	worktree := d.worktreeEnabled
+	multiRepo := d.multiRepoEnabled
+
+	// Send shortcut keys while Name is focused — they should be ignored.
+	for _, key := range []string{"s", "w", "m", "y"} {
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+		d.Update(msg)
+	}
+
+	if d.sandboxEnabled != sandbox {
+		t.Error("sandbox toggled while Name text input was focused")
+	}
+	if d.worktreeEnabled != worktree {
+		t.Error("worktree toggled while Name text input was focused")
+	}
+	if d.multiRepoEnabled != multiRepo {
+		t.Error("multi-repo toggled while Name text input was focused")
+	}
+
+	// Now focus on Command field with a preset command (not custom/shell).
+	cmdIdx := d.indexOf(focusCommand)
+	d.focusIndex = cmdIdx
+	d.commandCursor = 1 // preset command, not custom input
+
+	sandbox = d.sandboxEnabled
+	d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if d.sandboxEnabled == sandbox {
+		t.Error("sandbox should toggle when command field is focused on a preset (non-text-input)")
 	}
 }
