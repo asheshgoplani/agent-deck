@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -108,6 +109,9 @@ func handleHookHandler() {
 	}
 
 	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
+
+	// Write cost event if this hook contains usage data
+	writeCostEvent(instanceID, data)
 }
 
 // writeHookStatus writes a hook status file atomically for one instance.
@@ -293,6 +297,66 @@ func handleHooksStatus() {
 
 	fmt.Printf("Active hook files: %d (in %s)\n", activeCount, hooksDir)
 	fmt.Printf("Total hook files: %d\n", len(entries))
+}
+
+// costEventFile is the JSON written to ~/.agent-deck/cost-events/{instance}_{ts}.json
+type costEventFile struct {
+	InstanceID       string `json:"instance_id"`
+	Model            string `json:"model"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	Timestamp        int64  `json:"ts"`
+}
+
+// writeCostEvent parses a hook payload for usage data and writes cost event files.
+func writeCostEvent(instanceID string, rawPayload []byte) {
+	parser := &costs.ClaudeHookParser{}
+	events, err := parser.Parse(string(rawPayload))
+	if err != nil || len(events) == 0 {
+		return
+	}
+
+	costDir := getCostEventsDir()
+	if err := os.MkdirAll(costDir, 0755); err != nil {
+		return
+	}
+
+	for _, ev := range events {
+		cf := costEventFile{
+			InstanceID:       instanceID,
+			Model:            ev.Model,
+			InputTokens:      ev.InputTokens,
+			OutputTokens:     ev.OutputTokens,
+			CacheReadTokens:  ev.CacheReadTokens,
+			CacheWriteTokens: ev.CacheWriteTokens,
+			Timestamp:        time.Now().UnixNano(),
+		}
+
+		jsonData, err := json.Marshal(cf)
+		if err != nil {
+			continue
+		}
+
+		filename := fmt.Sprintf("%s_%d.json", instanceID, cf.Timestamp)
+		tmpPath := filepath.Join(costDir, filename+".tmp")
+		finalPath := filepath.Join(costDir, filename)
+
+		if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
+			continue
+		}
+		os.Rename(tmpPath, finalPath)
+	}
+}
+
+// getCostEventsDir returns the path to the cost events directory.
+func getCostEventsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".agent-deck", "cost-events")
+	}
+	return filepath.Join(home, ".agent-deck", "cost-events")
 }
 
 // getClaudeConfigDirForHooks returns the Claude config directory for hook operations.
