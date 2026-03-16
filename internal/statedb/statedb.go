@@ -18,7 +18,7 @@ import (
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -231,6 +231,31 @@ func (s *StateDB) Migrate() error {
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create recent_sessions: %w", err)
+	}
+
+	// cost_events table (cost tracking)
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS cost_events (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			model TEXT NOT NULL,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_microdollars INTEGER NOT NULL DEFAULT 0,
+			budget_stop_triggered INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create cost_events: %w", err)
+	}
+
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cost_events_session ON cost_events(session_id)`); err != nil {
+		return fmt.Errorf("statedb: create cost_events session index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cost_events_timestamp ON cost_events(timestamp)`); err != nil {
+		return fmt.Errorf("statedb: create cost_events timestamp index: %w", err)
 	}
 
 	// Set schema version only when missing or changed.
