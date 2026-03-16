@@ -123,6 +123,9 @@ type UserConfig struct {
 
 	// Display defines rendering and display settings
 	Display DisplaySettings `toml:"display"`
+
+	// Costs defines cost tracking and budget settings
+	Costs CostsSettings `toml:"costs"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1939,4 +1942,54 @@ func GetMCPDef(name string) *MCPDef {
 		return &def
 	}
 	return nil
+}
+
+// CostsSettings configures cost tracking, budgets, and pricing overrides.
+type CostsSettings struct {
+	Currency      string          `toml:"currency"`
+	Timezone      string          `toml:"timezone"`
+	RetentionDays int             `toml:"retention_days"`
+	Budgets       BudgetSettings  `toml:"budgets"`
+	Pricing       PricingSettings `toml:"pricing"`
+}
+
+type BudgetSettings struct {
+	DailyLimit   float64                  `toml:"daily_limit"`
+	WeeklyLimit  float64                  `toml:"weekly_limit"`
+	MonthlyLimit float64                  `toml:"monthly_limit"`
+	Groups       map[string]GroupBudget   `toml:"groups"`
+	Sessions     map[string]SessionBudget `toml:"sessions"`
+}
+
+type GroupBudget struct {
+	DailyLimit float64 `toml:"daily_limit"`
+}
+
+type SessionBudget struct {
+	TotalLimit float64 `toml:"total_limit"`
+}
+
+type PricingSettings struct {
+	Overrides map[string]PricingOverride `toml:"overrides"`
+}
+
+type PricingOverride struct {
+	InputPerMtok      float64 `toml:"input_per_mtok"`
+	OutputPerMtok     float64 `toml:"output_per_mtok"`
+	CacheReadPerMtok  float64 `toml:"cache_read_per_mtok"`
+	CacheWritePerMtok float64 `toml:"cache_write_per_mtok"`
+}
+
+func (c CostsSettings) GetRetentionDays() int {
+	if c.RetentionDays > 0 {
+		return c.RetentionDays
+	}
+	return 90
+}
+
+func (c CostsSettings) GetTimezone() string {
+	if c.Timezone != "" {
+		return c.Timezone
+	}
+	return "Local"
 }
