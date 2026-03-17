@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import toml
@@ -290,6 +291,56 @@ def ensure_all_conductors_running(profiles: list[str]) -> dict[str, bool]:
     for profile in profiles:
         results[profile] = ensure_conductor_running(profile)
     return results
+
+
+# ---------------------------------------------------------------------------
+# Schedule helpers
+# ---------------------------------------------------------------------------
+
+
+def load_conductor_meta(profile: str) -> dict:
+    """Load meta.json for a conductor profile, returning {} if not found."""
+    meta_path = CONDUCTOR_DIR / profile / "meta.json"
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to read %s: %s", meta_path, e)
+        return {}
+
+
+def is_within_schedule(meta: dict) -> bool:
+    """Check if the current local time falls within the conductor's schedule.
+
+    The schedule is defined in meta.json as:
+        {"schedule": {"start_hour": 9, "stop_hour": 19, "days": [0,1,2,3,4]}}
+
+    Days use Python weekday convention: 0=Monday through 6=Sunday.
+    All fields are optional. If schedule is not set, returns True (always active).
+    """
+    schedule = meta.get("schedule")
+    if not schedule:
+        return True
+
+    now = datetime.now()
+    current_hour = now.hour
+
+    # Check day of week
+    allowed_days = schedule.get("days")
+    if allowed_days is not None and now.weekday() not in allowed_days:
+        return False
+
+    # Check hour range
+    start_hour = schedule.get("start_hour")
+    stop_hour = schedule.get("stop_hour")
+
+    if start_hour is not None and current_hour < start_hour:
+        return False
+    if stop_hour is not None and current_hour >= stop_hour:
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +719,15 @@ async def heartbeat_loop(bot: Bot, config: dict):
 
         for profile in profiles:
             try:
+                # Check schedule before doing any work for this profile
+                meta = load_conductor_meta(profile)
+                if not is_within_schedule(meta):
+                    log.info(
+                        "Heartbeat [%s]: outside scheduled hours, skipping",
+                        profile,
+                    )
+                    continue
+
                 session_title = conductor_session_title(profile)
 
                 # Get current status for this profile
