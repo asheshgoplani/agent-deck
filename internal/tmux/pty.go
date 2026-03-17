@@ -19,6 +19,24 @@ import (
 	"golang.org/x/term"
 )
 
+// IndexCtrlQ returns the index of a Ctrl+Q sequence in data, or -1 if not found.
+// Handles three encodings:
+//   - Raw byte 0x11
+//   - xterm modifyOtherKeys: ESC[27;5;113~
+//   - CSI u (kitty keyboard protocol): ESC[113;5u
+func IndexCtrlQ(data []byte) int {
+	if idx := bytes.IndexByte(data, 17); idx >= 0 {
+		return idx
+	}
+	if idx := bytes.Index(data, []byte("\x1b[27;5;113~")); idx >= 0 {
+		return idx
+	}
+	if idx := bytes.Index(data, []byte("\x1b[113;5u")); idx >= 0 {
+		return idx
+	}
+	return -1
+}
+
 // Attach attaches to the tmux session with full PTY support
 // Ctrl+Q will detach and return to the caller
 func (s *Session) Attach(ctx context.Context) error {
@@ -134,9 +152,10 @@ func (s *Session) Attach(ctx context.Context) error {
 				continue
 			}
 
-			// Check for Ctrl+Q (ASCII 17) anywhere in the input chunk.
+			// Check for Ctrl+Q anywhere in the input chunk.
 			// Some terminals coalesce reads, so detach must not require a single-byte read.
-			if idx := bytes.IndexByte(buf[:n], 17); idx >= 0 {
+			// Handles raw byte 0x11, xterm modifyOtherKeys, and kitty CSI u encodings.
+			if idx := IndexCtrlQ(buf[:n]); idx >= 0 {
 				// Forward any bytes before Ctrl+Q, then detach.
 				if idx > 0 {
 					if _, err := ptmx.Write(buf[:idx]); err != nil {

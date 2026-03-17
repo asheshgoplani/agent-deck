@@ -9,6 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"golang.org/x/term"
 )
 
 // sshControlDir is the directory for SSH ControlMaster sockets.
@@ -66,14 +69,16 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 // Attach connects interactively to a remote agent-deck session.
-// This connects stdin/stdout/stderr for full terminal interaction.
+// This manages the local terminal directly (rather than letting SSH do it)
+// so that Ctrl+Q can be intercepted regardless of the terminal's key
+// reporting mode (raw byte 0x11, xterm modifyOtherKeys, or kitty CSI u).
 func (r *SSHRunner) Attach(sessionID string) error {
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
 
 	sshArgs := []string{
-		"-t",
+		"-tt", // force remote PTY even though local stdin is a pipe
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
 		"-o", "ControlPersist=600",
@@ -82,12 +87,53 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}
 
 	cmd := exec.Command("ssh", sshArgs...)
-	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	return cmd.Run()
+	sshStdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start ssh: %w", err)
+	}
+
+	// Forward stdin to SSH, intercepting Ctrl+Q to detach
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				break
+			}
+			data := buf[:n]
+
+			if idx := tmux.IndexCtrlQ(data); idx >= 0 {
+				if idx > 0 {
+					_, _ = sshStdin.Write(data[:idx])
+				}
+				_ = sshStdin.Close()
+				_ = cmd.Process.Kill()
+				return
+			}
+
+			if _, err := sshStdin.Write(data); err != nil {
+				break
+			}
+		}
+	}()
+
+	_ = cmd.Wait()
+	return nil
 }
+
 
 // RunCommand executes an arbitrary agent-deck command on the remote.
 func (r *SSHRunner) RunCommand(ctx context.Context, args ...string) ([]byte, error) {
