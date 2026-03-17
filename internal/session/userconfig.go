@@ -123,6 +123,21 @@ type UserConfig struct {
 
 	// Display defines rendering and display settings
 	Display DisplaySettings `toml:"display"`
+
+	// Grid defines grid view popup settings
+	Grid GridSettings `toml:"grid"`
+}
+
+// GridSettings configures the grid popup triggered from tmux sessions.
+type GridSettings struct {
+	// PopupKey is the tmux prefix key that opens the grid popup (default: "V")
+	PopupKey string `toml:"popup_key"`
+	// PopupWidth is the tmux display-popup width (default: "80%")
+	PopupWidth string `toml:"popup_width"`
+	// PopupHeight is the tmux display-popup height (default: "70%")
+	PopupHeight string `toml:"popup_height"`
+	// PopupEnabled controls whether the keybinding is injected (default: true)
+	PopupEnabled *bool `toml:"popup_enabled"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1934,4 +1949,40 @@ func GetMCPDef(name string) *MCPDef {
 		return &def
 	}
 	return nil
+}
+
+// GetGridPopupKey returns the tmux prefix key for the grid popup (default: "V").
+func GetGridPopupKey() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupKey != "" {
+		return config.Grid.PopupKey
+	}
+	return "V"
+}
+
+// GetGridPopupWidth returns the tmux display-popup width (default: "80%").
+func GetGridPopupWidth() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupWidth != "" {
+		return config.Grid.PopupWidth
+	}
+	return "80%"
+}
+
+// GetGridPopupHeight returns the tmux display-popup height (default: "70%").
+func GetGridPopupHeight() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupHeight != "" {
+		return config.Grid.PopupHeight
+	}
+	return "70%"
+}
+
+// IsGridPopupEnabled returns whether the grid popup keybinding is enabled (default: true).
+func IsGridPopupEnabled() bool {
+	config, _ := LoadUserConfig()
+	if config == nil || config.Grid.PopupEnabled == nil {
+		return true
+	}
+	return *config.Grid.PopupEnabled
 }
