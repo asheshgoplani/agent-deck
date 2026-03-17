@@ -2,6 +2,7 @@ package vcs
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -12,14 +13,22 @@ func TestInterfaceConformance(t *testing.T) {
 	var _ Backend = (*JJBackend)(nil)
 }
 
+// initGitRepo creates a real git repository in dir using git init.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "init", dir)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+}
+
 func TestDetect_GitRepo(t *testing.T) {
 	ClearCache()
 	dir := t.TempDir()
 
-	// Create a .git directory
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// Create a real git repository
+	initGitRepo(t, dir)
 
 	b := Detect(dir)
 	if b == nil {
@@ -31,15 +40,16 @@ func TestDetect_GitRepo(t *testing.T) {
 }
 
 func TestDetect_JJRepo(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not installed, skipping jj detection test")
+	}
 	ClearCache()
 	dir := t.TempDir()
 
-	// Create .jj directory (jj repos have both .jj and .git)
-	if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
+	// Create a jj repository (jj init creates both .jj and .git)
+	cmd := exec.Command("jj", "init", "--git", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("jj init failed: %v\n%s", err, out)
 	}
 
 	b := Detect(dir)
@@ -52,15 +62,16 @@ func TestDetect_JJRepo(t *testing.T) {
 }
 
 func TestDetect_JJTakesPrecedence(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not installed, skipping jj precedence test")
+	}
 	ClearCache()
 	dir := t.TempDir()
 
-	// Both .jj and .git present — jj should win
-	if err := os.Mkdir(filepath.Join(dir, ".jj"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
+	// jj init creates both .jj and .git — jj should win
+	cmd := exec.Command("jj", "init", "--git", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("jj init failed: %v\n%s", err, out)
 	}
 
 	b := Detect(dir)
@@ -86,9 +97,7 @@ func TestDetect_Subdirectory(t *testing.T) {
 	ClearCache()
 	dir := t.TempDir()
 
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initGitRepo(t, dir)
 	subDir := filepath.Join(dir, "sub", "deep")
 	if err := os.MkdirAll(subDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -107,9 +116,7 @@ func TestDetect_CachingWorks(t *testing.T) {
 	ClearCache()
 	dir := t.TempDir()
 
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initGitRepo(t, dir)
 
 	b1 := Detect(dir)
 	b2 := Detect(dir)
@@ -132,9 +139,7 @@ func TestDetect_AsIsRepoReplacement(t *testing.T) {
 		t.Fatal("expected nil for non-repo")
 	}
 
-	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	initGitRepo(t, dir)
 	ClearCache()
 
 	if Detect(dir) == nil {
