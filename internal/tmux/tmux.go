@@ -1238,7 +1238,7 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
@@ -1452,7 +1452,7 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
