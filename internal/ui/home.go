@@ -1141,7 +1141,17 @@ func (h *Home) rebuildFlatItems() {
 				}
 			}
 		}
-		h.flatItems = filtered
+
+		// If the persisted status filter results in an empty list but sessions
+		// exist, clear the filter so sessions remain visible. This prevents a
+		// stale filter (e.g. "error") from hiding all sessions after the
+		// matching sessions are removed.
+		if len(filtered) == 0 && len(allItems) > 0 {
+			h.statusFilter = ""
+			h.flatItems = allItems
+		} else {
+			h.flatItems = filtered
+		}
 	} else {
 		h.flatItems = allItems
 	}
