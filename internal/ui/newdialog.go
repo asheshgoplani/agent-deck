@@ -80,6 +80,8 @@ type NewDialog struct {
 	multiRepoEditing    bool     // True when editing a path entry.
 	// Recent sessions picker.
 	recentSessions      []*statedb.RecentSessionRow
+	recentFiltered      []*statedb.RecentSessionRow // filtered subset (nil = no filter active)
+	recentFilter        string                      // current typeahead filter text
 	recentSessionCursor int
 	showRecentPicker    bool
 	recentSnapshot      *dialogSnapshot // saved state to restore on Esc
@@ -306,8 +308,41 @@ func (d *NewDialog) IsRecentPickerOpen() bool {
 // SetRecentSessions sets the list of recently deleted session configs.
 func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
 	d.recentSessions = sessions
+	d.recentFiltered = nil
+	d.recentFilter = ""
 	d.recentSessionCursor = 0
 	d.showRecentPicker = false
+}
+
+// recentDisplayList returns the filtered list if a filter is active,
+// otherwise the full list.
+func (d *NewDialog) recentDisplayList() []*statedb.RecentSessionRow {
+	if d.recentFiltered != nil {
+		return d.recentFiltered
+	}
+	return d.recentSessions
+}
+
+// applyRecentFilter rebuilds the filtered list from the current filter text.
+// Matching is case-insensitive substring on title and project path.
+func (d *NewDialog) applyRecentFilter() {
+	if d.recentFilter == "" {
+		d.recentFiltered = nil
+		return
+	}
+	query := strings.ToLower(d.recentFilter)
+	filtered := make([]*statedb.RecentSessionRow, 0, len(d.recentSessions))
+	for _, rs := range d.recentSessions {
+		if strings.Contains(strings.ToLower(rs.Title), query) ||
+			strings.Contains(strings.ToLower(rs.ProjectPath), query) {
+			filtered = append(filtered, rs)
+		}
+	}
+	d.recentFiltered = filtered
+	// Clamp cursor to new list bounds.
+	if d.recentSessionCursor >= len(filtered) {
+		d.recentSessionCursor = 0
+	}
 }
 
 // saveSnapshot captures current form state so the picker can restore on cancel.
@@ -894,23 +929,32 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	case tea.KeyMsg:
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
+			displayList := d.recentDisplayList()
 			switch msg.String() {
 			case "ctrl+n", "down":
-				d.recentSessionCursor = (d.recentSessionCursor + 1) % len(d.recentSessions)
-				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
+				if len(displayList) > 0 {
+					d.recentSessionCursor = (d.recentSessionCursor + 1) % len(displayList)
+					d.previewRecentSession(displayList[d.recentSessionCursor])
+				}
 				return d, nil
 			case "ctrl+p", "up":
-				d.recentSessionCursor--
-				if d.recentSessionCursor < 0 {
-					d.recentSessionCursor = len(d.recentSessions) - 1
+				if len(displayList) > 0 {
+					d.recentSessionCursor--
+					if d.recentSessionCursor < 0 {
+						d.recentSessionCursor = len(displayList) - 1
+					}
+					d.previewRecentSession(displayList[d.recentSessionCursor])
 				}
-				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
 				return d, nil
 			case "enter":
-				// Fields already applied via preview — just close picker.
-				d.showRecentPicker = false
-				d.recentSnapshot = nil
-				d.pathSoftSelected = true
+				if len(displayList) > 0 {
+					// Fields already applied via preview — just close picker.
+					d.showRecentPicker = false
+					d.recentSnapshot = nil
+					d.recentFilter = ""
+					d.recentFiltered = nil
+					d.pathSoftSelected = true
+				}
 				return d, nil
 			case "esc", "ctrl+r":
 				// Cancel — restore original form state.
@@ -919,15 +963,39 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.recentSnapshot = nil
 				}
 				d.showRecentPicker = false
+				d.recentFilter = ""
+				d.recentFiltered = nil
 				return d, nil
+			case "backspace":
+				// Remove last character from filter.
+				if len(d.recentFilter) > 0 {
+					d.recentFilter = d.recentFilter[:len(d.recentFilter)-1]
+					d.applyRecentFilter()
+					if len(d.recentDisplayList()) > 0 {
+						d.previewRecentSession(d.recentDisplayList()[d.recentSessionCursor])
+					}
+				}
+				return d, nil
+			default:
+				// Typeahead: printable runes filter the list.
+				if msg.Type == tea.KeyRunes {
+					d.recentFilter += string(msg.Runes)
+					d.applyRecentFilter()
+					if len(d.recentDisplayList()) > 0 {
+						d.previewRecentSession(d.recentDisplayList()[d.recentSessionCursor])
+					}
+					return d, nil
+				}
 			}
-			return d, nil // Consume all other keys while picker is open
+			return d, nil // Consume all other unhandled keys while picker is open
 		}
 
 		// Toggle recent sessions picker
 		if msg.String() == "ctrl+r" && len(d.recentSessions) > 0 {
 			d.recentSnapshot = d.saveSnapshot()
 			d.showRecentPicker = true
+			d.recentFilter = ""
+			d.recentFiltered = nil
 			d.recentSessionCursor = 0
 			d.previewRecentSession(d.recentSessions[0])
 			return d, nil
@@ -1348,65 +1416,104 @@ func (d *NewDialog) View() string {
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
 	content.WriteString("\n")
 
-	// Recent sessions picker
+	// When recent picker is open, render it instead of the form fields.
 	if d.showRecentPicker && len(d.recentSessions) > 0 {
+		// Override title to show nested context
+		content.Reset()
+		pickerTitleStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+		breadcrumbStyle := lipgloss.NewStyle().Foreground(ColorComment)
+		content.WriteString(pickerTitleStyle.Render("New Session") + breadcrumbStyle.Render(" → ") + pickerTitleStyle.Render("Recents"))
+		content.WriteString("\n")
+
 		pickerHeaderStyle := lipgloss.NewStyle().Foreground(ColorComment)
 		pickerSelectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 		pickerItemStyle := lipgloss.NewStyle().Foreground(ColorComment)
+		filterStyle := lipgloss.NewStyle().Foreground(ColorGreen)
 
-		content.WriteString("\n")
-		content.WriteString(pickerHeaderStyle.Render(
-			fmt.Sprintf("─ Recent Sessions (%d) ─ ↑↓ navigate │ Enter apply │ Esc close ─", len(d.recentSessions)),
-		))
+		displayList := d.recentDisplayList()
 		content.WriteString("\n")
 
-		maxShow := 5
-		total := len(d.recentSessions)
-		startIdx := 0
-		endIdx := total
-		if total > maxShow {
-			startIdx = d.recentSessionCursor - maxShow/2
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			endIdx = startIdx + maxShow
-			if endIdx > total {
-				endIdx = total
-				startIdx = endIdx - maxShow
-			}
+		// Filter prompt
+		content.WriteString(pickerHeaderStyle.Render("  Filter: "))
+		if d.recentFilter != "" {
+			content.WriteString(filterStyle.Render(d.recentFilter))
 		}
+		content.WriteString(pickerHeaderStyle.Render("▏"))
+		content.WriteString("\n\n")
 
-		if startIdx > 0 {
-			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
+		if len(displayList) == 0 {
+			content.WriteString(pickerItemStyle.Render("    no matches"))
 			content.WriteString("\n")
+		} else {
+			maxShow := 8
+			total := len(displayList)
+			startIdx := 0
+			endIdx := total
+			if total > maxShow {
+				startIdx = d.recentSessionCursor - maxShow/2
+				if startIdx < 0 {
+					startIdx = 0
+				}
+				endIdx = startIdx + maxShow
+				if endIdx > total {
+					endIdx = total
+					startIdx = endIdx - maxShow
+				}
+			}
+
+			if startIdx > 0 {
+				content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
+				content.WriteString("\n")
+			}
+
+			for i := startIdx; i < endIdx; i++ {
+				rs := displayList[i]
+				shortPath := rs.ProjectPath
+				if home, err := os.UserHomeDir(); err == nil {
+					shortPath = strings.Replace(shortPath, home, "~", 1)
+				}
+				toolLabel := rs.Tool
+				if toolLabel == "" {
+					toolLabel = "shell"
+				}
+				entry := fmt.Sprintf("%s  (%s @ %s)", rs.Title, toolLabel, shortPath)
+
+				if i == d.recentSessionCursor {
+					content.WriteString(pickerSelectedStyle.Render("  ▶ " + entry))
+				} else {
+					content.WriteString(pickerItemStyle.Render("    " + entry))
+				}
+				content.WriteString("\n")
+			}
+
+			if endIdx < total {
+				content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
+				content.WriteString("\n")
+			}
 		}
 
-		for i := startIdx; i < endIdx; i++ {
-			rs := d.recentSessions[i]
-			// Format: Name  (tool @ ~/shortened/path)
-			shortPath := rs.ProjectPath
-			if home, err := os.UserHomeDir(); err == nil {
-				shortPath = strings.Replace(shortPath, home, "~", 1)
-			}
-			toolLabel := rs.Tool
-			if toolLabel == "" {
-				toolLabel = "shell"
-			}
-			entry := fmt.Sprintf("%s  (%s @ %s)", rs.Title, toolLabel, shortPath)
-
-			if i == d.recentSessionCursor {
-				content.WriteString(pickerSelectedStyle.Render("  ▶ " + entry))
-			} else {
-				content.WriteString(pickerItemStyle.Render("    " + entry))
-			}
-			content.WriteString("\n")
+		// Picker-specific help text (replaces the normal form help)
+		content.WriteString("\n")
+		helpStyle := lipgloss.NewStyle().
+			Foreground(ColorComment).
+			MarginTop(1)
+		matchInfo := ""
+		if d.recentFilter != "" {
+			matchInfo = fmt.Sprintf("%d/%d │ ", len(displayList), len(d.recentSessions))
+		} else {
+			matchInfo = fmt.Sprintf("%d │ ", len(d.recentSessions))
 		}
+		content.WriteString(helpStyle.Render(matchInfo + "↑↓ navigate │ Enter apply │ Esc cancel"))
 
-		if endIdx < total {
-			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
-			content.WriteString("\n")
-		}
+		// Wrap in dialog box and return early
+		dialog := dialogStyle.Render(content.String())
+		return lipgloss.Place(
+			d.width, d.height,
+			lipgloss.Center, lipgloss.Center,
+			dialog,
+		)
 	}
+
 	content.WriteString("\n")
 
 	// Name input
