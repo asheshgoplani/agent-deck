@@ -721,6 +721,7 @@ func handleGrid(profile string, args []string) {
 	}
 
 	var targetGroup *session.Group
+	var sourceInstance *session.Instance // the session we launched from
 	var storage *session.Storage
 
 	for _, tryProfile := range profilesToTry {
@@ -740,6 +741,7 @@ func handleGrid(profile string, args []string) {
 			for _, inst := range instances {
 				tmuxSess := inst.GetTmuxSession()
 				if tmuxSess != nil && tmuxSess.Name == *sessionFlag {
+					sourceInstance = inst
 					if g, ok := groupTree.Groups[inst.GroupPath]; ok {
 						targetGroup = g
 						storage = s
@@ -793,7 +795,7 @@ func handleGrid(profile string, args []string) {
 		}
 	}
 
-	host := ui.NewGridPopupHost(targetGroup)
+	host := ui.NewGridPopupHost(targetGroup, sourceInstance)
 
 	p := tea.NewProgram(
 		host,

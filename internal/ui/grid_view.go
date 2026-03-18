@@ -68,6 +68,14 @@ type gridPopupCaptureMsg struct {
 	err     error
 }
 
+// gridSendOutputMsg is returned after async inter-session send completes
+type gridSendOutputMsg struct {
+	sourceTitle string
+	targetTitle string
+	lineCount   int
+	err         error
+}
+
 // --- Types ---
 
 // GridCell represents one session cell in the grid
@@ -113,6 +121,13 @@ type GridView struct {
 
 	// standaloneMode is true when running in tmux popup (affects status bar text)
 	standaloneMode bool
+
+	// sourceSession is the session the popup was launched from (for send output)
+	sourceSession *session.Instance
+
+	// statusMsg is a temporary status message shown in the status bar
+	statusMsg     string
+	statusMsgTime time.Time
 }
 
 // NewGridView creates a new hidden GridView.
@@ -124,6 +139,11 @@ func NewGridView() *GridView {
 // In standalone mode, "attach" becomes "switch" and "back" becomes "close".
 func (g *GridView) SetStandaloneMode(standalone bool) {
 	g.standaloneMode = standalone
+}
+
+// SetSourceSession sets the session the popup was launched from (for send output).
+func (g *GridView) SetSourceSession(inst *session.Instance) {
+	g.sourceSession = inst
 }
 
 // IsVisible returns whether the grid view is currently showing.
@@ -831,6 +851,10 @@ func (g *GridView) renderStatusBar() string {
 		parts = append(parts, MenuKeyStyle.Render("+/-")+MenuDescStyle.Render(" resize"))
 		parts = append(parts, sep)
 		parts = append(parts, MenuKeyStyle.Render("=")+MenuDescStyle.Render(" reset"))
+		if g.sourceSession != nil {
+			parts = append(parts, sep)
+			parts = append(parts, MenuKeyStyle.Render("x")+MenuDescStyle.Render(" send output"))
+		}
 		parts = append(parts, sep)
 		if g.standaloneMode {
 			parts = append(parts, MenuKeyStyle.Render("Esc/q")+MenuDescStyle.Render(" close"))
@@ -842,6 +866,16 @@ func (g *GridView) renderStatusBar() string {
 	if g.totalCount > gridMaxCells {
 		parts = append(parts, sep)
 		parts = append(parts, DimStyle.Render(fmt.Sprintf("Showing %d of %d", gridMaxCells, g.totalCount)))
+	}
+
+	// Show temporary status message (e.g., send confirmation)
+	if g.statusMsg != "" && time.Since(g.statusMsgTime) < 5*time.Second {
+		parts = append(parts, sep)
+		if strings.HasPrefix(g.statusMsg, "Send failed") {
+			parts = append(parts, ErrorStyle.Render(g.statusMsg))
+		} else {
+			parts = append(parts, SuccessStyle.Render(g.statusMsg))
+		}
 	}
 
 	bar := strings.Join(parts, "")
@@ -1034,6 +1068,16 @@ func (g *GridView) Update(msg tea.Msg) (*GridView, tea.Cmd) {
 		}
 		return g, nil
 
+	case gridSendOutputMsg:
+		if msg.err != nil {
+			g.statusMsg = fmt.Sprintf("Send failed: %v", msg.err)
+		} else {
+			g.statusMsg = fmt.Sprintf("Sent %d lines from %s → %s", msg.lineCount, msg.sourceTitle, msg.targetTitle)
+		}
+		g.statusMsgTime = time.Now()
+		// Refresh the target cell to show the received content
+		return g, g.fetchCell(g.focusIndex)
+
 	case gridPopupTickMsg:
 		if g.popup != nil {
 			var cmds []tea.Cmd
@@ -1111,6 +1155,12 @@ func (g *GridView) handleNavigateKey(msg tea.KeyMsg) (*GridView, tea.Cmd) {
 		return g, nil
 	case "ctrl+down":
 		g.resizeRow(-gridResizeStep)
+		return g, nil
+	case "x":
+		// Send source session's output to focused cell
+		if g.sourceSession != nil && g.focusIndex < len(g.cells) {
+			return g, g.sendOutputToCell(g.focusIndex)
+		}
 		return g, nil
 	case "esc", "q", "ctrl+q":
 		g.Hide()
@@ -1236,6 +1286,48 @@ func (g *GridView) startTick() tea.Cmd {
 	return tea.Tick(gridTickRate, func(t time.Time) tea.Msg {
 		return gridTickMsg(t)
 	})
+}
+
+// --- Send output ---
+
+const gridMaxTransferSize = 500 * 1024 // 500KB max
+
+// sendOutputToCell sends the source session's output to the target cell's tmux session.
+func (g *GridView) sendOutputToCell(cellIdx int) tea.Cmd {
+	if g.sourceSession == nil || cellIdx >= len(g.cells) {
+		return nil
+	}
+	cell := g.cells[cellIdx]
+	if cell.tmuxSess == nil {
+		return nil
+	}
+	source := g.sourceSession
+	target := cell.instance
+	targetTmux := cell.tmuxSess
+	return func() tea.Msg {
+		// Get source content (try AI response first, fallback to CapturePane)
+		content, err := getSessionContent(source)
+		if err != nil {
+			return gridSendOutputMsg{err: err}
+		}
+		if len(content) > gridMaxTransferSize {
+			content = content[:gridMaxTransferSize] + "\n[Truncated at 500KB]"
+		}
+		wrapped := fmt.Sprintf("--- Output from [%s] ---\n%s\n--- End output from [%s] ---\n",
+			source.Title, content, source.Title)
+		if err := targetTmux.SendKeysChunked(wrapped); err != nil {
+			return gridSendOutputMsg{
+				targetTitle: target.Title,
+				err:         fmt.Errorf("send failed: %w", err),
+			}
+		}
+		lineCount := strings.Count(content, "\n")
+		return gridSendOutputMsg{
+			sourceTitle: source.Title,
+			targetTitle: target.Title,
+			lineCount:   lineCount,
+		}
+	}
 }
 
 // --- JSON helpers for persistence ---

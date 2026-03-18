@@ -14,10 +14,12 @@ type GridPopupHost struct {
 }
 
 // NewGridPopupHost creates a standalone grid host for the given group.
-func NewGridPopupHost(group *session.Group) *GridPopupHost {
+// sourceSession is the session the popup was launched from (for send output).
+func NewGridPopupHost(group *session.Group, sourceSession *session.Instance) *GridPopupHost {
 	InitTheme("dark")
 	grid := NewGridView()
 	grid.SetStandaloneMode(true)
+	grid.SetSourceSession(sourceSession)
 	grid.Show(group)
 	return &GridPopupHost{grid: grid}
 }
@@ -49,7 +51,7 @@ func (h *GridPopupHost) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, tea.Quit
 
-	case gridCellCaptureMsg, gridTickMsg, gridPopupTickMsg, gridPopupCaptureMsg:
+	case gridCellCaptureMsg, gridTickMsg, gridPopupTickMsg, gridPopupCaptureMsg, gridSendOutputMsg:
 		var cmd tea.Cmd
 		h.grid, cmd = h.grid.Update(msg)
 		return h, cmd
