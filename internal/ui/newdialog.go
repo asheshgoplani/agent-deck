@@ -40,7 +40,7 @@ type settingDisplay struct {
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
 	nameInput            textinput.Model
-	generatedName        string // auto-generated name shown as placeholder, used when user leaves name empty
+	generatedName        string
 	pathInput            textinput.Model
 	commandInput         textinput.Model
 	claudeOptions        *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
