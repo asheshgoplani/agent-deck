@@ -1441,6 +1441,64 @@ func TestNewDialog_BranchPrefix_Empty_NoPrefix(t *testing.T) {
 	}
 }
 
+// TestNewDialog_CtrlR_OpensRecentPicker verifies that Ctrl+R opens the recent
+// sessions picker when recent sessions are available.
+func TestNewDialog_CtrlR_OpensRecentPicker(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// Set up recent sessions
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "session-1", ProjectPath: "/tmp/one", Tool: "claude"},
+		{Title: "session-2", ProjectPath: "/tmp/two", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	if len(d.recentSessions) != 2 {
+		t.Fatalf("expected 2 recent sessions, got %d", len(d.recentSessions))
+	}
+
+	// Verify ^R hint appears in the view
+	view := d.View()
+	if !strings.Contains(view, "^R recent") {
+		t.Error("View should contain '^R recent' hint when recent sessions exist")
+	}
+
+	// Verify picker is not open yet
+	if d.showRecentPicker {
+		t.Fatal("recent picker should not be open before Ctrl+R")
+	}
+
+	// Send Ctrl+R
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	if !d.showRecentPicker {
+		t.Error("Ctrl+R should open the recent sessions picker")
+	}
+	if d.recentSessionCursor != 0 {
+		t.Errorf("recentSessionCursor = %d, want 0", d.recentSessionCursor)
+	}
+	// First session should be previewed
+	if d.nameInput.Value() != "session-1" {
+		t.Errorf("name = %q, want %q (first session should be previewed)", d.nameInput.Value(), "session-1")
+	}
+}
+
+// TestNewDialog_CtrlR_HintHiddenWhenNoRecents verifies the hint is absent
+// when there are no recent sessions.
+func TestNewDialog_CtrlR_HintHiddenWhenNoRecents(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// No recent sessions set
+	view := d.View()
+	if strings.Contains(view, "^R recent") {
+		t.Error("View should NOT contain '^R recent' hint when no recent sessions exist")
+	}
+}
+
 func TestNewDialog_BranchPrefix_Placeholder_Updated(t *testing.T) {
 	d := NewNewDialog()
 	d.branchPrefix = "fix/"
