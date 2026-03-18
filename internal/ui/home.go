@@ -5532,13 +5532,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "$", "shift+4":
-		// Cost dashboard (when cost tracking is active), otherwise filter to error sessions
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
-		}
-		// Fallback: filter to error sessions only
+		// Filter to error sessions only
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -5546,6 +5540,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case "C":
+		// Cost dashboard
+		if h.costStore != nil {
+			h.showCostDashboard = true
+			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
+			return h, nil
+		}
 	}
 
 	return h, nil
