@@ -1499,6 +1499,188 @@ func TestNewDialog_CtrlR_HintHiddenWhenNoRecents(t *testing.T) {
 	}
 }
 
+// TestNewDialog_RecentPicker_TypeaheadFilters verifies that typing in the
+// recent picker filters the list by session name.
+func TestNewDialog_RecentPicker_TypeaheadFilters(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "alpha-project", ProjectPath: "/tmp/alpha", Tool: "claude"},
+		{Title: "beta-service", ProjectPath: "/tmp/beta", Tool: "claude"},
+		{Title: "gamma-api", ProjectPath: "/tmp/gamma", Tool: "gemini"},
+	}
+	d.SetRecentSessions(sessions)
+
+	// Open picker
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	if !d.showRecentPicker {
+		t.Fatal("picker should be open")
+	}
+
+	// Type "beta" to filter
+	for _, r := range "beta" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	if d.recentFilter != "beta" {
+		t.Errorf("recentFilter = %q, want %q", d.recentFilter, "beta")
+	}
+
+	displayList := d.recentDisplayList()
+	if len(displayList) != 1 {
+		t.Fatalf("expected 1 filtered result, got %d", len(displayList))
+	}
+	if displayList[0].Title != "beta-service" {
+		t.Errorf("filtered result = %q, want %q", displayList[0].Title, "beta-service")
+	}
+
+	// Preview should show the filtered result
+	if d.nameInput.Value() != "beta-service" {
+		t.Errorf("name = %q, want %q (should preview filtered result)", d.nameInput.Value(), "beta-service")
+	}
+}
+
+// TestNewDialog_RecentPicker_TypeaheadNoMatch shows "no matches" when filter
+// doesn't match anything, and Enter is a no-op.
+func TestNewDialog_RecentPicker_TypeaheadNoMatch(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "alpha-project", ProjectPath: "/tmp/alpha", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	// Type something that doesn't match
+	for _, r := range "zzz" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	if len(d.recentDisplayList()) != 0 {
+		t.Errorf("expected 0 filtered results, got %d", len(d.recentDisplayList()))
+	}
+
+	// View should show "no matches"
+	view := d.View()
+	if !strings.Contains(view, "no matches") {
+		t.Error("View should show 'no matches' when filter has no results")
+	}
+
+	// Enter should be a no-op (picker stays open)
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.showRecentPicker {
+		t.Error("Enter with no matches should not close the picker")
+	}
+}
+
+// TestNewDialog_RecentPicker_BackspaceRemovesFilter verifies backspace
+// progressively removes filter characters.
+func TestNewDialog_RecentPicker_BackspaceRemovesFilter(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "alpha", ProjectPath: "/tmp/alpha", Tool: "claude"},
+		{Title: "beta", ProjectPath: "/tmp/beta", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	// Type "al" — filters to "alpha"
+	for _, r := range "al" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if len(d.recentDisplayList()) != 1 {
+		t.Fatalf("expected 1 result for 'al', got %d", len(d.recentDisplayList()))
+	}
+
+	// Backspace once — filter is "a", both match
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if d.recentFilter != "a" {
+		t.Errorf("filter = %q, want %q", d.recentFilter, "a")
+	}
+	if len(d.recentDisplayList()) != 2 {
+		t.Errorf("expected 2 results for 'a', got %d", len(d.recentDisplayList()))
+	}
+
+	// Backspace again — filter is empty, full list
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	if d.recentFilter != "" {
+		t.Errorf("filter = %q, want empty", d.recentFilter)
+	}
+	if d.recentFiltered != nil {
+		t.Error("recentFiltered should be nil when filter is empty")
+	}
+}
+
+// TestNewDialog_RecentPicker_FilterMatchesPath verifies filtering also
+// matches on project path.
+func TestNewDialog_RecentPicker_FilterMatchesPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "my-project", ProjectPath: "/home/user/special-repo", Tool: "claude"},
+		{Title: "other", ProjectPath: "/tmp/generic", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	// Type "special" — matches path of first session
+	for _, r := range "special" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	displayList := d.recentDisplayList()
+	if len(displayList) != 1 {
+		t.Fatalf("expected 1 result for path match, got %d", len(displayList))
+	}
+	if displayList[0].Title != "my-project" {
+		t.Errorf("filtered result = %q, want %q", displayList[0].Title, "my-project")
+	}
+}
+
+// TestNewDialog_RecentPicker_EscClearsFilter verifies Esc cancels and
+// clears the filter state.
+func TestNewDialog_RecentPicker_EscClearsFilter(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "test", ProjectPath: "/tmp/test", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	for _, r := range "xyz" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Esc should close picker and clear filter
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	if d.showRecentPicker {
+		t.Error("picker should be closed after Esc")
+	}
+	if d.recentFilter != "" {
+		t.Errorf("filter should be cleared after Esc, got %q", d.recentFilter)
+	}
+	if d.recentFiltered != nil {
+		t.Error("recentFiltered should be nil after Esc")
+	}
+}
+
 func TestNewDialog_BranchPrefix_Placeholder_Updated(t *testing.T) {
 	d := NewNewDialog()
 	d.branchPrefix = "fix/"
