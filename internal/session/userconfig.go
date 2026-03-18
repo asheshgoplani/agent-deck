@@ -635,6 +635,11 @@ type CodexSettings struct {
 
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
+	// AutoCreate: automatically create a worktree for every new session in a git repo.
+	// When true, sessions created without an explicit -w flag will get an auto-generated
+	// branch and worktree. Can be skipped per-session with --no-worktree.
+	AutoCreate bool `toml:"auto_create"`
+
 	// AutoCleanup: remove worktree when session is deleted
 	AutoCleanup bool `toml:"auto_cleanup"`
 

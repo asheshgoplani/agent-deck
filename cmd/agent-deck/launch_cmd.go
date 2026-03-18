@@ -40,6 +40,7 @@ func handleLaunch(profile string, args []string) {
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
+
 	// MCP flag
 	var mcpFlags []string
 	fs.Func("mcp", "MCP to attach (can specify multiple times)", func(s string) error {
@@ -140,6 +141,64 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
+	// Load sessions
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	// Resolve parent session if specified
+	var parentInstance *session.Instance
+	if sessionParent != "" {
+		var errMsg string
+		parentInstance, errMsg, _ = ResolveSession(sessionParent, instances)
+		if parentInstance == nil {
+			out.Error(errMsg, ErrCodeNotFound)
+			os.Exit(1)
+		}
+		if parentInstance.IsSubSession() {
+			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+	} else if !*noParent {
+		parentInstance = resolveAutoParentInstance(instances)
+		if parentInstance != nil && !parentInstance.IsSubSession() {
+			sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+		} else {
+			parentInstance = nil
+		}
+	}
+
+	// Resolve title before worktree creation (auto-create needs title for branch name)
+	if sessionTitle == "" {
+		sessionTitle = filepath.Base(path)
+	}
+
+	// Check for duplicate and generate unique title
+	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
+	if !userProvidedTitle {
+		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
+	} else {
+		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
+			out.Error(
+				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
+				ErrCodeAlreadyExists,
+			)
+			os.Exit(1)
+		}
+	}
+
+	// Auto-create worktree if configured or requested via CLI flag
+	if wtBranch == "" {
+		wtSettings := session.GetWorktreeSettings()
+		if wtSettings.AutoCreate && git.IsGitRepo(path) {
+			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(sessionTitle)
+			createNewBranch = true
+		}
+	}
+
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot string
 	if wtBranch != "" {
@@ -196,55 +255,6 @@ func handleLaunch(profile string, args []string) {
 
 		worktreeRepoRoot = repoRoot
 		path = worktreePath
-	}
-
-	// Load sessions
-	storage, instances, groups, err := loadSessionData(profile)
-	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
-	}
-
-	// Resolve parent session if specified
-	var parentInstance *session.Instance
-	if sessionParent != "" {
-		var errMsg string
-		parentInstance, errMsg, _ = ResolveSession(sessionParent, instances)
-		if parentInstance == nil {
-			out.Error(errMsg, ErrCodeNotFound)
-			os.Exit(1)
-		}
-		if parentInstance.IsSubSession() {
-			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
-	} else if !*noParent {
-		parentInstance = resolveAutoParentInstance(instances)
-		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
-		} else {
-			parentInstance = nil
-		}
-	}
-
-	// Default title to folder name
-	if sessionTitle == "" {
-		sessionTitle = filepath.Base(path)
-	}
-
-	// Check for duplicate and generate unique title
-	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	if !userProvidedTitle {
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			out.Error(
-				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
-				ErrCodeAlreadyExists,
-			)
-			os.Exit(1)
-		}
 	}
 
 	// Create new instance

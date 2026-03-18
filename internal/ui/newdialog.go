@@ -253,6 +253,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
+		if userConfig.Worktree.AutoCreate {
+			d.worktreeEnabled = true
+		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + d.generatedName
 	d.rebuildFocusTargets()

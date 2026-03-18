@@ -819,6 +819,7 @@ func handleAdd(profile string, args []string) {
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
+
 	// MCP flag - can be specified multiple times
 	var mcpFlags []string
 	fs.Func("mcp", "MCP to attach (can specify multiple times)", func(s string) error {
@@ -1013,6 +1014,38 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
+	// Resolve title before worktree creation (auto-create needs title for branch name)
+	if sessionTitle == "" {
+		sessionTitle = filepath.Base(path)
+	}
+
+	// Track if user provided explicit title or we auto-generated from folder name
+	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
+	isQuick := *quickCreate || *quickCreateShort
+
+	if isQuick && !userProvidedTitle {
+		// Quick mode: use auto-generated adjective-noun name
+		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
+	} else if !userProvidedTitle {
+		// User didn't provide title - auto-generate unique title for this path
+		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
+	} else {
+		// User provided explicit title - check for exact duplicate (same title AND path)
+		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
+			fmt.Printf("Session already exists with same title and path: %s (%s)\n", existingInst.Title, existingInst.ID)
+			os.Exit(0)
+		}
+	}
+
+	// Auto-create worktree if configured or requested via CLI flag
+	if wtBranch == "" {
+		wtSettings := session.GetWorktreeSettings()
+		if wtSettings.AutoCreate && git.IsGitRepo(path) {
+			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(sessionTitle)
+			createNewBranch = true
+		}
+	}
+
 	// Handle worktree creation
 	var worktreePath, worktreeRepoRoot string
 	if wtBranch != "" {
@@ -1079,29 +1112,6 @@ func handleAdd(profile string, args []string) {
 		worktreeRepoRoot = repoRoot
 		// Update path to point to worktree so session uses worktree as working directory
 		path = worktreePath
-	}
-
-	// Default title to folder name
-	if sessionTitle == "" {
-		sessionTitle = filepath.Base(path)
-	}
-
-	// Track if user provided explicit title or we auto-generated from folder name
-	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	isQuick := *quickCreate || *quickCreateShort
-
-	if isQuick && !userProvidedTitle {
-		// Quick mode: use auto-generated adjective-noun name
-		sessionTitle = session.GenerateUniqueSessionName(instances, sessionGroup)
-	} else if !userProvidedTitle {
-		// User didn't provide title - auto-generate unique title for this path
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
-		// User provided explicit title - check for exact duplicate (same title AND path)
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			fmt.Printf("Session already exists with same title and path: %s (%s)\n", existingInst.Title, existingInst.ID)
-			os.Exit(0)
-		}
 	}
 
 	// Create new instance (without starting tmux)
