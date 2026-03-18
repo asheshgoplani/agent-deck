@@ -179,6 +179,7 @@ type Home struct {
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
+	gridView             *GridView             // For viewing group sessions as a grid
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -661,6 +662,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
+		gridView:             NewGridView(),
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
@@ -2750,6 +2752,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setupWizard.SetSize(msg.Width, msg.Height)
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
+		h.gridView.SetSize(msg.Width, msg.Height)
 		return h, nil
 
 	case tea.MouseMsg:
@@ -2808,6 +2811,46 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return h.handleMouse(msg)
 		}
+
+	case gridAttachMsg:
+		// Attach to the session from grid view; grid stays visible so
+		// Ctrl+Q detach returns to it.
+		if msg.instance != nil {
+			return h, h.attachSession(msg.instance)
+		}
+		return h, nil
+
+	case gridCellCaptureMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridTickMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridPopupTickMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridPopupCaptureMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
 
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection
@@ -3964,6 +4007,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle jump mode input (before modals)
 		if h.jumpMode {
 			return h.handleJumpKey(msg)
+		}
+
+		// Handle grid view (fullscreen with its own input handling)
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
 		}
 
 		// Handle setup wizard first (modal, blocks everything)
@@ -5160,6 +5210,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.isAttaching.Store(false)
 				return statusUpdateMsg{}
 			})
+		}
+		return h, nil
+
+	case "V":
+		// Open grid view for group's sessions
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeGroup && item.Group != nil && len(item.Group.Sessions) > 0 {
+				h.gridView.Show(item.Group)
+				h.gridView.SetSize(h.width, h.height)
+				return h, tea.Batch(h.gridView.fetchAllCells(), h.gridView.startTick())
+			}
 		}
 		return h, nil
 
@@ -6982,6 +7044,23 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which were skipped during lazy loading for TUI startup performance
 	tmuxSess.EnsureConfigured()
 
+	// Bind grid popup key (prefix V by default) if enabled
+	if session.IsGridPopupEnabled() {
+		// Prefer PATH lookup (stable installed binary) over os.Executable()
+		// which may resolve to a go build cache artifact
+		agentDeckBin, err := exec.LookPath("agent-deck")
+		if err != nil {
+			agentDeckBin, err = os.Executable()
+			if err != nil {
+				agentDeckBin = "agent-deck"
+			}
+		}
+		_ = tmux.BindGridPopupKey(agentDeckBin,
+			session.GetGridPopupKey(),
+			session.GetGridPopupWidth(),
+			session.GetGridPopupHeight())
+	}
+
 	// Sync session IDs to tmux environment for resume functionality
 	// (Deferred from load time for performance)
 	inst.SyncSessionIDsToTmux()
@@ -7434,6 +7513,11 @@ func (h *Home) View() string {
 	// Settings panel is modal
 	if h.settingsPanel.IsVisible() {
 		return h.settingsPanel.View()
+	}
+
+	// Grid view takes full screen (highest priority overlay with its own input)
+	if h.gridView.IsVisible() {
+		return h.gridView.View()
 	}
 
 	// Overlays take full screen
@@ -11323,6 +11407,9 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	}
 	if key := h.actionKey(hotkeyCreateGroup); key != "" {
 		hints = append(hints, key+" subgroup")
+	}
+	if key := h.actionKey(hotkeyGridView); key != "" {
+		hints = append(hints, key+" grid view")
 	}
 	b.WriteString(hintStyle.Render(strings.Join(hints, " • ")))
 

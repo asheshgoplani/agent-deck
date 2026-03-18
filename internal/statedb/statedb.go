@@ -233,6 +233,20 @@ func (s *StateDB) Migrate() error {
 		return fmt.Errorf("statedb: create recent_sessions: %w", err)
 	}
 
+	// grid_preferences table (grid layout proportions per group)
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS grid_preferences (
+			group_path   TEXT PRIMARY KEY,
+			col_widths   TEXT NOT NULL DEFAULT '',
+			row_heights  TEXT NOT NULL DEFAULT '',
+			num_cols     INTEGER NOT NULL DEFAULT 0,
+			num_rows     INTEGER NOT NULL DEFAULT 0,
+			updated_at   INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		return fmt.Errorf("statedb: create grid_preferences: %w", err)
+	}
+
 	// cost_events table (cost tracking)
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS cost_events (
@@ -813,5 +827,56 @@ func (s *StateDB) pruneRecentSessions(maxCount int) error {
 			SELECT id FROM recent_sessions ORDER BY deleted_at DESC LIMIT ?
 		)
 	`, maxCount)
+	return err
+}
+
+// --- Grid Preferences ---
+
+// SaveGridPreferences upserts grid layout proportions for a group.
+func (s *StateDB) SaveGridPreferences(groupPath string, colWidths, rowHeights []float64) error {
+	colJSON, err := json.Marshal(colWidths)
+	if err != nil {
+		return fmt.Errorf("statedb: marshal col_widths: %w", err)
+	}
+	rowJSON, err := json.Marshal(rowHeights)
+	if err != nil {
+		return fmt.Errorf("statedb: marshal row_heights: %w", err)
+	}
+	_, err = s.db.Exec(`
+		INSERT OR REPLACE INTO grid_preferences (group_path, col_widths, row_heights, num_cols, num_rows, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, groupPath, string(colJSON), string(rowJSON), len(colWidths), len(rowHeights), time.Now().Unix())
+	return err
+}
+
+// LoadGridPreferences loads saved grid layout proportions for a group.
+// Returns nil slices if not found (not an error).
+func (s *StateDB) LoadGridPreferences(groupPath string) (colWidths, rowHeights []float64, err error) {
+	var colJSON, rowJSON string
+	err = s.db.QueryRow(`
+		SELECT col_widths, row_heights FROM grid_preferences WHERE group_path = ?
+	`, groupPath).Scan(&colJSON, &rowJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if colJSON != "" {
+		if e := json.Unmarshal([]byte(colJSON), &colWidths); e != nil {
+			return nil, nil, fmt.Errorf("statedb: unmarshal col_widths: %w", e)
+		}
+	}
+	if rowJSON != "" {
+		if e := json.Unmarshal([]byte(rowJSON), &rowHeights); e != nil {
+			return nil, nil, fmt.Errorf("statedb: unmarshal row_heights: %w", e)
+		}
+	}
+	return colWidths, rowHeights, nil
+}
+
+// DeleteGridPreferences removes saved grid preferences for a group.
+func (s *StateDB) DeleteGridPreferences(groupPath string) error {
+	_, err := s.db.Exec("DELETE FROM grid_preferences WHERE group_path = ?", groupPath)
 	return err
 }

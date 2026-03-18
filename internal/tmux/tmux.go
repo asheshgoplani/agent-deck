@@ -3999,3 +3999,38 @@ func DiscoverAllTmuxSessions() ([]*Session, error) {
 
 	return sessions, nil
 }
+
+// BindGridPopupKey binds a tmux prefix key to open the agent-deck grid popup.
+// Skips binding if the key is already bound to a non-agent-deck command.
+func BindGridPopupKey(agentDeckBin, key, width, height string) error {
+	// Check existing bindings for this key
+	existing, err := exec.Command("tmux", "list-keys", "-T", "prefix").Output()
+	if err == nil {
+		lines := strings.Split(string(existing), "\n")
+		for _, line := range lines {
+			// Look for "prefix <key>" binding
+			if strings.Contains(line, " "+key+" ") || strings.HasSuffix(strings.TrimSpace(line), " "+key) {
+				if strings.Contains(line, "agent-deck grid") {
+					// Already our binding, re-bind to update path/dimensions
+					break
+				}
+				// Bound to something else — don't overwrite
+				statusLog.Debug("grid_popup_key_conflict",
+					slog.String("key", key),
+					slog.String("existing", strings.TrimSpace(line)))
+				return nil
+			}
+		}
+	}
+
+	// Bind: prefix <key> → run-shell that launches display-popup with expanded session name.
+	// tmux expands #{session_name} inside run-shell commands.
+	// The session name is captured via tmux display-message -p and passed to display-popup.
+	shellCmd := fmt.Sprintf(
+		`tmux display-popup -E -w %s -h %s -- %s grid --session "$(tmux display-message -p '#{session_name}')"`,
+		width, height, agentDeckBin)
+	cmd := exec.Command("tmux", "bind-key", "-T", "prefix", key,
+		"run-shell", shellCmd,
+	)
+	return cmd.Run()
+}

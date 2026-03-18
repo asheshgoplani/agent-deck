@@ -29,6 +29,7 @@ const (
 	hotkeyEditNotes       = "edit_notes"
 	hotkeyWorktreeFinish  = "worktree_finish"
 	hotkeyCreateGroup     = "create_group"
+	hotkeyGridView        = "grid_view"
 	hotkeySearch          = "search"
 	hotkeyHelp            = "help"
 	hotkeySettings        = "settings"
@@ -60,6 +61,7 @@ var hotkeyActionOrder = []string{
 	hotkeyEditNotes,
 	hotkeyWorktreeFinish,
 	hotkeyCreateGroup,
+	hotkeyGridView,
 	hotkeySearch,
 	hotkeyHelp,
 	hotkeySettings,
@@ -91,6 +93,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyEditNotes:       "e",
 	hotkeyWorktreeFinish:  "W",
 	hotkeyCreateGroup:     "g",
+	hotkeyGridView:        "V",
 	hotkeySearch:          "/",
 	hotkeyHelp:            "?",
 	hotkeySettings:        "S",

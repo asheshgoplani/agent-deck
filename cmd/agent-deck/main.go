@@ -258,6 +258,9 @@ func main() {
 		case "remote":
 			handleRemote(profile, args[1:])
 			return
+		case "grid":
+			handleGrid(profile, args[1:])
+			return
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
 			return
@@ -787,6 +790,130 @@ func resolveGroupPathForAdd(groupTree *session.GroupTree, groupSelector string) 
 	}
 
 	return groupSelector
+}
+
+// handleGrid launches a standalone grid view for a group (used in tmux popup).
+func handleGrid(profile string, args []string) {
+	fs := flag.NewFlagSet("grid", flag.ExitOnError)
+	sessionFlag := fs.String("session", "", "Auto-detect group from tmux session name")
+	groupFlag := fs.String("group", "", "Explicit group path")
+	_ = fs.Parse(args)
+
+	if *sessionFlag == "" && *groupFlag == "" {
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck grid --session <tmux-session> | --group <group-path>")
+		os.Exit(1)
+	}
+
+	// Try the given profile first, then search all profiles for the session
+	profilesToTry := []string{profile}
+	if *sessionFlag != "" {
+		// Session might be in a different profile — search all
+		allProfiles, err := session.ListProfiles()
+		if err == nil {
+			for _, p := range allProfiles {
+				if p != profile {
+					profilesToTry = append(profilesToTry, p)
+				}
+			}
+		}
+	}
+
+	var targetGroup *session.Group
+	var sourceInstance *session.Instance // the session we launched from
+	var storage *session.Storage
+
+	for _, tryProfile := range profilesToTry {
+		s, err := session.NewStorageWithProfile(tryProfile)
+		if err != nil {
+			continue
+		}
+
+		instances, groups, err := s.LoadWithGroups()
+		if err != nil {
+			continue
+		}
+
+		groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+		if *sessionFlag != "" {
+			for _, inst := range instances {
+				tmuxSess := inst.GetTmuxSession()
+				if tmuxSess != nil && tmuxSess.Name == *sessionFlag {
+					sourceInstance = inst
+					if g, ok := groupTree.Groups[inst.GroupPath]; ok {
+						targetGroup = g
+						storage = s
+					}
+					break
+				}
+			}
+		} else {
+			if g, ok := groupTree.Groups[*groupFlag]; ok {
+				targetGroup = g
+				storage = s
+			}
+		}
+
+		if targetGroup != nil {
+			break
+		}
+	}
+
+	if targetGroup == nil {
+		if *sessionFlag != "" {
+			fmt.Fprintf(os.Stderr, "Error: session '%s' not found in any profile\n", *sessionFlag)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", *groupFlag)
+		}
+		os.Exit(1)
+	}
+
+	// Exclude the current session from the grid (no point showing yourself)
+	if *sessionFlag != "" {
+		filtered := make([]*session.Instance, 0, len(targetGroup.Sessions))
+		for _, inst := range targetGroup.Sessions {
+			tmuxSess := inst.GetTmuxSession()
+			if tmuxSess != nil && tmuxSess.Name == *sessionFlag {
+				continue
+			}
+			filtered = append(filtered, inst)
+		}
+		targetGroup.Sessions = filtered
+	}
+
+	if len(targetGroup.Sessions) == 0 {
+		fmt.Fprintln(os.Stderr, "No other sessions in this group")
+		os.Exit(0)
+	}
+
+	// Initialize statedb for grid preferences
+	if storage != nil {
+		if db := storage.GetDB(); db != nil {
+			statedb.SetGlobal(db)
+		}
+	}
+
+	host := ui.NewGridPopupHost(targetGroup, sourceInstance)
+
+	p := tea.NewProgram(
+		host,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// If user selected a session to switch to, do it
+	if target := host.SwitchTo(); target != "" {
+		cmd := exec.Command("tmux", "switch-client", "-t", target)
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to switch to session '%s': %v\n", target, err)
+			os.Exit(1)
+		}
+	}
 }
 
 // handleAdd adds a new session from CLI
