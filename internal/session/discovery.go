@@ -124,7 +124,8 @@ func FilterByQuery(instances []*Instance, query string) []*Instance {
 	for _, inst := range instances {
 		if strings.Contains(strings.ToLower(inst.Title), query) ||
 			strings.Contains(strings.ToLower(inst.ProjectPath), query) ||
-			strings.Contains(strings.ToLower(inst.Tool), query) {
+			strings.Contains(strings.ToLower(inst.Tool), query) ||
+			strings.Contains(strings.ToLower(inst.ID), query) {
 			filtered = append(filtered, inst)
 		}
 	}

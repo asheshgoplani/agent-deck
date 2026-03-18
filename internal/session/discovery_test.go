@@ -82,6 +82,38 @@ func TestFilterByQueryCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestFilterByQueryByInstanceID(t *testing.T) {
+	instances := []*Instance{
+		{ID: "abc12345-1710777600", Title: "session-one", ProjectPath: "/tmp", Tool: "claude"},
+		{ID: "def67890-1710777601", Title: "session-two", ProjectPath: "/tmp", Tool: "shell"},
+		{ID: "abc12345-1710777602", Title: "session-three", ProjectPath: "/home", Tool: "gemini"},
+	}
+
+	// Full hex prefix match
+	result := FilterByQuery(instances, "def67890")
+	if len(result) != 1 || result[0].Title != "session-two" {
+		t.Errorf("Expected 1 result for 'def67890', got %d", len(result))
+	}
+
+	// Partial ID prefix match
+	result = FilterByQuery(instances, "abc12345")
+	if len(result) != 2 {
+		t.Errorf("Expected 2 results for 'abc12345' (shared prefix), got %d", len(result))
+	}
+
+	// Full ID match (hex + timestamp)
+	result = FilterByQuery(instances, "abc12345-1710777600")
+	if len(result) != 1 || result[0].Title != "session-one" {
+		t.Errorf("Expected 1 result for full ID, got %d", len(result))
+	}
+
+	// No match
+	result = FilterByQuery(instances, "zzz99999")
+	if len(result) != 0 {
+		t.Errorf("Expected 0 results for 'zzz99999', got %d", len(result))
+	}
+}
+
 func TestDetectToolFromName(t *testing.T) {
 	tests := []struct {
 		name     string
