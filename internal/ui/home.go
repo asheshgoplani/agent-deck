@@ -9148,10 +9148,10 @@ func (h *Home) renderGroupItem(
 		}
 	}
 
-	// Hotkey indicator (subtle, only for root groups, hidden when selected)
+	// Hotkey indicator (subtle, only for root groups)
 	// Uses pre-computed RootGroupNum from rebuildFlatItems() - O(1) lookup instead of O(n) loop
 	hotkeyStr := ""
-	if item.Level == 0 && !selected {
+	if item.Level == 0 {
 		if item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
 			hotkeyStr = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 		}
