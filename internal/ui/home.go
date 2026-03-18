@@ -2988,6 +2988,19 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case branchPickerResultMsg:
+		if h.newDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
+		if h.forkDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.forkDialog, cmd = h.forkDialog.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
 	case sessionCreatedMsg:
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
 		// even during reload, otherwise the session becomes orphaned (exists in tmux but not in storage)
