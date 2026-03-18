@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestNewForkDialog(t *testing.T) {
@@ -173,5 +176,54 @@ func TestForkDialog_Show_ClearsError(t *testing.T) {
 
 	if d.validationErr != "" {
 		t.Error("Show() should clear validationErr")
+	}
+}
+
+func TestForkDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/tmp/project", "group")
+	d.worktreeEnabled = true
+	d.focusIndex = 2
+	d.updateFocus()
+
+	origPicker := openBranchPicker
+	defer func() { openBranchPicker = origPicker }()
+
+	called := false
+	openBranchPicker = func(path string) tea.Cmd {
+		called = true
+		if path != "/tmp/project" {
+			t.Fatalf("picker path = %q, want %q", path, "/tmp/project")
+		}
+		return func() tea.Msg {
+			return branchPickerResultMsg{branch: "fork/picked"}
+		}
+	}
+
+	var cmd tea.Cmd
+	d, cmd = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !called {
+		t.Fatal("expected ctrl+f to open branch picker")
+	}
+	if cmd == nil {
+		t.Fatal("expected ctrl+f to return a branch picker command")
+	}
+
+	d, _ = d.Update(cmd())
+	if got := d.branchInput.Value(); got != "fork/picked" {
+		t.Fatalf("branch = %q, want %q", got, "fork/picked")
+	}
+}
+
+func TestForkDialog_BranchPickerErrorIsShown(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/tmp/project", "group")
+	d.worktreeEnabled = true
+	d.focusIndex = 2
+	d.updateFocus()
+
+	d, _ = d.Update(branchPickerResultMsg{err: os.ErrNotExist})
+	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
+		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
 	}
 }

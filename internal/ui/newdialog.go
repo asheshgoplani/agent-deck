@@ -847,6 +847,36 @@ func (d *NewDialog) isTextInputFocused() bool {
 	}
 }
 
+func (d *NewDialog) worktreePickerPath() string {
+	if d.multiRepoEnabled {
+		for _, path := range d.multiRepoPaths {
+			path = strings.Trim(strings.TrimSpace(path), "'\"")
+			if path != "" {
+				return path
+			}
+		}
+	}
+	return strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+}
+
+func (d *NewDialog) applyBranchPickerResult(msg branchPickerResultMsg) {
+	if msg.err != nil {
+		d.SetError(msg.err.Error())
+		return
+	}
+	if msg.canceled {
+		return
+	}
+	if msg.branch == "" {
+		return
+	}
+
+	d.branchInput.SetValue(msg.branch)
+	d.branchInput.SetCursor(len(msg.branch))
+	d.branchAutoSet = false
+	d.ClearError()
+}
+
 func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	if !d.visible {
 		return d, nil
@@ -857,6 +887,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	cur := d.currentTarget()
 
 	switch msg := msg.(type) {
+	case branchPickerResultMsg:
+		d.applyBranchPickerResult(msg)
+		return d, nil
+
 	case tea.KeyMsg:
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
@@ -999,6 +1033,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				}
 				d.suggestionNavigated = true
 				return d, nil
+			}
+
+		case "ctrl+f":
+			if cur == focusBranch {
+				return d, openBranchPicker(d.worktreePickerPath())
 			}
 
 		case "down":
@@ -1719,6 +1758,8 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
 		}
+	} else if cur == focusBranch {
+		helpText = "^F fzf pick │ Tab next │ Enter create │ Esc cancel"
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
 		if selectedCmd == "gemini" || selectedCmd == "codex" {

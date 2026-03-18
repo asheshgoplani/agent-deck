@@ -1028,6 +1028,61 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 	}
 }
 
+func TestNewDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.pathInput.SetValue("/tmp/project")
+	d.ToggleWorktree()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusBranch)
+	d.updateFocus()
+
+	origPicker := openBranchPicker
+	defer func() { openBranchPicker = origPicker }()
+
+	called := false
+	openBranchPicker = func(path string) tea.Cmd {
+		called = true
+		if path != "/tmp/project" {
+			t.Fatalf("picker path = %q, want %q", path, "/tmp/project")
+		}
+		return func() tea.Msg {
+			return branchPickerResultMsg{branch: "feature/picked"}
+		}
+	}
+
+	var cmd tea.Cmd
+	d, cmd = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !called {
+		t.Fatal("expected ctrl+f to open branch picker")
+	}
+	if cmd == nil {
+		t.Fatal("expected ctrl+f to return a branch picker command")
+	}
+
+	d, _ = d.Update(cmd())
+	if got := d.branchInput.Value(); got != "feature/picked" {
+		t.Fatalf("branch = %q, want %q", got, "feature/picked")
+	}
+	if d.validationErr != "" {
+		t.Fatalf("expected no validation error, got %q", d.validationErr)
+	}
+}
+
+func TestNewDialog_BranchPickerErrorIsShown(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.ToggleWorktree()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusBranch)
+	d.updateFocus()
+
+	d, _ = d.Update(branchPickerResultMsg{err: os.ErrNotExist})
+	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
+		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
+	}
+}
+
 // ===== Soft-Select Tests =====
 
 func TestNewDialog_SoftSelect_InitialState(t *testing.T) {
