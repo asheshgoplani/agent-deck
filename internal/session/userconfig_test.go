@@ -411,11 +411,40 @@ func TestGetWorktreeSettings(t *testing.T) {
 	ClearUserConfigCache()
 
 	settings := GetWorktreeSettings()
-	if settings.DefaultLocation != "subdirectory" {
-		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "subdirectory")
+	if settings.DefaultLocation != "sibling" {
+		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "sibling")
 	}
 	if !settings.AutoCleanup {
 		t.Error("GetWorktreeSettings AutoCleanup: should default to true")
+	}
+}
+
+func TestGetWorktreeSettings_UsesSiblingWhenLocationUnsetInConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("Failed to create agent-deck dir: %v", err)
+	}
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := "[worktree]\nauto_cleanup = true\n"
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	ClearUserConfigCache()
+
+	settings := GetWorktreeSettings()
+	if settings.DefaultLocation != "sibling" {
+		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "sibling")
+	}
+	if !settings.AutoCleanup {
+		t.Error("GetWorktreeSettings AutoCleanup: should remain true from config")
 	}
 }
 
