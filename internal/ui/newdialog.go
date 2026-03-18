@@ -529,7 +529,7 @@ func (d *NewDialog) IsWorktreeEnabled() bool {
 func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
 	name, path, command = d.GetValues()
 	branch = strings.TrimSpace(d.branchInput.Value())
-	if branch == "" && d.worktreeEnabled && d.generatedName != "" {
+	if branch == "" && d.worktreeEnabled && name != "" {
 		branch = d.branchPrefix + name
 	}
 	worktreeEnabled = d.worktreeEnabled

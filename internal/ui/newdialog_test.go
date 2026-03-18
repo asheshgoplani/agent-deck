@@ -506,19 +506,31 @@ func TestNewDialog_GetValuesWithWorktree_Disabled(t *testing.T) {
 	}
 }
 
-func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch(t *testing.T) {
+func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch_WithName(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.nameInput.SetValue("test-session")
 	dialog.pathInput.SetValue("/tmp/project")
 	dialog.worktreeEnabled = true
 	dialog.branchInput.SetValue("")
 
+	// With a name set, empty branch is derived from name — validation passes
+	err := dialog.Validate()
+	if err != "" {
+		t.Errorf("Validation should pass when branch is empty but name is set (derives branch), got: %q", err)
+	}
+}
+
+func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch_NoName(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.nameInput.SetValue("")
+	dialog.generatedName = "" // no fallback
+	dialog.pathInput.SetValue("/tmp/project")
+	dialog.worktreeEnabled = true
+	dialog.branchInput.SetValue("")
+
 	err := dialog.Validate()
 	if err == "" {
-		t.Error("Validation should fail when worktree enabled but branch is empty")
-	}
-	if err != "Branch name required for worktree" {
-		t.Errorf("Unexpected error message: %q", err)
+		t.Error("Validation should fail when worktree enabled, branch empty, and no name")
 	}
 }
 
@@ -1231,6 +1243,95 @@ func TestNewDialog_FilterPaths_EmptyInput(t *testing.T) {
 
 	if len(d.pathSuggestions) != 3 {
 		t.Errorf("expected all 3 suggestions for empty input, got %d", len(d.pathSuggestions))
+	}
+}
+
+// ===== Generated Name Fallback Tests =====
+
+func TestNewDialog_EmptyName_UsesGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.pathInput.SetValue("/tmp/project")
+	d.nameInput.SetValue("")
+	d.generatedName = "golden-eagle"
+
+	name, _, _ := d.GetValues()
+	if name != "golden-eagle" {
+		t.Errorf("GetValues() name = %q, want %q", name, "golden-eagle")
+	}
+}
+
+func TestNewDialog_Validate_EmptyName_UsesGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.pathInput.SetValue("/tmp/project")
+	d.nameInput.SetValue("")
+	d.generatedName = "swift-fox"
+
+	err := d.Validate()
+	if err != "" {
+		t.Errorf("Validate() should pass with generatedName fallback, got: %q", err)
+	}
+}
+
+func TestNewDialog_ShowInGroup_SetsGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.ShowInGroup("default", "default", "")
+
+	if d.generatedName == "" {
+		t.Error("generatedName should be set after ShowInGroup")
+	}
+	if d.nameInput.Placeholder != d.generatedName {
+		t.Errorf("nameInput.Placeholder = %q, want %q", d.nameInput.Placeholder, d.generatedName)
+	}
+}
+
+func TestNewDialog_WorktreeBranch_PlaceholderWhenNameEmpty(t *testing.T) {
+	d := NewNewDialog()
+	d.generatedName = "calm-river"
+	d.branchPrefix = "feature/"
+	d.nameInput.SetValue("")
+
+	d.autoBranchFromName()
+
+	// Branch input should remain empty (placeholder only)
+	if d.branchInput.Value() != "" {
+		t.Errorf("branch value should be empty when using generated name, got %q", d.branchInput.Value())
+	}
+	if d.branchInput.Placeholder != "feature/calm-river" {
+		t.Errorf("branch placeholder = %q, want %q", d.branchInput.Placeholder, "feature/calm-river")
+	}
+	if !d.branchAutoSet {
+		t.Error("branchAutoSet should be true")
+	}
+}
+
+func TestNewDialog_WorktreeBranch_FilledWhenNameProvided(t *testing.T) {
+	d := NewNewDialog()
+	d.generatedName = "calm-river"
+	d.branchPrefix = "feature/"
+	d.nameInput.SetValue("my-feature")
+
+	d.autoBranchFromName()
+
+	if d.branchInput.Value() != "feature/my-feature" {
+		t.Errorf("branch value = %q, want %q", d.branchInput.Value(), "feature/my-feature")
+	}
+}
+
+func TestNewDialog_GetValuesWithWorktree_EmptyBranch_DerivedFromName(t *testing.T) {
+	d := NewNewDialog()
+	d.worktreeEnabled = true
+	d.branchPrefix = "feature/"
+	d.generatedName = "bold-crane"
+	d.nameInput.SetValue("")
+	d.pathInput.SetValue("/tmp/project")
+	d.branchInput.SetValue("")
+
+	name, _, _, branch, _ := d.GetValuesWithWorktree()
+	if name != "bold-crane" {
+		t.Errorf("name = %q, want %q", name, "bold-crane")
+	}
+	if branch != "feature/bold-crane" {
+		t.Errorf("branch = %q, want %q", branch, "feature/bold-crane")
 	}
 }
 
