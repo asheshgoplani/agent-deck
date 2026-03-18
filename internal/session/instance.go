@@ -1849,8 +1849,16 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 // Returns nil if no overrides apply.
 func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	var overrides map[string]string
-	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+	tmuxCfg := GetTmuxSettings()
+	if len(tmuxCfg.Options) > 0 {
 		overrides = maps.Clone(tmuxCfg.Options)
+	}
+	if tmuxCfg.WindowStyleOverride != "" {
+		if overrides == nil {
+			overrides = make(map[string]string)
+		}
+		overrides["window-style"] = tmuxCfg.WindowStyleOverride
+		overrides["window-active-style"] = tmuxCfg.WindowStyleOverride
 	}
 	// Sandbox sessions need remain-on-exit so dead-pane detection works.
 	// Non-sandbox sessions use default tmux behaviour (pane closes on exit).

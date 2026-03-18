@@ -870,6 +870,14 @@ type TmuxSettings struct {
 	// scope is torn down. Default: false.
 	LaunchInUserScope bool `toml:"launch_in_user_scope"`
 
+	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
+	// all sessions, overriding the theme default. Use "default" to let your terminal
+	// emulator's background show through instead of agent-deck's theme color.
+	// Empty string (default) means use the theme's built-in value.
+	// Takes precedence over the same keys in Options if both are set.
+	// Example: window_style_override = "default"
+	WindowStyleOverride string `toml:"window_style_override"`
+
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
@@ -1774,6 +1782,9 @@ auto_cleanup = true
 # so they are not tied to the current login session scope (useful for SSH/tmux).
 # Default: false
 # launch_in_user_scope = true
+# window_style_override sets the tmux window-style for all sessions, overriding
+# the theme default. Use "default" to let your terminal's background show through.
+# window_style_override = "default"
 # Override tmux options applied to every session (applied after defaults)
 # Options matching agent-deck's managed keys (status, status-style,
 # status-left-length, status-right, status-right-length) will cause agent-deck
