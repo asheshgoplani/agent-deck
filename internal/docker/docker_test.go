@@ -668,3 +668,27 @@ func TestShellJoinArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestNewContainerConfig_SetsHOME(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project")
+	require.Equal(t, containerHome, cfg.environment["HOME"])
+}
+
+func TestNewContainerConfig_HOMERespectsContainerHome(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project", WithContainerHome("/home/app"))
+	require.Equal(t, "/home/app", cfg.environment["HOME"])
+}
+
+func TestNewContainerConfig_HOMENotOverridable(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithEnvironment(map[string]string{"HOME": "/wrong"}),
+	)
+	// HOME must be set to containerHome, not caller-supplied value.
+	require.Equal(t, containerHome, cfg.environment["HOME"])
+}

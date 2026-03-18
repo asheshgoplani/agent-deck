@@ -14,6 +14,37 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 )
 
+const (
+	ConductorAgentClaude = "claude"
+	ConductorAgentCodex  = "codex"
+)
+
+// ConductorAgentSpec describes conductor-specific behavior for an agent runtime.
+type ConductorAgentSpec struct {
+	Agent                  string
+	DisplayName            string
+	DefaultCommand         string
+	InstructionsFileName   string
+	SupportsClearOnCompact bool
+}
+
+var conductorAgentSpecs = map[string]ConductorAgentSpec{
+	ConductorAgentClaude: {
+		Agent:                  ConductorAgentClaude,
+		DisplayName:            "Claude Code",
+		DefaultCommand:         "claude",
+		InstructionsFileName:   "CLAUDE.md",
+		SupportsClearOnCompact: true,
+	},
+	ConductorAgentCodex: {
+		Agent:                  ConductorAgentCodex,
+		DisplayName:            "Codex",
+		DefaultCommand:         "codex",
+		InstructionsFileName:   "AGENTS.md",
+		SupportsClearOnCompact: false,
+	},
+}
+
 // ConductorSettings defines conductor (meta-agent orchestration) configuration
 type ConductorSettings struct {
 	// Enabled activates the conductor system
@@ -93,6 +124,7 @@ type DiscordSettings struct {
 // ConductorMeta holds metadata for a named conductor instance
 type ConductorMeta struct {
 	Name              string `json:"name"`
+	Agent             string `json:"agent,omitempty"`
 	Profile           string `json:"profile"`
 	HeartbeatEnabled  bool   `json:"heartbeat_enabled"`
 	HeartbeatInterval int    `json:"heartbeat_interval"` // 0 = use global default
@@ -105,10 +137,33 @@ type ConductorMeta struct {
 	// relying on CLAUDE.md and conductor state for continuity.
 	// Default: true (nil = use default true via GetClearOnCompact)
 	ClearOnCompact *bool `json:"clear_on_compact,omitempty"`
+
+	// Env holds inline environment variables for the conductor session.
+	// These are exported before the conductor command launches.
+	Env map[string]string `json:"env,omitempty"`
+
+	// EnvFile is a path to a .env file to source before the conductor command.
+	// Supports ~ and $VAR expansion.
+	EnvFile string `json:"env_file,omitempty"`
+}
+
+// GetAgent returns the normalized conductor agent, defaulting to Claude.
+func (m *ConductorMeta) GetAgent() string {
+	if m == nil {
+		return ConductorAgentClaude
+	}
+	if _, err := GetConductorAgentSpec(m.Agent); err == nil {
+		return normalizeConductorAgent(m.Agent)
+	}
+	return ConductorAgentClaude
 }
 
 // GetClearOnCompact returns whether to block compaction and send /clear instead, defaulting to true
 func (m *ConductorMeta) GetClearOnCompact() bool {
+	spec, _ := GetConductorAgentSpec(m.GetAgent())
+	if !spec.SupportsClearOnCompact {
+		return false
+	}
 	if m.ClearOnCompact == nil {
 		return true
 	}
@@ -134,6 +189,24 @@ func (i *Instance) ConductorClearOnCompact() bool {
 		return true // can't load meta: enable by default
 	}
 	return meta.GetClearOnCompact()
+}
+
+func normalizeConductorAgent(agent string) string {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent == "" {
+		return ConductorAgentClaude
+	}
+	return agent
+}
+
+// GetConductorAgentSpec returns the normalized spec for a supported conductor agent.
+func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
+	normalized := normalizeConductorAgent(agent)
+	spec, ok := conductorAgentSpecs[normalized]
+	if !ok {
+		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex)
+	}
+	return spec, nil
 }
 
 // conductorNameRegex validates conductor names: starts with alphanumeric, then alphanumeric/._-
@@ -244,6 +317,7 @@ func LoadConductorMeta(name string) (*ConductorMeta, error) {
 	if meta.Name == "" {
 		meta.Name = name
 	}
+	meta.Agent = meta.GetAgent()
 	meta.Profile = normalizeConductorProfile(meta.Profile)
 	return &meta, nil
 }
@@ -255,6 +329,14 @@ func SaveConductorMeta(meta *ConductorMeta) error {
 	}
 	if meta.Name == "" {
 		return fmt.Errorf("conductor name cannot be empty")
+	}
+	spec, err := GetConductorAgentSpec(meta.Agent)
+	if err != nil {
+		return err
+	}
+	meta.Agent = spec.Agent
+	if !spec.SupportsClearOnCompact {
+		meta.ClearOnCompact = nil
 	}
 	meta.Profile = normalizeConductorProfile(meta.Profile)
 
@@ -270,7 +352,11 @@ func SaveConductorMeta(meta *ConductorMeta) error {
 		return fmt.Errorf("failed to marshal meta.json: %w", err)
 	}
 	metaPath := filepath.Join(dir, "meta.json")
-	if err := os.WriteFile(metaPath, data, 0o644); err != nil {
+	perm := os.FileMode(0o644)
+	if len(meta.Env) > 0 || meta.EnvFile != "" {
+		perm = 0o600 // restrict access when env vars contain secrets
+	}
+	if err := os.WriteFile(metaPath, data, perm); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
 	}
 	return nil
@@ -294,20 +380,11 @@ func ListConductors() ([]ConductorMeta, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		metaPath := filepath.Join(base, entry.Name(), "meta.json")
-		data, err := os.ReadFile(metaPath)
+		meta, err := LoadConductorMeta(entry.Name())
 		if err != nil {
-			continue // skip dirs without meta.json
-		}
-		var meta ConductorMeta
-		if err := json.Unmarshal(data, &meta); err != nil {
 			continue
 		}
-		if meta.Name == "" {
-			meta.Name = entry.Name()
-		}
-		meta.Profile = normalizeConductorProfile(meta.Profile)
-		conductors = append(conductors, meta)
+		conductors = append(conductors, *meta)
 	}
 	return conductors, nil
 }
@@ -327,8 +404,11 @@ func ListConductorsForProfile(profile string) ([]ConductorMeta, error) {
 	return filtered, nil
 }
 
-func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
+func renderConductorInstructionsTemplate(baseTemplate, name, profile string, spec ConductorAgentSpec) string {
 	content := strings.ReplaceAll(baseTemplate, "{NAME}", name)
+	content = strings.ReplaceAll(content, "{AGENT}", spec.Agent)
+	content = strings.ReplaceAll(content, "{AGENT_DISPLAY}", spec.DisplayName)
+	content = strings.ReplaceAll(content, "{INSTRUCTIONS_FILE}", spec.InstructionsFileName)
 	if profile == DefaultProfile {
 		// For default profile, show "default" in display text and omit -p flag in commands
 		content = strings.ReplaceAll(content, "{PROFILE}", "default")
@@ -340,16 +420,31 @@ func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
 	return content
 }
 
+func renderConductorClaudeTemplate(baseTemplate, name, profile string) string {
+	spec, _ := GetConductorAgentSpec(ConductorAgentClaude)
+	return renderConductorInstructionsTemplate(baseTemplate, name, profile, spec)
+}
+
 func matchesTemplateContent(actual, expected string) bool {
 	return strings.TrimSuffix(actual, "\n") == strings.TrimSuffix(expected, "\n")
 }
 
-// SetupConductor creates the conductor directory, per-conductor CLAUDE.md, and meta.json.
-// If customClaudeMD is provided, creates a symlink instead of writing the template.
+// SetupConductor creates a Claude conductor for backward compatibility.
+// New callers should prefer SetupConductorWithAgent.
+func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string, env map[string]string, envFile string) error {
+	return SetupConductorWithAgent(name, profile, ConductorAgentClaude, heartbeatEnabled, clearOnCompact, description, customClaudeMD, customPolicyMD, env, envFile)
+}
+
+// SetupConductorWithAgent creates the conductor directory, agent-specific instructions file, and meta.json.
+// If customInstructionsMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string) error {
+func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool, clearOnCompact bool, description string, customInstructionsMD string, customPolicyMD string, env map[string]string, envFile string) error {
 	if err := ValidateConductorName(name); err != nil {
+		return err
+	}
+	spec, err := GetConductorAgentSpec(agent)
+	if err != nil {
 		return err
 	}
 	profile = normalizeConductorProfile(profile)
@@ -369,18 +464,27 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact 
 		return fmt.Errorf("failed to create conductor dir: %w", err)
 	}
 
-	targetPath := filepath.Join(dir, "CLAUDE.md")
+	targetPath := filepath.Join(dir, spec.InstructionsFileName)
 
-	if customClaudeMD != "" {
+	if customInstructionsMD != "" {
 		// Custom path provided - create symlink
-		if err := createSymlinkWithExpansion(targetPath, customClaudeMD); err != nil {
+		if err := createSymlinkWithExpansion(targetPath, customInstructionsMD); err != nil {
 			return err
 		}
 	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		// No custom path - write default template (but preserve existing symlink)
-		content := renderConductorClaudeTemplate(conductorPerNameClaudeMDTemplate, name, profile)
+		content := renderConductorInstructionsTemplate(conductorPerNameClaudeMDTemplate, name, profile, spec)
 		if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
-			return fmt.Errorf("failed to write CLAUDE.md: %w", err)
+			return fmt.Errorf("failed to write %s: %w", spec.InstructionsFileName, err)
+		}
+	}
+	for otherAgent, otherSpec := range conductorAgentSpecs {
+		if otherAgent == spec.Agent {
+			continue
+		}
+		stalePath := filepath.Join(dir, otherSpec.InstructionsFileName)
+		if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove stale %s: %w", otherSpec.InstructionsFileName, err)
 		}
 	}
 
@@ -395,10 +499,13 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact 
 	// Write meta.json
 	meta := &ConductorMeta{
 		Name:             name,
+		Agent:            spec.Agent,
 		Profile:          profile,
 		HeartbeatEnabled: heartbeatEnabled,
 		Description:      description,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		Env:              env,
+		EnvFile:          envFile,
 	}
 	if !clearOnCompact {
 		meta.ClearOnCompact = &clearOnCompact
@@ -674,14 +781,14 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
+// SetupConductorProfile creates a default Claude conductor for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, true, "", "", "")
+	return SetupConductor(profile, profile, true, true, "", "", "", nil, "")
 }
 
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
-// target: the symlink path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
+// target: the generated instructions path (e.g., ~/.agent-deck/conductor/CLAUDE.md)
 // source: the user's custom file path (e.g., ~/my/custom.md)
 func createSymlinkWithExpansion(target, source string) error {
 	// Expand environment variables and ~ in source path
@@ -710,10 +817,13 @@ func createSymlinkWithExpansion(target, source string) error {
 	return nil
 }
 
-// InstallSharedClaudeMD writes the shared CLAUDE.md to the conductor base directory,
+// InstallSharedConductorInstructions writes the shared instructions file for the given conductor agent,
 // or creates a symlink if customPath is provided.
-// This contains CLI reference, protocols, and rules shared by all conductors.
-func InstallSharedClaudeMD(customPath string) error {
+func InstallSharedConductorInstructions(agent, customPath string) error {
+	spec, err := GetConductorAgentSpec(agent)
+	if err != nil {
+		return err
+	}
 	dir, err := ConductorDir()
 	if err != nil {
 		return err
@@ -721,7 +831,7 @@ func InstallSharedClaudeMD(customPath string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	targetPath := filepath.Join(dir, "CLAUDE.md")
+	targetPath := filepath.Join(dir, spec.InstructionsFileName)
 
 	if customPath != "" {
 		// Custom path provided - create symlink
@@ -732,10 +842,17 @@ func InstallSharedClaudeMD(customPath string) error {
 	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}
-	if err := os.WriteFile(targetPath, []byte(conductorSharedClaudeMDTemplate), 0o644); err != nil {
-		return fmt.Errorf("failed to write shared CLAUDE.md: %w", err)
+	content := renderConductorInstructionsTemplate(conductorSharedClaudeMDTemplate, "", DefaultProfile, spec)
+	if err := os.WriteFile(targetPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("failed to write shared %s: %w", spec.InstructionsFileName, err)
 	}
 	return nil
+}
+
+// InstallSharedClaudeMD writes the shared CLAUDE.md to the conductor base directory.
+// Deprecated: use InstallSharedConductorInstructions with the Claude agent.
+func InstallSharedClaudeMD(customPath string) error {
+	return InstallSharedConductorInstructions(ConductorAgentClaude, customPath)
 }
 
 // InstallLearningsMD writes the default LEARNINGS.md to the conductor base directory.

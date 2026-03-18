@@ -1,0 +1,4 @@
+#!/bin/sh
+# Hook that takes too long (for timeout testing)
+sleep 60
+echo "should never see this"

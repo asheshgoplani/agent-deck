@@ -1,0 +1,4 @@
+#!/bin/sh
+# Hook that crashes with an error
+echo "something went wrong" >&2
+exit 2

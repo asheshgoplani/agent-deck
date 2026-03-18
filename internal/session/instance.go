@@ -34,7 +34,7 @@ var (
 	mcpLog                      = logging.ForComponent(logging.CompMCP)
 	codexSessionIDPathPatternRE = regexp.MustCompile(`/.codex/sessions/\S*/rollout-\S*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl`)
 	uuidPatternRE               = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
-	geminiPromptRE              = regexp.MustCompile(`^(>|>>>|\$|❯|➜|gemini>)\s*$`)
+	geminiPromptRE              = regexp.MustCompile(`^(>|>>>|\$|❯|➜|gemini>|✦)\s*$`)
 	shellPromptRE               = regexp.MustCompile(`^[\s]*(>|>>>|\$|❯|➜|#|%)\s*$`)
 )
 
@@ -481,16 +481,21 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		return baseCommand
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
-	hasCustomCommand := claudeCmd != "claude"
+	// Get options - either from instance or create defaults from config
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		// Fall back to config defaults
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured (env var or config.toml)
 	// If NOT explicit, we don't set it in the command - let the shell's environment handle it.
 	// This is critical for WSL and other environments where users have CLAUDE_CONFIG_DIR
 	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
-	// Also skip if using a custom command (alias handles config dir)
+	// Also skip if using a custom command alias (alias handles config dir).
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicit() {
 		configDir := GetClaudeConfigDir()
@@ -501,14 +506,6 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
-
-	// Get options - either from instance or create defaults from config
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		// Fall back to config defaults
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
 
 	// If baseCommand is just "claude", build the appropriate command
 	if baseCommand == "claude" {
@@ -554,6 +551,9 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 		// Pre-generate UUID in Go to avoid shell uuidgen (may be absent in Docker sandbox).
 		// CLAUDE_SESSION_ID is also propagated via host-side SetEnvironment after tmux start.
+		// Use `exec` before the final claude invocation so that when this compound
+		// command is wrapped in `bash -c` (for fish compatibility), exec replaces
+		// the bash process with claude, enabling proper job control (Ctrl+Z suspend / fg resume).
 		sessionUUID := generateUUID()
 		i.ClaudeSessionID = sessionUUID
 
@@ -561,7 +561,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Use pre-generated literal UUID with --session-id flag.
 		// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		baseCmd = fmt.Sprintf(
-			`%s%s --session-id "%s"%s`,
+			`%sexec %s --session-id "%s"%s`,
 			bashExportPrefix, claudeCmd, sessionUUID, extraFlags)
 
 		// If message provided, append wait-and-send logic in background.
@@ -569,11 +569,13 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// Escape single quotes in message for bash
 			escapedMsg := strings.ReplaceAll(message, "'", "'\"'\"'")
 
+			// The background subshell runs independently; exec replaces
+			// the current shell with claude for proper job control.
 			baseCmd = fmt.Sprintf(
 				`(sleep 2; SESSION_NAME=$(tmux display-message -p '#S'); `+
 					`while ! tmux capture-pane -p -t "$SESSION_NAME" | tail -5 | grep -qE "^>"; do sleep 0.2; done; `+
 					`tmux send-keys -l -t "$SESSION_NAME" -- '%s' \; send-keys -t "$SESSION_NAME" Enter) & `+
-					`%s%s --session-id "%s"%s`,
+					`%sexec %s --session-id "%s"%s`,
 				escapedMsg,
 				bashExportPrefix, claudeCmd, sessionUUID, extraFlags)
 		}
@@ -583,6 +585,32 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 	// For custom commands (e.g., fork commands), return as-is
 	return baseCommand
+}
+
+func resolveClaudeLaunchCommand(opts *ClaudeOptions) (cmd string, hasCustomCommand bool) {
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	configuredCmd := GetClaudeCommand()
+	if configuredCmd == "" {
+		configuredCmd = "claude"
+	}
+
+	hasCustomCommand = configuredCmd != "claude"
+	if hasCustomCommand {
+		return configuredCmd, true
+	}
+
+	if opts != nil {
+		if opts.UseHappy {
+			return "happy", false
+		}
+		return configuredCmd, false
+	}
+
+	return configuredCmd, false
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
@@ -779,8 +807,8 @@ func (i *Instance) DetectOpenCodeSession() {
 	i.detectOpenCodeSessionAsync()
 }
 
-// buildCodexCommand builds the command for OpenAI Codex CLI
-// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
+// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled
+// (per-session override > global config), or "".
 func (i *Instance) resolveCodexYoloFlag() string {
 	opts := i.GetCodexOptions()
 	if opts != nil && opts.YoloMode != nil {
@@ -798,6 +826,17 @@ func (i *Instance) resolveCodexYoloFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexUseHappy() bool {
+	opts := i.GetCodexOptions()
+	if opts != nil && opts.UseHappy != nil {
+		return *opts.UseHappy
+	}
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		return config.Codex.UseHappy
+	}
+	return false
+}
+
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
@@ -812,18 +851,22 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
+	codexCmd := "codex"
+	if i.resolveCodexUseHappy() {
+		codexCmd = "happy codex"
+	}
 
 	// If baseCommand is just "codex", handle specially
 	if baseCommand == "codex" {
 		// If we already have a session ID, use resume.
 		// CODEX_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("codex%s resume %s",
-				yoloFlag, i.CodexSessionID)
+			return envPrefix + fmt.Sprintf("%s%s resume %s",
+				codexCmd, yoloFlag, i.CodexSessionID)
 		}
 
 		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + "codex" + yoloFlag
+		return envPrefix + codexCmd + yoloFlag
 	}
 
 	// For custom commands (e.g., resume commands), preserve env propagation.
@@ -3042,6 +3085,13 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 // 3. Scan disk for active session ID and retry.
 // 4. Fallback to terminal parsing.
 // 5. If still unavailable, return an empty response (no error).
+//
+// Behavior for Gemini (mirrors Claude):
+// 1. Try structured JSON read via stored GeminiSessionID.
+// 2. Refresh ID from tmux env and retry.
+// 3. Scan disk for latest session and retry.
+// 4. Fallback to terminal parsing.
+// 5. If still unavailable, return an empty response (no error).
 func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 	resp, err := i.GetLastResponse()
 	if err == nil {
@@ -3068,6 +3118,25 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		}
 	}
 
+	// Gemini-specific recovery path (mirrors Claude recovery above)
+	if i.Tool == "gemini" {
+		// Refresh from tmux env (fast path)
+		i.syncGeminiSessionFromTmux()
+		if i.GeminiSessionID != "" {
+			if recovered, recoverErr := i.getGeminiLastResponse(); recoverErr == nil {
+				return recovered, nil
+			}
+		}
+
+		// Fallback: detect latest session on disk (handles startup race / stale ID)
+		i.syncGeminiSessionFromDisk()
+		if i.GeminiSessionID != "" {
+			if recovered, recoverErr := i.getGeminiLastResponse(); recoverErr == nil {
+				return recovered, nil
+			}
+		}
+	}
+
 	// Final fallback: terminal parsing (works for all tools).
 	if i.tmuxSession != nil {
 		if terminalResp, terminalErr := i.getTerminalLastResponse(); terminalErr == nil {
@@ -3075,10 +3144,14 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		}
 	}
 
-	// For Claude, prefer a graceful empty response instead of a hard error.
-	if IsClaudeCompatible(i.Tool) {
+	// For Claude and Gemini, prefer a graceful empty response instead of a hard error.
+	if IsClaudeCompatible(i.Tool) || i.Tool == "gemini" {
+		toolName := i.Tool
+		if IsClaudeCompatible(toolName) {
+			toolName = "claude"
+		}
 		return &ResponseOutput{
-			Tool:    "claude",
+			Tool:    toolName,
 			Role:    "assistant",
 			Content: "",
 		}, nil
@@ -4015,14 +4088,19 @@ func (i *Instance) Restart() error {
 	return nil
 }
 
-// buildClaudeResumeCommand builds the claude resume command with proper config options
-// Respects: CLAUDE_CONFIG_DIR, dangerous_mode from user config
+// buildClaudeResumeCommand builds the Claude resume command with proper config options.
+// Respects: CLAUDE_CONFIG_DIR, use_happy, and dangerous_mode from user/session config.
 // CLAUDE_SESSION_ID is set via host-side SetEnvironment (called by SyncSessionIDsToTmux after restart)
 func (i *Instance) buildClaudeResumeCommand() string {
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
-	hasCustomCommand := claudeCmd != "claude"
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	// Get the configured Claude command (e.g., "claude", "cdw", "happy")
+	// If a custom command alias is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it.
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured
 	// If NOT explicit, don't set it - let the shell's environment handle it
@@ -4037,13 +4115,6 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
-
-	// Get per-session permission settings (falls back to config if not persisted)
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
 	dangerousMode := opts.SkipPermissions
 	allowDangerousMode := opts.AllowSkipPermissions
 
@@ -4209,7 +4280,8 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	workDir := target.ProjectPath
 
 	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST use
-	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
+	// the default launch binary ("claude" or "happy") + explicit env exports, NOT a
+	// custom command alias like "cdw".
 	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 	// and shell aliases are not available in non-interactive bash shells.
 	bashExportPrefix := target.buildBashExportPrefix()
@@ -4220,18 +4292,26 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 		opts = NewClaudeOptions(userConfig)
 	}
 
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
+	if hasCustomCommand {
+		claudeCmd = "claude"
+	}
+
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
 	extraFlags := i.buildClaudeExtraFlags(opts)
 
 	// Pre-generate UUID for forked session to avoid shell uuidgen dependency.
 	// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
+	// Use `exec` before claude so that when this compound command is wrapped
+	// in `bash -c` (for fish compatibility), claude replaces the bash process,
+	// enabling proper job control (Ctrl+Z suspend / fg resume).
 	forkUUID := generateUUID()
 	target.ClaudeSessionID = forkUUID
 	cmd := fmt.Sprintf(
 		`cd '%s' && `+
-			`%sclaude --session-id "%s" --resume %s --fork-session%s`,
+			`%sexec %s --session-id "%s" --resume %s --fork-session%s`,
 		workDir,
-		bashExportPrefix, forkUUID, i.ClaudeSessionID, extraFlags)
+		bashExportPrefix, claudeCmd, forkUUID, i.ClaudeSessionID, extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", err
@@ -4920,7 +5000,11 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if wrapped != "" {
+	// Only disable Ctrl+Z suspend for sandboxed sessions where the command
+	// runs as the pane's initial process (no interactive shell for job control).
+	// Non-sandbox sessions use send-keys into an interactive shell, so Ctrl+Z
+	// naturally suspends the process and the user can `fg` to resume.
+	if wrapped != "" && i.IsSandboxed() {
 		wrapped = wrapIgnoreSuspend(wrapped)
 	}
 	return wrapped, containerName, nil

@@ -1,9 +1,10 @@
 package session
 
-// conductorSharedClaudeMDTemplate is the shared CLAUDE.md written to ~/.agent-deck/conductor/CLAUDE.md.
+// conductorSharedClaudeMDTemplate is the shared instructions file written to
+// ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).
 // Agent behavior (rules, auto-response policy) lives in POLICY.md, not here.
-// Claude Code walks up the directory tree, so per-conductor CLAUDE.md files inherit this automatically.
+// The active agent walks up the directory tree, so per-conductor instructions files inherit this automatically.
 const conductorSharedClaudeMDTemplate = `# Conductor: Shared Knowledge Base
 
 This file contains shared infrastructure knowledge (CLI reference, protocols, formats) for all conductor sessions.
@@ -35,10 +36,10 @@ Each conductor has its own identity in its subdirectory and its own policy in PO
 |---------|-------------|
 | ` + "`" + `agent-deck -p <PROFILE> session start <id_or_title>` + "`" + ` | Start a stopped session |
 | ` + "`" + `agent-deck -p <PROFILE> session stop <id_or_title>` + "`" + ` | Stop a running session |
-| ` + "`" + `agent-deck -p <PROFILE> session restart <id_or_title>` + "`" + ` | Restart (reloads MCPs for Claude) |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c claude -g "group"` + "`" + ` | Create new Claude session |
-| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c claude -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
-| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c claude --worktree feature/branch -b` + "`" + ` | Create session with new worktree |
+| ` + "`" + `agent-deck -p <PROFILE> session restart <id_or_title>` + "`" + ` | Restart a managed session |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} -g "group"` + "`" + ` | Create a new {AGENT_DISPLAY} session |
+| ` + "`" + `agent-deck -p <PROFILE> launch <path> -t "Title" -c {AGENT} -g "group" -m "prompt"` + "`" + ` | Create + start + send initial prompt in one command (preferred for new task sessions) |
+| ` + "`" + `agent-deck -p <PROFILE> add <path> -t "Title" -c {AGENT} --worktree feature/branch -b` + "`" + ` | Create a new {AGENT_DISPLAY} session with a worktree |
 
 ### Session Resolution
 Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**, or **fuzzy match**.
@@ -47,8 +48,8 @@ Commands accept: **exact title**, **ID prefix** (e.g., first 4 chars), **path**,
 
 | Status | Meaning | Your Action |
 |--------|---------|-------------|
-| ` + "`" + `running` + "`" + ` (green) | Claude is actively processing | Do nothing. Wait. |
-| ` + "`" + `waiting` + "`" + ` (yellow) | Claude finished, needs input | Read output, decide: auto-respond or escalate |
+| ` + "`" + `running` + "`" + ` (green) | The conductor is actively processing | Do nothing. Wait. |
+| ` + "`" + `waiting` + "`" + ` (yellow) | The conductor finished and needs input | Read output, decide: auto-respond or escalate |
 | ` + "`" + `idle` + "`" + ` (gray) | Waiting, but user acknowledged | User knows about it. Skip unless asked. |
 | ` + "`" + `error` + "`" + ` (red) | Session crashed or missing | Try ` + "`" + `session restart` + "`" + `. If that fails, escalate. |
 
@@ -260,16 +261,18 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 If you're not sure whether to auto-respond, **escalate**. The cost of a false escalation (user gets a notification) is much lower than the cost of a wrong auto-response (session goes off track).
 `
 
-// conductorPerNameClaudeMDTemplate is the per-conductor CLAUDE.md written to ~/.agent-deck/conductor/<name>/CLAUDE.md.
-// It contains only the conductor's identity. Shared knowledge is inherited from the parent directory's CLAUDE.md.
+// conductorPerNameClaudeMDTemplate is the per-conductor instructions file written to
+// ~/.agent-deck/conductor/<name>/<instructions-file>.
+// It contains only the conductor's identity. Shared knowledge is inherited from the parent directory's instructions file.
 // {NAME} and {PROFILE} placeholders are replaced at setup time.
 const conductorPerNameClaudeMDTemplate = `# Conductor: {NAME} ({PROFILE} profile)
 
-You are **{NAME}**, a conductor for the **{PROFILE}** profile.
+You are **{NAME}**, a conductor for the **{PROFILE}** profile running on **{AGENT_DISPLAY}**.
 
 ## Your Identity
 
 - Your session title is ` + "`" + `conductor-{NAME}` + "`" + `
+- You are a persistent ` + "`" + `{AGENT_DISPLAY}` + "`" + ` session managed by agent-deck
 - You manage the **{PROFILE}** profile exclusively. Always pass ` + "`" + `-p {PROFILE}` + "`" + ` to all CLI commands.
 - You live in ` + "`" + `~/.agent-deck/conductor/{NAME}/` + "`" + `
 - Maintain state in ` + "`" + `./state.json` + "`" + ` and log actions in ` + "`" + `./task-log.md` + "`" + `
@@ -293,7 +296,7 @@ When you first start (or after a restart):
 
 Your operating rules (auto-response policy, escalation guidelines, response style) are in ` + "`" + `./POLICY.md` + "`" + `.
 If ` + "`" + `./POLICY.md` + "`" + ` does not exist, use ` + "`" + `../POLICY.md` + "`" + ` instead.
-Read the policy file at the start of each interaction.
+Read the policy file at the start of each interaction. Your agent instructions live in ` + "`" + `{INSTRUCTIONS_FILE}` + "`" + `.
 `
 
 // conductorPerNameClaudeMDPreLearningsTemplate is the post-policy-split but pre-learnings per-conductor CLAUDE.md template.
@@ -821,6 +824,36 @@ def split_message(text: str, max_len: int = TG_MAX_LENGTH) -> list[str]:
     return chunks
 
 
+def md_to_tg_html(text: str) -> str:
+    """Convert markdown bold/italic/code to Telegram HTML and escape unsafe chars.
+
+    Processes code spans first to protect their content from bold/italic conversion.
+    """
+    import html as _html
+
+    # 1. Extract code spans before escaping (protect their content)
+    code_spans: list[str] = []
+
+    def _save_code(m: re.Match) -> str:
+        code_spans.append(m.group(1))
+        return f"\x00CODE{len(code_spans) - 1}\x00"
+
+    text = re.sub(r'` + "`" + `(.+?)` + "`" + `', _save_code, text)
+
+    # 2. Escape HTML special chars
+    text = _html.escape(text, quote=False)
+
+    # 3. Convert bold/italic (code spans are already replaced with placeholders)
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
+
+    # 4. Restore code spans (escaped content wrapped in <code>)
+    for i, code in enumerate(code_spans):
+        text = text.replace(f"\x00CODE{i}\x00", f"<code>{_html.escape(code, quote=False)}</code>")
+
+    return text
+
+
 def parse_discord_message_parts(text: str) -> list[tuple[str, str]]:
     """Split Discord output into plain-text and image-upload segments."""
     parts = []
@@ -1156,10 +1189,12 @@ def create_telegram_bot(config: dict):
         await message.answer(f"{name_tag}...")  # typing indicator
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
-        # Send response back (split if needed)
-        for chunk in split_message(response):
-            prefixed = f"{name_tag}{chunk}" if name_tag else chunk
-            await message.answer(prefixed)
+        # Convert to HTML first, then split to respect post-conversion length
+        html_response = md_to_tg_html(
+            f"{name_tag}{response}" if name_tag else response
+        )
+        for chunk in split_message(html_response):
+            await message.answer(chunk, parse_mode="HTML")
 
     return bot, dp
 
@@ -2138,9 +2173,11 @@ async def heartbeat_loop(
                     # Notify via Telegram
                     if telegram_bot and tg_user_id:
                         try:
-                            await telegram_bot.send_message(
-                                tg_user_id, alert_msg,
-                            )
+                            alert_html = md_to_tg_html(alert_msg)
+                            for chunk in split_message(alert_html):
+                                await telegram_bot.send_message(
+                                    tg_user_id, chunk, parse_mode="HTML",
+                                )
                         except Exception as e:
                             log.error(
                                 "Failed to send Telegram notification: %s", e

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -29,7 +31,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-const Version = "0.26.2"
+const Version = "0.26.4"
 
 // Table column widths for list command output
 const (
@@ -262,6 +264,9 @@ func main() {
 		case "worktree", "wt":
 			handleWorktree(profile, args[1:])
 			return
+		case "costs":
+			handleCosts(profile, args[1:])
+			return
 		case "web":
 			webEnabled = true
 			webArgs = append(webArgs, args[1:]...)
@@ -442,6 +447,96 @@ func main() {
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
 
+	// ═══════════════════════════════════════════════════════════════════
+	// Cost Tracking Initialization
+	// ═══════════════════════════════════════════════════════════════════
+	var costStore *costs.Store
+	if db := statedb.GetGlobal(); db != nil {
+		costStore = costs.NewStore(db.DB())
+
+		// Load user config for pricing overrides and budgets
+		userCfg, _ := session.LoadUserConfig()
+
+		// Set up pricer with overrides
+		homeDir, _ := os.UserHomeDir()
+		cacheDir := filepath.Join(homeDir, ".agent-deck")
+		pricerCfg := costs.PricerConfig{CachePath: cacheDir}
+		if userCfg != nil && len(userCfg.Costs.Pricing.Overrides) > 0 {
+			pricerCfg.Overrides = make(map[string]costs.PriceOverride)
+			for model, ov := range userCfg.Costs.Pricing.Overrides {
+				pricerCfg.Overrides[model] = costs.PriceOverride{
+					InputPerMtok:      ov.InputPerMtok,
+					OutputPerMtok:     ov.OutputPerMtok,
+					CacheReadPerMtok:  ov.CacheReadPerMtok,
+					CacheWritePerMtok: ov.CacheWritePerMtok,
+				}
+			}
+		}
+		pricer := costs.NewPricer(pricerCfg)
+		_ = pricer.LoadCache()
+
+		// Start daily price fetcher
+		fetchCtx, fetchCancel := context.WithCancel(context.Background())
+		defer fetchCancel()
+		fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
+		go fetcher.StartDaily(fetchCtx)
+
+		// Set up budget checker
+		var budgetCfg costs.BudgetConfig
+		if userCfg != nil {
+			bc := userCfg.Costs.Budgets
+			budgetCfg.DailyLimit = int64(math.Round(bc.DailyLimit * 1_000_000))
+			budgetCfg.WeeklyLimit = int64(math.Round(bc.WeeklyLimit * 1_000_000))
+			budgetCfg.MonthlyLimit = int64(math.Round(bc.MonthlyLimit * 1_000_000))
+			if len(bc.Groups) > 0 {
+				budgetCfg.GroupLimits = make(map[string]int64)
+				for name, g := range bc.Groups {
+					budgetCfg.GroupLimits[name] = int64(math.Round(g.DailyLimit * 1_000_000))
+				}
+			}
+		}
+		budgetChecker := costs.NewBudgetChecker(budgetCfg, costStore)
+
+		// Wire into TUI
+		homeModel.SetCostStore(costStore)
+		homeModel.SetCostPricer(pricer)
+		homeModel.SetCostBudget(budgetChecker)
+
+		// Start cost event watcher (for Claude hook events)
+		costEventsDir := filepath.Join(homeDir, ".agent-deck", "cost-events")
+		costWatcher, watchErr := costs.NewCostEventWatcher(costEventsDir)
+		if watchErr == nil {
+			go costWatcher.Start()
+			defer costWatcher.Stop()
+
+			// Process incoming cost events from hooks
+			go func() {
+				for raw := range costWatcher.EventCh() {
+					ev := costs.CostEvent{
+						ID:               fmt.Sprintf("%s_%d", raw.InstanceID, raw.Timestamp),
+						SessionID:        raw.InstanceID,
+						Timestamp:        time.Unix(0, raw.Timestamp),
+						Model:            raw.Model,
+						InputTokens:      raw.InputTokens,
+						OutputTokens:     raw.OutputTokens,
+						CacheReadTokens:  raw.CacheReadTokens,
+						CacheWriteTokens: raw.CacheWriteTokens,
+						CostMicrodollars: pricer.ComputeCost(raw.Model, raw.InputTokens, raw.OutputTokens, raw.CacheReadTokens, raw.CacheWriteTokens),
+					}
+					_ = costStore.WriteCostEvent(ev)
+				}
+			}()
+		}
+
+		// Run retention cleanup on startup
+		if userCfg != nil {
+			retDays := userCfg.Costs.GetRetentionDays()
+			if retDays > 0 {
+				_, _ = costStore.PurgeOlderThan(retDays)
+			}
+		}
+	}
+
 	// Start web server alongside TUI if "web" subcommand was used
 	if webEnabled {
 		effectiveProfile := session.GetEffectiveProfile(profile)
@@ -453,6 +548,9 @@ func main() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
 			os.Exit(1)
+		}
+		if costStore != nil {
+			server.SetCostStore(costStore)
 		}
 		go func() {
 			if err := server.Start(); err != nil {
@@ -844,8 +942,8 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag - can be specified multiple times
@@ -924,7 +1022,7 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
@@ -1061,17 +1159,6 @@ func handleAdd(profile string, args []string) {
 		// Pre-validate branch name for better error messages
 		if err := git.ValidateBranchName(wtBranch); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid branch name: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
-		branchExists := git.BranchExists(repoRoot, wtBranch)
-		if createNewBranch && branchExists {
-			fmt.Fprintf(
-				os.Stderr,
-				"Error: branch '%s' already exists (remove -b flag to use existing branch)\n",
-				wtBranch,
-			)
 			os.Exit(1)
 		}
 

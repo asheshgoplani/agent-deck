@@ -551,7 +551,7 @@ configure_tmux() {
     local TMUX_CONF="$HOME/.tmux.conf"
     local MARKER="# agent-deck configuration"
     local VERSION_MARKER="# agent-deck-tmux-config-version:"
-    local CURRENT_VERSION="2"  # Bump this when config changes
+    local CURRENT_VERSION="3"  # Bump this when config changes
     local NEEDS_UPDATE=false
     local HAS_CONFIG=false
 
@@ -571,6 +571,7 @@ configure_tmux() {
             fi
             echo ""
             echo -e "${BLUE}What's new in this update:${NC}"
+            echo "  • Added extended-keys for Shift+Enter support (tmux 3.2+)"
             echo "  • Fixed mouse scrolling issues on WSL"
             echo "  • Added auto-enter copy-mode on scroll up"
             echo "  • Added explicit scroll bindings for copy-mode"
@@ -667,6 +668,10 @@ set -ag terminal-overrides \",*256col*:Tc\"
 # Performance
 set -sg escape-time 0
 set -g history-limit 50000
+
+# Extended keys: forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+set -s extended-keys on
+set -as terminal-features 'tmux-256color:extkeys'
 
 # Mouse support (scroll + drag-to-copy)
 set -g mouse on

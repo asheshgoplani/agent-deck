@@ -78,6 +78,24 @@ body {
   border-color: var(--accent);
 }
 
+.costs-btn {
+  font-size: 0.85rem;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  margin-left: auto;
+  margin-right: 8px;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.costs-btn:hover {
+  background: rgba(15, 118, 110, 0.1);
+  border-color: var(--accent);
+}
+
 .meta {
   font-size: 0.9rem;
   color: var(--muted);

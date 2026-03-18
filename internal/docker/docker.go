@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -141,6 +142,10 @@ func (c *Container) Create(ctx context.Context, cfg *ContainerConfig) (string, e
 		// Security hardening: drop all capabilities and prevent privilege escalation.
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
+		// Run as the host user so bind-mounted files (owned by the host UID) are
+		// readable without DAC_OVERRIDE. The UID has no /etc/passwd entry inside
+		// the container, so HOME is set explicitly via environment (see NewContainerConfig).
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		// Limit process count to prevent fork bombs.
 		"--pids-limit=4096",
 		// Read-only root filesystem — writable paths are explicitly mounted as tmpfs below.
@@ -344,6 +349,11 @@ func NewContainerConfig(projectPath string, opts ...ContainerConfigOption) *Cont
 	// IS_SANDBOX=1 allows Claude Code to use --dangerously-skip-permissions in container.
 	// Set after options to prevent caller-supplied values from disabling sandbox mode.
 	cfg.environment["IS_SANDBOX"] = "1"
+
+	// HOME must point to the container home directory so tools find their config.
+	// The host UID has no /etc/passwd entry, so HOME would default to "/" without this.
+	// Set after options to prevent caller-supplied values from misdirecting tool config.
+	cfg.environment["HOME"] = cfg.containerHome
 
 	return cfg
 }

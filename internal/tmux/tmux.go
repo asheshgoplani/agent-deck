@@ -1223,7 +1223,8 @@ func (s *Session) Start(command string) error {
 	// - set-clipboard on: Clipboard integration (Warp, iTerm2, kitty, etc.)
 	// - history-limit 10000: Large scrollback for AI agent output
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
-	// - terminal-features hyperlinks: Track hyperlinks like colors (tmux 3.4+, server-wide)
+	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+, server-wide)
 	//
 	// Note: remain-on-exit is NOT set here — it is only enabled for sandbox sessions
 	// via OptionOverrides to avoid changing behaviour for non-sandbox sessions.
@@ -1237,7 +1238,17 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks").Run()
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on").Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
+
+	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
+	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
+	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
+	_ = exec.Command("tmux", "bind-key", "-n", "-T", "root", "C-q",
+		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
+		"detach-client", "").Run()
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.
@@ -1347,29 +1358,81 @@ func (s *Session) IsPaneDead() bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
-// ConfigureStatusBar sets up the tmux status bar with session info
-// Shows: notification bar on left (managed by NotificationManager), session info on right
-// NOTE: status-left is reserved for the notification bar showing waiting sessions
-// This function only configures status-right to avoid overwriting notification bar
-func (s *Session) ConfigureStatusBar() {
-	// Skip status bar injection if disabled by user config
+// buildStatusBarArgs returns the tmux command args for configuring the status bar.
+// Returns nil if status bar injection is disabled.
+// Skips any option key that exists in s.OptionOverrides — user-defined options take precedence.
+func (s *Session) buildStatusBarArgs() []string {
 	if !s.injectStatusLine {
-		return
+		return nil
 	}
 	themeStyle := currentTmuxThemeStyle()
 	rightStatus := s.themedStatusRight(themeStyle)
 
-	// PERFORMANCE: Batch all 5 status bar options into single subprocess call
-	// Uses tmux command chaining with \; separator (73% reduction in subprocess calls)
-	// Before: 5 separate exec.Command calls = 5 subprocess spawns
-	// After: 1 exec.Command call = 1 subprocess spawn
-	cmd := exec.Command("tmux",
-		"set-option", "-t", s.Name, "status", "on", ";",
-		"set-option", "-t", s.Name, "status-style", themeStyle.statusStyle, ";",
-		"set-option", "-t", s.Name, "status-left-length", "120", ";",
-		"set-option", "-t", s.Name, "status-right", rightStatus, ";",
-		"set-option", "-t", s.Name, "status-right-length", "80")
-	_ = cmd.Run()
+	// Managed defaults — each can be skipped if user defined it in [tmux] options
+	type option struct {
+		key   string
+		value string
+	}
+	defaults := []option{
+		{"status", "on"},
+		{"status-style", themeStyle.statusStyle},
+		{"status-left-length", "120"},
+		{"status-right", rightStatus},
+		{"status-right-length", "80"},
+	}
+
+	var args []string
+	for _, opt := range defaults {
+		if _, overridden := s.OptionOverrides[opt.key]; overridden {
+			continue
+		}
+		if len(args) > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, "set-option", "-t", s.Name, opt.key, opt.value)
+	}
+
+	if len(args) == 0 {
+		return nil
+	}
+	return args
+}
+
+// ConfigureStatusBar sets up the tmux status bar with session info.
+// Shows: notification bar on left (managed by NotificationManager), session info on right.
+// NOTE: status-left is reserved for the notification bar showing waiting sessions.
+// Options defined in [tmux] options are respected — agent-deck skips those keys.
+func (s *Session) ConfigureStatusBar() {
+	args := s.buildStatusBarArgs()
+	if args == nil {
+		return
+	}
+	_ = exec.Command("tmux", args...).Run()
+}
+
+// ensureTerminalFeatures appends terminal features only if not already present.
+// This prevents the terminal-features list from growing on every session start (#366).
+func ensureTerminalFeatures(features ...string) {
+	out, err := exec.Command("tmux", "show", "-sv", "terminal-features").Output()
+	if err != nil {
+		// tmux too old or server not running — append unconditionally as best-effort
+		if len(features) > 0 {
+			val := ",*:" + strings.Join(features, ":")
+			_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+		}
+		return
+	}
+	existing := string(out)
+	var missing []string
+	for _, f := range features {
+		if !strings.Contains(existing, f) {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) > 0 {
+		val := ",*:" + strings.Join(missing, ":")
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+	}
 }
 
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
@@ -1405,7 +1468,8 @@ func (s *Session) EnableMouseMode() error {
 	// Enhancements included:
 	// - set-clipboard on: OSC 52 clipboard integration (Warp, iTerm2, kitty, etc.)
 	// - allow-passthrough on: OSC 8 hyperlinks, advanced escape sequences (tmux 3.2+)
-	// - terminal-features hyperlinks: Track hyperlinks like colors (tmux 3.4+)
+	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+)
 	// - history-limit 10000: Large scrollback for AI agent output
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
@@ -1415,10 +1479,13 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks")
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }
@@ -3859,6 +3926,19 @@ func UnbindKey(key string) error {
 	// bind-key 1 select-window -t :1
 	_ = exec.Command("tmux", "bind-key", key, "select-window", "-t", ":"+key).Run()
 	return nil
+}
+
+// BindMouseStatusRightDetach binds a mouse click on the status-right area to detach.
+// Only fires inside agentdeck sessions (guards against detaching the user's outer tmux).
+func BindMouseStatusRightDetach() error {
+	// Guard: only detach if current session is an agentdeck-managed session
+	script := `S=$(tmux display-message -p '#{session_name}'); case "$S" in agentdeck_*) tmux detach-client ;; esac`
+	return exec.Command("tmux", "bind", "-n", "MouseDown1StatusRight", "run-shell", script).Run()
+}
+
+// UnbindMouseStatusClicks removes mouse click bindings from the status bar.
+func UnbindMouseStatusClicks() {
+	_ = exec.Command("tmux", "unbind", "-n", "MouseDown1StatusRight").Run()
 }
 
 // GetActiveSession returns the session name the user is currently attached to.

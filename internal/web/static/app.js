@@ -1648,4 +1648,9 @@
   registerServiceWorker()
   initPushNotifications()
   loadMenu()
+
+  const costsLink = document.getElementById('costs-link')
+  if (costsLink && state.authToken) {
+    costsLink.href = '/costs?token=' + encodeURIComponent(state.authToken)
+  }
 })()

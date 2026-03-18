@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -45,6 +46,8 @@ type Server struct {
 
 	menuSubscribersMu sync.Mutex
 	menuSubscribers   map[chan struct{}]struct{}
+
+	costStore *costs.Store
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -100,6 +103,16 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/push/presence", s.handlePushPresence)
 	mux.HandleFunc("/events/menu", s.handleMenuEvents)
 	mux.HandleFunc("/ws/session/", s.handleSessionWS)
+
+	mux.HandleFunc("/api/costs/summary", s.handleCostsSummary)
+	mux.HandleFunc("/api/costs/daily", s.handleCostsDaily)
+	mux.HandleFunc("/api/costs/sessions", s.handleCostsSessions)
+	mux.HandleFunc("/api/costs/models", s.handleCostsModels)
+	mux.HandleFunc("/api/costs/export", s.handleCostsExport)
+	mux.HandleFunc("/api/costs/groups", s.handleCostsGroups)
+	mux.HandleFunc("/api/costs/session", s.handleCostsSessionDetail)
+	mux.HandleFunc("/api/costs/stream", s.handleCostsStream)
+	mux.HandleFunc("/costs", s.handleCostsPage)
 
 	handler := withRecover(mux)
 
@@ -219,6 +232,10 @@ func (s *Server) unsubscribeMenuChanges(ch chan struct{}) {
 		close(ch)
 	}
 	s.menuSubscribersMu.Unlock()
+}
+
+func (s *Server) SetCostStore(store *costs.Store) {
+	s.costStore = store
 }
 
 func (s *Server) notifyMenuChanged() {

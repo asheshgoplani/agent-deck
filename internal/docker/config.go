@@ -11,8 +11,9 @@ import (
 
 const (
 	// containerHome is the home directory inside the container.
-	// Assumes the default sandbox image runs as root. If a non-root image is
-	// used, config mount paths (gitconfig, SSH, agent configs) will need updating.
+	// Tools are installed here at build time (e.g. /root/.local/bin/claude).
+	// The container runs as the host user (--user uid:gid), not root —
+	// /root is chmod 755 in the Dockerfile to allow traversal.
 	containerHome = "/root"
 
 	// containerNamePrefix is the expected prefix for managed containers.

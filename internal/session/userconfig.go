@@ -126,6 +126,9 @@ type UserConfig struct {
 
 	// Grid defines grid view popup settings
 	Grid GridSettings `toml:"grid"`
+
+	// Costs defines cost tracking and budget settings
+	Costs CostsSettings `toml:"costs"`
 }
 
 // GridSettings configures the grid popup triggered from tmux sessions.
@@ -540,6 +543,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -634,6 +642,10 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1660,6 +1672,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1677,6 +1691,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
@@ -1745,7 +1761,12 @@ auto_cleanup = true
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
 # Override tmux options applied to every session (applied after defaults)
+# Options matching agent-deck's managed keys (status, status-style,
+# status-left-length, status-right, status-right-length) will cause agent-deck
+# to skip its default for that key, letting your value take full effect.
 # options = { "allow-passthrough" = "all", "history-limit" = "50000" }
+# Example: keep agent-deck notifications but use a 2-line status bar
+# options = { "status" = "2" }
 
 # ============================================================================
 # MCP Server Definitions
@@ -1985,4 +2006,54 @@ func IsGridPopupEnabled() bool {
 		return true
 	}
 	return *config.Grid.PopupEnabled
+}
+
+// CostsSettings configures cost tracking, budgets, and pricing overrides.
+type CostsSettings struct {
+	Currency      string          `toml:"currency"`
+	Timezone      string          `toml:"timezone"`
+	RetentionDays int             `toml:"retention_days"`
+	Budgets       BudgetSettings  `toml:"budgets"`
+	Pricing       PricingSettings `toml:"pricing"`
+}
+
+type BudgetSettings struct {
+	DailyLimit   float64                  `toml:"daily_limit"`
+	WeeklyLimit  float64                  `toml:"weekly_limit"`
+	MonthlyLimit float64                  `toml:"monthly_limit"`
+	Groups       map[string]GroupBudget   `toml:"groups"`
+	Sessions     map[string]SessionBudget `toml:"sessions"`
+}
+
+type GroupBudget struct {
+	DailyLimit float64 `toml:"daily_limit"`
+}
+
+type SessionBudget struct {
+	TotalLimit float64 `toml:"total_limit"`
+}
+
+type PricingSettings struct {
+	Overrides map[string]PricingOverride `toml:"overrides"`
+}
+
+type PricingOverride struct {
+	InputPerMtok      float64 `toml:"input_per_mtok"`
+	OutputPerMtok     float64 `toml:"output_per_mtok"`
+	CacheReadPerMtok  float64 `toml:"cache_read_per_mtok"`
+	CacheWritePerMtok float64 `toml:"cache_write_per_mtok"`
+}
+
+func (c CostsSettings) GetRetentionDays() int {
+	if c.RetentionDays > 0 {
+		return c.RetentionDays
+	}
+	return 90
+}
+
+func (c CostsSettings) GetTimezone() string {
+	if c.Timezone != "" {
+		return c.Timezone
+	}
+	return "Local"
 }

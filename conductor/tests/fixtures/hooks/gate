@@ -1,0 +1,4 @@
+#!/bin/sh
+# Hook that gates (blocks) the action
+echo "blocked by hook" >&2
+exit 1

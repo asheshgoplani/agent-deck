@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,7 +16,8 @@ import (
 //  2. Global [shell].env_files (in order)
 //  3. [shell].init_script (for direnv, nvm, etc.)
 //  4. Tool-specific env_file ([claude].env_file, [gemini].env_file, [tools.X].env_file)
-//  5. Inline env vars from [tools.X].env (highest priority)
+//  5. Inline env vars from [tools.X].env
+//  6. Conductor-specific env from meta.json (highest priority, overrides tool env)
 func (i *Instance) buildEnvSourceCommand() string {
 	var sources []string
 
@@ -60,9 +62,14 @@ func (i *Instance) buildEnvSourceCommand() string {
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
-	// 5. Inline env vars from [tools.X].env (highest priority)
+	// 5. Inline env vars from [tools.X].env
 	if inlineEnv := i.getToolInlineEnv(); inlineEnv != "" {
 		sources = append(sources, inlineEnv)
+	}
+
+	// 6. Conductor-specific env (highest priority, overrides tool env)
+	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
+		sources = append(sources, conductorEnv)
 	}
 
 	if len(sources) == 0 {
@@ -241,4 +248,63 @@ func (i *Instance) getToolEnvFile() string {
 		}
 	}
 	return ""
+}
+
+// getConductorEnv returns shell export commands for conductor-specific env vars.
+// Checks if this session is a conductor (title starts with "conductor-") and loads
+// env and env_file from the conductor's meta.json.
+func (i *Instance) getConductorEnv(ignoreMissing bool) string {
+	name := strings.TrimPrefix(i.Title, "conductor-")
+	if name == "" || name == i.Title {
+		return "" // not a conductor session
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		sessionLog.Warn("conductor_env_load_failed",
+			slog.String("conductor", name),
+			slog.String("error", err.Error()))
+		return ""
+	}
+
+	var parts []string
+
+	// Conductor env_file
+	if meta.EnvFile != "" {
+		resolved := resolvePath(meta.EnvFile, i.ProjectPath)
+		parts = append(parts, buildSourceCmd(resolved, ignoreMissing))
+	}
+
+	// Conductor inline env vars
+	if len(meta.Env) > 0 {
+		keys := make([]string, 0, len(meta.Env))
+		for k := range meta.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !isValidEnvKey(k) {
+				continue // skip invalid env var names
+			}
+			parts = append(parts, fmt.Sprintf("export %s='%s'", k, strings.ReplaceAll(meta.Env[k], "'", "'\\''")))
+		}
+	}
+
+	return strings.Join(parts, " && ")
+}
+
+// isValidEnvKey checks that a string is a valid environment variable name.
+func isValidEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, c := range key {
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '_' {
+			continue
+		}
+		if i > 0 && c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }

@@ -70,8 +70,16 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 			strings.Contains(lower, "ctrl+c to interrupt") {
 			return false
 		}
-		return strings.Contains(content, "codex>") ||
-			strings.Contains(content, "Continue?")
+		// Direct prompt strings
+		if strings.Contains(content, "codex>") ||
+			strings.Contains(content, "Continue?") ||
+			strings.Contains(content, "How can I help") {
+			return true
+		}
+		// Codex uses › (U+203A) as its prompt marker, similar to Claude's ❯.
+		// The prompt appears as "› suggestion text" near the bottom of the pane
+		// with a status bar (model · path · branch · usage) below it.
+		return d.hasCodexPromptMarker(content)
 
 	default:
 		// Generic shell - check for common prompts
@@ -321,6 +329,34 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 		}
 	}
 
+	return false
+}
+
+// hasCodexPromptMarker detects the › (U+203A) prompt marker used by Codex CLI.
+// Codex renders its prompt as:
+//
+//	› Run /review on my current changes
+//	  gpt-5.4 · ~/path/to/project · branch · 100% left · 0% used
+//
+// The marker appears at (or near) the start of a line in the last few lines.
+func (d *PromptDetector) hasCodexPromptMarker(content string) bool {
+	lines := strings.Split(content, "\n")
+	// Check last 10 non-empty lines (prompt may not be the very last line
+	// due to the status bar below it).
+	var lastLines []string
+	for i := len(lines) - 1; i >= 0 && len(lastLines) < 10; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			lastLines = append(lastLines, line)
+		}
+	}
+	for _, line := range lastLines {
+		clean := strings.TrimSpace(StripANSI(line))
+		if clean == "›" || clean == "› " ||
+			strings.HasPrefix(clean, "› ") {
+			return true
+		}
+	}
 	return false
 }
 

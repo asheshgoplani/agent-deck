@@ -279,9 +279,15 @@ func TestPromptDetector(t *testing.T) {
 	}{
 		{"codex>", true},
 		{"Continue?", true},
-		{"How can I help today?", false}, // plain prose should not trigger by itself
-		{"some output >", false},         // generic trailing '>' should not be treated as Codex prompt
-		{"esc to interrupt", false},      // busy indicator, not prompt
+		{"How can I help today?", true},               // initial Codex prompt (#350)
+		{"some output >", false},                      // generic trailing '>' should not be treated as Codex prompt
+		{"esc to interrupt", false},                   // busy indicator, not prompt
+		{"› Run /review on my current changes", true}, // Codex › prompt marker (#350)
+		{"›", true},                                   // bare › prompt marker (#350)
+		{"  › ", true},                                // › with surrounding whitespace (#350)
+		{"› Run /review\n\n  gpt-5.4 · ~/proj · main · 100% left · 0% used", true}, // full Codex prompt with status bar (#350)
+		{"ctrl+c to interrupt\n› Run /review on my current changes", false},        // busy overrides › prompt (#350)
+		{"Processing files...\nesc to interrupt\n› previous suggestion", false},    // busy overrides › prompt (#350)
 	}
 
 	for _, tt := range codexTests {
@@ -2551,4 +2557,131 @@ func TestParseWindowCacheEmptyInput(t *testing.T) {
 	sessionCache, windowCache := parseListWindowsOutput("")
 	assert.Empty(t, sessionCache)
 	assert.Empty(t, windowCache)
+}
+
+func TestBuildStatusBarArgs(t *testing.T) {
+	tests := []struct {
+		name            string
+		sessionName     string
+		displayName     string
+		workDir         string
+		optionOverrides map[string]string
+		wantKeys        []string // keys that SHOULD appear in args
+		skipKeys        []string // keys that should NOT appear in args
+	}{
+		{
+			name:            "no overrides - all defaults applied",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: nil,
+			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			skipKeys:        nil,
+		},
+		{
+			name:            "empty overrides - all defaults applied",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: map[string]string{},
+			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			skipKeys:        nil,
+		},
+		{
+			name:            "status overridden - status skipped",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: map[string]string{"status": "2"},
+			wantKeys:        []string{"status-style", "status-left-length", "status-right", "status-right-length"},
+			skipKeys:        []string{"status"},
+		},
+		{
+			name:            "status-style overridden - status-style skipped",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: map[string]string{"status-style": "bg=#000000"},
+			wantKeys:        []string{"status", "status-left-length", "status-right", "status-right-length"},
+			skipKeys:        []string{"status-style"},
+		},
+		{
+			name:            "multiple overrides - multiple skipped",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: map[string]string{"status": "2", "status-style": "bg=#000", "status-right-length": "100"},
+			wantKeys:        []string{"status-left-length", "status-right"},
+			skipKeys:        []string{"status", "status-style", "status-right-length"},
+		},
+		{
+			name:            "unrelated override - all defaults applied",
+			sessionName:     "test-sess",
+			displayName:     "my-project",
+			workDir:         "/home/user/my-project",
+			optionOverrides: map[string]string{"history-limit": "50000"},
+			wantKeys:        []string{"status", "status-style", "status-left-length", "status-right", "status-right-length"},
+			skipKeys:        nil,
+		},
+		{
+			name:        "all managed keys overridden - returns nil",
+			sessionName: "test-sess",
+			displayName: "my-project",
+			workDir:     "/home/user/my-project",
+			optionOverrides: map[string]string{
+				"status": "2", "status-style": "bg=#000",
+				"status-left-length": "50", "status-right": "custom",
+				"status-right-length": "100",
+			},
+			wantKeys: nil,
+			skipKeys: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Session{
+				Name:             tt.sessionName,
+				DisplayName:      tt.displayName,
+				WorkDir:          tt.workDir,
+				OptionOverrides:  tt.optionOverrides,
+				injectStatusLine: true,
+			}
+			args := s.buildStatusBarArgs()
+
+			if tt.wantKeys == nil && tt.skipKeys == nil {
+				assert.Nil(t, args, "args should be nil when all managed keys are overridden")
+				return
+			}
+
+			require.NotNil(t, args, "args should not be nil when injectStatusLine is true")
+
+			// Extract the set of option keys from the args.
+			// Args follow the pattern: "set-option" "-t" <session> <key> <value> [";"]
+			keys := make(map[string]bool)
+			for i, a := range args {
+				if a == "set-option" && i+3 < len(args) {
+					keys[args[i+3]] = true
+				}
+			}
+
+			for _, key := range tt.wantKeys {
+				assert.True(t, keys[key], "expected key %q in args", key)
+			}
+			for _, key := range tt.skipKeys {
+				assert.False(t, keys[key], "key %q should be skipped", key)
+			}
+		})
+	}
+}
+
+func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
+	s := &Session{
+		Name:             "test-sess",
+		DisplayName:      "proj",
+		WorkDir:          "/tmp",
+		injectStatusLine: false,
+	}
+	args := s.buildStatusBarArgs()
+	assert.Nil(t, args, "args should be nil when injectStatusLine is false")
 }

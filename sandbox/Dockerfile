@@ -37,13 +37,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
   && rm -rf /var/lib/apt/lists/*
 
-# Run as root — Claude Code's --dangerously-skip-permissions requires root,
-# and the container's filesystem is read-only at runtime (--read-only flag).
-#
-# Why root is safe here: the container only sees bind-mounted paths (the project
-# directory and sandbox credential copies), all owned by the same user. Root inside
-# the container cannot affect anything outside the mounts. Runtime hardening enforces
-# --cap-drop=ALL, --read-only, and --security-opt=no-new-privileges.
+# The container runs as the host user (--user uid:gid) at runtime, not root.
+# Tools are installed under /root at build time; chmod 755 makes them traversable.
+# Security: --cap-drop=ALL, --read-only, and --security-opt=no-new-privileges
+# are enforced at runtime. IS_SANDBOX=1 gates --dangerously-skip-permissions.
 WORKDIR /root
 
 # ── Claude Code (native installer) ──────────────────────────────────
@@ -70,7 +67,12 @@ RUN mkdir -p /root/.claude \
     /root/.gemini \
     /root/.ssh
 
-# Allow Claude Code to use --dangerously-skip-permissions as root.
+# Make /root traversable by the non-root runtime user (--user uid:gid).
+# Installed binaries at /root/.local/bin/ and /root/.opencode/bin/ need
+# the parent directory to have the execute bit for path resolution.
+RUN chmod 755 /root
+
+# Allow Claude Code to use --dangerously-skip-permissions in sandbox.
 ENV IS_SANDBOX=1
 
 # Workspace directory (host project is bind-mounted here).

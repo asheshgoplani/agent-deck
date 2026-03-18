@@ -747,6 +747,46 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	}
 }
 
+func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := InstallSharedConductorInstructions(ConductorAgentCodex, ""); err != nil {
+		t.Fatalf("InstallSharedConductorInstructions returned error: %v", err)
+	}
+
+	target := filepath.Join(tmpHome, ".agent-deck", "conductor", "AGENTS.md")
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("failed to read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(content), "Codex") {
+		t.Fatal("AGENTS.md should mention Codex")
+	}
+	if !strings.Contains(string(content), "agent-deck -p <PROFILE> add <path> -t \"Title\" -c codex") {
+		t.Fatal("AGENTS.md should render codex session examples")
+	}
+}
+
+func TestInstallSharedConductorInstructions_AgentsCoexist(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := InstallSharedConductorInstructions(ConductorAgentClaude, ""); err != nil {
+		t.Fatalf("InstallSharedConductorInstructions(claude) returned error: %v", err)
+	}
+	if err := InstallSharedConductorInstructions(ConductorAgentCodex, ""); err != nil {
+		t.Fatalf("InstallSharedConductorInstructions(codex) returned error: %v", err)
+	}
+
+	base := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	for _, file := range []string{"CLAUDE.md", "AGENTS.md"} {
+		if _, err := os.Stat(filepath.Join(base, file)); err != nil {
+			t.Fatalf("%s should exist: %v", file, err)
+		}
+	}
+}
+
 func TestSetupConductor_DefaultTemplate(t *testing.T) {
 	name := "test-default"
 	profile := "default"
@@ -756,7 +796,7 @@ func TestSetupConductor_DefaultTemplate(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup without custom path (uses default template)
-	err := SetupConductor(name, profile, true, true, "test description", "", "")
+	err := SetupConductor(name, profile, true, true, "test description", "", "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -793,6 +833,64 @@ func TestSetupConductor_DefaultTemplate(t *testing.T) {
 	if meta.Name != name {
 		t.Errorf("expected name %q, got %q", name, meta.Name)
 	}
+	if meta.Agent != ConductorAgentClaude {
+		t.Errorf("expected agent %q, got %q", ConductorAgentClaude, meta.Agent)
+	}
+}
+
+func TestSetupConductorWithAgent_Codex(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "test-codex"
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "codex conductor", "", "", nil, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	agentsPath := filepath.Join(dir, "AGENTS.md")
+	content, err := os.ReadFile(agentsPath)
+	if err != nil {
+		t.Fatalf("failed to read AGENTS.md: %v", err)
+	}
+	if !strings.Contains(string(content), "Codex") {
+		t.Fatal("AGENTS.md should mention Codex")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatal("CLAUDE.md should not be created for Codex conductor")
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.Agent != ConductorAgentCodex {
+		t.Fatalf("agent = %q, want %q", meta.Agent, ConductorAgentCodex)
+	}
+	if meta.GetClearOnCompact() {
+		t.Fatal("codex conductor should not enable clear_on_compact")
+	}
+}
+
+func TestSetupConductorWithAgent_RemovesStaleInstructionsFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "switch-agent"
+	if err := SetupConductor(name, "default", true, true, "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to create initial Claude conductor: %v", err)
+	}
+	if err := SetupConductorWithAgent(name, "default", ConductorAgentCodex, true, true, "", "", "", nil, ""); err != nil {
+		t.Fatalf("failed to switch conductor to Codex: %v", err)
+	}
+
+	dir, _ := ConductorNameDir(name)
+	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatal("CLAUDE.md should be removed after switching conductor agent to Codex")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err != nil {
+		t.Fatalf("AGENTS.md should exist after switching conductor agent to Codex: %v", err)
+	}
 }
 
 func TestSetupConductor_CustomSymlink(t *testing.T) {
@@ -812,7 +910,7 @@ func TestSetupConductor_CustomSymlink(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom path (creates symlink)
-	err := SetupConductor(name, profile, true, true, "test description", customPath, "")
+	err := SetupConductor(name, profile, true, true, "test description", customPath, "", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -842,7 +940,7 @@ func TestSetupConductor_EmptyProfileNormalizesToDefault(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "default-profile-conductor"
-	if err := SetupConductor(name, "", true, true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "", true, true, "", "", "", nil, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -869,11 +967,11 @@ func TestSetupConductor_ProfileConflict(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "profile-conflict"
-	if err := SetupConductor(name, "work", true, true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "work", true, true, "", "", "", nil, ""); err != nil {
 		t.Fatalf("first setup failed: %v", err)
 	}
 
-	err := SetupConductor(name, "personal", true, true, "", "", "")
+	err := SetupConductor(name, "personal", true, true, "", "", "", nil, "")
 	if err == nil {
 		t.Fatal("expected conflict error when reusing conductor name across profiles")
 	}
@@ -903,6 +1001,30 @@ func TestLoadConductorMeta_EmptyProfileDefaultsToDefault(t *testing.T) {
 	}
 	if meta.Profile != DefaultProfile {
 		t.Fatalf("meta profile = %q, want %q", meta.Profile, DefaultProfile)
+	}
+}
+
+func TestLoadConductorMeta_EmptyAgentDefaultsToClaude(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "meta-empty-agent"
+	dir, _ := ConductorNameDir(name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("failed to create conductor dir: %v", err)
+	}
+
+	raw := `{"name":"meta-empty-agent","profile":"default","heartbeat_enabled":true,"created_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("failed to write meta.json: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("LoadConductorMeta failed: %v", err)
+	}
+	if meta.Agent != ConductorAgentClaude {
+		t.Fatalf("meta agent = %q, want %q", meta.Agent, ConductorAgentClaude)
 	}
 }
 
@@ -1244,7 +1366,7 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom policy path (creates per-conductor symlink)
-	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath)
+	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1423,7 +1545,7 @@ func TestSetupConductorCreatesLearnings(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "learnings-test"
-	if err := SetupConductor(name, "default", true, true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "default", true, true, "", "", "", nil, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1448,7 +1570,7 @@ func TestSetupConductorPreservesExistingLearnings(t *testing.T) {
 
 	name := "learnings-preserve"
 	// First setup creates the file
-	if err := SetupConductor(name, "default", true, true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "default", true, true, "", "", "", nil, ""); err != nil {
 		t.Fatalf("first setup failed: %v", err)
 	}
 
@@ -1461,7 +1583,7 @@ func TestSetupConductorPreservesExistingLearnings(t *testing.T) {
 	}
 
 	// Re-running setup should NOT overwrite
-	if err := SetupConductor(name, "default", true, true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "default", true, true, "", "", "", nil, ""); err != nil {
 		t.Fatalf("second setup failed: %v", err)
 	}
 
@@ -1967,6 +2089,15 @@ func TestConductorClearOnCompact(t *testing.T) {
 		t.Error("should return false when clear_on_compact is explicitly disabled")
 	}
 
+	meta = ConductorMeta{Name: "main", Agent: ConductorAgentCodex, Profile: "default"}
+	data, _ = json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(condDir, "meta.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if inst.ConductorClearOnCompact() {
+		t.Error("codex conductors should always disable clear_on_compact")
+	}
+
 	// Non-conductor title should return false (not a conductor-prefixed session)
 	nonConductor := &Instance{Title: "my-session", GroupPath: "conductor"}
 	if nonConductor.ConductorClearOnCompact() {
@@ -2082,5 +2213,68 @@ func TestBridgeTemplate_SafeSayConvertsMarkdown(t *testing.T) {
 	// The conversion must be conditional on "text" being in kwargs.
 	if !strings.Contains(template, `if "text" in kwargs:`) {
 		t.Error("_safe_say should guard _markdown_to_slack call with 'if \"text\" in kwargs:'")
+	}
+}
+
+func TestSetupConductor_WithEnvVars(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "test-env-conductor"
+	env := map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://api.z.ai/api/anthropic",
+		"ANTHROPIC_AUTH_TOKEN": "test-token",
+	}
+	err := SetupConductor(name, "default", true, true, "env test", "", "", env, "~/.conductor.env")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+
+	if len(meta.Env) != 2 {
+		t.Errorf("expected 2 env vars, got %d", len(meta.Env))
+	}
+	if meta.Env["ANTHROPIC_BASE_URL"] != "https://api.z.ai/api/anthropic" {
+		t.Errorf("unexpected ANTHROPIC_BASE_URL: %s", meta.Env["ANTHROPIC_BASE_URL"])
+	}
+	if meta.EnvFile != "~/.conductor.env" {
+		t.Errorf("unexpected env_file: %s", meta.EnvFile)
+	}
+
+	// Verify restricted file permissions when env vars present
+	dir, _ := ConductorNameDir(name)
+	info, err := os.Stat(filepath.Join(dir, "meta.json"))
+	if err != nil {
+		t.Fatalf("failed to stat meta.json: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("expected 0600 permissions for meta.json with env vars, got %o", info.Mode().Perm())
+	}
+}
+
+func TestSetupConductor_WithoutEnvVars(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "test-no-env-conductor"
+	err := SetupConductor(name, "default", true, true, "", "", "", nil, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+
+	if meta.Env != nil {
+		t.Errorf("expected nil env, got %v", meta.Env)
+	}
+	if meta.EnvFile != "" {
+		t.Errorf("expected empty env_file, got %s", meta.EnvFile)
 	}
 }

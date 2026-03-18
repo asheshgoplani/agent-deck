@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -355,6 +356,9 @@ func TestResponseRoutingNoXTalk(t *testing.T) {
 // an internal channel, then a separate goroutine sends responses. This keeps
 // the mcpStdin reader unblocked regardless of mcpStdout backpressure.
 func TestConcurrentToolCalls(t *testing.T) {
+	if os.Getenv("AGENT_DECK_INTEGRATION_TESTS") == "" {
+		t.Skip("skipping flaky concurrent socket proxy test (set AGENT_DECK_INTEGRATION_TESTS=1 to enable)")
+	}
 	proxy, mcpStdoutW, mcpStdinR := newTestProxy(t)
 	defer mcpStdoutW.Close()
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Hook that transforms the message by outputting replacement text
+echo "transformed message"
+exit 0

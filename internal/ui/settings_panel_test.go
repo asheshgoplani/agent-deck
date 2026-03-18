@@ -68,6 +68,11 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 		Claude: session.ClaudeSettings{
 			DangerousMode: &dangerousModeBool,
 			ConfigDir:     "~/.claude-work",
+			UseHappy:      true,
+		},
+		Codex: session.CodexSettings{
+			UseHappy: true,
+			YoloMode: true,
 		},
 		Updates: session.UpdateSettings{
 			CheckEnabled: false,
@@ -95,6 +100,15 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 	}
 	if panel.claudeConfigDir != "~/.claude-work" {
 		t.Errorf("claudeConfigDir: got %q, want %q", panel.claudeConfigDir, "~/.claude-work")
+	}
+	if !panel.claudeUseHappy {
+		t.Error("claudeUseHappy should be true")
+	}
+	if !panel.codexUseHappy {
+		t.Error("codexUseHappy should be true")
+	}
+	if !panel.codexYoloMode {
+		t.Error("codexYoloMode should be true")
 	}
 	if panel.checkForUpdates {
 		t.Error("checkForUpdates should be false")
@@ -247,6 +261,9 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel.selectedTool = 2 // opencode
 	panel.dangerousMode = true
 	panel.claudeConfigDir = "~/.claude-custom"
+	panel.claudeUseHappy = true
+	panel.codexUseHappy = true
+	panel.codexYoloMode = true
 	panel.checkForUpdates = false
 	panel.autoUpdate = true
 	panel.logMaxSizeMB = 15
@@ -266,6 +283,15 @@ func TestSettingsPanel_GetConfig(t *testing.T) {
 	}
 	if config.Claude.ConfigDir != "~/.claude-custom" {
 		t.Errorf("ConfigDir: got %q, want %q", config.Claude.ConfigDir, "~/.claude-custom")
+	}
+	if !config.Claude.UseHappy {
+		t.Error("Claude.UseHappy should be true")
+	}
+	if !config.Codex.UseHappy {
+		t.Error("Codex.UseHappy should be true")
+	}
+	if !config.Codex.YoloMode {
+		t.Error("Codex.YoloMode should be true")
 	}
 	if config.Updates.CheckEnabled {
 		t.Error("CheckEnabled should be false")
@@ -486,6 +512,29 @@ func TestSettingsPanel_Update_ToggleCheckbox(t *testing.T) {
 	}
 }
 
+func TestSettingsPanel_Update_ToggleHappyCheckboxes(t *testing.T) {
+	panel := NewSettingsPanel()
+	panel.Show()
+
+	panel.cursor = int(SettingClaudeUseHappy)
+	_, _, changed := panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("Claude use_happy toggle should report a change")
+	}
+	if !panel.claudeUseHappy {
+		t.Fatal("claudeUseHappy should toggle on")
+	}
+
+	panel.cursor = int(SettingCodexUseHappy)
+	_, _, changed = panel.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !changed {
+		t.Fatal("Codex use_happy toggle should report a change")
+	}
+	if !panel.codexUseHappy {
+		t.Fatal("codexUseHappy should toggle on")
+	}
+}
+
 func TestSettingsPanel_Update_RadioSelection(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.Show()
@@ -632,6 +681,7 @@ func TestSettingsPanel_View_Visible(t *testing.T) {
 		"Gemini",
 		"CLAUDE",
 		"Dangerous mode",
+		"Use happy wrapper",
 		"UPDATES",
 		"LOGS",
 		"GLOBAL SEARCH",

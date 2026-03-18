@@ -728,7 +728,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// Pass instance ID for activity hooks (enables real-time status updates)
 			tmuxSess.InstanceID = instData.ID
 			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
-			// Note: EnableMouseMode is now deferred to EnsureConfigured()
+			// Note: EnableMouseMode and ConfigureStatusBar are deferred to EnsureConfigured()
 			// Called automatically when user attaches to session
 		}
 
@@ -790,6 +790,12 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 				RepoRoot:     wt.RepoRoot,
 				Branch:       wt.Branch,
 			})
+		}
+
+		// Set tmux option overrides so EnsureConfigured/ConfigureStatusBar
+		// respects user-defined keys (e.g. status = "2" for multi-line bar).
+		if tmuxSess != nil {
+			tmuxSess.OptionOverrides = inst.buildTmuxOptionOverrides()
 		}
 
 		// PERFORMANCE: Skip UpdateStatus at load time - use cached status from SQLite

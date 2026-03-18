@@ -163,7 +163,7 @@ See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the 
 
 ### Conductor
 
-Conductors are persistent Claude Code sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
+Conductors are persistent agent sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
 
 Create as many conductors as you need per profile:
 
@@ -174,23 +174,38 @@ agent-deck -p work conductor setup ops --description "Ops monitor"
 # Add more conductors to the same profile (no prompts)
 agent-deck -p work conductor setup infra --description "Infra watcher"
 agent-deck conductor setup personal --description "Personal project monitor"
+
+# Run a conductor on Codex instead of Claude Code
+agent-deck -p work conductor setup review --agent codex --description "Codex reviewer"
+
+# Use a custom agent endpoint via environment variables
+agent-deck conductor setup glm-bot \
+  -env ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic \
+  -env ANTHROPIC_AUTH_TOKEN=<token> \
+  -env ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5
+
+# Or use an env file
+agent-deck conductor setup glm-bot -env-file ~/.conductor.env
 ```
 
 Each conductor gets its own directory, identity, and settings:
 
 ```
 ~/.agent-deck/conductor/
-├── CLAUDE.md           # Shared knowledge (CLI ref, protocols, rules)
+├── CLAUDE.md           # Shared knowledge for Claude conductors
+├── AGENTS.md           # Shared knowledge for Codex conductors
 ├── bridge.py           # Bridge daemon (Telegram/Slack, if configured)
 ├── ops/
 │   ├── CLAUDE.md       # Identity: "You are ops, a conductor for the work profile"
-│   ├── meta.json       # Config: name, profile, description
+│   ├── meta.json       # Config: name, profile, description, env vars
 │   ├── state.json      # Runtime state
 │   └── task-log.md     # Action log
-└── infra/
-    ├── CLAUDE.md
+└── review/
+    ├── AGENTS.md
     └── meta.json
 ```
+
+Claude conductors use `CLAUDE.md`. Codex conductors use `AGENTS.md`. Shared `POLICY.md` and `LEARNINGS.md` remain agent-neutral.
 
 **CLI commands:**
 
@@ -270,9 +285,34 @@ Agent Deck works with any terminal-based AI tool:
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
 | **OpenCode** | Status detection, organization |
-| **Codex** | Status detection, organization |
+| **Codex** | Status detection, organization, conductor |
 | **Cursor** (terminal) | Status detection, organization |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
+
+### Cost Tracking Dashboard
+
+Track token usage and costs across all your AI agent sessions in real-time.
+
+- **Automatic collection** — Claude Code hook integration reads transcript files on each turn. Gemini/Codex support via output parsing (untested)
+- **9 models priced** — Claude Opus/Sonnet/Haiku, Gemini Pro/Flash, GPT-4o/4.1, o3, o4-mini with daily price refresh
+- **TUI dashboard** — press `$` to view today/week/month costs, top sessions, model breakdown
+- **Web dashboard** — `/costs` page with Chart.js charts, group drill-down, session detail views, SSE live updates
+- **Budget limits** — configurable daily/weekly/monthly/per-group/per-session limits with 80% warning and 100% hard stop (untested)
+- **Historical sync** — `agent-deck costs sync` backfills cost data from existing Claude transcript files
+- **Export** — CSV/JSON export from web dashboard
+
+```toml
+# Optional config (~/.agent-deck/config.toml)
+[costs]
+retention_days = 90
+
+[costs.budgets]
+daily_limit = 50.00
+weekly_limit = 200.00
+
+[costs.pricing.overrides]
+"custom-model" = { input_per_mtok = 1.0, output_per_mtok = 5.0 }
+```
 
 ## Installation
 
@@ -372,6 +412,7 @@ agent-deck web --token my-secret
 | `f` / `F` | Fork (quick / dialog) |
 | `m` | MCP Manager |
 | `s` | Skills Manager (Claude) |
+| `$` | Cost Dashboard |
 | `M` | Move session to group |
 | `S` | Settings |
 | `/` / `G` | Search / Global search |

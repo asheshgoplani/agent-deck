@@ -414,3 +414,66 @@ func TestShellSettings_GetIgnoreMissingEnvFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestGetConductorEnv(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	name := "env-order-test"
+	env := map[string]string{
+		"MY_API_KEY": "conductor-value",
+		"DEBUG":      "true",
+	}
+	if err := SetupConductor(name, "default", true, true, "", "", "", env, ""); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	inst := &Instance{
+		Title:       "conductor-" + name,
+		Tool:        "claude",
+		ProjectPath: tmpHome,
+	}
+
+	result := inst.getConductorEnv(true)
+	if result == "" {
+		t.Fatal("getConductorEnv returned empty string for conductor with env vars")
+	}
+	if !strings.Contains(result, "export DEBUG='true'") {
+		t.Errorf("expected DEBUG export, got: %s", result)
+	}
+	if !strings.Contains(result, "export MY_API_KEY='conductor-value'") {
+		t.Errorf("expected MY_API_KEY export, got: %s", result)
+	}
+
+	// Verify ordering: DEBUG before MY_API_KEY (sorted)
+	debugIdx := strings.Index(result, "DEBUG")
+	apiIdx := strings.Index(result, "MY_API_KEY")
+	if debugIdx > apiIdx {
+		t.Error("env vars should be sorted alphabetically")
+	}
+}
+
+func TestGetConductorEnv_NonConductorSession(t *testing.T) {
+	inst := &Instance{
+		Title: "main",
+		Tool:  "claude",
+	}
+	if result := inst.getConductorEnv(true); result != "" {
+		t.Errorf("non-conductor session should return empty, got: %s", result)
+	}
+}
+
+func TestIsValidEnvKey(t *testing.T) {
+	valid := []string{"HOME", "MY_VAR", "_private", "A", "API_KEY_123"}
+	for _, k := range valid {
+		if !isValidEnvKey(k) {
+			t.Errorf("expected %q to be valid", k)
+		}
+	}
+	invalid := []string{"", "123BAD", "HAS SPACE", "key=val", "semi;colon", "a'b"}
+	for _, k := range invalid {
+		if isValidEnvKey(k) {
+			t.Errorf("expected %q to be invalid", k)
+		}
+	}
+}

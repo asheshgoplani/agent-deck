@@ -89,6 +89,41 @@ func TestDefaultRawPatterns_Codex(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_Codex_PromptRegex(t *testing.T) {
+	raw := DefaultRawPatterns("codex")
+	if raw == nil {
+		t.Fatal("expected non-nil for codex")
+	}
+	resolved, err := CompilePatterns(raw)
+	if err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+
+	// The › regex should match Codex's actual prompt format
+	tests := []struct {
+		content string
+		want    bool
+	}{
+		{"› Run /review on my current changes", true},
+		{"  › ", true},
+		{"› ", true},
+		{"some output without marker", false},
+		{"codex>", false}, // matched by string pattern, not regex
+	}
+	for _, tt := range tests {
+		matched := false
+		for _, re := range resolved.PromptRegexps {
+			if re.MatchString(tt.content) {
+				matched = true
+				break
+			}
+		}
+		if matched != tt.want {
+			t.Errorf("codex prompt regex on %q = %v, want %v", tt.content, matched, tt.want)
+		}
+	}
+}
+
 func TestDefaultRawPatterns_Pi(t *testing.T) {
 	raw := DefaultRawPatterns("pi")
 	if raw == nil {
