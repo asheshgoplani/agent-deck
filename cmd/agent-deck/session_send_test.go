@@ -35,15 +35,48 @@ func (m *mockStatusChecker) GetStatus() (string, error) {
 }
 
 func TestWaitForCompletion_ImmediateWaiting(t *testing.T) {
+	// When the first status is already "waiting" (no "active" seen),
+	// waitForCompletion should still return after the maxWaitForActive
+	// fallback period (not immediately). This prevents returning stale
+	// output when the session was already in "waiting" state (#380).
 	mock := &mockStatusChecker{
 		statuses: []string{"waiting"},
 	}
-	status, err := waitForCompletion(mock, 5*time.Second)
+	start := time.Now()
+	status, err := waitForCompletion(mock, 30*time.Second)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if status != "waiting" {
 		t.Errorf("expected status 'waiting', got %q", status)
+	}
+	// Should wait at least the maxWaitForActive period (8s) plus the
+	// 1s grace period before returning. Allow some slack for timing.
+	if elapsed < 8*time.Second {
+		t.Errorf("returned too quickly (%v); should wait for maxWaitForActive fallback", elapsed)
+	}
+}
+
+func TestWaitForCompletion_WaitingThenActiveThenWaiting(t *testing.T) {
+	// Simulates #380 scenario: session starts in "waiting" (pre-existing),
+	// then agent processes (goes "active"), then finishes ("waiting" again).
+	// waitForCompletion should wait through the initial "waiting" states,
+	// observe "active", and return only after the agent finishes.
+	mock := &mockStatusChecker{
+		statuses: []string{"waiting", "waiting", "active", "active", "active", "waiting"},
+	}
+	status, err := waitForCompletion(mock, 30*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != "waiting" {
+		t.Errorf("expected status 'waiting', got %q", status)
+	}
+	// Verify it polled enough times to see through the initial waiting states
+	idx := int(mock.idx.Load())
+	if idx < 5 {
+		t.Errorf("expected at least 5 status checks (to see active→waiting), got %d", idx)
 	}
 }
 
