@@ -385,6 +385,8 @@ func handleSessionFork(profile string, args []string) {
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
 	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
+	noWorktree := fs.Bool("no-worktree", false, "Skip automatic worktree creation")
+	noWorktreeShort := fs.Bool("no-wt", false, "Skip automatic worktree creation (short)")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -472,7 +474,16 @@ func handleSessionFork(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	_ = *newBranch || *newBranchLong
+	createNewBranch := *newBranch || *newBranchLong
+
+	// Auto-create worktree if configured and not explicitly skipped
+	if wtBranch == "" && !*noWorktree && !*noWorktreeShort {
+		wtSettings := session.GetWorktreeSettings()
+		if wtSettings.AutoCreate && git.IsGitRepo(inst.ProjectPath) {
+			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(forkTitle)
+			createNewBranch = true
+		}
+	}
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
@@ -487,8 +498,13 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if err := git.ValidateBranchName(wtBranch); err != nil {
-			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
+		branchExists := git.BranchExists(repoRoot, wtBranch)
+		if !createNewBranch && !branchExists {
+			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if createNewBranch && branchExists {
+			out.Error(fmt.Sprintf("branch '%s' already exists (remove -b flag to use existing branch)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 

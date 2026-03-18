@@ -39,7 +39,8 @@ func handleLaunch(profile string, args []string) {
 	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
-
+	noWorktree := fs.Bool("no-worktree", false, "Skip automatic worktree creation")
+	noWorktreeShort := fs.Bool("no-wt", false, "Skip automatic worktree creation (short)")
 
 	// MCP flag
 	var mcpFlags []string
@@ -171,27 +172,19 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// Resolve title before worktree creation (auto-create needs title for branch name)
+	// Generate title before worktree creation (auto-create needs title for branch name).
+	// Duplicate detection runs after worktree creation so it uses the final session path.
 	if sessionTitle == "" {
 		sessionTitle = filepath.Base(path)
 	}
 
-	// Check for duplicate and generate unique title
 	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
 	if !userProvidedTitle {
 		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
-		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
-			out.Error(
-				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
-				ErrCodeAlreadyExists,
-			)
-			os.Exit(1)
-		}
 	}
 
-	// Auto-create worktree if configured or requested via CLI flag
-	if wtBranch == "" {
+	// Auto-create worktree if configured and not explicitly skipped
+	if wtBranch == "" && !*noWorktree && !*noWorktreeShort {
 		wtSettings := session.GetWorktreeSettings()
 		if wtSettings.AutoCreate && git.IsGitRepo(path) {
 			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(sessionTitle)
@@ -255,6 +248,17 @@ func handleLaunch(profile string, args []string) {
 
 		worktreeRepoRoot = repoRoot
 		path = worktreePath
+	}
+
+	// Check for duplicate sessions using the final path (after worktree resolution)
+	if userProvidedTitle {
+		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
+			out.Error(
+				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
+				ErrCodeAlreadyExists,
+			)
+			os.Exit(1)
+		}
 	}
 
 	// Create new instance

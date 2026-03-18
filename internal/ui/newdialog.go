@@ -254,7 +254,12 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
 		if userConfig.Worktree.AutoCreate {
-			d.worktreeEnabled = true
+			// Only auto-enable worktree if the resolved path is a git repo
+			pathValue := d.pathInput.Value()
+			if pathValue != "" && git.IsGitRepo(pathValue) {
+				d.worktreeEnabled = true
+				d.branchAutoSet = true
+			}
 		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + d.generatedName
