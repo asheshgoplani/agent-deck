@@ -98,6 +98,7 @@ type dialogSnapshot struct {
 	claudeOptions    *session.ClaudeOptions
 	geminiYolo       bool
 	codexYolo        bool
+	codexUseHappy    bool
 	multiRepoEnabled bool
 	multiRepoPaths   []string
 }
@@ -182,8 +183,8 @@ func NewNewDialog() *NewDialog {
 		commandInput:    commandInput,
 		branchInput:     branchInput,
 		claudeOptions:   NewClaudeOptionsPanel(),
-		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
-		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
+		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all", false),
+		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox", true),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -244,10 +245,10 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.pathSoftSelected = true // activate soft-select for pre-filled path.
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)
-	d.codexOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false, false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
-		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
+		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode, userConfig.Codex.UseHappy)
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
@@ -329,6 +330,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		claudeOptions:    claudeOpts,
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
+		codexUseHappy:    d.codexOptions.GetUseHappy(),
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
 	}
@@ -348,7 +350,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 		d.claudeOptions.SetFromOptions(s.claudeOptions)
 	}
 	d.geminiOptions.SetDefaults(s.geminiYolo)
-	d.codexOptions.SetDefaults(s.codexYolo)
+	d.codexOptions.SetDefaults(s.codexYolo, s.codexUseHappy)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -405,8 +407,18 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 			var wrapper session.ToolOptionsWrapper
 			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "codex" {
 				var opts session.CodexOptions
-				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.YoloMode != nil {
-					d.codexOptions.SetDefaults(*opts.YoloMode)
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					yoloMode := d.codexOptions.GetYoloMode()
+					if opts.YoloMode != nil {
+						yoloMode = *opts.YoloMode
+					}
+					useHappy := d.codexOptions.GetUseHappy()
+					if opts.UseHappy != nil {
+						useHappy = *opts.UseHappy
+					}
+					if opts.YoloMode != nil || opts.UseHappy != nil {
+						d.codexOptions.SetDefaults(yoloMode, useHappy)
+					}
 				}
 			}
 		}
@@ -544,6 +556,19 @@ func (d *NewDialog) IsGeminiYoloMode() bool {
 // GetCodexYoloMode returns the Codex YOLO mode state
 func (d *NewDialog) GetCodexYoloMode() bool {
 	return d.codexOptions.GetYoloMode()
+}
+
+// GetCodexOptions returns the Codex-specific options (only relevant if command is "codex")
+func (d *NewDialog) GetCodexOptions() *session.CodexOptions {
+	if d.GetSelectedCommand() != "codex" {
+		return nil
+	}
+	yoloMode := d.codexOptions.GetYoloMode()
+	useHappy := d.codexOptions.GetUseHappy()
+	return &session.CodexOptions{
+		YoloMode: &yoloMode,
+		UseHappy: &useHappy,
+	}
 }
 
 // IsSandboxEnabled returns whether Docker sandbox mode is enabled.
