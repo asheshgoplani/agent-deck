@@ -44,3 +44,9 @@ export const confirmDialogSignal = signal(null)
 
 // groupNameDialogSignal: null or { mode: 'create'|'rename', groupPath: string, currentName: string, onSubmit: function }
 export const groupNameDialogSignal = signal(null)
+
+// WebSocket connection state for terminal: 'disconnected' | 'connecting' | 'connected' | 'error'
+export const wsStateSignal = signal('disconnected')
+
+// Read-only mode from WebSocket status:connected payload
+export const readOnlySignal = signal(false)
