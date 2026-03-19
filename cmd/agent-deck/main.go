@@ -815,8 +815,8 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
+	_ = fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	_ = fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 	noWorktree := fs.Bool("no-worktree", false, "Skip automatic worktree creation")
 	noWorktreeShort := fs.Bool("no-wt", false, "Skip automatic worktree creation (short)")
@@ -897,8 +897,6 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	_ = *newBranch || *newBranchLong
-
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
 	sessionGroup := mergeFlags(*group, *groupShort)
@@ -1035,7 +1033,6 @@ func handleAdd(profile string, args []string) {
 		wtSettings := session.GetWorktreeSettings()
 		if wtSettings.AutoCreate && git.IsGitRepo(path) {
 			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(sessionTitle)
-			createNewBranch = true
 		}
 	}
 
