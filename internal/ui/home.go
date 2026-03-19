@@ -4938,14 +4938,24 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
+				h.rebuildFlatItems()
+				// Track cursor to the group's new position (it may have jumped
+				// over multiple flat items if the sibling above was expanded).
+				for i, fi := range h.flatItems {
+					if fi.Type == session.ItemTypeGroup && fi.Path == item.Path {
+						h.cursor = i
+						break
+					}
+				}
+				h.saveGroupState()
 			case session.ItemTypeSession:
 				h.groupTree.MoveSessionUp(item.Session)
+				h.rebuildFlatItems()
+				if h.cursor > 0 {
+					h.cursor--
+				}
+				h.saveInstances()
 			}
-			h.rebuildFlatItems()
-			if h.cursor > 0 {
-				h.cursor--
-			}
-			h.saveInstances()
 		}
 		return h, nil
 
@@ -4956,14 +4966,24 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
+				h.rebuildFlatItems()
+				// Track cursor to the group's new position (it may have jumped
+				// over multiple flat items if the sibling below was expanded).
+				for i, fi := range h.flatItems {
+					if fi.Type == session.ItemTypeGroup && fi.Path == item.Path {
+						h.cursor = i
+						break
+					}
+				}
+				h.saveGroupState()
 			case session.ItemTypeSession:
 				h.groupTree.MoveSessionDown(item.Session)
+				h.rebuildFlatItems()
+				if h.cursor < len(h.flatItems)-1 {
+					h.cursor++
+				}
+				h.saveInstances()
 			}
-			h.rebuildFlatItems()
-			if h.cursor < len(h.flatItems)-1 {
-				h.cursor++
-			}
-			h.saveInstances()
 		}
 		return h, nil
 
