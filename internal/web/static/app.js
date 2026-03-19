@@ -1,4 +1,6 @@
-(function () {
+import { sessionsSignal, selectedIdSignal, connectionSignal } from '/static/app/state.js'
+
+;(function () {
   const menuRoot = document.getElementById("menu-root")
   const menuFilter = document.getElementById("menu-filter")
   const menuPanel = document.getElementById("menu-panel")
@@ -517,6 +519,7 @@
         return
       }
       state.snapshot = snapshot
+      sessionsSignal.value = snapshot.items || []
       reconcileGroupExpansionState(snapshot)
       renderMenu()
     })
@@ -571,6 +574,7 @@
 
   function setConnectionState(phase, detail) {
     state.connectionPhase = phase
+    connectionSignal.value = phase
     state.connectionDetail = detail || ""
     renderTopBarState()
   }
@@ -950,6 +954,7 @@
       return
     }
     state.selectedSessionId = sessionId
+    selectedIdSignal.value = sessionId
 
     if (updatePath) {
       syncRouteToSelection(false)
