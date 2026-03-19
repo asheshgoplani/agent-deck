@@ -36,9 +36,11 @@ func handleLaunch(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
+	_ = fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	_ = fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
+	noWorktree := fs.Bool("no-worktree", false, "Skip automatic worktree creation")
+	noWorktreeShort := fs.Bool("no-wt", false, "Skip automatic worktree creation (short)")
 
 	// MCP flag
 	var mcpFlags []string
@@ -129,14 +131,61 @@ func handleLaunch(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	_ = *newBranch || *newBranchLong
-
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
 		tool := firstNonEmpty(sessionCommandTool, detectTool(sessionCommandInput))
 		if tool != "claude" {
 			out.Error("--resume-session only works with Claude sessions (-c claude)", ErrCodeInvalidOperation)
 			os.Exit(1)
+		}
+	}
+
+	// Load sessions
+	storage, instances, groups, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	// Resolve parent session if specified
+	var parentInstance *session.Instance
+	if sessionParent != "" {
+		var errMsg string
+		parentInstance, errMsg, _ = ResolveSession(sessionParent, instances)
+		if parentInstance == nil {
+			out.Error(errMsg, ErrCodeNotFound)
+			os.Exit(1)
+		}
+		if parentInstance.IsSubSession() {
+			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+	} else if !*noParent {
+		parentInstance = resolveAutoParentInstance(instances)
+		if parentInstance != nil && !parentInstance.IsSubSession() {
+			sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+		} else {
+			parentInstance = nil
+		}
+	}
+
+	// Generate title before worktree creation (auto-create needs title for branch name).
+	// Duplicate detection runs after worktree creation so it uses the final session path.
+	if sessionTitle == "" {
+		sessionTitle = filepath.Base(path)
+	}
+
+	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
+	if !userProvidedTitle {
+		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
+	}
+
+	// Auto-create worktree if configured and not explicitly skipped
+	if wtBranch == "" && !*noWorktree && !*noWorktreeShort {
+		wtSettings := session.GetWorktreeSettings()
+		if wtSettings.AutoCreate && git.IsGitRepo(path) {
+			wtBranch = wtSettings.Prefix() + git.SanitizeBranchName(sessionTitle)
 		}
 	}
 
@@ -198,46 +247,8 @@ func handleLaunch(profile string, args []string) {
 		path = worktreePath
 	}
 
-	// Load sessions
-	storage, instances, groups, err := loadSessionData(profile)
-	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
-		os.Exit(1)
-	}
-
-	// Resolve parent session if specified
-	var parentInstance *session.Instance
-	if sessionParent != "" {
-		var errMsg string
-		parentInstance, errMsg, _ = ResolveSession(sessionParent, instances)
-		if parentInstance == nil {
-			out.Error(errMsg, ErrCodeNotFound)
-			os.Exit(1)
-		}
-		if parentInstance.IsSubSession() {
-			out.Error("cannot create sub-session of a sub-session (single level only)", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
-	} else if !*noParent {
-		parentInstance = resolveAutoParentInstance(instances)
-		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
-		} else {
-			parentInstance = nil
-		}
-	}
-
-	// Default title to folder name
-	if sessionTitle == "" {
-		sessionTitle = filepath.Base(path)
-	}
-
-	// Check for duplicate and generate unique title
-	userProvidedTitle := (mergeFlags(*title, *titleShort) != "")
-	if !userProvidedTitle {
-		sessionTitle = generateUniqueTitle(instances, sessionTitle, path)
-	} else {
+	// Check for duplicate sessions using the final path (after worktree resolution)
+	if userProvidedTitle {
 		if isDupe, existingInst := isDuplicateSession(instances, sessionTitle, path); isDupe {
 			out.Error(
 				fmt.Sprintf("session already exists: %s (%s)", existingInst.Title, existingInst.ID),
