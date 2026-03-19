@@ -549,6 +549,7 @@ func main() {
 		if costStore != nil {
 			server.SetCostStore(costStore)
 		}
+		server.SetMutator(ui.NewWebMutator(homeModel))
 		go func() {
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
@@ -576,6 +577,7 @@ func main() {
 		homeModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
 	)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
