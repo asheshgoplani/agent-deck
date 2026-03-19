@@ -1037,32 +1037,38 @@ func TestNewDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
 	d.focusIndex = d.indexOf(focusBranch)
 	d.updateFocus()
 
-	origPicker := openBranchPicker
-	defer func() { openBranchPicker = origPicker }()
+	origLoader := loadBranchCandidates
+	defer func() { loadBranchCandidates = origLoader }()
 
 	called := false
-	openBranchPicker = func(path string) tea.Cmd {
+	loadBranchCandidates = func(path string) ([]string, error) {
 		called = true
 		if path != "/tmp/project" {
-			t.Fatalf("picker path = %q, want %q", path, "/tmp/project")
+			t.Fatalf("loader path = %q, want %q", path, "/tmp/project")
 		}
-		return func() tea.Msg {
-			return branchPickerResultMsg{branch: "feature/picked"}
-		}
+		return []string{"feature/alpha", "feature/picked", "bugfix/one"}, nil
 	}
 
-	var cmd tea.Cmd
-	d, cmd = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if !called {
 		t.Fatal("expected ctrl+f to open branch picker")
 	}
-	if cmd == nil {
-		t.Fatal("expected ctrl+f to return a branch picker command")
+	if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+		t.Fatal("expected ctrl+f to show the in-TUI branch picker")
 	}
 
-	d, _ = d.Update(cmd())
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("p")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("i")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("c")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("k")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("e")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("d")})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := d.branchInput.Value(); got != "feature/picked" {
 		t.Fatalf("branch = %q, want %q", got, "feature/picked")
+	}
+	if !d.branchInput.Focused() {
+		t.Fatal("expected branch input to regain focus after selecting a branch")
 	}
 	if d.validationErr != "" {
 		t.Fatalf("expected no validation error, got %q", d.validationErr)
@@ -1077,7 +1083,13 @@ func TestNewDialog_BranchPickerErrorIsShown(t *testing.T) {
 	d.focusIndex = d.indexOf(focusBranch)
 	d.updateFocus()
 
-	d, _ = d.Update(branchPickerResultMsg{err: os.ErrNotExist})
+	origLoader := loadBranchCandidates
+	defer func() { loadBranchCandidates = origLoader }()
+	loadBranchCandidates = func(path string) ([]string, error) {
+		return nil, os.ErrNotExist
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
 	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
 		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
 	}

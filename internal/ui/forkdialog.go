@@ -27,6 +27,7 @@ type ForkDialog struct {
 	// Worktree support
 	worktreeEnabled bool
 	branchInput     textinput.Model
+	branchPicker    *BranchPickerDialog
 	isGitRepo       bool
 	// Docker sandbox support
 	sandboxEnabled bool
@@ -53,6 +54,7 @@ func NewForkDialog() *ForkDialog {
 		nameInput:    nameInput,
 		groupInput:   groupInput,
 		branchInput:  branchInput,
+		branchPicker: NewBranchPickerDialog(),
 		optionsPanel: NewClaudeOptionsPanelForFork(),
 	}
 }
@@ -68,6 +70,9 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	d.nameInput.Focus()
 	d.groupInput.Blur()
 	d.branchInput.Blur()
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 	d.optionsPanel.Blur()
 
 	// Reset worktree fields.
@@ -93,12 +98,20 @@ func (d *ForkDialog) Hide() {
 	d.nameInput.Blur()
 	d.groupInput.Blur()
 	d.branchInput.Blur()
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 	d.optionsPanel.Blur()
 }
 
 // IsVisible returns whether the dialog is visible
 func (d *ForkDialog) IsVisible() bool {
 	return d.visible
+}
+
+// IsBranchPickerOpen returns whether the inline branch result list is visible.
+func (d *ForkDialog) IsBranchPickerOpen() bool {
+	return d.branchPicker != nil && d.branchPicker.IsVisible()
 }
 
 // GetValues returns the current input values
@@ -124,6 +137,9 @@ func (d *ForkDialog) GetOptions() *session.ClaudeOptions {
 func (d *ForkDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
+	if d.branchPicker != nil {
+		d.branchPicker.SetSize(width, height)
+	}
 }
 
 // ToggleWorktree toggles the worktree checkbox
@@ -217,6 +233,20 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		return d, nil
 
 	case tea.KeyMsg:
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			if selected, handled := d.branchPicker.Update(msg); handled {
+				if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+					d.branchInput.Focus()
+				}
+				if selected != "" {
+					d.branchInput.SetValue(selected)
+					d.branchInput.SetCursor(len(selected))
+					d.ClearError()
+				}
+				return d, nil
+			}
+		}
+
 		switch msg.String() {
 		case "tab", "down":
 			if d.focusIndex < optStart {
@@ -280,7 +310,17 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 
 		case "ctrl+f":
 			if d.focusIndex == 2 && d.worktreeEnabled {
-				return d, openBranchPicker(d.projectPath)
+				if d.branchPicker == nil {
+					d.branchPicker = NewBranchPickerDialog()
+				}
+				d.branchPicker.SetSize(d.width, d.height)
+				if err := d.branchPicker.Show(d.projectPath, d.branchInput.Value()); err != nil {
+					d.SetError(err.Error())
+				} else {
+					d.ClearError()
+					d.branchInput.Focus()
+				}
+				return d, nil
 			}
 
 		case "s":
@@ -307,7 +347,11 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		d.groupInput, cmd = d.groupInput.Update(msg)
 	case 2:
 		if d.worktreeEnabled {
+			oldBranch := d.branchInput.Value()
 			d.branchInput, cmd = d.branchInput.Update(msg)
+			if d.branchInput.Value() != oldBranch && d.branchPicker != nil && d.branchPicker.IsVisible() {
+				d.branchPicker.SetQuery(d.branchInput.Value())
+			}
 		} else {
 			cmd = d.optionsPanel.Update(msg)
 		}
@@ -415,6 +459,9 @@ func (d *ForkDialog) View() string {
 			}
 			worktreeSection += "\n"
 			worktreeSection += "  " + d.branchInput.View() + "\n"
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				worktreeSection += "  " + strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  ") + "\n"
+			}
 		}
 	}
 
@@ -442,7 +489,11 @@ func (d *ForkDialog) View() string {
 
 	helpText := "Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle"
 	if d.focusIndex == 2 && d.worktreeEnabled {
-		helpText = "^F fzf pick │ Enter create │ Esc cancel │ Tab next"
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
+		} else {
+			helpText = "^F branch search │ Enter create │ Esc cancel │ Tab next"
+		}
 	}
 
 	content := titleStyle.Render("Fork Session") + "\n\n" +
