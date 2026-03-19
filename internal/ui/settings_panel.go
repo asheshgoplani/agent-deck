@@ -367,6 +367,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.Preview.NotesOutputSplit = s.originalConfig.Preview.NotesOutputSplit
 		config.Preview.Analytics = s.originalConfig.Preview.Analytics
 		config.Profiles = s.originalConfig.Profiles
+		config.Worktree = s.originalConfig.Worktree
 		// Keep global Claude config when editing profile-specific override.
 		if s.claudeConfigIsScope {
 			config.Claude.ConfigDir = s.originalConfig.Claude.ConfigDir
