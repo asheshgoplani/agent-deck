@@ -48,6 +48,15 @@
         : null,
   }
 
+  // FOUND-05: Strip auth token from URL to prevent leaking in Referer headers.
+  // The token is already stored in state.authToken above. Remove it from the
+  // visible browser URL bar before any SSE or fetch calls fire.
+  if (state.authToken) {
+    const cleanURL = new URL(window.location.href)
+    cleanURL.searchParams.delete("token")
+    window.history.replaceState({}, "", cleanURL.pathname + cleanURL.search + cleanURL.hash)
+  }
+
   function readAuthTokenFromURL() {
     const params = new URLSearchParams(window.location.search || "")
     return String(params.get("token") || "").trim()
