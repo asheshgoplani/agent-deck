@@ -70,7 +70,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	d.branchInput.Blur()
 	d.optionsPanel.Blur()
 
-	// Reset worktree fields.
+	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
 	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
@@ -84,6 +84,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	if config, err := session.LoadUserConfig(); err == nil {
 		d.optionsPanel.SetDefaults(config)
 		d.sandboxEnabled = config.Docker.DefaultEnabled
+		d.worktreeEnabled = config.Worktree.DefaultEnabled
 	}
 }
 

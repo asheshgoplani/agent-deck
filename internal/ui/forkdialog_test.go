@@ -2,9 +2,11 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -32,6 +34,33 @@ func TestForkDialog_Show(t *testing.T) {
 	}
 	if group != "group/path" {
 		t.Errorf("Group = %s, want 'group/path'", group)
+	}
+}
+
+func TestForkDialog_Show_UsesConfiguredWorktreeDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	session.ClearUserConfigCache()
+	defer session.ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Worktree: session.WorktreeSettings{DefaultEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	d := NewForkDialog()
+	d.Show("Original Session", "/path/to/project", "group/path")
+
+	if !d.worktreeEnabled {
+		t.Error("worktreeEnabled should default to true from config on Show")
 	}
 }
 
