@@ -36,6 +36,20 @@ type MenuDataLoader interface {
 	LoadMenuSnapshot() (*MenuSnapshot, error)
 }
 
+// SessionMutator is implemented by internal/ui.WebMutator and injected at startup.
+// It bridges web HTTP handlers to the TUI session/group management methods.
+type SessionMutator interface {
+	CreateSession(title, tool, projectPath, groupPath string) (string, error)
+	StartSession(sessionID string) error
+	StopSession(sessionID string) error
+	RestartSession(sessionID string) error
+	DeleteSession(sessionID string) error
+	ForkSession(sessionID string) (string, error)
+	CreateGroup(name, parentPath string) (string, error)
+	RenameGroup(groupPath, newName string) error
+	DeleteGroup(groupPath string) error
+}
+
 // Server wraps an HTTP server for Agent Deck web mode.
 type Server struct {
 	cfg         Config
@@ -50,6 +64,7 @@ type Server struct {
 	menuSubscribers   map[chan struct{}]struct{}
 
 	costStore       *costs.Store
+	mutator         SessionMutator
 	mutationLimiter *rate.Limiter
 }
 
@@ -248,6 +263,11 @@ func (s *Server) unsubscribeMenuChanges(ch chan struct{}) {
 
 func (s *Server) SetCostStore(store *costs.Store) {
 	s.costStore = store
+}
+
+// SetMutator injects the session mutator implementation (typically *ui.WebMutator).
+func (s *Server) SetMutator(m SessionMutator) {
+	s.mutator = m
 }
 
 func (s *Server) notifyMenuChanged() {
