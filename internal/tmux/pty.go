@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -234,6 +235,10 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		}
 		// Reset OSC-8 hyperlink state + SGR attributes before Bubble Tea redraws.
 		_, _ = os.Stdout.WriteString(terminalStyleReset)
+		// Re-disable Kitty keyboard protocol — the attached session (or tools
+		// inside it like Claude Code) may have re-enabled it, leaving the
+		// outer terminal in CSI u mode where Bubble Tea can't parse shift keys.
+		terminal.DisableKittyKeyboard(os.Stdout)
 	}
 
 	// Wait for either detach key or command completion
