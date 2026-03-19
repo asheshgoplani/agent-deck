@@ -5,6 +5,7 @@ import { sessionsSignal, selectedIdSignal, authTokenSignal, sessionCostsSignal, 
 import { isGroupExpanded, groupExpandedSignal } from './groupState.js'
 import { GroupRow } from './GroupRow.js'
 import { SessionRow } from './SessionRow.js'
+import { useKeyboardNav } from './useKeyboardNav.js'
 
 // Fetch batch costs once after the session list first loads
 let costsFetched = false
@@ -46,6 +47,8 @@ function hasCollapsedAncestor(path) {
 export function SessionList() {
   const items = sessionsSignal.value
   const focusedId = focusedIdSignal.value
+
+  useKeyboardNav()
 
   // Trigger batch cost fetch on first non-empty items
   useEffect(() => {
