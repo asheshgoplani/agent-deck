@@ -311,6 +311,11 @@ func (d *NewDialog) IsRecentPickerOpen() bool {
 	return d.showRecentPicker && len(d.recentSessions) > 0
 }
 
+// IsBranchPickerOpen returns whether the inline branch result list is visible.
+func (d *NewDialog) IsBranchPickerOpen() bool {
+	return d.branchPicker != nil && d.branchPicker.IsVisible()
+}
+
 // SetRecentSessions sets the list of recently deleted session configs.
 func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
 	d.recentSessions = sessions
@@ -905,6 +910,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	case tea.KeyMsg:
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			if selected, handled := d.branchPicker.Update(msg); handled {
+				if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+					d.branchInput.Focus()
+				}
 				if selected != "" {
 					d.branchInput.SetValue(selected)
 					d.branchInput.SetCursor(len(selected))
@@ -1064,10 +1072,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.branchPicker = NewBranchPickerDialog()
 				}
 				d.branchPicker.SetSize(d.width, d.height)
-				if err := d.branchPicker.Show(d.worktreePickerPath()); err != nil {
+				if err := d.branchPicker.Show(d.worktreePickerPath(), d.branchInput.Value()); err != nil {
 					d.SetError(err.Error())
 				} else {
 					d.ClearError()
+					d.branchInput.Focus()
 				}
 				return d, nil
 			}
@@ -1322,6 +1331,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		d.branchInput, cmd = d.branchInput.Update(msg)
 		if d.branchInput.Value() != oldBranch {
 			d.branchAutoSet = false
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				d.branchPicker.SetQuery(d.branchInput.Value())
+			}
 		}
 	case focusOptions:
 		if d.toolOptions != nil {

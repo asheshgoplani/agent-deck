@@ -183,6 +183,7 @@ func TestForkDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
 	d := NewForkDialog()
 	d.Show("Test", "/tmp/project", "group")
 	d.worktreeEnabled = true
+	d.branchInput.SetValue("")
 	d.focusIndex = 2
 	d.updateFocus()
 
@@ -215,6 +216,9 @@ func TestForkDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := d.branchInput.Value(); got != "fork/picked" {
 		t.Fatalf("branch = %q, want %q", got, "fork/picked")
+	}
+	if !d.branchInput.Focused() {
+		t.Fatal("expected branch input to regain focus after selecting a branch")
 	}
 }
 

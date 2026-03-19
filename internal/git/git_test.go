@@ -611,6 +611,17 @@ func TestListBranchCandidates(t *testing.T) {
 	runGit(t, dir, "checkout", "main")
 	runGit(t, dir, "branch", "-D", "feature/remote-only")
 
+	secondRemoteDir := filepath.Join(t.TempDir(), "qzchenwl.git")
+	if err := os.MkdirAll(secondRemoteDir, 0o755); err != nil {
+		t.Fatalf("failed to create second remote dir: %v", err)
+	}
+	runGit(t, secondRemoteDir, "init", "--bare")
+	runGit(t, dir, "remote", "add", "qzchenwl", secondRemoteDir)
+	runGit(t, dir, "checkout", "-b", "feature/fork-remote")
+	runGit(t, dir, "push", "-u", "qzchenwl", "feature/fork-remote")
+	runGit(t, dir, "checkout", "main")
+	runGit(t, dir, "branch", "-D", "feature/fork-remote")
+
 	branches, err := ListBranchCandidates(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -619,8 +630,11 @@ func TestListBranchCandidates(t *testing.T) {
 	if !containsString(branches, "feature/local-only") {
 		t.Fatalf("expected local branch in candidates: %v", branches)
 	}
-	if !containsString(branches, "feature/remote-only") {
-		t.Fatalf("expected remote-only branch in candidates: %v", branches)
+	if !containsString(branches, "origin/feature/remote-only") {
+		t.Fatalf("expected origin remote-only branch in candidates: %v", branches)
+	}
+	if !containsString(branches, "qzchenwl/feature/fork-remote") {
+		t.Fatalf("expected second remote branch in candidates: %v", branches)
 	}
 }
 

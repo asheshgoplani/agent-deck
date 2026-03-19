@@ -109,6 +109,11 @@ func (d *ForkDialog) IsVisible() bool {
 	return d.visible
 }
 
+// IsBranchPickerOpen returns whether the inline branch result list is visible.
+func (d *ForkDialog) IsBranchPickerOpen() bool {
+	return d.branchPicker != nil && d.branchPicker.IsVisible()
+}
+
 // GetValues returns the current input values
 func (d *ForkDialog) GetValues() (name, group string) {
 	return d.nameInput.Value(), d.groupInput.Value()
@@ -230,6 +235,9 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 	case tea.KeyMsg:
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			if selected, handled := d.branchPicker.Update(msg); handled {
+				if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+					d.branchInput.Focus()
+				}
 				if selected != "" {
 					d.branchInput.SetValue(selected)
 					d.branchInput.SetCursor(len(selected))
@@ -306,10 +314,11 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 					d.branchPicker = NewBranchPickerDialog()
 				}
 				d.branchPicker.SetSize(d.width, d.height)
-				if err := d.branchPicker.Show(d.projectPath); err != nil {
+				if err := d.branchPicker.Show(d.projectPath, d.branchInput.Value()); err != nil {
 					d.SetError(err.Error())
 				} else {
 					d.ClearError()
+					d.branchInput.Focus()
 				}
 				return d, nil
 			}
@@ -338,7 +347,11 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		d.groupInput, cmd = d.groupInput.Update(msg)
 	case 2:
 		if d.worktreeEnabled {
+			oldBranch := d.branchInput.Value()
 			d.branchInput, cmd = d.branchInput.Update(msg)
+			if d.branchInput.Value() != oldBranch && d.branchPicker != nil && d.branchPicker.IsVisible() {
+				d.branchPicker.SetQuery(d.branchInput.Value())
+			}
 		} else {
 			cmd = d.optionsPanel.Update(msg)
 		}

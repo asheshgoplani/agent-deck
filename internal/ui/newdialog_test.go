@@ -1067,6 +1067,9 @@ func TestNewDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
 	if got := d.branchInput.Value(); got != "feature/picked" {
 		t.Fatalf("branch = %q, want %q", got, "feature/picked")
 	}
+	if !d.branchInput.Focused() {
+		t.Fatal("expected branch input to regain focus after selecting a branch")
+	}
 	if d.validationErr != "" {
 		t.Fatalf("expected no validation error, got %q", d.validationErr)
 	}

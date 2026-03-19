@@ -486,8 +486,9 @@ func listRefShortNames(repoDir string, refs ...string) ([]string, error) {
 	return names, nil
 }
 
-// ListBranchCandidates returns unique branch names from local branches and the
-// default remote, normalized to plain branch names without a remote prefix.
+// ListBranchCandidates returns unique branch names from local branches and all
+// configured remotes. Local branches use plain names; remote branches keep
+// their remote prefix (for example "origin/main").
 func ListBranchCandidates(repoDir string) ([]string, error) {
 	if !IsGitRepo(repoDir) {
 		return nil, errors.New("not a git repository")
@@ -508,18 +509,17 @@ func ListBranchCandidates(repoDir string) ([]string, error) {
 		seen[branch] = struct{}{}
 	}
 
-	if defaultRemote, err := getDefaultRemote(repoDir); err == nil && defaultRemote != "" {
-		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+defaultRemote)
+	remotes, err := listRemotes(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, remote := range remotes {
+		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+remote)
 		if err != nil {
 			return nil, err
 		}
-		prefix := defaultRemote + "/"
 		for _, branch := range remoteBranches {
-			if branch == defaultRemote+"/HEAD" {
-				continue
-			}
-			branch = strings.TrimPrefix(branch, prefix)
-			if branch == "" {
+			if branch == remote || branch == remote+"/HEAD" {
 				continue
 			}
 			seen[branch] = struct{}{}
