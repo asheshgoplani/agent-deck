@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -373,4 +376,107 @@ func FormatPath(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// isTTY checks if stdin is a terminal
+func isTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// promptConfirm displays a confirmation prompt and returns true if user confirms
+// Default is No (user must explicitly type 'y' or 'Y')
+func promptConfirm(prompt string) bool {
+	if !isTTY() {
+		return false
+	}
+
+	fmt.Printf("%s (y/N): ", prompt)
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes"
+}
+
+// promptCreateDir prompts user to create a missing directory
+func promptCreateDir(path string) bool {
+	if !isTTY() {
+		fmt.Fprintf(os.Stderr, "Error: interactive prompt requires a TTY\n")
+		fmt.Fprintf(os.Stderr, "Use --yes to auto-confirm in scripts: agent-deck add --confirm --yes\n")
+		os.Exit(1)
+	}
+
+	fmt.Printf("Directory does not exist: %s\n", path)
+	return promptConfirm("Create it")
+}
+
+// printAddReviewSummary displays a review summary for agent-deck add command
+func printAddReviewSummary(title, path, tool, command, group, parent, mcpList string, sandbox, worktree bool) {
+	fmt.Println("\n=== Session Review ===")
+	fmt.Printf("Title:     %s\n", title)
+	fmt.Printf("Path:      %s\n", path)
+	if tool != "" {
+		fmt.Printf("Tool:      %s\n", tool)
+	}
+	if command != "" {
+		fmt.Printf("Command:   %s\n", command)
+	}
+	if group != "" {
+		fmt.Printf("Group:     %s\n", group)
+	}
+	if parent != "" {
+		fmt.Printf("Parent:    %s\n", parent)
+	}
+	if mcpList != "" {
+		fmt.Printf("MCPs:      %s\n", mcpList)
+	}
+	if sandbox {
+		fmt.Println("Sandbox:   enabled")
+	}
+	if worktree {
+		fmt.Println("Worktree:  enabled")
+	}
+	fmt.Println()
+}
+
+// printLaunchReviewSummary displays a review summary for agent-deck launch command
+func printLaunchReviewSummary(title, path, tool, command, group, parent, mcpList, message string, sandbox, worktree, noWait bool) {
+	fmt.Println("\n=== Session Review ===")
+	fmt.Printf("Title:     %s\n", title)
+	fmt.Printf("Path:      %s\n", path)
+	if tool != "" {
+		fmt.Printf("Tool:      %s\n", tool)
+	}
+	if command != "" {
+		fmt.Printf("Command:   %s\n", command)
+	}
+	if group != "" {
+		fmt.Printf("Group:     %s\n", group)
+	}
+	if parent != "" {
+		fmt.Printf("Parent:    %s\n", parent)
+	}
+	if mcpList != "" {
+		fmt.Printf("MCPs:      %s\n", mcpList)
+	}
+	if sandbox {
+		fmt.Println("Sandbox:   enabled")
+	}
+	if worktree {
+		fmt.Println("Worktree:  enabled")
+	}
+	if message != "" {
+		fmt.Printf("Message:   %s\n", message)
+		if noWait {
+			fmt.Println("           (will send with --no-wait)")
+		} else {
+			fmt.Println("           (will start and send)")
+		}
+	} else {
+		fmt.Println("Action:    will start tmux session")
+	}
+	fmt.Println()
 }
