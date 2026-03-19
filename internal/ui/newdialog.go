@@ -338,7 +338,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.codexOptions.Blur()
 	// Keep commandCursor at previously set default (don't reset to 0)
 	d.updateToolOptions()
-	// Reset worktree fields.
+	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
@@ -370,6 +370,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
+		d.worktreeEnabled = userConfig.Worktree.DefaultEnabled
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
 	}

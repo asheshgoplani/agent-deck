@@ -2,6 +2,7 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -599,6 +600,33 @@ func TestNewDialog_ShowInGroup_ResetsMultiRepo(t *testing.T) {
 	}
 	if dialog.multiRepoEditing {
 		t.Error("multiRepoEditing should be false on ShowInGroup")
+	}
+}
+
+func TestNewDialog_ShowInGroup_UsesConfiguredWorktreeDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	session.ClearUserConfigCache()
+	defer session.ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Worktree: session.WorktreeSettings{DefaultEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	dialog := NewNewDialog()
+	dialog.ShowInGroup("projects", "Projects", "", nil, "")
+
+	if !dialog.worktreeEnabled {
+		t.Error("worktreeEnabled should default to true from config on ShowInGroup")
 	}
 }
 

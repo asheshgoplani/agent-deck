@@ -639,6 +639,11 @@ type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted
 	AutoCleanup bool `toml:"auto_cleanup"`
 
+	// DefaultEnabled controls whether worktree creation is pre-selected in
+	// new-session and fork dialogs by default.
+	// Default: false
+	DefaultEnabled bool `toml:"default_enabled"`
+
 	// DefaultLocation: "sibling" (next to repo), "subdirectory" (inside .worktrees/),
 	// or a custom path (e.g., "~/worktrees") creating <path>/<repo_name>/<branch>
 	DefaultLocation string `toml:"default_location"`
@@ -1750,6 +1755,8 @@ default_tool = "claude"
 [worktree]
 # Where to create worktrees: "sibling" (next to repo) or "subdirectory" (inside repo)
 default_location = "sibling"
+# Pre-check "Create in worktree" in new-session and fork dialogs (default: false)
+# default_enabled = true
 # Automatically remove worktree when session is deleted
 auto_cleanup = true
 # Custom path template (overrides default_location if set)

@@ -393,6 +393,7 @@ func TestWorktreeConfig(t *testing.T) {
 	configContent := `
 [worktree]
 default_location = "subdirectory"
+default_enabled = true
 auto_cleanup = false
 `
 	configPath := filepath.Join(tmpDir, "config.toml")
@@ -409,6 +410,9 @@ auto_cleanup = false
 
 	if config.Worktree.DefaultLocation != "subdirectory" {
 		t.Errorf("Expected DefaultLocation 'subdirectory', got %q", config.Worktree.DefaultLocation)
+	}
+	if !config.Worktree.DefaultEnabled {
+		t.Error("Expected DefaultEnabled to be true")
 	}
 	if config.Worktree.AutoCleanup {
 		t.Error("Expected AutoCleanup to be false")
@@ -470,6 +474,7 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	config := &UserConfig{
 		Worktree: WorktreeSettings{
 			DefaultLocation: "subdirectory",
+			DefaultEnabled:  true,
 			AutoCleanup:     false,
 		},
 	}
@@ -479,6 +484,9 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	settings := GetWorktreeSettings()
 	if settings.DefaultLocation != "subdirectory" {
 		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "subdirectory")
+	}
+	if !settings.DefaultEnabled {
+		t.Error("GetWorktreeSettings DefaultEnabled: should be true from config")
 	}
 	if settings.AutoCleanup {
 		t.Error("GetWorktreeSettings AutoCleanup: should be false from config")
