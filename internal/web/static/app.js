@@ -1,4 +1,4 @@
-import { sessionsSignal, selectedIdSignal, connectionSignal } from '/static/app/state.js'
+import { sessionsSignal, selectedIdSignal, connectionSignal, authTokenSignal } from '/static/app/state.js'
 
 ;(function () {
   const menuRoot = document.getElementById("menu-root")
@@ -58,6 +58,9 @@ import { sessionsSignal, selectedIdSignal, connectionSignal } from '/static/app/
     cleanURL.searchParams.delete("token")
     window.history.replaceState({}, "", cleanURL.pathname + cleanURL.search + cleanURL.hash)
   }
+
+  // Bridge auth token to Preact signals for API calls
+  authTokenSignal.value = state.authToken
 
   function readAuthTokenFromURL() {
     const params = new URLSearchParams(window.location.search || "")
@@ -783,6 +786,7 @@ import { sessionsSignal, selectedIdSignal, connectionSignal } from '/static/app/
   }
 
   function renderMenu() {
+    if (window.__preactSessionListActive) return
     const snapshot = state.snapshot
     if (!snapshot || !Array.isArray(snapshot.items)) {
       menuRoot.innerHTML = `<div class="menu-empty">No session data available.</div>`
