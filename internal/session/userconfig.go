@@ -863,6 +863,14 @@ type TmuxSettings struct {
 	// Default: true (nil = use default true)
 	InjectStatusLine *bool `toml:"inject_status_line"`
 
+	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
+	// all sessions, overriding the theme default. Use "default" to let your terminal
+	// emulator's background show through instead of agent-deck's theme color.
+	// Empty string (default) means use the theme's built-in value.
+	// Takes precedence over the same keys in Options if both are set.
+	// Example: window_style_override = "default"
+	WindowStyleOverride string `toml:"window_style_override"`
+
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
@@ -1745,6 +1753,9 @@ auto_cleanup = true
 # agent-deck stops mutating the global tmux notification bar / number key bindings
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
+# window_style_override sets the tmux window-style for all sessions, overriding
+# the theme default. Use "default" to let your terminal's background show through.
+# window_style_override = "default"
 # Override tmux options applied to every session (applied after defaults)
 # Options matching agent-deck's managed keys (status, status-style,
 # status-left-length, status-right, status-right-length) will cause agent-deck
