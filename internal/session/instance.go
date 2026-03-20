@@ -24,9 +24,12 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/docker"
+	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 var (
@@ -64,6 +67,13 @@ const (
 	codexProbeMissingSentinel = "__AGENT_DECK_MISSING_TOOL__"
 )
 
+type WorktreeType string
+
+const (
+	WorktreeTypeGit     WorktreeType = "git"
+	WorktreeTypeJujutsu WorktreeType = "jujutsu"
+)
+
 // Instance represents a single agent/shell session
 type Instance struct {
 	ID                string `json:"id"`
@@ -78,6 +88,7 @@ type Instance struct {
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
+	WorktreeType     string `json:"worktree_type,omitempty"`      // "git", "jujutsu", or "" (auto-detect)
 
 	// Multi-repo support
 	MultiRepoEnabled   bool                `json:"multi_repo_enabled,omitempty"`
@@ -361,6 +372,17 @@ func (inst *Instance) GetWaitingSince() time.Time {
 // IsSubSession returns true if this session has a parent
 func (inst *Instance) IsSubSession() bool {
 	return inst.ParentSessionID != ""
+}
+
+// Backend returns the backend for this instance
+func (inst *Instance) Backend() (vcs.Backend, error) {
+	switch inst.WorktreeType {
+	case string(WorktreeTypeGit), "":
+		return git.NewGitBackend(inst.WorktreePath)
+	case string(WorktreeTypeJujutsu):
+		return jujutsu.NewJJBackend(inst.WorktreePath)
+	}
+	return nil, fmt.Errorf("Unrecognized VCS type: %s", inst.WorktreeType)
 }
 
 // IsWorktree returns true if this session is running in a git worktree

@@ -11,16 +11,48 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 var consecutiveDashesRe = regexp.MustCompile(`-+`)
 
-// Worktree represents a git worktree
-type Worktree struct {
-	Path   string // Filesystem path to the worktree
-	Branch string // Branch name checked out in this worktree
-	Commit string // HEAD commit SHA
-	Bare   bool   // Whether this is the bare repository
+// GitBackend encapsulates a repository directory and provides methods that
+// implement the vcs.Backend interface. Construct via NewGitBackend.
+type GitBackend struct {
+	repoDir string
+}
+
+// Compile-time check that *GitBackend satisfies vcs.Backend.
+var _ vcs.Backend = (*GitBackend)(nil)
+
+// NewGitBackend validates dir is a git repository, resolves through worktrees
+// to prevent nesting, and returns a GitBackend rooted at the main repo.
+func NewGitBackend(dir string) (*GitBackend, error) {
+	if !IsGitRepo(dir) {
+		return nil, fmt.Errorf("not a git repository: %s", dir)
+	}
+	root, err := GetWorktreeBaseRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &GitBackend{repoDir: root}, nil
+}
+
+func (g *GitBackend) Type() vcs.Type { return vcs.TypeGit }
+
+// RepoDir returns the root directory of the repository.
+func (g *GitBackend) RepoDir() string { return g.repoDir }
+
+// WorktreePath generates a worktree path using the backend's repoDir.
+func (g *GitBackend) WorktreePath(opts vcs.WorktreePathOptions) string {
+	return WorktreePath(WorktreePathOptions{
+		Branch:    opts.Branch,
+		Location:  opts.Location,
+		RepoDir:   g.repoDir,
+		SessionID: opts.SessionID,
+		Template:  opts.Template,
+	})
 }
 
 // IsGitRepo checks if the given directory is inside a git repository
@@ -40,9 +72,9 @@ func GetRepoRoot(dir string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// GetCurrentBranch returns the current branch name for the repository at dir
-func GetCurrentBranch(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+// GetCurrentBranch returns the current branch name.
+func (g *GitBackend) GetCurrentBranch() (string, error) {
+	cmd := exec.Command("git", "-C", g.repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
@@ -50,9 +82,9 @@ func GetCurrentBranch(dir string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-// BranchExists checks if a branch exists in the repository
-func BranchExists(repoDir, branchName string) bool {
-	cmd := exec.Command("git", "-C", repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+// BranchExists checks if a branch exists in the repository.
+func (g *GitBackend) BranchExists(branchName string) bool {
+	cmd := exec.Command("git", "-C", g.repoDir, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
 	err := cmd.Run()
 	return err == nil
 }
@@ -159,20 +191,19 @@ func GenerateWorktreePath(repoDir, branchName, location string) string {
 	}
 }
 
-// CreateWorktree creates a new git worktree at worktreePath for the given branch
-// If the branch doesn't exist, it will be created
-func CreateWorktree(repoDir, worktreePath, branchName string) error {
-	// Validate branch name first
+// CreateWorktree creates a new git worktree.
+// If the branch doesn't exist, it will be created.
+func (g *GitBackend) CreateWorktree(worktreePath, branchName string) error {
+
 	if err := ValidateBranchName(branchName); err != nil {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
 
-	// Check if it's a git repo
-	if !IsGitRepo(repoDir) {
+	if !IsGitRepo(g.repoDir) {
 		return errors.New("not a git repository")
 	}
 
-	resolution, err := resolveWorktreeBranch(repoDir, branchName)
+	resolution, err := g.resolveWorktreeBranch(branchName)
 	if err != nil {
 		return err
 	}
@@ -180,15 +211,15 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 	var cmd *exec.Cmd
 	switch resolution.Mode {
 	case worktreeBranchLocal:
-		// Reuse an existing local branch.
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", worktreePath, branchName)
+		// Use existing branch
+		cmd = exec.Command("git", "-C", g.repoDir, "worktree", "add", worktreePath, branchName)
 	case worktreeBranchRemote:
 		// Create a local tracking branch from the default remote.
 		remoteRef := resolution.Remote + "/" + branchName
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "--track", "-b", branchName, worktreePath, remoteRef)
+		cmd = exec.Command("git", "-C", g.repoDir, "worktree", "add", "--track", "-b", branchName, worktreePath, remoteRef)
 	default:
-		// Create a new local branch.
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
+		// Create new branch with -b flag
+		cmd = exec.Command("git", "-C", g.repoDir, "worktree", "add", "-b", branchName, worktreePath)
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -199,13 +230,13 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 	return nil
 }
 
-// ListWorktrees returns all worktrees for the repository at repoDir
-func ListWorktrees(repoDir string) ([]Worktree, error) {
-	if !IsGitRepo(repoDir) {
+// ListWorktrees returns all worktrees for the repository.
+func (g *GitBackend) ListWorktrees() ([]vcs.Worktree, error) {
+	if !IsGitRepo(g.repoDir) {
 		return nil, errors.New("not a git repository")
 	}
 
-	cmd := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain")
+	cmd := exec.Command("git", "-C", g.repoDir, "worktree", "list", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list worktrees: %w", err)
@@ -215,9 +246,9 @@ func ListWorktrees(repoDir string) ([]Worktree, error) {
 }
 
 // parseWorktreeList parses the output of `git worktree list --porcelain`
-func parseWorktreeList(output string) []Worktree {
-	var worktrees []Worktree
-	var current Worktree
+func parseWorktreeList(output string) []vcs.Worktree {
+	var worktrees []vcs.Worktree
+	var current vcs.Worktree
 
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	for scanner.Scan() {
@@ -228,7 +259,7 @@ func parseWorktreeList(output string) []Worktree {
 			if current.Path != "" {
 				worktrees = append(worktrees, current)
 			}
-			current = Worktree{}
+			current = vcs.Worktree{}
 			continue
 		}
 
@@ -257,14 +288,14 @@ func parseWorktreeList(output string) []Worktree {
 	return worktrees
 }
 
-// RemoveWorktree removes a worktree from the repository
-// If force is true, it will remove even if there are uncommitted changes
-func RemoveWorktree(repoDir, worktreePath string, force bool) error {
-	if !IsGitRepo(repoDir) {
+// RemoveWorktree removes a worktree from the repository.
+// If force is true, it will remove even if there are uncommitted changes.
+func (g *GitBackend) RemoveWorktree(worktreePath string, force bool) error {
+	if !IsGitRepo(g.repoDir) {
 		return errors.New("not a git repository")
 	}
 
-	args := []string{"-C", repoDir, "worktree", "remove"}
+	args := []string{"-C", g.repoDir, "worktree", "remove"}
 	if force {
 		args = append(args, "--force")
 	}
@@ -279,9 +310,9 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 	return nil
 }
 
-// GetWorktreeForBranch returns the worktree path for a given branch, if any
-func GetWorktreeForBranch(repoDir, branchName string) (string, error) {
-	worktrees, err := ListWorktrees(repoDir)
+// GetWorktreeForBranch returns the worktree path for a given branch, if any.
+func (g *GitBackend) GetWorktreeForBranch(branchName string) (string, error) {
+	worktrees, err := g.ListWorktrees()
 	if err != nil {
 		return "", err
 	}
@@ -390,8 +421,8 @@ func SanitizeBranchName(name string) string {
 	return sanitized
 }
 
-func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution, error) {
-	if !IsGitRepo(repoDir) {
+func (g *GitBackend) resolveWorktreeBranch(branchName string) (worktreeBranchResolution, error) {
+	if !IsGitRepo(g.repoDir) {
 		return worktreeBranchResolution{}, errors.New("not a git repository")
 	}
 
@@ -400,13 +431,13 @@ func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution
 		Mode:   worktreeBranchNew,
 	}
 
-	if BranchExists(repoDir, branchName) {
+	if g.BranchExists(branchName) {
 		resolution.Mode = worktreeBranchLocal
 		return resolution, nil
 	}
 
-	defaultRemote, err := getDefaultRemote(repoDir)
-	if err == nil && defaultRemote != "" && remoteBranchExists(repoDir, defaultRemote, branchName) {
+	defaultRemote, err := g.getDefaultRemote()
+	if err == nil && defaultRemote != "" && remoteBranchExists(g.repoDir, defaultRemote, branchName) {
 		resolution.Mode = worktreeBranchRemote
 		resolution.Remote = defaultRemote
 	}
@@ -414,8 +445,8 @@ func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution
 	return resolution, nil
 }
 
-func getDefaultRemote(repoDir string) (string, error) {
-	remotes, err := listRemotes(repoDir)
+func (g *GitBackend) getDefaultRemote() (string, error) {
+	remotes, err := listRemotes(g.repoDir)
 	if err != nil {
 		return "", err
 	}
@@ -423,9 +454,9 @@ func getDefaultRemote(repoDir string) (string, error) {
 		return "", errors.New("no git remotes configured")
 	}
 
-	currentBranch, err := GetCurrentBranch(repoDir)
+	currentBranch, err := g.GetCurrentBranch()
 	if err == nil && currentBranch != "" && currentBranch != "HEAD" {
-		cmd := exec.Command("git", "-C", repoDir, "config", "--get", "branch."+currentBranch+".remote")
+		cmd := exec.Command("git", "-C", g.repoDir, "config", "--get", "branch."+currentBranch+".remote")
 		output, err := cmd.Output()
 		if err == nil {
 			remote := strings.TrimSpace(string(output))
@@ -488,11 +519,8 @@ func listRefShortNames(repoDir string, refs ...string) ([]string, error) {
 
 // ListBranchCandidates returns unique branch names from local branches and the
 // default remote, normalized to plain branch names without a remote prefix.
-func ListBranchCandidates(repoDir string) ([]string, error) {
-	if !IsGitRepo(repoDir) {
-		return nil, errors.New("not a git repository")
-	}
-
+func (g *GitBackend) ListBranchCandidates() ([]string, error) {
+	repoDir := g.repoDir
 	repoRoot, err := GetWorktreeBaseRoot(repoDir)
 	if err == nil && repoRoot != "" {
 		repoDir = repoRoot
@@ -508,7 +536,7 @@ func ListBranchCandidates(repoDir string) ([]string, error) {
 		seen[branch] = struct{}{}
 	}
 
-	if defaultRemote, err := getDefaultRemote(repoDir); err == nil && defaultRemote != "" {
+	if defaultRemote, err := g.getDefaultRemote(); err == nil && defaultRemote != "" {
 		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+defaultRemote)
 		if err != nil {
 			return nil, err
@@ -544,10 +572,10 @@ func HasUncommittedChanges(dir string) (bool, error) {
 	return strings.TrimSpace(string(output)) != "", nil
 }
 
-// GetDefaultBranch returns the default branch name (e.g. "main" or "master") for the repo
-func GetDefaultBranch(repoDir string) (string, error) {
+// GetDefaultBranch returns the default branch name (e.g. "main" or "master").
+func (g *GitBackend) GetDefaultBranch() (string, error) {
 	// Try symbolic-ref first (works when remote HEAD is set)
-	cmd := exec.Command("git", "-C", repoDir, "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd := exec.Command("git", "-C", g.repoDir, "symbolic-ref", "refs/remotes/origin/HEAD")
 	output, err := cmd.Output()
 	if err == nil {
 		ref := strings.TrimSpace(string(output))
@@ -558,19 +586,19 @@ func GetDefaultBranch(repoDir string) (string, error) {
 	}
 
 	// Fallback: check for common default branch names
-	if BranchExists(repoDir, "main") {
+	if g.BranchExists("main") {
 		return "main", nil
 	}
-	if BranchExists(repoDir, "master") {
+	if g.BranchExists("master") {
 		return "master", nil
 	}
 
 	return "", errors.New("could not determine default branch (no origin/HEAD, no main or master branch)")
 }
 
-// MergeBranch merges the given branch into the current branch of the repository
-func MergeBranch(repoDir, branchName string) error {
-	cmd := exec.Command("git", "-C", repoDir, "merge", branchName)
+// MergeBranch merges the given branch into the current branch.
+func (g *GitBackend) MergeBranch(branchName string) error {
+	cmd := exec.Command("git", "-C", g.repoDir, "merge", branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("merge failed: %s: %w", strings.TrimSpace(string(output)), err)
@@ -579,12 +607,12 @@ func MergeBranch(repoDir, branchName string) error {
 }
 
 // DeleteBranch deletes a local branch. If force is true, uses -D (force delete).
-func DeleteBranch(repoDir, branchName string, force bool) error {
+func (g *GitBackend) DeleteBranch(branchName string, force bool) error {
 	flag := "-d"
 	if force {
 		flag = "-D"
 	}
-	cmd := exec.Command("git", "-C", repoDir, "branch", flag, branchName)
+	cmd := exec.Command("git", "-C", g.repoDir, "branch", flag, branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to delete branch: %s: %w", strings.TrimSpace(string(output)), err)
@@ -592,9 +620,9 @@ func DeleteBranch(repoDir, branchName string, force bool) error {
 	return nil
 }
 
-// PruneWorktrees removes stale worktree references
-func PruneWorktrees(repoDir string) error {
-	cmd := exec.Command("git", "-C", repoDir, "worktree", "prune")
+// PruneWorktrees removes stale worktree references.
+func (g *GitBackend) PruneWorktrees() error {
+	cmd := exec.Command("git", "-C", g.repoDir, "worktree", "prune")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to prune worktrees: %s: %w", strings.TrimSpace(string(output)), err)
