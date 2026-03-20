@@ -4,7 +4,7 @@ import { selectedIdSignal, sessionCostsSignal, confirmDialogSignal } from './sta
 import { apiFetch } from './api.js'
 
 const STATUS_COLORS = {
-  running:  'bg-tn-blue',
+  running:  'bg-tn-green animate-pulse',
   waiting:  'bg-tn-yellow animate-pulse',
   idle:     'bg-tn-muted',
   error:    'bg-tn-red',
@@ -64,7 +64,7 @@ export function SessionRow({ item, focused }) {
         style="padding-left: calc(${item.level || 0} * 1rem + 0.75rem)"
         data-session-id=${session.id}
       >
-        <span class="w-2 h-2 rounded-full flex-shrink-0 ${dotColor}"></span>
+        <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${dotColor}" title=${session.status}></span>
         <span class="flex-1 break-all min-w-0">${session.title || session.id}</span>
         <span class="text-xs dark:text-tn-muted text-gray-400 flex-shrink-0">
           ${session.tool || 'shell'}
