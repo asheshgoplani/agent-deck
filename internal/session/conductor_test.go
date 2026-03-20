@@ -1917,7 +1917,7 @@ func TestBridgeTemplate_DiscordConfigLoading(t *testing.T) {
 	template := conductorBridgePy
 	patterns := []string{
 		`dc = conductor_cfg.get("discord", {})`,
-		`dc_bot_token = dc.get("bot_token", "")`,
+		`dc_bot_token = _resolve_secret(dc.get("bot_token", ""))`,
 		`dc_guild_id = dc.get("guild_id", 0)`,
 		`dc_channel_id = dc.get("channel_id", 0)`,
 		`dc_user_id = dc.get("user_id", 0)`,
