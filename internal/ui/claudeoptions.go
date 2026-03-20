@@ -137,7 +137,7 @@ func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 			opts.SessionMode = "continue"
 		case 2:
 			opts.SessionMode = "resume"
-			opts.ResumeSessionID = p.resumeIDInput.Value()
+			opts.ResumeSessionID = session.ExtractSessionUUID(p.resumeIDInput.Value())
 		}
 	}
 
