@@ -100,7 +100,7 @@ func (d costDashboard) View() string {
 
 	// Help
 	helpStyle := lipgloss.NewStyle().Foreground(ColorComment)
-	b.WriteString("  " + helpStyle.Render("Press q or C to return"))
+	b.WriteString("  " + helpStyle.Render("Press q or $ to return"))
 
 	return b.String()
 }

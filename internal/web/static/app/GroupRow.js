@@ -52,7 +52,7 @@ export function GroupRow({ item }) {
         aria-expanded=${expanded}
       >
         <span class="text-base leading-none select-none">${expanded ? '\u25BE' : '\u25B8'}</span>
-        <span class="flex-1 break-all min-w-0 text-left">${group.name || group.path}</span>
+        <span class="flex-1 truncate min-w-0 text-left">${group.name || group.path}</span>
         <span class="dark:text-tn-muted/60 text-gray-400 font-normal">
           (${group.sessionCount || 0})
         </span>

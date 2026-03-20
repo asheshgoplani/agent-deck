@@ -33,7 +33,7 @@
     <!-- 3. Tailwind config: Tokyo Night palette + dark mode via selector -->
     <script>
       tailwind.config = {
-        darkMode: 'selector',
+        darkMode: 'class',
         theme: {
           extend: {
             fontFamily: {
@@ -100,9 +100,9 @@
     <link rel="stylesheet" href="/static/vendor/xterm.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
+  <body class="bg-gray-100 dark:bg-tn-bg text-gray-900 dark:text-tn-fg min-h-screen">
     <!-- Preact app mounts here -->
-    <div id="app-root"></div>
+    <div id="app-root" class="min-h-screen"></div>
 
     <!-- xterm.js Canvas renderer addon (UMD, loaded by TerminalPanel.js) -->
     <script src="/static/vendor/addon-canvas.js"></script>

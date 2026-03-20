@@ -186,23 +186,6 @@ func (d *ForkDialog) ClearError() {
 	d.validationErr = ""
 }
 
-func (d *ForkDialog) applyBranchPickerResult(msg branchPickerResultMsg) {
-	if msg.err != nil {
-		d.SetError(msg.err.Error())
-		return
-	}
-	if msg.canceled {
-		return
-	}
-	if msg.branch == "" {
-		return
-	}
-
-	d.branchInput.SetValue(msg.branch)
-	d.branchInput.SetCursor(len(msg.branch))
-	d.ClearError()
-}
-
 // Update handles input events
 func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 	if !d.visible {
@@ -212,10 +195,6 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 	optStart := d.optionsStartIndex()
 
 	switch msg := msg.(type) {
-	case branchPickerResultMsg:
-		d.applyBranchPickerResult(msg)
-		return d, nil
-
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "down":
@@ -276,11 +255,6 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 					d.updateFocus()
 				}
 				return d, nil
-			}
-
-		case "ctrl+f":
-			if d.focusIndex == 2 && d.worktreeEnabled {
-				return d, openBranchPicker(d.projectPath)
 			}
 
 		case "s":
@@ -440,11 +414,6 @@ func (d *ForkDialog) View() string {
 		errLine = "\n" + errStyle.Render("  ⚠ "+d.validationErr) + "\n"
 	}
 
-	helpText := "Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle"
-	if d.focusIndex == 2 && d.worktreeEnabled {
-		helpText = "^F fzf pick │ Enter create │ Esc cancel │ Tab next"
-	}
-
 	content := titleStyle.Render("Fork Session") + "\n\n" +
 		nameLabel + "\n" +
 		"  " + d.nameInput.View() + "\n\n" +
@@ -455,7 +424,7 @@ func (d *ForkDialog) View() string {
 		d.optionsPanel.View() +
 		errLine + "\n" +
 		lipgloss.NewStyle().Foreground(ColorComment).
-			Render(helpText)
+			Render("Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle")
 
 	dialog := boxStyle.Render(content)
 

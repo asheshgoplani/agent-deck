@@ -383,8 +383,8 @@ func handleSessionFork(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group for forked session (short)")
 	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -472,7 +472,7 @@ func handleSessionFork(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	_ = *newBranch || *newBranchLong
+	createNewBranch := *newBranch || *newBranchLong
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
@@ -487,8 +487,8 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if err := git.ValidateBranchName(wtBranch); err != nil {
-			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
+		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
+			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -1665,11 +1665,6 @@ type statusChecker interface {
 
 // waitForCompletion polls until the agent finishes processing (status leaves "active").
 // Returns the final status string ("waiting", "idle", "inactive") or an error on timeout.
-//
-// To avoid returning stale output when the session was already in a non-active state
-// before the message was sent (#380), this function requires seeing "active" at least
-// once before accepting a non-active status as completion. A fallback timer
-// (maxWaitForActive) prevents hanging when the agent processes faster than our polling.
 func waitForCompletion(checker statusChecker, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -1682,18 +1677,6 @@ func waitForCompletion(checker statusChecker, timeout time.Duration) (string, er
 
 	consecutiveErrors := 0
 	const maxConsecutiveErrors = 5
-
-	// Track whether we've observed "active" status at least once.
-	// Without this gate, a pre-existing "waiting" state (from the previous
-	// task) causes an immediate return before the new response is ready.
-	sawActive := false
-
-	// Safety fallback: if the agent processes so quickly that we never
-	// observe "active" (e.g. sub-second response), don't block forever.
-	// After this duration without seeing "active", accept the next
-	// non-active status.
-	const maxWaitForActive = 8 * time.Second
-	waitStart := time.Now()
 
 	for {
 		select {
@@ -1715,20 +1698,12 @@ func waitForCompletion(checker statusChecker, timeout time.Duration) (string, er
 
 		// "active" means still processing, keep waiting
 		if status == "active" {
-			sawActive = true
 			time.Sleep(pollInterval)
 			continue
 		}
 
-		// Non-active status: only return if we've confirmed the agent
-		// was actually processing (sawActive), or if enough time has
-		// passed that a fast response must have already completed.
-		if sawActive || time.Since(waitStart) >= maxWaitForActive {
-			return status, nil
-		}
-
-		// Haven't seen "active" yet — keep polling to catch the transition.
-		time.Sleep(pollInterval)
+		// Any non-active status means the agent is done
+		return status, nil
 	}
 }
 

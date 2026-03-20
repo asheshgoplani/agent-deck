@@ -192,7 +192,6 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	config := &UserConfig{
 		Claude: ClaudeSettings{
 			DangerousMode: &dangerousModeBool,
-			UseHappy:      true,
 		},
 	}
 
@@ -203,9 +202,6 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	}
 	if !opts.SkipPermissions {
 		t.Error("expected SkipPermissions=true when config.DangerousMode=true")
-	}
-	if !opts.UseHappy {
-		t.Error("expected UseHappy=true when config.Claude.UseHappy=true")
 	}
 }
 
@@ -220,9 +216,6 @@ func TestNewClaudeOptions_NilConfig(t *testing.T) {
 	}
 	if opts.AllowSkipPermissions {
 		t.Error("expected AllowSkipPermissions=false when config is nil")
-	}
-	if opts.UseHappy {
-		t.Error("expected UseHappy=false when config is nil")
 	}
 }
 
@@ -309,7 +302,6 @@ func TestUnmarshalClaudeOptions(t *testing.T) {
 	opts := &ClaudeOptions{
 		SessionMode:     "resume",
 		ResumeSessionID: "test-session-123",
-		UseHappy:        true,
 		SkipPermissions: true,
 		UseChrome:       true,
 		UseTeammateMode: true,
@@ -334,9 +326,6 @@ func TestUnmarshalClaudeOptions(t *testing.T) {
 	}
 	if !result.SkipPermissions {
 		t.Error("expected SkipPermissions=true")
-	}
-	if !result.UseHappy {
-		t.Error("expected UseHappy=true")
 	}
 	if !result.UseChrome {
 		t.Error("expected UseChrome=true")
@@ -424,28 +413,22 @@ func TestCodexOptions_ToArgs(t *testing.T) {
 }
 
 func TestNewCodexOptions_WithConfig(t *testing.T) {
-	// Global yolo=true, use_happy=true
+	// Global yolo=true
 	config := &UserConfig{
-		Codex: CodexSettings{YoloMode: true, UseHappy: true},
+		Codex: CodexSettings{YoloMode: true},
 	}
 	opts := NewCodexOptions(config)
 	if opts.YoloMode == nil || !*opts.YoloMode {
 		t.Error("expected YoloMode=true when config.Codex.YoloMode=true")
 	}
-	if opts.UseHappy == nil || !*opts.UseHappy {
-		t.Error("expected UseHappy=true when config.Codex.UseHappy=true")
-	}
 
-	// Global yolo=false, use_happy=false
+	// Global yolo=false
 	config2 := &UserConfig{
-		Codex: CodexSettings{YoloMode: false, UseHappy: false},
+		Codex: CodexSettings{YoloMode: false},
 	}
 	opts2 := NewCodexOptions(config2)
 	if opts2.YoloMode != nil {
 		t.Errorf("expected YoloMode=nil when config.Codex.YoloMode=false, got %v", *opts2.YoloMode)
-	}
-	if opts2.UseHappy != nil {
-		t.Errorf("expected UseHappy=nil when config.Codex.UseHappy=false, got %v", *opts2.UseHappy)
 	}
 }
 
@@ -454,13 +437,10 @@ func TestNewCodexOptions_NilConfig(t *testing.T) {
 	if opts.YoloMode != nil {
 		t.Errorf("expected YoloMode=nil when config is nil, got %v", *opts.YoloMode)
 	}
-	if opts.UseHappy != nil {
-		t.Errorf("expected UseHappy=nil when config is nil, got %v", *opts.UseHappy)
-	}
 }
 
 func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
-	original := &CodexOptions{YoloMode: boolPtr(true), UseHappy: boolPtr(true)}
+	original := &CodexOptions{YoloMode: boolPtr(true)}
 
 	data, err := MarshalToolOptions(original)
 	if err != nil {
@@ -474,9 +454,6 @@ func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
 
 	if restored.YoloMode == nil || !*restored.YoloMode {
 		t.Error("expected YoloMode=true after roundtrip")
-	}
-	if restored.UseHappy == nil || !*restored.UseHappy {
-		t.Error("expected UseHappy=true after roundtrip")
 	}
 }
 
@@ -505,7 +482,7 @@ func TestUnmarshalCodexOptions_WrongTool(t *testing.T) {
 }
 
 func TestCodexOptions_RoundTrip_NilYolo(t *testing.T) {
-	original := &CodexOptions{YoloMode: nil, UseHappy: nil}
+	original := &CodexOptions{YoloMode: nil}
 
 	data, err := MarshalToolOptions(original)
 	if err != nil {
@@ -519,9 +496,6 @@ func TestCodexOptions_RoundTrip_NilYolo(t *testing.T) {
 
 	if restored.YoloMode != nil {
 		t.Errorf("expected YoloMode=nil after roundtrip, got %v", *restored.YoloMode)
-	}
-	if restored.UseHappy != nil {
-		t.Errorf("expected UseHappy=nil after roundtrip, got %v", *restored.UseHappy)
 	}
 }
 

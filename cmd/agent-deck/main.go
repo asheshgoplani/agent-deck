@@ -549,7 +549,6 @@ func main() {
 		if costStore != nil {
 			server.SetCostStore(costStore)
 		}
-		server.SetMutator(ui.NewWebMutator(homeModel))
 		go func() {
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
@@ -577,7 +576,6 @@ func main() {
 		homeModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
 	)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
@@ -817,8 +815,8 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag - can be specified multiple times
@@ -897,7 +895,7 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	_ = *newBranch || *newBranchLong
+	createNewBranch := *newBranch || *newBranchLong
 
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
@@ -1034,6 +1032,17 @@ func handleAdd(profile string, args []string) {
 		// Pre-validate branch name for better error messages
 		if err := git.ValidateBranchName(wtBranch); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid branch name: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
+		branchExists := git.BranchExists(repoRoot, wtBranch)
+		if createNewBranch && branchExists {
+			fmt.Fprintf(
+				os.Stderr,
+				"Error: branch '%s' already exists (remove -b flag to use existing branch)\n",
+				wtBranch,
+			)
 			os.Exit(1)
 		}
 
