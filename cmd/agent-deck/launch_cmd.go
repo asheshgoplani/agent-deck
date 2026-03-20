@@ -272,6 +272,13 @@ func handleLaunch(profile string, args []string) {
 
 	if sessionWrapperResolved != "" {
 		newInstance.Wrapper = sessionWrapperResolved
+	} else if newInstance.Wrapper == "" {
+		// Fall back to tool-level wrapper from config.toml (e.g. [claude].wrapper)
+		if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+			if session.IsClaudeCompatible(newInstance.Tool) && cfg.Claude.Wrapper != "" {
+				newInstance.Wrapper = cfg.Claude.Wrapper
+			}
+		}
 	}
 
 	if worktreePath != "" {

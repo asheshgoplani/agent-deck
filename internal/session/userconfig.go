@@ -553,6 +553,12 @@ type ClaudeSettings struct {
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled"`
+
+	// Wrapper is an optional command that wraps the Claude process.
+	// Use {command} placeholder to include the tool command.
+	// Applied as default wrapper for new Claude sessions (can be overridden per-session).
+	// Example: wrapper = "osc8-shorten {command}"
+	Wrapper string `toml:"wrapper"`
 }
 
 // GetProfileClaudeConfigDir returns the profile-specific Claude config directory, if configured.

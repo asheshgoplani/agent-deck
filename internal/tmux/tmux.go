@@ -655,6 +655,11 @@ type Session struct {
 	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
 	RunCommandAsInitialProcess bool
 
+	// SkipBashCWrap tells Start() to skip the automatic bash -c wrapping.
+	// Set by prepareCommand when a wrapper pre-wraps the compound command,
+	// preventing double-wrapping that would break nested quoting.
+	SkipBashCWrap bool
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -1283,7 +1288,9 @@ func (s *Session) Start(command string) error {
 	if command != "" && !startWithInitialProcess {
 		cmdToSend := command
 		// Commands containing bash-specific syntax must be wrapped for fish users.
-		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+		// Skip if SkipBashCWrap is set (command was pre-wrapped by prepareCommand
+		// to support user wrappers without double-wrapping).
+		if !s.SkipBashCWrap && (strings.Contains(command, "$(") || strings.Contains(command, "session_id=")) {
 			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
 			cmdToSend = fmt.Sprintf("bash -c '%s'", escapedCmd)
 		}

@@ -1134,9 +1134,15 @@ func handleAdd(profile string, args []string) {
 		newInstance.Command = sessionCommandResolved
 	}
 
-	// Set wrapper if provided
+	// Set wrapper if provided, or fall back to tool-level config
 	if sessionWrapperResolved != "" {
 		newInstance.Wrapper = sessionWrapperResolved
+	} else if newInstance.Wrapper == "" {
+		if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil {
+			if session.IsClaudeCompatible(newInstance.Tool) && cfg.Claude.Wrapper != "" {
+				newInstance.Wrapper = cfg.Claude.Wrapper
+			}
+		}
 	}
 
 	// Set worktree fields if created

@@ -1793,6 +1793,25 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 	return wrapper, nil
 }
 
+// hasEffectiveWrapper returns true if the instance has a wrapper configured,
+// either directly on the instance or via the tool definition in config.toml.
+func (i *Instance) hasEffectiveWrapper() bool {
+	if i.Wrapper != "" {
+		return true
+	}
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.Wrapper != "" {
+		return true
+	}
+	return false
+}
+
+// commandNeedsBashCWrap returns true if the command is a compound shell expression
+// that needs bash -c wrapping to be passed as a single unit to a wrapper executable.
+func commandNeedsBashCWrap(cmd string) bool {
+	return strings.Contains(cmd, "$(") || strings.Contains(cmd, "&&") ||
+		strings.Contains(cmd, "; ") || strings.Contains(cmd, "session_id=")
+}
+
 // loadCustomPatternsFromConfig loads detection patterns from built-in defaults + config.toml
 // overrides, and sets them on the tmux session for status detection and tool auto-detection.
 // Works for ALL tools: built-in (claude, gemini, opencode, codex) and custom.
@@ -4949,6 +4968,19 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	// When a wrapper is configured and the command is a compound shell expression
+	// (contains &&, ;, etc.), pre-wrap the command in bash -c so the wrapper
+	// executable receives a single atomic command. Without this, shell operators
+	// would cause the wrapper to only apply to the first segment.
+	// We also tell tmux to skip its own bash -c wrapping to avoid double-wrapping.
+	if i.hasEffectiveWrapper() && commandNeedsBashCWrap(cmd) {
+		escaped := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		cmd = fmt.Sprintf("bash -c '%s'", escaped)
+		if i.tmuxSession != nil {
+			i.tmuxSession.SkipBashCWrap = true
+		}
+	}
+
 	wrapped, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", "", err
