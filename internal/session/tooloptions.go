@@ -2,7 +2,26 @@ package session
 
 import (
 	"encoding/json"
+	"regexp"
+	"strings"
 )
+
+// uuidPattern matches standard UUID format (8-4-4-4-12 hex chars)
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
+// ExtractSessionUUID extracts a UUID from a string that may contain a full
+// command (e.g., "claude --resume abc12345-...") or just the UUID itself.
+// Returns the extracted UUID, or the original string trimmed if no UUID is found.
+func ExtractSessionUUID(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	if match := uuidPattern.FindString(input); match != "" {
+		return match
+	}
+	return input
+}
 
 // ToolOptions is the interface for tool-specific launch options
 // Each AI tool (claude, codex, gemini, etc.) can have its own options struct
