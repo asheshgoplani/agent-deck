@@ -5,7 +5,7 @@
 // Desktop (1024px+): sidebar always visible
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { sidebarOpenSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal } from './state.js'
+import { sidebarOpenSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal } from './state.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
@@ -13,6 +13,7 @@ import { ConfirmDialog } from './ConfirmDialog.js'
 import { GroupNameDialog } from './GroupNameDialog.js'
 import { TerminalPanel } from './TerminalPanel.js'
 import { CostDashboard } from './CostDashboard.js'
+import { SettingsPanel } from './SettingsPanel.js'
 
 export function AppShell() {
   const sidebarOpen = sidebarOpenSignal.value
@@ -20,6 +21,7 @@ export function AppShell() {
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
   const activeTab = activeTabSignal.value
+  const drawerOpen = infoDrawerOpenSignal.value
 
   function toggleSidebar() {
     const next = !sidebarOpenSignal.value
@@ -35,6 +37,16 @@ export function AppShell() {
       if (vanillaApp) vanillaApp.style.display = ''
     }
   }, [])
+
+  // Close info drawer on Escape key
+  useEffect(() => {
+    if (!drawerOpen) return
+    function onKey(e) {
+      if (e.key === 'Escape') { infoDrawerOpenSignal.value = false }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [drawerOpen])
 
   return html`
     <div class="flex flex-col h-screen dark:bg-tn-bg bg-tn-light-bg">
@@ -106,6 +118,35 @@ export function AppShell() {
       ${showCreateSession && html`<${CreateSessionDialog} />`}
       ${confirmData && html`<${ConfirmDialog} ...${confirmData} />`}
       ${groupNameData && html`<${GroupNameDialog} ...${groupNameData} />`}
+
+      ${drawerOpen && html`
+        <div
+          class="fixed inset-0 z-40 bg-black/40"
+          onClick=${() => { infoDrawerOpenSignal.value = false }}
+          onKeyDown=${(e) => { if (e.key === 'Escape') infoDrawerOpenSignal.value = false }}
+          aria-hidden="true"
+        />
+        <div class="fixed top-0 right-0 bottom-0 z-50 w-72 max-w-[90vw]
+                    dark:bg-tn-panel bg-white
+                    border-l dark:border-tn-muted/20 border-gray-200
+                    shadow-xl flex flex-col"
+             role="dialog"
+             aria-label="Info panel">
+          <div class="flex items-center justify-between px-sp-12 py-sp-8
+                      border-b dark:border-tn-muted/20 border-gray-200">
+            <span class="text-sm font-semibold dark:text-tn-fg text-gray-900">Info</span>
+            <button
+              type="button"
+              onClick=${() => { infoDrawerOpenSignal.value = false }}
+              class="dark:text-tn-muted text-gray-400 hover:dark:text-tn-fg hover:text-gray-700 transition-colors p-1 rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
+              aria-label="Close info panel"
+            >\u2715</button>
+          </div>
+          <div class="flex-1 overflow-y-auto px-sp-12 py-sp-12">
+            <${SettingsPanel} />
+          </div>
+        </div>
+      `}
     </div>
   `
 }

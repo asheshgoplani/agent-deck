@@ -1,15 +1,12 @@
-// Topbar.js -- Full-width topbar with sidebar toggle, brand, connection, theme, settings
+// Topbar.js -- Full-width topbar with sidebar toggle, brand, connection, theme, profile, info drawer toggle
 import { html } from 'htm/preact'
-import { useState } from 'preact/hooks'
 import { ThemeToggle } from './ThemeToggle.js'
-import { SettingsPanel } from './SettingsPanel.js'
+import { ProfileDropdown } from './ProfileDropdown.js'
 import { ConnectionIndicator } from './ConnectionIndicator.js'
-import { activeTabSignal } from './state.js'
+import { activeTabSignal, infoDrawerOpenSignal } from './state.js'
 import { PushControls } from './PushControls.js'
 
 export function Topbar({ onToggleSidebar, sidebarOpen }) {
-  const [showSettings, setShowSettings] = useState(false)
-
   return html`
     <header class="flex items-center justify-between px-sp-12 py-sp-8
       dark:bg-tn-panel bg-white border-b dark:border-tn-muted/20 border-gray-200
@@ -38,23 +35,19 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
         </button>
         <${ConnectionIndicator} />
         <${ThemeToggle} />
+        <${ProfileDropdown} />
         <button
-          onClick=${() => setShowSettings(!showSettings)}
-          class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors"
-          title="Toggle settings"
-          aria-expanded=${showSettings}
+          type="button"
+          onClick=${() => { infoDrawerOpenSignal.value = !infoDrawerOpenSignal.value }}
+          class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors px-2 py-1 rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
+          title="Toggle info panel"
+          aria-expanded=${infoDrawerOpenSignal.value}
+          aria-label=${infoDrawerOpenSignal.value ? 'Close info panel' : 'Open info panel'}
         >
-          ${showSettings ? 'Hide' : 'Info'}
+          Info
         </button>
         <${PushControls} />
       </div>
-      ${showSettings && html`
-        <div class="absolute top-full right-2 mt-1 z-50 px-3 py-2 rounded-lg
-          dark:bg-tn-panel bg-white shadow-lg border
-          dark:border-tn-muted/20 border-gray-200 min-w-[200px]">
-          <${SettingsPanel} />
-        </div>
-      `}
     </header>
   `
 }
