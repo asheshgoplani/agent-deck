@@ -6,11 +6,19 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// maxHookPayloadSize limits the size of JSON payloads read from stdin
+// to prevent denial-of-service via oversized input.
+const maxHookPayloadSize = 1 << 20 // 1 MB
+
+// validInstanceID matches UUID-style instance IDs to prevent path traversal.
+var validInstanceID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // hookPayload represents the JSON payload Claude Code sends to hooks via stdin.
 // Only the fields we need are decoded; unknown fields are ignored.
@@ -77,8 +85,13 @@ func handleHookHandler() {
 		return
 	}
 
-	// Read stdin (Claude sends hook payload as JSON)
-	data, err := io.ReadAll(os.Stdin)
+	// Validate instance ID to prevent path traversal via crafted env vars.
+	if !validInstanceID.MatchString(instanceID) || strings.Contains(instanceID, "..") {
+		return
+	}
+
+	// Read stdin with size limit to prevent DoS via oversized payloads.
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookPayloadSize))
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -121,7 +134,7 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 	}
 
 	hooksDir := getHooksDir()
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	if err := os.MkdirAll(hooksDir, 0700); err != nil {
 		return
 	}
 
@@ -144,9 +157,9 @@ func writeHookStatus(instanceID, status, sessionID, event string) {
 		return
 	}
 
-	filePath := filepath.Join(hooksDir, instanceID+".json")
+	filePath := filepath.Join(hooksDir, filepath.Base(instanceID)+".json")
 	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
 		return
 	}
 	_ = os.Rename(tmpPath, filePath)
@@ -347,9 +360,25 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		logCostDebug("no transcript_path in Stop payload")
 		return
 	}
-	logCostDebug("transcript_path: %s", stop.TranscriptPath)
 
-	lastLine, err := readLastLine(stop.TranscriptPath)
+	// Validate transcript path to prevent path traversal.
+	// Claude stores transcripts under ~/.claude/projects/{hash}/{session}.jsonl
+	cleanPath := filepath.Clean(stop.TranscriptPath)
+	if strings.Contains(cleanPath, "..") {
+		logCostDebug("rejected transcript_path with path traversal: %s", stop.TranscriptPath)
+		return
+	}
+	home, homeErr := os.UserHomeDir()
+	if homeErr == nil {
+		claudeDir := filepath.Join(home, ".claude")
+		if !strings.HasPrefix(cleanPath, claudeDir) {
+			logCostDebug("rejected transcript_path outside ~/.claude: %s", stop.TranscriptPath)
+			return
+		}
+	}
+	logCostDebug("transcript_path: %s", cleanPath)
+
+	lastLine, err := readLastLine(cleanPath)
 	if err != nil {
 		logCostDebug("read transcript failed: %v", err)
 		return
@@ -377,7 +406,7 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 		usage.CacheReadInputTokens, usage.CacheCreationInputTokens)
 
 	costDir := getCostEventsDir()
-	if err := os.MkdirAll(costDir, 0755); err != nil {
+	if err := os.MkdirAll(costDir, 0700); err != nil {
 		return
 	}
 
@@ -401,7 +430,7 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 	tmpPath := filepath.Join(costDir, filename+".tmp")
 	finalPath := filepath.Join(costDir, filename)
 
-	if err := os.WriteFile(tmpPath, jsonData, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, jsonData, 0600); err != nil {
 		logCostDebug("write failed: %v", err)
 		return
 	}
