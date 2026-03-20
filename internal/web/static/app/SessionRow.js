@@ -53,7 +53,7 @@ export function SessionRow({ item, focused }) {
       <button
         type="button"
         onClick=${handleClick}
-        class="w-full flex items-center gap-2 px-3 py-1.5 rounded text-left text-sm
+        class="w-full flex items-center gap-sp-8 px-sp-12 py-1.5 rounded text-left text-sm
           transition-colors
           ${isSelected
             ? 'dark:bg-tn-blue/20 bg-blue-100 dark:text-tn-fg text-gray-900'

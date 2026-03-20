@@ -62,12 +62,12 @@ export function SessionList() {
   }, [])
 
   if (!items || items.length === 0) {
-    return html`<div class="px-3 py-4 dark:text-tn-muted text-gray-400 text-sm">
+    return html`<div class="px-sp-12 py-sp-16 dark:text-tn-muted text-gray-400 text-sm">
       No sessions
     </div>`
   }
 
-  return html`<ul class="flex flex-col gap-0.5 py-1" role="list" id="preact-session-list">
+  return html`<ul class="flex flex-col gap-0.5 py-sp-4" role="list" id="preact-session-list">
     ${items.map(item => {
       if (item.type === 'group' && item.group) {
         if (hasCollapsedAncestor(item.group.path)) return null

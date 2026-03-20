@@ -170,7 +170,7 @@ export function PushControls() {
   }
 
   return html`
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-sp-8">
       <button
         disabled=${pushBusySignal.value}
         onClick=${toggle}

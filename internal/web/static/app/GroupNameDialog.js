@@ -37,9 +37,9 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
   return html`
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
          onClick=${(e) => e.target === e.currentTarget && (groupNameDialogSignal.value = null)}>
-      <div class="dark:bg-tn-panel bg-white rounded-lg shadow-xl p-6 w-full max-w-sm mx-4">
+      <div class="dark:bg-tn-card bg-white rounded-lg shadow-xl p-sp-24 w-full max-w-sm mx-4">
         <h2 class="text-lg font-semibold dark:text-tn-fg text-gray-900 mb-4">${dialogTitle}</h2>
-        <form onSubmit=${handleSubmit} class="flex flex-col gap-3">
+        <form onSubmit=${handleSubmit} class="flex flex-col gap-sp-12">
           <input autofocus required
             placeholder="Group name"
             value=${name} onInput=${e => setName(e.target.value)}
@@ -47,7 +47,7 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
                    bg-gray-50 text-gray-900 border-gray-300
                    focus:outline-none focus:ring-2 focus:ring-tn-blue/50" />
           ${error && html`<p class="text-sm dark:text-tn-red text-red-600">${error}</p>`}
-          <div class="flex gap-2 justify-end mt-2">
+          <div class="flex gap-sp-8 justify-end mt-2">
             <button type="button"
               onClick=${() => (groupNameDialogSignal.value = null)}
               class="px-4 py-2 rounded dark:text-tn-muted text-gray-600

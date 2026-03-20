@@ -34,9 +34,9 @@ export function CreateSessionDialog() {
   return html`
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
          onClick=${handleBackdropClick}>
-      <div class="dark:bg-tn-panel bg-white rounded-lg shadow-xl p-6 w-full max-w-md mx-4">
+      <div class="dark:bg-tn-card bg-white rounded-lg shadow-xl p-sp-24 w-full max-w-md mx-4">
         <h2 class="text-lg font-semibold dark:text-tn-fg text-gray-900 mb-4">New Session</h2>
-        <form onSubmit=${handleSubmit} class="flex flex-col gap-3">
+        <form onSubmit=${handleSubmit} class="flex flex-col gap-sp-12">
           <input autofocus required
             placeholder="Session title"
             value=${title} onInput=${e => setTitle(e.target.value)}
@@ -58,7 +58,7 @@ export function CreateSessionDialog() {
             <option value="codex">codex</option>
           </select>
           ${error && html`<p class="text-sm dark:text-tn-red text-red-600">${error}</p>`}
-          <div class="flex gap-2 justify-end mt-2">
+          <div class="flex gap-sp-8 justify-end mt-2">
             <button type="button"
               onClick=${() => (createSessionDialogSignal.value = false)}
               class="px-4 py-2 rounded dark:text-tn-muted text-gray-600

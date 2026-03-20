@@ -30,7 +30,7 @@ export function ThemeToggle() {
   const current = themeSignal.value
 
   return html`
-    <div class="flex items-center gap-1">
+    <div class="flex items-center gap-sp-4">
       <button
         onClick=${() => applyTheme('light')}
         class="px-2 py-1 rounded text-xs font-medium transition-colors
