@@ -465,6 +465,40 @@ log = logging.getLogger("conductor-bridge")
 # ---------------------------------------------------------------------------
 
 
+def _resolve_secret(value: str) -> str:
+    """Resolve a config value that may be an env-var reference or a macOS Keychain reference.
+
+    Supports:
+      - "$ENV_VAR" or "${ENV_VAR}" -> os.environ lookup
+      - "keychain:service-name" -> macOS Keychain lookup via /usr/bin/security
+      - Plain strings are returned as-is.
+    """
+    if not value:
+        return value
+    if value.startswith("$"):
+        # Strip ${...} or $... syntax
+        var_name = value.lstrip("$").strip("{}")
+        resolved = os.environ.get(var_name, "")
+        if not resolved:
+            log.warning("Environment variable %s is not set", var_name)
+        return resolved
+    if value.startswith("keychain:"):
+        service_name = value[len("keychain:"):]
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["/usr/bin/security", "find-generic-password", "-s", service_name, "-w"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            log.warning("Keychain lookup failed for service '%s': %s", service_name, result.stderr.strip())
+        except Exception as e:
+            log.warning("Keychain lookup error for service '%s': %s", service_name, e)
+        return ""
+    return value
+
+
 def load_config() -> dict:
     """Load [conductor] section from config.toml.
 
@@ -484,14 +518,14 @@ def load_config() -> dict:
 
     # Telegram config
     tg = conductor_cfg.get("telegram", {})
-    tg_token = tg.get("token", "")
+    tg_token = _resolve_secret(tg.get("token", ""))
     tg_user_id = tg.get("user_id", 0)
     tg_configured = bool(tg_token and tg_user_id)
 
     # Slack config
     sl = conductor_cfg.get("slack", {})
-    sl_bot_token = sl.get("bot_token", "")
-    sl_app_token = sl.get("app_token", "")
+    sl_bot_token = _resolve_secret(sl.get("bot_token", ""))
+    sl_app_token = _resolve_secret(sl.get("app_token", ""))
     sl_channel_id = sl.get("channel_id", "")
     sl_listen_mode = sl.get("listen_mode", "mentions")  # "mentions" or "all"
     sl_allowed_users = sl.get("allowed_user_ids", [])  # List of authorized Slack user IDs
@@ -499,7 +533,7 @@ def load_config() -> dict:
 
     # Discord config
     dc = conductor_cfg.get("discord", {})
-    dc_bot_token = dc.get("bot_token", "")
+    dc_bot_token = _resolve_secret(dc.get("bot_token", ""))
     dc_guild_id = dc.get("guild_id", 0)
     dc_channel_id = dc.get("channel_id", 0)
     dc_user_id = dc.get("user_id", 0)
