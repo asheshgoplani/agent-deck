@@ -2592,6 +2592,20 @@ func (i *Instance) syncClaudeSessionFromDisk() {
 		return
 	}
 
+	// When the tmux session is dead (or never existed) and we already have a
+	// stored ClaudeSessionID, trust it. Disk scanning is only useful for
+	// detecting /clear in a LIVE session. Without this guard, a more recently
+	// modified .jsonl from an external Claude instance (same project path) can
+	// silently steal the session ID during restart, causing the user to resume
+	// the wrong conversation.
+	if i.ClaudeSessionID != "" && (i.tmuxSession == nil || !i.tmuxSession.Exists()) {
+		sessionLog.Debug("claude_session_sync_skipped_dead_tmux",
+			slog.String("id", i.ClaudeSessionID),
+			slog.String("reason", "tmux_session_dead_or_nil"),
+		)
+		return
+	}
+
 	configDir := GetClaudeConfigDir()
 	exclude := i.collectOtherClaudeSessionIDs()
 
