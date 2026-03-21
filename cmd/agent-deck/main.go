@@ -591,13 +591,22 @@ func main() {
 	}
 }
 
-// extractProfileFlag extracts -p or --profile from args, returning the profile and remaining args
+// extractProfileFlag extracts -p or --profile from args, returning the profile and remaining args.
+// Only flags appearing before the first positional argument (the subcommand) are consumed.
+// This prevents the global -p flag from swallowing --profile flags intended for subcommands
+// like "remote add ... --profile <remote-profile>".
 func extractProfileFlag(args []string) (string, []string) {
 	var profile string
 	var remaining []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+
+		// Once we hit a non-flag arg (the subcommand), pass everything through as-is
+		if !strings.HasPrefix(arg, "-") {
+			remaining = append(remaining, args[i:]...)
+			break
+		}
 
 		// Check for -p=value or --profile=value
 		if strings.HasPrefix(arg, "-p=") {

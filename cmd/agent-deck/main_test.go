@@ -105,6 +105,40 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 			t.Errorf("expected empty args for TUI mode with profile flag, got %v", args)
 		}
 	})
+
+	// --profile after subcommand should NOT be consumed by global extractor
+	t.Run("subcommand_profile_flag_not_consumed", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"remote", "add", "mac-studio", "chuck@localhost", "--profile", "github_afterthought"})
+		if profile != "" {
+			t.Errorf("expected global profile to be empty, got %q", profile)
+		}
+		expected := []string{"remote", "add", "mac-studio", "chuck@localhost", "--profile", "github_afterthought"}
+		if len(args) != len(expected) {
+			t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+		}
+		for i, exp := range expected {
+			if args[i] != exp {
+				t.Errorf("args[%d]: expected %q, got %q", i, exp, args[i])
+			}
+		}
+	})
+
+	// -p before subcommand + --profile after subcommand should both work independently
+	t.Run("global_and_subcommand_profile_flags", func(t *testing.T) {
+		profile, args := extractProfileFlag([]string{"-p", "work", "remote", "add", "srv", "user@host", "--profile", "dev"})
+		if profile != "work" {
+			t.Errorf("expected global profile 'work', got %q", profile)
+		}
+		expected := []string{"remote", "add", "srv", "user@host", "--profile", "dev"}
+		if len(args) != len(expected) {
+			t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+		}
+		for i, exp := range expected {
+			if args[i] != exp {
+				t.Errorf("args[%d]: expected %q, got %q", i, exp, args[i])
+			}
+		}
+	})
 }
 
 func TestIsDuplicateSession(t *testing.T) {
