@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"io"
 	"testing"
 )
@@ -29,6 +30,44 @@ func TestIsValidRemoteName(t *testing.T) {
 			t.Fatalf("expected %q to be invalid", name)
 		}
 	}
+}
+
+func TestReorderRemoteArgs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single_dash_profile_value_consumed", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		_ = fs.String("profile", "", "")
+		_ = fs.String("agent-deck-path", "", "")
+
+		result := reorderRemoteArgs(fs, []string{"mac-studio", "chuck@localhost", "-profile", "dev"})
+		// flags should come first, then positional
+		expected := []string{"-profile", "dev", "mac-studio", "chuck@localhost"}
+		if len(result) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, result)
+		}
+		for i, exp := range expected {
+			if result[i] != exp {
+				t.Errorf("result[%d]: expected %q, got %q", i, exp, result[i])
+			}
+		}
+	})
+
+	t.Run("double_dash_profile_value_consumed", func(t *testing.T) {
+		fs := flag.NewFlagSet("test", flag.ContinueOnError)
+		_ = fs.String("profile", "", "")
+
+		result := reorderRemoteArgs(fs, []string{"srv", "user@host", "--profile", "work"})
+		expected := []string{"--profile", "work", "srv", "user@host"}
+		if len(result) != len(expected) {
+			t.Fatalf("expected %v, got %v", expected, result)
+		}
+		for i, exp := range expected {
+			if result[i] != exp {
+				t.Errorf("result[%d]: expected %q, got %q", i, exp, result[i])
+			}
+		}
+	})
 }
 
 func TestShouldProceedWithRemoteUpdate(t *testing.T) {
