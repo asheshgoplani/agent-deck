@@ -2685,3 +2685,35 @@ func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
 	args := s.buildStatusBarArgs()
 	assert.Nil(t, args, "args should be nil when injectStatusLine is false")
 }
+
+func TestOuterTerminalSupportsExtKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		term        string
+		termProgram string
+		want        bool
+	}{
+		{"ghostty terminal", "xterm-ghostty", "ghostty", true},
+		{"cmux using ghostty term", "xterm-ghostty", "cmux", false},
+		{"cmux using ghostty term no program", "xterm-ghostty", "", false},
+		{"kitty terminal", "xterm-kitty", "kitty", true},
+		{"kitty term only", "xterm-kitty", "", true},
+		{"wezterm terminal", "wezterm", "WezTerm", true},
+		{"wezterm term only", "wezterm", "", true},
+		{"plain xterm", "xterm-256color", "", false},
+		{"tmux term", "tmux-256color", "", false},
+		{"screen term", "screen-256color", "", false},
+		{"unknown terminal", "alacritty", "", false},
+		{"ghostty via TERM_PROGRAM only", "xterm-256color", "ghostty", true},
+		{"kitty via TERM_PROGRAM only", "xterm-256color", "kitty", true},
+		{"WezTerm via TERM_PROGRAM only", "xterm-256color", "WezTerm", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TERM", tc.term)
+			t.Setenv("TERM_PROGRAM", tc.termProgram)
+			got := outerTerminalSupportsExtKeys()
+			assert.Equal(t, tc.want, got, "outerTerminalSupportsExtKeys() for TERM=%q TERM_PROGRAM=%q", tc.term, tc.termProgram)
+		})
+	}
+}
