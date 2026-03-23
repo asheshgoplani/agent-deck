@@ -59,6 +59,22 @@ func resolvedAgentDeckTheme() string {
 			}
 		}
 	}
+	// Check the terminal's own declaration before asking the OS.
+	// COLORFGBG is set by iTerm2 and other terminals; format is "fg;bg"
+	// where bg < 8 means a dark background. This catches the common case
+	// where macOS is in light mode but the terminal profile is dark.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if idx := strings.LastIndex(colorfgbg, ";"); idx >= 0 {
+			var bg int
+			if _, err := fmt.Sscanf(colorfgbg[idx+1:], "%d", &bg); err == nil {
+				if bg < 8 {
+					return "dark"
+				}
+				return "light"
+			}
+		}
+	}
+
 	isDark, err := dark.IsDarkMode()
 	if err != nil {
 		return "dark"

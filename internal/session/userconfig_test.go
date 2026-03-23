@@ -381,6 +381,44 @@ func TestGetTheme_Light(t *testing.T) {
 	}
 }
 
+func TestResolveTheme_COLORFGBGOverridesOS(t *testing.T) {
+	// Setup: explicit "system" theme so ResolveTheme falls through to
+	// auto-detection where COLORFGBG should be checked.
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+	config := &UserConfig{Theme: "system"}
+	_ = SaveUserConfig(config)
+
+	tests := []struct {
+		name      string
+		colorfgbg string
+		want      string
+	}{
+		{"dark terminal (bg=0)", "15;0", "dark"},
+		{"dark terminal (bg=1)", "15;1", "dark"},
+		{"light terminal (bg=15)", "0;15", "light"},
+		{"light terminal (bg=8)", "0;8", "light"},
+		{"three-part dark", "12;7;0", "dark"},
+		{"three-part light", "12;7;15", "light"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COLORFGBG", tt.colorfgbg)
+			ClearUserConfigCache()
+
+			got := ResolveTheme()
+			if got != tt.want {
+				t.Errorf("ResolveTheme() with COLORFGBG=%q: got %q, want %q", tt.colorfgbg, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorktreeConfig(t *testing.T) {
 	// Create temp config with worktree settings
 	tmpDir := t.TempDir()
