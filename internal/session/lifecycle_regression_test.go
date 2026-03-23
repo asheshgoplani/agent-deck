@@ -347,3 +347,82 @@ func TestThreadSafeAccessors_Concurrent(t *testing.T) {
 func killTmuxSession(name string) error {
 	return exec.Command("tmux", "kill-session", "-t", name).Run()
 }
+
+// TestPermissionRequestResetsAcknowledged verifies that a PermissionRequest hook
+// event always causes the session to show as waiting (orange), even if the user
+// previously acknowledged the session while it was running.
+//
+// Regression test: before the fix, a previously-acknowledged session would show
+// as idle (grey) when Claude hit a permission prompt mid-task.
+func TestPermissionRequestResetsAcknowledged(t *testing.T) {
+	tmpDir := t.TempDir()
+	hooksDir := filepath.Join(tmpDir, "hooks")
+	require.NoError(t, os.MkdirAll(hooksDir, 0755))
+
+	// Simulate the hook event sequence:
+	// 1. UserPromptSubmit → running
+	// 2. User attaches (Acknowledge)
+	// 3. PermissionRequest → waiting  ← should be orange despite acknowledgment
+
+	watcher := &StatusFileWatcher{
+		hooksDir: hooksDir,
+		statuses: make(map[string]*HookStatus),
+	}
+
+	instanceID := "test-permission-ack"
+
+	writeHookFile := func(hooksDir, instanceID, status, event string) {
+		payload := map[string]any{
+			"status": status,
+			"event":  event,
+			"ts":     time.Now().Unix(),
+		}
+		data, err := json.Marshal(payload)
+		require.NoError(t, err)
+		path := filepath.Join(hooksDir, instanceID+".json")
+		require.NoError(t, os.WriteFile(path, data, 0644))
+		watcher.processFile(path)
+	}
+
+	// Step 1: running
+	writeHookFile(hooksDir, instanceID, "running", "UserPromptSubmit")
+	hs := watcher.GetHookStatus(instanceID)
+	require.NotNil(t, hs)
+	assert.Equal(t, "running", hs.Status)
+	assert.Equal(t, "UserPromptSubmit", hs.Event)
+
+	// Step 2: PermissionRequest → waiting
+	writeHookFile(hooksDir, instanceID, "waiting", "PermissionRequest")
+	hs = watcher.GetHookStatus(instanceID)
+	require.NotNil(t, hs)
+	assert.Equal(t, "waiting", hs.Status)
+	assert.Equal(t, "PermissionRequest", hs.Event, "Event field must be preserved for PermissionRequest")
+}
+
+// TestHookEventFieldPropagated verifies that the Event field from a hook status
+// file is correctly propagated into the HookStatus struct by the watcher.
+func TestHookEventFieldPropagated(t *testing.T) {
+	tmpDir := t.TempDir()
+	hooksDir := filepath.Join(tmpDir, "hooks")
+	require.NoError(t, os.MkdirAll(hooksDir, 0755))
+
+	watcher := &StatusFileWatcher{
+		hooksDir: hooksDir,
+		statuses: make(map[string]*HookStatus),
+	}
+
+	payload := map[string]any{
+		"status": "waiting",
+		"event":  "PermissionRequest",
+		"ts":     time.Now().Unix(),
+	}
+	data, _ := json.Marshal(payload)
+	path := filepath.Join(hooksDir, "inst-xyz.json")
+	require.NoError(t, os.WriteFile(path, data, 0644))
+	watcher.processFile(path)
+
+	hs := watcher.GetHookStatus("inst-xyz")
+	require.NotNil(t, hs)
+	assert.Equal(t, "PermissionRequest", hs.Event)
+	assert.Equal(t, "waiting", hs.Status)
+}

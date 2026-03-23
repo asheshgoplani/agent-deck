@@ -148,6 +148,7 @@ type Instance struct {
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
+	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
 
@@ -2346,6 +2347,7 @@ func (i *Instance) UpdateStatus() error {
 	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
+			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
 			i.hookSessionID = hs.SessionID
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
@@ -2385,7 +2387,8 @@ func (i *Instance) UpdateStatus() error {
 			} else {
 				// Check acknowledgment: orange (waiting) vs gray (idle)
 				// Acknowledge() is called when user attaches to a session.
-				// ResetAcknowledged() is called by u key or when new activity occurs.
+				// ResetAcknowledged() is called by UpdateHookStatus on any new
+				// waiting event, and by the u key / new activity.
 				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
 					i.Status = StatusIdle
 				} else {
@@ -2649,8 +2652,25 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Detect whether this is genuinely new data (newer timestamp than last seen).
+	// Only reset acknowledgment on new events — not on re-application of the same
+	// stale hook file, which would undo the user's intentional acknowledge.
+	isNewEvent := status.UpdatedAt.After(i.hookLastUpdate)
+
 	i.hookStatus = status.Status
+	i.hookEvent = status.Event
 	i.hookLastUpdate = status.UpdatedAt
+
+	// Permission-type events are always attention-needed, even if the user
+	// previously acknowledged this session. A mid-task permission block is new
+	// activity that the user must respond to — unlike Stop (task complete) which
+	// can stay grey if already seen.
+	// Handles both PermissionRequest events and Notification/permission_prompt.
+	if isNewEvent && status.Status == "waiting" && i.tmuxSession != nil {
+		if status.Event == "PermissionRequest" || status.Event == "Notification" {
+			i.tmuxSession.ResetAcknowledged()
+		}
+	}
 
 	// Resolve session ID from hook payload first, then sidecar anchor.
 	sessionID := strings.TrimSpace(status.SessionID)

@@ -3,6 +3,7 @@ package tmux
 import (
 	"strings"
 	"testing"
+	"fmt"
 )
 
 func TestDefaultRawPatterns_Claude(t *testing.T) {
@@ -452,4 +453,95 @@ func TestSpinnerRuneSet(t *testing.T) {
 	if !hasDone {
 		t.Error("missing ✻ from normalization set")
 	}
+}
+
+// TestClaudePromptDetector_NumberedMenuPermission verifies that the Claude
+// prompt detector correctly identifies the numbered-menu permission dialog
+// (e.g. "Do you want to proceed? > 1. Yes / 2. No") as a waiting state.
+// Regression test for the grey/idle bug reported in agent-deck.
+func TestClaudePromptDetector_NumberedMenuPermission(t *testing.T) {
+	detector := NewPromptDetector("claude")
+
+	// Exact content captured from the screenshot showing the bug
+	numberedMenuContent := `find /Users/ben.sgro/Work/k8s-configs/expanded -name "*.yaml" | wc -l
+Running…
+Bash(# Check the gcp:staging and gcp:production configs...)
+Running…
++111 more tool uses (ctrl+o to expand)
+(ctrl+b ctrl+b (twice) to run in background)
+
+Bash command
+
+  # Count files in expanded to see if it's stale/orphaned configs
+  find /Users/ben.sgro/Work/k8s-configs/expanded -name "*.yaml" | wc -l
+  Count expanded config files
+
+Command contains quote characters inside a # comment which can desync quote tracking
+
+Do you want to proceed?
+> 1.  Yes
+  2.  No
+
+Esc to cancel · Tab to amend · ctrl+e to explain`
+
+	if !detector.HasPrompt(numberedMenuContent) {
+		t.Error("should detect 'Do you want to proceed?' numbered menu as waiting")
+	}
+
+	// Also verify "Esc to cancel" alone is sufficient as a catch-all
+	escCancelContent := `Some tool output here
+Running some bash command
+
+Esc to cancel · Tab to amend · ctrl+e to explain`
+
+	if !detector.HasPrompt(escCancelContent) {
+		t.Error("should detect 'Esc to cancel' footer as waiting")
+	}
+
+	// Verify busy state is NOT incorrectly detected as waiting
+	busyContent := `Hullaballooing… (12s · ↓ 1234 tokens)
+ctrl+c to interrupt`
+
+	if detector.HasPrompt(busyContent) {
+		t.Error("busy state should NOT be detected as waiting")
+	}
+}
+
+// TestClaudePromptDetector_PermissionDialogVariants checks several known
+// permission dialog formats to ensure none are missed.
+func TestClaudePromptDetector_PermissionDialogVariants(t *testing.T) {
+	detector := NewPromptDetector("claude")
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "Do you want to proceed",
+			content: "Do you want to proceed?\n> 1.  Yes\n  2.  No\n\nEsc to cancel · Tab to amend",
+		},
+		{
+			name:    "Esc to cancel footer only",
+			content: "some output\nEsc to cancel · Tab to amend · ctrl+e to explain",
+		},
+		{
+			name:    "legacy box-drawing dialog",
+			content: "│ Do you want to run this command?\n│ Yes\n│ No",
+		},
+		{
+			name:    "Yes allow once",
+			content: "Run bash?\nYes, allow once\nNo",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !detector.HasPrompt(tc.content) {
+				t.Errorf("should detect as waiting: %s", tc.name)
+			}
+		})
+	}
+
+	// Suppress unused import
+	_ = fmt.Sprintf
 }
