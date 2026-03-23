@@ -11,7 +11,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // ForkDialog handles the fork session dialog
@@ -31,6 +33,8 @@ type ForkDialog struct {
 	branchInput     textinput.Model
 	branchPicker    *BranchPickerDialog
 	isGitRepo       bool
+	isJJRepo        bool
+	vcsTypeCursor   int // 0 = Git, 1 = Jujutsu.
 	// Docker sandbox support
 	sandboxEnabled bool
 
@@ -114,6 +118,13 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	d.worktreeEnabled = false
 	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
+	d.isJJRepo = jujutsu.IsJJRepo(projectPath)
+	// Default VCS type: prefer jujutsu when both available.
+	if d.isJJRepo {
+		d.vcsTypeCursor = 1
+	} else {
+		d.vcsTypeCursor = 0
+	}
 
 	// Conductor parent selector
 	d.conductorSessions = conductors
@@ -166,12 +177,31 @@ func (d *ForkDialog) GetValues() (name, group string) {
 }
 
 // GetValuesWithWorktree returns all values including worktree settings
-func (d *ForkDialog) GetValuesWithWorktree() (name, group, branch string, worktreeEnabled bool) {
+func (d *ForkDialog) GetValuesWithWorktree() (name, group, branch string, worktreeEnabled bool, vcsType vcs.Type) {
 	name = d.nameInput.Value()
 	group = d.groupInput.Value()
 	branch = strings.TrimSpace(d.branchInput.Value())
 	worktreeEnabled = d.worktreeEnabled
+	vcsType = d.GetSelectedVCSType()
 	return
+}
+
+// GetSelectedVCSType returns the VCS type selected in the dialog.
+func (d *ForkDialog) GetSelectedVCSType() vcs.Type {
+	if d.vcsTypeCursor == 1 {
+		return vcs.TypeJujutsu
+	}
+	return vcs.TypeGit
+}
+
+// cycleVCSType moves the VCS type cursor by delta, skipping unavailable options.
+func (d *ForkDialog) cycleVCSType(delta int) {
+	next := (d.vcsTypeCursor + delta + 2) % 2
+	if next == 0 && d.isGitRepo {
+		d.vcsTypeCursor = 0
+	} else if next == 1 && d.isJJRepo {
+		d.vcsTypeCursor = 1
+	}
 }
 
 // GetOptions returns the current Claude options
@@ -369,8 +399,8 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			}
 
 		case "w":
-			// Toggle worktree when on group field (only if git repo).
-			if d.focusIndex == 1 && d.isGitRepo {
+			// Toggle worktree when on group field (only if VCS repo).
+			if d.focusIndex == 1 && (d.isGitRepo || d.isJJRepo) {
 				d.ToggleWorktree()
 				if d.worktreeEnabled {
 					d.focusIndex = 2
@@ -547,9 +577,9 @@ func (d *ForkDialog) View() string {
 		conductorSection += "\n"
 	}
 
-	// Worktree checkbox and branch input (only for git repos)
+	// Worktree checkbox and branch input (only for VCS repos)
 	worktreeSection := ""
-	if d.isGitRepo {
+	if d.isGitRepo || d.isJJRepo {
 		checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
 		checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 
@@ -558,15 +588,59 @@ func (d *ForkDialog) View() string {
 			checkbox = "[x]"
 		}
 
+		// When only one VCS is available, show its type inline on the checkbox.
+		wtLabel := "Create in worktree"
 		if d.focusIndex == 1 {
-			worktreeSection += checkboxActiveStyle.Render(fmt.Sprintf("  %s Create in worktree (press w)", checkbox))
+			wtLabel = "Create in worktree (press w)"
+		}
+		if d.isGitRepo != d.isJJRepo {
+			vcsName := "Git"
+			if d.isJJRepo {
+				vcsName = "Jujutsu"
+			}
+			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			wtLabel += " " + dimStyle.Render("("+vcsName+")")
+		}
+
+		if d.focusIndex == 1 {
+			worktreeSection += checkboxActiveStyle.Render(fmt.Sprintf("  %s %s", checkbox, wtLabel))
 		} else {
-			worktreeSection += checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox))
+			worktreeSection += checkboxStyle.Render(fmt.Sprintf("  %s %s", checkbox, wtLabel))
 		}
 		worktreeSection += "\n"
 
-		// Branch input (only visible when worktree is enabled)
+		// VCS type picker (only when worktree is enabled and both VCS available)
 		if d.worktreeEnabled {
+			if d.isGitRepo && d.isJJRepo {
+				worktreeSection += "\n"
+				worktreeSection += labelStyle.Render("  VCS Type:") + "\n  "
+				vcsOptions := []struct {
+					label string
+					idx   int
+				}{
+					{"Git", 0},
+					{"Jujutsu", 1},
+				}
+				var vcsPills []string
+				for _, opt := range vcsOptions {
+					var pillStyle lipgloss.Style
+					if opt.idx == d.vcsTypeCursor {
+						pillStyle = lipgloss.NewStyle().
+							Foreground(ColorBg).
+							Background(ColorAccent).
+							Bold(true).
+							Padding(0, 2)
+					} else {
+						pillStyle = lipgloss.NewStyle().
+							Foreground(ColorTextDim).
+							Background(ColorSurface).
+							Padding(0, 2)
+					}
+					vcsPills = append(vcsPills, pillStyle.Render(opt.label))
+				}
+				worktreeSection += lipgloss.JoinHorizontal(lipgloss.Left, vcsPills...) + "\n"
+			}
+
 			worktreeSection += "\n"
 			if d.focusIndex == 2 {
 				worktreeSection += activeLabelStyle.Render("▶ Branch:")

@@ -12,8 +12,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // overlayDropdown paints `overlay` on top of `base` starting at the given
@@ -127,6 +129,7 @@ const (
 	focusPath                  // project path input (hidden when multi-repo enabled).
 	focusCommand               // tool/command picker.
 	focusWorktree              // worktree checkbox.
+	focusVCSType               // VCS type picker (git/jujutsu, conditional — only when worktree enabled).
 	focusSandbox               // sandbox checkbox.
 	focusConductor             // conducting parent dropdown (conditional — only when conductors exist).
 	focusMultiRepo             // multi-repo toggle (transforms path into list when enabled).
@@ -172,6 +175,12 @@ type NewDialog struct {
 	branchAutoSet   bool   // true if branch was auto-derived from session name.
 	branchPrefix    string // configured prefix for auto-generated branch names.
 	branchPicker    *BranchPickerDialog
+	// VCS type selector (only active when worktree is enabled).
+	vcsTypeCursor   int    // 0 = Git, 1 = Jujutsu.
+	vcsGitAvailable bool   // whether git is available for the current path.
+	vcsJJAvailable  bool   // whether jujutsu is available for the current path.
+	vcsDetected     bool   // whether detection has run for the current path.
+	vcsDetectedPath string // path that was last detected (to avoid re-detection).
 	// Docker sandbox support.
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
@@ -205,6 +214,7 @@ type dialogSnapshot struct {
 	worktreeEnabled  bool
 	branch           string
 	branchAutoSet    bool
+	vcsTypeCursor    int
 	claudeOptions    *session.ClaudeOptions
 	geminiYolo       bool
 	codexYolo        bool
@@ -358,6 +368,11 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.multiRepoPaths = nil
 	d.multiRepoPathCursor = 0
 	d.multiRepoEditing = false
+	d.vcsDetected = false
+	d.vcsDetectedPath = ""
+	d.vcsGitAvailable = false
+	d.vcsJJAvailable = false
+	d.vcsTypeCursor = 0
 	// Reset sandbox from global config default.
 	d.sandboxEnabled = false
 	d.inheritedExpanded = false
@@ -507,6 +522,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		worktreeEnabled:  d.worktreeEnabled,
 		branch:           d.branchInput.Value(),
 		branchAutoSet:    d.branchAutoSet,
+		vcsTypeCursor:    d.vcsTypeCursor,
 		claudeOptions:    claudeOpts,
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
@@ -526,6 +542,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.worktreeEnabled = s.worktreeEnabled
 	d.branchInput.SetValue(s.branch)
 	d.branchAutoSet = s.branchAutoSet
+	d.vcsTypeCursor = s.vcsTypeCursor
 	if s.claudeOptions != nil {
 		d.claudeOptions.SetFromOptions(s.claudeOptions)
 	}
@@ -601,6 +618,11 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 	d.worktreeEnabled = false
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
+	d.vcsDetected = false
+	d.vcsDetectedPath = ""
+	d.vcsGitAvailable = false
+	d.vcsJJAvailable = false
+	d.vcsTypeCursor = 0
 
 	// Reset multi-repo (ephemeral, never pre-filled)
 	d.multiRepoEnabled = false
@@ -676,13 +698,53 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 }
 
 // ToggleWorktree toggles the worktree checkbox.
-// When enabling, auto-populates the branch name from the session name.
+// When enabling, auto-populates the branch name from the session name and detects VCS.
 func (d *NewDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
 	if d.worktreeEnabled {
 		d.autoBranchFromName()
+		d.detectVCSForPath()
 	}
 	d.rebuildFocusTargets()
+}
+
+// detectVCSForPath detects which VCS backends are available for the current path
+// and sets the default VCS type cursor accordingly.
+func (d *NewDialog) detectVCSForPath() {
+	_, path, _ := d.GetValues()
+	if path == d.vcsDetectedPath && d.vcsDetected {
+		return // already detected for this path
+	}
+	d.vcsDetectedPath = path
+	d.vcsDetected = true
+	d.vcsGitAvailable = git.IsGitRepo(path)
+	d.vcsJJAvailable = jujutsu.IsJJRepo(path)
+
+	// Set default: prefer jujutsu when both are available.
+	if d.vcsJJAvailable {
+		d.vcsTypeCursor = 1 // Jujutsu
+	} else {
+		d.vcsTypeCursor = 0 // Git
+	}
+}
+
+// GetSelectedVCSType returns the VCS type selected in the dialog.
+func (d *NewDialog) GetSelectedVCSType() vcs.Type {
+	if d.vcsTypeCursor == 1 {
+		return vcs.TypeJujutsu
+	}
+	return vcs.TypeGit
+}
+
+// cycleVCSType moves the VCS type cursor by delta, skipping unavailable options.
+func (d *NewDialog) cycleVCSType(delta int) {
+	next := (d.vcsTypeCursor + delta + 2) % 2
+	// Only move if the target is available.
+	if next == 0 && d.vcsGitAvailable {
+		d.vcsTypeCursor = 0
+	} else if next == 1 && d.vcsJJAvailable {
+		d.vcsTypeCursor = 1
+	}
 }
 
 // autoBranchFromName sets the branch input to "<prefix><session-name>" if the
@@ -703,10 +765,11 @@ func (d *NewDialog) IsWorktreeEnabled() bool {
 }
 
 // GetValuesWithWorktree returns all values including worktree settings
-func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
+func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool, vcsType vcs.Type) {
 	name, path, command = d.GetValues()
 	branch = strings.TrimSpace(d.branchInput.Value())
 	worktreeEnabled = d.worktreeEnabled
+	vcsType = d.GetSelectedVCSType()
 	return
 }
 
@@ -927,6 +990,9 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if len(d.conductorSessions) > 0 {
 		targets = append(targets, focusConductor)
 	}
+	if d.worktreeEnabled && d.vcsGitAvailable && d.vcsJJAvailable {
+		targets = append(targets, focusVCSType)
+	}
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		targets = append(targets, focusInherited)
 	}
@@ -990,8 +1056,8 @@ func (d *NewDialog) updateFocus() {
 		if d.commandCursor == 0 { // shell.
 			d.commandInput.Focus()
 		}
-	case focusWorktree, focusSandbox, focusConductor, focusInherited:
-		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
+	case focusWorktree, focusVCSType, focusSandbox, focusConductor, focusInherited:
+		// Checkbox/toggle/picker rows and conductor dropdown — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
 	case focusOptions:
@@ -1329,6 +1395,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.updateFocus()
 				return d, nil
 			}
+			if cur == focusVCSType {
+				d.cycleVCSType(-1)
+				return d, nil
+			}
 			if cur == focusOptions && d.toolOptions != nil {
 				return d, d.toolOptions.Update(msg)
 			}
@@ -1338,6 +1408,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.commandCursor = (d.commandCursor + 1) % len(d.presetCommands)
 				d.updateToolOptions()
 				d.updateFocus()
+				return d, nil
+			}
+			if cur == focusVCSType {
+				d.cycleVCSType(1)
 				return d, nil
 			}
 			if cur == focusOptions && d.toolOptions != nil {
@@ -1430,6 +1504,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case " ":
+			if cur == focusVCSType {
+				d.cycleVCSType(1)
+				return d, nil
+			}
 			if cur == focusWorktree {
 				d.ToggleWorktree()
 				d.rebuildFocusTargets()
@@ -1482,6 +1560,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.pathSuggestionCursor = 0
 			d.pathCycler.Reset()
 			d.filterPathSuggestions()
+			// Invalidate VCS detection so it re-runs when worktree is toggled.
+			d.vcsDetected = false
 		}
 	case focusCommand:
 		if d.commandCursor == 0 {
@@ -1786,11 +1866,59 @@ func (d *NewDialog) View() string {
 	}
 
 	// Worktree checkbox — individually focusable.
+	// Lazily detect VCS so the label can show the type even before toggling.
+	d.detectVCSForPath()
 	worktreeLabel := "Create in worktree"
 	if cur == focusCommand {
 		worktreeLabel = "Create in worktree (w)"
 	}
+	// When only one VCS is available, show its type inline on the checkbox.
+	if d.vcsDetected && (d.vcsGitAvailable != d.vcsJJAvailable) {
+		vcsName := "Git"
+		if d.vcsJJAvailable {
+			vcsName = "Jujutsu"
+		}
+		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+		worktreeLabel += " " + dimStyle.Render("("+vcsName+")")
+	}
 	content.WriteString(renderCheckboxLine(worktreeLabel, d.worktreeEnabled, cur == focusWorktree))
+
+	// VCS type picker (only when worktree is enabled and both VCS are available).
+	if d.worktreeEnabled && d.vcsGitAvailable && d.vcsJJAvailable {
+		vcsActive := cur == focusVCSType
+		if vcsActive {
+			content.WriteString(activeLabelStyle.Render("▶ VCS Type:"))
+		} else {
+			content.WriteString(labelStyle.Render("  VCS Type:"))
+		}
+		content.WriteString("\n  ")
+		vcsOptions := []struct {
+			label string
+			idx   int
+		}{
+			{"Git", 0},
+			{"Jujutsu", 1},
+		}
+		var vcsPills []string
+		for _, opt := range vcsOptions {
+			var pillStyle lipgloss.Style
+			if opt.idx == d.vcsTypeCursor {
+				pillStyle = lipgloss.NewStyle().
+					Foreground(ColorBg).
+					Background(ColorAccent).
+					Bold(true).
+					Padding(0, 2)
+			} else {
+				pillStyle = lipgloss.NewStyle().
+					Foreground(ColorTextDim).
+					Background(ColorSurface).
+					Padding(0, 2)
+			}
+			vcsPills = append(vcsPills, pillStyle.Render(opt.label))
+		}
+		content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, vcsPills...))
+		content.WriteString("\n")
+	}
 
 	// Docker sandbox checkbox — individually focusable.
 	sandboxLabel := "Run in Docker sandbox"
@@ -1942,6 +2070,8 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusConductor {
 		helpText = "↑↓ select parent │ Tab next │ Enter create │ Esc cancel"
+	} else if cur == focusVCSType {
+		helpText = "←→ select │ Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
 		helpText = "Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if cur == focusInherited {

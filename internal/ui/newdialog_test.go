@@ -477,7 +477,7 @@ func TestNewDialog_GetValuesWithWorktree(t *testing.T) {
 	dialog.nameInput.SetValue("test-session")
 	dialog.pathInput.SetValue("/tmp/project")
 
-	name, path, command, branch, enabled := dialog.GetValuesWithWorktree()
+	name, path, command, branch, enabled, _ := dialog.GetValuesWithWorktree()
 
 	if !enabled {
 		t.Error("worktreeEnabled should be true")
@@ -500,7 +500,7 @@ func TestNewDialog_GetValuesWithWorktree_Disabled(t *testing.T) {
 	dialog.worktreeEnabled = false
 	dialog.branchInput.SetValue("feature/test")
 
-	_, _, _, branch, enabled := dialog.GetValuesWithWorktree()
+	_, _, _, branch, enabled, _ := dialog.GetValuesWithWorktree()
 
 	if enabled {
 		t.Error("worktreeEnabled should be false")

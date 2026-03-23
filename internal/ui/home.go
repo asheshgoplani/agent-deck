@@ -5171,25 +5171,31 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Get values including worktree settings.
-		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
+		name, path, command, branchName, worktreeEnabled, selectedVCSType := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			wtBackend, err := git.NewGitBackend(path)
+			var wtBackend vcs.Backend
+			var err error
+			switch selectedVCSType {
+			case vcs.TypeJujutsu:
+				wtBackend, err = jujutsu.NewJJBackend(path)
+			default:
+				wtBackend, err = git.NewGitBackend(path)
+			}
 			if err != nil {
-				h.newDialog.SetError(fmt.Sprintf("Failed to initialize git: %v", err))
+				h.newDialog.SetError(fmt.Sprintf("Failed to initialize %s: %v", selectedVCSType, err))
 				return h, nil
 			}
 
 			// Generate worktree path using configured location/template
 			wtSettings := session.GetWorktreeSettings()
-			worktreePath = git.WorktreePath(git.WorktreePathOptions{
+			worktreePath = wtBackend.WorktreePath(vcs.WorktreePathOptions{
 				Branch:    branchName,
 				Location:  wtSettings.DefaultLocation,
-				RepoDir:   wtBackend.RepoDir(),
 				SessionID: git.GeneratePathID(),
 				Template:  wtSettings.Template(),
 			})
@@ -7625,7 +7631,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Get fork parameters from dialog including worktree settings
-		title, groupPath, branchName, worktreeEnabled := h.forkDialog.GetValuesWithWorktree()
+		title, groupPath, branchName, worktreeEnabled, selectedVCSType := h.forkDialog.GetValuesWithWorktree()
 		opts := h.forkDialog.GetOptions()
 		h.clearError() // Clear any previous error
 
@@ -7637,17 +7643,23 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				// Resolve worktree target if enabled; actual creation runs in async command.
 				if worktreeEnabled && branchName != "" {
-					forkBackend, forkErr := git.NewGitBackend(source.ProjectPath)
+					var forkBackend vcs.Backend
+					var forkErr error
+					switch selectedVCSType {
+					case vcs.TypeJujutsu:
+						forkBackend, forkErr = jujutsu.NewJJBackend(source.ProjectPath)
+					default:
+						forkBackend, forkErr = git.NewGitBackend(source.ProjectPath)
+					}
 					if forkErr != nil {
-						h.forkDialog.SetError(fmt.Sprintf("Failed to initialize git: %v", forkErr))
+						h.forkDialog.SetError(fmt.Sprintf("Failed to initialize %s: %v", selectedVCSType, forkErr))
 						return h, nil
 					}
 
 					wtSettings := session.GetWorktreeSettings()
-					worktreePath := git.WorktreePath(git.WorktreePathOptions{
+					worktreePath := forkBackend.WorktreePath(vcs.WorktreePathOptions{
 						Branch:    branchName,
 						Location:  wtSettings.DefaultLocation,
-						RepoDir:   forkBackend.RepoDir(),
 						SessionID: git.GeneratePathID(),
 						Template:  wtSettings.Template(),
 					})
