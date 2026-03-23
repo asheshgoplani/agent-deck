@@ -1246,9 +1246,12 @@ func (s *Session) Start(command string) error {
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
+	// Uses a prefix match so all agentdeck sessions are covered, and forwards
+	// the key to the pane when the condition fails (e.g. when agent-deck runs
+	// inside an outer tmux session where session_name is "main").
 	_ = exec.Command("tmux", "bind-key", "-n", "-T", "root", "C-q",
-		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
-		"detach-client", "").Run()
+		"if-shell", "echo '#{session_name}' | grep -q '^agentdeck_'",
+		"detach-client", "send-keys C-q").Run()
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.

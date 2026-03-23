@@ -1686,6 +1686,15 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		return missingProbeDep
 	}
 
+	// When we already have a session ID and the process probe didn't find a
+	// running process, add our current ID to the exclude set so the disk scan
+	// won't reassign it to another instance that shares the same project path.
+	// The disk scan should only discover *new* sessions (e.g. after /new rotation),
+	// not re-discover the same ID we already own.
+	if i.CodexSessionID != "" && excludeIDs != nil {
+		excludeIDs[i.CodexSessionID] = true
+	}
+
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
 		changed := sessionID != i.CodexSessionID
 		if sessionID != i.CodexSessionID {
@@ -2497,10 +2506,11 @@ func (i *Instance) UpdateStatus() error {
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if i.Tool == "codex" {
-				var exclude map[string]bool
-				if i.CodexSessionID == "" {
-					exclude = i.collectOtherCodexSessionIDs()
-				}
+				// Always collect other instances' session IDs to prevent the
+				// disk scan from assigning a session that belongs to another
+				// instance. Without this, instances that share the same
+				// project_path can all claim the same Codex session file.
+				exclude := i.collectOtherCodexSessionIDs()
 				i.UpdateCodexSession(exclude)
 			}
 		}
@@ -3884,13 +3894,16 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
-	// For Codex: ALWAYS update session to get the most recent one
-	// Krudony fix: don't skip when we already have an ID - the user may have started a NEW session
-	if i.Tool == "codex" {
+	// For Codex: try to update session ID, but only if we don't already have one.
+	// When we already have a known session ID (from the database), trust it —
+	// the disk scan can return a wrong ID when multiple instances share the same
+	// project_path. The process probe is authoritative but only works when the
+	// process is running, which it isn't during a restart.
+	if i.Tool == "codex" && i.CodexSessionID == "" {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
-		if missingDep := i.updateCodexSession(nil, true); missingDep != "" {
+		if missingDep := i.updateCodexSession(i.collectOtherCodexSessionIDs(), true); missingDep != "" {
 			i.mu.Lock()
 			i.pendingCodexRestartWarning = codexProbeMissingWarning(missingDep)
 			i.mu.Unlock()
