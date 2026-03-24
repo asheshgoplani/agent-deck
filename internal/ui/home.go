@@ -46,6 +46,27 @@ func SetVersion(v string) {
 	Version = v
 }
 
+// CreatingSession is a lightweight placeholder shown in the UI while
+// a worktree + session is being created asynchronously.
+// It is NOT a real session.Instance — it is excluded from save, polling, and search.
+type CreatingSession struct {
+	ID        string    // Temporary ID for tracking
+	Title     string
+	Tool      string
+	GroupPath string
+	StartTime time.Time
+}
+
+// isCreatingPlaceholder returns true if the currently selected flat item is a
+// worktree-creation placeholder (not a real session). Actions like attach,
+// delete, fork, and restart must be suppressed for these items.
+func (h *Home) isCreatingPlaceholder() bool {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return false
+	}
+	return h.flatItems[h.cursor].CreatingID != ""
+}
+
 // Structured loggers for UI components
 var (
 	uiLog     = logging.ForComponent(logging.CompUI)
@@ -290,8 +311,9 @@ type Home struct {
 	launchingSessions  map[string]time.Time // sessionID -> creation time
 	resumingSessions   map[string]time.Time // sessionID -> resume time (for restart/resume)
 	mcpLoadingSessions map[string]time.Time // sessionID -> MCP reload time
-	forkingSessions    map[string]time.Time // sessionID -> fork start time (fork in progress)
-	animationFrame     int                  // Current frame for spinner animation
+	forkingSessions    map[string]time.Time          // sessionID -> fork start time (fork in progress)
+	creatingSessions   map[string]*CreatingSession   // tempID -> placeholder for worktree creation in progress
+	animationFrame     int                           // Current frame for spinner animation
 
 	// Context for cleanup
 	ctx    context.Context
@@ -482,6 +504,7 @@ type loadSessionsMsg struct {
 type sessionCreatedMsg struct {
 	instance *session.Instance
 	err      error
+	tempID   string // matches creatingSessions key for placeholder removal
 }
 
 type sessionForkedMsg struct {
@@ -685,6 +708,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
+		creatingSessions:     make(map[string]*CreatingSession),
 		lastLogActivity:      make(map[string]time.Time),
 		windowsCollapsed:     make(map[string]bool),
 		worktreeDirtyCache:   make(map[string]bool),
@@ -1260,6 +1284,41 @@ func (h *Home) rebuildFlatItems() {
 
 	// Invalidate mouse double-click tracking (item indices may have shifted)
 	h.lastClickIndex = -1
+
+	// Inject creating session placeholders (worktree creation in progress)
+	for _, creating := range h.creatingSessions {
+		item := session.Item{
+			Type:          session.ItemTypeSession,
+			Level:         1,
+			Path:          creating.GroupPath,
+			CreatingID:    creating.ID,
+			CreatingTitle: creating.Title,
+			CreatingTool:  creating.Tool,
+		}
+		// Insert at the appropriate group position
+		inserted := false
+		if creating.GroupPath != "" {
+			for i := len(h.flatItems) - 1; i >= 0; i-- {
+				fi := h.flatItems[i]
+				if fi.Type == session.ItemTypeGroup && fi.Path == creating.GroupPath {
+					// Insert after the group header
+					h.flatItems = append(h.flatItems[:i+1], append([]session.Item{item}, h.flatItems[i+1:]...)...)
+					inserted = true
+					break
+				}
+				if fi.Path == creating.GroupPath && (fi.Type == session.ItemTypeSession || fi.CreatingID != "") {
+					// Insert after the last session in this group
+					h.flatItems = append(h.flatItems[:i+1], append([]session.Item{item}, h.flatItems[i+1:]...)...)
+					inserted = true
+					break
+				}
+			}
+		}
+		if !inserted {
+			// No group found or no group — append at end (before remotes)
+			h.flatItems = append(h.flatItems, item)
+		}
+	}
 
 	// Ensure cursor is valid
 	if h.cursor >= len(h.flatItems) {
@@ -3050,6 +3109,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionCreatedMsg:
+		// Remove the creating placeholder (if any) — always, on success or error
+		if msg.tempID != "" {
+			delete(h.creatingSessions, msg.tempID)
+		}
+
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
 		// even during reload, otherwise the session becomes orphaned (exists in tmux but not in storage)
 		h.reloadMu.Lock()
@@ -3072,6 +3136,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			h.setError(msg.err)
+			if msg.tempID != "" {
+				h.rebuildFlatItems() // Remove placeholder from list
+			}
 		} else {
 			h.instancesMu.Lock()
 			h.instances = append(h.instances, msg.instance)
@@ -4402,6 +4469,28 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			additionalPaths = multiRepoPaths[1:]
 		}
 
+		// Show immediate placeholder in UI while worktree + session is created async
+		var tempID string
+		if worktreeEnabled && branchName != "" {
+			tempID = session.GenerateID()
+			h.creatingSessions[tempID] = &CreatingSession{
+				ID:        tempID,
+				Title:     name,
+				Tool:      command,
+				GroupPath: groupPath,
+				StartTime: time.Now(),
+			}
+			h.rebuildFlatItems()
+			// Auto-select the placeholder
+			for i, item := range h.flatItems {
+				if item.CreatingID == tempID {
+					h.cursor = i
+					h.syncViewport()
+					break
+				}
+			}
+		}
+
 		return h, h.createSessionInGroupWithWorktreeAndOptions(
 			name,
 			path,
@@ -4417,6 +4506,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			additionalPaths,
 			parentSessionID,
 			parentProjectPath,
+			tempID,
 		)
 
 	case "esc":
@@ -4997,12 +5087,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.cursor = max(0, len(h.flatItems)-1)
 				}
 			case session.ItemTypeSession:
-				sessionID := item.Session.ID
-				h.groupTree.MoveSessionUp(item.Session)
-				h.rebuildFlatItems()
-				h.moveCursorToSession(sessionID)
-				if h.cursor >= len(h.flatItems) {
-					h.cursor = max(0, len(h.flatItems)-1)
+				if item.Session != nil {
+					sessionID := item.Session.ID
+					h.groupTree.MoveSessionUp(item.Session)
+					h.rebuildFlatItems()
+					h.moveCursorToSession(sessionID)
+					if h.cursor >= len(h.flatItems) {
+						h.cursor = max(0, len(h.flatItems)-1)
+					}
 				}
 			}
 			h.saveInstances()
@@ -5022,12 +5114,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.cursor = max(0, len(h.flatItems)-1)
 				}
 			case session.ItemTypeSession:
-				sessionID := item.Session.ID
-				h.groupTree.MoveSessionDown(item.Session)
-				h.rebuildFlatItems()
-				h.moveCursorToSession(sessionID)
-				if h.cursor >= len(h.flatItems) {
-					h.cursor = max(0, len(h.flatItems)-1)
+				if item.Session != nil {
+					sessionID := item.Session.ID
+					h.groupTree.MoveSessionDown(item.Session)
+					h.rebuildFlatItems()
+					h.moveCursorToSession(sessionID)
+					if h.cursor >= len(h.flatItems) {
+						h.cursor = max(0, len(h.flatItems)-1)
+					}
 				}
 			}
 			h.saveInstances()
@@ -5664,6 +5758,7 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				nil,
 				parentSessionID,
 				parentProjectPath,
+				"", // no placeholder — non-worktree sessions are fast
 			)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
@@ -6368,11 +6463,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	multiRepoEnabled bool,
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
+	tempID string,
 ) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
-			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err)}
+			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err), tempID: tempID}
 		}
 
 		if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepoEnabled {
@@ -6384,12 +6480,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				worktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
 				var setupBuf bytes.Buffer
 				setupErr, err := git.CreateWorktreeWithSetup(worktreeRepoRoot, worktreePath, worktreeBranch, &setupBuf, &setupBuf)
 				if err != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
 				if setupErr != nil {
 					uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", setupBuf.String()))
@@ -6461,7 +6557,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees",
 					fmt.Sprintf("%s-%s", sanitizedBranch, inst.ID[:8]))
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr), tempID: tempID}
 				}
 				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
 					parentDir = resolved
@@ -6525,7 +6621,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				home, _ := os.UserHomeDir()
 				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), tempID: tempID}
 				}
 				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
 					parentDir = resolved
@@ -6566,10 +6662,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		)
 		if err := inst.Start(); err != nil {
 			uiLog.Error("session_create_failed", slog.String("error", err.Error()))
-			return sessionCreatedMsg{err: err}
+			return sessionCreatedMsg{err: err, tempID: tempID}
 		}
 		uiLog.Info("session_create_succeeded", slog.String("id", inst.ID))
-		return sessionCreatedMsg{instance: inst}
+		return sessionCreatedMsg{instance: inst, tempID: tempID}
 	}
 }
 
@@ -6693,6 +6789,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		geminiYoloMode, false, toolOptionsJSON,
 		false, nil, // no multi-repo
 		"", "", // no parent
+		"", // no placeholder
 	)
 }
 
@@ -9259,7 +9356,11 @@ func (h *Home) renderItem(
 	case session.ItemTypeGroup:
 		h.renderGroupItem(b, item, selected, itemIndex, groupStats)
 	case session.ItemTypeSession:
-		h.renderSessionItem(b, item, selected, snapshot)
+		if item.CreatingID != "" {
+			h.renderCreatingSessionItem(b, item, selected)
+		} else {
+			h.renderSessionItem(b, item, selected, snapshot)
+		}
 	case session.ItemTypeWindow:
 		h.renderWindowItem(b, item, selected)
 	case session.ItemTypeRemoteGroup:
@@ -9356,6 +9457,86 @@ const (
 
 // renderSessionItem renders a single session item for the left panel
 // PERFORMANCE: Uses cached styles from styles.go to avoid allocations
+func (h *Home) renderCreatingPreview(creating *CreatingSession, width, height int) string {
+	var b strings.Builder
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	centerStyle := lipgloss.NewStyle().
+		Width(width - 4).
+		Align(lipgloss.Center)
+
+	// Spinner line
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(ColorPurple).
+		Bold(true)
+	spinnerLine := spinnerStyle.Render(spinner + "  " + spinner + "  " + spinner)
+	b.WriteString("\n\n")
+	b.WriteString(centerStyle.Render(spinnerLine))
+	b.WriteString("\n\n")
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ColorPurple).
+		Bold(true)
+	b.WriteString(centerStyle.Render(titleStyle.Render("🔨 Creating Worktree")))
+	b.WriteString("\n\n")
+
+	// Description
+	descStyle := lipgloss.NewStyle().
+		Foreground(ColorText)
+	b.WriteString(centerStyle.Render(descStyle.Render("Setting up " + creating.Title + "...")))
+	b.WriteString("\n\n")
+
+	// Elapsed time
+	elapsed := time.Since(creating.StartTime).Truncate(time.Second)
+	timeStyle := lipgloss.NewStyle().
+		Foreground(ColorTextDim).
+		Italic(true)
+	b.WriteString(centerStyle.Render(timeStyle.Render(fmt.Sprintf("Elapsed: %s", elapsed))))
+	b.WriteString("\n\n")
+
+	// Progress dots animation
+	dots := strings.Repeat("·", (h.animationFrame%4)+1) + strings.Repeat(" ", 3-h.animationFrame%4)
+	dotStyle := lipgloss.NewStyle().Foreground(ColorPurple)
+	b.WriteString(centerStyle.Render(dotStyle.Render(dots)))
+
+	return b.String()
+}
+
+func (h *Home) renderCreatingSessionItem(
+	b *strings.Builder,
+	item session.Item,
+	selected bool,
+) {
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	// Selection styling
+	if selected {
+		b.WriteString(lipgloss.NewStyle().
+			Foreground(ColorAccent).
+			Bold(true).
+			Render("▸ "))
+	} else {
+		b.WriteString("  ")
+	}
+
+	// Tree connector
+	if item.Level > 0 {
+		b.WriteString(TreeConnectorStyle.Render("├── "))
+	}
+
+	// Spinner + title
+	spinnerStyle := lipgloss.NewStyle().Foreground(ColorPurple)
+	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+	b.WriteString(spinnerStyle.Render(spinner))
+	b.WriteString(" ")
+	b.WriteString(titleStyle.Render(item.CreatingTitle))
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true).Render(" (creating worktree...)"))
+	b.WriteString("\n")
+}
+
 func (h *Home) renderSessionItem(
 	b *strings.Builder,
 	item session.Item,
@@ -10174,6 +10355,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			}, width, height)
 		}
 		item.Session = parentInst
+	}
+
+	// Creating session placeholder: show dedicated animation
+	if item.CreatingID != "" {
+		if creating, ok := h.creatingSessions[item.CreatingID]; ok {
+			return h.renderCreatingPreview(creating, width, height)
+		}
+		return ""
 	}
 
 	// Session preview

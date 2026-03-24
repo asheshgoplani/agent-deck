@@ -67,7 +67,7 @@ func DiscoverExistingTmuxSessions(existingInstances []*Instance) ([]*Instance, e
 		}
 
 		inst := &Instance{
-			ID:          generateID(),
+			ID:          GenerateID(),
 			Title:       title,
 			ProjectPath: projectPath,
 			GroupPath:   groupPath,

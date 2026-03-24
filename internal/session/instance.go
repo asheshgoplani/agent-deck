@@ -390,7 +390,7 @@ func (inst *Instance) ClearParent() {
 
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
-	id := generateID()
+	id := GenerateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
@@ -416,7 +416,7 @@ func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 
 // NewInstanceWithTool creates a new session with tool-specific initialization
 func NewInstanceWithTool(title, projectPath, tool string) *Instance {
-	id := generateID()
+	id := GenerateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
@@ -5185,7 +5185,8 @@ func generateUUID() string {
 }
 
 // generateID generates a unique session ID
-func generateID() string {
+// GenerateID creates a unique session identifier.
+func GenerateID() string {
 	return fmt.Sprintf("%s-%d", randomString(8), time.Now().Unix())
 }
 
