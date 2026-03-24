@@ -16,6 +16,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
 
 // handleSession dispatches session subcommands
@@ -382,8 +383,8 @@ func handleSessionFork(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group for forked session (short)")
 	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -471,7 +472,7 @@ func handleSessionFork(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
@@ -486,8 +487,8 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
-			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
+		if err := git.ValidateBranchName(wtBranch); err != nil {
+			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -579,13 +580,16 @@ func handleSessionFork(profile string, args []string) {
 
 // handleSessionAttach attaches to a session interactively
 func handleSessionAttach(profile string, args []string) {
+	detachByte := ui.ResolvedDetachByte(session.GetHotkeyOverrides())
+	detachLabel := ui.DetachByteLabel(detachByte)
+
 	fs := flag.NewFlagSet("session attach", flag.ExitOnError)
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session attach <id|title>")
 		fmt.Println()
 		fmt.Println("Attach to a session interactively.")
-		fmt.Println("Press Ctrl+Q to detach.")
+		fmt.Printf("Press %s to detach.\n", detachLabel)
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -628,7 +632,7 @@ func handleSessionAttach(profile string, args []string) {
 	// Create context for attach
 	ctx := context.Background()
 
-	if err := tmuxSession.Attach(ctx); err != nil {
+	if err := tmuxSession.Attach(ctx, detachByte); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to attach: %v\n", err)
 		os.Exit(1)
 	}

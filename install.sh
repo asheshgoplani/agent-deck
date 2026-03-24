@@ -671,6 +671,7 @@ set -g history-limit 50000
 
 # Extended keys: forward Shift+Enter and other modified keys to apps (tmux 3.2+)
 set -s extended-keys on
+set -as terminal-features 'tmux-256color:extkeys'
 
 # Mouse support (scroll + drag-to-copy)
 set -g mouse on

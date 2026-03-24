@@ -34,6 +34,7 @@ const (
 	hotkeySettings        = "settings"
 	hotkeyImport          = "import"
 	hotkeyReload          = "reload"
+	hotkeyDetach          = "detach"
 )
 
 var hotkeyActionOrder = []string{
@@ -64,6 +65,7 @@ var hotkeyActionOrder = []string{
 	hotkeySettings,
 	hotkeyImport,
 	hotkeyReload,
+	hotkeyDetach,
 }
 
 var defaultHotkeyBindings = map[string]string{
@@ -94,6 +96,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeySettings:        "S",
 	hotkeyImport:          "i",
 	hotkeyReload:          "ctrl+r",
+	hotkeyDetach:          "ctrl+q",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{
@@ -313,4 +316,57 @@ func joinHotkeyLabels(keys ...string) string {
 		}
 	}
 	return strings.Join(filtered, "/")
+}
+
+// DetachByteFromBinding converts a hotkey binding string (e.g. "ctrl+q") to the
+// corresponding ASCII byte used by the PTY attach loop. Returns 0x11 (Ctrl+Q) as
+// the default when the binding cannot be mapped.
+func DetachByteFromBinding(binding string) byte {
+	binding = strings.ToLower(strings.TrimSpace(binding))
+	if !strings.HasPrefix(binding, "ctrl+") {
+		return 17 // default Ctrl+Q
+	}
+	ch := binding[len("ctrl+"):]
+	if len(ch) == 1 && ch[0] >= 'a' && ch[0] <= 'z' {
+		return ch[0] - 'a' + 1
+	}
+	switch ch {
+	case "\\":
+		return 0x1C
+	case "]":
+		return 0x1D
+	case "^":
+		return 0x1E
+	case "_":
+		return 0x1F
+	}
+	return 17 // default Ctrl+Q
+}
+
+// DetachByteLabel returns a human-readable label for a detach byte (e.g. "Ctrl+Q").
+func DetachByteLabel(b byte) string {
+	if b >= 1 && b <= 26 {
+		return "Ctrl+" + string(rune('A'+b-1))
+	}
+	switch b {
+	case 0x1C:
+		return "Ctrl+\\"
+	case 0x1D:
+		return "Ctrl+]"
+	case 0x1E:
+		return "Ctrl+^"
+	case 0x1F:
+		return "Ctrl+_"
+	}
+	return "Ctrl+Q"
+}
+
+// ResolvedDetachByte returns the detach byte for the current hotkey configuration.
+func ResolvedDetachByte(overrides map[string]string) byte {
+	bindings := resolveHotkeys(overrides)
+	key := actionHotkey(bindings, hotkeyDetach)
+	if key == "" {
+		return 17 // default Ctrl+Q
+	}
+	return DetachByteFromBinding(key)
 }
