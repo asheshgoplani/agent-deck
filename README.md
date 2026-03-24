@@ -310,8 +310,8 @@ Agent Deck works with any terminal-based AI tool:
 
 Track token usage and costs across all your AI agent sessions in real-time.
 
-- **Automatic collection** — Claude Code hook integration reads transcript files on each turn. Gemini/Codex support via output parsing (untested)
-- **9 models priced** — Claude Opus/Sonnet/Haiku, Gemini Pro/Flash, GPT-4o/4.1, o3, o4-mini with daily price refresh
+- **Automatic collection** — Claude Code hook integration reads transcript files on each turn. Gemini/Codex/MiniMax support via output parsing (untested)
+- **13 models priced** — Claude Opus/Sonnet/Haiku, Gemini Pro/Flash, GPT-4o/4.1, o3, o4-mini, MiniMax M2.7/M2.7-highspeed/M2.5/M2.5-highspeed with daily price refresh
 - **TUI dashboard** — press `$` to view today/week/month costs, top sessions, model breakdown
 - **Web dashboard** — `/costs` page with Chart.js charts, group drill-down, session detail views, SSE live updates
 - **Budget limits** — configurable daily/weekly/monthly/per-group/per-session limits with 80% warning and 100% hard stop (untested)
