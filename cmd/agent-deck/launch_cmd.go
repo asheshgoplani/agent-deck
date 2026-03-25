@@ -148,9 +148,9 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// Handle worktree creation
+	// Handle worktree creation (single-repo only; multi-repo delegates to SetupMultiRepo below)
 	var worktreePath, worktreeRepoRoot string
-	if wtBranch != "" {
+	if wtBranch != "" && len(addPaths) == 0 {
 		if !git.IsGitRepo(path) {
 			out.Error(fmt.Sprintf("%s is not a git repository", path), ErrCodeInvalidOperation)
 			os.Exit(1)
