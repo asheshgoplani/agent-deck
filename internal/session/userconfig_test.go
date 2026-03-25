@@ -1012,3 +1012,92 @@ inject_status_line = true
 		t.Error("GetInjectStatusLine should be true when set to true")
 	}
 }
+
+// ============================================================================
+// GoogleCalendar Config Tests
+// ============================================================================
+
+func TestGoogleCalendarConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	content := `
+[google_calendar]
+enabled = true
+calendar_ids = ["work@company.com", "me@gmail.com"]
+lookahead = "1h30m"
+credentials_path = "/custom/path/credentials.json"
+poll_interval = "90s"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !cfg.GoogleCalendar.Enabled {
+		t.Error("Expected GoogleCalendar.Enabled to be true")
+	}
+	if len(cfg.GoogleCalendar.CalendarIDs) != 2 {
+		t.Fatalf("Expected 2 CalendarIDs, got %d", len(cfg.GoogleCalendar.CalendarIDs))
+	}
+	if cfg.GoogleCalendar.CalendarIDs[0] != "work@company.com" {
+		t.Errorf("Expected CalendarIDs[0] = %q, got %q", "work@company.com", cfg.GoogleCalendar.CalendarIDs[0])
+	}
+	if cfg.GoogleCalendar.Lookahead != "1h30m" {
+		t.Errorf("Expected Lookahead %q, got %q", "1h30m", cfg.GoogleCalendar.Lookahead)
+	}
+	if cfg.GoogleCalendar.CredentialsPath != "/custom/path/credentials.json" {
+		t.Errorf("Expected CredentialsPath %q, got %q", "/custom/path/credentials.json", cfg.GoogleCalendar.CredentialsPath)
+	}
+	if cfg.GoogleCalendar.PollInterval != "90s" {
+		t.Errorf("Expected PollInterval %q, got %q", "90s", cfg.GoogleCalendar.PollInterval)
+	}
+}
+
+func TestGoogleCalendarConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if cfg.GoogleCalendar.Enabled {
+		t.Error("GoogleCalendar.Enabled should be false by default")
+	}
+	if len(cfg.GoogleCalendar.CalendarIDs) != 0 {
+		t.Errorf("Expected no CalendarIDs by default, got %v", cfg.GoogleCalendar.CalendarIDs)
+	}
+}
+
+func TestGoogleCalendarConfig_GetLookahead(t *testing.T) {
+	cfg := GoogleCalendarConfig{Lookahead: "1h30m"}
+	if d := cfg.GetLookahead(); d.Hours() != 1.5 {
+		t.Errorf("Expected 1.5h, got %v", d)
+	}
+
+	empty := GoogleCalendarConfig{}
+	if d := empty.GetLookahead(); d.Hours() != 2 {
+		t.Errorf("Expected default 2h, got %v", d)
+	}
+}
+
+func TestGoogleCalendarConfig_GetPollInterval(t *testing.T) {
+	cfg := GoogleCalendarConfig{PollInterval: "90s"}
+	if d := cfg.GetPollInterval(); d.Seconds() != 90 {
+		t.Errorf("Expected 90s, got %v", d)
+	}
+
+	empty := GoogleCalendarConfig{}
+	if d := empty.GetPollInterval(); d.Seconds() != 60 {
+		t.Errorf("Expected default 60s, got %v", d)
+	}
+}

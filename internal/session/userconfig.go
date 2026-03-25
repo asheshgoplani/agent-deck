@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -126,6 +127,9 @@ type UserConfig struct {
 
 	// Costs defines cost tracking and budget settings
 	Costs CostsSettings `toml:"costs"`
+
+	// GoogleCalendar defines Google Calendar integration settings
+	GoogleCalendar GoogleCalendarConfig `toml:"google_calendar"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1992,4 +1996,74 @@ func (c CostsSettings) GetTimezone() string {
 		return c.Timezone
 	}
 	return "Local"
+}
+
+// GoogleCalendarConfig defines Google Calendar integration settings.
+type GoogleCalendarConfig struct {
+	// Enabled enables the calendar collector (default: false)
+	Enabled bool `toml:"enabled"`
+
+	// CalendarIDs specifies which calendars to query (empty = primary only)
+	CalendarIDs []string `toml:"calendar_ids"`
+
+	// Lookahead is how far ahead to check for events (default: "2h")
+	// Parsed as time.Duration string (e.g., "2h", "1h30m", "90m")
+	Lookahead string `toml:"lookahead"`
+
+	// CredentialsPath overrides the default credentials.json location.
+	// Default: ~/.agent-deck/google-calendar-credentials.json
+	CredentialsPath string `toml:"credentials_path"`
+
+	// PollInterval is how often to poll the API (default: "60s")
+	// Parsed as time.Duration string
+	PollInterval string `toml:"poll_interval"`
+}
+
+// GetLookahead parses the Lookahead string into a time.Duration.
+// Returns 2h if empty or unparseable.
+func (c *GoogleCalendarConfig) GetLookahead() time.Duration {
+	if c.Lookahead == "" {
+		return 2 * time.Hour
+	}
+	d, err := time.ParseDuration(c.Lookahead)
+	if err != nil {
+		return 2 * time.Hour
+	}
+	return d
+}
+
+// GetPollInterval parses the PollInterval string into a time.Duration.
+// Returns 60s if empty or unparseable.
+func (c *GoogleCalendarConfig) GetPollInterval() time.Duration {
+	if c.PollInterval == "" {
+		return 60 * time.Second
+	}
+	d, err := time.ParseDuration(c.PollInterval)
+	if err != nil {
+		return 60 * time.Second
+	}
+	return d
+}
+
+// GetCredentialsPath returns the credentials path, defaulting to
+// ~/.agent-deck/google-calendar-credentials.json.
+func (c *GoogleCalendarConfig) GetCredentialsPath() string {
+	if c.CredentialsPath != "" {
+		return c.CredentialsPath
+	}
+	dir, err := GetAgentDeckDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "google-calendar-credentials.json")
+}
+
+// GetTokenPath returns the path where the OAuth token is cached.
+// Always next to the credentials file: ~/.agent-deck/google-calendar-token.json
+func (c *GoogleCalendarConfig) GetTokenPath() string {
+	dir, err := GetAgentDeckDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "google-calendar-token.json")
 }
