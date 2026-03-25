@@ -832,6 +832,16 @@ async def heartbeat_loop(bot: Bot, config: dict):
                     parts.append(
                         f"Error sessions: {', '.join(error_details)}."
                     )
+                # Include meeting context if available
+                next_meeting = summary.get("next_meeting")
+                if next_meeting:
+                    title = next_meeting.get("title", "meeting")
+                    mins = next_meeting.get("starts_in_minutes", 0)
+                    video = " (video call)" if next_meeting.get("has_video") else ""
+                    if mins <= 0:
+                        parts.append(f"⚠️ User in meeting now: {title}{video}")
+                    elif mins <= 15:
+                        parts.append(f"⚠️ Meeting in {mins}m: {title}{video}")
                 # Append HEARTBEAT_RULES.md (per-profile, then global fallback)
                 rules_text = None
                 for rules_path in [
