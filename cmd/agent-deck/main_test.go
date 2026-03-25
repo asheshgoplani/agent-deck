@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTmuxAvailable(t *testing.T) {
@@ -105,6 +108,27 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 			t.Errorf("expected empty args for TUI mode with profile flag, got %v", args)
 		}
 	})
+}
+
+func TestStatusJSON_IncludesNextMeeting(t *testing.T) {
+	out := struct {
+		Waiting     int          `json:"waiting"`
+		Running     int          `json:"running"`
+		NextMeeting *meetingInfo `json:"next_meeting,omitempty"`
+	}{
+		Waiting: 2,
+		Running: 1,
+		NextMeeting: &meetingInfo{
+			Title:           "Sprint Planning",
+			StartsInMinutes: 8,
+			HasVideo:        true,
+		},
+	}
+
+	data, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"next_meeting"`)
+	assert.Contains(t, string(data), `"starts_in_minutes":8`)
 }
 
 func TestIsDuplicateSession(t *testing.T) {

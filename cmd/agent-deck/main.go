@@ -21,6 +21,7 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/asheshgoplani/agent-deck/internal/calendar"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -1730,6 +1731,13 @@ type statusCounts struct {
 	total   int
 }
 
+// meetingInfo is the JSON representation of the next upcoming calendar event.
+type meetingInfo struct {
+	Title           string `json:"title"`
+	StartsInMinutes int    `json:"starts_in_minutes"`
+	HasVideo        bool   `json:"has_video"`
+}
+
 // countByStatus counts sessions by their status
 func countByStatus(instances []*session.Instance) statusCounts {
 	var counts statusCounts
@@ -1810,20 +1818,41 @@ func handleStatus(profile string, args []string) {
 	// Output based on flags
 	if *jsonOutput {
 		type statusJSON struct {
-			Waiting int `json:"waiting"`
-			Running int `json:"running"`
-			Idle    int `json:"idle"`
-			Error   int `json:"error"`
-			Stopped int `json:"stopped"`
-			Total   int `json:"total"`
+			Waiting     int          `json:"waiting"`
+			Running     int          `json:"running"`
+			Idle        int          `json:"idle"`
+			Error       int          `json:"error"`
+			Stopped     int          `json:"stopped"`
+			Total       int          `json:"total"`
+			NextMeeting *meetingInfo `json:"next_meeting,omitempty"`
+		}
+		var meeting *meetingInfo
+		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg.GoogleCalendar.Enabled {
+			collector, err := calendar.NewCollectorFromConfig(
+				cfg.GoogleCalendar.GetCredentialsPath(),
+				cfg.GoogleCalendar.GetTokenPath(),
+				cfg.GoogleCalendar.CalendarIDs,
+				cfg.GoogleCalendar.GetLookahead(),
+			)
+			if err == nil {
+				if events, err := collector.Collect(); err == nil && len(events) > 0 {
+					e := events[0]
+					meeting = &meetingInfo{
+						Title:           e.Title,
+						StartsInMinutes: int(time.Until(e.StartsAt).Minutes()),
+						HasVideo:        e.HasVideo,
+					}
+				}
+			}
 		}
 		output, _ := json.Marshal(statusJSON{
-			Waiting: counts.waiting,
-			Running: counts.running,
-			Idle:    counts.idle,
-			Error:   counts.err,
-			Stopped: counts.stopped,
-			Total:   counts.total,
+			Waiting:     counts.waiting,
+			Running:     counts.running,
+			Idle:        counts.idle,
+			Error:       counts.err,
+			Stopped:     counts.stopped,
+			Total:       counts.total,
+			NextMeeting: meeting,
 		})
 		fmt.Println(string(output))
 	} else if *quiet || *quietShort {
