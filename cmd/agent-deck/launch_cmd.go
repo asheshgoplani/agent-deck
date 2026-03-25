@@ -47,6 +47,13 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Multi-repo flag
+	var addPaths []string
+	fs.Func("add-path", "Additional repo path for multi-repo session (repeatable)", func(s string) error {
+		addPaths = append(addPaths, s)
+		return nil
+	})
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 
@@ -70,6 +77,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
+		fmt.Println("  agent-deck launch . -c claude --add-path /path/to/repo2 --add-path /path/to/repo3")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -274,6 +282,23 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreeBranch = wtBranch
 	}
 
+	if len(addPaths) > 0 {
+		// Resolve additional paths to absolute
+		resolvedPaths := make([]string, 0, len(addPaths))
+		for _, p := range addPaths {
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				out.Error(fmt.Sprintf("failed to resolve --add-path %s: %v", p, err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			resolvedPaths = append(resolvedPaths, abs)
+		}
+		if err := session.SetupMultiRepo(newInstance, resolvedPaths, wtBranch, session.GetMultiRepoBaseDir()); err != nil {
+			out.Error(fmt.Sprintf("failed to set up multi-repo session: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
 		newInstance.ClaudeDetectedAt = time.Now()
@@ -390,6 +415,10 @@ func handleLaunch(profile string, args []string) {
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
+	}
+	if newInstance.IsMultiRepo() {
+		jsonData["multi_repo"] = true
+		jsonData["multi_repo_paths"] = newInstance.AllProjectPaths()
 	}
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)
