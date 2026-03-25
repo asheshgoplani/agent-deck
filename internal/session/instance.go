@@ -1831,6 +1831,18 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 	return wrapper, nil
 }
 
+// hasEffectiveWrapper returns true if the instance has a wrapper configured,
+// either directly on the instance or via the tool definition in config.toml.
+func (i *Instance) hasEffectiveWrapper() bool {
+	if i.Wrapper != "" {
+		return true
+	}
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.Wrapper != "" {
+		return true
+	}
+	return false
+}
+
 // loadCustomPatternsFromConfig loads detection patterns from built-in defaults + config.toml
 // overrides, and sets them on the tmux session for status detection and tool auto-detection.
 // Works for ALL tools: built-in (claude, gemini, opencode, codex) and custom.
@@ -4991,6 +5003,16 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	// Always pre-wrap in bash -c when a wrapper is configured. Wrappers use
+	// execvp() which cannot interpret shell syntax, so without this any
+	// metacharacter in cmd (inline env vars, &&, $(), etc.) would be passed
+	// as literal argv. Wrapping unconditionally is both safe and simpler than
+	// trying to detect which commands need it.
+	if i.hasEffectiveWrapper() {
+		escaped := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		cmd = fmt.Sprintf("bash -c '%s'", escaped)
+	}
+
 	wrapped, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", "", err
