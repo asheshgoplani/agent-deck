@@ -25,6 +25,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/asheshgoplani/agent-deck/internal/calendar"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -393,6 +394,10 @@ type Home struct {
 	costRefreshTime   time.Time
 	showCostDashboard bool
 	costDashboard     costDashboard
+
+	// Calendar integration
+	calendarEvents atomic.Pointer[[]calendar.Event] // latest poll result (nil = not yet loaded)
+	calendarDone   chan struct{}                      // closed when calendarTicker goroutine exits
 }
 
 // reloadState preserves UI state during storage reload
@@ -890,6 +895,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		logSettings := session.GetLogSettings()
 		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.RemoveOrphans)
 	}()
+
+	// Start calendar ticker if enabled
+	if userConfig != nil && userConfig.GoogleCalendar.Enabled {
+		h.calendarDone = make(chan struct{})
+		go h.calendarTicker(&userConfig.GoogleCalendar)
+	}
 
 	return h
 }
@@ -2509,6 +2520,13 @@ func (h *Home) syncNotificationsBackground() {
 
 	// Update tmux status bar directly
 	barText := h.notificationManager.FormatBar()
+	if calSeg := h.calendarSegment(); calSeg != "" {
+		if barText != "" {
+			barText += "  " + calSeg
+		} else {
+			barText = calSeg
+		}
+	}
 
 	// Only update if changed (avoid unnecessary tmux calls)
 	h.lastBarTextMu.Lock()
@@ -5711,6 +5729,13 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 			case <-h.statusWorkerDone:
 			case <-time.After(5 * time.Second):
 				uiLog.Warn("status_worker_stop_timeout")
+			}
+		}
+		if h.calendarDone != nil {
+			select {
+			case <-h.calendarDone:
+			case <-time.After(5 * time.Second):
+				uiLog.Warn("calendar_ticker_stop_timeout")
 			}
 		}
 		// Wait for log workers to drain before closing the watcher they depend on
@@ -11608,4 +11633,76 @@ func getSessionContent(inst *session.Instance) (string, error) {
 	}
 
 	return content, nil
+}
+
+// calendarTicker polls Google Calendar at the configured interval.
+// Runs as a background goroutine; exits when h.ctx is cancelled.
+func (h *Home) calendarTicker(cfg *session.GoogleCalendarConfig) {
+	defer close(h.calendarDone)
+
+	collector, err := calendar.NewCollectorFromConfig(
+		cfg.GetCredentialsPath(),
+		cfg.GetTokenPath(),
+		cfg.CalendarIDs,
+		cfg.GetLookahead(),
+	)
+	if err != nil {
+		uiLog.Warn("calendar_init_failed", slog.String("error", err.Error()))
+		return
+	}
+
+	poll := func() {
+		events, err := collector.Collect()
+		if err != nil {
+			uiLog.Warn("calendar_poll_failed", slog.String("error", err.Error()))
+			return
+		}
+		h.calendarEvents.Store(&events)
+	}
+
+	poll() // Collect immediately on startup
+
+	ticker := time.NewTicker(cfg.GetPollInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case <-ticker.C:
+			poll()
+		}
+	}
+}
+
+// calendarSegment returns a tmux status bar segment for the next upcoming meeting.
+// Returns empty string when calendar is disabled, not yet loaded, or no events.
+func (h *Home) calendarSegment() string {
+	ptr := h.calendarEvents.Load()
+	if ptr == nil {
+		return ""
+	}
+	events := *ptr
+	if len(events) == 0 {
+		return ""
+	}
+
+	e := events[0]
+	label := e.TimeUntilLabel()
+	title := e.Title
+	if len(title) > 20 {
+		title = title[:18] + ".."
+	}
+
+	var color string
+	switch e.Urgency() {
+	case calendar.UrgencyCritical:
+		color = "#f7768e" // red
+	case calendar.UrgencyWarning:
+		color = "#e0af68" // yellow
+	default:
+		color = "#787fa0" // dim
+	}
+
+	return fmt.Sprintf("#[fg=%s]📅 %s %s#[default]", color, title, label)
 }
