@@ -54,9 +54,8 @@ func TestParseEventsResponse(t *testing.T) {
 				"summary": "Standup",
 				"status": "confirmed",
 				"start": {"dateTime": "2026-03-25T10:00:00-07:00"},
-				"end": {"dateTime": "2026-03-25T10:15:00-07:00"},
-				"hangoutLink": "https://meet.google.com/abc"
-			},
+				"end": {"dateTime": "2026-03-25T10:15:00-07:00"}
+				},
 			{
 				"summary": "All-day event",
 				"status": "confirmed",
@@ -69,6 +68,5 @@ func TestParseEventsResponse(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &resp))
 	assert.Len(t, resp.Items, 2)
 	assert.Equal(t, "Standup", resp.Items[0].Summary)
-	assert.Equal(t, "https://meet.google.com/abc", resp.Items[0].HangoutLink)
 	assert.Equal(t, "2026-03-25", resp.Items[1].Start.Date)
 }

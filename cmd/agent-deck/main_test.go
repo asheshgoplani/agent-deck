@@ -121,7 +121,6 @@ func TestStatusJSON_IncludesNextMeeting(t *testing.T) {
 		NextMeeting: &meetingInfo{
 			Title:           "Sprint Planning",
 			StartsInMinutes: 8,
-			HasVideo:        true,
 		},
 	}
 

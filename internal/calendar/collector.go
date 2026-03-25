@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -50,19 +51,23 @@ func NewCollectorFromConfig(credentialsPath, tokenPath string, calendarIDs []str
 
 	tok, err := loadToken(tokenPath)
 	if err != nil {
-		return nil, fmt.Errorf("no token found — run 'agent-deck google-calendar auth' first")
+		return nil, fmt.Errorf("no token found (%w) — run 'agent-deck google-calendar auth' first", err)
 	}
 
 	// TokenSource handles automatic refresh
 	ts := oauthCfg.TokenSource(context.Background(), tok)
-	client := oauth2.NewClient(context.Background(), ts)
 
-	// Persist refreshed tokens
+	// Eagerly validate the token and persist any refresh. Fail fast if auth is broken
+	// so callers get a clear error rather than opaque HTTP 401s on first Collect.
 	newTok, err := ts.Token()
-	if err == nil && newTok.AccessToken != tok.AccessToken {
+	if err != nil {
+		return nil, fmt.Errorf("token unavailable — run 'agent-deck google-calendar auth' to re-authorize: %w", err)
+	}
+	if newTok.AccessToken != tok.AccessToken {
 		_ = saveToken(tokenPath, newTok)
 	}
 
+	client := oauth2.NewClient(context.Background(), ts)
 	return NewCollector(client, calendarIDs, lookahead), nil
 }
 
@@ -100,7 +105,7 @@ func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, e
 	q.Set("timeMax", timeMax)
 	q.Set("singleEvents", "true")
 	q.Set("orderBy", "startTime")
-	q.Set("fields", "items(summary,status,start,end,hangoutLink)")
+	q.Set("fields", "items(summary,status,start,end)")
 	req.URL.RawQuery = q.Encode()
 
 	resp, err := c.client.Do(req)
@@ -129,11 +134,18 @@ func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, e
 		}
 		startTime, err := time.Parse(time.RFC3339, item.Start.DateTime)
 		if err != nil {
+			slog.Warn("calendar: skipping event with unparseable start time",
+				"summary", item.Summary, "dateTime", item.Start.DateTime, "error", err)
 			continue
 		}
 		var endTime time.Time
 		if item.End.DateTime != "" {
-			endTime, _ = time.Parse(time.RFC3339, item.End.DateTime)
+			var endErr error
+			endTime, endErr = time.Parse(time.RFC3339, item.End.DateTime)
+			if endErr != nil {
+				slog.Warn("calendar: unparseable end time, using zero",
+					"summary", item.Summary, "dateTime", item.End.DateTime, "error", endErr)
+			}
 		}
 		title := item.Summary
 		if title == "" {
@@ -143,7 +155,6 @@ func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, e
 			Title:      title,
 			StartsAt:   startTime,
 			EndsAt:     endTime,
-			HasVideo:   item.HangoutLink != "",
 			CalendarID: calendarID,
 		})
 	}

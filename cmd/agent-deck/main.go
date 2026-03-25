@@ -1735,7 +1735,6 @@ type statusCounts struct {
 type meetingInfo struct {
 	Title           string `json:"title"`
 	StartsInMinutes int    `json:"starts_in_minutes"`
-	HasVideo        bool   `json:"has_video"`
 }
 
 // countByStatus counts sessions by their status
@@ -1840,7 +1839,6 @@ func handleStatus(profile string, args []string) {
 					meeting = &meetingInfo{
 						Title:           e.Title,
 						StartsInMinutes: int(time.Until(e.StartsAt).Minutes()),
-						HasVideo:        e.HasVideo,
 					}
 				}
 			}

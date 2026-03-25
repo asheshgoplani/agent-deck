@@ -19,7 +19,6 @@ type Event struct {
 	Title      string    `json:"title"`
 	StartsAt   time.Time `json:"starts_at"`
 	EndsAt     time.Time `json:"ends_at"`
-	HasVideo   bool      `json:"has_video"`
 	CalendarID string    `json:"-"`
 }
 
@@ -63,11 +62,10 @@ type eventsListResponse struct {
 }
 
 type eventResource struct {
-	Summary     string        `json:"summary"`
-	Status      string        `json:"status"`
-	Start       eventDateTime `json:"start"`
-	End         eventDateTime `json:"end"`
-	HangoutLink string        `json:"hangoutLink"`
+	Summary string        `json:"summary"`
+	Status  string        `json:"status"`
+	Start   eventDateTime `json:"start"`
+	End     eventDateTime `json:"end"`
 }
 
 type eventDateTime struct {

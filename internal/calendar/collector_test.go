@@ -25,9 +25,8 @@ func TestCollector_Collect(t *testing.T) {
 					"summary": "Standup",
 					"status": "confirmed",
 					"start": {"dateTime": "` + start1 + `"},
-					"end": {"dateTime": "` + end1 + `"},
-					"hangoutLink": "https://meet.google.com/abc"
-				},
+					"end": {"dateTime": "` + end1 + `"}
+					},
 				{
 					"summary": "Planning",
 					"status": "confirmed",
@@ -56,9 +55,7 @@ func TestCollector_Collect(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, events, 2) // cancelled event excluded
 	assert.Equal(t, "Standup", events[0].Title)
-	assert.True(t, events[0].HasVideo)
 	assert.Equal(t, "Planning", events[1].Title)
-	assert.False(t, events[1].HasVideo)
 }
 
 func TestCollector_Collect_AllDayEventsSkipped(t *testing.T) {
