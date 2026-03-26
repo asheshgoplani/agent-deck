@@ -356,6 +356,8 @@ type Home struct {
 	boundKeysMu             sync.Mutex        // Protects boundKeys for background worker access
 	lastBarText             string            // Cache to avoid updating all sessions every tick
 	lastBarTextMu           sync.Mutex        // Protects lastBarText for background worker access
+	lastCalSeg              string            // Cache to avoid redundant @agentdeck_calendar updates
+	lastCalSegMu            sync.Mutex        // Protects lastCalSeg for background worker access
 
 	// Maintenance banner (shown after background maintenance completes)
 	maintenanceMsg     string
@@ -1416,8 +1418,9 @@ func (h *Home) cleanupNotifications() {
 		return
 	}
 
-	// Clear global status bar (ONE call instead of per-session)
+	// Clear global status bars (ONE call each instead of per-session)
 	_ = tmux.ClearStatusLeftGlobal()
+	_ = tmux.ClearCalendarSegmentGlobal()
 
 	// Unbind all keys (with mutex protection)
 	h.boundKeysMu.Lock()
@@ -2520,17 +2523,9 @@ func (h *Home) syncNotificationsBackground() {
 	// Sync notification manager with current states
 	h.notificationManager.SyncFromInstances(instances, currentSessionID)
 
-	// Update tmux status bar directly
+	// Update notification bar (status-left) — only notification text, no calendar
 	barText := h.notificationManager.FormatBar()
-	if calSeg := h.calendarSegment(); calSeg != "" {
-		if barText != "" {
-			barText += "  " + calSeg
-		} else {
-			barText = calSeg
-		}
-	}
 
-	// Only update if changed (avoid unnecessary tmux calls)
 	h.lastBarTextMu.Lock()
 	if barText != h.lastBarText {
 		h.lastBarText = barText
@@ -2542,13 +2537,31 @@ func (h *Home) syncNotificationsBackground() {
 			_ = tmux.SetStatusLeftGlobal(barText)
 		}
 
-		// Force immediate visual update (bypasses 15-second status-interval)
-		_ = tmux.RefreshStatusBarImmediate()
-
 		notifLog.Info("bar_updated", slog.String("text", barText))
 	} else {
 		h.lastBarTextMu.Unlock()
 	}
+
+	// Update calendar segment in status-right (#{@agentdeck_calendar} prefix, ONE global call)
+	calSeg := h.calendarSegment()
+	h.lastCalSegMu.Lock()
+	if calSeg != h.lastCalSeg {
+		h.lastCalSeg = calSeg
+		h.lastCalSegMu.Unlock()
+
+		if calSeg == "" {
+			_ = tmux.ClearCalendarSegmentGlobal()
+		} else {
+			_ = tmux.SetCalendarSegmentGlobal(calSeg)
+		}
+
+		notifLog.Info("calendar_updated", slog.String("text", calSeg))
+	} else {
+		h.lastCalSegMu.Unlock()
+	}
+
+	// Force immediate visual update (bypasses 15-second status-interval) when either changed
+	_ = tmux.RefreshStatusBarImmediate()
 
 	// CRITICAL: Update key bindings in background too!
 	// This fixes the bug where key bindings became stale when TUI was paused (tea.Exec).
@@ -7563,6 +7576,11 @@ func (h *Home) View() string {
 	}
 	_ = weekMicro // reserved for future weekly display
 
+	// Calendar segment (next upcoming meeting, urgency-coloured)
+	if calText := h.calendarTUISegment(); calText != "" {
+		stats += statsSep + calText
+	}
+
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
 	versionStyle := lipgloss.NewStyle().
 		Foreground(ColorComment).
@@ -11678,12 +11696,48 @@ func (h *Home) calendarTicker(cfg *session.GoogleCalendarConfig) {
 	}
 }
 
+// calendarTUISegment returns a lipgloss-rendered string for use in the TUI header bar.
+// Returns empty string when calendar is disabled, not yet loaded, or no events.
+// Returns a red [cal:err] indicator when the collector failed to initialise.
+func (h *Home) calendarTUISegment() string {
+	if v := h.calendarInitErr.Load(); v != nil {
+		return lipgloss.NewStyle().Foreground(ColorRed).Render("📅 cal:err")
+	}
+	ptr := h.calendarEvents.Load()
+	if ptr == nil {
+		return ""
+	}
+	events := *ptr
+	if len(events) == 0 {
+		return ""
+	}
+
+	e := events[0]
+	label := e.TimeUntilLabel()
+	title := e.Title
+	if len(title) > 20 {
+		title = title[:18] + ".."
+	}
+
+	var color lipgloss.Color
+	switch e.Urgency() {
+	case calendar.UrgencyCritical:
+		color = ColorRed
+	case calendar.UrgencyWarning:
+		color = ColorYellow
+	default:
+		color = ColorComment
+	}
+
+	return lipgloss.NewStyle().Foreground(color).Render(fmt.Sprintf("📅 %s %s", title, label))
+}
+
 // calendarSegment returns a tmux status bar segment for the next upcoming meeting.
 // Returns empty string when calendar is disabled, not yet loaded, or no events.
 // Returns a [cal:err] indicator when the collector failed to initialise.
 func (h *Home) calendarSegment() string {
 	if v := h.calendarInitErr.Load(); v != nil {
-		return "#[fg=#f7768e]📅 cal:err#[default]"
+		return "#[fg=#f7768e]📅 cal:err#[default] "
 	}
 	ptr := h.calendarEvents.Load()
 	if ptr == nil {
@@ -11711,5 +11765,5 @@ func (h *Home) calendarSegment() string {
 		color = "#787fa0" // dim
 	}
 
-	return fmt.Sprintf("#[fg=%s]📅 %s %s#[default]", color, title, label)
+	return fmt.Sprintf("#[fg=%s]📅 %s %s#[default] ", color, title, label)
 }
