@@ -10952,16 +10952,13 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	for _, line := range lines {
 		// Use ANSI-aware width measurement to handle lines with escape codes
 		displayWidth := ansi.StringWidth(line)
-		var finalLine string
 		if displayWidth > maxWidth {
 			// ANSI-aware truncation preserves escape codes while trimming visible content
-			finalLine = ansi.Truncate(line, maxWidth-3, "...")
+			truncated := ansi.Truncate(line, maxWidth-3, "...")
+			truncatedLines = append(truncatedLines, truncated)
 		} else {
-			finalLine = line
+			truncatedLines = append(truncatedLines, line)
 		}
-		
-		// Append ANSI reset to prevent terminal styling from bleeding into adjacent UI.
-		truncatedLines = append(truncatedLines, finalLine+"\x1b[0m")
 	}
 
 	return strings.Join(truncatedLines, "\n")

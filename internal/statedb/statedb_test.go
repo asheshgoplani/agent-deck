@@ -1,8 +1,10 @@
 package statedb
 
 import (
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -679,5 +681,379 @@ func TestRecentSessions_DedupIdenticalConfig(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("expected deduped row count 1, got %d", len(rows))
+	}
+}
+
+// --- Schema migration tests ---
+
+// createOldSchemaDB creates a database with the old schema (before acknowledged column)
+// and inserts test data to simulate an upgrade scenario.
+func createOldSchemaDB(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	defer db.Close()
+
+	// Set up WAL mode like the real code does
+	_, _ = db.Exec("PRAGMA journal_mode=WAL")
+	_, _ = db.Exec("PRAGMA busy_timeout=5000")
+
+	// Create tables WITHOUT the acknowledged column (old schema)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS metadata (
+			key   TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create metadata: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS instances (
+			id              TEXT PRIMARY KEY,
+			title           TEXT NOT NULL,
+			project_path    TEXT NOT NULL,
+			group_path      TEXT NOT NULL DEFAULT 'my-sessions',
+			sort_order      INTEGER NOT NULL DEFAULT 0,
+			command         TEXT NOT NULL DEFAULT '',
+			wrapper         TEXT NOT NULL DEFAULT '',
+			tool            TEXT NOT NULL DEFAULT 'shell',
+			status          TEXT NOT NULL DEFAULT 'error',
+			tmux_session    TEXT NOT NULL DEFAULT '',
+			created_at      INTEGER NOT NULL,
+			last_accessed   INTEGER NOT NULL DEFAULT 0,
+			parent_session_id TEXT NOT NULL DEFAULT '',
+			worktree_path     TEXT NOT NULL DEFAULT '',
+			worktree_repo     TEXT NOT NULL DEFAULT '',
+			worktree_branch   TEXT NOT NULL DEFAULT '',
+			tool_data       TEXT NOT NULL DEFAULT '{}'
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create old instances: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS groups (
+			path         TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			expanded     INTEGER NOT NULL DEFAULT 1,
+			sort_order   INTEGER NOT NULL DEFAULT 0,
+			default_path TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create groups: %v", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS instance_heartbeats (
+			pid        INTEGER PRIMARY KEY,
+			started    INTEGER NOT NULL,
+			heartbeat  INTEGER NOT NULL,
+			is_primary INTEGER NOT NULL DEFAULT 0
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create heartbeats: %v", err)
+	}
+
+	// Set old schema version
+	_, _ = db.Exec(`INSERT INTO metadata (key, value) VALUES ('schema_version', '1')`)
+
+	// Insert test sessions using the old schema (no acknowledged column)
+	now := time.Now().Unix()
+	_, err = db.Exec(`
+		INSERT INTO instances (id, title, project_path, group_path, sort_order,
+			command, wrapper, tool, status, tmux_session,
+			created_at, last_accessed, parent_session_id, worktree_path, worktree_repo, worktree_branch, tool_data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"old-session-1", "Legacy Session", "/home/user/project", "my-sessions", 0,
+		"claude", "", "claude", "idle", "agentdeck_old1",
+		now, now, "", "", "", "", `{"claude_session_id":"cls-abc123"}`,
+	)
+	if err != nil {
+		t.Fatalf("insert old session: %v", err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO instances (id, title, project_path, group_path, sort_order,
+			command, wrapper, tool, status, tmux_session,
+			created_at, last_accessed, parent_session_id, worktree_path, worktree_repo, worktree_branch, tool_data)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"old-session-2", "Another Session", "/home/user/other", "my-sessions", 1,
+		"", "", "shell", "running", "agentdeck_old2",
+		now, now, "", "", "", "", "{}",
+	)
+	if err != nil {
+		t.Fatalf("insert old session 2: %v", err)
+	}
+
+	// Insert a group
+	_, _ = db.Exec(`INSERT INTO groups (path, name, expanded, sort_order, default_path) VALUES (?, ?, ?, ?, ?)`,
+		"my-sessions", "My Sessions", 1, 0, "/home/user",
+	)
+
+	// Checkpoint WAL before closing
+	_, _ = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+}
+
+func TestMigrate_OldSchema_AddsAcknowledgedColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	// Open with current code and run Migrate
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate on old schema should succeed: %v", err)
+	}
+
+	// Verify existing sessions are loadable
+	rows, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances after migration: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("Expected 2 instances after migration, got %d", len(rows))
+	}
+	if rows[0].ID != "old-session-1" || rows[1].ID != "old-session-2" {
+		t.Errorf("Unexpected IDs: %s, %s", rows[0].ID, rows[1].ID)
+	}
+	// acknowledged defaults to false for migrated sessions
+	if rows[0].Acknowledged || rows[1].Acknowledged {
+		t.Error("Old sessions should have acknowledged=false after migration")
+	}
+}
+
+func TestMigrate_OldSchema_SaveInstanceWorks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Create a new session (the operation that was failing)
+	newInst := &InstanceRow{
+		ID:          "new-session-1",
+		Title:       "New Session",
+		ProjectPath: "/home/user/new-project",
+		GroupPath:   "my-sessions",
+		Order:       2,
+		Tool:        "claude",
+		Status:      "running",
+		TmuxSession: "agentdeck_new1",
+		CreatedAt:   time.Now(),
+		ToolData:    json.RawMessage("{}"),
+		Acknowledged: false,
+	}
+	if err := db.SaveInstance(newInst); err != nil {
+		t.Fatalf("SaveInstance on migrated DB should succeed: %v", err)
+	}
+
+	// Verify we can load all three
+	rows, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("Expected 3 instances, got %d", len(rows))
+	}
+}
+
+func TestMigrate_OldSchema_WriteStatusWorks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// WriteStatus references acknowledged in CASE expression
+	if err := db.WriteStatus("old-session-1", "running", "claude"); err != nil {
+		t.Fatalf("WriteStatus on migrated DB: %v", err)
+	}
+
+	statuses, err := db.ReadAllStatuses()
+	if err != nil {
+		t.Fatalf("ReadAllStatuses: %v", err)
+	}
+	if s, ok := statuses["old-session-1"]; !ok || s.Status != "running" {
+		t.Errorf("Expected status 'running', got %+v", statuses["old-session-1"])
+	}
+}
+
+func TestMigrate_OldSchema_SetAcknowledgedWorks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	if err := db.SetAcknowledged("old-session-1", true); err != nil {
+		t.Fatalf("SetAcknowledged: %v", err)
+	}
+
+	statuses, err := db.ReadAllStatuses()
+	if err != nil {
+		t.Fatalf("ReadAllStatuses: %v", err)
+	}
+	if !statuses["old-session-1"].Acknowledged {
+		t.Error("Expected acknowledged=true after SetAcknowledged")
+	}
+}
+
+func TestMigrate_OldSchema_SaveInstancesWorks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// SaveInstances (bulk) should work on migrated DB
+	instances := []*InstanceRow{
+		{ID: "bulk-1", Title: "Bulk1", ProjectPath: "/a", GroupPath: "grp", Order: 0, Tool: "claude", Status: "idle", CreatedAt: time.Now(), ToolData: json.RawMessage("{}")},
+		{ID: "bulk-2", Title: "Bulk2", ProjectPath: "/b", GroupPath: "grp", Order: 1, Tool: "shell", Status: "running", CreatedAt: time.Now(), ToolData: json.RawMessage("{}")},
+	}
+	if err := db.SaveInstances(instances); err != nil {
+		t.Fatalf("SaveInstances on migrated DB: %v", err)
+	}
+
+	loaded, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("Expected 2 instances, got %d", len(loaded))
+	}
+}
+
+func TestMigrate_OldSchema_CostEventsCreated(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// cost_events table should now exist
+	var count int
+	err = db.DB().QueryRow("SELECT COUNT(*) FROM cost_events").Scan(&count)
+	if err != nil {
+		t.Fatalf("cost_events table should exist after migration: %v", err)
+	}
+}
+
+func TestMigrate_OldSchema_RecentSessionsCreated(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// recent_sessions table should now exist and be usable
+	if err := db.SaveRecentSession(&RecentSessionRow{
+		Title:       "test",
+		ProjectPath: "/tmp",
+		Tool:        "claude",
+	}); err != nil {
+		t.Fatalf("SaveRecentSession after migration: %v", err)
+	}
+}
+
+func TestMigrate_DuplicateColumnErrorFormat(t *testing.T) {
+	// Verify that modernc.org/sqlite produces an error containing "duplicate column"
+	// when attempting to add a column that already exists.
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Try adding the acknowledged column again (it already exists)
+	_, err = db.DB().Exec("ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0")
+	if err == nil {
+		t.Fatal("Expected error when adding duplicate column")
+	}
+	if !strings.Contains(err.Error(), "duplicate column") {
+		t.Errorf("Expected error to contain 'duplicate column', got: %q", err.Error())
+	}
+}
+
+func TestMigrate_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	createOldSchemaDB(t, dbPath)
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	// Run Migrate multiple times; should be idempotent
+	for i := 0; i < 3; i++ {
+		if err := db.Migrate(); err != nil {
+			t.Fatalf("Migrate iteration %d: %v", i, err)
+		}
+	}
+
+	// Insert and verify data works after multiple migrations
+	if err := db.SaveInstance(&InstanceRow{
+		ID: "idempotent-1", Title: "Test", ProjectPath: "/tmp", GroupPath: "grp",
+		Tool: "shell", Status: "idle", CreatedAt: time.Now(), ToolData: json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatalf("SaveInstance after multiple migrations: %v", err)
 	}
 }

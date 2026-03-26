@@ -1230,36 +1230,25 @@ func (s *Session) Start(command string) error {
 	// via OptionOverrides to avoid changing behaviour for non-sandbox sessions.
 	themeStyle := currentTmuxThemeStyle()
 
-	optArgs := []string{
+	_ = exec.Command("tmux",
 		"set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";",
 		"set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";",
 		"set-option", "-t", s.Name, "mouse", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
-		"set-option", "-t", s.Name, "escape-time", "10",
-	}
-	if outerTerminalSupportsExtKeys() {
-		optArgs = append(optArgs, ";", "set-option", "-t", s.Name, "-q", "extended-keys", "on")
-	}
-	_ = exec.Command("tmux", optArgs...).Run()
+		"set-option", "-t", s.Name, "escape-time", "10", ";",
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on").Run()
 
 	// Idempotent: only append terminal-features if not already present
-	features := []string{"hyperlinks"}
-	if outerTerminalSupportsExtKeys() {
-		features = append(features, "extkeys")
-	}
-	ensureTerminalFeatures(features...)
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
-	// Uses a prefix match so all agentdeck sessions are covered, and forwards
-	// the key to the pane when the condition fails (e.g. when agent-deck runs
-	// inside an outer tmux session where session_name is "main").
 	_ = exec.Command("tmux", "bind-key", "-n", "-T", "root", "C-q",
-		"if-shell", "echo '#{session_name}' | grep -q '^agentdeck_'",
-		"detach-client", "send-keys C-q").Run()
+		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
+		"detach-client", "").Run()
 
 	// Apply user-specified tmux option overrides from config (after defaults).
 	// These are batched into a single call when multiple overrides are present.
@@ -1421,32 +1410,6 @@ func (s *Session) ConfigureStatusBar() {
 	_ = exec.Command("tmux", args...).Run()
 }
 
-// outerTerminalSupportsExtKeys reports whether the terminal emulator that
-// launched tmux is known to support the CSI u / kitty keyboard protocol.
-// When this returns false, enabling tmux extended-keys will cause Shift+key
-// and other modified key combos to be silently dropped by the terminal.
-func outerTerminalSupportsExtKeys() bool {
-	term := os.Getenv("TERM")
-	termProgram := os.Getenv("TERM_PROGRAM")
-
-	// Known CSI u / kitty keyboard protocol supporters
-	switch {
-	case strings.Contains(term, "ghostty"):
-		// Real Ghostty supports it, but cmux also sets TERM=xterm-ghostty
-		// while not supporting the protocol. Check TERM_PROGRAM to distinguish.
-		return termProgram == "ghostty"
-	case strings.Contains(term, "kitty"):
-		return true
-	case strings.Contains(term, "wezterm"):
-		return true
-	case termProgram == "ghostty", termProgram == "kitty", termProgram == "WezTerm":
-		return true
-	}
-	// Foot, Contour, Rio, and other CSI u terminals can be added here.
-	// Default to off — breaking Shift+key is worse than missing extended key reports.
-	return false
-}
-
 // ensureTerminalFeatures appends terminal features only if not already present.
 // This prevents the terminal-features list from growing on every session start (#366).
 func ensureTerminalFeatures(features ...string) {
@@ -1511,25 +1474,18 @@ func (s *Session) EnableMouseMode() error {
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
 	// Uses -q flag where supported to silently ignore on older tmux versions
-	enhanceArgs := []string{
+	enhanceCmd := exec.Command("tmux",
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
-		"set-option", "-t", s.Name, "escape-time", "10",
-	}
-	if outerTerminalSupportsExtKeys() {
-		enhanceArgs = append(enhanceArgs, ";", "set-option", "-t", s.Name, "-q", "extended-keys", "on")
-	}
+		"set-option", "-t", s.Name, "escape-time", "10", ";",
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
-	_ = exec.Command("tmux", enhanceArgs...).Run()
+	_ = enhanceCmd.Run()
 
 	// Idempotent: only append terminal-features if not already present
-	enhanceFeatures := []string{"hyperlinks"}
-	if outerTerminalSupportsExtKeys() {
-		enhanceFeatures = append(enhanceFeatures, "extkeys")
-	}
-	ensureTerminalFeatures(enhanceFeatures...)
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }

@@ -22,18 +22,29 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// DisableKittyKeyboard delegates to terminal.DisableKittyKeyboard.
+// DisableKittyKeyboard writes escape sequences that disable extended keyboard
+// protocols so that the terminal reverts to legacy key reporting:
+//
+//   - Kitty keyboard protocol: ESC[>0u pushes mode 0 (legacy) on the stack.
+//   - xterm modifyOtherKeys: ESC[>4;0m disables modifyOtherKeys mode.
+//
+// Terminals that do not support a protocol ignore the corresponding sequence.
+// Both must be disabled because tmux's "extended-keys on" option can activate
+// modifyOtherKeys on the outer terminal, and it may persist even after the
+// tmux option is turned off.
 func DisableKittyKeyboard(w io.Writer) {
-	terminal.DisableKittyKeyboard(w)
+	_, _ = io.WriteString(w, "\x1b[>0u")   // Disable Kitty protocol
+	_, _ = io.WriteString(w, "\x1b[>4;0m") // Disable xterm modifyOtherKeys
 }
 
-// RestoreKittyKeyboard delegates to terminal.RestoreKittyKeyboard.
+// RestoreKittyKeyboard writes escape sequences that restore the terminal to
+// its previous keyboard mode when the TUI exits.
 func RestoreKittyKeyboard(w io.Writer) {
-	terminal.RestoreKittyKeyboard(w)
+	_, _ = io.WriteString(w, "\x1b[<u")    // Pop Kitty protocol stack
+	_, _ = io.WriteString(w, "\x1b[>4;1m") // Restore modifyOtherKeys mode 1 (default)
 }
 
 // ParseCSIu parses a Kitty keyboard protocol (CSI u) escape sequence and
