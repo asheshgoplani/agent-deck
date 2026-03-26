@@ -632,6 +632,8 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	if opts != nil {
 		if opts.SkipPermissions {
 			flags = append(flags, "--dangerously-skip-permissions")
+		} else if opts.AutoMode {
+			flags = append(flags, "--permission-mode auto")
 		} else if opts.AllowSkipPermissions {
 			flags = append(flags, "--allow-dangerously-skip-permissions")
 		}
@@ -4080,6 +4082,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		opts = NewClaudeOptions(userConfig)
 	}
 	dangerousMode := opts.SkipPermissions
+	autoMode := opts.AutoMode
 	allowDangerousMode := opts.AllowSkipPermissions
 
 	// Check if session has actual conversation data
@@ -4092,10 +4095,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		slog.Bool("use_resume", useResume),
 	)
 
-	// Build dangerous mode flag (--dangerously-skip-permissions wins over --allow-...)
+	// Build permission flag (--dangerously-skip-permissions wins over --permission-mode auto wins over --allow-...)
 	dangerousFlag := ""
 	if dangerousMode {
 		dangerousFlag = " --dangerously-skip-permissions"
+	} else if autoMode {
+		dangerousFlag = " --permission-mode auto"
 	} else if allowDangerousMode {
 		dangerousFlag = " --allow-dangerously-skip-permissions"
 	}
