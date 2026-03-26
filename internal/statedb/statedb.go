@@ -47,6 +47,7 @@ type InstanceRow struct {
 	WorktreeRepo    string
 	WorktreeBranch  string
 	ToolData        json.RawMessage // JSON blob for tool-specific data
+	Acknowledged    bool
 }
 
 // GroupRow represents a group row in the database.
@@ -302,20 +303,25 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 		toolData = json.RawMessage("{}")
 	}
 
+	ack := 0
+	if inst.Acknowledged {
+		ack = 1
+	}
+
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
 			parent_session_id, worktree_path, worktree_repo, worktree_branch,
-			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tool_data, acknowledged
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
-		string(toolData),
+		string(toolData), ack,
 	)
 	return err
 }
@@ -354,8 +360,8 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
 			parent_session_id, worktree_path, worktree_repo, worktree_branch,
-			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tool_data, acknowledged
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -367,12 +373,16 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 		if len(toolData) == 0 {
 			toolData = json.RawMessage("{}")
 		}
+		ack := 0
+		if inst.Acknowledged {
+			ack = 1
+		}
 		if _, err := stmt.Exec(
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
-			string(toolData),
+			string(toolData), ack,
 		); err != nil {
 			return err
 		}
@@ -388,7 +398,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
 			parent_session_id, worktree_path, worktree_repo, worktree_branch,
-			tool_data
+			tool_data, acknowledged
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -401,12 +411,13 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		r := &InstanceRow{}
 		var createdUnix, accessedUnix int64
 		var toolDataStr string
+		var ack int
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
 			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession,
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
-			&toolDataStr,
+			&toolDataStr, &ack,
 		); err != nil {
 			return nil, err
 		}
@@ -415,6 +426,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			r.LastAccessed = time.Unix(accessedUnix, 0)
 		}
 		r.ToolData = json.RawMessage(toolDataStr)
+		r.Acknowledged = ack != 0
 		result = append(result, r)
 	}
 	return result, rows.Err()

@@ -300,6 +300,11 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.MultiRepoTempDir, mrWorktrees,
 		)
 
+		acknowledged := false
+		if inst.tmuxSession != nil {
+			acknowledged = inst.tmuxSession.IsAcknowledged()
+		}
+
 		rows[i] = &statedb.InstanceRow{
 			ID:              inst.ID,
 			Title:           inst.Title,
@@ -318,6 +323,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			WorktreeRepo:    inst.WorktreeRepoRoot,
 			WorktreeBranch:  inst.WorktreeBranch,
 			ToolData:        toolData,
+			Acknowledged:    acknowledged,
 		}
 	}
 
@@ -444,6 +450,12 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			mrTempDir2, mrWorktrees2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
+		// Compute effective status: acknowledged waiting → idle
+		effectiveStatus := Status(r.Status)
+		if r.Status == string(StatusWaiting) && r.Acknowledged {
+			effectiveStatus = StatusIdle
+		}
+
 		instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,
@@ -454,7 +466,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
-			Status:             Status(r.Status),
+			Status:             effectiveStatus,
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,
 			TmuxSession:        r.TmuxSession,
@@ -540,6 +552,12 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			mrTempDir, mrWorktrees := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
+		// Compute effective status: acknowledged waiting → idle
+		effectiveStatus := Status(r.Status)
+		if r.Status == string(StatusWaiting) && r.Acknowledged {
+			effectiveStatus = StatusIdle
+		}
+
 		data.Instances[i] = &InstanceData{
 			ID:                 r.ID,
 			Title:              r.Title,
@@ -550,7 +568,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
-			Status:             Status(r.Status),
+			Status:             effectiveStatus,
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,
 			TmuxSession:        r.TmuxSession,
