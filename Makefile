@@ -83,7 +83,7 @@ release-local:
 	echo "Version: $$CODE_VERSION"
 	@echo "=== Running tests ==="
 	go test -race ./...
-	@echo "=== Running GoReleaser ==="
-	goreleaser release --clean
+	@echo "=== Running GoReleaser (pinned to go1.24.0) ==="
+	GOTOOLCHAIN=go1.24.0 goreleaser release --clean
 	@echo "=== Release complete ==="
 	@echo "Verify: gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"

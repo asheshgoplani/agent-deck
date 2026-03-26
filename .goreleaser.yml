@@ -7,6 +7,9 @@ before:
   hooks:
     - go mod tidy
 
+env:
+  - GOTOOLCHAIN=go1.24.0
+
 builds:
   - id: agent-deck
     main: ./cmd/agent-deck
