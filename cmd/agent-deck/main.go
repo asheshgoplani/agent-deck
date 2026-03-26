@@ -1826,15 +1826,24 @@ func handleStatus(profile string, args []string) {
 			NextMeeting *meetingInfo `json:"next_meeting,omitempty"`
 		}
 		var meeting *meetingInfo
-		if cfg, cfgErr := session.LoadUserConfig(); cfgErr == nil && cfg.GoogleCalendar.Enabled {
+		if cfg, cfgErr := session.LoadUserConfig(); cfgErr != nil {
+			slog.Warn("calendar: config load failed", slog.String("error", cfgErr.Error()))
+		} else if cfg.GoogleCalendar.Enabled {
 			collector, err := calendar.NewCollectorFromConfig(
 				cfg.GoogleCalendar.GetCredentialsPath(),
 				cfg.GoogleCalendar.GetTokenPath(),
 				cfg.GoogleCalendar.CalendarIDs,
 				cfg.GoogleCalendar.GetLookahead(),
 			)
-			if err == nil {
-				if events, err := collector.Collect(); err == nil && len(events) > 0 {
+			if err != nil {
+				slog.Warn("calendar: collector init failed", slog.String("error", err.Error()))
+			} else {
+				calCtx, calCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer calCancel()
+				events, collectErr := collector.Collect(calCtx)
+				if collectErr != nil {
+					slog.Warn("calendar: collect failed", slog.String("error", collectErr.Error()))
+				} else if len(events) > 0 {
 					e := events[0]
 					meeting = &meetingInfo{
 						Title:           e.Title,
@@ -1843,7 +1852,7 @@ func handleStatus(profile string, args []string) {
 				}
 			}
 		}
-		output, _ := json.Marshal(statusJSON{
+		output, err := json.Marshal(statusJSON{
 			Waiting:     counts.waiting,
 			Running:     counts.running,
 			Idle:        counts.idle,
@@ -1852,6 +1861,11 @@ func handleStatus(profile string, args []string) {
 			Total:       counts.total,
 			NextMeeting: meeting,
 		})
+		if err != nil {
+			slog.Error("handleStatus: failed to marshal JSON", slog.String("error", err.Error()))
+			fmt.Fprintln(os.Stderr, "error: failed to marshal status JSON")
+			os.Exit(1)
+		}
 		fmt.Println(string(output))
 	} else if *quiet || *quietShort {
 		fmt.Println(counts.waiting)

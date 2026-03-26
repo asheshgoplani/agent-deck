@@ -1,6 +1,7 @@
 package calendar
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -51,7 +52,7 @@ func TestCollector_Collect(t *testing.T) {
 		lookahead:   2 * time.Hour,
 	}
 
-	events, err := c.Collect()
+	events, err := c.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Len(t, events, 2) // cancelled event excluded
 	assert.Equal(t, "Standup", events[0].Title)
@@ -81,14 +82,16 @@ func TestCollector_Collect_AllDayEventsSkipped(t *testing.T) {
 		lookahead:   2 * time.Hour,
 	}
 
-	events, err := c.Collect()
+	events, err := c.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, events) // all-day events excluded
 }
 
-func TestCollector_Collect_APIError(t *testing.T) {
+func TestCollector_Collect_APIError_IncludesGoogleMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"code":403,"message":"Calendar usage limits exceeded.","errors":[{"reason":"rateLimitExceeded"}]}}`))
 	}))
 	defer srv.Close()
 
@@ -99,8 +102,60 @@ func TestCollector_Collect_APIError(t *testing.T) {
 		lookahead:   2 * time.Hour,
 	}
 
-	_, err := c.Collect()
-	assert.Error(t, err)
+	_, err := c.Collect(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Calendar usage limits exceeded.")
+}
+
+func TestCollector_Collect_APIError_TokenExpiredSuggestsReauth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"code":401,"message":"Invalid Credentials"}}`))
+	}))
+	defer srv.Close()
+
+	c := &Collector{
+		client:      srv.Client(),
+		baseURL:     srv.URL,
+		calendarIDs: []string{"primary"},
+		lookahead:   2 * time.Hour,
+	}
+
+	_, err := c.Collect(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent-deck google-calendar auth")
+}
+
+func TestCollector_Collect_RespectsContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		// Block until the client disconnects.
+		<-r.Context().Done()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := &Collector{
+		client:      srv.Client(),
+		baseURL:     srv.URL,
+		calendarIDs: []string{"primary"},
+		lookahead:   2 * time.Hour,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := c.Collect(ctx)
+		errCh <- err
+	}()
+
+	<-started // wait until request is in-flight
+	cancel()
+
+	err := <-errCh
+	require.Error(t, err)
 }
 
 func TestCollector_Collect_MultipleCalendars(t *testing.T) {
@@ -127,7 +182,7 @@ func TestCollector_Collect_MultipleCalendars(t *testing.T) {
 		lookahead:   2 * time.Hour,
 	}
 
-	events, err := c.Collect()
+	events, err := c.Collect(context.Background())
 	require.NoError(t, err)
 	assert.Len(t, events, 2)
 	// Sorted by start time — Personal (10m) before Work sync (20m)

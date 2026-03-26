@@ -102,7 +102,10 @@ func handleGoogleCalendarAuth() {
 		fmt.Fprintln(w, "Authorization successful! You can close this tab.")
 	})
 	srv := &http.Server{Handler: mux}
+	// Serve returns http.ErrServerClosed on clean shutdown via Shutdown below — expected.
 	go srv.Serve(listener) //nolint:errcheck
+	// Shutdown error is safe to ignore: this single-use auth server exits seconds
+	// after receiving the OAuth code regardless of whether Shutdown returns an error.
 	defer srv.Shutdown(context.Background()) //nolint:errcheck
 
 	authURL := oauthCfg.AuthCodeURL(oauthState, oauth2.AccessTypeOffline)
@@ -150,7 +153,7 @@ func handleGoogleCalendarTest() {
 		os.Exit(1)
 	}
 
-	events, err := collector.Collect()
+	events, err := collector.Collect(context.Background())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching events: %v\n", err)
 		os.Exit(1)

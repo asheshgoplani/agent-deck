@@ -3,6 +3,7 @@ package calendar
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"golang.org/x/oauth2"
@@ -44,6 +45,30 @@ func saveToken(path string, tok *oauth2.Token) error {
 		return fmt.Errorf("encode token: %w", err)
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// persistingTokenSource wraps an oauth2.TokenSource and writes the token to
+// disk whenever the access token changes, ensuring long-running processes
+// survive token rotation across restarts.
+type persistingTokenSource struct {
+	inner     oauth2.TokenSource
+	tokenPath string
+	last      string // last seen access token
+}
+
+func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
+	tok, err := p.inner.Token()
+	if err != nil {
+		return nil, err
+	}
+	if tok.AccessToken != p.last {
+		p.last = tok.AccessToken
+		if saveErr := saveToken(p.tokenPath, tok); saveErr != nil {
+			slog.Warn("calendar: failed to persist refreshed token",
+				slog.String("path", p.tokenPath), slog.String("error", saveErr.Error()))
+		}
+	}
+	return tok, nil
 }
 
 // ParseCredentials is the exported version of parseCredentials.

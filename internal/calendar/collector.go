@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -54,17 +55,15 @@ func NewCollectorFromConfig(credentialsPath, tokenPath string, calendarIDs []str
 		return nil, fmt.Errorf("no token found (%w) — run 'agent-deck google-calendar auth' first", err)
 	}
 
-	// TokenSource handles automatic refresh
-	ts := oauthCfg.TokenSource(context.Background(), tok)
+	// TokenSource handles automatic refresh. Wrap it in a persisting source so
+	// every token rotation during the process lifetime is written to disk.
+	rawTS := oauthCfg.TokenSource(context.Background(), tok)
+	ts := &persistingTokenSource{inner: rawTS, tokenPath: tokenPath, last: tok.AccessToken}
 
-	// Eagerly validate the token and persist any refresh. Fail fast if auth is broken
-	// so callers get a clear error rather than opaque HTTP 401s on first Collect.
-	newTok, err := ts.Token()
-	if err != nil {
+	// Eagerly validate the token. Fail fast if auth is broken so callers get a
+	// clear error rather than opaque HTTP 401s on first Collect.
+	if _, err := ts.Token(); err != nil {
 		return nil, fmt.Errorf("token unavailable — run 'agent-deck google-calendar auth' to re-authorize: %w", err)
-	}
-	if newTok.AccessToken != tok.AccessToken {
-		_ = saveToken(tokenPath, newTok)
 	}
 
 	client := oauth2.NewClient(context.Background(), ts)
@@ -73,14 +72,15 @@ func NewCollectorFromConfig(credentialsPath, tokenPath string, calendarIDs []str
 
 // Collect fetches upcoming timed events across all configured calendars.
 // Returns events sorted by start time. All-day and cancelled events are excluded.
-func (c *Collector) Collect() ([]Event, error) {
+// The context is forwarded to each HTTP request; cancellation aborts in-flight calls.
+func (c *Collector) Collect(ctx context.Context) ([]Event, error) {
 	now := time.Now()
 	timeMin := now.Format(time.RFC3339)
 	timeMax := now.Add(c.lookahead).Format(time.RFC3339)
 
 	var all []Event
 	for _, calID := range c.calendarIDs {
-		events, err := c.fetchEvents(calID, timeMin, timeMax)
+		events, err := c.fetchEvents(ctx, calID, timeMin, timeMax)
 		if err != nil {
 			return nil, fmt.Errorf("calendar %s: %w", calID, err)
 		}
@@ -93,10 +93,10 @@ func (c *Collector) Collect() ([]Event, error) {
 	return all, nil
 }
 
-func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, error) {
+func (c *Collector) fetchEvents(ctx context.Context, calendarID, timeMin, timeMax string) ([]Event, error) {
 	u := fmt.Sprintf("%s/calendar/v3/calendars/%s/events", c.baseURL, url.PathEscape(calendarID))
 
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,11 @@ func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, e
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		msg := readErrorMessage(resp)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, fmt.Errorf("HTTP 401: %s — run 'agent-deck google-calendar auth' to re-authorize", msg)
+		}
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, msg)
 	}
 
 	var body eventsListResponse
@@ -159,4 +163,22 @@ func (c *Collector) fetchEvents(calendarID, timeMin, timeMax string) ([]Event, e
 		})
 	}
 	return events, nil
+}
+
+// readErrorMessage extracts the human-readable message from a Google API error
+// response body. Returns the raw status text if the body is absent or unparseable.
+func readErrorMessage(resp *http.Response) string {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if err != nil || len(body) == 0 {
+		return resp.Status
+	}
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+		return envelope.Error.Message
+	}
+	return resp.Status
 }

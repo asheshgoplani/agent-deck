@@ -2098,3 +2098,13 @@ func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 		t.Errorf("expected 1 session in flatItems with error filter, got %d", sessionCount)
 	}
 }
+
+func TestCalendarSegment_ShowsErrorWhenInitFailed(t *testing.T) {
+	h := &Home{}
+	h.calendarInitErr.Store("token expired — run 'agent-deck google-calendar auth' to re-authorize")
+
+	result := h.calendarSegment()
+	if !strings.Contains(result, "cal:err") {
+		t.Errorf("calendarSegment should contain 'cal:err' when init failed, got: %q", result)
+	}
+}

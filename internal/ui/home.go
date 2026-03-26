@@ -397,7 +397,9 @@ type Home struct {
 
 	// Calendar integration
 	calendarEvents atomic.Pointer[[]calendar.Event] // latest poll result (nil = not yet loaded)
-	calendarDone   chan struct{}                      // closed when calendarTicker goroutine exits
+	calendarDone    chan struct{}   // closed when calendarTicker goroutine exits
+	calendarInitErr atomic.Value  // stores string error message when init fails; empty means no error
+
 }
 
 // reloadState preserves UI state during storage reload
@@ -11648,11 +11650,12 @@ func (h *Home) calendarTicker(cfg *session.GoogleCalendarConfig) {
 	)
 	if err != nil {
 		uiLog.Warn("calendar_init_failed", slog.String("error", err.Error()))
+		h.calendarInitErr.Store(err.Error())
 		return
 	}
 
 	poll := func() {
-		events, err := collector.Collect()
+		events, err := collector.Collect(h.ctx)
 		if err != nil {
 			uiLog.Warn("calendar_poll_failed", slog.String("error", err.Error()))
 			return
@@ -11677,7 +11680,11 @@ func (h *Home) calendarTicker(cfg *session.GoogleCalendarConfig) {
 
 // calendarSegment returns a tmux status bar segment for the next upcoming meeting.
 // Returns empty string when calendar is disabled, not yet loaded, or no events.
+// Returns a [cal:err] indicator when the collector failed to initialise.
 func (h *Home) calendarSegment() string {
+	if v := h.calendarInitErr.Load(); v != nil {
+		return "#[fg=#f7768e]📅 cal:err#[default]"
+	}
 	ptr := h.calendarEvents.Load()
 	if ptr == nil {
 		return ""
