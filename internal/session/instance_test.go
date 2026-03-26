@@ -527,8 +527,8 @@ func TestBuildClaudeCommand_SubagentAddDir(t *testing.T) {
 
 	cmd := inst.buildClaudeCommand("claude")
 
-	// Should contain --add-dir with parent's project path
-	if !strings.Contains(cmd, "--add-dir /home/user/projects/main-project") {
+	// Should contain --add-dir with parent's project path (shell-quoted)
+	if !strings.Contains(cmd, "--add-dir '/home/user/projects/main-project'") {
 		t.Errorf("Subagent command should contain --add-dir with parent path, got: %s", cmd)
 	}
 

@@ -6728,6 +6728,21 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 			inst.ProjectPath = newProjectPath
 			inst.AdditionalPaths = newAdditionalPaths
+
+			// Rebuild fork command with correct multi-repo working directory.
+			// The command was built before MultiRepoTempDir was set, so it
+			// used ProjectPath (a single-repo symlink) instead of
+			// MultiRepoTempDir (the parent dir with all repo symlinks).
+			switch source.Tool {
+			case "opencode":
+				if rebuildErr := source.RebuildOpenCodeForkCommand(inst); rebuildErr != nil {
+					return sessionForkedMsg{err: fmt.Errorf("rebuild OpenCode fork command failed: %w", rebuildErr), sourceID: sourceID}
+				}
+			default:
+				if rebuildErr := source.RebuildForkCommand(inst, opts); rebuildErr != nil {
+					return sessionForkedMsg{err: fmt.Errorf("rebuild fork command failed: %w", rebuildErr), sourceID: sourceID}
+				}
+			}
 		}
 
 		if err := inst.Start(); err != nil {

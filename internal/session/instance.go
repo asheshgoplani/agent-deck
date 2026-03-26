@@ -608,7 +608,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// Instance-level flags (not from ClaudeOptions)
 	// --add-dir: Grant subagent access to parent's project directory (for worktrees, etc.)
 	if i.ParentProjectPath != "" {
-		flags = append(flags, fmt.Sprintf("--add-dir %s", i.ParentProjectPath))
+		flags = append(flags, fmt.Sprintf("--add-dir %s", shellQuote(i.ParentProjectPath)))
 	}
 
 	// Multi-repo: pass all project paths via --add-dir (deduplicated, excluding cwd)
@@ -624,7 +624,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 				continue
 			}
 			seen[real] = true
-			flags = append(flags, fmt.Sprintf("--add-dir %s", p))
+			flags = append(flags, fmt.Sprintf("--add-dir %s", shellQuote(p)))
 		}
 	}
 
@@ -4214,7 +4214,7 @@ func (i *Instance) Fork(newTitle, newGroupPath string) (string, error) {
 // Uses capture-resume pattern: starts fork in print mode to get new session ID,
 // stores in tmux environment, then resumes interactively
 func (i *Instance) ForkWithOptions(newTitle, newGroupPath string, opts *ClaudeOptions) (string, error) {
-	projectPath := i.ProjectPath
+	projectPath := i.EffectiveWorkingDir()
 	if opts != nil && opts.WorkDir != "" {
 		projectPath = opts.WorkDir
 	}
@@ -4241,7 +4241,7 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 		return "", fmt.Errorf("cannot fork: no active Claude session")
 	}
 
-	workDir := target.ProjectPath
+	workDir := target.EffectiveWorkingDir()
 
 	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST use
 	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
@@ -4263,12 +4263,17 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	// Use `exec` before claude so that when this compound command is wrapped
 	// in `bash -c` (for fish compatibility), claude replaces the bash process,
 	// enabling proper job control (Ctrl+Z suspend / fg resume).
-	forkUUID := generateUUID()
-	target.ClaudeSessionID = forkUUID
+	// Reuse existing UUID if already set (e.g. when rebuilding the command after
+	// multi-repo propagation via RebuildForkCommand).
+	forkUUID := target.ClaudeSessionID
+	if forkUUID == "" {
+		forkUUID = generateUUID()
+		target.ClaudeSessionID = forkUUID
+	}
 	cmd := fmt.Sprintf(
-		`cd '%s' && `+
+		`cd %s && `+
 			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,
-		workDir,
+		shellQuote(workDir),
 		bashExportPrefix, forkUUID, i.ClaudeSessionID, extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
@@ -4278,14 +4283,14 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	return cmd, nil
 }
 
-// GetActualWorkDir returns the actual working directory from tmux, or falls back to ProjectPath
+// GetActualWorkDir returns the actual working directory from tmux, or falls back to EffectiveWorkingDir
 func (i *Instance) GetActualWorkDir() string {
 	if i.tmuxSession != nil {
 		if workDir := i.tmuxSession.GetWorkDir(); workDir != "" {
 			return workDir
 		}
 	}
-	return i.ProjectPath
+	return i.EffectiveWorkingDir()
 }
 
 // CreateForkedInstance creates a new Instance configured for forking
@@ -4299,8 +4304,9 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	newTitle, newGroupPath string,
 	opts *ClaudeOptions,
 ) (*Instance, string, error) {
-	// Create new instance - use worktree path if provided, otherwise parent's project path
-	projectPath := i.ProjectPath
+	// Create new instance - use worktree path if provided, otherwise effective working dir
+	// (MultiRepoTempDir for multi-repo sessions, ProjectPath otherwise)
+	projectPath := i.EffectiveWorkingDir()
 	if opts != nil && opts.WorkDir != "" {
 		projectPath = opts.WorkDir
 	}
@@ -4335,6 +4341,49 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	return forked, cmd, nil
 }
 
+// RebuildForkCommand rebuilds the fork command using the current state of the target instance.
+// This is used after multi-repo state is propagated to the fork, so the command
+// correctly uses EffectiveWorkingDir() (MultiRepoTempDir) instead of ProjectPath.
+// Precondition: target.MultiRepoTempDir must be set before calling this method.
+func (i *Instance) RebuildForkCommand(target *Instance, opts *ClaudeOptions) error {
+	if target.MultiRepoEnabled && target.MultiRepoTempDir == "" {
+		return fmt.Errorf("cannot rebuild fork command: MultiRepoTempDir not set on target")
+	}
+	cmd, err := i.buildClaudeForkCommandForTarget(target, opts)
+	if err != nil {
+		return err
+	}
+	target.Command = cmd
+	return nil
+}
+
+// RebuildOpenCodeForkCommand rebuilds the OpenCode fork script using the target's
+// current EffectiveWorkingDir. Used after multi-repo state propagation so the fork
+// script starts in the fork's own MultiRepoTempDir, not the source's.
+func (i *Instance) RebuildOpenCodeForkCommand(target *Instance) error {
+	if target.MultiRepoEnabled && target.MultiRepoTempDir == "" {
+		return fmt.Errorf("cannot rebuild OpenCode fork command: MultiRepoTempDir not set on target")
+	}
+
+	workDir := target.EffectiveWorkingDir()
+	envPrefix := i.buildEnvSourceCommand()
+
+	var extraFlags string
+	if opts := target.GetOpenCodeOptions(); opts != nil {
+		for _, arg := range opts.ToArgsForFork() {
+			extraFlags += " " + arg
+		}
+	}
+
+	scriptPath, err := i.writeOpenCodeForkScript(workDir, envPrefix, extraFlags)
+	if err != nil {
+		return fmt.Errorf("failed to create fork script: %w", err)
+	}
+
+	target.Command = fmt.Sprintf("bash '%s'", scriptPath)
+	return nil
+}
+
 // ForkOpenCode returns the command to create a forked OpenCode session.
 // Uses export/import to clone the session with a new ID, then launches
 // the forked session with opencode -s <new-id>.
@@ -4351,7 +4400,7 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
 
-	workDir := i.ProjectPath
+	workDir := i.EffectiveWorkingDir()
 	envPrefix := i.buildEnvSourceCommand()
 
 	// Build extra flags from options (for fork, exclude session mode flags)
@@ -4378,8 +4427,9 @@ func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *
 // writeOpenCodeForkScript writes a bash script that forks via export/import.
 // The script self-deletes after execution.
 func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix, extraFlags string) (string, error) {
+	escapedWorkDir := strings.ReplaceAll(workDir, "'", "'\\''")
 	script := fmt.Sprintf(`#!/bin/bash
-cd "%s" || { echo "cd failed to: %s"; exit 1; }
+cd '%s' || { echo 'cd failed to: %s'; exit 1; }
 %s
 tmpfile=$(mktemp -t opencode-fork)
 trap "rm -f \"$tmpfile\" \"$0\"" EXIT
@@ -4404,7 +4454,7 @@ opencode import "$tmpfile" 2>&1 || { echo "Import failed"; exit 1; }
 # OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 echo "Forked to: $new_id"
 opencode -s "$new_id"%s
-`, workDir, workDir, envPrefix, i.OpenCodeSessionID,
+`, escapedWorkDir, escapedWorkDir, envPrefix, i.OpenCodeSessionID,
 		i.OpenCodeSessionID, i.OpenCodeSessionID, extraFlags)
 
 	f, err := os.CreateTemp("", "opencode-fork-*.sh")
@@ -4442,7 +4492,7 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 		return nil, "", err
 	}
 
-	forked := NewInstance(newTitle, i.ProjectPath)
+	forked := NewInstance(newTitle, i.EffectiveWorkingDir())
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
