@@ -446,6 +446,32 @@ func (s *StateDB) UpdateInstanceField(id, field string, value any) error {
 	return err
 }
 
+// QueryClaudeSessionIDs returns a map of instance_id -> claude_session_id for
+// all instances that have a non-empty claude_session_id in their tool_data JSON.
+// Used by session ID exclusion logic to avoid stealing IDs from sibling instances.
+func (s *StateDB) QueryClaudeSessionIDs() (map[string]string, error) {
+	rows, err := s.db.Query(`
+		SELECT id, json_extract(tool_data, '$.claude_session_id')
+		FROM instances
+		WHERE json_extract(tool_data, '$.claude_session_id') IS NOT NULL
+		  AND json_extract(tool_data, '$.claude_session_id') != ''
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var instanceID, sessionID string
+		if err := rows.Scan(&instanceID, &sessionID); err != nil {
+			continue
+		}
+		result[instanceID] = sessionID
+	}
+	return result, rows.Err()
+}
+
 // --- Group CRUD ---
 
 // SaveGroups replaces all groups in a single transaction.

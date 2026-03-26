@@ -275,7 +275,8 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	if *resumeSession != "" {
-		newInstance.ClaudeSessionID = *resumeSession
+		sanitizedID := session.ExtractSessionUUID(*resumeSession)
+		newInstance.ClaudeSessionID = sanitizedID
 		newInstance.ClaudeDetectedAt = time.Now()
 
 		opts := newInstance.GetClaudeOptions()
@@ -284,7 +285,7 @@ func handleLaunch(profile string, args []string) {
 			opts = session.NewClaudeOptions(userConfig)
 		}
 		opts.SessionMode = "resume"
-		opts.ResumeSessionID = *resumeSession
+		opts.ResumeSessionID = sanitizedID
 		_ = newInstance.SetClaudeOptions(opts)
 	}
 

@@ -770,3 +770,31 @@ func TestClaudeOptions_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip failed: original=%+v, restored=%+v", original, restored)
 	}
 }
+
+func TestExtractSessionUUID(t *testing.T) {
+	uuid := "62236352-5ed3-46c1-bafd-b3ad9d3a7209"
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"bare UUID", uuid, uuid},
+		{"claude --resume prefix", "claude --resume " + uuid, uuid},
+		{"ddd --resume prefix", "ddd --resume " + uuid, uuid},
+		{"with leading/trailing spaces", "  " + uuid + "  ", uuid},
+		{"full command with flags", "claude --resume " + uuid + " --dangerously-skip-permissions", uuid},
+		{"empty string", "", ""},
+		{"non-UUID string", "not-a-uuid", "not-a-uuid"},
+		{"UUID with surrounding text", "session_id=" + uuid, uuid},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractSessionUUID(tt.input)
+			if got != tt.want {
+				t.Errorf("ExtractSessionUUID(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

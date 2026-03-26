@@ -1161,7 +1161,8 @@ func handleAdd(profile string, args []string) {
 
 	// Handle --resume-session: set Claude session ID and resume mode
 	if *resumeSession != "" {
-		newInstance.ClaudeSessionID = *resumeSession
+		sanitizedID := session.ExtractSessionUUID(*resumeSession)
+		newInstance.ClaudeSessionID = sanitizedID
 		newInstance.ClaudeDetectedAt = time.Now()
 
 		opts := newInstance.GetClaudeOptions()
@@ -1170,7 +1171,7 @@ func handleAdd(profile string, args []string) {
 			opts = session.NewClaudeOptions(userConfig)
 		}
 		opts.SessionMode = "resume"
-		opts.ResumeSessionID = *resumeSession
+		opts.ResumeSessionID = sanitizedID
 		if err := newInstance.SetClaudeOptions(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to set resume options: %v\n", err)
 		}

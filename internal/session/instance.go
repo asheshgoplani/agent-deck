@@ -26,6 +26,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -2553,29 +2554,39 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 }
 
 // collectOtherClaudeSessionIDs enumerates all agent-deck tmux sessions (except this one)
-// and returns the set of CLAUDE_SESSION_ID values they own. Used to avoid stealing
-// another instance's session when scanning for the most recent .jsonl on disk.
+// and all sibling instances in the state DB, returning the set of CLAUDE_SESSION_ID
+// values they own. Used to avoid stealing another instance's session when scanning
+// for the most recent .jsonl on disk.
 func (i *Instance) collectOtherClaudeSessionIDs() map[string]bool {
 	exclude := make(map[string]bool)
 
+	// Source 1: tmux environment variables (covers running sessions)
 	tmuxSessions, err := tmux.ListAgentDeckSessions()
-	if err != nil {
-		return exclude
-	}
-
-	myTmuxName := ""
-	if i.tmuxSession != nil {
-		myTmuxName = i.tmuxSession.Name
-	}
-
-	for _, sessName := range tmuxSessions {
-		if sessName == myTmuxName {
-			continue
+	if err == nil {
+		myTmuxName := ""
+		if i.tmuxSession != nil {
+			myTmuxName = i.tmuxSession.Name
 		}
-		// Read CLAUDE_SESSION_ID from the other tmux session
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
+
+		for _, sessName := range tmuxSessions {
+			if sessName == myTmuxName {
+				continue
+			}
+			other := &tmux.Session{Name: sessName}
+			if id, err := other.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
+				exclude[id] = true
+			}
+		}
+	}
+
+	// Source 2: state DB (covers stopped sessions and sessions running outside agent-deck)
+	if db := statedb.GetGlobal(); db != nil {
+		if dbIDs, err := db.QueryClaudeSessionIDs(); err == nil {
+			for instanceID, sessionID := range dbIDs {
+				if instanceID != i.ID {
+					exclude[sessionID] = true
+				}
+			}
 		}
 	}
 
