@@ -334,6 +334,9 @@ func (p *ClaudeOptionsPanel) viewForkMode(labelStyle, activeStyle, dimStyle, hea
 	content += headerStyle.Render("─ Advanced Options ─") + "\n"
 	content += renderCheckboxLine("Skip permissions", p.skipPermissions, p.focusIndex == 0)
 	content += renderCheckboxLine("Auto mode", p.autoMode, p.focusIndex == 1)
+	if p.autoMode && p.skipPermissions {
+		content += dimStyle.Render("    ↑ overridden by skip permissions") + "\n"
+	}
 	content += renderCheckboxLine("Chrome mode", p.useChrome, p.focusIndex == 2)
 	content += renderCheckboxLine("Teammate mode", p.useTeammateMode, p.focusIndex == 3)
 	return content
@@ -372,6 +375,9 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 
 	// Auto mode checkbox
 	content += renderCheckboxLine("Auto mode", p.autoMode, p.focusIndex == focusIdx)
+	if p.autoMode && p.skipPermissions {
+		content += dimStyle.Render("    ↑ overridden by skip permissions") + "\n"
+	}
 	focusIdx++
 
 	// Chrome checkbox
