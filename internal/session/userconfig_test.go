@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +212,10 @@ func TestIsClaudeCompatible_CustomToolCommands(t *testing.T) {
 			"claude_env": {
 				Command: "ANTHROPIC_BASE_URL=https://example.com claude --continue",
 			},
+			"claude_wrapper": {
+				Command:        "claude-wrapper",
+				CompatibleWith: "claude",
+			},
 			"other": {
 				Command: "codex --model gpt-5",
 			},
@@ -231,8 +236,84 @@ func TestIsClaudeCompatible_CustomToolCommands(t *testing.T) {
 	if !IsClaudeCompatible("claude_env") {
 		t.Fatal("custom tool with env-prefixed Claude command should be Claude-compatible")
 	}
+	if !IsClaudeCompatible("claude_wrapper") {
+		t.Fatal("custom tool with compatible_with=claude should be Claude-compatible")
+	}
 	if IsClaudeCompatible("other") {
 		t.Fatal("non-Claude custom tool should not be Claude-compatible")
+	}
+}
+
+func TestIsCodexCompatible_CustomToolCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my_codex_wrapper": {
+				Command:        "codex-wrapper",
+				CompatibleWith: "codex",
+			},
+			"my_codex_exact": {
+				Command: "CODEX_HOME=/tmp/codex codex --model gpt-5",
+			},
+			"other": {
+				Command: "codex-wrapper",
+			},
+		},
+	}
+
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	if !IsCodexCompatible("codex") {
+		t.Fatal("built-in codex should be Codex-compatible")
+	}
+	if !IsCodexCompatible("my_codex_wrapper") {
+		t.Fatal("custom tool with compatible_with=codex should be Codex-compatible")
+	}
+	if !IsCodexCompatible("my_codex_exact") {
+		t.Fatal("custom tool with env-prefixed exact codex command should be Codex-compatible")
+	}
+	if IsCodexCompatible("other") {
+		t.Fatal("wrapper without compatible_with should not be Codex-compatible")
+	}
+}
+
+func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+
+	if err := CreateExampleConfig(); err != nil {
+		t.Fatalf("CreateExampleConfig: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".agent-deck", "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", configPath, err)
+	}
+	config := string(data)
+
+	for _, want := range []string{
+		`compatible_with - Built-in compatibility to mirror ("claude" or "codex")`,
+		`compatible_with = "codex"`,
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("example config missing %q", want)
+		}
 	}
 }
 

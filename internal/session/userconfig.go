@@ -842,6 +842,12 @@ type ToolDef struct {
 	// Command is the shell command to run
 	Command string `toml:"command"`
 
+	// CompatibleWith opts this tool into compatibility behavior for a built-in
+	// tool even when the configured command is a wrapper script rather than the
+	// literal executable name. Supported values currently include "claude" and
+	// "codex".
+	CompatibleWith string `toml:"compatible_with"`
+
 	// Wrapper is an optional command that wraps the tool command.
 	// Use {command} placeholder to include the tool command, or omit it to replace the command.
 	// Example: wrapper = "nvim +'terminal {command}' +'startinsert'"
@@ -1497,12 +1503,34 @@ func IsClaudeCompatible(toolName string) bool {
 		return true
 	}
 	if def := GetToolDef(toolName); def != nil {
-		return isClaudeCommand(def.Command)
+		return strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "claude") || isClaudeCommand(def.Command)
+	}
+	return false
+}
+
+// IsCodexCompatible returns true if the tool is "codex" or a custom tool
+// whose underlying command is "codex". Use this for capability gates
+// where custom tools wrapping Codex should get full Codex functionality
+// without losing their configured tool identity.
+func IsCodexCompatible(toolName string) bool {
+	if toolName == "codex" {
+		return true
+	}
+	if def := GetToolDef(toolName); def != nil {
+		return strings.EqualFold(strings.TrimSpace(def.CompatibleWith), "codex") || isCodexCommand(def.Command)
 	}
 	return false
 }
 
 func isClaudeCommand(command string) bool {
+	return isCommand(command, "claude")
+}
+
+func isCodexCommand(command string) bool {
+	return isCommand(command, "codex")
+}
+
+func isCommand(command, wantBase string) bool {
 	fields := strings.Fields(strings.TrimSpace(command))
 	if len(fields) == 0 {
 		return false
@@ -1523,7 +1551,7 @@ func isClaudeCommand(command string) bool {
 	base := filepath.Base(cmdToken)
 	base = strings.TrimSuffix(base, ".exe")
 	base = strings.TrimSuffix(base, ".EXE")
-	return strings.EqualFold(base, "claude")
+	return strings.EqualFold(base, wantBase)
 }
 
 func isShellEnvAssignment(token string) bool {
@@ -1573,14 +1601,9 @@ func GetCustomToolNames() []string {
 		return nil
 	}
 
-	builtins := map[string]bool{
-		"claude": true, "gemini": true, "opencode": true,
-		"codex": true, "pi": true, "shell": true, "cursor": true, "aider": true,
-	}
-
 	var names []string
 	for name := range config.Tools {
-		if !builtins[name] {
+		if !isBuiltinToolName(name) {
 			names = append(names, name)
 		}
 	}
@@ -1589,6 +1612,15 @@ func GetCustomToolNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func isBuiltinToolName(toolName string) bool {
+	switch toolName {
+	case "claude", "gemini", "opencode", "codex", "pi", "shell", "cursor", "aider":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetToolIcon returns the icon for a tool (custom or built-in)
@@ -2243,6 +2275,7 @@ auto_cleanup = true
 # Each tool can have:
 #   command      - The shell command to run
 #   icon         - Emoji/symbol shown in the UI
+#   compatible_with - Built-in compatibility to mirror ("claude" or "codex")
 #   busy_patterns - Strings that indicate the tool is processing
 
 # Example: Add a custom AI tool
@@ -2264,6 +2297,12 @@ auto_cleanup = true
 # dangerous_mode = true
 # dangerous_flag = "--dangerously-skip-permissions"
 # env = { ANTHROPIC_BASE_URL = "https://api.example.com/v4", API_KEY = "your-key" }
+
+# Example: Custom Codex wrapper that should restart and detect status like Codex
+# [tools.my-codex]
+# command = "codex-wrapper"
+# compatible_with = "codex"
+# icon = "C"
 
 # ============================================================================
 # Status Detection Pattern Overrides (Advanced)
