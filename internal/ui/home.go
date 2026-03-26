@@ -4071,7 +4071,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if h.showCostDashboard {
 			keyStr := msg.String()
-			if keyStr == "q" || keyStr == "$" || keyStr == "esc" {
+			if keyStr == "q" || keyStr == "C" || keyStr == "esc" {
 				h.showCostDashboard = false
 				return h, nil
 			}
