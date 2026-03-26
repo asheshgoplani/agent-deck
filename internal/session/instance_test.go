@@ -1385,6 +1385,85 @@ func TestBuildGeminiCommand(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-codex": {
+				Command:        "codex-wrapper",
+				CompatibleWith: "codex",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "my-codex")
+	inst.Command = "codex-wrapper"
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, `AGENTDECK_TOOL=my-codex`) {
+		t.Fatalf("buildCodexCommand should preserve custom tool identity, got %q", cmd)
+	}
+	if !strings.Contains(cmd, "codex-wrapper") {
+		t.Fatalf("buildCodexCommand should use the custom command, got %q", cmd)
+	}
+
+	inst.CodexSessionID = "019d1af6-c425-7791-8fd1-38c0fc43062c"
+	cmd = inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "codex-wrapper resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
+		t.Fatalf("buildCodexCommand should resume through the custom wrapper, got %q", cmd)
+	}
+}
+
+func TestCanRestart_CustomCodexWrapperWithKnownID(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+
+	cfg := &UserConfig{
+		Tools: map[string]ToolDef{
+			"my-codex": {
+				Command:        "codex-wrapper",
+				CompatibleWith: "codex",
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("test", "/tmp/test", "my-codex")
+	if !inst.CanRestart() {
+		t.Fatal("custom Codex wrapper should be restartable even before session ID detection")
+	}
+
+	inst.CodexSessionID = "019d1af6-c425-7791-8fd1-38c0fc43062c"
+	if !inst.CanRestart() {
+		t.Fatal("custom Codex wrapper should be restartable with a known session ID")
+	}
+}
+
 func TestInstance_GetMCPInfo_Gemini(t *testing.T) {
 	inst := NewInstanceWithTool("test", "/tmp/test", "gemini")
 
