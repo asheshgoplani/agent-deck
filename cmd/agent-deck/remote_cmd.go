@@ -606,10 +606,12 @@ func installOnRemote(runner *session.SSHRunner, ctx context.Context) error {
 
 // reorderRemoteArgs moves flags before positional args for Go's flag package.
 func reorderRemoteArgs(fs *flag.FlagSet, args []string) []string {
-	// Collect known value flags from the FlagSet
+	// Collect known value flags from the FlagSet.
+	// Go's flag package accepts both -flag and --flag, so register both forms.
 	valueFlags := map[string]bool{}
 	fs.VisitAll(func(f *flag.Flag) {
 		valueFlags["--"+f.Name] = true
+		valueFlags["-"+f.Name] = true
 	})
 
 	var flags, positional []string
