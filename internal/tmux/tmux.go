@@ -104,6 +104,50 @@ var ErrCaptureTimeout = errors.New("capture-pane timed out")
 
 const SessionPrefix = "agentdeck_"
 
+// serverAlive tracks whether the tmux server is responsive.
+// When the server is dead, all subprocess calls take ~3s to fail.
+// This flag short-circuits expensive status loops to prevent UI freezes.
+var (
+	serverAliveMu   sync.RWMutex
+	serverAliveVal  = true
+	serverAliveTime time.Time
+)
+
+// IsServerAlive returns whether the tmux server was recently reachable.
+// Result is cached for 5 seconds to avoid redundant checks.
+func IsServerAlive() bool {
+	serverAliveMu.RLock()
+	if !serverAliveTime.IsZero() && time.Since(serverAliveTime) < 5*time.Second {
+		alive := serverAliveVal
+		serverAliveMu.RUnlock()
+		return alive
+	}
+	serverAliveMu.RUnlock()
+
+	// Quick probe: 1-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}").CombinedOutput()
+	alive := err == nil || (!strings.Contains(string(out), "server exited") &&
+		!strings.Contains(string(out), "lost server") &&
+		ctx.Err() != context.DeadlineExceeded)
+
+	// "no server running" with quick response is fine - server just has no sessions
+	if err != nil && strings.Contains(string(out), "no server running") {
+		alive = true
+	}
+
+	serverAliveMu.Lock()
+	serverAliveVal = alive
+	serverAliveTime = time.Now()
+	serverAliveMu.Unlock()
+
+	if !alive {
+		perfLog.Warn("tmux_server_dead")
+	}
+	return alive
+}
+
 // Session cache - reduces subprocess spawns from O(n) to O(1) per tick
 // Instead of calling `tmux has-session` and `tmux display-message` for each session,
 // we call `tmux list-sessions` ONCE and cache both existence and activity timestamps
@@ -144,8 +188,10 @@ func RefreshSessionCache() {
 		statusLog.Debug("refresh_cache_subprocess_fallback")
 	}
 
-	// Subprocess fallback: list-windows -a
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
+	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -974,7 +1020,9 @@ func generateShortID() string {
 
 // SetEnvironment sets an environment variable for this tmux session
 func (s *Session) SetEnvironment(key, value string) error {
-	cmd := exec.Command("tmux", "set-environment", "-t", s.Name, key, value)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "set-environment", "-t", s.Name, key, value)
 	err := cmd.Run()
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
@@ -1016,7 +1064,9 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	}
 	s.envCacheMu.RUnlock()
 
-	cmd := exec.Command("tmux", "show-environment", "-t", s.Name, key)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "show-environment", "-t", s.Name, key)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)

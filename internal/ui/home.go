@@ -2212,6 +2212,12 @@ func (h *Home) backgroundStatusUpdate() {
 		return
 	}
 
+	// Fast-fail: skip entire status loop when tmux server is dead.
+	// Without this, every subprocess call takes ~3s to fail, causing 30-50s UI freezes.
+	if !tmux.IsServerAlive() {
+		return
+	}
+
 	// Track this tick with the slow-op detector (warns if stuck >3s)
 	if sod := logging.SlowOps(); sod != nil {
 		opID := sod.Start("background_status_update")
