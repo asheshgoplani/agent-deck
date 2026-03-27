@@ -543,6 +543,13 @@ type ClaudeSettings struct {
 	// Default: false
 	AllowDangerousMode bool `toml:"allow_dangerous_mode"`
 
+	// AutoMode enables --permission-mode auto flag for Claude sessions
+	// A classifier model reviews commands before they run, blocking scope escalation
+	// and hostile-content-driven actions while letting routine work proceed without prompts.
+	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
+	// Default: false
+	AutoMode bool `toml:"auto_mode"`
+
 	// EnvFile is a .env file specific to Claude sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory

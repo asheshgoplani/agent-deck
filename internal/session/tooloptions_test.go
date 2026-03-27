@@ -99,6 +99,29 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			},
 			expected: []string{"--dangerously-skip-permissions"},
 		},
+		{
+			name: "auto mode only",
+			opts: ClaudeOptions{
+				AutoMode: true,
+			},
+			expected: []string{"--permission-mode", "auto"},
+		},
+		{
+			name: "skip permissions takes precedence over auto mode",
+			opts: ClaudeOptions{
+				SkipPermissions: true,
+				AutoMode:        true,
+			},
+			expected: []string{"--dangerously-skip-permissions"},
+		},
+		{
+			name: "auto mode takes precedence over allow skip permissions",
+			opts: ClaudeOptions{
+				AutoMode:             true,
+				AllowSkipPermissions: true,
+			},
+			expected: []string{"--permission-mode", "auto"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -174,6 +197,21 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			},
 			expected: []string{"--dangerously-skip-permissions"},
 		},
+		{
+			name: "auto mode for fork",
+			opts: ClaudeOptions{
+				AutoMode: true,
+			},
+			expected: []string{"--permission-mode", "auto"},
+		},
+		{
+			name: "skip permissions takes precedence over auto mode for fork",
+			opts: ClaudeOptions{
+				SkipPermissions: true,
+				AutoMode:        true,
+			},
+			expected: []string{"--dangerously-skip-permissions"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -202,6 +240,25 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	}
 	if !opts.SkipPermissions {
 		t.Error("expected SkipPermissions=true when config.DangerousMode=true")
+	}
+}
+
+func TestNewClaudeOptions_AutoMode(t *testing.T) {
+	dangerousModeFalse := false
+	config := &UserConfig{
+		Claude: ClaudeSettings{
+			DangerousMode: &dangerousModeFalse,
+			AutoMode:      true,
+		},
+	}
+
+	opts := NewClaudeOptions(config)
+
+	if opts.SkipPermissions {
+		t.Error("expected SkipPermissions=false when dangerous_mode=false")
+	}
+	if !opts.AutoMode {
+		t.Error("expected AutoMode=true when auto_mode=true")
 	}
 }
 
