@@ -1283,3 +1283,70 @@ func TestNewDialog_ToggleWorktree_CustomPrefix(t *testing.T) {
 		t.Errorf("expected branch %q, got %q", "dev/cool-feature", got)
 	}
 }
+
+func TestOverlayDropdown_Basic(t *testing.T) {
+	base := "line0\nline1\nline2\nline3\nline4"
+	overlay := "AAA\nBBB"
+
+	result := overlayDropdown(base, overlay, 1, 0)
+	lines := strings.Split(result, "\n")
+
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines, got %d", len(lines))
+	}
+	if lines[0] != "line0" {
+		t.Errorf("line 0: expected %q, got %q", "line0", lines[0])
+	}
+	// overlay at col 0: "AAA" replaces first 3 chars of "line1", remainder "e1" preserved
+	if lines[1] != "AAAe1" {
+		t.Errorf("line 1: expected %q, got %q", "AAAe1", lines[1])
+	}
+}
+
+func TestOverlayDropdown_WithOffset(t *testing.T) {
+	base := "0123456789\n0123456789\n0123456789"
+	overlay := "XX"
+
+	result := overlayDropdown(base, overlay, 1, 3)
+	lines := strings.Split(result, "\n")
+
+	// Line 1 should be "012XX56789"
+	if lines[1] != "012XX56789" {
+		t.Errorf("expected %q, got %q", "012XX56789", lines[1])
+	}
+	// Other lines unchanged
+	if lines[0] != "0123456789" {
+		t.Errorf("line 0 should be unchanged, got %q", lines[0])
+	}
+	if lines[2] != "0123456789" {
+		t.Errorf("line 2 should be unchanged, got %q", lines[2])
+	}
+}
+
+func TestOverlayDropdown_PreservesLineCount(t *testing.T) {
+	base := "a\nb\nc\nd\ne\nf"
+	overlay := "X\nY\nZ"
+
+	result := overlayDropdown(base, overlay, 2, 0)
+	lines := strings.Split(result, "\n")
+
+	if len(lines) != 6 {
+		t.Fatalf("overlay should not change line count: expected 6, got %d", len(lines))
+	}
+}
+
+func TestOverlayDropdown_OutOfBounds(t *testing.T) {
+	base := "a\nb"
+	overlay := "X\nY\nZ"
+
+	// Overlay starts at row 1, only 1 line fits (row 1), row 2 is out of bounds
+	result := overlayDropdown(base, overlay, 1, 0)
+	lines := strings.Split(result, "\n")
+
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	if lines[0] != "a" {
+		t.Errorf("line 0 should be unchanged, got %q", lines[0])
+	}
+}

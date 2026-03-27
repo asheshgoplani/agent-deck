@@ -16,6 +16,109 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
+// overlayDropdown paints `overlay` on top of `base` starting at the given
+// row and column (0-indexed). Lines of the overlay replace the characters
+// underneath while preserving the rest of each base line. This gives a
+// "z-index" effect for floating dropdowns.
+func overlayDropdown(base string, overlay string, row, col int) string {
+	baseLines := strings.Split(base, "\n")
+	overLines := strings.Split(overlay, "\n")
+
+	for i, ol := range overLines {
+		targetRow := row + i
+		if targetRow < 0 || targetRow >= len(baseLines) {
+			continue
+		}
+		bl := baseLines[targetRow]
+		blWidth := lipgloss.Width(bl)
+
+		// Build: [left padding] [overlay line] [right remainder]
+		var result strings.Builder
+
+		if col > 0 {
+			if col <= blWidth {
+				// Truncate base line to col visible chars
+				result.WriteString(truncateVisible(bl, col))
+			} else {
+				// Base line is shorter than col; pad with spaces
+				result.WriteString(bl)
+				result.WriteString(strings.Repeat(" ", col-blWidth))
+			}
+		}
+
+		result.WriteString(ol)
+
+		// Append remaining base chars after the overlay
+		olWidth := lipgloss.Width(ol)
+		afterCol := col + olWidth
+		if afterCol < blWidth {
+			result.WriteString(sliceVisibleFrom(bl, afterCol))
+		}
+
+		baseLines[targetRow] = result.String()
+	}
+
+	return strings.Join(baseLines, "\n")
+}
+
+// truncateVisible returns the prefix of s that spans exactly n visible columns.
+// ANSI escape sequences are preserved for any characters included.
+func truncateVisible(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	visible := 0
+	inEsc := false
+	var buf strings.Builder
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			buf.WriteRune(r)
+			continue
+		}
+		if inEsc {
+			buf.WriteRune(r)
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '~' || r == '\\' {
+				inEsc = false
+			}
+			continue
+		}
+		if visible >= n {
+			break
+		}
+		buf.WriteRune(r)
+		visible++
+	}
+	return buf.String()
+}
+
+// sliceVisibleFrom returns the suffix of s starting from visible column n.
+// ANSI sequences attached to skipped characters are dropped.
+func sliceVisibleFrom(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	visible := 0
+	inEsc := false
+	for i, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '~' || r == '\\' {
+				inEsc = false
+			}
+			continue
+		}
+		if visible >= n {
+			return s[i:]
+		}
+		visible++
+	}
+	return ""
+}
+
 // focusTarget identifies a focusable element in the new session dialog.
 type focusTarget int
 
@@ -70,8 +173,9 @@ type NewDialog struct {
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
 	inheritedSettings []settingDisplay // non-default Docker config values to display.
 	// Inline validation error displayed inside the dialog.
-	validationErr string
-	pathCycler    session.CompletionCycler // Path autocomplete state.
+	validationErr          string
+	pathCycler             session.CompletionCycler // Path autocomplete state.
+	suggestionsLineOffset  int                      // Content line where suggestions overlay should appear.
 	// Multi-repo mode.
 	multiRepoEnabled    bool
 	multiRepoPaths      []string // All paths when multi-repo is active.
@@ -1379,62 +1483,8 @@ func (d *NewDialog) View() string {
 			}
 			content.WriteString(dimStyle.Render("    [a: add, d: remove, enter: edit, ↑↓: navigate]"))
 			content.WriteString("\n")
-			// Show path suggestions dropdown when editing a multi-repo path
-			if d.multiRepoEditing && len(d.pathSuggestions) > 0 {
-				suggestionStyle := lipgloss.NewStyle().
-					Foreground(ColorComment)
-				selectedStyle := lipgloss.NewStyle().
-					Foreground(ColorCyan).
-					Bold(true)
-
-				maxShow := 5
-				total := len(d.pathSuggestions)
-				startIdx := 0
-				endIdx := total
-				if total > maxShow {
-					startIdx = d.pathSuggestionCursor - maxShow/2
-					if startIdx < 0 {
-						startIdx = 0
-					}
-					endIdx = startIdx + maxShow
-					if endIdx > total {
-						endIdx = total
-						startIdx = endIdx - maxShow
-					}
-				}
-
-				var headerText string
-				if len(d.pathSuggestions) < len(d.allPathSuggestions) {
-					headerText = fmt.Sprintf("─ recent paths (%d/%d matching, ^N/^P: cycle, Tab: accept) ─",
-						len(d.pathSuggestions), len(d.allPathSuggestions))
-				} else {
-					headerText = "─ recent paths (^N/^P: cycle, Tab: accept) ─"
-				}
-				content.WriteString("  ")
-				content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(headerText))
-				content.WriteString("\n")
-
-				if startIdx > 0 {
-					content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
-					content.WriteString("\n")
-				}
-
-				for i := startIdx; i < endIdx; i++ {
-					style := suggestionStyle
-					prefix := "    "
-					if i == d.pathSuggestionCursor {
-						style = selectedStyle
-						prefix = "  ▶ "
-					}
-					content.WriteString(style.Render(prefix + d.pathSuggestions[i]))
-					content.WriteString("\n")
-				}
-
-				if endIdx < total {
-					content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
-					content.WriteString("\n")
-				}
-			}
+			// Record line offset for suggestions overlay (rendered after dialog is placed).
+			d.suggestionsLineOffset = strings.Count(content.String(), "\n")
 		} else {
 			for i, p := range d.multiRepoPaths {
 				display := p
@@ -1464,62 +1514,8 @@ func (d *NewDialog) View() string {
 		}
 		content.WriteString("\n")
 
-		// Show path suggestions dropdown when path field is focused
-		if cur == focusPath && len(d.pathSuggestions) > 0 {
-			suggestionStyle := lipgloss.NewStyle().
-				Foreground(ColorComment)
-			selectedStyle := lipgloss.NewStyle().
-				Foreground(ColorCyan).
-				Bold(true)
-
-			maxShow := 5
-			total := len(d.pathSuggestions)
-			startIdx := 0
-			endIdx := total
-			if total > maxShow {
-				startIdx = d.pathSuggestionCursor - maxShow/2
-				if startIdx < 0 {
-					startIdx = 0
-				}
-				endIdx = startIdx + maxShow
-				if endIdx > total {
-					endIdx = total
-					startIdx = endIdx - maxShow
-				}
-			}
-
-			var headerText string
-			if len(d.pathSuggestions) < len(d.allPathSuggestions) {
-				headerText = fmt.Sprintf("─ recent paths (%d/%d matching, ^N/^P: cycle, Tab: accept) ─",
-					len(d.pathSuggestions), len(d.allPathSuggestions))
-			} else {
-				headerText = "─ recent paths (^N/^P: cycle, Tab: accept) ─"
-			}
-			content.WriteString("  ")
-			content.WriteString(lipgloss.NewStyle().Foreground(ColorComment).Render(headerText))
-			content.WriteString("\n")
-
-			if startIdx > 0 {
-				content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
-				content.WriteString("\n")
-			}
-
-			for i := startIdx; i < endIdx; i++ {
-				style := suggestionStyle
-				prefix := "    "
-				if i == d.pathSuggestionCursor {
-					style = selectedStyle
-					prefix = "  ▶ "
-				}
-				content.WriteString(style.Render(prefix + d.pathSuggestions[i]))
-				content.WriteString("\n")
-			}
-
-			if endIdx < total {
-				content.WriteString(suggestionStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
-				content.WriteString("\n")
-			}
-		}
+		// Record line offset for suggestions overlay (rendered after dialog is placed).
+		d.suggestionsLineOffset = strings.Count(content.String(), "\n")
 	}
 	content.WriteString("\n")
 
@@ -1692,11 +1688,123 @@ func (d *NewDialog) View() string {
 	dialog := dialogStyle.Render(content.String())
 
 	// Center the dialog
-	return lipgloss.Place(
+	placed := lipgloss.Place(
 		d.width,
 		d.height,
 		lipgloss.Center,
 		lipgloss.Center,
 		dialog,
 	)
+
+	// Overlay path suggestions dropdown if visible.
+	// Rendered as a floating bordered menu over the placed dialog so it
+	// doesn't shift the layout when it appears/disappears.
+	if suggestionsOverlay := d.renderSuggestionsDropdown(); suggestionsOverlay != "" {
+		// Find where to place the overlay:
+		// The dialog is centered, so we need the dialog's top-left position
+		// within the placed output, plus the line offset to the path input.
+		dialogHeight := lipgloss.Height(dialog)
+		dialogWidth := lipgloss.Width(dialog)
+		topRow := (d.height - dialogHeight) / 2
+		leftCol := (d.width - dialogWidth) / 2
+
+		// suggestionsLineOffset is the content line where the dropdown should appear.
+		// Add border (1) + top padding (2) to get the actual row within the dialog box.
+		overlayRow := topRow + 1 + 2 + d.suggestionsLineOffset
+		// Align with the path input: border (1) + padding (4)
+		overlayCol := leftCol + 1 + 4
+
+		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
+	}
+
+	return placed
+}
+
+// renderSuggestionsDropdown renders the path suggestions as a standalone block
+// for overlay positioning. Returns empty string if no suggestions to show.
+// dropdownMenuBg returns a slightly elevated background color for floating menus.
+// Dark theme: one step brighter than Surface. Light theme: one step darker.
+func dropdownMenuBg() lipgloss.Color {
+	if currentTheme == ThemeLight {
+		return lipgloss.Color("#dcdde2")
+	}
+	return lipgloss.Color("#292e42")
+}
+
+func (d *NewDialog) renderSuggestionsDropdown() string {
+	cur := d.currentTarget()
+
+	// Single-path mode: show when path focused
+	showSingle := !d.multiRepoEnabled && cur == focusPath && len(d.pathSuggestions) > 0
+	// Multi-repo mode: show when editing a path entry
+	showMulti := d.multiRepoEnabled && cur == focusMultiRepo && d.multiRepoEditing && len(d.pathSuggestions) > 0
+
+	if !showSingle && !showMulti {
+		return ""
+	}
+
+	menuBg := dropdownMenuBg()
+	suggestionStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
+
+	maxShow := 5
+	total := len(d.pathSuggestions)
+	startIdx := 0
+	endIdx := total
+	if total > maxShow {
+		startIdx = d.pathSuggestionCursor - maxShow/2
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		endIdx = startIdx + maxShow
+		if endIdx > total {
+			endIdx = total
+			startIdx = endIdx - maxShow
+		}
+	}
+
+	var b strings.Builder
+
+	if startIdx > 0 {
+		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
+		b.WriteString("\n")
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		if i > startIdx {
+			b.WriteString("\n")
+		}
+		style := suggestionStyle
+		prefix := "  "
+		if i == d.pathSuggestionCursor {
+			style = selectedStyle
+			prefix = "▶ "
+		}
+		b.WriteString(style.Render(prefix + d.pathSuggestions[i]))
+	}
+
+	if endIdx < total {
+		b.WriteString("\n")
+		b.WriteString(suggestionStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+	}
+
+	// Footer with keybinding hints
+	var footerText string
+	if len(d.pathSuggestions) < len(d.allPathSuggestions) {
+		footerText = fmt.Sprintf(" %d/%d matching │ ^N/^P cycle │ Tab accept ",
+			len(d.pathSuggestions), len(d.allPathSuggestions))
+	} else {
+		footerText = " ^N/^P cycle │ Tab accept "
+	}
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
+
+	// Wrap in a bordered menu box
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Background(menuBg).
+		Padding(0, 1)
+
+	return menuStyle.Render(b.String())
 }
