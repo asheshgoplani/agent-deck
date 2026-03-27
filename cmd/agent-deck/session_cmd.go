@@ -1390,6 +1390,10 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
+	// Record send time before the actual send so we can verify output freshness.
+	// Captured early to avoid false negatives from clock skew.
+	sentAt := time.Now()
+
 	// Send message atomically (text + Enter in single tmux invocation).
 	// --no-wait: skip readiness waiting, but still do a short retry/verification
 	// loop to avoid silent "pasted but not submitted" races.
@@ -1435,14 +1439,16 @@ func handleSessionSend(profile string, args []string) {
 			}
 		}
 
-		// Fetch and print last response (like session output -q)
-		response, err := inst.GetLastResponseBestEffort()
+		// Wait for the JSONL to contain a response newer than sentAt.
+		// The status check (waitForCompletion) detects the UI prompt reappearing,
+		// but the JSONL file may not be flushed yet — poll until it is.
+		response, err := waitForFreshOutput(inst, sentAt)
 		if err != nil {
 			// Fallback: reload session from DB in case tmux env was also stale
 			// (e.g., /clear created a new session that TUI or hooks detected)
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, err = freshInst.GetLastResponseBestEffort()
+					response, err = waitForFreshOutput(freshInst, sentAt)
 				}
 			}
 		}
@@ -1707,6 +1713,72 @@ func waitForCompletion(checker statusChecker, timeout time.Duration) (string, er
 	}
 }
 
+// freshOutputConfig holds tunable parameters for waitForFreshOutput.
+// Tests override these via freshOutputTestConfig; production uses defaults.
+type freshOutputConfig struct {
+	pollInterval time.Duration
+	timeout      time.Duration
+}
+
+// freshOutputTestConfig, when non-nil, overrides the default timing constants.
+// Only set from tests.
+var freshOutputTestConfig *freshOutputConfig
+
+// waitForFreshOutput polls the session's JSONL file until it contains an assistant
+// response with a timestamp not before sentAt (with a 2-second skew tolerance).
+// This bridges the gap between the UI prompt reappearing (detected by
+// waitForCompletion) and the JSONL being flushed to disk.
+// Falls back to the best-effort response if the freshness timeout expires.
+func waitForFreshOutput(inst *session.Instance, sentAt time.Time) (*session.ResponseOutput, error) {
+	pollInterval := 250 * time.Millisecond
+	timeout := 5 * time.Second
+	if cfg := freshOutputTestConfig; cfg != nil {
+		pollInterval = cfg.pollInterval
+		timeout = cfg.timeout
+	}
+
+	// Allow 2 seconds of clock skew / second-precision rounding.
+	// Claude's JSONL timestamps may have only second precision, and local
+	// time.Now() can be slightly ahead of Claude's clock.
+	threshold := sentAt.Add(-2 * time.Second)
+
+	deadline := time.Now().Add(timeout)
+	var lastResp *session.ResponseOutput
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		resp, err := inst.GetLastResponseBestEffort()
+		if err != nil {
+			lastErr = err
+			time.Sleep(pollInterval)
+			continue
+		}
+		lastResp = resp
+		lastErr = nil
+
+		// If the response has a timestamp, check freshness
+		if resp.Timestamp != "" {
+			if ts, parseErr := time.Parse(time.RFC3339Nano, resp.Timestamp); parseErr == nil {
+				if !ts.Before(threshold) {
+					return resp, nil
+				}
+			} else if ts, parseErr := time.Parse(time.RFC3339, resp.Timestamp); parseErr == nil {
+				if !ts.Before(threshold) {
+					return resp, nil
+				}
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	// Freshness timeout: return whatever we have rather than failing
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
 // handleSessionOutput gets the last response from a session
 func handleSessionOutput(profile string, args []string) {
 	fs := flag.NewFlagSet("session output", flag.ExitOnError)
@@ -1748,6 +1820,16 @@ func handleSessionOutput(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	// Refresh session ID from tmux env before reading output.
+	// The DB-stored ClaudeSessionID may be stale if /clear created a new session
+	// or PostStartSync timed out. This matches the refresh in handleSessionSend.
+	if session.IsClaudeCompatible(inst.Tool) {
+		if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
+			inst.ClaudeSessionID = freshID
+			inst.ClaudeDetectedAt = time.Now()
+		}
 	}
 
 	// Get the last response (best-effort fallback for smoother CLI reads)
