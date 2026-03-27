@@ -528,6 +528,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -622,6 +627,10 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1335,6 +1344,22 @@ func ResolveTheme() string {
 	if theme != "system" {
 		return theme
 	}
+	// Check the terminal's own declaration before asking the OS.
+	// COLORFGBG is set by iTerm2 and other terminals; format is "fg;bg"
+	// where bg < 8 means a dark background. This catches the common case
+	// where macOS is in light mode but the terminal profile is dark.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if idx := strings.LastIndex(colorfgbg, ";"); idx >= 0 {
+			var bg int
+			if _, err := fmt.Sscanf(colorfgbg[idx+1:], "%d", &bg); err == nil {
+				if bg < 8 {
+					return "dark"
+				}
+				return "light"
+			}
+		}
+	}
+
 	isDark, err := dark.IsDarkMode()
 	if err != nil {
 		return "dark"
@@ -1648,6 +1673,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1665,6 +1692,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection

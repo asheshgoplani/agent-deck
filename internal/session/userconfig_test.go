@@ -14,6 +14,7 @@ func TestUserConfig_ClaudeConfigDir(t *testing.T) {
 	configContent := `
 [claude]
 config_dir = "~/.claude-work"
+use_happy = true
 
 [tools.test]
 command = "test"
@@ -32,6 +33,9 @@ command = "test"
 
 	if config.Claude.ConfigDir != "~/.claude-work" {
 		t.Errorf("Claude.ConfigDir = %s, want ~/.claude-work", config.Claude.ConfigDir)
+	}
+	if !config.Claude.UseHappy {
+		t.Error("Claude.UseHappy should be true")
 	}
 }
 
@@ -92,6 +96,34 @@ command = "test"
 
 	if config.Claude.ConfigDir != "" {
 		t.Errorf("Claude.ConfigDir = %s, want empty string", config.Claude.ConfigDir)
+	}
+	if config.Claude.UseHappy {
+		t.Error("Claude.UseHappy should default to false")
+	}
+}
+
+func TestUserConfig_CodexUseHappy(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[codex]
+yolo_mode = true
+use_happy = true
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !config.Codex.YoloMode {
+		t.Error("Codex.YoloMode should be true")
+	}
+	if !config.Codex.UseHappy {
+		t.Error("Codex.UseHappy should be true")
 	}
 }
 
@@ -346,6 +378,44 @@ func TestGetTheme_Light(t *testing.T) {
 	theme := GetTheme()
 	if theme != "light" {
 		t.Errorf("GetTheme: got %q, want %q", theme, "light")
+	}
+}
+
+func TestResolveTheme_COLORFGBGOverridesOS(t *testing.T) {
+	// Setup: explicit "system" theme so ResolveTheme falls through to
+	// auto-detection where COLORFGBG should be checked.
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+	config := &UserConfig{Theme: "system"}
+	_ = SaveUserConfig(config)
+
+	tests := []struct {
+		name      string
+		colorfgbg string
+		want      string
+	}{
+		{"dark terminal (bg=0)", "15;0", "dark"},
+		{"dark terminal (bg=1)", "15;1", "dark"},
+		{"light terminal (bg=15)", "0;15", "light"},
+		{"light terminal (bg=8)", "0;8", "light"},
+		{"three-part dark", "12;7;0", "dark"},
+		{"three-part light", "12;7;15", "light"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COLORFGBG", tt.colorfgbg)
+			ClearUserConfigCache()
+
+			got := ResolveTheme()
+			if got != tt.want {
+				t.Errorf("ResolveTheme() with COLORFGBG=%q: got %q, want %q", tt.colorfgbg, got, tt.want)
+			}
+		})
 	}
 }
 

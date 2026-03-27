@@ -59,6 +59,22 @@ func resolvedAgentDeckTheme() string {
 			}
 		}
 	}
+	// Check the terminal's own declaration before asking the OS.
+	// COLORFGBG is set by iTerm2 and other terminals; format is "fg;bg"
+	// where bg < 8 means a dark background. This catches the common case
+	// where macOS is in light mode but the terminal profile is dark.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if idx := strings.LastIndex(colorfgbg, ";"); idx >= 0 {
+			var bg int
+			if _, err := fmt.Sscanf(colorfgbg[idx+1:], "%d", &bg); err == nil {
+				if bg < 8 {
+					return "dark"
+				}
+				return "light"
+			}
+		}
+	}
+
 	isDark, err := dark.IsDarkMode()
 	if err != nil {
 		return "dark"
@@ -1238,8 +1254,10 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on").Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -1408,6 +1426,31 @@ func (s *Session) ConfigureStatusBar() {
 	_ = exec.Command("tmux", args...).Run()
 }
 
+// ensureTerminalFeatures appends terminal features only if not already present.
+// This prevents the terminal-features list from growing on every session start (#366).
+func ensureTerminalFeatures(features ...string) {
+	out, err := exec.Command("tmux", "show", "-sv", "terminal-features").Output()
+	if err != nil {
+		// tmux too old or server not running — append unconditionally as best-effort
+		if len(features) > 0 {
+			val := ",*:" + strings.Join(features, ":")
+			_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+		}
+		return
+	}
+	existing := string(out)
+	var missing []string
+	for _, f := range features {
+		if !strings.Contains(existing, f) {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) > 0 {
+		val := ",*:" + strings.Join(missing, ":")
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+	}
+}
+
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
 // Safe to call multiple times - just sets the options again
 //
@@ -1452,11 +1495,13 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }
