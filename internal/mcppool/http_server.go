@@ -142,7 +142,7 @@ func (s *HTTPServer) Start() error {
 
 	// Create log file
 	logDir := filepath.Join(os.Getenv("HOME"), ".agent-deck", "logs", "http-servers")
-	_ = os.MkdirAll(logDir, 0755)
+	_ = os.MkdirAll(logDir, 0700)
 	s.logFile = filepath.Join(logDir, fmt.Sprintf("%s.log", s.name))
 
 	logWriter, err := os.Create(s.logFile)
@@ -156,6 +156,11 @@ func (s *HTTPServer) Start() error {
 	s.process = exec.CommandContext(s.ctx, s.command, s.args...)
 	cmdEnv := os.Environ()
 	for k, v := range s.env {
+		// Reject environment variables that could be used for code injection.
+		if dangerousEnvVars[k] {
+			httpLog.Warn("rejected_dangerous_env", slog.String("server", s.name), slog.String("var", k))
+			continue
+		}
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
 	s.process.Env = cmdEnv

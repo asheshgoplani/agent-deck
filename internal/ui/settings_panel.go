@@ -20,7 +20,9 @@ const (
 	SettingDefaultTool
 	SettingDangerousMode
 	SettingClaudeConfigDir
+	SettingClaudeUseHappy
 	SettingGeminiYoloMode
+	SettingCodexUseHappy
 	SettingCodexYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
@@ -36,7 +38,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 17
+const settingsCount = 19
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -57,7 +59,9 @@ type SettingsPanel struct {
 	dangerousMode       bool
 	claudeConfigDir     string
 	claudeConfigIsScope bool // true = profile override, false = global [claude]
+	claudeUseHappy      bool
 	geminiYoloMode      bool
+	codexUseHappy       bool
 	codexYoloMode       bool
 	checkForUpdates     bool
 	autoUpdate          bool
@@ -202,6 +206,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.dangerousMode = config.Claude.GetDangerousMode()
 	s.claudeConfigDir = config.Claude.ConfigDir
 	s.claudeConfigIsScope = false
+	s.claudeUseHappy = config.Claude.UseHappy
 	if s.profile != "" && config.Profiles != nil {
 		if profileCfg, ok := config.Profiles[s.profile]; ok && profileCfg.Claude.ConfigDir != "" {
 			s.claudeConfigDir = profileCfg.Claude.ConfigDir
@@ -213,6 +218,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.geminiYoloMode = config.Gemini.YoloMode
 
 	// Codex settings
+	s.codexUseHappy = config.Codex.UseHappy
 	s.codexYoloMode = config.Codex.YoloMode
 
 	// Update settings
@@ -290,6 +296,17 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		MCPs:        make(map[string]session.MCPDef),
 	}
 
+	if s.originalConfig != nil {
+		config.Claude = s.originalConfig.Claude
+		config.Gemini = s.originalConfig.Gemini
+		config.Codex = s.originalConfig.Codex
+		config.Updates = s.originalConfig.Updates
+		config.Logs = s.originalConfig.Logs
+		config.GlobalSearch = s.originalConfig.GlobalSearch
+		config.Preview = s.originalConfig.Preview
+		config.Maintenance = s.originalConfig.Maintenance
+	}
+
 	// Theme
 	if s.selectedTheme < len(themeValues) {
 		config.Theme = themeValues[s.selectedTheme]
@@ -303,6 +320,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Claude settings
 	dangerousModeVal := s.dangerousMode
 	config.Claude.DangerousMode = &dangerousModeVal
+	config.Claude.UseHappy = s.claudeUseHappy
 	if !s.claudeConfigIsScope {
 		config.Claude.ConfigDir = s.claudeConfigDir
 	}
@@ -311,6 +329,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Gemini.YoloMode = s.geminiYoloMode
 
 	// Codex settings
+	config.Codex.UseHappy = s.codexUseHappy
 	config.Codex.YoloMode = s.codexYoloMode
 
 	// Update settings
@@ -481,8 +500,16 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.dangerousMode = !s.dangerousMode
 		return true
 
+	case SettingClaudeUseHappy:
+		s.claudeUseHappy = !s.claudeUseHappy
+		return true
+
 	case SettingGeminiYoloMode:
 		s.geminiYoloMode = !s.geminiYoloMode
+		return true
+
+	case SettingCodexUseHappy:
+		s.codexUseHappy = !s.codexUseHappy
 		return true
 
 	case SettingCodexYoloMode:
@@ -664,6 +691,12 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingClaudeConfigDir) {
 		line = highlightStyle.Render(line)
 	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Use happy wrapper", s.claudeUseHappy) + " - Launch Claude via happy"
+	if s.cursor == int(SettingClaudeUseHappy) {
+		line = highlightStyle.Render(line)
+	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
 	// GEMINI
@@ -680,6 +713,12 @@ func (s *SettingsPanel) View() string {
 	// CODEX
 	content.WriteString(sectionStyle.Render("CODEX"))
 	content.WriteString("\n")
+
+	line = s.renderCheckbox("Use happy wrapper", s.codexUseHappy) + " - Launch Codex via happy"
+	if s.cursor == int(SettingCodexUseHappy) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
 
 	// YOLO mode checkbox
 	line = s.renderCheckbox("YOLO mode", s.codexYoloMode) + " - Bypass approvals and sandbox"
@@ -817,19 +856,21 @@ func (s *SettingsPanel) View() string {
 			7,  // SettingDefaultTool
 			11, // SettingDangerousMode
 			12, // SettingClaudeConfigDir
-			15, // SettingGeminiYoloMode
-			18, // SettingCodexYoloMode
-			21, // SettingCheckForUpdates
-			22, // SettingAutoUpdate
-			25, // SettingLogMaxSize
-			25, // SettingLogMaxLines (shares line with LogMaxSize)
-			26, // SettingRemoveOrphans
-			29, // SettingGlobalSearchEnabled
-			30, // SettingSearchTier
-			31, // SettingRecentDays
-			34, // SettingShowOutput
-			35, // SettingShowAnalytics
-			38, // SettingMaintenanceEnabled
+			13, // SettingClaudeUseHappy
+			16, // SettingGeminiYoloMode
+			19, // SettingCodexUseHappy
+			20, // SettingCodexYoloMode
+			23, // SettingCheckForUpdates
+			24, // SettingAutoUpdate
+			27, // SettingLogMaxSize
+			27, // SettingLogMaxLines (shares line with LogMaxSize)
+			28, // SettingRemoveOrphans
+			31, // SettingGlobalSearchEnabled
+			32, // SettingSearchTier
+			33, // SettingRecentDays
+			36, // SettingShowOutput
+			37, // SettingShowAnalytics
+			40, // SettingMaintenanceEnabled
 		}
 		cursorLine := cursorToLine[s.cursor]
 
