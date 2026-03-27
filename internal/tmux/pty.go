@@ -29,11 +29,12 @@ func IndexDetachKey(data []byte, detachByte byte) int {
 	if idx := bytes.IndexByte(data, detachByte); idx >= 0 {
 		return idx
 	}
+	// Derive the printable key code for escape sequence matching.
 	var keyCode byte
 	if detachByte >= 1 && detachByte <= 26 {
-		keyCode = detachByte + 96
+		keyCode = detachByte + 96 // ctrl+letter: 1-26 -> 'a'-'z'
 	} else if detachByte >= 28 && detachByte <= 31 {
-		keyCode = detachByte + 64
+		keyCode = detachByte + 64 // ctrl+special: 28-31 -> '\',']','^','_'
 	}
 	if keyCode > 0 {
 		modSeq := fmt.Sprintf("\x1b[27;5;%d~", keyCode)
@@ -55,10 +56,10 @@ func IndexCtrlQ(data []byte) int {
 }
 
 // Attach attaches to the tmux session with full PTY support.
-// The detach key (default Ctrl+Q) will detach and return to the caller.
-// An optional detachByte overrides the default detach key (0x11 = Ctrl+Q).
+// The configured detach key (default Ctrl+Q) will detach and return to the caller.
+// Pass an optional detachByte to override the default (0x11 / Ctrl+Q).
 func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
-	detach := byte(17)
+	detach := byte(17) // Ctrl+Q default
 	if len(detachByte) > 0 && detachByte[0] != 0 {
 		detach = detachByte[0]
 	}
@@ -67,7 +68,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		return fmt.Errorf("session %s does not exist", s.Name)
 	}
 
-	// Create context with cancel for detach key
+	// Create context with cancel for detach
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -130,7 +131,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// Initial resize
 	sigwinch <- syscall.SIGWINCH
 
-	// Channel to signal detach via configured detach key
+	// Channel to signal detach
 	detachCh := make(chan struct{})
 
 	// Channel for I/O errors (buffered to prevent goroutine leaks)
@@ -236,11 +237,11 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		_, _ = os.Stdout.WriteString(terminalStyleReset)
 	}
 
-	// Wait for either detach key or command completion
+	// Wait for either detach or command completion
 	var attachErr error
 	select {
 	case <-detachCh:
-		// User pressed detach key, detach gracefully
+		// User pressed the detach key, detach gracefully
 		attachErr = nil
 	case err := <-cmdDone:
 		if err != nil {
@@ -271,7 +272,6 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 
 // AttachWindow attaches to a specific window within this tmux session.
 // Selects the target window first, then uses the standard Attach flow.
-// An optional detachByte overrides the default detach key.
 func (s *Session) AttachWindow(ctx context.Context, windowIndex int, detachByte ...byte) error {
 	if !s.Exists() {
 		return fmt.Errorf("session %s does not exist", s.Name)

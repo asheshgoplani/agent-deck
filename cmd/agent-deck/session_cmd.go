@@ -580,10 +580,10 @@ func handleSessionFork(profile string, args []string) {
 
 // handleSessionAttach attaches to a session interactively
 func handleSessionAttach(profile string, args []string) {
+	fs := flag.NewFlagSet("session attach", flag.ExitOnError)
+
 	detachByte := ui.ResolvedDetachByte(session.GetHotkeyOverrides())
 	detachLabel := ui.DetachByteLabel(detachByte)
-
-	fs := flag.NewFlagSet("session attach", flag.ExitOnError)
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session attach <id|title>")
