@@ -218,7 +218,7 @@ def run_cli(
 def get_session_status(session: str, profile: str | None = None) -> str:
     """Get the status of a session (running/waiting/idle/error)."""
     result = run_cli(
-        "session", "show", "--json", session, profile=profile, timeout=30
+        "session", "show", session, "--json", profile=profile, timeout=30
     )
     if result.returncode != 0:
         return "unknown"  # transient CLI failure — not the same as conductor broken
