@@ -815,8 +815,8 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag - can be specified multiple times
@@ -895,7 +895,7 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
@@ -1035,17 +1035,6 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
-		branchExists := git.BranchExists(repoRoot, wtBranch)
-		if createNewBranch && branchExists {
-			fmt.Fprintf(
-				os.Stderr,
-				"Error: branch '%s' already exists (remove -b flag to use existing branch)\n",
-				wtBranch,
-			)
-			os.Exit(1)
-		}
-
 		// Determine worktree location: CLI flag overrides config
 		wtSettings := session.GetWorktreeSettings()
 		location := wtSettings.DefaultLocation
@@ -1075,7 +1064,8 @@ func handleAdd(profile string, args []string) {
 
 			// Create worktree atomically (git handles existence checks).
 			// This avoids a TOCTOU race from separate check-then-create steps.
-			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr)
+			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {
 					fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
 					fmt.Fprintf(os.Stderr, "Tip: Use 'agent-deck add %s' to add the existing worktree\n", worktreePath)
@@ -1083,6 +1073,9 @@ func handleAdd(profile string, args []string) {
 				}
 				fmt.Fprintf(os.Stderr, "Error: failed to create worktree: %v\n", err)
 				os.Exit(1)
+			}
+			if setupErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 
 			fmt.Printf("Created worktree at: %s\n", worktreePath)
