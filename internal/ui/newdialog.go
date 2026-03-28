@@ -40,6 +40,7 @@ type settingDisplay struct {
 // NewDialog represents the new session creation dialog.
 type NewDialog struct {
 	nameInput            textinput.Model
+	generatedName        string
 	pathInput            textinput.Model
 	commandInput         textinput.Model
 	claudeOptions        *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
@@ -65,6 +66,7 @@ type NewDialog struct {
 	branchInput     textinput.Model
 	branchAutoSet   bool   // true if branch was auto-derived from session name.
 	branchPrefix    string // configured prefix for auto-generated branch names.
+	branchPicker    *BranchPickerDialog
 	// Docker sandbox support.
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
@@ -97,6 +99,7 @@ type dialogSnapshot struct {
 	claudeOptions    *session.ClaudeOptions
 	geminiYolo       bool
 	codexYolo        bool
+	codexUseHappy    bool
 	multiRepoEnabled bool
 	multiRepoPaths   []string
 }
@@ -180,9 +183,10 @@ func NewNewDialog() *NewDialog {
 		pathInput:       pathInput,
 		commandInput:    commandInput,
 		branchInput:     branchInput,
+		branchPicker:    NewBranchPickerDialog(),
 		claudeOptions:   NewClaudeOptionsPanel(),
-		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
-		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
+		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all", false),
+		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox", true),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -208,6 +212,8 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.focusIndex = 0
 	d.validationErr = ""
 	d.nameInput.SetValue("")
+	d.generatedName = session.GenerateSessionName()
+	d.nameInput.Placeholder = d.generatedName
 	d.nameInput.Focus()
 	d.suggestionNavigated = false // reset on show
 	d.pathSuggestionCursor = 0    // reset cursor too
@@ -218,6 +224,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 	// Keep commandCursor at previously set default (don't reset to 0)
 	d.updateToolOptions()
 	// Reset worktree fields.
@@ -241,16 +250,16 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.pathSoftSelected = true // activate soft-select for pre-filled path.
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)
-	d.codexOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false, false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
-		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
+		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode, userConfig.Codex.UseHappy)
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
 	}
-	d.branchInput.Placeholder = d.branchPrefix + "branch-name"
+	d.branchInput.Placeholder = d.branchPrefix + d.generatedName
 	d.rebuildFocusTargets()
 }
 
@@ -285,6 +294,9 @@ func (d *NewDialog) GetSelectedGroup() string {
 func (d *NewDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
+	if d.branchPicker != nil {
+		d.branchPicker.SetSize(width, height)
+	}
 }
 
 // SetPathSuggestions sets the available path suggestions for autocomplete
@@ -297,6 +309,11 @@ func (d *NewDialog) SetPathSuggestions(paths []string) {
 // IsRecentPickerOpen returns whether the recent sessions picker is visible.
 func (d *NewDialog) IsRecentPickerOpen() bool {
 	return d.showRecentPicker && len(d.recentSessions) > 0
+}
+
+// IsBranchPickerOpen returns whether the inline branch result list is visible.
+func (d *NewDialog) IsBranchPickerOpen() bool {
+	return d.branchPicker != nil && d.branchPicker.IsVisible()
 }
 
 // SetRecentSessions sets the list of recently deleted session configs.
@@ -326,6 +343,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		claudeOptions:    claudeOpts,
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
+		codexUseHappy:    d.codexOptions.GetUseHappy(),
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
 	}
@@ -345,7 +363,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 		d.claudeOptions.SetFromOptions(s.claudeOptions)
 	}
 	d.geminiOptions.SetDefaults(s.geminiYolo)
-	d.codexOptions.SetDefaults(s.codexYolo)
+	d.codexOptions.SetDefaults(s.codexYolo, s.codexUseHappy)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -402,8 +420,18 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 			var wrapper session.ToolOptionsWrapper
 			if err := json.Unmarshal(rs.ToolOptions, &wrapper); err == nil && wrapper.Tool == "codex" {
 				var opts session.CodexOptions
-				if err := json.Unmarshal(wrapper.Options, &opts); err == nil && opts.YoloMode != nil {
-					d.codexOptions.SetDefaults(*opts.YoloMode)
+				if err := json.Unmarshal(wrapper.Options, &opts); err == nil {
+					yoloMode := d.codexOptions.GetYoloMode()
+					if opts.YoloMode != nil {
+						yoloMode = *opts.YoloMode
+					}
+					useHappy := d.codexOptions.GetUseHappy()
+					if opts.UseHappy != nil {
+						useHappy = *opts.UseHappy
+					}
+					if opts.YoloMode != nil || opts.UseHappy != nil {
+						d.codexOptions.SetDefaults(yoloMode, useHappy)
+					}
 				}
 			}
 		}
@@ -452,6 +480,9 @@ func (d *NewDialog) Show() {
 // Hide hides the dialog
 func (d *NewDialog) Hide() {
 	d.visible = false
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 }
 
 // IsVisible returns whether the dialog is visible
@@ -462,6 +493,9 @@ func (d *NewDialog) IsVisible() bool {
 // GetValues returns the current dialog values with expanded paths
 func (d *NewDialog) GetValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
+	if name == "" {
+		name = d.generatedName
+	}
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
 	path = strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
@@ -497,9 +531,16 @@ func (d *NewDialog) ToggleWorktree() {
 
 // autoBranchFromName sets the branch input to "<prefix><session-name>" if the
 // name field is non-empty and the branch hasn't been manually edited.
+// When the name is empty but a generated name exists, it updates the placeholder instead.
 func (d *NewDialog) autoBranchFromName() {
 	name := strings.TrimSpace(d.nameInput.Value())
 	if name == "" {
+		// No user-typed name — show generated branch as placeholder only
+		if d.generatedName != "" {
+			d.branchInput.Placeholder = d.branchPrefix + d.generatedName
+		}
+		d.branchInput.SetValue("")
+		d.branchAutoSet = true
 		return
 	}
 	branch := d.branchPrefix + name
@@ -516,6 +557,9 @@ func (d *NewDialog) IsWorktreeEnabled() bool {
 func (d *NewDialog) GetValuesWithWorktree() (name, path, command, branch string, worktreeEnabled bool) {
 	name, path, command = d.GetValues()
 	branch = strings.TrimSpace(d.branchInput.Value())
+	if branch == "" && d.worktreeEnabled && name != "" {
+		branch = d.branchPrefix + name
+	}
 	worktreeEnabled = d.worktreeEnabled
 	return
 }
@@ -528,6 +572,19 @@ func (d *NewDialog) IsGeminiYoloMode() bool {
 // GetCodexYoloMode returns the Codex YOLO mode state
 func (d *NewDialog) GetCodexYoloMode() bool {
 	return d.codexOptions.GetYoloMode()
+}
+
+// GetCodexOptions returns the Codex-specific options (only relevant if command is "codex")
+func (d *NewDialog) GetCodexOptions() *session.CodexOptions {
+	if d.GetSelectedCommand() != "codex" {
+		return nil
+	}
+	yoloMode := d.codexOptions.GetYoloMode()
+	useHappy := d.codexOptions.GetUseHappy()
+	return &session.CodexOptions{
+		YoloMode: &yoloMode,
+		UseHappy: &useHappy,
+	}
 }
 
 // IsSandboxEnabled returns whether Docker sandbox mode is enabled.
@@ -624,7 +681,10 @@ func (d *NewDialog) Validate() string {
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
 	path := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
 
-	// Check for empty name
+	// Fall back to auto-generated name if user left it empty
+	if name == "" {
+		name = d.generatedName
+	}
 	if name == "" {
 		return "Session name cannot be empty"
 	}
@@ -663,6 +723,9 @@ func (d *NewDialog) Validate() string {
 	// Validate worktree branch if enabled
 	if d.worktreeEnabled {
 		branch := strings.TrimSpace(d.branchInput.Value())
+		if branch == "" && name != "" {
+			branch = d.branchPrefix + name
+		}
 		if branch == "" {
 			return "Branch name required for worktree"
 		}
@@ -800,6 +863,36 @@ func (d *NewDialog) isTextInputFocused() bool {
 	}
 }
 
+func (d *NewDialog) worktreePickerPath() string {
+	if d.multiRepoEnabled {
+		for _, path := range d.multiRepoPaths {
+			path = strings.Trim(strings.TrimSpace(path), "'\"")
+			if path != "" {
+				return path
+			}
+		}
+	}
+	return strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+}
+
+func (d *NewDialog) applyBranchPickerResult(msg branchPickerResultMsg) {
+	if msg.err != nil {
+		d.SetError(msg.err.Error())
+		return
+	}
+	if msg.canceled {
+		return
+	}
+	if msg.branch == "" {
+		return
+	}
+
+	d.branchInput.SetValue(msg.branch)
+	d.branchInput.SetCursor(len(msg.branch))
+	d.branchAutoSet = false
+	d.ClearError()
+}
+
 func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	if !d.visible {
 		return d, nil
@@ -810,7 +903,26 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 	cur := d.currentTarget()
 
 	switch msg := msg.(type) {
+	case branchPickerResultMsg:
+		d.applyBranchPickerResult(msg)
+		return d, nil
+
 	case tea.KeyMsg:
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			if selected, handled := d.branchPicker.Update(msg); handled {
+				if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+					d.branchInput.Focus()
+				}
+				if selected != "" {
+					d.branchInput.SetValue(selected)
+					d.branchInput.SetCursor(len(selected))
+					d.branchAutoSet = false
+					d.ClearError()
+				}
+				return d, nil
+			}
+		}
+
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
 			switch msg.String() {
@@ -951,6 +1063,21 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
 				}
 				d.suggestionNavigated = true
+				return d, nil
+			}
+
+		case "ctrl+f":
+			if cur == focusBranch {
+				if d.branchPicker == nil {
+					d.branchPicker = NewBranchPickerDialog()
+				}
+				d.branchPicker.SetSize(d.width, d.height)
+				if err := d.branchPicker.Show(d.worktreePickerPath(), d.branchInput.Value()); err != nil {
+					d.SetError(err.Error())
+				} else {
+					d.ClearError()
+					d.branchInput.Focus()
+				}
 				return d, nil
 			}
 
@@ -1204,6 +1331,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		d.branchInput, cmd = d.branchInput.Update(msg)
 		if d.branchInput.Value() != oldBranch {
 			d.branchAutoSet = false
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				d.branchPicker.SetQuery(d.branchInput.Value())
+			}
 		}
 	case focusOptions:
 		if d.toolOptions != nil {
@@ -1640,6 +1770,11 @@ func (d *NewDialog) View() string {
 		content.WriteString("  ")
 		content.WriteString(d.branchInput.View())
 		content.WriteString("\n")
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			content.WriteString("  ")
+			content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
+			content.WriteString("\n")
+		}
 	}
 
 	// Tool options panel
@@ -1671,6 +1806,12 @@ func (d *NewDialog) View() string {
 			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
 		} else {
 			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+		}
+	} else if cur == focusBranch {
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
+		} else {
+			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()

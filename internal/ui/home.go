@@ -2988,6 +2988,19 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case branchPickerResultMsg:
+		if h.newDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
+		if h.forkDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.forkDialog, cmd = h.forkDialog.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
 	case sessionCreatedMsg:
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
 		// even during reload, otherwise the session becomes orphaned (exists in tmux but not in storage)
@@ -4256,6 +4269,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog, cmd = h.newDialog.Update(msg)
 		return h, cmd
 	}
+	// When branch search results are visible, let the dialog consume Enter/Esc/navigation
+	// before the outer dialog-level handlers create/cancel the session.
+	if h.newDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
+	}
 
 	switch msg.String() {
 	case "enter":
@@ -4311,9 +4331,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 		} else if command == "codex" {
-			yolo := h.newDialog.GetCodexYoloMode()
-			codexOpts := &session.CodexOptions{YoloMode: &yolo}
-			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			if codexOpts := h.newDialog.GetCodexOptions(); codexOpts != nil {
+				toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			}
 		}
 
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
@@ -5519,13 +5539,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "$", "shift+4":
-		// Cost dashboard (when cost tracking is active), otherwise filter to error sessions
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
-		}
-		// Fallback: filter to error sessions only
+		// Filter to error sessions only
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -5533,6 +5547,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case "C":
+		// Cost dashboard
+		if h.costStore != nil {
+			h.showCostDashboard = true
+			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
+			return h, nil
+		}
 	}
 
 	return h, nil
@@ -5978,6 +6000,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleForkDialogKey handles keyboard input for the fork dialog
 func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if h.forkDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.forkDialog, cmd = h.forkDialog.Update(msg)
+		return h, cmd
+	}
+
 	switch msg.String() {
 	case "enter":
 		// Validate before proceeding

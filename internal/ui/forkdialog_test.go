@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestNewForkDialog(t *testing.T) {
@@ -173,5 +176,67 @@ func TestForkDialog_Show_ClearsError(t *testing.T) {
 
 	if d.validationErr != "" {
 		t.Error("Show() should clear validationErr")
+	}
+}
+
+func TestForkDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/tmp/project", "group")
+	d.worktreeEnabled = true
+	d.branchInput.SetValue("")
+	d.focusIndex = 2
+	d.updateFocus()
+
+	origLoader := loadBranchCandidates
+	defer func() { loadBranchCandidates = origLoader }()
+
+	called := false
+	loadBranchCandidates = func(path string) ([]string, error) {
+		called = true
+		if path != "/tmp/project" {
+			t.Fatalf("loader path = %q, want %q", path, "/tmp/project")
+		}
+		return []string{"fork/alpha", "fork/picked"}, nil
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !called {
+		t.Fatal("expected ctrl+f to open branch picker")
+	}
+	if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+		t.Fatal("expected ctrl+f to show the in-TUI branch picker")
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("p")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("i")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("c")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("k")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("e")})
+	d, _ = d.Update(tea.KeyMsg{Runes: []rune("d")})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := d.branchInput.Value(); got != "fork/picked" {
+		t.Fatalf("branch = %q, want %q", got, "fork/picked")
+	}
+	if !d.branchInput.Focused() {
+		t.Fatal("expected branch input to regain focus after selecting a branch")
+	}
+}
+
+func TestForkDialog_BranchPickerErrorIsShown(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/tmp/project", "group")
+	d.worktreeEnabled = true
+	d.focusIndex = 2
+	d.updateFocus()
+
+	origLoader := loadBranchCandidates
+	defer func() { loadBranchCandidates = origLoader }()
+	loadBranchCandidates = func(path string) ([]string, error) {
+		return nil, os.ErrNotExist
+	}
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
+		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
 	}
 }
