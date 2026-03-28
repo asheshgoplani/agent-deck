@@ -72,6 +72,66 @@ func TestOpenAIParser(t *testing.T) {
 	assert.Equal(t, "gpt-4.1", events[0].Model)
 }
 
+func TestMiniMaxParser(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	parser := &MiniMaxOutputParser{pricer: pricer}
+
+	events, err := parser.Parse("MiniMax usage: 3,456 input tokens, 1,234 output tokens (MiniMax-M2.7)")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	assert.Equal(t, int64(3456), events[0].InputTokens)
+	assert.Equal(t, int64(1234), events[0].OutputTokens)
+	assert.Equal(t, "MiniMax-M2.7", events[0].Model)
+}
+
+func TestMiniMaxParser_Highspeed(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	parser := &MiniMaxOutputParser{pricer: pricer}
+
+	events, err := parser.Parse("MiniMax usage: 10000 input tokens, 5000 output tokens (MiniMax-M2.5-highspeed)")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	assert.Equal(t, int64(10000), events[0].InputTokens)
+	assert.Equal(t, int64(5000), events[0].OutputTokens)
+	assert.Equal(t, "MiniMax-M2.5-highspeed", events[0].Model)
+}
+
+func TestMiniMaxParser_SingleToken(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	parser := &MiniMaxOutputParser{pricer: pricer}
+
+	events, err := parser.Parse("MiniMax usage: 1 input token, 1 output token (MiniMax-M2.5)")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	assert.Equal(t, int64(1), events[0].InputTokens)
+	assert.Equal(t, int64(1), events[0].OutputTokens)
+	assert.Equal(t, "MiniMax-M2.5", events[0].Model)
+}
+
+func TestMiniMaxParser_NoMatch(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	parser := &MiniMaxOutputParser{pricer: pricer}
+
+	events, err := parser.Parse("no minimax usage info here")
+	require.NoError(t, err)
+	assert.Empty(t, events)
+}
+
+func TestMiniMaxParser_CanParse(t *testing.T) {
+	parser := &MiniMaxOutputParser{}
+	assert.True(t, parser.CanParse("minimax"))
+	assert.False(t, parser.CanParse("claude"))
+	assert.False(t, parser.CanParse("gemini"))
+}
+
+func TestMiniMaxParser_Name(t *testing.T) {
+	parser := &MiniMaxOutputParser{}
+	assert.Equal(t, "minimax", parser.Name())
+}
+
 func TestCollector(t *testing.T) {
 	pricer := NewPricer(PricerConfig{})
 	collector := NewCollector(pricer)
@@ -85,6 +145,23 @@ func TestCollector(t *testing.T) {
 	ev := events[0]
 	assert.Equal(t, "session-123", ev.SessionID)
 	assert.Equal(t, "claude-sonnet-4-6", ev.Model)
+	assert.NotEmpty(t, ev.ID)
+	assert.Greater(t, ev.CostMicrodollars, int64(0))
+}
+
+func TestCollectorMiniMax(t *testing.T) {
+	pricer := NewPricer(PricerConfig{})
+	collector := NewCollector(pricer)
+
+	input := "MiniMax usage: 2,000 input tokens, 1,000 output tokens (MiniMax-M2.7)"
+
+	events, err := collector.Collect("minimax", "session-456", input)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+
+	ev := events[0]
+	assert.Equal(t, "session-456", ev.SessionID)
+	assert.Equal(t, "MiniMax-M2.7", ev.Model)
 	assert.NotEmpty(t, ev.ID)
 	assert.Greater(t, ev.CostMicrodollars, int64(0))
 }

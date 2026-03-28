@@ -104,23 +104,23 @@ func TestParseCSIuCtrlA(t *testing.T) {
 	}
 }
 
-// TestDisableKittyKeyboard tests that DisableKittyKeyboard writes the correct escape sequence.
+// TestDisableKittyKeyboard tests that DisableKittyKeyboard writes the correct escape sequences.
 func TestDisableKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
 	DisableKittyKeyboard(&buf)
 	got := buf.String()
-	want := "\x1b[>0u"
+	want := "\x1b[>0u\x1b[>4;0m"
 	if got != want {
 		t.Errorf("DisableKittyKeyboard wrote %q, want %q", got, want)
 	}
 }
 
-// TestRestoreKittyKeyboard tests that RestoreKittyKeyboard writes the correct escape sequence.
+// TestRestoreKittyKeyboard tests that RestoreKittyKeyboard writes the correct escape sequences.
 func TestRestoreKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
 	RestoreKittyKeyboard(&buf)
 	got := buf.String()
-	want := "\x1b[<u"
+	want := "\x1b[<u\x1b[>4;1m"
 	if got != want {
 		t.Errorf("RestoreKittyKeyboard wrote %q, want %q", got, want)
 	}

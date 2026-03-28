@@ -26,6 +26,7 @@ func NewCollector(pricer *Pricer) *Collector {
 			&ClaudeHookParser{pricer: pricer},
 			&GeminiOutputParser{pricer: pricer},
 			&OpenAIOutputParser{pricer: pricer},
+			&MiniMaxOutputParser{pricer: pricer},
 		},
 		pricer: pricer,
 	}
