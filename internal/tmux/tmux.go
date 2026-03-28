@@ -1181,13 +1181,18 @@ func (s *Session) Start(command string) error {
 		workDir = os.Getenv("HOME")
 	}
 
-	// Create new tmux session in detached mode.
-	// Sandbox sessions launch command as the pane process for dead-pane restart.
-	// Non-sandbox sessions keep the legacy shell+send flow.
+	// Create new tmux session in detached mode with the command as the initial
+	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
+	// Commands containing bash-specific syntax are wrapped for fish compatibility.
 	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
 	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
 	if startWithInitialProcess {
-		args = append(args, command)
+		cmdToStart := command
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
+			cmdToStart = fmt.Sprintf("bash -c '%s'", escapedCmd)
+		}
+		args = append(args, cmdToStart)
 	}
 	cmd := exec.Command("tmux", args...)
 	output, err := cmd.CombinedOutput()
@@ -1238,8 +1243,10 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on").Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -1286,7 +1293,7 @@ func (s *Session) Start(command string) error {
 		}
 	}
 
-	// Legacy behavior for non-sandbox sessions: start shell first, then send command.
+	// Fallback: if RunCommandAsInitialProcess is false, send command via send-keys.
 	if command != "" && !startWithInitialProcess {
 		cmdToSend := command
 		// Commands containing bash-specific syntax must be wrapped for fish users.
@@ -1408,6 +1415,31 @@ func (s *Session) ConfigureStatusBar() {
 	_ = exec.Command("tmux", args...).Run()
 }
 
+// ensureTerminalFeatures appends terminal features only if not already present.
+// This prevents the terminal-features list from growing on every session start (#366).
+func ensureTerminalFeatures(features ...string) {
+	out, err := exec.Command("tmux", "show", "-sv", "terminal-features").Output()
+	if err != nil {
+		// tmux too old or server not running — append unconditionally as best-effort
+		if len(features) > 0 {
+			val := ",*:" + strings.Join(features, ":")
+			_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+		}
+		return
+	}
+	existing := string(out)
+	var missing []string
+	for _, f := range features {
+		if !strings.Contains(existing, f) {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) > 0 {
+		val := ",*:" + strings.Join(missing, ":")
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+	}
+}
+
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
 // Safe to call multiple times - just sets the options again
 //
@@ -1452,11 +1484,13 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }

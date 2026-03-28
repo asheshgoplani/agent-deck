@@ -379,6 +379,7 @@ func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing
 	originalClaude := &session.ClaudeOptions{
 		SessionMode:          "resume",
 		ResumeSessionID:      "abc123",
+		UseHappy:             true,
 		SkipPermissions:      true,
 		AllowSkipPermissions: false,
 		UseChrome:            true,
@@ -390,7 +391,7 @@ func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing
 	d.commandInput.SetValue("echo original")
 	d.claudeOptions.SetFromOptions(originalClaude)
 	d.geminiOptions.SetDefaults(true)
-	d.codexOptions.SetDefaults(true)
+	d.codexOptions.SetDefaults(true, true)
 
 	snapshot := d.saveSnapshot()
 
@@ -401,7 +402,7 @@ func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing
 	d.commandInput.SetValue("echo mutated")
 	d.claudeOptions.SetFromOptions(&session.ClaudeOptions{SessionMode: "new"})
 	d.geminiOptions.SetDefaults(false)
-	d.codexOptions.SetDefaults(false)
+	d.codexOptions.SetDefaults(false, false)
 
 	d.restoreSnapshot(snapshot)
 
@@ -426,7 +427,7 @@ func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing
 		t.Fatalf("restored Claude session mode/id = %q/%q, want resume/abc123",
 			restoredClaude.SessionMode, restoredClaude.ResumeSessionID)
 	}
-	if !restoredClaude.SkipPermissions || !restoredClaude.UseChrome || !restoredClaude.UseTeammateMode {
+	if !restoredClaude.UseHappy || !restoredClaude.SkipPermissions || !restoredClaude.UseChrome || !restoredClaude.UseTeammateMode {
 		t.Fatalf("restored Claude toggles incorrect: %+v", restoredClaude)
 	}
 	if !d.geminiOptions.GetYoloMode() {
@@ -434,6 +435,27 @@ func TestNewDialog_RestoreSnapshot_RestoresToolOptionsAndCommandInput(t *testing
 	}
 	if !d.codexOptions.GetYoloMode() {
 		t.Fatal("codex yolo mode was not restored")
+	}
+	if !d.codexOptions.GetUseHappy() {
+		t.Fatal("codex happy mode was not restored")
+	}
+}
+
+func TestNewDialog_GetCodexOptions(t *testing.T) {
+	d := NewNewDialog()
+	d.commandCursor = 4 // codex
+	d.updateToolOptions()
+	d.codexOptions.SetDefaults(true, true)
+
+	opts := d.GetCodexOptions()
+	if opts == nil {
+		t.Fatal("GetCodexOptions returned nil")
+	}
+	if opts.YoloMode == nil || !*opts.YoloMode {
+		t.Fatalf("expected YoloMode=true, got %+v", opts)
+	}
+	if opts.UseHappy == nil || !*opts.UseHappy {
+		t.Fatalf("expected UseHappy=true, got %+v", opts)
 	}
 }
 
@@ -506,19 +528,31 @@ func TestNewDialog_GetValuesWithWorktree_Disabled(t *testing.T) {
 	}
 }
 
-func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch(t *testing.T) {
+func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch_WithName(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.nameInput.SetValue("test-session")
 	dialog.pathInput.SetValue("/tmp/project")
 	dialog.worktreeEnabled = true
 	dialog.branchInput.SetValue("")
 
+	// With a name set, empty branch is derived from name — validation passes
+	err := dialog.Validate()
+	if err != "" {
+		t.Errorf("Validation should pass when branch is empty but name is set (derives branch), got: %q", err)
+	}
+}
+
+func TestNewDialog_Validate_WorktreeEnabled_EmptyBranch_NoName(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.nameInput.SetValue("")
+	dialog.generatedName = "" // no fallback
+	dialog.pathInput.SetValue("/tmp/project")
+	dialog.worktreeEnabled = true
+	dialog.branchInput.SetValue("")
+
 	err := dialog.Validate()
 	if err == "" {
-		t.Error("Validation should fail when worktree enabled but branch is empty")
-	}
-	if err != "Branch name required for worktree" {
-		t.Errorf("Unexpected error message: %q", err)
+		t.Error("Validation should fail when worktree enabled, branch empty, and no name")
 	}
 }
 
@@ -994,6 +1028,61 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 	}
 }
 
+func TestNewDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.pathInput.SetValue("/tmp/project")
+	d.ToggleWorktree()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusBranch)
+	d.updateFocus()
+
+	origPicker := openBranchPicker
+	defer func() { openBranchPicker = origPicker }()
+
+	called := false
+	openBranchPicker = func(path string) tea.Cmd {
+		called = true
+		if path != "/tmp/project" {
+			t.Fatalf("picker path = %q, want %q", path, "/tmp/project")
+		}
+		return func() tea.Msg {
+			return branchPickerResultMsg{branch: "feature/picked"}
+		}
+	}
+
+	var cmd tea.Cmd
+	d, cmd = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+	if !called {
+		t.Fatal("expected ctrl+f to open branch picker")
+	}
+	if cmd == nil {
+		t.Fatal("expected ctrl+f to return a branch picker command")
+	}
+
+	d, _ = d.Update(cmd())
+	if got := d.branchInput.Value(); got != "feature/picked" {
+		t.Fatalf("branch = %q, want %q", got, "feature/picked")
+	}
+	if d.validationErr != "" {
+		t.Fatalf("expected no validation error, got %q", d.validationErr)
+	}
+}
+
+func TestNewDialog_BranchPickerErrorIsShown(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.ToggleWorktree()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusBranch)
+	d.updateFocus()
+
+	d, _ = d.Update(branchPickerResultMsg{err: os.ErrNotExist})
+	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
+		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
+	}
+}
+
 // ===== Soft-Select Tests =====
 
 func TestNewDialog_SoftSelect_InitialState(t *testing.T) {
@@ -1234,6 +1323,95 @@ func TestNewDialog_FilterPaths_EmptyInput(t *testing.T) {
 	}
 }
 
+// ===== Generated Name Fallback Tests =====
+
+func TestNewDialog_EmptyName_UsesGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.pathInput.SetValue("/tmp/project")
+	d.nameInput.SetValue("")
+	d.generatedName = "golden-eagle"
+
+	name, _, _ := d.GetValues()
+	if name != "golden-eagle" {
+		t.Errorf("GetValues() name = %q, want %q", name, "golden-eagle")
+	}
+}
+
+func TestNewDialog_Validate_EmptyName_UsesGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.pathInput.SetValue("/tmp/project")
+	d.nameInput.SetValue("")
+	d.generatedName = "swift-fox"
+
+	err := d.Validate()
+	if err != "" {
+		t.Errorf("Validate() should pass with generatedName fallback, got: %q", err)
+	}
+}
+
+func TestNewDialog_ShowInGroup_SetsGeneratedName(t *testing.T) {
+	d := NewNewDialog()
+	d.ShowInGroup("default", "default", "")
+
+	if d.generatedName == "" {
+		t.Error("generatedName should be set after ShowInGroup")
+	}
+	if d.nameInput.Placeholder != d.generatedName {
+		t.Errorf("nameInput.Placeholder = %q, want %q", d.nameInput.Placeholder, d.generatedName)
+	}
+}
+
+func TestNewDialog_WorktreeBranch_PlaceholderWhenNameEmpty(t *testing.T) {
+	d := NewNewDialog()
+	d.generatedName = "calm-river"
+	d.branchPrefix = "feature/"
+	d.nameInput.SetValue("")
+
+	d.autoBranchFromName()
+
+	// Branch input should remain empty (placeholder only)
+	if d.branchInput.Value() != "" {
+		t.Errorf("branch value should be empty when using generated name, got %q", d.branchInput.Value())
+	}
+	if d.branchInput.Placeholder != "feature/calm-river" {
+		t.Errorf("branch placeholder = %q, want %q", d.branchInput.Placeholder, "feature/calm-river")
+	}
+	if !d.branchAutoSet {
+		t.Error("branchAutoSet should be true")
+	}
+}
+
+func TestNewDialog_WorktreeBranch_FilledWhenNameProvided(t *testing.T) {
+	d := NewNewDialog()
+	d.generatedName = "calm-river"
+	d.branchPrefix = "feature/"
+	d.nameInput.SetValue("my-feature")
+
+	d.autoBranchFromName()
+
+	if d.branchInput.Value() != "feature/my-feature" {
+		t.Errorf("branch value = %q, want %q", d.branchInput.Value(), "feature/my-feature")
+	}
+}
+
+func TestNewDialog_GetValuesWithWorktree_EmptyBranch_DerivedFromName(t *testing.T) {
+	d := NewNewDialog()
+	d.worktreeEnabled = true
+	d.branchPrefix = "feature/"
+	d.generatedName = "bold-crane"
+	d.nameInput.SetValue("")
+	d.pathInput.SetValue("/tmp/project")
+	d.branchInput.SetValue("")
+
+	name, _, _, branch, _ := d.GetValuesWithWorktree()
+	if name != "bold-crane" {
+		t.Errorf("name = %q, want %q", name, "bold-crane")
+	}
+	if branch != "feature/bold-crane" {
+		t.Errorf("branch = %q, want %q", branch, "feature/bold-crane")
+	}
+}
+
 func TestNewDialog_BranchPrefix_Default(t *testing.T) {
 	d := NewNewDialog()
 	if d.branchPrefix != "feature/" {
@@ -1260,6 +1438,64 @@ func TestNewDialog_BranchPrefix_Empty_NoPrefix(t *testing.T) {
 
 	if got := d.branchInput.Value(); got != "my-session" {
 		t.Errorf("expected branch %q, got %q", "my-session", got)
+	}
+}
+
+// TestNewDialog_CtrlR_OpensRecentPicker verifies that Ctrl+R opens the recent
+// sessions picker when recent sessions are available.
+func TestNewDialog_CtrlR_OpensRecentPicker(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// Set up recent sessions
+	sessions := []*statedb.RecentSessionRow{
+		{Title: "session-1", ProjectPath: "/tmp/one", Tool: "claude"},
+		{Title: "session-2", ProjectPath: "/tmp/two", Tool: "claude"},
+	}
+	d.SetRecentSessions(sessions)
+
+	if len(d.recentSessions) != 2 {
+		t.Fatalf("expected 2 recent sessions, got %d", len(d.recentSessions))
+	}
+
+	// Verify ^R hint appears in the view
+	view := d.View()
+	if !strings.Contains(view, "^R recent") {
+		t.Error("View should contain '^R recent' hint when recent sessions exist")
+	}
+
+	// Verify picker is not open yet
+	if d.showRecentPicker {
+		t.Fatal("recent picker should not be open before Ctrl+R")
+	}
+
+	// Send Ctrl+R
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+
+	if !d.showRecentPicker {
+		t.Error("Ctrl+R should open the recent sessions picker")
+	}
+	if d.recentSessionCursor != 0 {
+		t.Errorf("recentSessionCursor = %d, want 0", d.recentSessionCursor)
+	}
+	// First session should be previewed
+	if d.nameInput.Value() != "session-1" {
+		t.Errorf("name = %q, want %q (first session should be previewed)", d.nameInput.Value(), "session-1")
+	}
+}
+
+// TestNewDialog_CtrlR_HintHiddenWhenNoRecents verifies the hint is absent
+// when there are no recent sessions.
+func TestNewDialog_CtrlR_HintHiddenWhenNoRecents(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(80, 40)
+	d.Show()
+
+	// No recent sessions set
+	view := d.View()
+	if strings.Contains(view, "^R recent") {
+		t.Error("View should NOT contain '^R recent' hint when no recent sessions exist")
 	}
 }
 
