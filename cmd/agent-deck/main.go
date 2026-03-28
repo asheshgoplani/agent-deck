@@ -815,8 +815,8 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag - can be specified multiple times
@@ -838,6 +838,10 @@ func handleAdd(profile string, args []string) {
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+
+	// Confirmation flags
+	confirm := fs.Bool("confirm", false, "Show review summary and prompt for confirmation before creating session")
+	autoConfirm := fs.Bool("yes", false, "Auto-confirm without prompting (use with --confirm for scripts)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
@@ -873,6 +877,10 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("SSH Examples:")
 		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
+		fmt.Println()
+		fmt.Println("Confirmation Examples:")
+		fmt.Println("  agent-deck add -c claude . --confirm           # Review before creating")
+		fmt.Println("  agent-deck add -c claude . --confirm --yes     # Auto-confirm (for scripts)")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -895,7 +903,7 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
@@ -1004,10 +1012,29 @@ func handleAdd(profile string, args []string) {
 	} else {
 		info, err := os.Stat(path)
 		if err != nil {
-			fmt.Printf("Error: path does not exist: %s\n", path)
-			os.Exit(1)
-		}
-		if !info.IsDir() {
+			// Path doesn't exist - prompt to create if --confirm is set
+			if *confirm {
+				// Auto-create if --yes is provided
+				if *autoConfirm {
+					if err := os.MkdirAll(path, 0o755); err != nil {
+						fmt.Printf("Error: failed to create directory: %v\n", err)
+						os.Exit(1)
+					}
+				} else if !promptCreateDir(path) {
+					fmt.Println("Cancelled.")
+					os.Exit(0)
+				} else {
+					// Create the directory
+					if err := os.MkdirAll(path, 0o755); err != nil {
+						fmt.Printf("Error: failed to create directory: %v\n", err)
+						os.Exit(1)
+					}
+				}
+			} else {
+				fmt.Printf("Error: path does not exist: %s\n", path)
+				os.Exit(1)
+			}
+		} else if !info.IsDir() {
 			fmt.Printf("Error: path is not a directory: %s\n", path)
 			os.Exit(1)
 		}
@@ -1032,17 +1059,6 @@ func handleAdd(profile string, args []string) {
 		// Pre-validate branch name for better error messages
 		if err := git.ValidateBranchName(wtBranch); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid branch name: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
-		branchExists := git.BranchExists(repoRoot, wtBranch)
-		if createNewBranch && branchExists {
-			fmt.Fprintf(
-				os.Stderr,
-				"Error: branch '%s' already exists (remove -b flag to use existing branch)\n",
-				wtBranch,
-			)
 			os.Exit(1)
 		}
 
@@ -1185,6 +1201,43 @@ func handleAdd(profile string, args []string) {
 
 	// Add to instances
 	instances = append(instances, newInstance)
+
+	// Handle --confirm flag: show review and prompt for confirmation
+	if *confirm {
+		// Check if stdin is TTY (unless --yes is provided)
+		if !*autoConfirm && !isTTY() {
+			fmt.Fprintf(os.Stderr, "Error: --confirm requires a TTY for interactive confirmation\n")
+			fmt.Fprintf(os.Stderr, "Use --yes to auto-confirm in scripts: agent-deck add --confirm --yes\n")
+			os.Exit(1)
+		}
+
+		// Build review summary
+		mcpList := ""
+		if len(mcpFlags) > 0 {
+			mcpList = strings.Join(mcpFlags, ", ")
+		}
+		parentStr := ""
+		if parentInstance != nil {
+			parentStr = fmt.Sprintf("%s (%s)", parentInstance.Title, parentInstance.ID[:8])
+		}
+		printAddReviewSummary(
+			sessionTitle,
+			path,
+			sessionCommandTool,
+			sessionCommandResolved,
+			sessionGroup,
+			parentStr,
+			mcpList,
+			*sandbox,
+			worktreePath != "",
+		)
+
+		// Prompt for confirmation
+		if !*autoConfirm && !promptConfirm("Proceed") {
+			fmt.Println("Cancelled.")
+			os.Exit(0)
+		}
+	}
 
 	// Rebuild group tree and save
 	groupTree = session.NewGroupTreeWithGroups(instances, groups)

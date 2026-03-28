@@ -36,8 +36,8 @@ func handleLaunch(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag
@@ -47,8 +47,15 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Sandbox flags
+	sandbox := fs.Bool("sandbox", false, "Run session in Docker sandbox")
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
+
+	// Confirmation flags
+	confirm := fs.Bool("confirm", false, "Show review summary and prompt for confirmation before creating session")
+	autoConfirm := fs.Bool("yes", false, "Auto-confirm without prompting (use with --confirm for scripts)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck launch [path] [options]")
@@ -70,6 +77,10 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
+		fmt.Println()
+		fmt.Println("Confirmation Examples:")
+		fmt.Println("  agent-deck launch . -c claude --confirm          # Review before launching")
+		fmt.Println("  agent-deck launch . -c claude --confirm --yes    # Auto-confirm (for scripts)")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -103,10 +114,29 @@ func handleLaunch(profile string, args []string) {
 	// Verify path exists and is a directory
 	info, err := os.Stat(path)
 	if err != nil {
-		out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
-		os.Exit(1)
-	}
-	if !info.IsDir() {
+		// Path doesn't exist - prompt to create if --confirm is set
+		if *confirm {
+			// Auto-create if --yes is provided
+			if *autoConfirm {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					out.Error(fmt.Sprintf("failed to create directory: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+			} else if !promptCreateDir(path) {
+				fmt.Println("Cancelled.")
+				os.Exit(0)
+			} else {
+				// Create the directory
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					out.Error(fmt.Sprintf("failed to create directory: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+			}
+		} else {
+			out.Error(fmt.Sprintf("path does not exist: %s", path), ErrCodeNotFound)
+			os.Exit(1)
+		}
+	} else if !info.IsDir() {
 		out.Error(fmt.Sprintf("path is not a directory: %s", path), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -129,7 +159,7 @@ func handleLaunch(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Validate --resume-session requires Claude
 	if *resumeSession != "" {
@@ -156,12 +186,6 @@ func handleLaunch(profile string, args []string) {
 
 		if err := git.ValidateBranchName(wtBranch); err != nil {
 			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-
-		branchExists := git.BranchExists(repoRoot, wtBranch)
-		if createNewBranch && branchExists {
-			out.Error(fmt.Sprintf("branch '%s' already exists (remove -b flag to use existing branch)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -280,6 +304,11 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreeBranch = wtBranch
 	}
 
+	// Apply sandbox config if requested.
+	if *sandbox {
+		newInstance.Sandbox = session.NewSandboxConfig("")
+	}
+
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
 		newInstance.ClaudeDetectedAt = time.Now()
@@ -296,6 +325,45 @@ func handleLaunch(profile string, args []string) {
 
 	// Add to instances and save
 	instances = append(instances, newInstance)
+
+	// Handle --confirm flag: show review and prompt for confirmation
+	if *confirm {
+		// Check if stdin is TTY (unless --yes is provided)
+		if !*autoConfirm && !isTTY() {
+			fmt.Fprintf(os.Stderr, "Error: --confirm requires a TTY for interactive confirmation\n")
+			fmt.Fprintf(os.Stderr, "Use --yes to auto-confirm in scripts: agent-deck launch --confirm --yes\n")
+			os.Exit(1)
+		}
+
+		// Build review summary
+		mcpList := ""
+		if len(mcpFlags) > 0 {
+			mcpList = strings.Join(mcpFlags, ", ")
+		}
+		parentStr := ""
+		if parentInstance != nil {
+			parentStr = fmt.Sprintf("%s (%s)", parentInstance.Title, parentInstance.ID[:8])
+		}
+		printLaunchReviewSummary(
+			sessionTitle,
+			path,
+			sessionCommandTool,
+			sessionCommandResolved,
+			sessionGroup,
+			parentStr,
+			mcpList,
+			initialMessage,
+			*sandbox,
+			worktreePath != "",
+			*noWait,
+		)
+
+		// Prompt for confirmation
+		if !*autoConfirm && !promptConfirm("Proceed") {
+			fmt.Println("Cancelled.")
+			os.Exit(0)
+		}
+	}
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if newInstance.GroupPath != "" {
