@@ -528,6 +528,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -622,12 +627,21 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
 type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted
 	AutoCleanup bool `toml:"auto_cleanup"`
+
+	// DefaultEnabled controls whether worktree creation is pre-selected in
+	// new-session and fork dialogs by default.
+	// Default: false
+	DefaultEnabled bool `toml:"default_enabled"`
 
 	// DefaultLocation: "sibling" (next to repo), "subdirectory" (inside .worktrees/),
 	// or a custom path (e.g., "~/worktrees") creating <path>/<repo_name>/<branch>
@@ -1648,6 +1662,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1665,6 +1681,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
@@ -1704,6 +1722,8 @@ default_tool = "claude"
 [worktree]
 # Where to create worktrees: "sibling" (next to repo) or "subdirectory" (inside repo)
 default_location = "sibling"
+# Pre-check "Create in worktree" in new-session and fork dialogs (default: false)
+# default_enabled = true
 # Automatically remove worktree when session is deleted
 auto_cleanup = true
 # Custom path template (overrides default_location if set)
