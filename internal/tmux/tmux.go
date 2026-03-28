@@ -989,11 +989,14 @@ func (s *Session) SetEnvironment(key, value string) error {
 
 func (s *Session) ApplyThemeOptions() error {
 	themeStyle := currentTmuxThemeStyle()
-	args := []string{
-		"set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";",
-		"set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";",
-		"set-option", "-t", s.Name, "status-style", themeStyle.statusStyle,
+	var args []string
+	if _, ok := s.OptionOverrides["window-style"]; !ok {
+		args = append(args, "set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";")
 	}
+	if _, ok := s.OptionOverrides["window-active-style"]; !ok {
+		args = append(args, "set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";")
+	}
+	args = append(args, "set-option", "-t", s.Name, "status-style", themeStyle.statusStyle)
 	if s.injectStatusLine {
 		args = append(args,
 			";", "set-option", "-t", s.Name, "status-right", s.themedStatusRight(themeStyle),
@@ -1230,16 +1233,25 @@ func (s *Session) Start(command string) error {
 	// via OptionOverrides to avoid changing behaviour for non-sandbox sessions.
 	themeStyle := currentTmuxThemeStyle()
 
-	_ = exec.Command("tmux",
-		"set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";",
-		"set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";",
+	startArgs := make([]string, 0, 40)
+	if _, ok := s.OptionOverrides["window-style"]; !ok {
+		startArgs = append(startArgs, "set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";")
+	}
+	if _, ok := s.OptionOverrides["window-active-style"]; !ok {
+		startArgs = append(startArgs, "set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";")
+	}
+	startArgs = append(startArgs,
 		"set-option", "-t", s.Name, "mouse", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys").Run()
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on",
+	)
+	_ = exec.Command("tmux", startArgs...).Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -1408,6 +1420,31 @@ func (s *Session) ConfigureStatusBar() {
 	_ = exec.Command("tmux", args...).Run()
 }
 
+// ensureTerminalFeatures appends terminal features only if not already present.
+// This prevents the terminal-features list from growing on every session start (#366).
+func ensureTerminalFeatures(features ...string) {
+	out, err := exec.Command("tmux", "show", "-sv", "terminal-features").Output()
+	if err != nil {
+		// tmux too old or server not running — append unconditionally as best-effort
+		if len(features) > 0 {
+			val := ",*:" + strings.Join(features, ":")
+			_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+		}
+		return
+	}
+	existing := string(out)
+	var missing []string
+	for _, f := range features {
+		if !strings.Contains(existing, f) {
+			missing = append(missing, f)
+		}
+	}
+	if len(missing) > 0 {
+		val := ",*:" + strings.Join(missing, ":")
+		_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
+	}
+}
+
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
 // Safe to call multiple times - just sets the options again
 //
@@ -1452,11 +1489,13 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set", "-sq", "extended-keys", "on", ";",
-		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
+
+	// Idempotent: only append terminal-features if not already present
+	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }

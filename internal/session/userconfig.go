@@ -528,6 +528,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -622,6 +627,10 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -853,6 +862,14 @@ type TmuxSettings struct {
 	// runtime stops mutating global tmux options.
 	// Default: true (nil = use default true)
 	InjectStatusLine *bool `toml:"inject_status_line"`
+
+	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
+	// all sessions, overriding the theme default. Use "default" to let your terminal
+	// emulator's background show through instead of agent-deck's theme color.
+	// Empty string (default) means use the theme's built-in value.
+	// Takes precedence over the same keys in Options if both are set.
+	// Example: window_style_override = "default"
+	WindowStyleOverride string `toml:"window_style_override"`
 
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
@@ -1648,6 +1665,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1665,6 +1684,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
@@ -1732,6 +1753,9 @@ auto_cleanup = true
 # agent-deck stops mutating the global tmux notification bar / number key bindings
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
+# window_style_override sets the tmux window-style for all sessions, overriding
+# the theme default. Use "default" to let your terminal's background show through.
+# window_style_override = "default"
 # Override tmux options applied to every session (applied after defaults)
 # Options matching agent-deck's managed keys (status, status-style,
 # status-left-length, status-right, status-right-length) will cause agent-deck
