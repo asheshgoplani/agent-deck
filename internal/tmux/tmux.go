@@ -2850,13 +2850,17 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 			}
 		}
 		lowerContent := strings.ToLower(recentContent)
+		// "esc to interrupt" always appears in the last 1-2 status bar lines of the
+		// pane. Limiting to 3 lines prevents matching model-generated prose output
+		// that happens to contain the phrase (e.g. conductor status reports).
+		statusBarLines := lastNLines(content, 3)
 		for _, str := range patterns.BusyStrings {
 			lowerStr := strings.ToLower(str)
 			if !strings.Contains(lowerContent, lowerStr) {
 				continue
 			}
 			if strings.Contains(lowerStr, "interrupt") &&
-				!hasInterruptBusyContext(recentLines, lowerStr, spinnerChars) {
+				!hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars) {
 				statusLog.Debug("busy_string_ignored_no_context",
 					slog.String("session", shortName),
 					slog.String("pattern", str))
