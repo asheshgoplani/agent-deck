@@ -481,16 +481,21 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		return baseCommand
 	}
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
-	hasCustomCommand := claudeCmd != "claude"
+	// Get options - either from instance or create defaults from config
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		// Fall back to config defaults
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured (env var or config.toml)
 	// If NOT explicit, we don't set it in the command - let the shell's environment handle it.
 	// This is critical for WSL and other environments where users have CLAUDE_CONFIG_DIR
 	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
-	// Also skip if using a custom command (alias handles config dir)
+	// Also skip if using a custom command alias (alias handles config dir).
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicit() {
 		configDir := GetClaudeConfigDir()
@@ -501,14 +506,6 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
-
-	// Get options - either from instance or create defaults from config
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		// Fall back to config defaults
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
 
 	// If baseCommand is just "claude", build the appropriate command
 	if baseCommand == "claude" {
@@ -588,6 +585,32 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 	// For custom commands (e.g., fork commands), return as-is
 	return baseCommand
+}
+
+func resolveClaudeLaunchCommand(opts *ClaudeOptions) (cmd string, hasCustomCommand bool) {
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	configuredCmd := GetClaudeCommand()
+	if configuredCmd == "" {
+		configuredCmd = "claude"
+	}
+
+	hasCustomCommand = configuredCmd != "claude"
+	if hasCustomCommand {
+		return configuredCmd, true
+	}
+
+	if opts != nil {
+		if opts.UseHappy {
+			return "happy", false
+		}
+		return configuredCmd, false
+	}
+
+	return configuredCmd, false
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
@@ -784,8 +807,8 @@ func (i *Instance) DetectOpenCodeSession() {
 	i.detectOpenCodeSessionAsync()
 }
 
-// buildCodexCommand builds the command for OpenAI Codex CLI
-// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
+// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled
+// (per-session override > global config), or "".
 func (i *Instance) resolveCodexYoloFlag() string {
 	opts := i.GetCodexOptions()
 	if opts != nil && opts.YoloMode != nil {
@@ -803,6 +826,17 @@ func (i *Instance) resolveCodexYoloFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexUseHappy() bool {
+	opts := i.GetCodexOptions()
+	if opts != nil && opts.UseHappy != nil {
+		return *opts.UseHappy
+	}
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		return config.Codex.UseHappy
+	}
+	return false
+}
+
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
@@ -817,18 +851,22 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
+	codexCmd := "codex"
+	if i.resolveCodexUseHappy() {
+		codexCmd = "happy codex"
+	}
 
 	// If baseCommand is just "codex", handle specially
 	if baseCommand == "codex" {
 		// If we already have a session ID, use resume.
 		// CODEX_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("codex%s resume %s",
-				yoloFlag, i.CodexSessionID)
+			return envPrefix + fmt.Sprintf("%s%s resume %s",
+				codexCmd, yoloFlag, i.CodexSessionID)
 		}
 
 		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + "codex" + yoloFlag
+		return envPrefix + codexCmd + yoloFlag
 	}
 
 	// For custom commands (e.g., resume commands), preserve env propagation.
@@ -1791,6 +1829,18 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 		return strings.ReplaceAll(wrapper, wrapperPlaceholder, command), nil
 	}
 	return wrapper, nil
+}
+
+// hasEffectiveWrapper returns true if the instance has a wrapper configured,
+// either directly on the instance or via the tool definition in config.toml.
+func (i *Instance) hasEffectiveWrapper() bool {
+	if i.Wrapper != "" {
+		return true
+	}
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.Wrapper != "" {
+		return true
+	}
+	return false
 }
 
 // loadCustomPatternsFromConfig loads detection patterns from built-in defaults + config.toml
@@ -4050,14 +4100,19 @@ func (i *Instance) Restart() error {
 	return nil
 }
 
-// buildClaudeResumeCommand builds the claude resume command with proper config options
-// Respects: CLAUDE_CONFIG_DIR, dangerous_mode from user config
+// buildClaudeResumeCommand builds the Claude resume command with proper config options.
+// Respects: CLAUDE_CONFIG_DIR, use_happy, and dangerous_mode from user/session config.
 // CLAUDE_SESSION_ID is set via host-side SetEnvironment (called by SyncSessionIDsToTmux after restart)
 func (i *Instance) buildClaudeResumeCommand() string {
-	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
-	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
-	claudeCmd := GetClaudeCommand()
-	hasCustomCommand := claudeCmd != "claude"
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
+
+	// Get the configured Claude command (e.g., "claude", "cdw", "happy")
+	// If a custom command alias is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it.
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured
 	// If NOT explicit, don't set it - let the shell's environment handle it
@@ -4072,13 +4127,6 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
-
-	// Get per-session permission settings (falls back to config if not persisted)
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
 	dangerousMode := opts.SkipPermissions
 	allowDangerousMode := opts.AllowSkipPermissions
 
@@ -4244,7 +4292,8 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	workDir := target.ProjectPath
 
 	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST use
-	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
+	// the default launch binary ("claude" or "happy") + explicit env exports, NOT a
+	// custom command alias like "cdw".
 	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 	// and shell aliases are not available in non-interactive bash shells.
 	bashExportPrefix := target.buildBashExportPrefix()
@@ -4253,6 +4302,11 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	if opts == nil {
 		userConfig, _ := LoadUserConfig()
 		opts = NewClaudeOptions(userConfig)
+	}
+
+	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
+	if hasCustomCommand {
+		claudeCmd = "claude"
 	}
 
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
@@ -4267,9 +4321,9 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	target.ClaudeSessionID = forkUUID
 	cmd := fmt.Sprintf(
 		`cd '%s' && `+
-			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,
+			`%sexec %s --session-id "%s" --resume %s --fork-session%s`,
 		workDir,
-		bashExportPrefix, forkUUID, i.ClaudeSessionID, extraFlags)
+		bashExportPrefix, claudeCmd, forkUUID, i.ClaudeSessionID, extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", err
@@ -4949,6 +5003,16 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	// Always pre-wrap in bash -c when a wrapper is configured. Wrappers use
+	// execvp() which cannot interpret shell syntax, so without this any
+	// metacharacter in cmd (inline env vars, &&, $(), etc.) would be passed
+	// as literal argv. Wrapping unconditionally is both safe and simpler than
+	// trying to detect which commands need it.
+	if i.hasEffectiveWrapper() {
+		escaped := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		cmd = fmt.Sprintf("bash -c '%s'", escaped)
+	}
+
 	wrapped, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", "", err
