@@ -2,7 +2,7 @@
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
-VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION=$(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 
 # Build the binary
