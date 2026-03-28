@@ -14,6 +14,7 @@ func TestUserConfig_ClaudeConfigDir(t *testing.T) {
 	configContent := `
 [claude]
 config_dir = "~/.claude-work"
+use_happy = true
 
 [tools.test]
 command = "test"
@@ -32,6 +33,9 @@ command = "test"
 
 	if config.Claude.ConfigDir != "~/.claude-work" {
 		t.Errorf("Claude.ConfigDir = %s, want ~/.claude-work", config.Claude.ConfigDir)
+	}
+	if !config.Claude.UseHappy {
+		t.Error("Claude.UseHappy should be true")
 	}
 }
 
@@ -92,6 +96,34 @@ command = "test"
 
 	if config.Claude.ConfigDir != "" {
 		t.Errorf("Claude.ConfigDir = %s, want empty string", config.Claude.ConfigDir)
+	}
+	if config.Claude.UseHappy {
+		t.Error("Claude.UseHappy should default to false")
+	}
+}
+
+func TestUserConfig_CodexUseHappy(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[codex]
+yolo_mode = true
+use_happy = true
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !config.Codex.YoloMode {
+		t.Error("Codex.YoloMode should be true")
+	}
+	if !config.Codex.UseHappy {
+		t.Error("Codex.UseHappy should be true")
 	}
 }
 

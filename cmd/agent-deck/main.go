@@ -642,9 +642,10 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"-c": true, "--cmd": true,
 		"-m": true, "--message": true,
 		"-p": true, "--parent": true,
-		"--mcp":     true,
-		"--wrapper": true,
-		"-w":        true, "--worktree": true,
+		"--mcp":      true,
+		"--add-path": true,
+		"--wrapper":  true,
+		"-w":         true, "--worktree": true,
 		"--location":       true,
 		"--resume-session": true,
 		"--sandbox-image":  true,
@@ -815,14 +816,21 @@ func handleAdd(profile string, args []string) {
 	// Worktree flags
 	worktreeBranch := fs.String("w", "", "Create session in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create session in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	worktreeLocation := fs.String("location", "", "Worktree location: sibling, subdirectory, or custom path")
 
 	// MCP flag - can be specified multiple times
 	var mcpFlags []string
 	fs.Func("mcp", "MCP to attach (can specify multiple times)", func(s string) error {
 		mcpFlags = append(mcpFlags, s)
+		return nil
+	})
+
+	// Multi-repo flag
+	var addPaths []string
+	fs.Func("add-path", "Additional repo path for multi-repo session (repeatable)", func(s string) error {
+		addPaths = append(addPaths, s)
 		return nil
 	})
 
@@ -870,6 +878,10 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add -w feature/new -b .   # Create worktree with new branch")
 		fmt.Println("  agent-deck add --worktree fix/bug-123 --new-branch /path/to/repo")
 		fmt.Println()
+		fmt.Println("Multi-Repo Examples:")
+		fmt.Println("  agent-deck add . --add-path /path/to/repo2 --add-path /path/to/repo3")
+		fmt.Println("  agent-deck add . -w feature/my-branch --add-path /path/to/repo2")
+		fmt.Println()
 		fmt.Println("SSH Examples:")
 		fmt.Println("  agent-deck add --ssh user@host --remote-path ~/project -c claude")
 		fmt.Println("  agent-deck add --ssh user@host -c claude -t \"remote-dev\"")
@@ -895,7 +907,7 @@ func handleAdd(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Merge short and long flags
 	sessionTitle := mergeFlags(*title, *titleShort)
@@ -1013,9 +1025,9 @@ func handleAdd(profile string, args []string) {
 		}
 	}
 
-	// Handle worktree creation
+	// Handle worktree creation (single-repo only; multi-repo delegates to SetupMultiRepo below)
 	var worktreePath, worktreeRepoRoot string
-	if wtBranch != "" {
+	if wtBranch != "" && len(addPaths) == 0 {
 		// Validate path is a git repo
 		if !git.IsGitRepo(path) {
 			fmt.Fprintf(os.Stderr, "Error: %s is not a git repository\n", path)
@@ -1032,17 +1044,6 @@ func handleAdd(profile string, args []string) {
 		// Pre-validate branch name for better error messages
 		if err := git.ValidateBranchName(wtBranch); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: invalid branch name: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Check -b flag logic: if -b is passed, branch must NOT exist (user wants new branch)
-		branchExists := git.BranchExists(repoRoot, wtBranch)
-		if createNewBranch && branchExists {
-			fmt.Fprintf(
-				os.Stderr,
-				"Error: branch '%s' already exists (remove -b flag to use existing branch)\n",
-				wtBranch,
-			)
 			os.Exit(1)
 		}
 
@@ -1144,6 +1145,23 @@ func handleAdd(profile string, args []string) {
 		newInstance.WorktreePath = worktreePath
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
 		newInstance.WorktreeBranch = wtBranch
+	}
+
+	// Set up multi-repo if additional paths were provided
+	if len(addPaths) > 0 {
+		resolvedPaths := make([]string, 0, len(addPaths))
+		for _, p := range addPaths {
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				fmt.Printf("Error: failed to resolve --add-path %s: %v\n", p, err)
+				os.Exit(1)
+			}
+			resolvedPaths = append(resolvedPaths, abs)
+		}
+		if err := session.SetupMultiRepo(newInstance, resolvedPaths, wtBranch, session.GetMultiRepoBaseDir()); err != nil {
+			fmt.Printf("Error: failed to set up multi-repo session: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Apply sandbox config if requested.
@@ -1294,6 +1312,17 @@ func handleAdd(profile string, args []string) {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
 		jsonData["worktree_repo_root"] = worktreeRepoRoot
+	}
+	if newInstance.IsMultiRepo() {
+		jsonData["multi_repo"] = true
+		jsonData["multi_repo_paths"] = newInstance.AllProjectPaths()
+		humanLines = append(humanLines[:len(humanLines)-3],
+			fmt.Sprintf("  Multi-repo: %d paths", len(newInstance.AllProjectPaths())),
+		)
+		humanLines = append(humanLines, "", "Next steps:",
+			fmt.Sprintf("  agent-deck session start %s   # Start the session", sessionTitle),
+			"  agent-deck                         # Open TUI and press Enter to attach",
+		)
 	}
 	if *resumeSession != "" {
 		jsonData["resume_session"] = *resumeSession
