@@ -216,7 +216,11 @@ def run_cli(
 
 
 def get_session_status(session: str, profile: str | None = None) -> str:
-    """Get the status of a session (running/waiting/idle/error)."""
+    """Get the status of a session (running/waiting/idle/error/unknown).
+
+    Returns "unknown" on CLI failure or parse error — callers should treat
+    this as a transient condition and retry rather than dropping state.
+    """
     result = run_cli(
         "session", "show", session, "--json", profile=profile, timeout=30
     )
