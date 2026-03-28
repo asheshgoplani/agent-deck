@@ -172,6 +172,7 @@ type Home struct {
 	confirmDialog        *ConfirmDialog        // For confirming destructive actions
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
+	editPathsDialog      *EditPathsDialog      // For editing multi-repo paths
 	skillDialog          *SkillDialog          // For managing project skills
 	setupWizard          *SetupWizard          // For first-run setup
 	settingsPanel        *SettingsPanel        // For editing settings
@@ -654,6 +655,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		confirmDialog:        NewConfirmDialog(),
 		helpOverlay:          NewHelpOverlay(),
 		mcpDialog:            NewMCPDialog(),
+		editPathsDialog:      NewEditPathsDialog(),
 		skillDialog:          NewSkillDialog(),
 		setupWizard:          NewSetupWizard(),
 		settingsPanel:        NewSettingsPanel(),
@@ -4041,6 +4043,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.mcpDialog.IsVisible() {
 			return h.handleMCPDialogKey(msg)
 		}
+		if h.editPathsDialog.IsVisible() {
+			return h.handleEditPathsDialogKey(msg)
+		}
 		if h.skillDialog.IsVisible() {
 			return h.handleSkillDialogKey(msg)
 		}
@@ -4509,7 +4514,7 @@ func (h *Home) hasModalVisible() bool {
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
-		h.worktreeFinishDialog.IsVisible()
+		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible()
 }
 
 // markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command
@@ -4951,6 +4956,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.cursor++
 			}
 			h.saveInstances()
+		}
+		return h, nil
+
+	case "p":
+		// Edit multi-repo paths
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsMultiRepo() {
+				h.editPathsDialog.SetSize(h.width, h.height)
+				h.editPathsDialog.Show(item.Session, h.newDialog.allPathSuggestions)
+			}
 		}
 		return h, nil
 
@@ -5823,6 +5839,92 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		h.mcpDialog.Update(msg)
 		return h, nil
+	}
+}
+
+// handleEditPathsDialogKey handles key events for the edit paths dialog.
+func (h *Home) handleEditPathsDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		if h.editPathsDialog.IsEditing() {
+			h.editPathsDialog.Update(msg)
+			return h, nil
+		}
+		// Confirm changes
+		if h.editPathsDialog.HasChanged() {
+			if errMsg := h.editPathsDialog.Validate(); errMsg != "" {
+				h.editPathsDialog.validationErr = errMsg
+				return h, nil
+			}
+			newPaths := h.editPathsDialog.GetPaths()
+			sessionID := h.editPathsDialog.GetSessionID()
+			h.editPathsDialog.Hide()
+			inst := h.getInstanceByID(sessionID)
+			if inst != nil {
+				return h, h.applyMultiRepoPathChanges(inst, newPaths)
+			}
+		}
+		h.editPathsDialog.Hide()
+		return h, nil
+	case "esc":
+		if h.editPathsDialog.IsEditing() {
+			h.editPathsDialog.Update(msg)
+			return h, nil
+		}
+		h.editPathsDialog.Hide()
+		return h, nil
+	default:
+		h.editPathsDialog.Update(msg)
+		return h, nil
+	}
+}
+
+// applyMultiRepoPathChanges updates the symlink directory and restarts the session.
+func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []string) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		h.instancesMu.RLock()
+		current := h.instanceByID[id]
+		h.instancesMu.RUnlock()
+		if current == nil {
+			return sessionRestartedMsg{sessionID: id, err: fmt.Errorf("session no longer exists")}
+		}
+
+		tempDir := current.MultiRepoTempDir
+		if tempDir == "" {
+			return sessionRestartedMsg{sessionID: id, err: fmt.Errorf("no multi-repo temp dir")}
+		}
+
+		// Remove all existing symlinks/entries in tempDir
+		entries, _ := os.ReadDir(tempDir)
+		for _, entry := range entries {
+			_ = os.RemoveAll(filepath.Join(tempDir, entry.Name()))
+		}
+
+		// Create new symlinks
+		dirnames := session.DeduplicateDirnames(newPaths)
+		var newProjectPath string
+		var newAdditionalPaths []string
+		for i, p := range newPaths {
+			linkPath := filepath.Join(tempDir, dirnames[i])
+			_ = os.Symlink(p, linkPath)
+			if i == 0 {
+				newProjectPath = linkPath
+			} else {
+				newAdditionalPaths = append(newAdditionalPaths, linkPath)
+			}
+		}
+
+		current.ProjectPath = newProjectPath
+		current.AdditionalPaths = newAdditionalPaths
+		if current.GetTmuxSession() != nil {
+			current.GetTmuxSession().WorkDir = tempDir
+		}
+
+		h.saveInstances()
+
+		err := current.Restart()
+		return sessionRestartedMsg{sessionID: id, err: err}
 	}
 }
 
@@ -7446,6 +7548,9 @@ func (h *Home) View() string {
 	if h.mcpDialog.IsVisible() {
 		return h.mcpDialog.View()
 	}
+	if h.editPathsDialog.IsVisible() {
+		return h.editPathsDialog.View()
+	}
 	if h.skillDialog.IsVisible() {
 		return h.skillDialog.View()
 	}
@@ -8771,6 +8876,11 @@ func (h *Home) renderHelpBarFull() string {
 			if item.Session != nil && item.Session.IsSandboxed() {
 				if execShellKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(execShellKey, "Exec"))
+				}
+			}
+			if item.Session != nil && item.Session.IsMultiRepo() {
+				if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+					primaryHints = append(primaryHints, h.helpKey(editPathsKey, "Paths"))
 				}
 			}
 			if copyKey != "" {
@@ -10129,6 +10239,13 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(mrValueStyle.Render(truncatePath(p, width-4-len(label))))
 			b.WriteString("\n")
 		}
+
+		editPathsKey := h.actionKey(hotkeyEditPaths)
+		if editPathsKey != "" {
+			hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			b.WriteString(hintStyle.Render(fmt.Sprintf("  %s: edit paths", editPathsKey)))
+			b.WriteString("\n")
+		}
 	}
 
 	// Claude-specific info (session ID and MCPs)
@@ -10537,6 +10654,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(keyStyle.Render("Enter"))
 		b.WriteString(dimStyle.Render(" - attach (will auto-start)"))
 		b.WriteString("\n")
+		if selected.IsMultiRepo() {
+			if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(editPathsKey))
+				b.WriteString(dimStyle.Render(" Paths   - edit multi-repo paths"))
+				b.WriteString("\n")
+			}
+		}
 
 		// Pad output to exact height to prevent layout shifts
 		content := b.String()
@@ -10594,6 +10719,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(keyStyle.Render("Enter"))
 		b.WriteString(dimStyle.Render(" - attach (will auto-start)"))
 		b.WriteString("\n")
+		if selected.IsMultiRepo() {
+			if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(editPathsKey))
+				b.WriteString(dimStyle.Render(" Paths   - edit multi-repo paths"))
+				b.WriteString("\n")
+			}
+		}
 
 		// Pad output to exact height to prevent layout shifts
 		content := b.String()
