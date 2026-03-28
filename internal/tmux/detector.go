@@ -196,10 +196,13 @@ func (d *PromptDetector) hasClaudePrompt(content string) bool {
 		"Allow this MCP server",
 		// Tool permission prompts
 		"Run this command?",
+		"Do you want to proceed?",
 		"Execute this?",
 		"Action Required",
 		"Waiting for user confirmation",
 		"Allow execution of",
+		// Numbered menu footer (present in all Claude Code permission dialogs)
+		"Esc to cancel",
 		// AskUserQuestion / interactive question UI
 		// Claude Code renders selection options with these indicators
 		"Use arrow keys to navigate",
