@@ -28,11 +28,13 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
@@ -2988,6 +2990,19 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case branchPickerResultMsg:
+		if h.newDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
+		if h.forkDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.forkDialog, cmd = h.forkDialog.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
 	case sessionCreatedMsg:
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
 		// even during reload, otherwise the session becomes orphaned (exists in tmux but not in storage)
@@ -4280,15 +4295,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			// Validate path is a git repo
-			if !git.IsGitRepo(path) {
-				h.newDialog.SetError("Path is not a git repository")
-				return h, nil
-			}
-
-			repoRoot, err := git.GetWorktreeBaseRoot(path)
+			wtBackend, err := git.NewGitBackend(path)
 			if err != nil {
-				h.newDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
+				h.newDialog.SetError(fmt.Sprintf("Failed to initialize git: %v", err))
 				return h, nil
 			}
 
@@ -4297,13 +4306,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			worktreePath = git.WorktreePath(git.WorktreePathOptions{
 				Branch:    branchName,
 				Location:  wtSettings.DefaultLocation,
-				RepoDir:   repoRoot,
+				RepoDir:   wtBackend.RepoDir(),
 				SessionID: git.GeneratePathID(),
 				Template:  wtSettings.Template(),
 			})
 
 			// Store repo root for later use
-			worktreeRepoRoot = repoRoot
+			worktreeRepoRoot = wtBackend.RepoDir()
 		}
 
 		// Build generic toolOptionsJSON from tool-specific options
@@ -4311,9 +4320,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 		} else if command == "codex" {
-			yolo := h.newDialog.GetCodexYoloMode()
-			codexOpts := &session.CodexOptions{YoloMode: &yolo}
-			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			if codexOpts := h.newDialog.GetCodexOptions(); codexOpts != nil {
+				toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			}
 		}
 
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
@@ -5040,8 +5049,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				// Determine default target branch
 				defaultBranch := "main"
-				if detected, err := git.GetDefaultBranch(inst.WorktreeRepoRoot); err == nil {
-					defaultBranch = detected
+				if wtb, bErr := inst.Backend(); bErr == nil {
+					if detected, dErr := wtb.GetDefaultBranch(); dErr == nil {
+						defaultBranch = detected
+					}
 				}
 				h.worktreeFinishDialog.SetSize(h.width, h.height)
 				h.worktreeFinishDialog.Show(inst.ID, inst.Title, inst.WorktreeBranch, inst.WorktreeRepoRoot, inst.WorktreePath, defaultBranch)
@@ -5519,13 +5530,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "$", "shift+4":
-		// Cost dashboard (when cost tracking is active), otherwise filter to error sessions
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
-		}
-		// Fallback: filter to error sessions only
+		// Filter to error sessions only
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -5533,6 +5538,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case "C":
+		// Cost dashboard
+		if h.costStore != nil {
+			h.showCostDashboard = true
+			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
+			return h, nil
+		}
 	}
 
 	return h, nil
@@ -5999,13 +6012,9 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				// Resolve worktree target if enabled; actual creation runs in async command.
 				if worktreeEnabled && branchName != "" {
-					if !git.IsGitRepo(source.ProjectPath) {
-						h.forkDialog.SetError("Path is not a git repository")
-						return h, nil
-					}
-					repoRoot, err := git.GetWorktreeBaseRoot(source.ProjectPath)
-					if err != nil {
-						h.forkDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
+					forkBackend, forkErr := git.NewGitBackend(source.ProjectPath)
+					if forkErr != nil {
+						h.forkDialog.SetError(fmt.Sprintf("Failed to initialize git: %v", forkErr))
 						return h, nil
 					}
 
@@ -6013,7 +6022,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					worktreePath := git.WorktreePath(git.WorktreePathOptions{
 						Branch:    branchName,
 						Location:  wtSettings.DefaultLocation,
-						RepoDir:   repoRoot,
+						RepoDir:   forkBackend.RepoDir(),
 						SessionID: git.GeneratePathID(),
 						Template:  wtSettings.Template(),
 					})
@@ -6023,7 +6032,7 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 					opts.WorkDir = worktreePath
 					opts.WorktreePath = worktreePath
-					opts.WorktreeRepoRoot = repoRoot
+					opts.WorktreeRepoRoot = forkBackend.RepoDir()
 					opts.WorktreeBranch = branchName
 				}
 
@@ -6269,6 +6278,19 @@ func (h *Home) loadUIState() {
 	h.pendingCursorRestore = &state
 }
 
+// detectVCSBackend detects the VCS type for the given directory and creates the
+// appropriate backend. It tries jujutsu first (since jj repos also contain a git
+// store that would match git detection), then falls back to git.
+func detectVCSBackend(dir string) (vcs.Backend, error) {
+	if b, err := jujutsu.NewJJBackend(dir); err == nil {
+		return b, nil
+	}
+	if b, err := git.NewGitBackend(dir); err == nil {
+		return b, nil
+	}
+	return nil, fmt.Errorf("no supported VCS found in %s", dir)
+}
+
 // createSessionInGroupWithWorktreeAndOptions creates a new session with full options including YOLO mode, sandbox, and tool options.
 func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	name, path, command, groupPath, worktreePath, worktreeRepoRoot, worktreeBranch string,
@@ -6288,14 +6310,18 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			// Single-repo worktree: create here. Multi-repo worktrees are handled below.
 			//
 			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := git.GetWorktreeForBranch(worktreeRepoRoot, worktreeBranch); err == nil && existingPath != "" {
+			wtBackend, err := detectVCSBackend(worktreeRepoRoot)
+			if err != nil {
+				return sessionCreatedMsg{err: fmt.Errorf("failed to initialize VCS backend: %w", err)}
+			}
+			if existingPath, err := wtBackend.GetWorktreeForBranch(worktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", worktreeBranch), slog.String("path", existingPath))
 				worktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err)}
 				}
-				if err := git.CreateWorktree(worktreeRepoRoot, worktreePath, worktreeBranch); err != nil {
+				if err := wtBackend.CreateWorktree(worktreePath, worktreeBranch); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err)}
 				}
 			}
@@ -6336,6 +6362,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.WorktreePath = worktreePath
 			inst.WorktreeRepoRoot = worktreeRepoRoot
 			inst.WorktreeBranch = worktreeBranch
+
+			worktreeType := vcs.TypeGit
+			if jujutsu.IsJJRepo(worktreeRepoRoot) {
+				worktreeType = vcs.TypeJujutsu
+			}
+			inst.WorktreeType = string(worktreeType)
 		}
 
 		applyCreateSessionToolOverrides(inst, tool, geminiYoloMode)
@@ -6378,8 +6410,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				var newAdditionalPaths []string
 				for i, p := range allPaths {
 					wtPath := filepath.Join(parentDir, dirnames[i])
-					if git.IsGitRepo(p) {
-						repoRoot, rootErr := git.GetWorktreeBaseRoot(p)
+					if jujutsu.IsJJRepo(p) || git.IsGitRepo(p) {
+						var repoRoot string
+						var rootErr error
+						if jujutsu.IsJJRepo(p) {
+							repoRoot, rootErr = jujutsu.GetWorktreeBaseRoot(p)
+						} else {
+							repoRoot, rootErr = git.GetWorktreeBaseRoot(p)
+						}
 						if rootErr != nil {
 							uiLog.Warn("multi_repo_worktree_skip", slog.String("path", p), slog.String("error", rootErr.Error()))
 							// Copy path as-is into the parent dir via symlink
@@ -6391,7 +6429,18 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 							}
 							continue
 						}
-						if err := git.CreateWorktree(repoRoot, wtPath, worktreeBranch); err != nil {
+						mrBackend, mrErr := detectVCSBackend(repoRoot)
+						if mrErr != nil {
+							uiLog.Warn("multi_repo_worktree_create_fail", slog.String("path", p), slog.String("error", mrErr.Error()))
+							_ = os.Symlink(p, wtPath)
+							if i == 0 {
+								newProjectPath = wtPath
+							} else {
+								newAdditionalPaths = append(newAdditionalPaths, wtPath)
+							}
+							continue
+						}
+						if err := mrBackend.CreateWorktree(wtPath, worktreeBranch); err != nil {
 							uiLog.Warn("multi_repo_worktree_create_fail", slog.String("path", p), slog.String("error", err.Error()))
 							_ = os.Symlink(p, wtPath)
 							if i == 0 {
@@ -6660,14 +6709,18 @@ func (h *Home) forkSessionCmdWithOptions(
 			// so the TUI remains responsive.
 			//
 			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := git.GetWorktreeForBranch(opts.WorktreeRepoRoot, opts.WorktreeBranch); err == nil && existingPath != "" {
+			forkWtBackend, err := detectVCSBackend(opts.WorktreeRepoRoot)
+			if err != nil {
+				return sessionForkedMsg{err: fmt.Errorf("failed to initialize VCS backend: %w", err), sourceID: sourceID}
+			}
+			if existingPath, err := forkWtBackend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))
 				opts.WorktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				if err := git.CreateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch); err != nil {
+				if err := forkWtBackend.CreateWorktree(opts.WorktreePath, opts.WorktreeBranch); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}
 			}
@@ -6767,15 +6820,16 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	id := inst.ID
 	isWorktree := inst.IsWorktree()
 	worktreePath := inst.WorktreePath
-	worktreeRepoRoot := inst.WorktreeRepoRoot
 	isMultiRepo := inst.IsMultiRepo()
 	multiRepoTempDir := inst.MultiRepoTempDir
 	multiRepoWorktrees := inst.MultiRepoWorktrees
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		if isWorktree {
-			_ = git.RemoveWorktree(worktreeRepoRoot, worktreePath, false)
-			_ = git.PruneWorktrees(worktreeRepoRoot)
+			if delBackend, bErr := inst.Backend(); bErr == nil {
+				_ = delBackend.RemoveWorktree(worktreePath, false)
+				_ = delBackend.PruneWorktrees()
+			}
 		}
 		if isMultiRepo {
 			// Clean up multi-repo temp directory
@@ -6784,8 +6838,10 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 			}
 			// Clean up per-repo worktrees
 			for _, wt := range multiRepoWorktrees {
-				_ = git.RemoveWorktree(wt.RepoRoot, wt.WorktreePath, false)
-				_ = git.PruneWorktrees(wt.RepoRoot)
+				if wtCleanBackend, wtErr := git.NewGitBackend(wt.RepoRoot); wtErr == nil {
+					_ = wtCleanBackend.RemoveWorktree(wt.WorktreePath, false)
+					_ = wtCleanBackend.PruneWorktrees()
+				}
 			}
 		}
 		return sessionDeletedMsg{deletedID: id, killErr: killErr}
@@ -10045,14 +10101,32 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		Background(ColorCyan).
 		Padding(0, 1).
 		Render(selected.GroupPath)
+	vcsBadgeText := string(vcs.TypeGit)
+	if selected.WorktreeType != "" {
+		vcsBadgeText = string(selected.WorktreeType)
+	}
+	vcsBadge := lipgloss.NewStyle().
+		Foreground(ColorBg).
+		Background(ColorOrange).
+		Padding(0, 1).
+		Render(vcsBadgeText)
 	b.WriteString(toolBadge)
 	b.WriteString(" ")
 	b.WriteString(groupBadge)
+	b.WriteString(" ")
+	b.WriteString(vcsBadge)
 	b.WriteString("\n")
 
 	// Worktree info section (for sessions running in git worktrees)
 	if selected.IsWorktree() {
-		wtHeader := renderSectionDivider("Worktree", width-4)
+		var sectionHeader string
+		switch selected.WorktreeType {
+		case string(vcs.TypeGit), "":
+			sectionHeader = "Git Worktree"
+		case string(vcs.TypeJujutsu):
+			sectionHeader = "Jujutsu Workspace"
+		}
+		wtHeader := renderSectionDivider(sectionHeader, width-4)
 		b.WriteString(wtHeader)
 		b.WriteString("\n")
 
@@ -11515,6 +11589,14 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 	return func() tea.Msg {
 		merged := false
 
+		finBackend, bErr := inst.Backend()
+		if bErr != nil {
+			return worktreeFinishResultMsg{
+				sessionID: sessionID, sessionTitle: sessionTitle,
+				err: fmt.Errorf("failed to initialize VCS: %v", bErr),
+			}
+		}
+
 		// Step 1: Merge (if requested)
 		if mergeEnabled {
 			// Checkout target branch in main repo
@@ -11528,7 +11610,7 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 			}
 
 			// Merge the worktree branch
-			if err := git.MergeBranch(repoRoot, branchName); err != nil {
+			if err := finBackend.MergeBranch(branchName); err != nil {
 				// Abort the merge to leave things clean
 				abortCmd := exec.Command("git", "-C", repoRoot, "merge", "--abort")
 				_ = abortCmd.Run()
@@ -11542,14 +11624,14 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 
 		// Step 2: Remove worktree
 		if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
-			_ = git.RemoveWorktree(repoRoot, worktreePath, false)
+			_ = finBackend.RemoveWorktree(worktreePath, false)
 		}
-		_ = git.PruneWorktrees(repoRoot)
+		_ = finBackend.PruneWorktrees()
 
 		// Step 3: Delete branch (if not keeping)
 		if !keepBranch {
 			// Use force delete if we merged (branch is fully merged), regular delete otherwise
-			_ = git.DeleteBranch(repoRoot, branchName, merged)
+			_ = finBackend.DeleteBranch(branchName, merged)
 		}
 
 		// Step 4: Kill tmux session

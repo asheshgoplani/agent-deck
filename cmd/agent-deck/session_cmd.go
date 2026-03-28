@@ -17,6 +17,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleSession dispatches session subcommands
@@ -383,8 +384,8 @@ func handleSessionFork(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group for forked session (short)")
 	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -476,36 +477,34 @@ func handleSessionFork(profile string, args []string) {
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
+	var worktreeType string
 	if wtBranch != "" {
-		if !git.IsGitRepo(inst.ProjectPath) {
-			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
+		backend, err := detectAndCreateBackend(inst.ProjectPath)
 		if err != nil {
-			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
+			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		worktreeType = string(backend.Type())
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
-			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
+		if err := git.ValidateBranchName(wtBranch); !createNewBranch && !backend.BranchExists(wtBranch) {
+			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
 		wtSettings := session.GetWorktreeSettings()
-		worktreePath := git.WorktreePath(git.WorktreePathOptions{
+		worktreePath := backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  wtSettings.DefaultLocation,
-			RepoDir:   repoRoot,
 			SessionID: git.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
+		if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
 			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
 			worktreePath = existingPath
 		} else {
+
 			if _, statErr := os.Stat(worktreePath); statErr == nil {
 				out.Error(fmt.Sprintf("worktree path already exists: %s", worktreePath), ErrCodeInvalidOperation)
 				os.Exit(1)
@@ -516,7 +515,7 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			if err := backend.CreateWorktree(worktreePath, wtBranch); err != nil {
 				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
@@ -526,7 +525,7 @@ func handleSessionFork(profile string, args []string) {
 		opts = session.NewClaudeOptions(userConfig)
 		opts.WorkDir = worktreePath
 		opts.WorktreePath = worktreePath
-		opts.WorktreeRepoRoot = repoRoot
+		opts.WorktreeRepoRoot = backend.RepoDir()
 		opts.WorktreeBranch = wtBranch
 	}
 
@@ -535,6 +534,10 @@ func handleSessionFork(profile string, args []string) {
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	if worktreeType != "" {
+		forkedInst.WorktreeType = worktreeType
 	}
 
 	// Apply sandbox config if requested.
