@@ -471,6 +471,105 @@ func TestClaudeCodeBusyPatterns(t *testing.T) {
 }
 
 // =============================================================================
+// VALIDATION 4.1: "esc to interrupt" Only Matched in Status Bar Lines
+// =============================================================================
+// Bug: conductor output containing "esc to interrupt" in prose (e.g.
+// "I is processing (esc to interrupt = running)") caused the session to be
+// detected as busy/running even when Claude was waiting at the ❯ prompt.
+// Fix: interrupt patterns are now only checked against the last 3 lines of
+// the pane (the status bar area), not the full 25-line window.
+
+func TestEscToInterruptOnlyMatchedInStatusBar(t *testing.T) {
+	// separatorLine is the horizontal rule Claude Code draws above/below the prompt.
+	const separatorLine = "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+
+	tests := []struct {
+		name     string
+		content  string
+		wantBusy bool
+	}{
+		{
+			// Real busy: "esc to interrupt" appears in the last status-bar line,
+			// together with the bypass-permissions affordance.
+			name: "busy - esc to interrupt in status bar with bypass permissions",
+			content: `Some previous output
+
+` + separatorLine + `
+❯
+` + separatorLine + `
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt                9% until auto-compact`,
+			wantBusy: true,
+		},
+		{
+			// Real busy: bare "esc to interrupt" on its own as last status-bar line
+			// (older Claude Code versions).
+			name: "busy - esc to interrupt alone in status bar",
+			content: `Working on your request...
+` + separatorLine + `
+❯
+` + separatorLine + `
+esc to interrupt`,
+			wantBusy: true,
+		},
+		{
+			// Real busy: accept-edits variant.
+			name: "busy - esc to interrupt in accept edits status bar",
+			content: `Editing file...
+
+` + separatorLine + `
+❯
+` + separatorLine + `
+  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt                      9% until auto-compact`,
+			wantBusy: true,
+		},
+		{
+			// False positive regression: conductor prose output containing
+			// "esc to interrupt" with parentheses is far above the status bar.
+			// Before the fix this triggered busy detection.
+			name: "not busy - conductor prose mentioning esc to interrupt with parens",
+			content: `● I is processing (esc to interrupt = running). Verified.
+
+  ⚡ 2
+
+  · A    review loop BLA-840 (@assessor)
+  · B    running     BLA-838 billing tests
+  NEED: D stuck 4+ heartbeats.
+
+✻ Brewed for 2m 12s · 2 shells still running
+
+` + separatorLine + `
+❯
+` + separatorLine + `
+  ⏵⏵ bypass permissions on · 2 shells · ↓ to manage`,
+			wantBusy: false,
+		},
+		{
+			// Another prose variant: model output quoting the phrase.
+			name: "not busy - model output quoting esc to interrupt in body",
+			content: `To interrupt a running task, press (esc to interrupt) in the terminal.
+
+✻ Conjured for 1m 22s
+
+` + separatorLine + `
+❯
+` + separatorLine,
+			wantBusy: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// detectedTool must be set so Claude string patterns ("esc to interrupt") are loaded.
+			sess := &Session{DisplayName: "test-" + tt.name, detectedTool: "claude"}
+			got := sess.hasBusyIndicator(tt.content)
+			if got != tt.wantBusy {
+				t.Errorf("hasBusyIndicator() = %v, want %v\nContent:\n%s", got, tt.wantBusy, tt.content)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // VALIDATION 5.0: thinkingPattern Requires Spinner Prefix
 // =============================================================================
 // Fix: thinkingPattern now requires a braille spinner character prefix
