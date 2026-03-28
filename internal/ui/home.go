@@ -179,6 +179,7 @@ type Home struct {
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
+	gridView             *GridView             // For viewing group sessions as a grid
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -661,6 +662,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
+		gridView:             NewGridView(),
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
@@ -2750,6 +2752,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setupWizard.SetSize(msg.Width, msg.Height)
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
+		h.gridView.SetSize(msg.Width, msg.Height)
 		return h, nil
 
 	case tea.MouseMsg:
@@ -2808,6 +2811,46 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return h.handleMouse(msg)
 		}
+
+	case gridAttachMsg:
+		// Attach to the session from grid view; grid stays visible so
+		// Ctrl+Q detach returns to it.
+		if msg.instance != nil {
+			return h, h.attachSession(msg.instance)
+		}
+		return h, nil
+
+	case gridCellCaptureMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridTickMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridPopupTickMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
+
+	case gridPopupCaptureMsg:
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+		return h, nil
 
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection
@@ -2985,6 +3028,19 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(detectionCmds) > 0 {
 				return h, tea.Batch(detectionCmds...)
 			}
+		}
+		return h, nil
+
+	case branchPickerResultMsg:
+		if h.newDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
+		if h.forkDialog.IsVisible() {
+			var cmd tea.Cmd
+			h.forkDialog, cmd = h.forkDialog.Update(msg)
+			return h, cmd
 		}
 		return h, nil
 
@@ -3953,6 +4009,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h.handleJumpKey(msg)
 		}
 
+		// Handle grid view (fullscreen with its own input handling)
+		if h.gridView.IsVisible() {
+			var cmd tea.Cmd
+			h.gridView, cmd = h.gridView.Update(msg)
+			return h, cmd
+		}
+
 		// Handle setup wizard first (modal, blocks everything)
 		if h.setupWizard.IsVisible() {
 			var cmd tea.Cmd
@@ -4311,9 +4374,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 		} else if command == "codex" {
-			yolo := h.newDialog.GetCodexYoloMode()
-			codexOpts := &session.CodexOptions{YoloMode: &yolo}
-			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			if codexOpts := h.newDialog.GetCodexOptions(); codexOpts != nil {
+				toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+			}
 		}
 
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
@@ -5150,6 +5213,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "V":
+		// Open grid view for group's sessions
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeGroup && item.Group != nil && len(item.Group.Sessions) > 0 {
+				h.gridView.Show(item.Group)
+				h.gridView.SetSize(h.width, h.height)
+				return h, tea.Batch(h.gridView.fetchAllCells(), h.gridView.startTick())
+			}
+		}
+		return h, nil
+
 	case "n":
 		// Check if cursor is on a remote group/session — create on remote instead
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
@@ -5519,13 +5594,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "$", "shift+4":
-		// Cost dashboard (when cost tracking is active), otherwise filter to error sessions
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
-		}
-		// Fallback: filter to error sessions only
+		// Filter to error sessions only
 		if h.statusFilter == session.StatusError {
 			h.statusFilter = "" // Toggle off
 		} else {
@@ -5533,6 +5602,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case "C":
+		// Cost dashboard
+		if h.costStore != nil {
+			h.showCostDashboard = true
+			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
+			return h, nil
+		}
 	}
 
 	return h, nil
@@ -6967,6 +7044,23 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// which were skipped during lazy loading for TUI startup performance
 	tmuxSess.EnsureConfigured()
 
+	// Bind grid popup key (prefix V by default) if enabled
+	if session.IsGridPopupEnabled() {
+		// Prefer PATH lookup (stable installed binary) over os.Executable()
+		// which may resolve to a go build cache artifact
+		agentDeckBin, err := exec.LookPath("agent-deck")
+		if err != nil {
+			agentDeckBin, err = os.Executable()
+			if err != nil {
+				agentDeckBin = "agent-deck"
+			}
+		}
+		_ = tmux.BindGridPopupKey(agentDeckBin,
+			session.GetGridPopupKey(),
+			session.GetGridPopupWidth(),
+			session.GetGridPopupHeight())
+	}
+
 	// Sync session IDs to tmux environment for resume functionality
 	// (Deferred from load time for performance)
 	inst.SyncSessionIDsToTmux()
@@ -7419,6 +7513,11 @@ func (h *Home) View() string {
 	// Settings panel is modal
 	if h.settingsPanel.IsVisible() {
 		return h.settingsPanel.View()
+	}
+
+	// Grid view takes full screen (highest priority overlay with its own input)
+	if h.gridView.IsVisible() {
+		return h.gridView.View()
 	}
 
 	// Overlays take full screen
@@ -11308,6 +11407,9 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	}
 	if key := h.actionKey(hotkeyCreateGroup); key != "" {
 		hints = append(hints, key+" subgroup")
+	}
+	if key := h.actionKey(hotkeyGridView); key != "" {
+		hints = append(hints, key+" grid view")
 	}
 	b.WriteString(hintStyle.Render(strings.Join(hints, " • ")))
 

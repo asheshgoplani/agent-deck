@@ -681,3 +681,69 @@ func TestRecentSessions_DedupIdenticalConfig(t *testing.T) {
 		t.Fatalf("expected deduped row count 1, got %d", len(rows))
 	}
 }
+
+func TestGridPreferences_RoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	cols := []float64{0.6, 0.4}
+	rowH := []float64{0.5, 0.5}
+
+	if err := db.SaveGridPreferences("projects", cols, rowH); err != nil {
+		t.Fatalf("SaveGridPreferences: %v", err)
+	}
+
+	gotCols, gotRows, err := db.LoadGridPreferences("projects")
+	if err != nil {
+		t.Fatalf("LoadGridPreferences: %v", err)
+	}
+	if len(gotCols) != 2 || len(gotRows) != 2 {
+		t.Fatalf("expected 2 cols and 2 rows, got %d and %d", len(gotCols), len(gotRows))
+	}
+	if gotCols[0] != 0.6 || gotCols[1] != 0.4 {
+		t.Errorf("cols mismatch: %v", gotCols)
+	}
+	if gotRows[0] != 0.5 || gotRows[1] != 0.5 {
+		t.Errorf("rows mismatch: %v", gotRows)
+	}
+}
+
+func TestGridPreferences_NotFound(t *testing.T) {
+	db := newTestDB(t)
+	cols, rowH, err := db.LoadGridPreferences("nonexistent")
+	if err != nil {
+		t.Fatalf("LoadGridPreferences: %v", err)
+	}
+	if cols != nil || rowH != nil {
+		t.Errorf("expected nil slices for missing key, got cols=%v rows=%v", cols, rowH)
+	}
+}
+
+func TestGridPreferences_Delete(t *testing.T) {
+	db := newTestDB(t)
+	_ = db.SaveGridPreferences("test-group", []float64{0.7, 0.3}, []float64{1.0})
+
+	if err := db.DeleteGridPreferences("test-group"); err != nil {
+		t.Fatalf("DeleteGridPreferences: %v", err)
+	}
+
+	cols, _, err := db.LoadGridPreferences("test-group")
+	if err != nil {
+		t.Fatalf("LoadGridPreferences after delete: %v", err)
+	}
+	if cols != nil {
+		t.Errorf("expected nil after delete, got %v", cols)
+	}
+}
+
+func TestGridPreferences_Upsert(t *testing.T) {
+	db := newTestDB(t)
+	_ = db.SaveGridPreferences("g1", []float64{0.5, 0.5}, []float64{1.0})
+	_ = db.SaveGridPreferences("g1", []float64{0.8, 0.2}, []float64{1.0})
+
+	cols, _, err := db.LoadGridPreferences("g1")
+	if err != nil {
+		t.Fatalf("LoadGridPreferences: %v", err)
+	}
+	if cols[0] != 0.8 {
+		t.Errorf("expected updated value 0.8, got %v", cols[0])
+	}
+}

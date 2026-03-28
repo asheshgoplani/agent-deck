@@ -124,8 +124,23 @@ type UserConfig struct {
 	// Display defines rendering and display settings
 	Display DisplaySettings `toml:"display"`
 
+	// Grid defines grid view popup settings
+	Grid GridSettings `toml:"grid"`
+
 	// Costs defines cost tracking and budget settings
 	Costs CostsSettings `toml:"costs"`
+}
+
+// GridSettings configures the grid popup triggered from tmux sessions.
+type GridSettings struct {
+	// PopupKey is the tmux prefix key that opens the grid popup (default: "V")
+	PopupKey string `toml:"popup_key"`
+	// PopupWidth is the tmux display-popup width (default: "80%")
+	PopupWidth string `toml:"popup_width"`
+	// PopupHeight is the tmux display-popup height (default: "70%")
+	PopupHeight string `toml:"popup_height"`
+	// PopupEnabled controls whether the keybinding is injected (default: true)
+	PopupEnabled *bool `toml:"popup_enabled"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -528,6 +543,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -622,6 +642,10 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1648,6 +1672,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1665,6 +1691,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
@@ -1942,6 +1970,42 @@ func GetMCPDef(name string) *MCPDef {
 		return &def
 	}
 	return nil
+}
+
+// GetGridPopupKey returns the tmux prefix key for the grid popup (default: "V").
+func GetGridPopupKey() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupKey != "" {
+		return config.Grid.PopupKey
+	}
+	return "V"
+}
+
+// GetGridPopupWidth returns the tmux display-popup width (default: "80%").
+func GetGridPopupWidth() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupWidth != "" {
+		return config.Grid.PopupWidth
+	}
+	return "80%"
+}
+
+// GetGridPopupHeight returns the tmux display-popup height (default: "70%").
+func GetGridPopupHeight() string {
+	config, _ := LoadUserConfig()
+	if config != nil && config.Grid.PopupHeight != "" {
+		return config.Grid.PopupHeight
+	}
+	return "70%"
+}
+
+// IsGridPopupEnabled returns whether the grid popup keybinding is enabled (default: true).
+func IsGridPopupEnabled() bool {
+	config, _ := LoadUserConfig()
+	if config == nil || config.Grid.PopupEnabled == nil {
+		return true
+	}
+	return *config.Grid.PopupEnabled
 }
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
