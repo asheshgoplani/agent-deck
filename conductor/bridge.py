@@ -16,6 +16,7 @@ Dependencies: pip3 install toml aiogram slack-bolt slack-sdk
 """
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -164,6 +165,12 @@ def get_conductor_names() -> list[str]:
     return [c["name"] for c in discover_conductors()]
 
 
+def get_default_conductor() -> dict | None:
+    """Get the first conductor (default target for messages)."""
+    conductors = discover_conductors()
+    return conductors[0] if conductors else None
+
+
 def get_unique_profiles() -> list[str]:
     """Get unique profile names from all conductors."""
     profiles = set()
@@ -232,6 +239,7 @@ def send_to_conductor(
     profile: str | None = None,
     wait_for_reply: bool = False,
     response_timeout: int = RESPONSE_TIMEOUT,
+    reply_callback=None,
 ) -> tuple[bool, str]:
     """Send a message to the conductor session.
 
@@ -239,8 +247,8 @@ def send_to_conductor(
 
     When wait_for_reply=False and the conductor is busy (running/active/starting),
     the message is queued in-memory and delivered automatically once the conductor
-    returns to idle/waiting state (see _drain_queue). This prevents message loss
-    during long-running tool calls.
+    returns to idle/waiting state (see _drain_queue). reply_callback, if provided,
+    is an async callable(response_text: str) invoked after drain delivery.
     """
     if not wait_for_reply:
         # For non-blocking sends (user messages), check if conductor is busy
@@ -250,7 +258,7 @@ def send_to_conductor(
             log.info(
                 "Conductor %s is busy (%s), queueing message", session, status,
             )
-            _enqueue_message(session, message, profile)
+            _enqueue_message(session, message, profile, reply_callback)
             return True, ""  # queued, not failed
 
         result = run_cli(
@@ -266,7 +274,7 @@ def send_to_conductor(
                     "Conductor %s became busy during send, queueing message",
                     session,
                 )
-                _enqueue_message(session, message, profile)
+                _enqueue_message(session, message, profile, reply_callback)
                 return True, ""
             log.error("Failed to send to conductor: %s", stderr)
             return False, ""
@@ -292,17 +300,27 @@ def send_to_conductor(
 # Message queue for busy conductors
 # ---------------------------------------------------------------------------
 
-# In-memory queue: {session_title: [(message, profile), ...]}
-_message_queue: dict[str, list[tuple[str, str | None]]] = {}
-_queue_lock = asyncio.Lock()
+# In-memory queue: {session_title: [(message, profile, reply_callback), ...]}
+# reply_callback is an optional async callable(response_text: str) that notifies
+# the originating user when the queued message is eventually delivered.
+_message_queue: dict[str, list[tuple[str, str | None, object]]] = {}
 _drain_task: asyncio.Task | None = None
 
 
-def _enqueue_message(session: str, message: str, profile: str | None) -> None:
-    """Add a message to the in-memory queue for a busy conductor."""
+def _enqueue_message(
+    session: str,
+    message: str,
+    profile: str | None,
+    reply_callback=None,
+) -> None:
+    """Add a message to the in-memory queue for a busy conductor.
+
+    reply_callback, if provided, is an async callable(response_text: str) that
+    will be invoked once the message is delivered and the conductor replies.
+    """
     if session not in _message_queue:
         _message_queue[session] = []
-    _message_queue[session].append((message, profile))
+    _message_queue[session].append((message, profile, reply_callback))
     log.info(
         "Queued message for %s (queue depth: %d)",
         session, len(_message_queue[session]),
@@ -314,7 +332,7 @@ def _ensure_drain_task() -> None:
     """Start the background drain task if it's not already running."""
     global _drain_task
     if _drain_task is None or _drain_task.done():
-        _drain_task = asyncio.ensure_future(_drain_queue())
+        _drain_task = asyncio.create_task(_drain_queue())
 
 
 async def _drain_queue() -> None:
@@ -340,8 +358,12 @@ async def _drain_queue() -> None:
                 _message_queue.pop(session, None)
                 continue
 
-            message, profile = items[0]
-            status = get_session_status(session, profile=profile)
+            message, profile, reply_callback = items[0]
+            loop = asyncio.get_event_loop()
+            status = await loop.run_in_executor(
+                None,
+                functools.partial(get_session_status, session, profile=profile),
+            )
 
             if status in ("running", "active", "starting"):
                 continue  # still busy, try next cycle
@@ -351,22 +373,42 @@ async def _drain_queue() -> None:
                     "Conductor %s in error state, dropping %d queued message(s)",
                     session, len(items),
                 )
-                _message_queue.pop(session, None)
+                dropped = _message_queue.pop(session, [])
+                for _msg, _prof, cb in dropped:
+                    if cb is not None:
+                        try:
+                            await cb(
+                                "[Queued message could not be delivered — conductor error.]"
+                            )
+                        except Exception as e:
+                            log.error("reply_callback error for %s: %s", session, e)
                 continue
 
-            # Conductor is ready — deliver the message
+            # Conductor is ready — deliver the message and wait for the response
             log.info(
                 "Conductor %s is %s, delivering queued message (%d remaining)",
                 session, status, len(items) - 1,
             )
-            result = run_cli(
-                "session", "send", session, message,
-                profile=profile, timeout=120,
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    run_cli,
+                    "session", "send", session, message,
+                    "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
+                    profile=profile,
+                    timeout=max(RESPONSE_TIMEOUT + 30, 60),
+                ),
             )
             if result.returncode == 0:
                 items.pop(0)
                 if not items:
                     _message_queue.pop(session, None)
+                if reply_callback is not None:
+                    try:
+                        text = result.stdout.strip() or "[No output from conductor.]"
+                        await reply_callback(text)
+                    except Exception as e:
+                        log.error("reply_callback error for %s: %s", session, e)
             else:
                 stderr = result.stderr.strip()
                 if "timeout" in stderr.lower() or "not ready" in stderr.lower():
@@ -382,6 +424,13 @@ async def _drain_queue() -> None:
                     items.pop(0)
                     if not items:
                         _message_queue.pop(session, None)
+                    if reply_callback is not None:
+                        try:
+                            await reply_callback(
+                                "[Queued message could not be delivered — conductor error.]"
+                            )
+                        except Exception as e:
+                            log.error("reply_callback error for %s: %s", session, e)
 
 
 def get_status_summary(profile: str | None = None) -> dict:
@@ -669,7 +718,7 @@ def create_telegram_bot(config: dict):
 
     bot = Bot(token=config["telegram"]["token"])
     dp = Dispatcher()
-    authorized_user = config["user_id"]
+    authorized_user = config["telegram"]["user_id"]
     profiles = config["profiles"]
     default_profile = profiles[0]
     bot_info = {"username": ""}
@@ -915,11 +964,22 @@ def create_telegram_bot(config: dict):
         log.info("User message -> [%s]: %s", target_profile, cleaned_msg[:100])
 
         if was_busy:
+            tg_bot = message.bot
+            tg_chat_id = message.chat.id
+            profile_tag_captured = profile_tag
+
+            async def _tg_reply(response_text: str):
+                header = f"{profile_tag_captured}Queued response:\n" if profile_tag_captured else "Queued response:\n"
+                html = md_to_tg_html(f"{header}{response_text}")
+                for chunk in split_message(html):
+                    await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
+
             ok, _ = send_to_conductor(
                 session_title,
                 cleaned_msg,
                 profile=target_profile,
                 wait_for_reply=False,
+                reply_callback=_tg_reply,
             )
             if not ok:
                 await message.answer(
@@ -927,11 +987,12 @@ def create_telegram_bot(config: dict):
                 )
                 return
             await message.answer(
-                f"{profile_tag}⏳ Conductor busy — message queued, will deliver when ready."
+                f"{profile_tag}⏳ Conductor busy — message queued, will reply here when done."
             )
             return
 
         # Conductor is free — send and wait for reply synchronously
+        await message.answer(f"{profile_tag}⏳")  # typing indicator (sent before blocking)
         ok, response = send_to_conductor(
             session_title,
             cleaned_msg,
@@ -945,8 +1006,6 @@ def create_telegram_bot(config: dict):
             )
             return
 
-        # Response is returned directly by `session send --wait`.
-        await message.answer(f"{profile_tag}...")  # typing indicator
         log.info("Conductor [%s] response: %s", target_profile, response[:100])
 
         # Convert to HTML first, then split to respect post-conversion length
@@ -1033,11 +1092,6 @@ def create_slack_app(config: dict):
             return False
         return True
 
-    def get_default_conductor() -> dict | None:
-        """Get the first conductor (default target for messages)."""
-        conductors = discover_conductors()
-        return conductors[0] if conductors else None
-
     async def _safe_say(say, **kwargs):
         """Wrapper around say() that catches network/API errors."""
         try:
@@ -1087,7 +1141,41 @@ def create_slack_app(config: dict):
         was_busy = conductor_status in ("running", "active", "starting")
 
         log.info("Slack message -> [%s]: %s", target["name"], cleaned_msg[:100])
-        if not send_to_conductor(session_title, cleaned_msg, profile=profile):
+
+        name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
+
+        if was_busy:
+            name_tag_captured = name_tag
+
+            async def _slack_reply(response_text: str):
+                for chunk in split_message(response_text, max_len=SLACK_MAX_LENGTH):
+                    prefixed = f"{name_tag_captured}{chunk}" if name_tag_captured else chunk
+                    await _safe_say(say, text=prefixed, thread_ts=thread_ts)
+
+            ok, _ = send_to_conductor(
+                session_title, cleaned_msg, profile=profile,
+                wait_for_reply=False, reply_callback=_slack_reply,
+            )
+            if not ok:
+                await _safe_say(
+                    say,
+                    text=f"[Failed to send message to conductor {target['name']}.]",
+                    thread_ts=thread_ts,
+                )
+                return
+            await _safe_say(
+                say,
+                text=f"{name_tag}⏳ Conductor busy — message queued, will reply here when done.",
+                thread_ts=thread_ts,
+            )
+            return
+
+        await _safe_say(say, text=f"{name_tag}⏳", thread_ts=thread_ts)  # sent before blocking
+        ok, response = send_to_conductor(
+            session_title, cleaned_msg, profile=profile,
+            wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
+        )
+        if not ok:
             await _safe_say(
                 say,
                 text=f"[Failed to send message to conductor {target['name']}.]",
@@ -1095,19 +1183,6 @@ def create_slack_app(config: dict):
             )
             return
 
-        name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
-
-        if was_busy:
-            await _safe_say(
-                say,
-                text=f"{name_tag}⏳ Conductor busy — message queued, will deliver when ready.",
-                thread_ts=thread_ts,
-            )
-            return
-
-        await _safe_say(say, text=f"{name_tag}...", thread_ts=thread_ts)
-
-        response = await wait_for_response(session_title, profile=profile)
         log.info("Conductor [%s] response: %s", target["name"], response[:100])
 
         for chunk in split_message(response, max_len=SLACK_MAX_LENGTH):
