@@ -140,6 +140,23 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
 
+#### Worktree Setup Script
+
+Gitignored files (`.env`, `.mcp.json`, etc.) aren't copied into new worktrees. To automate this, create a setup script at `.agent-deck/worktree-setup.sh` in your repo. Agent-deck runs it automatically after creating a worktree.
+
+```sh
+#!/bin/sh
+for f in .env .env.local .mcp.json; do
+    [ -f "$AGENT_DECK_REPO_ROOT/$f" ] && cp "$AGENT_DECK_REPO_ROOT/$f" "$AGENT_DECK_WORKTREE_PATH/$f"
+done
+```
+
+The script receives two environment variables:
+- `AGENT_DECK_REPO_ROOT` — path to the main repository
+- `AGENT_DECK_WORKTREE_PATH` — path to the new worktree
+
+The script runs via `sh -e` with a 60-second timeout. If it fails, the worktree is still created — you'll see a warning but the session proceeds normally.
+
 ### Docker Sandbox
 
 Run sessions inside isolated Docker containers. The project directory is bind-mounted read-write, so agents work on your code while the rest of the system stays protected.
