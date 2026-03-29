@@ -73,6 +73,12 @@
 
     state.menuOpen = next
     document.body.classList.toggle("menu-open", next)
+
+    // Record open timestamp so we can suppress spurious closes from
+    // viewport shifts (toolbar hide, keyboard mis-detection) on mobile.
+    if (next && changed) {
+      state.menuOpenedAt = Date.now()
+    }
     if (menuPanel) {
       const hidden = isSmallDisplay() ? !next : false
       menuPanel.setAttribute("aria-hidden", hidden ? "true" : "false")
@@ -86,25 +92,25 @@
       )
     }
 
-    if (next && changed && menuPanel) {
-      // Focus the first menu item (button) instead of the filter input.
-      // Focusing the input triggers the virtual keyboard on mobile, which
-      // fires a visualViewport resize that immediately closes the menu.
-      window.setTimeout(() => {
-        const target = menuPanel.querySelector(".menu-item")
-        if (target && typeof target.focus === "function") {
-          try {
-            target.focus({ preventScroll: true })
-          } catch (_err) {
-            target.focus()
-          }
-        }
-      }, 60)
+    if (next && changed) {
+      // On mobile, dismiss the virtual keyboard by blurring whatever is
+      // focused (often xterm.js's hidden textarea).  Without this, the
+      // keyboard stays up or reappears and the viewport-shift detection
+      // immediately closes the menu.
+      if (document.activeElement && document.activeElement !== document.body) {
+        document.activeElement.blur()
+      }
     }
   }
 
   function closeMenuForMobile() {
     if (!isSmallDisplay()) {
+      return
+    }
+    // Guard against spurious closes right after the menu was opened.
+    // On mobile (e.g. Galaxy Fold), opening the menu can trigger
+    // viewport shifts that are mis-detected as keyboard events.
+    if (Date.now() - (state.menuOpenedAt || 0) < 400) {
       return
     }
     setMenuOpen(false)
@@ -1617,6 +1623,11 @@
 
   if (menuBackdrop) {
     menuBackdrop.addEventListener("click", () => {
+      // Ignore taps that arrive within 300ms of the menu opening —
+      // on touch devices the same gesture can propagate to the backdrop.
+      if (Date.now() - (state.menuOpenedAt || 0) < 300) {
+        return
+      }
       setMenuOpen(false)
     })
   }
