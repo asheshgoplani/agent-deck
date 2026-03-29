@@ -155,13 +155,19 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := target.Kill(); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "KILL_ERROR", "failed to stop session: "+err.Error())
-		return
+	// Kill tmux session (ignore errors — it may already be stopped).
+	_ = target.Kill()
+
+	// Remove from instances list.
+	filtered := make([]*session.Instance, 0, len(instances)-1)
+	for _, inst := range instances {
+		if inst.ID != sessionID {
+			filtered = append(filtered, inst)
+		}
 	}
 
-	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
-	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+	groupTree := session.NewGroupTreeWithGroups(filtered, groupsData)
+	if err := storage.SaveWithGroups(filtered, groupTree); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "SAVE_ERROR", "failed to save session state")
 		return
 	}
