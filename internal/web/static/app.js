@@ -86,12 +86,18 @@
       )
     }
 
-    if (next && changed && menuFilter) {
+    if (next && changed && menuPanel) {
+      // Focus the first menu item (button) instead of the filter input.
+      // Focusing the input triggers the virtual keyboard on mobile, which
+      // fires a visualViewport resize that immediately closes the menu.
       window.setTimeout(() => {
-        try {
-          menuFilter.focus({ preventScroll: true })
-        } catch (_err) {
-          menuFilter.focus()
+        const target = menuPanel.querySelector(".menu-item")
+        if (target && typeof target.focus === "function") {
+          try {
+            target.focus({ preventScroll: true })
+          } catch (_err) {
+            target.focus()
+          }
         }
       }, 60)
     }
