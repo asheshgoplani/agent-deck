@@ -78,6 +78,7 @@ func (s *Server) handleQuickCreate(w http.ResponseWriter, r *http.Request) {
 	// Generate unique name and create the instance.
 	title := session.GenerateUniqueSessionName(instances, groupPath)
 	inst := session.NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool)
+	inst.Command = tool // e.g. "claude" — required for buildClaudeCommand to work
 
 	// Start the tmux session.
 	if err := inst.Start(); err != nil {
