@@ -1373,6 +1373,7 @@ func handleList(profile string, args []string) {
 			Tool          string    `json:"tool"`
 			Command       string    `json:"command,omitempty"`
 			Status        string    `json:"status"`
+			TmuxSession   string    `json:"tmux_session,omitempty"`
 			Profile       string    `json:"profile"`
 			CreatedAt     time.Time `json:"created_at"`
 			SSHHost       string    `json:"ssh_host,omitempty"`
@@ -1381,7 +1382,7 @@ func handleList(profile string, args []string) {
 		sessions := make([]sessionJSON, len(instances))
 		for i, inst := range instances {
 			_ = inst.UpdateStatus()
-			sessions[i] = sessionJSON{
+			sj := sessionJSON{
 				ID:            inst.ID,
 				Title:         inst.Title,
 				Path:          inst.ProjectPath,
@@ -1394,6 +1395,10 @@ func handleList(profile string, args []string) {
 				SSHHost:       inst.SSHHost,
 				SSHRemotePath: inst.SSHRemotePath,
 			}
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				sj.TmuxSession = tmuxSess.Name
+			}
+			sessions[i] = sj
 		}
 		output, err := json.MarshalIndent(sessions, "", "  ")
 		if err != nil {

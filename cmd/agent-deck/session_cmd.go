@@ -737,11 +737,8 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
-	if inst.Exists() {
-		tmuxSession := inst.GetTmuxSession()
-		if tmuxSession != nil {
-			jsonData["tmux_session"] = tmuxSession.Name
-		}
+	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
+		jsonData["tmux_session"] = tmuxSession.Name
 	}
 
 	// Build human-readable output
@@ -1897,6 +1894,10 @@ func handleSessionCurrent(profileArg string, args []string) {
 		"id":      instData.ID,
 		"path":    instData.ProjectPath,
 		"status":  status,
+	}
+
+	if instData.TmuxSession != "" {
+		jsonData["tmux_session"] = instData.TmuxSession
 	}
 
 	if instData.GroupPath != "" {
