@@ -984,7 +984,7 @@
     const stopBtn = document.createElement("button")
     stopBtn.type = "button"
     stopBtn.className = "session-action-btn"
-    stopBtn.textContent = "\uD83D\uDDD1"
+    stopBtn.textContent = "\u00D7"
     stopBtn.title = "Delete session"
     stopBtn.addEventListener("click", (e) => {
       e.stopPropagation()
