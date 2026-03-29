@@ -578,6 +578,47 @@
     renderTopBarState()
   }
 
+  async function apiPost(path, body) {
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+    const response = await fetch(apiPathWithToken(path), {
+      method: "POST",
+      headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error((err.error && err.error.message) || `request failed: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  async function quickCreateSession(groupPath) {
+    try {
+      await apiPost("/api/session/quick-create", { groupPath })
+      await loadMenu()
+    } catch (error) {
+      console.error("quick-create failed:", error)
+    }
+  }
+
+  async function stopSession(sessionId) {
+    try {
+      await apiPost(`/api/session/${sessionId}/stop`)
+      if (state.selectedSessionId === sessionId) {
+        state.selectedSessionId = null
+      }
+      await loadMenu()
+    } catch (error) {
+      console.error("stop-session failed:", error)
+    }
+  }
+
   async function loadMenu() {
     try {
       setConnectionState("idle", "loading menu")
@@ -887,10 +928,21 @@
     count.className = "group-count"
     count.textContent = `(${item.group.sessionCount || 0})`
 
+    const addBtn = document.createElement("button")
+    addBtn.type = "button"
+    addBtn.className = "group-action-btn"
+    addBtn.textContent = "+"
+    addBtn.title = "New session"
+    addBtn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      quickCreateSession(groupPath)
+    })
+
     row.appendChild(indent)
     row.appendChild(marker)
     row.appendChild(name)
     row.appendChild(count)
+    row.appendChild(addBtn)
     btn.appendChild(row)
     return btn
   }
@@ -925,10 +977,26 @@
     tool.className = "tool-badge"
     tool.textContent = session.tool || "shell"
 
+    const isRunning =
+      session.status === "running" ||
+      session.status === "waiting" ||
+      session.status === "starting"
+    const stopBtn = document.createElement("button")
+    stopBtn.type = "button"
+    stopBtn.className = "session-action-btn"
+    stopBtn.textContent = "\u25A0"
+    stopBtn.title = "Stop session"
+    stopBtn.hidden = !isRunning
+    stopBtn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      stopSession(session.id)
+    })
+
     row.appendChild(indent)
     row.appendChild(status)
     row.appendChild(title)
     row.appendChild(tool)
+    row.appendChild(stopBtn)
     btn.appendChild(row)
     return btn
   }

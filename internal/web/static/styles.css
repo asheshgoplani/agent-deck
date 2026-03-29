@@ -335,6 +335,50 @@ body {
   background: #dc2626;
 }
 
+.group-action-btn,
+.session-action-btn {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+
+.menu-item:hover .group-action-btn,
+.menu-item:hover .session-action-btn {
+  opacity: 1;
+}
+
+.group-action-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.session-action-btn:hover {
+  background: #dc2626;
+  color: #fff;
+  border-color: #dc2626;
+}
+
+@media (max-width: 900px) {
+  .group-action-btn,
+  .session-action-btn {
+    opacity: 1;
+  }
+}
+
 .menu-empty {
   padding: 14px;
   color: var(--muted);
