@@ -200,16 +200,28 @@ def run_cli(
     cmd += list(args)
     log.debug("CLI: %s", " ".join(cmd))
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+        # Use Popen + communicate(timeout=) so we have the proc object available
+        # when TimeoutExpired fires — subprocess.run() does NOT set exc.proc.
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,  # own process group → killpg kills grandchildren too
         )
-        return result
-    except subprocess.TimeoutExpired as exc:
-        log.warning("CLI timeout: %s", " ".join(cmd))
-        if exc.proc:
-            exc.proc.kill()
-            exc.proc.communicate()
-        return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            log.warning("CLI timeout: %s", " ".join(cmd))
+            try:
+                # Kill the entire process group so grandchildren (e.g. tmux send-keys)
+                # don't survive as orphans and jam the pane's input queue.
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()  # fallback: kill direct child only
+            proc.communicate()
+            return subprocess.CompletedProcess(cmd, 1, "", "timeout")
     except FileNotFoundError:
         log.error("agent-deck not found in PATH")
         return subprocess.CompletedProcess(cmd, 1, "", "not found")
@@ -1618,8 +1630,10 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
 
                 # Check if conductor is busy — skip heartbeat if so
                 # (heartbeats are periodic; no point queueing them)
-                conductor_status = get_session_status(
-                    session_title, profile=profile
+                loop = asyncio.get_running_loop()
+                conductor_status = await loop.run_in_executor(
+                    None,
+                    functools.partial(get_session_status, session_title, profile=profile),
                 )
                 if conductor_status in ("running", "active", "starting"):
                     log.info(
@@ -1628,13 +1642,19 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                     )
                     continue
 
-                # Send heartbeat to conductor
-                ok, response = send_to_conductor(
-                    session_title,
-                    heartbeat_msg,
-                    profile=profile,
-                    wait_for_reply=True,
-                    response_timeout=RESPONSE_TIMEOUT,
+                # Send heartbeat to conductor (wrapped in executor — blocks up to
+                # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
+                loop = asyncio.get_running_loop()
+                ok, response = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        send_to_conductor,
+                        session_title,
+                        heartbeat_msg,
+                        profile=profile,
+                        wait_for_reply=True,
+                        response_timeout=RESPONSE_TIMEOUT,
+                    ),
                 )
                 if not ok:
                     log.error(
