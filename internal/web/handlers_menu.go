@@ -48,6 +48,10 @@ func (s *Server) routeSessionAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionStop(w, r)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/start") {
+		s.handleSessionStart(w, r)
+		return
+	}
 	s.handleSessionByID(w, r)
 }
 

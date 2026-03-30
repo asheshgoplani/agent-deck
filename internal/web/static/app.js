@@ -607,6 +607,22 @@
     }
   }
 
+  async function startSession(sessionId) {
+    try {
+      await apiPost(`/api/session/${sessionId}/start`)
+      disconnectWS({ intentional: true })
+      state.wsSessionId = null
+      await loadMenu()
+      selectSession(sessionId, true)
+      const session = findSessionById(sessionId)
+      if (session) {
+        renderTerminal(session)
+      }
+    } catch (error) {
+      console.error("start-session failed:", error)
+    }
+  }
+
   async function stopSession(sessionId) {
     try {
       await apiPost(`/api/session/${sessionId}/stop`)
@@ -981,6 +997,11 @@
       session.status === "running" ||
       session.status === "waiting" ||
       session.status === "starting"
+    const isError =
+      session.status === "error" ||
+      session.status === "stopped" ||
+      session.status === "exited"
+
     const stopBtn = document.createElement("button")
     stopBtn.type = "button"
     stopBtn.className = "session-action-btn"
@@ -995,6 +1016,18 @@
     row.appendChild(status)
     row.appendChild(title)
     row.appendChild(tool)
+    if (isError) {
+      const startBtn = document.createElement("button")
+      startBtn.type = "button"
+      startBtn.className = "session-action-btn session-start-btn"
+      startBtn.textContent = "\u25B6"
+      startBtn.title = "Start session"
+      startBtn.addEventListener("click", (e) => {
+        e.stopPropagation()
+        startSession(session.id)
+      })
+      row.appendChild(startBtn)
+    }
     row.appendChild(stopBtn)
     btn.appendChild(row)
     return btn

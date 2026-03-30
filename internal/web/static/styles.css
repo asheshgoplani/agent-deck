@@ -372,6 +372,17 @@ body {
   border-color: #dc2626;
 }
 
+.session-start-btn {
+  margin-left: 4px;
+  font-size: 0.7rem;
+}
+
+.session-start-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 @media (max-width: 900px) {
   .group-action-btn,
   .session-action-btn {
