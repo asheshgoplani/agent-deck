@@ -110,7 +110,7 @@ func handleTry(profile string, args []string) {
 	}
 
 	// Create and start session
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -127,7 +127,7 @@ func handleTry(profile string, args []string) {
 				}
 				inst.PostStartSync(3 * time.Second)
 				// Save updated state with session ID
-				_ = saveSessionData(storage, instances)
+				_ = saveSessionData(storage, instances, groups)
 			}
 			out.Print(
 				fmt.Sprintf("Session: %s (%s)\nPath: %s\n", inst.Title, inst.ID[:8], exp.Path),
@@ -156,7 +156,7 @@ func handleTry(profile string, args []string) {
 	instances = append(instances, newInst)
 
 	// Save using helper (rebuilds group tree including "experiments" group from instance)
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -169,7 +169,7 @@ func handleTry(profile string, args []string) {
 
 	// Capture session ID and re-save (first save at line above was before Start)
 	newInst.PostStartSync(3 * time.Second)
-	_ = saveSessionData(storage, instances)
+	_ = saveSessionData(storage, instances, groups)
 
 	action := "Created"
 	if !created {
