@@ -6527,7 +6527,21 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		tool = sourceSession.Tool
 		command = sourceSession.Command
 		if len(sourceSession.ToolOptionsJSON) > 0 {
-			toolOptionsJSON = sourceSession.ToolOptionsJSON
+			// Inherit tool options but strip session-specific fields
+			// (resume_session_id, session_mode) so the new session starts
+			// fresh instead of resuming the source session's conversation.
+			var opts map[string]interface{}
+			if err := json.Unmarshal(sourceSession.ToolOptionsJSON, &opts); err == nil {
+				if inner, ok := opts["options"].(map[string]interface{}); ok {
+					delete(inner, "resume_session_id")
+					delete(inner, "session_mode")
+				}
+				if cleaned, err := json.Marshal(opts); err == nil {
+					toolOptionsJSON = cleaned
+				}
+			} else {
+				toolOptionsJSON = sourceSession.ToolOptionsJSON
+			}
 		}
 		if sourceSession.GeminiYoloMode != nil && *sourceSession.GeminiYoloMode {
 			geminiYoloMode = true
@@ -6552,7 +6566,20 @@ func (h *Home) quickCreateSession() tea.Cmd {
 			tool = mostRecent.Tool
 			command = mostRecent.Command
 			if len(mostRecent.ToolOptionsJSON) > 0 {
-				toolOptionsJSON = mostRecent.ToolOptionsJSON
+				// Strip session-specific fields so the new session starts
+				// fresh instead of resuming the most-recent session's conversation.
+				var opts map[string]interface{}
+				if err := json.Unmarshal(mostRecent.ToolOptionsJSON, &opts); err == nil {
+					if inner, ok := opts["options"].(map[string]interface{}); ok {
+						delete(inner, "resume_session_id")
+						delete(inner, "session_mode")
+					}
+					if cleaned, err := json.Marshal(opts); err == nil {
+						toolOptionsJSON = cleaned
+					}
+				} else {
+					toolOptionsJSON = mostRecent.ToolOptionsJSON
+				}
 			}
 			if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
 				geminiYoloMode = true
