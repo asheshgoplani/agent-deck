@@ -341,7 +341,7 @@ func handleLaunch(profile string, args []string) {
 	newInstance.PostStartSync(3 * time.Second)
 
 	// Save again with updated state (session ID, tmux name)
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

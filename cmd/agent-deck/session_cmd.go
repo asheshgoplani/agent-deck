@@ -150,7 +150,7 @@ func handleSessionStart(profile string, args []string) {
 	initialMessage := mergeFlags(*message, *messageShort)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -196,7 +196,7 @@ func handleSessionStart(profile string, args []string) {
 	inst.PostStartSync(3 * time.Second)
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -247,7 +247,7 @@ func handleSessionStop(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -283,7 +283,7 @@ func handleSessionStop(profile string, args []string) {
 	}
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -321,7 +321,7 @@ func handleSessionRestart(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -354,7 +354,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -982,10 +982,9 @@ func loadSessionData(profile string) (*session.Storage, []*session.Instance, []*
 	return storage, instances, groupsData, nil
 }
 
-// saveSessionData saves session data with groups
-func saveSessionData(storage *session.Storage, instances []*session.Instance) error {
-	// Rebuild group tree from instances
-	groupTree := session.NewGroupTree(instances)
+// saveSessionData saves session data with groups, preserving stored group metadata (sort_order).
+func saveSessionData(storage *session.Storage, instances []*session.Instance, groups []*session.GroupData) error {
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	return storage.SaveWithGroups(instances, groupTree)
 }
 
