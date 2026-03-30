@@ -3990,7 +3990,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// Fallback: recreate tmux session (for dead sessions or unknown ID)
-	i.tmuxSession = tmux.NewSession(i.Title, i.ProjectPath)
+	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
 	i.tmuxSession.InstanceID = i.ID // Pass instance ID for activity hooks
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 
