@@ -854,6 +854,12 @@ type TmuxSettings struct {
 	// Default: true (nil = use default true)
 	InjectStatusLine *bool `toml:"inject_status_line"`
 
+	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
+	// so the tmux server lives under the user's systemd manager instead of the
+	// current login session scope. This keeps tmux alive when an SSH session
+	// scope is torn down. Default: false.
+	LaunchInUserScope bool `toml:"launch_in_user_scope"`
+
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
@@ -865,6 +871,12 @@ func (t TmuxSettings) GetInjectStatusLine() bool {
 		return true
 	}
 	return *t.InjectStatusLine
+}
+
+// GetLaunchInUserScope returns whether new tmux servers should be launched
+// under the user's systemd manager, defaulting to false.
+func (t TmuxSettings) GetLaunchInUserScope() bool {
+	return t.LaunchInUserScope
 }
 
 // DockerSettings defines Docker sandbox configuration.
@@ -1732,6 +1744,10 @@ auto_cleanup = true
 # agent-deck stops mutating the global tmux notification bar / number key bindings
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
+# launch_in_user_scope starts new tmux servers with systemd-run --user --scope
+# so they are not tied to the current login session scope (useful for SSH/tmux).
+# Default: false
+# launch_in_user_scope = true
 # Override tmux options applied to every session (applied after defaults)
 # Options matching agent-deck's managed keys (status, status-style,
 # status-left-length, status-right, status-right-length) will cause agent-deck

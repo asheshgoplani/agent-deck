@@ -655,6 +655,11 @@ type Session struct {
 	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
 	RunCommandAsInitialProcess bool
 
+	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
+	// so the server is owned by the user's systemd manager instead of the current
+	// login session scope.
+	LaunchInUserScope bool
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -688,6 +693,51 @@ const (
 	envCacheTTL        = 30 * time.Second
 	startupStateWindow = 2 * time.Minute
 )
+
+func sanitizeSystemdUnitComponent(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "session"
+	}
+	if len(out) > 48 {
+		out = strings.Trim(out[:48], "-")
+		if out == "" {
+			return "session"
+		}
+	}
+	return out
+}
+
+func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
+	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
+	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
+	if startWithInitialProcess {
+		args = append(args, command)
+	}
+
+	if !s.LaunchInUserScope {
+		return "tmux", args
+	}
+
+	unitName := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
+	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitName, "tmux"}
+	scopeArgs = append(scopeArgs, args...)
+	return "systemd-run", scopeArgs
+}
 
 // invalidateCache clears the CapturePane cache.
 // MUST be called after any action that might change terminal content.
@@ -1184,27 +1234,28 @@ func (s *Session) Start(command string) error {
 	// Create new tmux session in detached mode.
 	// Sandbox sessions launch command as the pane process for dead-pane restart.
 	// Non-sandbox sessions keep the legacy shell+send flow.
-	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
-	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
-	if startWithInitialProcess {
-		args = append(args, command)
-	}
-	cmd := exec.Command("tmux", args...)
+	launcher, args := s.startCommandSpec(workDir, command)
+	cmd := exec.Command(launcher, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
-			statusLog.Warn("tmux_stale_socket_recovery_failed",
-				slog.String("session", s.Name),
-				slog.String("error", recoverErr.Error()),
-			)
-		} else if recovered {
-			statusLog.Warn("tmux_start_retry_after_socket_recovery",
-				slog.String("session", s.Name),
-			)
-			output, err = exec.Command("tmux", args...).CombinedOutput()
+		if launcher == "tmux" {
+			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
+				statusLog.Warn("tmux_stale_socket_recovery_failed",
+					slog.String("session", s.Name),
+					slog.String("error", recoverErr.Error()),
+				)
+			} else if recovered {
+				statusLog.Warn("tmux_start_retry_after_socket_recovery",
+					slog.String("session", s.Name),
+				)
+				output, err = exec.Command(launcher, args...).CombinedOutput()
+			}
 		}
 	}
 	if err != nil {
+		if launcher == "systemd-run" {
+			return fmt.Errorf("failed to create tmux session via systemd user scope: %w (output: %s)", err, string(output))
+		}
 		return fmt.Errorf("failed to create tmux session: %w (output: %s)", err, string(output))
 	}
 
@@ -1272,7 +1323,7 @@ func (s *Session) Start(command string) error {
 	// sending keys before the shell is ready causes them to be silently swallowed.
 	// Non-fatal best-effort guard: if the timeout expires, log a warning and continue
 	// anyway (degraded path, same as the behaviour before this guard was added).
-	if command != "" && !startWithInitialProcess {
+	if command != "" && !s.RunCommandAsInitialProcess {
 		paneReadyTimeout := 2 * time.Second
 		if platform.IsWSL() {
 			paneReadyTimeout = 5 * time.Second
@@ -1287,7 +1338,7 @@ func (s *Session) Start(command string) error {
 	}
 
 	// Legacy behavior for non-sandbox sessions: start shell first, then send command.
-	if command != "" && !startWithInitialProcess {
+	if command != "" && !s.RunCommandAsInitialProcess {
 		cmdToSend := command
 		// Commands containing bash-specific syntax must be wrapped for fish users.
 		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
