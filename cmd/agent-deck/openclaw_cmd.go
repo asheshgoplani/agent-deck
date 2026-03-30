@@ -32,6 +32,8 @@ func handleOpenClaw(profile string, args []string) {
 		handleOpenClawList(args[1:])
 	case "send":
 		handleOpenClawSend(args[1:])
+	case "pair":
+		handleOpenClawPair(args[1:])
 	case "help", "--help", "-h":
 		printOpenClawHelp()
 	default:
@@ -51,6 +53,7 @@ func printOpenClawHelp() {
 	fmt.Println("  status         Show gateway health and agent summary")
 	fmt.Println("  list           List agents from gateway")
 	fmt.Println("  send           Send a message to an agent")
+	fmt.Println("  pair           Pair this device with the gateway (required for full access)")
 	fmt.Println("  help           Show this help")
 	fmt.Println()
 	fmt.Println("Aliases: openclaw, oc")
@@ -443,6 +446,129 @@ func resolveAgentName(agent openclaw.AgentSummary) string {
 		return agent.Name
 	}
 	return agent.ID
+}
+
+// --- pair ---
+
+func handleOpenClawPair(args []string) {
+	fs := flag.NewFlagSet("openclaw pair", flag.ExitOnError)
+	showID := fs.Bool("id", false, "Show device ID only")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+
+	identity, err := openclaw.LoadOrCreateIdentity()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create device identity: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *showID {
+		fmt.Println(identity.DeviceID)
+		return
+	}
+
+	// Check if already paired
+	tokens, _ := openclaw.LoadDeviceTokens()
+	if tokens != nil && tokens.DeviceID == identity.DeviceID {
+		if ref, ok := tokens.Tokens["operator"]; ok && ref.Token != "" {
+			fmt.Printf("Device already paired (id: %s...%s)\n", identity.DeviceID[:8], identity.DeviceID[len(identity.DeviceID)-8:])
+			fmt.Println("Testing connection with device auth...")
+
+			cfg := loadOpenClawConfig()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+			if err := client.Connect(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
+				fmt.Println("Try: agent-deck openclaw pair --force to re-pair")
+				os.Exit(1)
+			}
+			defer client.Close()
+
+			hello := client.Hello()
+			if hello.Auth != nil && len(hello.Auth.Scopes) > 0 {
+				fmt.Printf("Scopes: %s\n", strings.Join(hello.Auth.Scopes, ", "))
+				fmt.Println("Device pairing is working.")
+			} else {
+				fmt.Println("Connected but no scopes granted. Try re-pairing.")
+			}
+			return
+		}
+	}
+
+	cfg := loadOpenClawConfig()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := openclaw.NewClient(cfg.GatewayURL, cfg.Password)
+	if err := client.Connect(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to connect: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	rawPub, _ := openclaw.RawPublicKeyBase64URL(identity.PublicKeyPEM)
+
+	pairParams := map[string]any{
+		"deviceId":     identity.DeviceID,
+		"publicKey":    rawPub,
+		"displayName":  fmt.Sprintf("Agent Deck (%s)", "darwin"),
+		"platform":     "darwin",
+		"deviceFamily": "mac",
+		"clientId":     "gateway-client",
+		"clientMode":   "backend",
+		"role":         "operator",
+		"roles":        []string{"operator"},
+		"scopes":       []string{"operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"},
+		"silent":       false,
+	}
+
+	fmt.Printf("Device ID: %s\n", identity.DeviceID)
+	fmt.Println("Requesting pairing...")
+
+	payload, err := client.Request(ctx, "device.pair.request", pairParams)
+	if err != nil {
+		if strings.Contains(err.Error(), "already paired") {
+			fmt.Println("Device is already paired with the gateway.")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Pairing request failed: %v\n", err)
+		fmt.Println()
+		fmt.Println("Approve this device on the gateway:")
+		fmt.Printf("  ssh openclaw \"openclaw device approve %s\"\n", identity.DeviceID[:12])
+		os.Exit(1)
+	}
+
+	var pairResult struct {
+		RequestID string `json:"requestId"`
+		Device    *struct {
+			DeviceID string `json:"deviceId"`
+			Tokens   map[string]struct {
+				Token  string   `json:"token"`
+				Role   string   `json:"role"`
+				Scopes []string `json:"scopes"`
+			} `json:"tokens"`
+		} `json:"device"`
+	}
+	if err := json.Unmarshal(payload, &pairResult); err == nil && pairResult.Device != nil && pairResult.Device.Tokens != nil {
+		for role, tokenInfo := range pairResult.Device.Tokens {
+			_ = openclaw.SaveDeviceToken(identity.DeviceID, role, tokenInfo.Token, tokenInfo.Scopes)
+		}
+		fmt.Println("Paired successfully!")
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Pairing request sent. Approve on the gateway:")
+	if pairResult.RequestID != "" {
+		fmt.Printf("  ssh openclaw \"openclaw device approve %s\"\n", pairResult.RequestID)
+	} else {
+		fmt.Printf("  ssh openclaw \"openclaw device approve %s\"\n", identity.DeviceID[:12])
+	}
+	fmt.Println()
+	fmt.Println("After approving, run: agent-deck openclaw status")
 }
 
 func formatDuration(d time.Duration) string {

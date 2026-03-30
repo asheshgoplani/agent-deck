@@ -97,10 +97,8 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("challenge: %w", err)
 	}
 
-	_ = challenge // nonce received but not used in password auth
-
-	// Step 2: Send connect request
-	helloOk, err := c.sendConnect(ctx)
+	// Step 2: Send connect request with device identity
+	helloOk, err := c.sendConnect(ctx, challenge.Nonce)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("connect: %w", err)
@@ -109,10 +107,25 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.hello = helloOk
 	c.backoff = initialBackoff // reset on successful connect
 
+	// Persist device token if the gateway issued one
+	if helloOk.Auth != nil && helloOk.Auth.DeviceToken != "" {
+		if identity, err := LoadOrCreateIdentity(); err == nil {
+			_ = SaveDeviceToken(identity.DeviceID, helloOk.Auth.Role, helloOk.Auth.DeviceToken, helloOk.Auth.Scopes)
+		}
+	}
+
+	authRole := ""
+	var authScopes []string
+	if helloOk.Auth != nil {
+		authRole = helloOk.Auth.Role
+		authScopes = helloOk.Auth.Scopes
+	}
 	clientLog.Info("connected",
 		slog.String("server_version", helloOk.Server.Version),
 		slog.String("conn_id", helloOk.Server.ConnID),
 		slog.Int("protocol", helloOk.Protocol),
+		slog.String("auth_role", authRole),
+		slog.Any("auth_scopes", authScopes),
 	)
 
 	// Start read loop
@@ -320,27 +333,52 @@ func (c *Client) waitForChallenge(ctx context.Context) (*ChallengePayload, error
 	return &challenge, nil
 }
 
-func (c *Client) sendConnect(ctx context.Context) (*HelloOk, error) {
+func (c *Client) sendConnect(ctx context.Context, nonce string) (*HelloOk, error) {
+	scopes := []string{"operator.admin", "operator.read", "operator.write", "operator.approvals", "operator.pairing"}
+
+	params := ConnectParams{
+		MinProtocol: ProtocolVersion,
+		MaxProtocol: ProtocolVersion,
+		Client: ClientInfo{
+			ID:       clientID,
+			Version:  clientVersion,
+			Platform: runtime.GOOS,
+			Mode:     clientMode,
+		},
+		Role:   "operator",
+		Scopes: scopes,
+		Auth: &ConnectAuth{
+			Token:    c.password,
+			Password: c.password,
+		},
+	}
+
+	// Attach device identity if available (enables full scoped access)
+	identity, err := LoadOrCreateIdentity()
+	if err != nil {
+		clientLog.Warn("device_identity_unavailable", slog.String("error", err.Error()))
+	} else {
+		device, err := BuildDeviceConnect(identity, nonce, scopes, runtime.GOOS, "", c.password)
+		if err != nil {
+			clientLog.Warn("device_connect_build_failed", slog.String("error", err.Error()))
+		} else {
+			params.Device = device
+			// Include device token in auth if we have one
+			tokens, err := LoadDeviceTokens()
+			if err == nil && tokens.DeviceID == identity.DeviceID {
+				if ref, ok := tokens.Tokens["operator"]; ok {
+					params.Auth.DeviceToken = ref.Token
+				}
+			}
+		}
+	}
+
 	id := uuid.New().String()
 	frame := RequestFrame{
 		Type:   FrameTypeRequest,
 		ID:     id,
 		Method: "connect",
-		Params: ConnectParams{
-			MinProtocol: ProtocolVersion,
-			MaxProtocol: ProtocolVersion,
-			Client: ClientInfo{
-				ID:       clientID,
-				Version:  clientVersion,
-				Platform: runtime.GOOS,
-				Mode:     clientMode,
-			},
-			Role:   "operator",
-			Scopes: []string{"operator.admin"},
-			Auth: &ConnectAuth{
-				Password: c.password,
-			},
-		},
+		Params: params,
 	}
 
 	if err := c.writeJSON(frame); err != nil {
