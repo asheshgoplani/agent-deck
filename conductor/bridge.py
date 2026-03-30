@@ -243,6 +243,10 @@ def get_session_output(session: str, profile: str | None = None) -> str:
     return result.stdout.strip()
 
 
+# Async callable type for reply notifications: (response_text: str) -> None
+ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
+
+
 def send_to_conductor(
     session: str,
     message: str,
@@ -320,9 +324,6 @@ def send_to_conductor(
 # ---------------------------------------------------------------------------
 # Message queue for busy conductors
 # ---------------------------------------------------------------------------
-
-# Async callable type for reply notifications: (response_text: str) -> None
-ReplyCallback = Callable[[str], Coroutine[Any, Any, None]]
 
 # Per-session max depth — prevents unbounded memory growth when conductor is stuck.
 MAX_QUEUE_DEPTH = 20
