@@ -780,8 +780,9 @@ def create_telegram_bot(config: dict):
     bot = Bot(token=config["telegram"]["token"])
     dp = Dispatcher()
     authorized_user = config["telegram"]["user_id"]
-    profiles = config["profiles"]
-    default_profile = profiles[0]
+    profiles = get_unique_profiles()
+    default_conductor = get_default_conductor()
+    default_profile = default_conductor["profile"] if default_conductor else (profiles[0] if profiles else "default")
     bot_info = {"username": ""}
 
     async def ensure_bot_info(bot_instance: Bot):
