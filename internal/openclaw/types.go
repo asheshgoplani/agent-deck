@@ -76,15 +76,16 @@ type ChallengePayload struct {
 
 // ConnectParams are sent in the "connect" request.
 type ConnectParams struct {
-	MinProtocol int          `json:"minProtocol"`
-	MaxProtocol int          `json:"maxProtocol"`
-	Client      ClientInfo   `json:"client"`
-	Caps        []string     `json:"caps,omitempty"`
-	Role        string       `json:"role,omitempty"`
-	Scopes      []string     `json:"scopes,omitempty"`
-	Auth        *ConnectAuth `json:"auth,omitempty"`
-	Locale      string       `json:"locale,omitempty"`
-	UserAgent   string       `json:"userAgent,omitempty"`
+	MinProtocol int            `json:"minProtocol"`
+	MaxProtocol int            `json:"maxProtocol"`
+	Client      ClientInfo     `json:"client"`
+	Caps        []string       `json:"caps,omitempty"`
+	Role        string         `json:"role,omitempty"`
+	Scopes      []string       `json:"scopes,omitempty"`
+	Auth        *ConnectAuth   `json:"auth,omitempty"`
+	Device      *DeviceConnect `json:"device,omitempty"`
+	Locale      string         `json:"locale,omitempty"`
+	UserAgent   string         `json:"userAgent,omitempty"`
 }
 
 // ClientInfo identifies this client to the gateway.
