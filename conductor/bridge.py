@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -116,13 +117,28 @@ def run_cli(
     cmd += list(args)
     log.debug("CLI: %s", " ".join(cmd))
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout
+        # Use Popen + communicate(timeout=) so we have the proc object available
+        # when TimeoutExpired fires — subprocess.run() does NOT set exc.proc.
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,  # own process group → killpg kills grandchildren too
         )
-        return result
-    except subprocess.TimeoutExpired:
-        log.warning("CLI timeout: %s", " ".join(cmd))
-        return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            log.warning("CLI timeout: %s", " ".join(cmd))
+            try:
+                # Kill the entire process group so grandchildren (e.g. tmux send-keys)
+                # don't survive as orphans and jam the pane's input queue.
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()  # fallback: kill direct child only
+            proc.communicate()
+            return subprocess.CompletedProcess(cmd, 1, "", "timeout")
     except FileNotFoundError:
         log.error("agent-deck not found in PATH")
         return subprocess.CompletedProcess(cmd, 1, "", "not found")
