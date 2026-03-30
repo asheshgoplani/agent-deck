@@ -1012,3 +1012,51 @@ inject_status_line = true
 		t.Error("GetInjectStatusLine should be true when set to true")
 	}
 }
+
+func TestGetTmuxSettings_LaunchInUserScope_Default(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if settings.GetLaunchInUserScope() {
+		t.Error("GetLaunchInUserScope should default to false when not set")
+	}
+}
+
+func TestGetTmuxSettings_LaunchInUserScope_True(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[tmux]
+launch_in_user_scope = true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if !settings.GetLaunchInUserScope() {
+		t.Error("GetLaunchInUserScope should be true when set to true")
+	}
+}

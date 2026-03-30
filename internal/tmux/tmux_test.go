@@ -2685,3 +2685,29 @@ func TestBuildStatusBarArgs_InjectDisabled(t *testing.T) {
 	args := s.buildStatusBarArgs()
 	assert.Nil(t, args, "args should be nil when injectStatusLine is false")
 }
+
+func TestStartCommandSpec_Default(t *testing.T) {
+	s := &Session{
+		Name:    "agentdeck_test-session_1234abcd",
+		WorkDir: "/tmp/project",
+	}
+
+	launcher, args := s.startCommandSpec("/tmp/project", "")
+	assert.Equal(t, "tmux", launcher)
+	assert.Equal(t, []string{"new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args)
+}
+
+func TestStartCommandSpec_UserScope(t *testing.T) {
+	s := &Session{
+		Name:              "agentdeck_test-session_1234abcd",
+		WorkDir:           "/tmp/project",
+		LaunchInUserScope: true,
+	}
+
+	launcher, args := s.startCommandSpec("/tmp/project", "")
+	require.Equal(t, "systemd-run", launcher)
+	require.GreaterOrEqual(t, len(args), 8)
+	assert.Equal(t, []string{"--user", "--scope", "--quiet", "--collect", "--unit"}, args[:5])
+	assert.Equal(t, "agentdeck-tmux-agentdeck-test-session-1234abcd", args[5])
+	assert.Equal(t, []string{"tmux", "new-session", "-d", "-s", "agentdeck_test-session_1234abcd", "-c", "/tmp/project"}, args[6:])
+}
