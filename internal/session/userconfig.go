@@ -293,6 +293,15 @@ type UpdateSettings struct {
 	// NotifyInCLI shows update notification in CLI commands (not just TUI)
 	// Default: true
 	NotifyInCLI bool `toml:"notify_in_cli"`
+
+	// SourceDir is the absolute path to a local git checkout. When set,
+	// updates pull and build from source instead of downloading release
+	// binaries. Leave empty to use the default release-based updates.
+	SourceDir string `toml:"source_dir"`
+
+	// SourceRef is the remote tracking ref to follow (e.g. "origin/main").
+	// Default: "origin/main"
+	SourceRef string `toml:"source_ref"`
 }
 
 // PreviewSettings defines preview pane configuration
@@ -1422,6 +1431,9 @@ func GetUpdateSettings() UpdateSettings {
 	}
 	if settings.CheckIntervalHours <= 0 {
 		settings.CheckIntervalHours = 24
+	}
+	if settings.SourceRef == "" {
+		settings.SourceRef = "origin/main"
 	}
 
 	return settings

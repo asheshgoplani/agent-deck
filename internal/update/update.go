@@ -234,9 +234,19 @@ func CompareVersions(v1, v2 string) int {
 	return 0
 }
 
-// CheckForUpdate checks if a new version is available
-// Uses cache to avoid hitting GitHub API too frequently
+// CheckForUpdate checks if a new version is available.
+// When source_dir is set in config, compares local vs remote git HEAD;
+// otherwise checks GitHub releases.
 func CheckForUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error) {
+	settings := session.GetUpdateSettings()
+	if settings.SourceDir != "" {
+		return checkForSourceUpdate(currentVersion, forceCheck, settings)
+	}
+	return checkForReleaseUpdate(currentVersion, forceCheck)
+}
+
+// checkForReleaseUpdate checks GitHub releases for a newer version.
+func checkForReleaseUpdate(currentVersion string, forceCheck bool) (*UpdateInfo, error) {
 	info := &UpdateInfo{
 		Available:      false,
 		CurrentVersion: currentVersion,
@@ -301,8 +311,19 @@ func CheckForUpdateAsync(currentVersion string) <-chan *UpdateInfo {
 	return ch
 }
 
-// PerformUpdate downloads and installs the latest version
+// PerformUpdate installs the latest version. When source_dir is set in config,
+// it pulls and builds from a local git checkout; otherwise it downloads a
+// pre-built release binary.
 func PerformUpdate(downloadURL string) error {
+	settings := session.GetUpdateSettings()
+	if settings.SourceDir != "" {
+		return performSourceUpdate(settings)
+	}
+	return performReleaseUpdate(downloadURL)
+}
+
+// performReleaseUpdate downloads and installs a pre-built release binary.
+func performReleaseUpdate(downloadURL string) error {
 	if downloadURL == "" {
 		return fmt.Errorf("no download URL available for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
@@ -374,7 +395,7 @@ func PerformUpdate(downloadURL string) error {
 	// Remove old binary
 	os.Remove(oldBinaryPath)
 
-	fmt.Println("✓ Update complete!")
+	fmt.Println("Update complete!")
 	return nil
 }
 

@@ -33,6 +33,17 @@ import (
 
 const Version = "0.27.5"
 
+// Commit is the git commit hash, injected at build time via ldflags.
+var Commit string
+
+// VersionString returns the version with commit hash if available.
+func VersionString() string {
+	if Commit != "" {
+		return Version + " (" + Commit + ")"
+	}
+	return Version
+}
+
 // Table column widths for list command output
 const (
 	tableColTitle     = 20
@@ -198,7 +209,7 @@ func main() {
 	if len(args) > 0 {
 		switch args[0] {
 		case "version", "--version", "-v":
-			fmt.Printf("Agent Deck v%s\n", Version)
+			fmt.Printf("Agent Deck v%s\n", VersionString())
 			return
 		case "help", "--help", "-h":
 			printHelp()
@@ -313,6 +324,7 @@ func main() {
 
 	// Set version for UI update checking
 	ui.SetVersion(Version)
+	ui.SetCommit(Commit)
 
 	// Initialize theme from config (resolves "system" to actual dark/light)
 	theme := session.ResolveTheme()
@@ -2101,7 +2113,7 @@ func handleUpdate(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Agent Deck v%s\n", Version)
+	fmt.Printf("Agent Deck v%s\n", VersionString())
 	fmt.Println("Checking for updates...")
 
 	// Always force check when user explicitly runs 'update' command
@@ -2118,7 +2130,9 @@ func handleUpdate(args []string) {
 	}
 
 	fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
-	fmt.Printf("  Release: %s\n", info.ReleaseURL)
+	if info.ReleaseURL != "" {
+		fmt.Printf("  %s\n", info.ReleaseURL)
+	}
 
 	// Fetch and display changelog
 	displayChangelog(info.CurrentVersion, info.LatestVersion)
@@ -2261,7 +2275,7 @@ func drainStdin() {
 }
 
 func printHelp() {
-	fmt.Printf("Agent Deck v%s\n", Version)
+	fmt.Printf("Agent Deck v%s\n", VersionString())
 	fmt.Println("Terminal session manager for AI coding agents")
 	fmt.Println()
 	fmt.Println("Usage: agent-deck [-p profile] [command]")
