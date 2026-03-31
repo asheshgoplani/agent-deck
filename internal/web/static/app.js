@@ -6,6 +6,7 @@
   const menuBackdrop = document.getElementById("menu-backdrop")
   const pushTools = document.getElementById("push-tools")
   const pushToggle = document.getElementById("push-toggle")
+  const restartAllBtn = document.getElementById("restart-all-btn")
   const pushStatus = document.getElementById("push-status")
   const metaState = document.getElementById("meta-state")
   const terminalRoot = document.getElementById("terminal-root")
@@ -607,6 +608,16 @@
     }
   }
 
+  async function restartAllSessions() {
+    try {
+      const result = await apiPost("/api/session/restart-all")
+      console.log(`restart-all: ${result.restarted} restarted, ${result.failed} failed`)
+      await loadMenu()
+    } catch (error) {
+      console.error("restart-all failed:", error)
+    }
+  }
+
   async function startSession(sessionId) {
     try {
       await apiPost(`/api/session/${sessionId}/start`)
@@ -907,6 +918,20 @@
 
     menuRoot.innerHTML = ""
     menuRoot.appendChild(fragment)
+
+    // Show "Restart All" button when there are error sessions
+    const hasErrorSessions = snapshot.items.some(
+      (i) =>
+        i.type === "session" &&
+        i.session &&
+        (i.session.status === "error" ||
+          i.session.status === "stopped" ||
+          i.session.status === "exited"),
+    )
+    const menuActions = document.getElementById("menu-actions")
+    if (menuActions) {
+      menuActions.hidden = !hasErrorSessions
+    }
 
     const selected = findSessionById(state.selectedSessionId)
     renderTopBarState()
@@ -1714,6 +1739,12 @@
     state.filter = event.target.value || ""
     renderMenu()
   })
+
+  if (restartAllBtn) {
+    restartAllBtn.addEventListener("click", () => {
+      restartAllSessions()
+    })
+  }
 
   if (menuToggle) {
     menuToggle.addEventListener("click", () => {

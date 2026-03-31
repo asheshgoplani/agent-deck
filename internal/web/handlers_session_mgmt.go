@@ -173,6 +173,69 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stopResponse{OK: true})
 }
 
+type restartAllResponse struct {
+	Restarted int      `json:"restarted"`
+	Failed    int      `json:"failed"`
+	IDs       []string `json:"ids"`
+}
+
+// handleRestartAll restarts all sessions that are in error/stopped/exited state.
+func (s *Server) handleRestartAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	if s.cfg.ReadOnly {
+		writeAPIError(w, http.StatusForbidden, "READ_ONLY", "session management is disabled in read-only mode")
+		return
+	}
+
+	storage, err := session.NewStorageWithProfile(s.cfg.Profile)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "STORAGE_ERROR", "failed to open storage")
+		return
+	}
+	defer storage.Close()
+
+	instances, groupsData, err := storage.LoadWithGroups()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "LOAD_ERROR", "failed to load sessions")
+		return
+	}
+
+	// Refresh status from tmux before filtering
+	for _, inst := range instances {
+		_ = inst.UpdateStatus()
+	}
+
+	resp := restartAllResponse{}
+	for _, inst := range instances {
+		st := inst.Status
+		if st != session.StatusRunning && st != session.StatusStarting {
+			if err := inst.Restart(); err != nil {
+				resp.Failed++
+			} else {
+				resp.Restarted++
+				resp.IDs = append(resp.IDs, inst.ID)
+			}
+		}
+	}
+
+	session.UpdateClaudeSessionsWithDedup(instances)
+	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SAVE_ERROR", "failed to save session state")
+		return
+	}
+
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleSessionStop stops a running session by killing its tmux session.
 func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

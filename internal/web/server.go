@@ -97,6 +97,7 @@ func NewServer(cfg Config) *Server {
 	})
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/quick-create", s.handleQuickCreate)
+	mux.HandleFunc("/api/session/restart-all", s.handleRestartAll)
 	mux.HandleFunc("/api/session/", s.routeSessionAPI)
 	mux.HandleFunc("/api/push/config", s.handlePushConfig)
 	mux.HandleFunc("/api/push/subscribe", s.handlePushSubscribe)

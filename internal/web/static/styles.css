@@ -383,6 +383,27 @@ body {
   border-color: var(--accent);
 }
 
+.menu-actions {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.restart-all-btn {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+}
+
+.restart-all-btn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 @media (max-width: 900px) {
   .group-action-btn,
   .session-action-btn {
