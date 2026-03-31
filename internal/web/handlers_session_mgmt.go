@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -71,6 +73,15 @@ func (s *Server) handleQuickCreate(w http.ResponseWriter, r *http.Request) {
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if gp := groupTree.DefaultPathForGroup(groupPath); gp != "" {
 		projectPath = gp
+	}
+	// Fallback: infer from group name (last segment) as ~/name
+	if projectPath == "" {
+		parts := strings.Split(groupPath, "/")
+		groupName := parts[len(parts)-1]
+		candidate := filepath.Join(os.Getenv("HOME"), groupName)
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			projectPath = candidate
+		}
 	}
 	if projectPath == "" {
 		projectPath = "/tmp"
@@ -291,6 +302,18 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before deleting, check if this is the last session in the group.
+	// If so, preserve its ProjectPath as the group's DefaultPath so that
+	// new sessions created via + inherit the correct workspace.
+	targetGroup := target.GroupPath
+	targetPath := target.ProjectPath
+	remainingInGroup := 0
+	for _, inst := range instances {
+		if inst.ID != sessionID && inst.GroupPath == targetGroup {
+			remainingInGroup++
+		}
+	}
+
 	// Kill tmux session (ignore errors — it may already be stopped).
 	_ = target.Kill()
 
@@ -303,6 +326,11 @@ func (s *Server) handleSessionStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	groupTree := session.NewGroupTreeWithGroups(filtered, groupsData)
+
+	// Persist project path when last session in group is deleted
+	if remainingInGroup == 0 && targetPath != "" && targetPath != "/tmp" {
+		groupTree.SetDefaultPathForGroup(targetGroup, targetPath)
+	}
 	if err := storage.SaveWithGroups(filtered, groupTree); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "SAVE_ERROR", "failed to save session state")
 		return
