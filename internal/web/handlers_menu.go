@@ -42,6 +42,19 @@ func (s *Server) handleMenu(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
+// routeSessionAPI dispatches /api/session/* requests to the appropriate handler.
+func (s *Server) routeSessionAPI(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/stop") {
+		s.handleSessionStop(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/start") {
+		s.handleSessionStart(w, r)
+		return
+	}
+	s.handleSessionByID(w, r)
+}
+
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
