@@ -66,10 +66,11 @@ func (s *Server) handleQuickCreate(w http.ResponseWriter, r *http.Request) {
 	if dt := session.GetDefaultTool(); dt != "" {
 		tool = dt
 	}
-	for _, inst := range instances {
-		if inst.GroupPath == groupPath && inst.ProjectPath != "" {
-			projectPath = inst.ProjectPath
-		}
+
+	// Use group tree to resolve default path (checks DefaultPath, then most recent session)
+	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	if gp := groupTree.DefaultPathForGroup(groupPath); gp != "" {
+		projectPath = gp
 	}
 	if projectPath == "" {
 		projectPath = "/tmp"
@@ -88,7 +89,7 @@ func (s *Server) handleQuickCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Persist.
 	instances = append(instances, inst)
-	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	groupTree = session.NewGroupTreeWithGroups(instances, groupsData)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "SAVE_ERROR", "failed to save session")
 		return
