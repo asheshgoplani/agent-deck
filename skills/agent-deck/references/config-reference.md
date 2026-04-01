@@ -57,6 +57,7 @@ Claude Code integration settings.
 ```toml
 [claude]
 config_dir = "~/.claude"           # Path to Claude config directory
+use_happy = false                  # Launch Claude via happy
 dangerous_mode = true              # Enable --dangerously-skip-permissions
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
 env_file = "~/.claude.env"         # .env file specific to Claude sessions
@@ -69,6 +70,7 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
+| `use_happy` | bool | `false` | Launch built-in Claude sessions via `happy`. Ignored when `[claude].command` is set to a custom alias/command. |
 | `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `allow_dangerous_mode`. |
 | `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` is true. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
@@ -117,11 +119,13 @@ Codex CLI integration settings.
 ```toml
 [codex]
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
+use_happy = false  # Launch Codex via happy codex
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+| `use_happy` | bool | `false` | Launch built-in Codex sessions via `happy codex`. Can be overridden per-session. |
 
 ## [docker] Section
 
@@ -412,6 +416,7 @@ ignore_missing_env_files = true
 
 [claude]
 config_dir = "~/.claude"
+use_happy = false
 dangerous_mode = true
 env_file = "~/.claude.env"
 
@@ -420,6 +425,7 @@ config_dir = "~/.claude-work"
 
 [codex]
 yolo_mode = false
+use_happy = false
 
 [docker]
 default_enabled = false

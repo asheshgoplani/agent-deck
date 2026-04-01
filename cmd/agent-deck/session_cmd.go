@@ -106,12 +106,14 @@ func printSessionHelp() {
 	fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 	fmt.Println("  claude-session-id  Claude conversation ID (for fork/resume)")
 	fmt.Println("  gemini-session-id  Gemini conversation ID (for resume)")
+	fmt.Println("  add-path           Add a repository to a multi-repo session")
 	fmt.Println()
 	fmt.Println("Set examples:")
 	fmt.Println("  agent-deck session set my-project title \"New Title\"")
 	fmt.Println("  agent-deck session set my-project claude-session-id \"abc123-def456\"")
 	fmt.Println("  agent-deck session set my-project tool claude")
 	fmt.Println("  agent-deck session set my-project wrapper \"nvim +'terminal {command}'\"")
+	fmt.Println("  agent-deck session set my-project add-path /path/to/another-repo")
 }
 
 // handleSessionStart starts a session's tmux process
@@ -383,8 +385,8 @@ func handleSessionFork(profile string, args []string) {
 	groupShort := fs.String("g", "", "Group for forked session (short)")
 	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	newBranch := fs.Bool("b", false, "Create new branch if needed (reuse existing branch when present)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch if needed (reuse existing branch when present)")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -472,7 +474,7 @@ func handleSessionFork(profile string, args []string) {
 	if *worktreeBranchLong != "" {
 		wtBranch = *worktreeBranchLong
 	}
-	createNewBranch := *newBranch || *newBranchLong
+	_ = *newBranch || *newBranchLong
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
@@ -487,8 +489,8 @@ func handleSessionFork(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
-			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
+		if err := git.ValidateBranchName(wtBranch); err != nil {
+			out.Error(fmt.Sprintf("invalid branch name: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -840,6 +842,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
+		fmt.Println("  add-path           Add a repository to a multi-repo session")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -875,12 +878,13 @@ func handleSessionSet(profile string, args []string) {
 		"wrapper":           true,
 		"claude-session-id": true,
 		"gemini-session-id": true,
+		"add-path":          true,
 	}
 
 	if !validFields[field] {
 		out.Error(
 			fmt.Sprintf(
-				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, claude-session-id, gemini-session-id",
+				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, claude-session-id, gemini-session-id, add-path",
 				field,
 			),
 			ErrCodeInvalidOperation,
@@ -943,6 +947,26 @@ func handleSessionSet(profile string, args []string) {
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 			_ = exec.Command("tmux", "set-environment", "-t", tmuxSess.Name, "GEMINI_SESSION_ID", value).Run()
 		}
+	case "add-path":
+		createdPath, err := session.AddPathToMultiRepo(inst, value)
+		if err != nil {
+			out.Error(fmt.Sprintf("failed to add path: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+		if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+			out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		out.Success(fmt.Sprintf("Added %s -> %s", value, createdPath), map[string]interface{}{
+			"success":      true,
+			"id":           inst.ID,
+			"title":        inst.Title,
+			"field":        field,
+			"added_path":   value,
+			"created_path": createdPath,
+		})
+		return
 	}
 
 	// Save

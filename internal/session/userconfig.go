@@ -528,6 +528,11 @@ type ClaudeSettings struct {
 	// This allows using shell aliases that set CLAUDE_CONFIG_DIR automatically
 	Command string `toml:"command"`
 
+	// UseHappy launches Claude via the happy wrapper by default.
+	// Ignored when Command is set to a custom alias or command.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
+
 	// ConfigDir is the path to Claude's config directory
 	// Default: ~/.claude (or CLAUDE_CONFIG_DIR env var)
 	ConfigDir string `toml:"config_dir"`
@@ -622,6 +627,10 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// UseHappy launches Codex via "happy codex" by default.
+	// Default: false
+	UseHappy bool `toml:"use_happy"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -647,6 +656,11 @@ type WorktreeSettings struct {
 	// Set to "" to disable auto-prefixing (just the session name).
 	// Default: "feature/" when not set.
 	BranchPrefix *string `toml:"branch_prefix"`
+
+	// MultiRepoBaseDir overrides the default base directory used when creating
+	// multi-repo session symlink/worktree directories.
+	// Default: ~/.agent-deck/multi-repo-worktrees
+	MultiRepoBaseDir string `toml:"multi_repo_base_dir"`
 }
 
 // Template returns the path template if set, or empty string if nil.
@@ -663,6 +677,21 @@ func (w *WorktreeSettings) Prefix() string {
 		return "feature/"
 	}
 	return *w.BranchPrefix
+}
+
+// MultiRepoBase returns the effective base directory for multi-repo sessions.
+// Expands a leading ~/ to the user home directory.
+// Returns ~/.agent-deck/multi-repo-worktrees if not configured.
+func (w *WorktreeSettings) MultiRepoBase() string {
+	if w.MultiRepoBaseDir != "" {
+		if strings.HasPrefix(w.MultiRepoBaseDir, "~/") {
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, w.MultiRepoBaseDir[2:])
+		}
+		return w.MultiRepoBaseDir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".agent-deck", "multi-repo-worktrees")
 }
 
 // GlobalSearchSettings defines global conversation search configuration
@@ -1399,6 +1428,16 @@ func GetWorktreeSettings() WorktreeSettings {
 	return settings
 }
 
+// GetMultiRepoBaseDir returns the configured base directory for multi-repo sessions.
+func GetMultiRepoBaseDir() string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".agent-deck", "multi-repo-worktrees")
+	}
+	return config.Worktree.MultiRepoBase()
+}
+
 // GetUpdateSettings returns update settings with defaults applied
 func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
@@ -1648,6 +1687,8 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Launch Claude via happy by default (default: false)
+# use_happy = true
 
 # Gemini CLI integration
 # [gemini]
@@ -1665,6 +1706,8 @@ func CreateExampleConfig() error {
 # [codex]
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
+# Launch Codex via happy by default (default: false)
+# use_happy = true
 
 # Log file management
 # Agent-deck logs session output to ~/.agent-deck/logs/ for status detection
@@ -1712,6 +1755,8 @@ auto_cleanup = true
 #   {branch}         -> sanitized (human-friendly, may collide)
 #   {branch-escaped} -> URL-escaped (collision-resistant, reversible)
 # path_template = "../worktrees/{repo-name}/{branch}"
+# Base directory for multi-repo session symlink/worktree dirs (default: ~/.agent-deck/multi-repo-worktrees)
+# multi_repo_base_dir = "~/my-workspaces/multi-repo"
 
 # Default scope for MCP operations: "local", "global", or "user"
 # "local" writes to .mcp.json (project-only, default)
