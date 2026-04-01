@@ -7557,6 +7557,16 @@ func (h *Home) View() string {
 			Bold(true)
 		titleText = "Agent Deck " + profileStyle.Render("["+h.profile+"]")
 	}
+	if h.groupScope != "" {
+		scopeStyle := lipgloss.NewStyle().
+			Foreground(ColorPurple).
+			Bold(true)
+		scopeName := h.groupScope
+		if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+			scopeName = group.Name
+		}
+		titleText += " " + scopeStyle.Render("["+scopeName+"]")
+	}
 	title := titleStyle.Render(titleText)
 
 	// Status-based stats (more useful than group/session counts)
