@@ -3728,8 +3728,11 @@ func (i *Instance) Restart() error {
 		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
 	}
 
-	// Sync Claude session from disk before restart to pick up /clear session changes
-	if IsClaudeCompatible(i.Tool) {
+	// Sync Claude session from disk before restart to pick up /clear session changes.
+	// Only do this when the tmux session is alive — a dead session can't have run /clear,
+	// and scanning disk without a live tmux session risks adopting another session's .jsonl
+	// because collectOtherClaudeSessionIDs() only excludes IDs from live tmux sessions.
+	if IsClaudeCompatible(i.Tool) && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		i.syncClaudeSessionFromDisk()
 	}
 
