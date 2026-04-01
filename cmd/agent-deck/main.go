@@ -464,7 +464,7 @@ func main() {
 		} else {
 			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
 		}
-		homeModel.SetGroupScope(normalizedGroup)
+		homeModel.SetGroupScope(groupScope)
 	}
 
 	// ═══════════════════════════════════════════════════════════════════

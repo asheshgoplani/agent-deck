@@ -957,6 +957,18 @@ func (h *Home) scopedGroupPaths() []string {
 	return scoped
 }
 
+// groupScopeDisplayName returns the human-readable name for the active group scope.
+// Falls back to the raw scope path if the group is not found in the tree.
+func (h *Home) groupScopeDisplayName() string {
+	if h.groupScope == "" {
+		return ""
+	}
+	if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+		return group.Name
+	}
+	return h.groupScope
+}
+
 // refreshCostTotals updates cached cost totals from the store.
 // Throttled to run at most every 10 seconds.
 func (h *Home) refreshCostTotals() {
@@ -5126,18 +5138,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					h.groupDialog.ShowCreateSubgroup(item.Group.Path, item.Group.Name)
 				} else {
 					// Default to creating under scope root
-					scopeName := h.groupScope
-					if idx := strings.LastIndex(h.groupScope, "/"); idx >= 0 {
-						scopeName = h.groupScope[idx+1:]
-					}
-					h.groupDialog.ShowCreateSubgroup(h.groupScope, scopeName)
+					h.groupDialog.ShowCreateSubgroup(h.groupScope, h.groupScopeDisplayName())
 				}
 			} else {
-				scopeName := h.groupScope
-				if idx := strings.LastIndex(h.groupScope, "/"); idx >= 0 {
-					scopeName = h.groupScope[idx+1:]
-				}
-				h.groupDialog.ShowCreateSubgroup(h.groupScope, scopeName)
+				h.groupDialog.ShowCreateSubgroup(h.groupScope, h.groupScopeDisplayName())
 			}
 		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
@@ -5335,6 +5339,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
+			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
+				h.setError(fmt.Errorf("cannot delete the scoped root group"))
 			}
 		}
 		return h, nil
@@ -7565,11 +7571,7 @@ func (h *Home) View() string {
 		scopeStyle := lipgloss.NewStyle().
 			Foreground(ColorPurple).
 			Bold(true)
-		scopeName := h.groupScope
-		if group, exists := h.groupTree.Groups[h.groupScope]; exists {
-			scopeName = group.Name
-		}
-		titleText += " " + scopeStyle.Render("["+scopeName+"]")
+		titleText += " " + scopeStyle.Render("["+h.groupScopeDisplayName()+"]")
 	}
 	title := titleStyle.Render(titleText)
 
@@ -9023,17 +9025,13 @@ func (h *Home) renderSessionList(width, height int) string {
 
 		// Group-scoped empty state
 		if h.groupScope != "" {
-			scopeName := h.groupScope
-			if group, exists := h.groupTree.Groups[h.groupScope]; exists {
-				scopeName = group.Name
-			}
 			hints := []string{}
 			if key := h.actionKey(hotkeyNewSession); key != "" {
 				hints = append(hints, fmt.Sprintf("Press %s to create a session", key))
 			}
 			emptyContent := renderEmptyStateResponsive(EmptyStateConfig{
 				Icon:     "⬡",
-				Title:    "No sessions in " + scopeName,
+				Title:    "No sessions in " + h.groupScopeDisplayName(),
 				Subtitle: "This group is empty",
 				Hints:    hints,
 			}, contentWidth, contentHeight)
@@ -10043,13 +10041,9 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		if len(h.flatItems) == 0 {
 			// Group-scoped empty preview
 			if h.groupScope != "" {
-				scopeName := h.groupScope
-				if group, exists := h.groupTree.Groups[h.groupScope]; exists {
-					scopeName = group.Name
-				}
 				return renderEmptyStateResponsive(EmptyStateConfig{
 					Icon:     "✦",
-					Title:    scopeName,
+					Title:    h.groupScopeDisplayName(),
 					Subtitle: "Group scope active",
 					Hints:    []string{"Only sessions in this group are shown"},
 				}, width, height)
