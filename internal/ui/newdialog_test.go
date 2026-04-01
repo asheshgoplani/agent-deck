@@ -579,6 +579,29 @@ func TestNewDialog_ShowInGroup_ResetsWorktree(t *testing.T) {
 	}
 }
 
+func TestNewDialog_ShowInGroup_ResetsMultiRepo(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.multiRepoEnabled = true
+	dialog.multiRepoPaths = []string{"/path/a", "/path/b"}
+	dialog.multiRepoPathCursor = 1
+	dialog.multiRepoEditing = true
+
+	dialog.ShowInGroup("projects", "Projects", "")
+
+	if dialog.multiRepoEnabled {
+		t.Error("multiRepoEnabled should be reset to false on ShowInGroup")
+	}
+	if dialog.multiRepoPaths != nil {
+		t.Errorf("multiRepoPaths should be nil, got: %v", dialog.multiRepoPaths)
+	}
+	if dialog.multiRepoPathCursor != 0 {
+		t.Errorf("multiRepoPathCursor should be 0, got: %d", dialog.multiRepoPathCursor)
+	}
+	if dialog.multiRepoEditing {
+		t.Error("multiRepoEditing should be false on ShowInGroup")
+	}
+}
+
 func TestNewDialog_ShowInGroup_SetsDefaultPath(t *testing.T) {
 	dialog := NewNewDialog()
 
