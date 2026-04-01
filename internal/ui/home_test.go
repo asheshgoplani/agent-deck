@@ -2062,6 +2062,51 @@ func TestRebuildFlatItemsAutoClearsEmptyStatusFilter(t *testing.T) {
 	}
 }
 
+func TestSetGroupScope(t *testing.T) {
+	home := NewHome()
+
+	// Default is empty
+	if home.groupScope != "" {
+		t.Errorf("expected empty groupScope by default, got %q", home.groupScope)
+	}
+
+	// Set a group scope
+	home.SetGroupScope("work")
+	if home.groupScope != "work" {
+		t.Errorf("expected groupScope %q, got %q", "work", home.groupScope)
+	}
+
+	// Overwrite with another value
+	home.SetGroupScope("clients/acme")
+	if home.groupScope != "clients/acme" {
+		t.Errorf("expected groupScope %q, got %q", "clients/acme", home.groupScope)
+	}
+}
+
+func TestGroupScopeNormalization(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"work", "work"},
+		{"Work", "work"},
+		{"My Group", "my-group"},
+		{"MY GROUP", "my-group"},
+		{"clients/Acme Corp", "clients/acme-corp"},
+		{"already-normalized", "already-normalized"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			home := NewHome()
+			home.SetGroupScope(tt.input)
+			if home.groupScope != tt.want {
+				t.Errorf("SetGroupScope(%q): got %q, want %q", tt.input, home.groupScope, tt.want)
+			}
+		})
+	}
+}
+
 func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 	home := NewHome()
 	home.initialLoading = false

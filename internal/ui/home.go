@@ -205,6 +205,7 @@ type Home struct {
 	viewOffset     int            // First visible item index (for scrolling)
 	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
 	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
+	groupScope     string         // Limit TUI to a specific group path ("" = all groups)
 	previewMode    PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
 	err            error
 	errTime        time.Time  // When error occurred (for auto-dismiss)
@@ -923,6 +924,12 @@ func (h *Home) SetCostPricer(pricer *costs.Pricer) {
 // SetCostBudget sets the budget checker for cost limits.
 func (h *Home) SetCostBudget(budget *costs.BudgetChecker) {
 	h.costBudget = budget
+}
+
+// SetGroupScope limits the TUI to sessions within the given group path.
+// The path is normalized: lowercased and spaces replaced with hyphens.
+func (h *Home) SetGroupScope(path string) {
+	h.groupScope = strings.ToLower(strings.ReplaceAll(path, " ", "-"))
 }
 
 // refreshCostTotals updates cached cost totals from the store.
