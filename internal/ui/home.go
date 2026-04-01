@@ -2028,8 +2028,29 @@ func (h *Home) getSelectedSession() *session.Instance {
 }
 
 type sessionRenderState struct {
-	status session.Status
-	tool   string
+	status    session.Status
+	tool      string
+	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
+}
+
+// cleanPaneTitle strips spinner/done marker characters from a tmux pane title
+// and returns the task description. Returns "" for default/generic titles.
+func cleanPaneTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	// Strip known spinner/done markers, plus any Braille chars (U+2800-28FF)
+	// that Claude Code may use as spinner frames beyond the canonical set.
+	cleaned := tmux.StripSpinnerRunes(title)
+	cleaned = strings.TrimLeftFunc(cleaned, func(r rune) bool {
+		return r >= 0x2800 && r <= 0x28FF
+	})
+	cleaned = strings.TrimSpace(cleaned)
+	switch cleaned {
+	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+		return ""
+	}
+	return cleaned
 }
 
 func (h *Home) getSessionRenderSnapshot() map[string]sessionRenderState {
@@ -2054,10 +2075,17 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
-		snap[inst.ID] = sessionRenderState{
+		state := sessionRenderState{
 			status: inst.GetStatusThreadSafe(),
 			tool:   inst.GetToolThreadSafe(),
 		}
+		// Look up pane title from the already-refreshed tmux cache.
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+			}
+		}
+		snap[inst.ID] = state
 	}
 	h.sessionRenderSnapshot.Store(snap)
 }
@@ -9386,9 +9414,20 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [yolo] [worktree] [sandbox] [multi-repo] [ssh]
+	// Pane title suffix: show current task description inline (dim) only for the selected item.
+	// Cap length to avoid garbled mid-ANSI truncation by ensureExactWidth on narrow terminals.
+	paneTitleSuffix := ""
+	if selected && instState.paneTitle != "" {
+		pt := instState.paneTitle
+		if lipgloss.Width(pt) > 40 {
+			pt = ansi.Truncate(pt, 40, "…")
+		}
+		paneTitleSuffix = DimStyle.Render(" " + pt)
+	}
+
+	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges] [paneTitle]
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s",
+		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -9401,6 +9440,7 @@ func (h *Home) renderSessionItem(
 		sandboxBadge,
 		multiRepoBadge,
 		sshBadge,
+		paneTitleSuffix,
 	)
 	b.WriteString(row)
 	b.WriteString("\n")
