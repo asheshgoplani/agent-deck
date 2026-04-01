@@ -1192,7 +1192,7 @@ func (h *Home) rebuildFlatItems() {
 	if h.groupScope != "" {
 		scoped := make([]session.Item, 0, len(h.flatItems))
 		for _, item := range h.flatItems {
-			if item.Path == h.groupScope || strings.HasPrefix(item.Path, h.groupScope+"/") {
+			if h.isInGroupScope(item.Path) {
 				scoped = append(scoped, item)
 			}
 		}
