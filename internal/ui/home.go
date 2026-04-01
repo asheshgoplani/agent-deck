@@ -9017,6 +9017,29 @@ func (h *Home) renderSessionList(width, height int) string {
 			contentHeight = 5
 		}
 
+		// Group-scoped empty state
+		if h.groupScope != "" {
+			scopeName := h.groupScope
+			if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+				scopeName = group.Name
+			}
+			hints := []string{}
+			if key := h.actionKey(hotkeyNewSession); key != "" {
+				hints = append(hints, fmt.Sprintf("Press %s to create a session", key))
+			}
+			emptyContent := renderEmptyStateResponsive(EmptyStateConfig{
+				Icon:     "⬡",
+				Title:    "No sessions in " + scopeName,
+				Subtitle: "This group is empty",
+				Hints:    hints,
+			}, contentWidth, contentHeight)
+
+			return lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Render(emptyContent)
+		}
+
 		hints := make([]string, 0, 3)
 		if key := h.actionKey(hotkeyNewSession); key != "" {
 			hints = append(hints, fmt.Sprintf("Press %s to create a new session", key))
@@ -10014,6 +10037,19 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
 		if len(h.flatItems) == 0 {
+			// Group-scoped empty preview
+			if h.groupScope != "" {
+				scopeName := h.groupScope
+				if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+					scopeName = group.Name
+				}
+				return renderEmptyStateResponsive(EmptyStateConfig{
+					Icon:     "✦",
+					Title:    scopeName,
+					Subtitle: "Group scope active",
+					Hints:    []string{"Only sessions in this group are shown"},
+				}, width, height)
+			}
 			hints := make([]string, 0, 2)
 			if key := h.actionKey(hotkeyNewSession); key != "" {
 				hints = append(hints, fmt.Sprintf("Press %s to create your first session", key))
