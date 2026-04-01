@@ -932,6 +932,31 @@ func (h *Home) SetGroupScope(path string) {
 	h.groupScope = strings.ToLower(strings.ReplaceAll(path, " ", "-"))
 }
 
+// isInGroupScope returns true if the given path is within the active group scope.
+// Returns true for all paths when no scope is set.
+func (h *Home) isInGroupScope(path string) bool {
+	if h.groupScope == "" {
+		return true
+	}
+	return path == h.groupScope || strings.HasPrefix(path, h.groupScope+"/")
+}
+
+// scopedGroupPaths returns group paths filtered to the active scope.
+// Returns all paths when no scope is set.
+func (h *Home) scopedGroupPaths() []string {
+	allPaths := h.groupTree.GetGroupPaths()
+	if h.groupScope == "" {
+		return allPaths
+	}
+	var scoped []string
+	for _, p := range allPaths {
+		if h.isInGroupScope(p) {
+			scoped = append(scoped, p)
+		}
+	}
+	return scoped
+}
+
 // refreshCostTotals updates cached cost totals from the store.
 // Throttled to run at most every 10 seconds.
 func (h *Home) refreshCostTotals() {
@@ -5041,7 +5066,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession {
-				h.groupDialog.ShowMove(h.groupTree.GetGroupPaths())
+				h.groupDialog.ShowMove(h.scopedGroupPaths())
 			}
 		}
 		return h, nil
@@ -5093,7 +5118,28 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// - Group header: defaults to subgroup, Tab toggles to root
 		// - Grouped session: defaults to root, Tab toggles to subgroup
 		// - Ungrouped item: root only, no toggle
-		if h.cursor < len(h.flatItems) {
+		if h.groupScope != "" {
+			// Scoped mode: create subgroups under scope root or its children
+			if h.cursor < len(h.flatItems) {
+				item := h.flatItems[h.cursor]
+				if item.Type == session.ItemTypeGroup {
+					h.groupDialog.ShowCreateSubgroup(item.Group.Path, item.Group.Name)
+				} else {
+					// Default to creating under scope root
+					scopeName := h.groupScope
+					if idx := strings.LastIndex(h.groupScope, "/"); idx >= 0 {
+						scopeName = h.groupScope[idx+1:]
+					}
+					h.groupDialog.ShowCreateSubgroup(h.groupScope, scopeName)
+				}
+			} else {
+				scopeName := h.groupScope
+				if idx := strings.LastIndex(h.groupScope, "/"); idx >= 0 {
+					scopeName = h.groupScope[idx+1:]
+				}
+				h.groupDialog.ShowCreateSubgroup(h.groupScope, scopeName)
+			}
+		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeGroup {
 				// On group header: default to subgroup mode
@@ -5243,6 +5289,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Auto-select parent group from current cursor position
 		groupPath := session.DefaultGroupPath
 		groupName := session.DefaultGroupName
+		if h.groupScope != "" {
+			// Scoped mode: default to scope root
+			groupPath = h.groupScope
+			if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+				groupName = group.Name
+			}
+		}
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
@@ -5280,7 +5333,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath {
+			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			}
 		}
