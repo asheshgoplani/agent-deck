@@ -25,12 +25,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// DisableKittyKeyboard writes the escape sequence that pushes keyboard mode 0
-// (legacy) on the Kitty keyboard protocol stack. After this call, Kitty-protocol-
-// aware terminals stop sending CSI u sequences and revert to legacy key
-// reporting. Terminals that do not support the protocol ignore the sequence.
+// DisableKittyKeyboard writes the escape sequence that pops the Kitty keyboard
+// protocol stack, restoring the previous keyboard mode. If nothing was on the
+// stack, this is a safe no-op. After this call, Kitty-protocol-aware terminals
+// stop sending CSI u sequences and revert to legacy key reporting. Terminals
+// that do not support the protocol ignore the sequence.
 func DisableKittyKeyboard(w io.Writer) {
-	_, _ = io.WriteString(w, "\x1b[>0u")
+	_, _ = io.WriteString(w, "\x1b[<u")
 }
 
 // RestoreKittyKeyboard writes the escape sequence that pops the keyboard mode

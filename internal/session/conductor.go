@@ -209,8 +209,6 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 	return spec, nil
 }
 
-
-
 // conductorNameRegex validates conductor names: starts with alphanumeric, then alphanumeric/._-
 var conductorNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 

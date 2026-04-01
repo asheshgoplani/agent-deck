@@ -109,7 +109,7 @@ func TestDisableKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
 	DisableKittyKeyboard(&buf)
 	got := buf.String()
-	want := "\x1b[>0u"
+	want := "\x1b[<u"
 	if got != want {
 		t.Errorf("DisableKittyKeyboard wrote %q, want %q", got, want)
 	}
