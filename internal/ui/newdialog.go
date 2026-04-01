@@ -225,6 +225,11 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
 	d.branchPrefix = "feature/" // default; overridden below if config provides one.
+	// Reset multi-repo fields (ephemeral, never pre-filled).
+	d.multiRepoEnabled = false
+	d.multiRepoPaths = nil
+	d.multiRepoPathCursor = 0
+	d.multiRepoEditing = false
 	// Reset sandbox from global config default.
 	d.sandboxEnabled = false
 	d.inheritedExpanded = false
@@ -1339,7 +1344,7 @@ func (d *NewDialog) View() string {
 	if cur == focusCommand {
 		multiRepoLabel = "Multi-repo mode (m)"
 	}
-	content.WriteString(renderCheckboxLine(multiRepoLabel, d.multiRepoEnabled, cur == focusMultiRepo && !d.multiRepoEnabled))
+	content.WriteString(renderCheckboxLine(multiRepoLabel, d.multiRepoEnabled, cur == focusMultiRepo))
 
 	if d.multiRepoEnabled {
 		// Multi-repo path list replaces the single path field.
