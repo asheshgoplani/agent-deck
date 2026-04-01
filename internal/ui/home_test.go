@@ -2143,3 +2143,73 @@ func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 		t.Errorf("expected 1 session in flatItems with error filter, got %d", sessionCount)
 	}
 }
+
+func TestRebuildFlatItemsGroupScope(t *testing.T) {
+	h := &Home{}
+	h.groupScope = "work"
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("s1", "/tmp/p1", "work"),
+		session.NewInstanceWithGroup("s2", "/tmp/p2", "work/frontend"),
+		session.NewInstanceWithGroup("s3", "/tmp/p3", "personal"),
+	}
+	h.groupTree = session.NewGroupTree(instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			if item.Session.GroupPath == "personal" {
+				t.Errorf("found session in 'personal' group, expected only work and children")
+			}
+		}
+		if item.Type == session.ItemTypeGroup && item.Path == "personal" {
+			t.Errorf("found 'personal' group header, expected only work and children")
+		}
+	}
+
+	found := map[string]bool{}
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			found[item.Session.Title] = true
+		}
+	}
+	if !found["s1"] {
+		t.Error("missing session s1 (work group)")
+	}
+	if !found["s2"] {
+		t.Error("missing session s2 (work/frontend group)")
+	}
+}
+
+func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
+	h := &Home{}
+	h.groupScope = "work"
+	h.statusFilter = session.StatusRunning
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("running-work", "/tmp/p1", "work"),
+		session.NewInstanceWithGroup("idle-work", "/tmp/p2", "work"),
+		session.NewInstanceWithGroup("running-personal", "/tmp/p3", "personal"),
+	}
+	instances[0].Status = session.StatusRunning
+	instances[1].Status = session.StatusIdle
+	instances[2].Status = session.StatusRunning
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			if item.Session.GroupPath == "personal" {
+				t.Errorf("found personal session, expected only work group")
+			}
+			if item.Session.Status != session.StatusRunning {
+				t.Errorf("found non-running session %q, expected only running", item.Session.Title)
+			}
+		}
+	}
+}

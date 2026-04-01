@@ -1163,6 +1163,17 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = allItems
 	}
 
+	// Apply group scope filter (composes with status filter above)
+	if h.groupScope != "" {
+		scoped := make([]session.Item, 0, len(h.flatItems))
+		for _, item := range h.flatItems {
+			if item.Path == h.groupScope || strings.HasPrefix(item.Path, h.groupScope+"/") {
+				scoped = append(scoped, item)
+			}
+		}
+		h.flatItems = scoped
+	}
+
 	// Inject window items after sessions that have 2+ windows
 	if len(h.flatItems) > 0 {
 		expanded := make([]session.Item, 0, len(h.flatItems)+8)
