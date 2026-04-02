@@ -4316,11 +4316,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
 		}
 
+		parentSessionID := h.newDialog.GetParentSessionID()
+		parentProjectPath := h.newDialog.GetParentProjectPath()
+
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -4351,6 +4354,8 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			multiRepoEnabled,
 			additionalPaths,
+			parentSessionID,
+			parentProjectPath,
 		)
 
 	case "esc":
@@ -5240,7 +5245,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		defaultPath := h.getDefaultPathForGroup(groupPath)
-		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath)
+		conductors := h.activeConductorSessions()
+		suggestedParentID := h.suggestConductorParent()
+		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
 		return h, nil
 
 	case "N":
@@ -5561,7 +5568,7 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ConfirmCreateDirectory:
 		switch msg.String() {
 		case "y", "Y":
-			name, path, command, groupPath, pendingToolOpts := h.confirmDialog.GetPendingSession()
+			name, path, command, groupPath, pendingToolOpts, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 			h.confirmDialog.Hide()
 			if err := os.MkdirAll(path, 0o755); err != nil {
 				h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -5580,6 +5587,8 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				pendingToolOpts,
 				false,
 				nil,
+				parentSessionID,
+				parentProjectPath,
 			)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
@@ -6027,8 +6036,10 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opts.WorktreeBranch = branchName
 				}
 
+				parentID := h.forkDialog.GetParentSessionID()
+				parentPath := h.forkDialog.GetParentProjectPath()
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled())
+				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled(), parentID, parentPath)
 			}
 		}
 		h.forkDialog.Hide()
@@ -6277,6 +6288,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	multiRepoEnabled bool,
 	additionalPaths []string,
+	parentSessionID, parentProjectPath string,
 ) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
@@ -6459,6 +6471,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			}
 		}
 
+		if parentSessionID != "" {
+			inst.SetParentWithPath(parentSessionID, parentProjectPath)
+		}
+
 		uiLog.Info("session_create_starting",
 			slog.String("tool", inst.Tool),
 			slog.String("path", inst.ProjectPath),
@@ -6487,10 +6503,9 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if source == nil {
 		return nil
 	}
-	// Use source title with " (fork)" suffix
 	title := source.Title + " (fork)"
 	groupPath := source.GroupPath
-	return h.forkSessionCmd(source, title, groupPath)
+	return h.forkSessionCmd(source, title, groupPath, source.ParentSessionID, source.ParentProjectPath)
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
@@ -6593,7 +6608,53 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"", "", "", // no worktree
 		geminiYoloMode, false, toolOptionsJSON,
 		false, nil, // no multi-repo
+		"", "", // no parent
 	)
+}
+
+// suggestConductorParent returns the ID of the most contextually relevant conductor
+// based on the current cursor position: the cursor session itself if it's a conductor,
+// or the conductor pointed to by its ParentSessionID.
+func (h *Home) suggestConductorParent() string {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return ""
+	}
+	item := h.flatItems[h.cursor]
+	if item.Type != session.ItemTypeSession || item.Session == nil {
+		return ""
+	}
+	inst := item.Session
+	// Cursor is directly on a conductor.
+	if inst.IsConductor {
+		return inst.ID
+	}
+	// Cursor is on a session that has a conductor parent.
+	if inst.ParentSessionID != "" {
+		h.instancesMu.RLock()
+		parent, ok := h.instanceByID[inst.ParentSessionID]
+		h.instancesMu.RUnlock()
+		if ok && parent.IsConductor {
+			return parent.ID
+		}
+	}
+	return ""
+}
+
+// activeConductorSessions returns all non-stopped, non-error conductor sessions
+// in the current profile (h.instances is already scoped to the active profile).
+func (h *Home) activeConductorSessions() []*session.Instance {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+
+	var out []*session.Instance
+	for _, inst := range h.instances {
+		if inst.IsConductor &&
+			inst.Status != session.StatusError &&
+			inst.Status != session.StatusStopped {
+			out = append(out, inst)
+		}
+	}
+	return out
 }
 
 // mostRecentPathInGroup returns the project path of the most recently created
@@ -6622,14 +6683,16 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 		return nil
 	}
 	// Pre-populate dialog with source session info
-	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath)
+	conductors := h.activeConductorSessions()
+	suggestedParentID := h.suggestConductorParent()
+	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID)
 	return nil
 }
 
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
-func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false)
+func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, parentSessionID, parentProjectPath)
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, Claude options, and optional sandbox.
@@ -6639,6 +6702,7 @@ func (h *Home) forkSessionCmdWithOptions(
 	title, groupPath string,
 	opts *session.ClaudeOptions,
 	sandboxEnabled bool,
+	parentSessionID, parentProjectPath string,
 ) tea.Cmd {
 	if source == nil {
 		return nil
@@ -6728,6 +6792,10 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 			inst.ProjectPath = newProjectPath
 			inst.AdditionalPaths = newAdditionalPaths
+		}
+
+		if parentSessionID != "" {
+			inst.SetParentWithPath(parentSessionID, parentProjectPath)
 		}
 
 		if err := inst.Start(); err != nil {

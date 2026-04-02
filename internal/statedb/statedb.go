@@ -18,7 +18,7 @@ import (
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -43,6 +43,7 @@ type InstanceRow struct {
 	CreatedAt       time.Time
 	LastAccessed    time.Time
 	ParentSessionID string
+	IsConductor     bool
 	WorktreePath    string
 	WorktreeRepo    string
 	WorktreeBranch  string
@@ -179,6 +180,7 @@ func (s *StateDB) Migrate() error {
 			created_at      INTEGER NOT NULL,
 			last_accessed   INTEGER NOT NULL DEFAULT 0,
 			parent_session_id TEXT NOT NULL DEFAULT '',
+			is_conductor      INTEGER NOT NULL DEFAULT 0,
 			worktree_path     TEXT NOT NULL DEFAULT '',
 			worktree_repo     TEXT NOT NULL DEFAULT '',
 			worktree_branch   TEXT NOT NULL DEFAULT '',
@@ -273,6 +275,18 @@ func (s *StateDB) Migrate() error {
 	case err != nil:
 		return fmt.Errorf("statedb: read schema version: %w", err)
 	case existingVersion != schemaVersion:
+		oldVer, _ := strconv.Atoi(existingVersion)
+		if oldVer < 4 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN is_conductor INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v4 is_conductor: %w", err)
+				}
+			}
+			// Backfill: mark existing sessions whose title starts with "conductor-"
+			if _, err := tx.Exec(`UPDATE instances SET is_conductor = 1 WHERE title LIKE 'conductor-%'`); err != nil {
+				return fmt.Errorf("statedb: migrate v4 backfill is_conductor: %w", err)
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -302,19 +316,23 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 		toolData = json.RawMessage("{}")
 	}
 
+	isConductorInt := 0
+	if inst.IsConductor {
+		isConductorInt = 1
+	}
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
-			parent_session_id, worktree_path, worktree_repo, worktree_branch,
+			parent_session_id, is_conductor, worktree_path, worktree_repo, worktree_branch,
 			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
-		inst.ParentSessionID, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
+		inst.ParentSessionID, isConductorInt, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
 		string(toolData),
 	)
 	return err
@@ -353,9 +371,9 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 			id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
-			parent_session_id, worktree_path, worktree_repo, worktree_branch,
+			parent_session_id, is_conductor, worktree_path, worktree_repo, worktree_branch,
 			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -367,11 +385,15 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 		if len(toolData) == 0 {
 			toolData = json.RawMessage("{}")
 		}
+		isConductorInt := 0
+		if inst.IsConductor {
+			isConductorInt = 1
+		}
 		if _, err := stmt.Exec(
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
-			inst.ParentSessionID, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
+			inst.ParentSessionID, isConductorInt, inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
 			string(toolData),
 		); err != nil {
 			return err
@@ -387,7 +409,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		SELECT id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session,
 			created_at, last_accessed,
-			parent_session_id, worktree_path, worktree_repo, worktree_branch,
+			parent_session_id, is_conductor, worktree_path, worktree_repo, worktree_branch,
 			tool_data
 		FROM instances ORDER BY sort_order
 	`)
@@ -401,11 +423,12 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		r := &InstanceRow{}
 		var createdUnix, accessedUnix int64
 		var toolDataStr string
+		var isConductorInt int
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
 			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession,
 			&createdUnix, &accessedUnix,
-			&r.ParentSessionID, &r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
+			&r.ParentSessionID, &isConductorInt, &r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
 			&toolDataStr,
 		); err != nil {
 			return nil, err
@@ -414,6 +437,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		if accessedUnix > 0 {
 			r.LastAccessed = time.Unix(accessedUnix, 0)
 		}
+		r.IsConductor = isConductorInt != 0
 		r.ToolData = json.RawMessage(toolDataStr)
 		result = append(result, r)
 	}

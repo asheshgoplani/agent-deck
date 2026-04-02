@@ -42,6 +42,7 @@ type InstanceData struct {
 	GroupPath       string    `json:"group_path"`
 	Order           int       `json:"order"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"` // Links to parent session (sub-session support)
+	IsConductor     bool      `json:"is_conductor,omitempty"`      // True if this session is a conductor orchestrator
 	Command         string    `json:"command"`
 	Wrapper         string    `json:"wrapper,omitempty"`
 	Tool            string    `json:"tool"`
@@ -314,6 +315,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			CreatedAt:       inst.CreatedAt,
 			LastAccessed:    inst.LastAccessedAt,
 			ParentSessionID: inst.ParentSessionID,
+			IsConductor:     inst.IsConductor,
 			WorktreePath:    inst.WorktreePath,
 			WorktreeRepo:    inst.WorktreeRepoRoot,
 			WorktreeBranch:  inst.WorktreeBranch,
@@ -451,6 +453,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			GroupPath:          r.GroupPath,
 			Order:              r.Order,
 			ParentSessionID:    r.ParentSessionID,
+			IsConductor:        r.IsConductor,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
@@ -547,6 +550,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			GroupPath:          r.GroupPath,
 			Order:              r.Order,
 			ParentSessionID:    r.ParentSessionID,
+			IsConductor:        r.IsConductor,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
@@ -750,6 +754,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			GroupPath:          groupPath,
 			Order:              instData.Order,
 			ParentSessionID:    instData.ParentSessionID,
+			IsConductor:        instData.IsConductor,
 			Command:            instData.Command,
 			Wrapper:            instData.Wrapper,
 			Tool:               instData.Tool,

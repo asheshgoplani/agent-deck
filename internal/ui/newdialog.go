@@ -25,6 +25,7 @@ const (
 	focusCommand               // tool/command picker.
 	focusWorktree              // worktree checkbox.
 	focusSandbox               // sandbox checkbox.
+	focusConductor             // conducting parent dropdown (conditional — only when conductors exist).
 	focusMultiRepo             // multi-repo toggle (transforms path into list when enabled).
 	focusInherited             // inherited Docker settings toggle (conditional).
 	focusBranch                // branch input (conditional — only when worktree enabled).
@@ -82,6 +83,9 @@ type NewDialog struct {
 	recentSessionCursor int
 	showRecentPicker    bool
 	recentSnapshot      *dialogSnapshot // saved state to restore on Esc
+	// Conducting parent selector.
+	conductorSessions []*session.Instance // nil when no conductors; populated by ShowInGroup
+	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
 }
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
@@ -99,6 +103,7 @@ type dialogSnapshot struct {
 	codexYolo        bool
 	multiRepoEnabled bool
 	multiRepoPaths   []string
+	conductorCursor  int
 }
 
 // buildPresetCommands returns the list of commands for the picker,
@@ -196,8 +201,9 @@ func NewNewDialog() *NewDialog {
 	return dlg
 }
 
-// ShowInGroup shows the dialog with a pre-selected parent group and optional default path
-func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
+// ShowInGroup shows the dialog with a pre-selected parent group and optional default path.
+// conductors is the list of active conductor sessions available as parent options.
+func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conductors []*session.Instance, suggestedParentID string) {
 	if groupPath == "" {
 		groupPath = "default"
 		groupName = "default"
@@ -214,6 +220,14 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string) {
 	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
 	d.showRecentPicker = false    // reset recent picker
 	d.recentSessionCursor = 0
+	d.conductorSessions = conductors
+	d.conductorCursor = 0
+	for i, c := range conductors {
+		if c.ID == suggestedParentID {
+			d.conductorCursor = i + 1 // +1 because 0 = "None"
+			break
+		}
+	}
 	d.pathInput.Blur()
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
@@ -328,6 +342,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		codexYolo:        d.codexOptions.GetYoloMode(),
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
+		conductorCursor:  d.conductorCursor,
 	}
 }
 
@@ -350,6 +365,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
 	d.multiRepoEditing = false
+	d.conductorCursor = s.conductorCursor
 	d.updateToolOptions()
 	d.rebuildFocusTargets()
 }
@@ -446,7 +462,7 @@ func (d *NewDialog) filterPathSuggestions() {
 
 // Show makes the dialog visible (uses default group)
 func (d *NewDialog) Show() {
-	d.ShowInGroup("default", "default", "")
+	d.ShowInGroup("default", "default", "", nil, "")
 }
 
 // Hide hides the dialog
@@ -712,6 +728,9 @@ func (d *NewDialog) rebuildFocusTargets() {
 	} else {
 		targets = []focusTarget{focusName, focusMultiRepo, focusPath, focusCommand, focusWorktree, focusSandbox}
 	}
+	if len(d.conductorSessions) > 0 {
+		targets = append(targets, focusConductor)
+	}
 	if d.sandboxEnabled && len(d.inheritedSettings) > 0 {
 		targets = append(targets, focusInherited)
 	}
@@ -773,8 +792,8 @@ func (d *NewDialog) updateFocus() {
 		if d.commandCursor == 0 { // shell.
 			d.commandInput.Focus()
 		}
-	case focusWorktree, focusSandbox, focusInherited:
-		// Checkbox/toggle rows — no text input to focus.
+	case focusWorktree, focusSandbox, focusConductor, focusInherited:
+		// Checkbox/toggle rows and conductor dropdown — no text input to focus.
 	case focusBranch:
 		d.branchInput.Focus()
 	case focusOptions:
@@ -955,6 +974,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
+			if cur == focusConductor {
+				total := len(d.conductorSessions) + 1 // +1 for "None"
+				if d.conductorCursor < total-1 {
+					d.conductorCursor++
+					return d, nil
+				}
+			}
 			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
 				if d.multiRepoPathCursor < len(d.multiRepoPaths)-1 {
 					d.multiRepoPathCursor++
@@ -970,6 +996,12 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "shift+tab", "up":
+			if cur == focusConductor {
+				if d.conductorCursor > 0 {
+					d.conductorCursor--
+					return d, nil
+				}
+			}
 			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
 				if d.multiRepoPathCursor > 0 {
 					d.multiRepoPathCursor--
@@ -1197,8 +1229,8 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.filterPathSuggestions()
 			}
 		}
-	case focusWorktree, focusSandbox, focusInherited:
-		// Checkbox/toggle rows — no text input to update.
+	case focusWorktree, focusSandbox, focusConductor, focusInherited:
+		// Checkbox/toggle rows and conductor dropdown — no text input to update.
 	case focusBranch:
 		oldBranch := d.branchInput.Value()
 		d.branchInput, cmd = d.branchInput.Update(msg)
@@ -1628,6 +1660,49 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n")
 	}
 
+	// Conducting parent selector (only visible when conductor sessions exist).
+	if len(d.conductorSessions) > 0 {
+		focused := cur == focusConductor
+		if focused {
+			content.WriteString(activeLabelStyle.Render("▶ Conducting parent:"))
+		} else {
+			content.WriteString(labelStyle.Render("  Conducting parent:"))
+		}
+		content.WriteString("\n")
+
+		selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+		itemStyle := lipgloss.NewStyle().Foreground(ColorComment)
+
+		// Build item list: "None" + one entry per conductor session.
+		type conductorItem struct {
+			label string
+			idx   int // 0 = None, 1..N = session index
+		}
+		items := make([]conductorItem, 0, len(d.conductorSessions)+1)
+		items = append(items, conductorItem{label: "None", idx: 0})
+		for i, inst := range d.conductorSessions {
+			name := strings.TrimPrefix(inst.Title, "conductor-")
+			shortPath := inst.ProjectPath
+			if home, err := os.UserHomeDir(); err == nil {
+				shortPath = strings.Replace(shortPath, home, "~", 1)
+			}
+			label := name
+			if shortPath != "" {
+				label = fmt.Sprintf("%s  (%s)", name, shortPath)
+			}
+			items = append(items, conductorItem{label: label, idx: i + 1})
+		}
+
+		for _, item := range items {
+			if item.idx == d.conductorCursor {
+				content.WriteString(selectedStyle.Render("  ▶ " + item.label))
+			} else {
+				content.WriteString(itemStyle.Render("    " + item.label))
+			}
+			content.WriteString("\n")
+		}
+	}
+
 	// Branch input (only visible when worktree is enabled).
 	if d.worktreeEnabled {
 		content.WriteString("\n")
@@ -1679,6 +1754,8 @@ func (d *NewDialog) View() string {
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ Enter create │ Esc cancel"
 		}
+	} else if cur == focusConductor {
+		helpText = "↑↓ select parent │ Tab next │ Enter create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
 		helpText = "Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
 	} else if cur == focusInherited {
@@ -1699,4 +1776,20 @@ func (d *NewDialog) View() string {
 		lipgloss.Center,
 		dialog,
 	)
+}
+
+// GetParentSessionID returns the selected conducting parent session ID, or "" for None.
+func (d *NewDialog) GetParentSessionID() string {
+	if d.conductorCursor == 0 || len(d.conductorSessions) == 0 {
+		return ""
+	}
+	return d.conductorSessions[d.conductorCursor-1].ID
+}
+
+// GetParentProjectPath returns the selected conductor's project path, or "".
+func (d *NewDialog) GetParentProjectPath() string {
+	if d.conductorCursor == 0 || len(d.conductorSessions) == 0 {
+		return ""
+	}
+	return d.conductorSessions[d.conductorCursor-1].ProjectPath
 }

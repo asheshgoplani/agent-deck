@@ -17,7 +17,7 @@ func TestNewForkDialog(t *testing.T) {
 
 func TestForkDialog_Show(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Original Session", "/path/to/project", "group/path")
+	d.Show("Original Session", "/path/to/project", "group/path", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible after Show()")
@@ -34,7 +34,7 @@ func TestForkDialog_Show(t *testing.T) {
 
 func TestForkDialog_Hide(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible after Show()")
@@ -49,7 +49,7 @@ func TestForkDialog_Hide(t *testing.T) {
 
 func TestForkDialog_GetValues(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("My Session", "/project", "work/team")
+	d.Show("My Session", "/project", "work/team", nil, "")
 
 	name, group := d.GetValues()
 	if name != "My Session (fork)" {
@@ -74,7 +74,7 @@ func TestForkDialog_SetSize(t *testing.T) {
 
 func TestForkDialog_EmptyProjectPath(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Test", "", "")
+	d.Show("Test", "", "", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible even with empty paths")
@@ -142,7 +142,7 @@ func TestForkDialog_Validate_ValidName(t *testing.T) {
 func TestForkDialog_SetError_ShowsInView(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	d.SetError("Name is required")
 	view := d.View()
@@ -155,7 +155,7 @@ func TestForkDialog_SetError_ShowsInView(t *testing.T) {
 func TestForkDialog_ClearError_HidesFromView(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	d.SetError("Name is required")
 	d.ClearError()
@@ -169,7 +169,7 @@ func TestForkDialog_ClearError_HidesFromView(t *testing.T) {
 func TestForkDialog_Show_ClearsError(t *testing.T) {
 	d := NewForkDialog()
 	d.SetError("Previous error")
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	if d.validationErr != "" {
 		t.Error("Show() should clear validationErr")

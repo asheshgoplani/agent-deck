@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -30,6 +32,10 @@ type ForkDialog struct {
 	isGitRepo       bool
 	// Docker sandbox support
 	sandboxEnabled bool
+
+	// Conductor parent selector
+	conductorSessions []*session.Instance
+	conductorCursor   int // 0 = None, 1..n = conductorSessions[0..n-1]
 }
 
 // NewForkDialog creates a new fork dialog
@@ -57,8 +63,37 @@ func NewForkDialog() *ForkDialog {
 	}
 }
 
+// hasConductors returns true when conductor sessions are available.
+func (d *ForkDialog) hasConductors() bool {
+	return len(d.conductorSessions) > 0
+}
+
+// conductorFocusIndex returns the focus index for the conductor picker, or -1 if none.
+func (d *ForkDialog) conductorFocusIndex() int {
+	if d.hasConductors() {
+		return 2
+	}
+	return -1
+}
+
+// GetParentSessionID returns the conductor ID selected in the dialog (empty = None).
+func (d *ForkDialog) GetParentSessionID() string {
+	if d.conductorCursor == 0 || d.conductorCursor > len(d.conductorSessions) {
+		return ""
+	}
+	return d.conductorSessions[d.conductorCursor-1].ID
+}
+
+// GetParentProjectPath returns the project path of the selected conductor.
+func (d *ForkDialog) GetParentProjectPath() string {
+	if d.conductorCursor == 0 || d.conductorCursor > len(d.conductorSessions) {
+		return ""
+	}
+	return d.conductorSessions[d.conductorCursor-1].ProjectPath
+}
+
 // Show displays the dialog with pre-filled values
-func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
+func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductors []*session.Instance, suggestedParentID string) {
 	d.visible = true
 	d.validationErr = ""
 	d.projectPath = projectPath
@@ -74,6 +109,16 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string) {
 	d.worktreeEnabled = false
 	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
+
+	// Conductor parent selector
+	d.conductorSessions = conductors
+	d.conductorCursor = 0
+	for i, c := range conductors {
+		if c.ID == suggestedParentID {
+			d.conductorCursor = i + 1
+			break
+		}
+	}
 
 	// Auto-suggest branch name based on fork title
 	sanitized := strings.ToLower(originalName)
@@ -148,10 +193,14 @@ func (d *ForkDialog) ToggleSandbox() {
 
 // optionsStartIndex returns the focus index where the options panel begins
 func (d *ForkDialog) optionsStartIndex() int {
-	if d.worktreeEnabled {
-		return 3 // 0=name, 1=group, 2=branch, 3+=options
+	base := 2
+	if d.hasConductors() {
+		base = 3 // conductor occupies index 2
 	}
-	return 2 // 0=name, 1=group, 2+=options
+	if d.worktreeEnabled {
+		return base + 1
+	}
+	return base
 }
 
 // Validate checks if the dialog values are valid and returns an error message if not
@@ -198,11 +247,31 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "tab", "down":
+			cIdx := d.conductorFocusIndex()
+			// "down" navigates within conductor list before advancing focus
+			if msg.String() == "down" && cIdx >= 0 && d.focusIndex == cIdx {
+				if d.conductorCursor < len(d.conductorSessions) {
+					d.conductorCursor++
+					return d, nil
+				}
+				// At last item — advance past conductor to next field
+				d.focusIndex++
+				branchFocusIdx := 3 // always 3 when conductors present
+				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
+					d.focusIndex = optStart
+				}
+				d.updateFocus()
+				return d, nil
+			}
 			if d.focusIndex < optStart {
-				// Move from name/group/branch to next field
 				d.focusIndex++
 				// Skip branch field if worktree not enabled
-				if d.focusIndex == 2 && !d.worktreeEnabled {
+				// Branch is at index 2 (no conductor) or 3 (with conductor)
+				branchFocusIdx := 2
+				if d.hasConductors() {
+					branchFocusIdx = 3
+				}
+				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
 					d.focusIndex = optStart
 				}
 				d.updateFocus()
@@ -213,10 +282,28 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			return d, nil
 
 		case "shift+tab", "up":
+			cIdx := d.conductorFocusIndex()
+			// "up" navigates within conductor list before retreating focus
+			if msg.String() == "up" && cIdx >= 0 && d.focusIndex == cIdx {
+				if d.conductorCursor > 0 {
+					d.conductorCursor--
+					return d, nil
+				}
+				// At None — retreat to group
+				d.focusIndex = 1
+				d.updateFocus()
+				return d, nil
+			}
+			branchFocusIdx := 2
+			if d.hasConductors() {
+				branchFocusIdx = 3
+			}
 			if d.focusIndex == optStart && d.optionsPanel.AtTop() {
 				// At first option item, move back
 				if d.worktreeEnabled {
-					d.focusIndex = 2 // branch
+					d.focusIndex = branchFocusIdx
+				} else if d.hasConductors() {
+					d.focusIndex = cIdx
 				} else {
 					d.focusIndex = 1 // group
 				}
@@ -224,8 +311,12 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			} else if d.focusIndex < optStart {
 				d.focusIndex--
 				// Skip branch field if worktree not enabled
-				if d.focusIndex == 2 && !d.worktreeEnabled {
-					d.focusIndex = 1
+				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
+					if d.hasConductors() {
+						d.focusIndex = cIdx
+					} else {
+						d.focusIndex = 1
+					}
 				}
 				if d.focusIndex < 0 {
 					d.focusIndex = 0
@@ -299,19 +390,26 @@ func (d *ForkDialog) updateFocus() {
 	d.branchInput.Blur()
 	d.optionsPanel.Blur()
 
+	cIdx := d.conductorFocusIndex()
 	switch d.focusIndex {
 	case 0:
 		d.nameInput.Focus()
 	case 1:
 		d.groupInput.Focus()
-	case 2:
-		if d.worktreeEnabled {
+	default:
+		if cIdx >= 0 && d.focusIndex == cIdx {
+			// Conductor picker focused — no text input to activate
+			return
+		}
+		branchFocusIdx := 2
+		if d.hasConductors() {
+			branchFocusIdx = 3
+		}
+		if d.focusIndex == branchFocusIdx && d.worktreeEnabled {
 			d.branchInput.Focus()
 		} else {
 			d.optionsPanel.Focus()
 		}
-	default:
-		d.optionsPanel.Focus()
 	}
 }
 
@@ -359,6 +457,44 @@ func (d *ForkDialog) View() string {
 	default:
 		nameLabel = labelStyle.Render("  Name:")
 		groupLabel = labelStyle.Render("  Group:")
+	}
+
+	// Conductor parent section (only when conductors exist)
+	conductorSection := ""
+	if d.hasConductors() {
+		cIdx := d.conductorFocusIndex()
+		cLabel := labelStyle.Render("  Conductor:")
+		if d.focusIndex == cIdx {
+			cLabel = activeLabelStyle.Render("▶ Conductor:")
+		}
+		conductorSection += cLabel + "\n"
+
+		home, _ := os.UserHomeDir()
+		shortPath := func(p string) string {
+			if strings.HasPrefix(p, home) {
+				p = "~" + p[len(home):]
+			}
+			return filepath.Base(p)
+		}
+
+		selectedStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+		itemStyle := lipgloss.NewStyle().Foreground(ColorText)
+
+		if d.conductorCursor == 0 {
+			conductorSection += selectedStyle.Render("  ▶ None") + "\n"
+		} else {
+			conductorSection += itemStyle.Render("    None") + "\n"
+		}
+		for i, inst := range d.conductorSessions {
+			name := strings.TrimPrefix(inst.Title, "conductor-")
+			label := name + " (" + shortPath(inst.ProjectPath) + ")"
+			if d.conductorCursor == i+1 {
+				conductorSection += selectedStyle.Render("  ▶ "+label) + "\n"
+			} else {
+				conductorSection += itemStyle.Render("    "+label) + "\n"
+			}
+		}
+		conductorSection += "\n"
 	}
 
 	// Worktree checkbox and branch input (only for git repos)
@@ -419,6 +555,7 @@ func (d *ForkDialog) View() string {
 		"  " + d.nameInput.View() + "\n\n" +
 		groupLabel + "\n" +
 		"  " + d.groupInput.View() + "\n" +
+		conductorSection +
 		worktreeSection +
 		sandboxSection + "\n" +
 		d.optionsPanel.View() +

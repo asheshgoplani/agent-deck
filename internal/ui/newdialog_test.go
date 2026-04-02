@@ -569,7 +569,7 @@ func TestNewDialog_ShowInGroup_ResetsWorktree(t *testing.T) {
 	dialog.worktreeEnabled = true
 	dialog.branchInput.SetValue("feature/old-branch")
 
-	dialog.ShowInGroup("projects", "Projects", "")
+	dialog.ShowInGroup("projects", "Projects", "", nil, "")
 
 	if dialog.worktreeEnabled {
 		t.Error("worktreeEnabled should be reset to false on ShowInGroup")
@@ -582,7 +582,7 @@ func TestNewDialog_ShowInGroup_ResetsWorktree(t *testing.T) {
 func TestNewDialog_ShowInGroup_SetsDefaultPath(t *testing.T) {
 	dialog := NewNewDialog()
 
-	dialog.ShowInGroup("projects", "Projects", "/test/default/path")
+	dialog.ShowInGroup("projects", "Projects", "/test/default/path", nil, "")
 
 	// Verify path input is set to the default path
 	if dialog.pathInput.Value() != "/test/default/path" {
@@ -593,7 +593,7 @@ func TestNewDialog_ShowInGroup_SetsDefaultPath(t *testing.T) {
 func TestNewDialog_ShowInGroup_EmptyDefaultPath(t *testing.T) {
 	dialog := NewNewDialog()
 
-	dialog.ShowInGroup("projects", "Projects", "")
+	dialog.ShowInGroup("projects", "Projects", "", nil, "")
 
 	// With empty default path, it should fall back to current working directory
 	// We can't test the exact value, but we can verify it's not empty
@@ -945,7 +945,7 @@ func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
 func TestNewDialog_ShowInGroup_ClearsError(t *testing.T) {
 	d := NewNewDialog()
 	d.SetError("Previous error")
-	d.ShowInGroup("group", "Group", "")
+	d.ShowInGroup("group", "Group", "", nil, "")
 
 	if d.validationErr != "" {
 		t.Error("ShowInGroup should clear validationErr")
@@ -987,7 +987,7 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 	d := NewNewDialog()
 	d.branchAutoSet = true
 
-	d.ShowInGroup("projects", "Projects", "")
+	d.ShowInGroup("projects", "Projects", "", nil, "")
 
 	if d.branchAutoSet {
 		t.Error("branchAutoSet should be reset to false on ShowInGroup")
