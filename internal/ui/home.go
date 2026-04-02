@@ -556,6 +556,11 @@ type maintenanceCompleteMsg struct {
 // clearMaintenanceMsg signals auto-clear of maintenance banner
 type clearMaintenanceMsg struct{}
 
+// switchToSessionMsg triggers re-attach to a different session (tab switching)
+type switchToSessionMsg struct {
+	instance *session.Instance
+}
+
 // copyResultMsg is sent when async clipboard copy completes
 type copyResultMsg struct {
 	sessionTitle string
@@ -3497,6 +3502,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Continue listening for next change
 		return h, tea.Batch(cmd, listenForReloads(h.storageWatcher))
+
+	case switchToSessionMsg:
+		// Tab switch: immediately re-attach to the target session
+		return h, h.attachSession(msg.instance)
 
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
@@ -7072,6 +7081,23 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		}
 	}
 
+	// --- Split-pane tab strip setup ---
+	// Create a narrow left pane in the target session running the tab-strip process
+	exe, _ := os.Executable()
+	tabStripCmd := fmt.Sprintf("%s tab-strip --current=%s", exe, inst.ID)
+	_ = exec.Command("tmux", "split-window", "-h", "-b", "-l", "16",
+		"-t", tmuxSess.Name+":0", tabStripCmd).Run()
+	// Focus the right pane (the actual session content)
+	_ = exec.Command("tmux", "select-pane", "-t", tmuxSess.Name+":0.1").Run()
+
+	// Register Alt+1-9 key bindings for tab switching
+	for i := 1; i <= 9; i++ {
+		key := fmt.Sprintf("M-%d", i)
+		cmd := fmt.Sprintf("%s tab-switch %d", exe, i)
+		_ = exec.Command("tmux", "bind-key", "-T", "root", key,
+			"run-shell", cmd).Run()
+	}
+
 	// Use tea.Exec with a custom command that runs our Attach method
 	// On return, immediately update all session statuses (don't reload from storage
 	// which would lose the tmux session state)
@@ -7094,11 +7120,55 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// Acknowledgment happens on ATTACH (only if session was waiting/yellow).
 		// This lets running sessions stay green through attach/detach cycles.
 
+		// --- Check for tab switch request ---
+		homeDir, homeErr := os.UserHomeDir()
+		if homeErr == nil {
+			switchFile := filepath.Join(homeDir, ".agent-deck", "tab_switch_request")
+			data, readErr := os.ReadFile(switchFile)
+			if readErr == nil && len(data) > 0 {
+				targetID := strings.TrimSpace(string(data))
+				os.Remove(switchFile)
+				h.cleanupTabStrip(tmuxSess.Name)
+
+				// Find target instance and re-attach
+				h.instancesMu.RLock()
+				for _, candidate := range h.instances {
+					if candidate.ID == targetID {
+						h.instancesMu.RUnlock()
+						return switchToSessionMsg{instance: candidate}
+					}
+				}
+				h.instancesMu.RUnlock()
+			}
+		}
+
+		// No switch request — normal cleanup
+		h.cleanupTabStrip(tmuxSess.Name)
+
 		// Capture current pane CWD after attach returns for optional path follow.
 		currentWorkDir := strings.TrimSpace(tmuxSess.GetWorkDir())
 
 		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir}
 	})
+}
+
+// cleanupTabStrip removes the tab strip pane and unbinds Alt+N keys
+func (h *Home) cleanupTabStrip(sessionName string) {
+	// Kill the tab strip pane (pane 0, the left one)
+	_ = exec.Command("tmux", "kill-pane", "-t", sessionName+":0.0").Run()
+
+	// Unbind Alt+1-9
+	for i := 1; i <= 9; i++ {
+		key := fmt.Sprintf("M-%d", i)
+		_ = exec.Command("tmux", "unbind-key", "-T", "root", key).Run()
+	}
+
+	// Clean up state files
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_current"))
+		os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_switch_request"))
+	}
 }
 
 func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
