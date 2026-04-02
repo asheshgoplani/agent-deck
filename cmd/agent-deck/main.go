@@ -90,19 +90,32 @@ func promptForUpdate() bool {
 	}
 
 	info, err := update.CheckForUpdate(Version, false)
-	if err != nil || info == nil || !info.Available {
+	if err != nil || info == nil {
+		return false
+	}
+
+	sourceRebuild, sourceHead := sourceRebuildNeeded()
+	if !info.Available && !sourceRebuild {
 		return false
 	}
 
 	// If auto_update is disabled, just show notification (don't prompt)
 	if !settings.AutoUpdate {
-		fmt.Fprintf(os.Stderr, "\n💡 Update available: v%s → v%s (run: agent-deck update)\n",
-			info.CurrentVersion, info.LatestVersion)
+		if sourceRebuild {
+			fmt.Fprintf(os.Stderr, "\n💡 Rebuild available: binary %s vs source %s (run: agent-deck update)\n", Commit, sourceHead)
+		} else {
+			fmt.Fprintf(os.Stderr, "\n💡 Update available: v%s → v%s (run: agent-deck update)\n",
+				info.CurrentVersion, info.LatestVersion)
+		}
 		return false
 	}
 
 	// auto_update is enabled - prompt user
-	fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
+	if sourceRebuild {
+		fmt.Printf("\n⬆ Rebuild available: binary %s vs source %s\n", Commit, sourceHead)
+	} else {
+		fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
+	}
 	fmt.Print("Update now? [Y/n]: ")
 
 	var response string
@@ -2123,15 +2136,20 @@ func handleUpdate(args []string) {
 		fmt.Printf("Error checking for updates: %v\n", err)
 		os.Exit(1)
 	}
+	sourceRebuild, sourceHead := sourceRebuildNeeded()
 
-	if !info.Available {
+	if !info.Available && !sourceRebuild {
 		fmt.Println("✓ You're running the latest version!")
 		return
 	}
 
-	fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
-	if info.ReleaseURL != "" {
-		fmt.Printf("  %s\n", info.ReleaseURL)
+	if sourceRebuild && !info.Available {
+		fmt.Printf("\n⬆ Rebuild available: binary %s vs source %s\n", Commit, sourceHead)
+	} else {
+		fmt.Printf("\n⬆ Update available: v%s → v%s\n", info.CurrentVersion, info.LatestVersion)
+		if info.ReleaseURL != "" {
+			fmt.Printf("  %s\n", info.ReleaseURL)
+		}
 	}
 
 	// Fetch and display changelog
@@ -2202,6 +2220,29 @@ func handleUpdate(args []string) {
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
+}
+
+// sourceRebuildNeeded reports whether source-mode should rebuild the binary even
+// when the source checkout is not behind source_ref (e.g. binary commit differs).
+func sourceRebuildNeeded() (bool, string) {
+	settings := session.GetUpdateSettings()
+	if settings.SourceDir == "" || Commit == "" {
+		return false, ""
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	cmd.Dir = settings.SourceDir
+	out, err := cmd.Output()
+	if err != nil {
+		return false, ""
+	}
+
+	head := strings.TrimSpace(string(out))
+	if head == "" || head == Commit {
+		return false, head
+	}
+
+	return true, head
 }
 
 func runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd string) error {
