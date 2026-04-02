@@ -3055,28 +3055,28 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 // 4. Fallback to terminal parsing.
 // 5. If still unavailable, return an empty response (no error).
 func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
+	// For Claude sessions, ensure session ID is current before reading.
+	// After /clear, a new session UUID exists on disk but the stored ID
+	// still points to the old (pre-clear) conversation file — which still
+	// exists and would succeed, returning stale content.
+	if IsClaudeCompatible(i.Tool) {
+		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" && sessionID != i.ClaudeSessionID {
+			i.ClaudeSessionID = sessionID
+			i.ClaudeDetectedAt = time.Now()
+		}
+		i.syncClaudeSessionFromDisk()
+	}
+
 	resp, err := i.GetLastResponse()
 	if err == nil {
 		return resp, nil
 	}
 
-	// Claude-specific recovery path
-	if IsClaudeCompatible(i.Tool) {
-		// Refresh from tmux env (fast path)
-		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
-			i.ClaudeSessionID = sessionID
-			i.ClaudeDetectedAt = time.Now()
-			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
-				return recovered, nil
-			}
-		}
-
-		// Fallback: detect latest session on disk (handles startup race / stale ID)
-		i.syncClaudeSessionFromDisk()
-		if i.ClaudeSessionID != "" {
-			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
-				return recovered, nil
-			}
+	// Claude-specific recovery path (session ID already synced above; retry
+	// only helps if the initial read had a transient error like a truncated file)
+	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" {
+		if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
+			return recovered, nil
 		}
 	}
 

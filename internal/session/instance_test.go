@@ -2024,6 +2024,57 @@ func TestInstance_GetLastResponseBestEffort_ClaudeNoSessionID(t *testing.T) {
 	}
 }
 
+func TestGetLastResponseBestEffort_ReturnsNewSessionAfterClear(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := "/test/clear-project"
+	encodedPath := ConvertToClaudeDirName(projectPath)
+	projectsDir := filepath.Join(tmpDir, "projects", encodedPath)
+	_ = os.MkdirAll(projectsDir, 0o755)
+
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+	defer os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	oldSessionID := "aaaa0000-0000-0000-0000-000000000001"
+	newSessionID := "bbbb0000-0000-0000-0000-000000000002"
+
+	oldContent := `{"type":"user","sessionId":"` + oldSessionID + `","message":{"role":"user","content":"hello"},"timestamp":"2026-01-01T00:00:00Z"}
+{"type":"assistant","sessionId":"` + oldSessionID + `","message":{"role":"assistant","content":"Old stale response"},"timestamp":"2026-01-01T00:00:01Z"}`
+	newContent := `{"type":"user","sessionId":"` + newSessionID + `","message":{"role":"user","content":"new task"},"timestamp":"2026-01-01T00:01:00Z"}
+{"type":"assistant","sessionId":"` + newSessionID + `","message":{"role":"assistant","content":"Fresh response after clear"},"timestamp":"2026-01-01T00:01:01Z"}`
+
+	oldFile := filepath.Join(projectsDir, oldSessionID+".jsonl")
+	newFile := filepath.Join(projectsDir, newSessionID+".jsonl")
+	_ = os.WriteFile(oldFile, []byte(oldContent), 0o644)
+	_ = os.WriteFile(newFile, []byte(newContent), 0o644)
+
+	// Make old file older, new file recent
+	oldTime := time.Now().Add(-10 * time.Minute)
+	_ = os.Chtimes(oldFile, oldTime, oldTime)
+
+	inst := NewInstance("clear-test", projectPath)
+	inst.Tool = "claude"
+	inst.ClaudeSessionID = oldSessionID
+	inst.tmuxSession = nil
+
+	resp, err := inst.GetLastResponseBestEffort()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("response is nil")
+	}
+	if resp.Content != "Fresh response after clear" {
+		t.Errorf("got %q, want %q (stale cache not invalidated after /clear)",
+			resp.Content, "Fresh response after clear")
+	}
+	if inst.ClaudeSessionID != newSessionID {
+		t.Errorf("ClaudeSessionID = %q, want %q", inst.ClaudeSessionID, newSessionID)
+	}
+}
+
 func TestSessionHasConversationData(t *testing.T) {
 	// Create temp directory structure
 	tmpDir := t.TempDir()
