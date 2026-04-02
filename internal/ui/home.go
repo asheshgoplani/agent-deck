@@ -7101,7 +7101,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			data, readErr := os.ReadFile(switchFile)
 			if readErr == nil && len(data) > 0 {
 				targetID := strings.TrimSpace(string(data))
-				os.Remove(switchFile)
+				_ = os.Remove(switchFile)
 				h.cleanupTabStrip(tmuxSess.Name)
 
 				// Find target instance and re-attach (keep isAttaching=true)
@@ -7155,8 +7155,8 @@ func (h *Home) cleanupTabStrip(sessionName string) {
 	// Clean up state files
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
-		os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_current"))
-		os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_switch_request"))
+		_ = os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_current"))
+		_ = os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_switch_request"))
 	}
 }
 

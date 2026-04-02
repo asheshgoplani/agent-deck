@@ -19,16 +19,16 @@ const (
 // Braille spinner frames for running status.
 var brailleSpinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Half-circle pulsation frames for waiting status.
-var halfCircle = []string{"◐", "◓", "◑", "◒"}
+// Half-circle pulsation frames for waiting status (kept for potential future use).
+// var halfCircle = []string{"◐", "◓", "◑", "◒"}
 
-// Dot matrix scale levels for transitions.
-var dotScale = []string{"●", "•", "·", " "}
+// Dot matrix scale levels for transitions (kept for future transition animations).
+// var dotScale = []string{"●", "•", "·", " "}
 
 // tabTransition tracks a dot-matrix animation between status changes.
 type tabTransition struct {
-	frame    int
-	maxFrame int
+	frame      int
+	maxFrame   int
 	fromActive bool // true = collapse (active→passive), false = expand
 }
 

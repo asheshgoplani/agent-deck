@@ -36,17 +36,17 @@ const (
 	hotkeyImport          = "import"
 	hotkeyReload          = "reload"
 	hotkeyDetach          = "detach"
-	hotkeyTab1     = "tab_1"
-	hotkeyTab2     = "tab_2"
-	hotkeyTab3     = "tab_3"
-	hotkeyTab4     = "tab_4"
-	hotkeyTab5     = "tab_5"
-	hotkeyTab6     = "tab_6"
-	hotkeyTab7     = "tab_7"
-	hotkeyTab8     = "tab_8"
-	hotkeyTab9     = "tab_9"
-	hotkeyNextTab  = "next_tab"
-	hotkeyPrevTab  = "prev_tab"
+	hotkeyTab1            = "tab_1"
+	hotkeyTab2            = "tab_2"
+	hotkeyTab3            = "tab_3"
+	hotkeyTab4            = "tab_4"
+	hotkeyTab5            = "tab_5"
+	hotkeyTab6            = "tab_6"
+	hotkeyTab7            = "tab_7"
+	hotkeyTab8            = "tab_8"
+	hotkeyTab9            = "tab_9"
+	hotkeyNextTab         = "next_tab"
+	hotkeyPrevTab         = "prev_tab"
 )
 
 var hotkeyActionOrder = []string{
@@ -109,17 +109,17 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyImport:          "i",
 	hotkeyReload:          "ctrl+r",
 	hotkeyDetach:          "ctrl+q",
-	hotkeyTab1:    "alt+1",
-	hotkeyTab2:    "alt+2",
-	hotkeyTab3:    "alt+3",
-	hotkeyTab4:    "alt+4",
-	hotkeyTab5:    "alt+5",
-	hotkeyTab6:    "alt+6",
-	hotkeyTab7:    "alt+7",
-	hotkeyTab8:    "alt+8",
-	hotkeyTab9:    "alt+9",
-	hotkeyNextTab: "alt+]",
-	hotkeyPrevTab: "alt+[",
+	hotkeyTab1:            "alt+1",
+	hotkeyTab2:            "alt+2",
+	hotkeyTab3:            "alt+3",
+	hotkeyTab4:            "alt+4",
+	hotkeyTab5:            "alt+5",
+	hotkeyTab6:            "alt+6",
+	hotkeyTab7:            "alt+7",
+	hotkeyTab8:            "alt+8",
+	hotkeyTab9:            "alt+9",
+	hotkeyNextTab:         "alt+]",
+	hotkeyPrevTab:         "alt+[",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{

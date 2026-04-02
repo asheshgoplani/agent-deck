@@ -40,7 +40,7 @@ func NewTabStripApp(dbPath, currentID string) (*TabStripApp, error) {
 	// Check if this DB has the instances table
 	rows, checkErr := db.LoadInstances()
 	if checkErr != nil || len(rows) == 0 {
-		db.Close()
+		_ = db.Close()
 		// Try profile path
 		profileDB := filepath.Join(filepath.Dir(dbPath), "profiles", "default", "state.db")
 		db, err = statedb.Open(profileDB)
@@ -121,7 +121,7 @@ func (a *TabStripApp) View() string {
 // Close releases resources.
 func (a *TabStripApp) Close() {
 	if a.db != nil {
-		a.db.Close()
+		_ = a.db.Close()
 	}
 }
 
@@ -154,7 +154,7 @@ func (a *TabStripApp) loadInstances() tea.Msg {
 			Status:      session.Status(r.Status),
 			Tool:        r.Tool,
 			Order:       r.Order,
-			GroupPath:    r.GroupPath,
+			GroupPath:   r.GroupPath,
 			CreatedAt:   r.CreatedAt,
 		}
 		instances = append(instances, inst)

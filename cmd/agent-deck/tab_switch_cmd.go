@@ -32,18 +32,18 @@ func handleTabSwitch(args []string) {
 	if err != nil {
 		return
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	instances, err := db.LoadInstances()
 	if err != nil || len(instances) == 0 {
 		// Try profile path
-		db.Close()
+		_ = db.Close()
 		profileDB := filepath.Join(homeDir, ".agent-deck", "profiles", "default", "state.db")
 		db, err = statedb.Open(profileDB)
 		if err != nil {
 			return
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		instances, err = db.LoadInstances()
 		if err != nil {
 			return

@@ -185,15 +185,13 @@ func TestTabStripStatusIcon(t *testing.T) {
 		t.Error("expected running icon to animate (multiple distinct icons)")
 	}
 
-	// Waiting should cycle
-	icons2 := make(map[string]bool)
+	// Waiting should be static (◐)
 	for i := 0; i < 4; i++ {
 		ts.animFrame = i
 		icon := ts.statusIcon(session.StatusWaiting, "test-id")
-		icons2[icon] = true
-	}
-	if len(icons2) < 2 {
-		t.Error("expected waiting icon to animate")
+		if icon != "◐" {
+			t.Errorf("expected waiting icon ◐, got %s", icon)
+		}
 	}
 }
 
