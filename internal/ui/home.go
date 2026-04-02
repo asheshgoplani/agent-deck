@@ -2028,8 +2028,29 @@ func (h *Home) getSelectedSession() *session.Instance {
 }
 
 type sessionRenderState struct {
-	status session.Status
-	tool   string
+	status    session.Status
+	tool      string
+	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
+}
+
+// cleanPaneTitle strips spinner/done marker characters from a tmux pane title
+// and returns the task description. Returns "" for default/generic titles.
+func cleanPaneTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	// Strip known spinner/done markers, plus any Braille chars (U+2800-28FF)
+	// that Claude Code may use as spinner frames beyond the canonical set.
+	cleaned := tmux.StripSpinnerRunes(title)
+	cleaned = strings.TrimLeftFunc(cleaned, func(r rune) bool {
+		return r >= 0x2800 && r <= 0x28FF
+	})
+	cleaned = strings.TrimSpace(cleaned)
+	switch cleaned {
+	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+		return ""
+	}
+	return cleaned
 }
 
 func (h *Home) getSessionRenderSnapshot() map[string]sessionRenderState {
@@ -2054,10 +2075,17 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
-		snap[inst.ID] = sessionRenderState{
+		state := sessionRenderState{
 			status: inst.GetStatusThreadSafe(),
 			tool:   inst.GetToolThreadSafe(),
 		}
+		// Look up pane title from the already-refreshed tmux cache.
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+			}
+		}
+		snap[inst.ID] = state
 	}
 	h.sessionRenderSnapshot.Store(snap)
 }
@@ -9386,7 +9414,7 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [yolo] [worktree] [sandbox] [multi-repo] [ssh]
+	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
 		"%s%s%s%s%s %s%s%s%s%s%s%s",
 		baseIndent,
@@ -9402,6 +9430,21 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 	)
+
+	// Append pane title filling remaining row space (only for the selected item).
+	// lipgloss.Width(row) accounts for indentation, tree connectors, and all badges,
+	// so deeply-nested sessions with many badges naturally get less pane title space.
+	if selected && instState.paneTitle != "" {
+		remaining := h.width - lipgloss.Width(row) - 2 // -2 for trailing margin
+		if remaining > 10 {
+			pt := instState.paneTitle
+			if lipgloss.Width(pt) > remaining {
+				pt = ansi.Truncate(pt, remaining, "…")
+			}
+			row += DimStyle.Render(" " + pt)
+		}
+	}
+
 	b.WriteString(row)
 	b.WriteString("\n")
 }
