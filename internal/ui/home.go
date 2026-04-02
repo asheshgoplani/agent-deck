@@ -9414,20 +9414,9 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Pane title suffix: show current task description inline (dim) only for the selected item.
-	// Cap length to avoid garbled mid-ANSI truncation by ensureExactWidth on narrow terminals.
-	paneTitleSuffix := ""
-	if selected && instState.paneTitle != "" {
-		pt := instState.paneTitle
-		if lipgloss.Width(pt) > 40 {
-			pt = ansi.Truncate(pt, 40, "…")
-		}
-		paneTitleSuffix = DimStyle.Render(" " + pt)
-	}
-
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges] [paneTitle]
+	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s %s%s%s%s%s%s%s",
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -9440,8 +9429,22 @@ func (h *Home) renderSessionItem(
 		sandboxBadge,
 		multiRepoBadge,
 		sshBadge,
-		paneTitleSuffix,
 	)
+
+	// Append pane title filling remaining row space (only for the selected item).
+	// lipgloss.Width(row) accounts for indentation, tree connectors, and all badges,
+	// so deeply-nested sessions with many badges naturally get less pane title space.
+	if selected && instState.paneTitle != "" {
+		remaining := h.width - lipgloss.Width(row) - 2 // -2 for trailing margin
+		if remaining > 10 {
+			pt := instState.paneTitle
+			if lipgloss.Width(pt) > remaining {
+				pt = ansi.Truncate(pt, remaining, "…")
+			}
+			row += DimStyle.Render(" " + pt)
+		}
+	}
+
 	b.WriteString(row)
 	b.WriteString("\n")
 }
