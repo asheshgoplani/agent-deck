@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -647,6 +648,12 @@ type WorktreeSettings struct {
 	// Set to "" to disable auto-prefixing (just the session name).
 	// Default: "feature/" when not set.
 	BranchPrefix *string `toml:"branch_prefix"`
+
+	// CreateCommand is a custom shell command for creating worktrees.
+	// Template variables: {path}, {branch}, {repo-root}
+	// Executed via "sh -c". If empty, uses standard "git worktree add".
+	// Can also be set per-directory in .agent-deck/config.toml.
+	CreateCommand string `toml:"create_command"`
 }
 
 // Template returns the path template if set, or empty string if nil.
@@ -1397,6 +1404,81 @@ func GetWorktreeSettings() WorktreeSettings {
 	}
 
 	return settings
+}
+
+// ProjectConfig represents per-directory agent-deck configuration
+// loaded from .agent-deck/config.toml by walking up from the project directory.
+type ProjectConfig struct {
+	Worktree WorktreeSettings `toml:"worktree"`
+}
+
+var (
+	projectConfigCache   = make(map[string]*projectConfigEntry)
+	projectConfigCacheMu sync.RWMutex
+)
+
+type projectConfigEntry struct {
+	config    *ProjectConfig
+	timestamp int64
+}
+
+// LoadProjectConfig walks up from startDir looking for .agent-deck/config.toml.
+// Returns nil if none found. Uses a 30-second TTL cache.
+func LoadProjectConfig(startDir string) *ProjectConfig {
+	now := time.Now().Unix()
+
+	projectConfigCacheMu.RLock()
+	if entry, ok := projectConfigCache[startDir]; ok && now-entry.timestamp < 30 {
+		projectConfigCacheMu.RUnlock()
+		return entry.config
+	}
+	projectConfigCacheMu.RUnlock()
+
+	config := loadProjectConfigUncached(startDir)
+
+	projectConfigCacheMu.Lock()
+	projectConfigCache[startDir] = &projectConfigEntry{config: config, timestamp: now}
+	projectConfigCacheMu.Unlock()
+
+	return config
+}
+
+func loadProjectConfigUncached(startDir string) *ProjectConfig {
+	currentPath := startDir
+	for {
+		configFile := filepath.Join(currentPath, ".agent-deck", "config.toml")
+		if data, err := os.ReadFile(configFile); err == nil {
+			var config ProjectConfig
+			if toml.Unmarshal(data, &config) == nil {
+				return &config
+			}
+		}
+
+		parent := filepath.Dir(currentPath)
+		if parent == currentPath || parent == "/" || parent == "." {
+			break
+		}
+		currentPath = parent
+	}
+	return nil
+}
+
+// ResolveWorktreeCreateCommand returns the effective custom worktree command
+// for the given project directory. Resolution order:
+// 1. Per-directory .agent-deck/config.toml (walk-up from projectDir)
+// 2. Global ~/.agent-deck/config.toml [worktree].create_command
+// 3. Empty string (use built-in git worktree add)
+func ResolveWorktreeCreateCommand(projectDir string) string {
+	if projectDir != "" {
+		if projConfig := LoadProjectConfig(projectDir); projConfig != nil {
+			if projConfig.Worktree.CreateCommand != "" {
+				return projConfig.Worktree.CreateCommand
+			}
+		}
+	}
+
+	globalSettings := GetWorktreeSettings()
+	return globalSettings.CreateCommand
 }
 
 // GetUpdateSettings returns update settings with defaults applied

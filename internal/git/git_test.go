@@ -445,7 +445,7 @@ func TestCreateWorktree(t *testing.T) {
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "existing-branch")
+		err := CreateWorktree(dir, worktreePath, "existing-branch", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -471,7 +471,7 @@ func TestCreateWorktree(t *testing.T) {
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "new-branch")
+		err := CreateWorktree(dir, worktreePath, "new-branch", nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -497,7 +497,7 @@ func TestCreateWorktree(t *testing.T) {
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "invalid..branch")
+		err := CreateWorktree(dir, worktreePath, "invalid..branch", nil)
 		if err == nil {
 			t.Error("expected error for invalid branch name")
 		}
@@ -507,11 +507,54 @@ func TestCreateWorktree(t *testing.T) {
 		dir := t.TempDir()
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "branch")
+		err := CreateWorktree(dir, worktreePath, "branch", nil)
 		if err == nil {
 			t.Error("expected error for non-git directory")
 		}
 	})
+
+	t.Run("custom command creates worktree", func(t *testing.T) {
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		worktreePath := filepath.Join(t.TempDir(), "custom-wt")
+		opts := &CreateWorktreeOptions{CreateCommand: "mkdir -p {path}"}
+		err := CreateWorktree(dir, worktreePath, "some-branch", opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+			t.Error("custom command did not create the worktree directory")
+		}
+	})
+
+	t.Run("custom command failure returns error", func(t *testing.T) {
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		worktreePath := filepath.Join(t.TempDir(), "fail-wt")
+		opts := &CreateWorktreeOptions{CreateCommand: "false"}
+		err := CreateWorktree(dir, worktreePath, "some-branch", opts)
+		if err == nil {
+			t.Error("expected error from failing custom command")
+		}
+		if !strings.Contains(err.Error(), "custom worktree command failed") {
+			t.Errorf("expected 'custom worktree command failed' in error, got: %v", err)
+		}
+	})
+}
+
+func TestExpandWorktreeCommand(t *testing.T) {
+	result := ExpandWorktreeCommand(
+		"spt git:worktree:add {path} -b {branch} --repo {repo-root}",
+		"/tmp/wt",
+		"feature/test",
+		"/home/user/repo",
+	)
+	expected := "spt git:worktree:add /tmp/wt -b feature/test --repo /home/user/repo"
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
 }
 
 func TestListWorktrees(t *testing.T) {
@@ -521,7 +564,7 @@ func TestListWorktrees(t *testing.T) {
 
 		// Create a worktree
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-branch", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -568,7 +611,7 @@ func TestRemoveWorktree(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-branch", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -597,7 +640,7 @@ func TestRemoveWorktree(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-branch", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -673,7 +716,7 @@ func TestIntegration_WorktreeLifecycle(t *testing.T) {
 	worktreePath := GenerateWorktreePath(root, "feature-test", "sibling")
 	t.Logf("Creating worktree at: %s", worktreePath)
 
-	if err := CreateWorktree(root, worktreePath, "feature-test"); err != nil {
+	if err := CreateWorktree(root, worktreePath, "feature-test", nil); err != nil {
 		t.Fatalf("failed to create worktree: %v", err)
 	}
 
@@ -923,7 +966,7 @@ func TestPruneWorktrees(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "prune-test"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "prune-test", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -962,7 +1005,7 @@ func TestIsWorktree(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-wt"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-wt", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -985,7 +1028,7 @@ func TestGetMainWorktreePath(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-main"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-main", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1043,7 +1086,7 @@ func TestGetWorktreeBaseRoot(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-base"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-base", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1065,7 +1108,7 @@ func TestGetWorktreeBaseRoot(t *testing.T) {
 		createTestRepo(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-sub"); err != nil {
+		if err := CreateWorktree(dir, worktreePath, "feature-sub", nil); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1105,7 +1148,7 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 
 	// Create first worktree (simulates Session A)
 	wt1Path := filepath.Join(dir, ".worktrees", "feature-a")
-	if err := CreateWorktree(dir, wt1Path, "feature-a"); err != nil {
+	if err := CreateWorktree(dir, wt1Path, "feature-a", nil); err != nil {
 		t.Fatalf("failed to create first worktree: %v", err)
 	}
 
@@ -1124,7 +1167,7 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 
 	// Create second worktree using the resolved base root (simulates Session B fork)
 	wt2Path := GenerateWorktreePath(baseRoot, "feature-b", "subdirectory")
-	if err := CreateWorktree(baseRoot, wt2Path, "feature-b"); err != nil {
+	if err := CreateWorktree(baseRoot, wt2Path, "feature-b", nil); err != nil {
 		t.Fatalf("failed to create second worktree: %v", err)
 	}
 

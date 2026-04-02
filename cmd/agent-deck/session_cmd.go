@@ -516,7 +516,8 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			wtOpts := &git.CreateWorktreeOptions{CreateCommand: session.ResolveWorktreeCreateCommand(repoRoot)}
+			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch, wtOpts); err != nil {
 				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}

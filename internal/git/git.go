@@ -138,26 +138,35 @@ func GenerateWorktreePath(repoDir, branchName, location string) string {
 	}
 }
 
-// CreateWorktree creates a new git worktree at worktreePath for the given branch
-// If the branch doesn't exist, it will be created
-func CreateWorktree(repoDir, worktreePath, branchName string) error {
-	// Validate branch name first
+// CreateWorktreeOptions provides optional configuration for worktree creation.
+type CreateWorktreeOptions struct {
+	// CreateCommand is a shell command template for creating worktrees.
+	// Template variables: {path}, {branch}, {repo-root}
+	// Executed via "sh -c". If empty, the standard "git worktree add" is used.
+	CreateCommand string
+}
+
+// CreateWorktree creates a new git worktree at worktreePath for the given branch.
+// If opts is nil or opts.CreateCommand is empty, uses standard git worktree add.
+// If the branch doesn't exist, it will be created (when using standard git).
+func CreateWorktree(repoDir, worktreePath, branchName string, opts *CreateWorktreeOptions) error {
 	if err := ValidateBranchName(branchName); err != nil {
 		return fmt.Errorf("invalid branch name: %w", err)
 	}
 
-	// Check if it's a git repo
 	if !IsGitRepo(repoDir) {
 		return errors.New("not a git repository")
+	}
+
+	if opts != nil && opts.CreateCommand != "" {
+		return createWorktreeCustom(repoDir, worktreePath, branchName, opts.CreateCommand)
 	}
 
 	var cmd *exec.Cmd
 
 	if BranchExists(repoDir, branchName) {
-		// Use existing branch
 		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", worktreePath, branchName)
 	} else {
-		// Create new branch with -b flag
 		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
 	}
 
@@ -167,6 +176,23 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 	}
 
 	return nil
+}
+
+func createWorktreeCustom(repoDir, worktreePath, branchName, commandTemplate string) error {
+	expanded := ExpandWorktreeCommand(commandTemplate, worktreePath, branchName, repoDir)
+	cmd := exec.Command("sh", "-c", expanded)
+	cmd.Dir = repoDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("custom worktree command failed: %s: %w", strings.TrimSpace(string(output)), err)
+	}
+	return nil
+}
+
+// ExpandWorktreeCommand replaces template variables in a worktree command template.
+func ExpandWorktreeCommand(tmpl, worktreePath, branchName, repoDir string) string {
+	r := strings.NewReplacer("{path}", worktreePath, "{branch}", branchName, "{repo-root}", repoDir)
+	return r.Replace(tmpl)
 }
 
 // ListWorktrees returns all worktrees for the repository at repoDir

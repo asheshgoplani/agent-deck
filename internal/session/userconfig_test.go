@@ -1012,3 +1012,75 @@ inject_status_line = true
 		t.Error("GetInjectStatusLine should be true when set to true")
 	}
 }
+
+func TestLoadProjectConfig(t *testing.T) {
+	t.Run("finds config in current directory", func(t *testing.T) {
+		dir := t.TempDir()
+		configDir := filepath.Join(dir, ".agent-deck")
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`
+[worktree]
+create_command = "my-tool {path} {branch}"
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Clear cache
+		projectConfigCacheMu.Lock()
+		projectConfigCache = make(map[string]*projectConfigEntry)
+		projectConfigCacheMu.Unlock()
+
+		config := LoadProjectConfig(dir)
+		if config == nil {
+			t.Fatal("expected config, got nil")
+		}
+		if config.Worktree.CreateCommand != "my-tool {path} {branch}" {
+			t.Errorf("got %q", config.Worktree.CreateCommand)
+		}
+	})
+
+	t.Run("walks up to find config in parent", func(t *testing.T) {
+		root := t.TempDir()
+		configDir := filepath.Join(root, ".agent-deck")
+		if err := os.MkdirAll(configDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`
+[worktree]
+create_command = "parent-tool {path}"
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		child := filepath.Join(root, "sub", "deep")
+		if err := os.MkdirAll(child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		projectConfigCacheMu.Lock()
+		projectConfigCache = make(map[string]*projectConfigEntry)
+		projectConfigCacheMu.Unlock()
+
+		config := LoadProjectConfig(child)
+		if config == nil {
+			t.Fatal("expected config from parent, got nil")
+		}
+		if config.Worktree.CreateCommand != "parent-tool {path}" {
+			t.Errorf("got %q", config.Worktree.CreateCommand)
+		}
+	})
+
+	t.Run("returns nil when no config exists", func(t *testing.T) {
+		dir := t.TempDir()
+
+		projectConfigCacheMu.Lock()
+		projectConfigCache = make(map[string]*projectConfigEntry)
+		projectConfigCacheMu.Unlock()
+
+		config := LoadProjectConfig(dir)
+		if config != nil {
+			t.Errorf("expected nil, got %+v", config)
+		}
+	})
+}
