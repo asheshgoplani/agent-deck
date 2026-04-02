@@ -275,6 +275,9 @@ type Home struct {
 	// System theme watcher (active when theme="system"; nil otherwise)
 	themeWatcher *ThemeWatcher
 
+	// Tab strip overlay (nil if disabled)
+	tabStrip *TabStripModel
+
 	// Storage warning (shown if storage initialization failed)
 	storageWarning string
 
@@ -506,9 +509,16 @@ type updateCheckMsg struct {
 }
 
 type (
-	tickMsg time.Time
-	quitMsg bool
+	tickMsg         time.Time
+	tabStripTickMsg time.Time
+	quitMsg         bool
 )
+
+func tabStripTick() tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg {
+		return tabStripTickMsg(t)
+	})
+}
 
 // previewFetchedMsg is sent when async preview content is ready
 type previewFetchedMsg struct {
@@ -545,6 +555,11 @@ type maintenanceCompleteMsg struct {
 
 // clearMaintenanceMsg signals auto-clear of maintenance banner
 type clearMaintenanceMsg struct{}
+
+// switchToSessionMsg triggers re-attach to a different session (tab switching)
+type switchToSessionMsg struct {
+	instance *session.Instance
+}
 
 // copyResultMsg is sent when async clipboard copy completes
 type copyResultMsg struct {
@@ -704,6 +719,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Cache full-repaint setting (config.toml [display] full_repaint or AGENTDECK_REPAINT=full)
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		h.fullRepaint = cfg.Display.GetFullRepaint()
+
+		// Initialize tab strip if enabled
+		tsConfig := cfg.TabStrip.TabStripConfig()
+		if tsConfig.GetEnabled() {
+			h.tabStrip = NewTabStrip(tsConfig.Layout, tsConfig.Width, tsConfig.GetShowHotkeyHints())
+		}
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 	}
@@ -1491,6 +1512,11 @@ func (h *Home) Init() tea.Cmd {
 		h.tick(),
 		h.checkForUpdate(),
 		h.fetchRemoteSessions,
+	}
+
+	// Start tab strip animation tick
+	if h.tabStrip != nil {
+		cmds = append(cmds, tabStripTick())
 	}
 
 	// Start listening for storage changes
@@ -3477,6 +3503,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Continue listening for next change
 		return h, tea.Batch(cmd, listenForReloads(h.storageWatcher))
 
+	case switchToSessionMsg:
+		// Tab switch: immediately re-attach to the target session
+		return h, h.attachSession(msg.instance)
+
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
@@ -3801,6 +3831,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case tabStripTickMsg:
+		if h.tabStrip != nil {
+			h.tabStrip.Tick()
+			return h, tabStripTick()
+		}
+		return h, nil
+
 	case tickMsg:
 		var remoteFetchCmd tea.Cmd
 
@@ -3830,6 +3867,18 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.triggerStatusUpdate()
 			}
 			// User idle - no updates needed (cache refresh happens in background worker)
+		}
+
+		// Sync tab strip with current instances
+		if h.tabStrip != nil {
+			h.instancesMu.RLock()
+			h.tabStrip.UpdateInstances(h.instances)
+			ackMap := make(map[string]bool, len(h.instances))
+			for _, inst := range h.instances {
+				ackMap[inst.ID] = inst.IsAcknowledged()
+			}
+			h.instancesMu.RUnlock()
+			h.tabStrip.UpdateUnreadState(ackMap)
 		}
 
 		// Update animation frame for launching spinner (8 frames, cycles every tick)
@@ -4844,6 +4893,34 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				// Attach to remote session via SSH
 				return h, h.attachRemoteSession(item.RemoteName, item.RemoteSession.ID)
+			}
+		}
+		return h, nil
+
+	case "alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9":
+		if h.tabStrip != nil {
+			idx := int(key[4] - '1') // "alt+1" -> 0, "alt+2" -> 1, etc.
+			h.tabStrip.SelectTab(idx)
+			if inst := h.tabStrip.SelectedInstance(); inst != nil && inst.Exists() {
+				return h, h.attachSession(inst)
+			}
+		}
+		return h, nil
+
+	case "alt+]":
+		if h.tabStrip != nil {
+			h.tabStrip.NextTab()
+			if inst := h.tabStrip.SelectedInstance(); inst != nil && inst.Exists() {
+				return h, h.attachSession(inst)
+			}
+		}
+		return h, nil
+
+	case "alt+[":
+		if h.tabStrip != nil {
+			h.tabStrip.PrevTab()
+			if inst := h.tabStrip.SelectedInstance(); inst != nil && inst.Exists() {
+				return h, h.attachSession(inst)
 			}
 		}
 		return h, nil
@@ -6990,6 +7067,23 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		statusLog.Debug("acknowledged_on_attach", slog.String("title", inst.Title))
 	}
 
+	// --- Split-pane tab strip setup ---
+	// Create a narrow left pane in the target session running the tab-strip process
+	exe, _ := os.Executable()
+	tabStripCmd := fmt.Sprintf("%s tab-strip --current=%s", exe, inst.ID)
+	_ = exec.Command("tmux", "split-window", "-v", "-b", "-l", "2",
+		"-t", tmuxSess.Name, tabStripCmd).Run()
+	// Focus the bottom pane (the actual session content)
+	_ = exec.Command("tmux", "select-pane", "-D", "-t", tmuxSess.Name).Run()
+
+	// Register Alt+1-9 key bindings for tab switching
+	for i := 1; i <= 9; i++ {
+		key := fmt.Sprintf("M-%d", i)
+		cmd := fmt.Sprintf("%s tab-switch %d", exe, i)
+		_ = exec.Command("tmux", "bind-key", "-T", "root", key,
+			"run-shell", cmd).Run()
+	}
+
 	// Use tea.Exec with a custom command that runs our Attach method
 	// On return, immediately update all session statuses (don't reload from storage
 	// which would lose the tmux session state)
@@ -6999,24 +7093,71 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// This prevents a race condition where View() could be called with
 		// isAttaching=true before Update() processes statusUpdateMsg,
 		// causing a blank screen on return from attached session
-		h.isAttaching.Store(false) // Atomic store for thread safety
+		// --- Check for tab switch request BEFORE restoring View ---
+		// If switching, keep isAttaching=true so View() returns "" (no flash)
+		homeDir, homeErr := os.UserHomeDir()
+		if homeErr == nil {
+			switchFile := filepath.Join(homeDir, ".agent-deck", "tab_switch_request")
+			data, readErr := os.ReadFile(switchFile)
+			if readErr == nil && len(data) > 0 {
+				targetID := strings.TrimSpace(string(data))
+				_ = os.Remove(switchFile)
+				h.cleanupTabStrip(tmuxSess.Name)
 
-		// NOTE: No manual screen clear here. Bubble Tea's RestoreTerminal()
-		// re-enters alt screen which handles clearing. Direct fmt.Print
-		// of escape codes races with the Bubble Tea renderer.
+				// Find target instance and re-attach (keep isAttaching=true)
+				h.instancesMu.RLock()
+				for _, candidate := range h.instances {
+					if candidate.ID == targetID {
+						h.instancesMu.RUnlock()
+						return switchToSessionMsg{instance: candidate}
+					}
+				}
+				h.instancesMu.RUnlock()
+			}
+		}
 
-		// Update last accessed time to detach time (more accurate than attach time)
+		// No switch request — normal detach, restore View
+		h.isAttaching.Store(false)
+
+		// Update last accessed time to detach time
 		inst.MarkAccessed()
 
-		// NOTE: We don't acknowledge on detach anymore.
-		// Acknowledgment happens on ATTACH (only if session was waiting/yellow).
-		// This lets running sessions stay green through attach/detach cycles.
+		// Normal cleanup
+		h.cleanupTabStrip(tmuxSess.Name)
 
 		// Capture current pane CWD after attach returns for optional path follow.
 		currentWorkDir := strings.TrimSpace(tmuxSess.GetWorkDir())
 
 		return statusUpdateMsg{attachedSessionID: inst.ID, attachedWorkDir: currentWorkDir}
 	})
+}
+
+// cleanupTabStrip removes the tab strip pane and unbinds Alt+N keys
+func (h *Home) cleanupTabStrip(sessionName string) {
+	// Kill the tab strip pane — it was created with split-window -b so it's the leftmost (smallest index).
+	// Get pane count first; only kill if there are 2+ panes (don't kill the last one)
+	countOut, _ := exec.Command("tmux", "list-panes", "-t", sessionName).Output()
+	if paneCount := len(strings.Split(strings.TrimSpace(string(countOut)), "\n")); paneCount >= 2 {
+		// Get the first pane ID
+		firstPaneOut, _ := exec.Command("tmux", "list-panes", "-t", sessionName, "-F", "#{pane_id}").Output()
+		lines := strings.Split(strings.TrimSpace(string(firstPaneOut)), "\n")
+		if len(lines) > 0 {
+			_ = exec.Command("tmux", "kill-pane", "-t", lines[0]).Run()
+		}
+	}
+
+	// Unbind Alt+1-9
+	for i := 1; i <= 9; i++ {
+		key := fmt.Sprintf("M-%d", i)
+		_ = exec.Command("tmux", "unbind-key", "-T", "root", key).Run()
+	}
+
+	// Clean up state files
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		_ = os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_current"))
+		_ = os.Remove(filepath.Join(homeDir, ".agent-deck", "tab_switch_request"))
+	}
 }
 
 func (h *Home) followAttachReturnCwd(msg statusUpdateMsg) {
