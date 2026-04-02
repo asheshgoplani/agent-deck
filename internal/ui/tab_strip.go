@@ -313,7 +313,7 @@ func (ts *TabStripModel) viewHorizontal(width int) string {
 			name = name[:nameWidth]
 		}
 
-		tab := "[" + iconStyle.Render(icon) + " " + name + "]"
+		tab := " " + iconStyle.Render(icon) + " " + name + " "
 		tabs = append(tabs, tab)
 
 		// Underline

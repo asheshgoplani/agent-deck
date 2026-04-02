@@ -7093,20 +7093,8 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// This prevents a race condition where View() could be called with
 		// isAttaching=true before Update() processes statusUpdateMsg,
 		// causing a blank screen on return from attached session
-		h.isAttaching.Store(false) // Atomic store for thread safety
-
-		// NOTE: No manual screen clear here. Bubble Tea's RestoreTerminal()
-		// re-enters alt screen which handles clearing. Direct fmt.Print
-		// of escape codes races with the Bubble Tea renderer.
-
-		// Update last accessed time to detach time (more accurate than attach time)
-		inst.MarkAccessed()
-
-		// NOTE: We don't acknowledge on detach anymore.
-		// Acknowledgment happens on ATTACH (only if session was waiting/yellow).
-		// This lets running sessions stay green through attach/detach cycles.
-
-		// --- Check for tab switch request ---
+		// --- Check for tab switch request BEFORE restoring View ---
+		// If switching, keep isAttaching=true so View() returns "" (no flash)
 		homeDir, homeErr := os.UserHomeDir()
 		if homeErr == nil {
 			switchFile := filepath.Join(homeDir, ".agent-deck", "tab_switch_request")
@@ -7116,7 +7104,7 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 				os.Remove(switchFile)
 				h.cleanupTabStrip(tmuxSess.Name)
 
-				// Find target instance and re-attach
+				// Find target instance and re-attach (keep isAttaching=true)
 				h.instancesMu.RLock()
 				for _, candidate := range h.instances {
 					if candidate.ID == targetID {
@@ -7128,7 +7116,13 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 			}
 		}
 
-		// No switch request — normal cleanup
+		// No switch request — normal detach, restore View
+		h.isAttaching.Store(false)
+
+		// Update last accessed time to detach time
+		inst.MarkAccessed()
+
+		// Normal cleanup
 		h.cleanupTabStrip(tmuxSess.Name)
 
 		// Capture current pane CWD after attach returns for optional path follow.
