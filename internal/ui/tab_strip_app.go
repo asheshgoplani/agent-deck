@@ -32,10 +32,18 @@ type TabStripApp struct {
 
 // NewTabStripApp creates a new standalone tab strip application.
 func NewTabStripApp(dbPath, currentID string) (*TabStripApp, error) {
-	db, err := statedb.Open(dbPath + "?mode=ro")
+	// If the given path has no tables, try profiles/default/state.db
+	db, err := statedb.Open(dbPath)
 	if err != nil {
-		// Try without query param (some drivers don't support it in path)
-		db, err = statedb.Open(dbPath)
+		return nil, err
+	}
+	// Check if this DB has the instances table
+	rows, checkErr := db.LoadInstances()
+	if checkErr != nil || len(rows) == 0 {
+		db.Close()
+		// Try profile path
+		profileDB := filepath.Join(filepath.Dir(dbPath), "profiles", "default", "state.db")
+		db, err = statedb.Open(profileDB)
 		if err != nil {
 			return nil, err
 		}
