@@ -7677,8 +7677,23 @@ func (h *Home) View() string {
 	if h.debugMode {
 		debugBarHeight = 1
 	}
-	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug
-	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight
+	// Tab strip bar height
+	tabStripHeight := 0
+	if h.tabStrip != nil && len(h.tabStrip.instances) > 0 {
+		if h.tabStrip.layout == TabStripHorizontal {
+			tabStripHeight = 2 // tab line + underline
+		}
+		// Vertical layout is rendered inside the content area, not as extra height
+	}
+
+	// Height breakdown: -1 header, -filterBarHeight filter, -updateBannerHeight banner, -maintenanceBannerHeight maintenance, -helpBarHeight help, -debugBarHeight debug, -tabStripHeight tab strip
+	contentHeight := h.height - 1 - helpBarHeight - updateBannerHeight - maintenanceBannerHeight - filterBarHeight - debugBarHeight - tabStripHeight
+
+	// Render horizontal tab strip above content
+	if h.tabStrip != nil && tabStripHeight > 0 {
+		b.WriteString(h.tabStrip.View(h.width))
+		b.WriteString("\n")
+	}
 
 	// Route to appropriate layout based on terminal width
 	layoutMode := h.getLayoutMode()
@@ -8163,9 +8178,20 @@ func ensureExactWidth(content string, width int) string {
 func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
 
+	// Render vertical tab strip as narrow left column if enabled
+	tabStripWidth := 0
+	tabStripContent := ""
+	if h.tabStrip != nil && h.tabStrip.layout == TabStripVertical && len(h.tabStrip.instances) > 0 {
+		tabStripWidth = h.tabStrip.width + 1 // +1 for separator
+		tabStripContent = h.tabStrip.View(contentHeight)
+		tabStripContent = ensureExactHeight(tabStripContent, contentHeight)
+		tabStripContent = ensureExactWidth(tabStripContent, h.tabStrip.width)
+	}
+
 	// Calculate panel widths (35% left, 65% right for more preview space)
-	leftWidth := int(float64(h.width) * 0.35)
-	rightWidth := h.width - leftWidth - 3 // -3 for separator
+	availableWidth := h.width - tabStripWidth
+	leftWidth := int(float64(availableWidth) * 0.35)
+	rightWidth := availableWidth - leftWidth - 3 // -3 for separator
 
 	// Panel title is exactly 2 lines (title + underline)
 	// Panel content gets the remaining space: contentHeight - 2
@@ -8204,7 +8230,18 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	rightPanel = ensureExactWidth(rightPanel, rightWidth)
 
 	// Join panels horizontally - all components have exact heights AND widths now
-	mainContent := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
+	var mainContent string
+	if tabStripWidth > 0 {
+		// Add vertical tab strip + thin separator before the main panels
+		tabSepLines := make([]string, contentHeight)
+		for i := range tabSepLines {
+			tabSepLines[i] = separatorStyle.Render("│")
+		}
+		tabSep := strings.Join(tabSepLines, "\n")
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, tabStripContent, tabSep, leftPanel, separator, rightPanel)
+	} else {
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, separator, rightPanel)
+	}
 
 	// Safety net: enforce per-line MaxWidth on the joined output.
 	// Even with ensureExactWidth, JoinHorizontal can produce lines wider than
