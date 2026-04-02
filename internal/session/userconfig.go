@@ -126,6 +126,9 @@ type UserConfig struct {
 
 	// Costs defines cost tracking and budget settings
 	Costs CostsSettings `toml:"costs"`
+
+	// TabStrip defines the persistent tab strip overlay settings
+	TabStrip TabStripSettings `toml:"tab_strip"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -942,6 +945,49 @@ func (d DisplaySettings) GetFullRepaint() bool {
 		return true
 	}
 	return d.FullRepaint
+}
+
+// TabStripSettings configures the persistent tab strip overlay.
+type TabStripSettings struct {
+	// Enabled shows the tab strip overlay (default: true)
+	Enabled *bool `toml:"enabled"`
+
+	// Layout controls the strip orientation: "vertical" (default) or "horizontal"
+	Layout string `toml:"layout"`
+
+	// Width is the column width of the vertical tab strip (default: 15)
+	Width int `toml:"width"`
+
+	// ShowHotkeyHints displays hotkey hints in the strip (default: true)
+	ShowHotkeyHints *bool `toml:"show_hotkey_hints"`
+}
+
+// GetEnabled returns whether the tab strip is enabled (default: true).
+func (t *TabStripSettings) GetEnabled() bool {
+	if t.Enabled == nil {
+		return true
+	}
+	return *t.Enabled
+}
+
+// GetShowHotkeyHints returns whether hotkey hints are shown (default: true).
+func (t *TabStripSettings) GetShowHotkeyHints() bool {
+	if t.ShowHotkeyHints == nil {
+		return true
+	}
+	return *t.ShowHotkeyHints
+}
+
+// TabStripConfig returns the settings with defaults applied.
+func (t TabStripSettings) TabStripConfig() TabStripSettings {
+	result := t
+	if result.Layout == "" {
+		result.Layout = "vertical"
+	}
+	if result.Width == 0 {
+		result.Width = 15
+	}
+	return result
 }
 
 // Default user config (empty maps)
