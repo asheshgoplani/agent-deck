@@ -3864,7 +3864,12 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.tabStrip != nil {
 			h.instancesMu.RLock()
 			h.tabStrip.UpdateInstances(h.instances)
+			ackMap := make(map[string]bool, len(h.instances))
+			for _, inst := range h.instances {
+				ackMap[inst.ID] = inst.IsAcknowledged()
+			}
 			h.instancesMu.RUnlock()
+			h.tabStrip.UpdateUnreadState(ackMap)
 		}
 
 		// Update animation frame for launching spinner (8 frames, cycles every tick)

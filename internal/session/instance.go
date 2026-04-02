@@ -4492,6 +4492,15 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 	i.tmuxSession.Acknowledge()
 }
 
+// IsAcknowledged returns whether the underlying tmux session has been
+// acknowledged (i.e. the user has seen the idle/waiting state).
+func (i *Instance) IsAcknowledged() bool {
+	if i.tmuxSession == nil {
+		return false
+	}
+	return i.tmuxSession.IsAcknowledged()
+}
+
 // SyncTmuxDisplayName updates the tmux status bar to reflect the current title.
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
