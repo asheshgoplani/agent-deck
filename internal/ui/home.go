@@ -7086,9 +7086,9 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	exe, _ := os.Executable()
 	tabStripCmd := fmt.Sprintf("%s tab-strip --current=%s", exe, inst.ID)
 	_ = exec.Command("tmux", "split-window", "-h", "-b", "-l", "16",
-		"-t", tmuxSess.Name+":0", tabStripCmd).Run()
-	// Focus the right pane (the actual session content)
-	_ = exec.Command("tmux", "select-pane", "-t", tmuxSess.Name+":0.1").Run()
+		"-t", tmuxSess.Name, tabStripCmd).Run()
+	// Focus the right pane (the actual session content) — pane index 1
+	_ = exec.Command("tmux", "select-pane", "-R", "-t", tmuxSess.Name).Run()
 
 	// Register Alt+1-9 key bindings for tab switching
 	for i := 1; i <= 9; i++ {
@@ -7154,8 +7154,17 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 
 // cleanupTabStrip removes the tab strip pane and unbinds Alt+N keys
 func (h *Home) cleanupTabStrip(sessionName string) {
-	// Kill the tab strip pane (pane 0, the left one)
-	_ = exec.Command("tmux", "kill-pane", "-t", sessionName+":0.0").Run()
+	// Kill the tab strip pane — it was created with split-window -b so it's the leftmost (smallest index).
+	// Get pane count first; only kill if there are 2+ panes (don't kill the last one)
+	countOut, _ := exec.Command("tmux", "list-panes", "-t", sessionName).Output()
+	if paneCount := len(strings.Split(strings.TrimSpace(string(countOut)), "\n")); paneCount >= 2 {
+		// Get the first pane ID
+		firstPaneOut, _ := exec.Command("tmux", "list-panes", "-t", sessionName, "-F", "#{pane_id}").Output()
+		lines := strings.Split(strings.TrimSpace(string(firstPaneOut)), "\n")
+		if len(lines) > 0 {
+			_ = exec.Command("tmux", "kill-pane", "-t", lines[0]).Run()
+		}
+	}
 
 	// Unbind Alt+1-9
 	for i := 1; i <= 9; i++ {
