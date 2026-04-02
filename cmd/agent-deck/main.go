@@ -280,6 +280,9 @@ func main() {
 		case "hooks":
 			handleHooks(args[1:])
 			return
+		case "tab-strip":
+			handleTabStrip(args[1:])
+			return
 		case "codex-hooks":
 			handleCodexHooks(args[1:])
 			return
