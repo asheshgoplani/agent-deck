@@ -45,15 +45,10 @@ func checkForSourceUpdate(currentVersion string, forceCheck bool, settings sessi
 		return info, fmt.Errorf("source_dir %q is not a git repository", settings.SourceDir)
 	}
 
-	// Try to use cache first (unless force check)
-	if !forceCheck {
-		cache, err := loadCache()
-		if err == nil && time.Since(cache.CheckedAt) < checkInterval {
-			info.LatestVersion = cache.LatestVersion
-			info.Available = cache.LatestVersion != cache.CurrentVersion
-			return info, nil
-		}
-	}
+	// Source-mode updates must be commit-aware. Version strings can remain the same
+	// across multiple commits on a branch (e.g. origin/dev), so cache-only checks
+	// can incorrectly suppress updates. Always evaluate git state directly.
+	_ = forceCheck
 
 	remote, branch := splitRef(settings.SourceRef)
 
