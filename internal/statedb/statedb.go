@@ -282,6 +282,10 @@ func (s *StateDB) Migrate() error {
 					return fmt.Errorf("statedb: migrate v4 is_conductor: %w", err)
 				}
 			}
+			// Backfill: mark existing sessions whose title starts with "conductor-"
+			if _, err := tx.Exec(`UPDATE instances SET is_conductor = 1 WHERE title LIKE 'conductor-%'`); err != nil {
+				return fmt.Errorf("statedb: migrate v4 backfill is_conductor: %w", err)
+			}
 		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
