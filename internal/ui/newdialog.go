@@ -313,7 +313,6 @@ func (d *NewDialog) IsRecentPickerOpen() bool {
 	return d.showRecentPicker && len(d.recentSessions) > 0
 }
 
-
 // SetRecentSessions sets the list of recently deleted session configs.
 func (d *NewDialog) SetRecentSessions(sessions []*statedb.RecentSessionRow) {
 	d.recentSessions = sessions

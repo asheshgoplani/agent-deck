@@ -147,11 +147,6 @@ func TestRebuildFocusTargets_WithConductors_IncludesConductorField(t *testing.T)
 
 // --- Up/down navigation ---
 
-func sendKey(d *NewDialog, key string) *NewDialog {
-	updated, _ := d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-	return updated
-}
-
 func sendSpecialKey(d *NewDialog, keyType tea.KeyType) *NewDialog {
 	updated, _ := d.Update(tea.KeyMsg{Type: keyType})
 	return updated
@@ -282,4 +277,3 @@ func TestView_SelectedConductorMarked(t *testing.T) {
 		t.Error("selected conductor should be marked with ▶")
 	}
 }
-
