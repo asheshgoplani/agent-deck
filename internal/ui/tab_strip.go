@@ -175,7 +175,7 @@ func (ts *TabStripModel) statusIcon(status session.Status, id string) string {
 	case session.StatusRunning:
 		return brailleSpinner[ts.animFrame%len(brailleSpinner)]
 	case session.StatusWaiting:
-		return halfCircle[ts.animFrame%len(halfCircle)]
+		return "◐"
 	case session.StatusStarting:
 		return brailleSpinner[ts.animFrame%len(brailleSpinner)]
 	case session.StatusIdle:

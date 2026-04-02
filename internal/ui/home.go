@@ -7067,28 +7067,14 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		statusLog.Debug("acknowledged_on_attach", slog.String("title", inst.Title))
 	}
 
-	// Set tmux status-right on target session to show tab strip
-	if h.tabStrip != nil {
-		h.instancesMu.RLock()
-		h.tabStrip.UpdateInstances(h.instances)
-		h.instancesMu.RUnlock()
-		statusFmt := h.tabStrip.TmuxStatusFormat()
-		if statusFmt != "" {
-			_ = exec.Command("tmux", "set-option", "-t", tmuxSess.Name,
-				"status-right", statusFmt).Run()
-			_ = exec.Command("tmux", "set-option", "-t", tmuxSess.Name,
-				"status-right-length", "120").Run()
-		}
-	}
-
 	// --- Split-pane tab strip setup ---
 	// Create a narrow left pane in the target session running the tab-strip process
 	exe, _ := os.Executable()
 	tabStripCmd := fmt.Sprintf("%s tab-strip --current=%s", exe, inst.ID)
-	_ = exec.Command("tmux", "split-window", "-h", "-b", "-l", "16",
+	_ = exec.Command("tmux", "split-window", "-v", "-b", "-l", "2",
 		"-t", tmuxSess.Name, tabStripCmd).Run()
-	// Focus the right pane (the actual session content) — pane index 1
-	_ = exec.Command("tmux", "select-pane", "-R", "-t", tmuxSess.Name).Run()
+	// Focus the bottom pane (the actual session content)
+	_ = exec.Command("tmux", "select-pane", "-D", "-t", tmuxSess.Name).Run()
 
 	// Register Alt+1-9 key bindings for tab switching
 	for i := 1; i <= 9; i++ {

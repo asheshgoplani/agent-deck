@@ -52,7 +52,7 @@ func NewTabStripApp(dbPath, currentID string) (*TabStripApp, error) {
 	homeDir, _ := os.UserHomeDir()
 	tabFile := filepath.Join(homeDir, ".agent-deck", "tab_current")
 
-	ts := NewTabStrip("vertical", 20, false)
+	ts := NewTabStrip("horizontal", 0, false)
 
 	app := &TabStripApp{
 		tabStrip:  ts,
@@ -110,6 +110,10 @@ func (a *TabStripApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *TabStripApp) View() string {
 	if a.err != nil {
 		return "error: " + a.err.Error()
+	}
+	// Horizontal layout uses width, vertical uses height
+	if a.tabStrip.layout == TabStripHorizontal {
+		return a.tabStrip.View(a.width)
 	}
 	return a.tabStrip.View(a.height)
 }
