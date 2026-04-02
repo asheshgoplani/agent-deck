@@ -292,6 +292,9 @@ func main() {
 		case "debug-dump":
 			handleDebugDump()
 			return
+		case "tab-switch":
+			handleTabSwitch(args[1:])
+			return
 		}
 	}
 
