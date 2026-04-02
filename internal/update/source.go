@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,13 +73,13 @@ func checkForSourceUpdate(currentVersion string, forceCheck bool, settings sessi
 		}
 	}
 
-	// Only offer update if HEAD is strictly behind the remote (no local-only commits).
-	// This avoids prompting when on a feature branch that has diverged.
+	// Offer update whenever local HEAD is behind source_ref, including divergence.
+	// Divergence can happen after force-push rewrites; update flow will reconcile.
 	behindCount, _ := sourceGitCmd(settings.SourceDir, "rev-list", "--count", "HEAD.."+settings.SourceRef)
 	aheadCount, _ := sourceGitCmd(settings.SourceDir, "rev-list", "--count", settings.SourceRef+"..HEAD")
 	behind := behindCount != "" && behindCount != "0"
 	ahead := aheadCount != "" && aheadCount != "0"
-	available := behind && !ahead
+	available := behind
 
 	cache := &UpdateCache{
 		CheckedAt:      time.Now(),
@@ -89,7 +90,11 @@ func checkForSourceUpdate(currentVersion string, forceCheck bool, settings sessi
 
 	info.LatestVersion = remoteVersion
 	if available {
-		info.ReleaseURL = fmt.Sprintf("%s new commit(s) on %s", behindCount, settings.SourceRef)
+		if ahead {
+			info.ReleaseURL = fmt.Sprintf("%s new commit(s) on %s (diverged: %s local-only commit(s))", behindCount, settings.SourceRef, aheadCount)
+		} else {
+			info.ReleaseURL = fmt.Sprintf("%s new commit(s) on %s", behindCount, settings.SourceRef)
+		}
 	}
 	info.Available = available
 
@@ -113,13 +118,45 @@ func performSourceUpdate(settings session.UpdateSettings) error {
 		return fmt.Errorf("failed to resolve executable path: %w", err)
 	}
 
-	// Pull latest from remote
-	fmt.Printf("Pulling latest from %s...\n", settings.SourceRef)
-	pullOut, err := sourceGitCmd(settings.SourceDir, "pull", remote, branch)
-	if err != nil {
-		return fmt.Errorf("git pull failed: %w", err)
+	// Fetch latest from remote.
+	if _, err := sourceGitCmd(settings.SourceDir, "fetch", remote, branch); err != nil {
+		return fmt.Errorf("git fetch failed: %w", err)
 	}
-	fmt.Println(pullOut)
+
+	// Never rewrite a dirty source checkout.
+	porcelain, err := sourceGitCmd(settings.SourceDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status failed: %w", err)
+	}
+	if strings.TrimSpace(porcelain) != "" {
+		return fmt.Errorf("source_dir has uncommitted changes; commit/stash before update")
+	}
+
+	behindCount, _ := sourceGitCmd(settings.SourceDir, "rev-list", "--count", "HEAD.."+settings.SourceRef)
+	aheadCount, _ := sourceGitCmd(settings.SourceDir, "rev-list", "--count", settings.SourceRef+"..HEAD")
+	behind, _ := strconv.Atoi(strings.TrimSpace(behindCount))
+	ahead, _ := strconv.Atoi(strings.TrimSpace(aheadCount))
+
+	// Reconcile source checkout state.
+	// - diverged (ahead+behind): hard-reset to source_ref (force-push safe)
+	// - behind only: fast-forward pull
+	// - up-to-date or ahead-only: keep local HEAD and rebuild
+	fmt.Printf("Pulling latest from %s...\n", settings.SourceRef)
+	switch {
+	case behind > 0 && ahead > 0:
+		fmt.Printf("Source checkout diverged (%d behind, %d ahead), resetting to %s...\n", behind, ahead, settings.SourceRef)
+		if _, err := sourceGitCmd(settings.SourceDir, "reset", "--hard", settings.SourceRef); err != nil {
+			return fmt.Errorf("git reset failed: %w", err)
+		}
+	case behind > 0:
+		pullOut, err := sourceGitCmd(settings.SourceDir, "pull", "--ff-only", remote, branch)
+		if err != nil {
+			return fmt.Errorf("git pull failed: %w", err)
+		}
+		fmt.Println(pullOut)
+	default:
+		fmt.Println("Already up to date.")
+	}
 
 	// Build directly to the install path.
 	// On macOS, go build applies an ad-hoc code signature. Copying the binary
