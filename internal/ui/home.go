@@ -122,6 +122,10 @@ const (
 	LayoutModeDual    = "dual"    // 80+ cols: side-by-side
 )
 
+// FilterKeyActive is the keyboard shortcut for the "open" status filter
+// (shows all sessions except error/stopped). Change this constant to rebind.
+const FilterKeyActive = "%"
+
 // PreviewMode defines what to show in the preview pane
 type PreviewMode int
 
@@ -338,7 +342,9 @@ type Home struct {
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
-	fullRepaint bool
+	fullRepaint       bool
+	defaultFilter     string // from config.toml [display] default_filter
+	activeFilterLabel string // from config.toml [display] active_filter_label
 
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
@@ -701,9 +707,11 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	h.reloadHotkeysFromConfig()
 
-	// Cache full-repaint setting (config.toml [display] full_repaint or AGENTDECK_REPAINT=full)
+	// Cache display settings (config.toml [display])
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		h.fullRepaint = cfg.Display.GetFullRepaint()
+		h.defaultFilter = cfg.Display.DefaultFilter
+		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 	}
@@ -714,6 +722,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	// Restore persisted UI state (preview mode, status filter, cursor position)
 	h.loadUIState()
+
+	// Apply default_filter from config if no filter was restored from persisted state.
+	// Auto-clears if no sessions match (handled in rebuildFlatItems).
+	if h.statusFilter == "" && h.defaultFilter != "" {
+		h.statusFilter = session.Status(h.defaultFilter)
+	}
 
 	tmuxSettings := session.GetTmuxSettings()
 	h.manageTmuxNotifications = tmuxSettings.GetInjectStatusLine()
@@ -1117,7 +1131,7 @@ func (h *Home) rebuildFlatItems() {
 		groupsWithMatches := make(map[string]bool)
 		for _, item := range allItems {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Status == h.statusFilter {
+				if matchesStatusFilter(h.statusFilter, item.Session.Status) {
 					// Mark this session's group and all parent groups as having matches
 					groupsWithMatches[item.Path] = true
 					// Also mark parent paths
@@ -1140,7 +1154,7 @@ func (h *Home) rebuildFlatItems() {
 				}
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Keep session if it matches the filter
-				if item.Session.Status == h.statusFilter {
+				if matchesStatusFilter(h.statusFilter, item.Session.Status) {
 					filtered = append(filtered, item)
 				}
 			}
@@ -5561,6 +5575,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case FilterKeyActive, "shift+5":
+		// Filter to open sessions (excludes error/stopped)
+		if h.statusFilter == session.StatusActive {
+			h.statusFilter = "" // Toggle off
+		} else {
+			h.statusFilter = session.StatusActive
+		}
+		h.rebuildFlatItems()
+		return h, nil
 	}
 
 	return h, nil
@@ -7299,12 +7323,24 @@ func (h *Home) renderFilterBar() string {
 	// Build pills
 	var pills []string
 
-	// "All" pill
-	allLabel := "All"
-	if h.statusFilter == "" {
-		pills = append(pills, activePillStyle.Render(allLabel))
+	// "All" / "Open" pill
+	isActive := h.statusFilter == session.StatusActive
+	activeLabel := h.activeFilterLabel
+	if activeLabel == "" {
+		activeLabel = "Open"
+	}
+	// "All" is shorter than "Open" — pad with a trailing space outside the pill
+	// so toggling doesn't shift the bar, without extending the highlight.
+	allPad := ""
+	if len(activeLabel) > len("All") {
+		allPad = " "
+	}
+	if isActive {
+		pills = append(pills, activePillStyle.Render(activeLabel))
+	} else if h.statusFilter == "" {
+		pills = append(pills, activePillStyle.Render("All")+allPad)
 	} else {
-		pills = append(pills, inactivePillStyle.Render(allLabel))
+		pills = append(pills, inactivePillStyle.Render("All")+allPad)
 	}
 
 	// Running pill (green when active, dim if 0)
@@ -7341,7 +7377,7 @@ func (h *Home) renderFilterBar() string {
 		pills = append(pills, dimPillStyle.Render(waitingLabel))
 	}
 
-	// Idle pill (gray when active)
+	// Idle pill (gray when selected, dimmed when active filter hides it)
 	idleLabel := fmt.Sprintf("○ %d", idle)
 	if h.statusFilter == session.StatusIdle {
 		pills = append(pills, lipgloss.NewStyle().
@@ -7349,16 +7385,16 @@ func (h *Home) renderFilterBar() string {
 			Background(ColorTextDim).
 			Bold(true).
 			Padding(0, 1).Render(idleLabel))
-	} else if idle > 0 {
+	} else if idle == 0 {
+		pills = append(pills, dimPillStyle.Render(idleLabel))
+	} else {
 		pills = append(pills, lipgloss.NewStyle().
 			Foreground(ColorText).
 			Background(ColorSurface).
 			Padding(0, 1).Render(idleLabel))
-	} else {
-		pills = append(pills, dimPillStyle.Render(idleLabel))
 	}
 
-	// Error pill (red when active)
+	// Error pill (red when selected, dimmed when active filter hides it)
 	if errored > 0 || h.statusFilter == session.StatusError {
 		errorLabel := fmt.Sprintf("✕ %d", errored)
 		if h.statusFilter == session.StatusError {
@@ -7367,6 +7403,8 @@ func (h *Home) renderFilterBar() string {
 				Background(ColorRed).
 				Bold(true).
 				Padding(0, 1).Render(errorLabel))
+		} else if isActive {
+			pills = append(pills, dimPillStyle.Render(errorLabel))
 		} else if errored > 0 {
 			pills = append(pills, lipgloss.NewStyle().
 				Foreground(ColorRed).
@@ -7375,9 +7413,8 @@ func (h *Home) renderFilterBar() string {
 		}
 	}
 
-	// Hint for keyboard shortcuts (shift+number to filter, 0 to clear)
-	hintStyle := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
-	hint := hintStyle.Render("  !@#$ filter • 0 all")
+	// Hint for keyboard shortcuts (cached — content is static)
+	hint := cachedFilterBarHint()
 
 	// Join pills with spaces (leading space replaces Padding)
 	filterRow := " " + strings.Join(pills, " ") + hint
@@ -11651,4 +11688,30 @@ func getSessionContent(inst *session.Instance) (string, error) {
 	}
 
 	return content, nil
+}
+
+// matchesStatusFilter returns true if the given session status matches the
+// current filter. For StatusActive, everything except error/stopped matches
+// (including StatusStarting — sessions being launched count as active).
+// See also isLiveSessionStatus in session/transition_notifier.go which uses
+// a positive enumeration for a different purpose (notification transitions).
+func matchesStatusFilter(filter, status session.Status) bool {
+	if filter == session.StatusActive {
+		return status != session.StatusError && status != session.StatusStopped
+	}
+	return status == filter
+}
+
+// cachedFilterBarHint returns the static filter bar hint string.
+// Cached after first call since the content never changes after theme init.
+var _cachedFilterBarHint string
+
+func cachedFilterBarHint() string {
+	if _cachedFilterBarHint == "" {
+		_cachedFilterBarHint = lipgloss.NewStyle().
+			Foreground(ColorComment).
+			Faint(true).
+			Render("  !@#$ filter • 0 all • " + FilterKeyActive + " open")
+	}
+	return _cachedFilterBarHint
 }

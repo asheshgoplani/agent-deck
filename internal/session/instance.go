@@ -48,6 +48,7 @@ const (
 	StatusError    Status = "error"
 	StatusStarting Status = "starting" // Session is being created (tmux initializing)
 	StatusStopped  Status = "stopped"  // Session intentionally stopped by user (not crashed)
+	StatusActive   Status = "active"   // Pseudo-status for filter: excludes error/stopped (never assigned to a session)
 )
 
 const wrapperPlaceholder = "{command}"

@@ -933,6 +933,16 @@ type DisplaySettings struct {
 	// Can also be enabled via AGENTDECK_REPAINT=full env var.
 	// Default: false
 	FullRepaint bool `toml:"full_repaint"`
+
+	// DefaultFilter sets the initial status filter when the TUI opens.
+	// Valid values: "" (all, default), "active" (hides error/stopped),
+	// "running", "waiting", "idle", "error".
+	// If set to "active" and no non-error sessions exist, falls back to showing all.
+	DefaultFilter string `toml:"default_filter"`
+
+	// ActiveFilterLabel sets the label shown on the filter pill when the active
+	// filter is engaged. Default: "Open". Examples: "Active", "Live", "Open".
+	ActiveFilterLabel string `toml:"active_filter_label"`
 }
 
 // GetFullRepaint returns whether full-repaint mode is active, checking

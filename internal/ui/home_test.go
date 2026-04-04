@@ -2098,3 +2098,30 @@ func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 		t.Errorf("expected 1 session in flatItems with error filter, got %d", sessionCount)
 	}
 }
+
+func TestMatchesStatusFilter(t *testing.T) {
+	tests := []struct {
+		filter session.Status
+		status session.Status
+		want   bool
+	}{
+		// Active filter: excludes error and stopped only
+		{session.StatusActive, session.StatusRunning, true},
+		{session.StatusActive, session.StatusWaiting, true},
+		{session.StatusActive, session.StatusIdle, true},
+		{session.StatusActive, session.StatusStarting, true},
+		{session.StatusActive, session.StatusError, false},
+		{session.StatusActive, session.StatusStopped, false},
+		// Concrete status filters: exact match
+		{session.StatusRunning, session.StatusRunning, true},
+		{session.StatusRunning, session.StatusWaiting, false},
+		{session.StatusError, session.StatusError, true},
+		{session.StatusError, session.StatusStopped, false},
+	}
+	for _, tt := range tests {
+		got := matchesStatusFilter(tt.filter, tt.status)
+		if got != tt.want {
+			t.Errorf("matchesStatusFilter(%q, %q) = %v, want %v", tt.filter, tt.status, got, tt.want)
+		}
+	}
+}
