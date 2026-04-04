@@ -711,10 +711,72 @@ func TestInstance_UpdateClaudeSession_PreservesExistingID(t *testing.T) {
 	}
 }
 
-// TestSyncClaudeSessionFromDisk_PicksUpNewerSession verifies that when a newer
-// session file appears on disk (e.g., after /clear), syncClaudeSessionFromDisk
-// updates the instance's ClaudeSessionID.
-func TestSyncClaudeSessionFromDisk_PicksUpNewerSession(t *testing.T) {
+// TestInstance_UpdateClaudeSession_RejectZombie verifies that when the tmux env
+// contains a zombie session ID (no conversation data) and the current session has
+// real data, the zombie is rejected and the current session is preserved.
+func TestInstance_UpdateClaudeSession_RejectZombie(t *testing.T) {
+	skipIfNoTmuxServer(t)
+
+	configDir := t.TempDir()
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		} else {
+			os.Unsetenv("CLAUDE_CONFIG_DIR")
+		}
+	}()
+
+	projectPath := "/tmp/claude-zombie-reject"
+	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("mkdir project dir: %v", err)
+	}
+
+	currentID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	candidateID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+	// Current ID has conversation data.
+	if err := os.WriteFile(
+		filepath.Join(projectDir, currentID+".jsonl"),
+		[]byte(`{"sessionId":"`+currentID+`","type":"user"}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write current session: %v", err)
+	}
+	// Candidate exists but has no conversation data (zombie).
+	if err := os.WriteFile(
+		filepath.Join(projectDir, candidateID+".jsonl"),
+		[]byte(`{"type":"file-history-snapshot"}`),
+		0o644,
+	); err != nil {
+		t.Fatalf("write candidate session: %v", err)
+	}
+
+	inst := NewInstanceWithTool("reject-zombie-test", projectPath, "claude")
+	inst.ClaudeSessionID = currentID
+	inst.ClaudeDetectedAt = time.Now().Add(-1 * time.Minute)
+
+	if err := inst.Start(); err != nil {
+		t.Fatalf("start instance: %v", err)
+	}
+	defer func() { _ = inst.Kill() }()
+
+	if err := inst.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", candidateID); err != nil {
+		t.Fatalf("set tmux env: %v", err)
+	}
+
+	inst.UpdateClaudeSession(nil)
+
+	if inst.ClaudeSessionID != currentID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (zombie should be rejected)", inst.ClaudeSessionID, currentID)
+	}
+}
+
+// TestSyncClaudeSessionFromDisk_Disabled_NoMutation verifies disk-scan sync
+// no longer mutates ClaudeSessionID, even when newer files exist on disk.
+func TestSyncClaudeSessionFromDisk_Disabled_NoMutation(t *testing.T) {
 	configDir := t.TempDir()
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
@@ -756,14 +818,15 @@ func TestSyncClaudeSessionFromDisk_PicksUpNewerSession(t *testing.T) {
 	inst := NewInstanceWithTool("sync-test", projectPath, "claude")
 	inst.ClaudeSessionID = oldSessionID
 	inst.ClaudeDetectedAt = time.Now().Add(-1 * time.Minute)
+	originalDetectedAt := inst.ClaudeDetectedAt
 
 	inst.syncClaudeSessionFromDisk()
 
-	if inst.ClaudeSessionID != newSessionID {
-		t.Errorf("ClaudeSessionID = %q, want %q (newer session from disk)", inst.ClaudeSessionID, newSessionID)
+	if inst.ClaudeSessionID != oldSessionID {
+		t.Errorf("ClaudeSessionID = %q, want %q (disk scan must be non-authoritative)", inst.ClaudeSessionID, oldSessionID)
 	}
-	if inst.ClaudeDetectedAt.IsZero() {
-		t.Error("ClaudeDetectedAt should be set after sync")
+	if inst.ClaudeDetectedAt != originalDetectedAt {
+		t.Error("ClaudeDetectedAt should not change when disk scan is disabled")
 	}
 }
 
@@ -866,8 +929,8 @@ func TestSyncClaudeSessionFromDisk_SkipsNonClaude(t *testing.T) {
 	}
 }
 
-// TestSyncClaudeSessionFromDisk_RejectsZombie verifies that a real current session
-// is NOT replaced by a zombie candidate (file with no conversation data).
+// TestSyncClaudeSessionFromDisk_RejectsZombie verifies that disk scan no longer
+// mutates session ID (previously it would reject zombies; now it rejects everything).
 func TestSyncClaudeSessionFromDisk_RejectsZombie(t *testing.T) {
 	configDir := t.TempDir()
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
@@ -917,9 +980,9 @@ func TestSyncClaudeSessionFromDisk_RejectsZombie(t *testing.T) {
 	}
 }
 
-// TestSyncClaudeSessionFromDisk_AcceptsRealOverZombie verifies that a zombie current
-// session IS replaced by a real candidate (upgrade from zombie to real).
-func TestSyncClaudeSessionFromDisk_AcceptsRealOverZombie(t *testing.T) {
+// TestSyncClaudeSessionFromDisk_NoMutation_EvenWithRealCandidate verifies that
+// disk scan no longer upgrades even when the candidate has real conversation data.
+func TestSyncClaudeSessionFromDisk_NoMutation_EvenWithRealCandidate(t *testing.T) {
 	configDir := t.TempDir()
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	os.Setenv("CLAUDE_CONFIG_DIR", configDir)
@@ -963,13 +1026,14 @@ func TestSyncClaudeSessionFromDisk_AcceptsRealOverZombie(t *testing.T) {
 
 	inst.syncClaudeSessionFromDisk()
 
-	if inst.ClaudeSessionID != realID {
-		t.Errorf("ClaudeSessionID = %q, want %q (zombie should be upgraded to real session)", inst.ClaudeSessionID, realID)
+	// Disk scan is disabled -- session ID must not change
+	if inst.ClaudeSessionID != zombieID {
+		t.Errorf("ClaudeSessionID = %q, want %q (disk scan must not mutate)", inst.ClaudeSessionID, zombieID)
 	}
 }
 
-// TestSyncClaudeSessionFromDisk_RejectsBothZombies verifies that when both the
-// current and candidate sessions are zombies, the current is kept (no pointless swap).
+// TestSyncClaudeSessionFromDisk_RejectsBothZombies verifies that disk scan is
+// fully disabled and does not mutate session ID regardless of file state.
 func TestSyncClaudeSessionFromDisk_RejectsBothZombies(t *testing.T) {
 	configDir := t.TempDir()
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
