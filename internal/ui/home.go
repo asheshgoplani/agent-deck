@@ -9295,10 +9295,13 @@ func (h *Home) renderSessionItem(
 		status = statusStyle.Render(statusIcon)
 		// Tree connector also gets selection styling
 		treeStyle = TreeConnectorSelStyle
-		// Rebuild baseIndent with selection styling for sub-sessions
-		if item.IsSubSession && !item.ParentIsLastInGroup {
+		// Rebuild baseIndent with selection arrow for sub-sessions
+		// Replace the │ (or empty space) with ▶ so the arrow doesn't squeeze
+		// between tree connector characters (e.g. " │▶├─" → " ▶ ├─")
+		if item.IsSubSession {
 			groupIndent := strings.Repeat(treeEmpty, max(0, item.Level-2))
-			baseIndent = groupIndent + " " + treeStyle.Render("│")
+			baseIndent = groupIndent + SessionSelectionPrefix.Render(" ▶")
+			selectionPrefix = " "
 		}
 	}
 
