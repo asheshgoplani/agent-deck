@@ -1648,6 +1648,15 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		return missingProbeDep
 	}
 
+	// When we already have a session ID and the process probe didn't find a
+	// running process, add our current ID to the exclude set so the disk scan
+	// won't reassign it to another instance that shares the same project path.
+	// The disk scan should only discover *new* sessions (e.g. after /new rotation),
+	// not re-discover the same ID we already own.
+	if i.CodexSessionID != "" && excludeIDs != nil {
+		excludeIDs[i.CodexSessionID] = true
+	}
+
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
 		changed := sessionID != i.CodexSessionID
 		if sessionID != i.CodexSessionID {
@@ -2459,10 +2468,11 @@ func (i *Instance) UpdateStatus() error {
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if i.Tool == "codex" {
-				var exclude map[string]bool
-				if i.CodexSessionID == "" {
-					exclude = i.collectOtherCodexSessionIDs()
-				}
+				// Always collect other instances' session IDs to prevent the
+				// disk scan from assigning a session that belongs to another
+				// instance. Without this, instances that share the same
+				// project_path can all claim the same Codex session file.
+				exclude := i.collectOtherCodexSessionIDs()
 				i.UpdateCodexSession(exclude)
 			}
 		}
@@ -2484,6 +2494,7 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	// Read from tmux environment (set by capture-resume pattern)
 	if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 		if i.ClaudeSessionID != sessionID {
+			rejected := false
 			// Quality gate: don't adopt a zombie ID from tmux env when current has real data
 			if i.ClaudeSessionID != "" {
 				currentHasData := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
@@ -2494,11 +2505,27 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 						slog.String("zombie_id", sessionID),
 						slog.String("reason", "tmux_env_has_zombie_id"),
 					)
+					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+						Source: "tmux_env", OldID: i.ClaudeSessionID, Candidate: sessionID,
+						Reason: "zombie_id_no_conversation_data",
+					})
 					// Don't adopt the zombie; skip the update but still refresh prompt below
+					rejected = true
 					sessionID = i.ClaudeSessionID
 				}
 			}
-			i.ClaudeSessionID = sessionID
+			if !rejected {
+				action := "bind"
+				if i.ClaudeSessionID != "" {
+					action = "rebind"
+				}
+				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+					InstanceID: i.ID, Tool: i.Tool, Action: action,
+					Source: "tmux_env", OldID: i.ClaudeSessionID, NewID: sessionID,
+				})
+				i.ClaudeSessionID = sessionID
+			}
 		}
 		i.ClaudeDetectedAt = time.Now()
 	}
@@ -2514,91 +2541,21 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	}
 }
 
-// collectOtherClaudeSessionIDs enumerates all agent-deck tmux sessions (except this one)
-// and returns the set of CLAUDE_SESSION_ID values they own. Used to avoid stealing
-// another instance's session when scanning for the most recent .jsonl on disk.
-func (i *Instance) collectOtherClaudeSessionIDs() map[string]bool {
-	exclude := make(map[string]bool)
-
-	tmuxSessions, err := tmux.ListAgentDeckSessions()
-	if err != nil {
-		return exclude
-	}
-
-	myTmuxName := ""
-	if i.tmuxSession != nil {
-		myTmuxName = i.tmuxSession.Name
-	}
-
-	for _, sessName := range tmuxSessions {
-		if sessName == myTmuxName {
-			continue
-		}
-		// Read CLAUDE_SESSION_ID from the other tmux session
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
-		}
-	}
-
-	return exclude
-}
-
-// syncClaudeSessionFromDisk scans the filesystem for the most recent session file,
-// excluding IDs owned by other agent-deck instances. If a different (newer) session
-// is found, it updates ClaudeSessionID, ClaudeDetectedAt, and the tmux env var.
-// This handles the case where /clear in Claude Code creates a new session UUID
-// that the tmux env var doesn't know about yet.
+// syncClaudeSessionFromDisk is a legacy shim kept for compatibility.
+// Disk scan is intentionally NOT authoritative for session identity.
+// Session ID binding must come from tmux env and/or hook session anchor.
 func (i *Instance) syncClaudeSessionFromDisk() {
 	if !IsClaudeCompatible(i.Tool) {
 		return
 	}
-
-	configDir := GetClaudeConfigDir()
-	exclude := i.collectOtherClaudeSessionIDs()
-
-	activeID := findActiveSessionIDExcluding(configDir, i.ProjectPath, exclude)
-	if activeID == "" || activeID == i.ClaudeSessionID {
-		return
-	}
-
-	// Quality gate: don't replace a session with real conversation data with a zombie
-	// (a zombie is a session file with no conversation data, typically from a crashed startup)
-	if i.ClaudeSessionID != "" {
-		currentHasData := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
-		candidateHasData := sessionHasConversationData(activeID, i.ProjectPath)
-
-		// Decision matrix:
-		//   current=real, candidate=real   → ACCEPT (handles /clear: both real, newer wins)
-		//   current=real, candidate=zombie  → REJECT (never replace real with zombie)
-		//   current=zombie, candidate=real  → ACCEPT (upgrade from zombie to real)
-		//   current=zombie, candidate=zombie → REJECT (don't swap zombies)
-		if currentHasData && !candidateHasData {
-			sessionLog.Debug("claude_session_sync_rejected_zombie",
-				slog.String("current_id", i.ClaudeSessionID),
-				slog.String("zombie_id", activeID),
-				slog.String("reason", "candidate_has_no_conversation_data"),
-			)
-			return
-		}
-		if !currentHasData && !candidateHasData {
-			sessionLog.Debug("claude_session_sync_rejected_zombie",
-				slog.String("current_id", i.ClaudeSessionID),
-				slog.String("candidate_id", activeID),
-				slog.String("reason", "both_have_no_conversation_data"),
-			)
-			return
-		}
-	}
-
-	sessionLog.Debug("claude_session_update_from_disk", slog.String("old_id", i.ClaudeSessionID), slog.String("new_id", activeID))
-	i.ClaudeSessionID = activeID
-	i.ClaudeDetectedAt = time.Now()
-
-	// Sync back to tmux environment so restart uses the new ID
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", activeID)
-	}
+	sessionLog.Debug("claude_session_disk_scan_disabled",
+		slog.String("instance", i.ID),
+		slog.String("reason", "disk_scan_not_authoritative"),
+	)
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: "scan_disabled",
+		Source: "disk_scan", Reason: "disk_scan_not_authoritative",
+	})
 }
 
 // UpdateHookStatus updates the instance's hook-based status fields.
@@ -2616,8 +2573,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	// Resolve session ID from hook payload first, then sidecar anchor.
 	sessionID := strings.TrimSpace(status.SessionID)
+	hookSource := "hook_payload"
 	if sessionID == "" {
 		sessionID = ReadHookSessionAnchor(i.ID)
+		hookSource = "hook_anchor"
 	}
 	if sessionID == "" {
 		return
@@ -2631,11 +2590,20 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
 		if i.ClaudeSessionID == "" || sessionHasConversationData(sessionID, i.ProjectPath) {
+			action := "bind"
+			if i.ClaudeSessionID != "" {
+				action = "rebind"
+			}
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
 				slog.String("new_id", sessionID),
 				slog.String("event", status.Event),
 			)
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: action,
+				Source: hookSource, OldID: i.ClaudeSessionID, NewID: sessionID,
+				HookEvent: status.Event,
+			})
 			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
 			i.hookSessionID = sessionID
@@ -2643,6 +2611,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 			}
+		} else {
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
+			})
 		}
 	case i.Tool == "codex":
 		if sessionID == i.CodexSessionID {
@@ -3044,9 +3018,8 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 // Behavior for Claude:
 // 1. Try structured JSONL read via stored ClaudeSessionID.
 // 2. Refresh ID from tmux env and retry.
-// 3. Scan disk for active session ID and retry.
-// 4. Fallback to terminal parsing.
-// 5. If still unavailable, return an empty response (no error).
+// 3. Fallback to terminal parsing.
+// 4. If still unavailable, return an empty response (no error).
 //
 // Behavior for Gemini (mirrors Claude):
 // 1. Try structured JSON read via stored GeminiSessionID.
@@ -3066,14 +3039,6 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
-			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
-				return recovered, nil
-			}
-		}
-
-		// Fallback: detect latest session on disk (handles startup race / stale ID)
-		i.syncClaudeSessionFromDisk()
-		if i.ClaudeSessionID != "" {
 			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
 				return recovered, nil
 			}
@@ -3728,11 +3693,6 @@ func (i *Instance) Restart() error {
 		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
 	}
 
-	// Sync Claude session from disk before restart to pick up /clear session changes
-	if IsClaudeCompatible(i.Tool) {
-		i.syncClaudeSessionFromDisk()
-	}
-
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
@@ -3846,13 +3806,13 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
-	// For Codex: ALWAYS update session to get the most recent one
-	// Krudony fix: don't skip when we already have an ID - the user may have started a NEW session
+	// For Codex: refresh session ID before restart even when a stale ID is already
+	// present in memory. tmux env is authoritative and can rotate (e.g. /new).
 	if i.Tool == "codex" {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
-		if missingDep := i.updateCodexSession(nil, true); missingDep != "" {
+		if missingDep := i.updateCodexSession(i.collectOtherCodexSessionIDs(), true); missingDep != "" {
 			i.mu.Lock()
 			i.pendingCodexRestartWarning = codexProbeMissingWarning(missingDep)
 			i.mu.Unlock()
@@ -4233,9 +4193,6 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	if target == nil {
 		return "", fmt.Errorf("cannot build fork command: target instance is nil")
 	}
-
-	// Sync session from disk to pick up /clear session changes before forking
-	i.syncClaudeSessionFromDisk()
 
 	if !i.CanFork() {
 		return "", fmt.Errorf("cannot fork: no active Claude session")
