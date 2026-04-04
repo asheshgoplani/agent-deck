@@ -707,9 +707,8 @@ func handleGroupMove(profile string, args []string) {
 
 	// Normalize target group
 	// Handle special cases for moving to root/default group
-	targetGroupPath := normalizeGroupPath(targetGroup)
 	if targetGroup == "root" || targetGroup == "" {
-		targetGroupPath = session.DefaultGroupPath
+		targetGroup = session.DefaultGroupPath
 	}
 
 	// Store original group for output
@@ -721,11 +720,32 @@ func handleGroupMove(profile string, args []string) {
 	// Build group tree
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 
-	// Check if target group exists (unless moving to default)
-	if targetGroupPath != session.DefaultGroupPath && targetGroupPath != "" {
-		if _, exists := groupTree.Groups[targetGroupPath]; !exists {
-			// Create the group
-			groupTree.CreateGroup(targetGroupPath)
+	// Try to match an existing group by exact name first, then case-insensitive
+	targetGroupPath := targetGroup
+	if targetGroup != session.DefaultGroupPath {
+		matched := false
+		for path := range groupTree.Groups {
+			if path == targetGroup {
+				targetGroupPath = path
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			// Case-insensitive match against existing groups
+			targetLower := strings.ToLower(targetGroup)
+			for path := range groupTree.Groups {
+				if strings.ToLower(path) == targetLower {
+					targetGroupPath = path
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			// No existing group found - CreateGroup normalizes the path
+			created := groupTree.CreateGroup(targetGroupPath)
+			targetGroupPath = created.Path
 		}
 	}
 
