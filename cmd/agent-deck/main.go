@@ -2230,7 +2230,16 @@ func sourceRebuildNeeded() (bool, string) {
 		return false, ""
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	// Compare against the configured source ref (e.g. origin/dev), not HEAD.
+	// HEAD follows whatever branch the checkout is on, but the update mechanism
+	// builds from SourceRef. Comparing against HEAD causes false-positive
+	// rebuilds when the user is on a different branch.
+	ref := settings.SourceRef
+	if ref == "" {
+		ref = "HEAD"
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--short", ref)
 	cmd.Dir = settings.SourceDir
 	out, err := cmd.Output()
 	if err != nil {
