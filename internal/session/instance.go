@@ -2505,12 +2505,25 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 						slog.String("zombie_id", sessionID),
 						slog.String("reason", "tmux_env_has_zombie_id"),
 					)
+					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+						Source: "tmux_env", OldID: i.ClaudeSessionID, Candidate: sessionID,
+						Reason: "zombie_id_no_conversation_data",
+					})
 					// Don't adopt the zombie; skip the update but still refresh prompt below
 					rejected = true
 					sessionID = i.ClaudeSessionID
 				}
 			}
 			if !rejected {
+				action := "bind"
+				if i.ClaudeSessionID != "" {
+					action = "rebind"
+				}
+				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+					InstanceID: i.ID, Tool: i.Tool, Action: action,
+					Source: "tmux_env", OldID: i.ClaudeSessionID, NewID: sessionID,
+				})
 				i.ClaudeSessionID = sessionID
 			}
 		}
@@ -2539,6 +2552,10 @@ func (i *Instance) syncClaudeSessionFromDisk() {
 		slog.String("instance", i.ID),
 		slog.String("reason", "disk_scan_not_authoritative"),
 	)
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: "scan_disabled",
+		Source: "disk_scan", Reason: "disk_scan_not_authoritative",
+	})
 }
 
 // UpdateHookStatus updates the instance's hook-based status fields.
@@ -2556,8 +2573,10 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 	// Resolve session ID from hook payload first, then sidecar anchor.
 	sessionID := strings.TrimSpace(status.SessionID)
+	hookSource := "hook_payload"
 	if sessionID == "" {
 		sessionID = ReadHookSessionAnchor(i.ID)
+		hookSource = "hook_anchor"
 	}
 	if sessionID == "" {
 		return
@@ -2571,11 +2590,20 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
 		if i.ClaudeSessionID == "" || sessionHasConversationData(sessionID, i.ProjectPath) {
+			action := "bind"
+			if i.ClaudeSessionID != "" {
+				action = "rebind"
+			}
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
 				slog.String("new_id", sessionID),
 				slog.String("event", status.Event),
 			)
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: action,
+				Source: hookSource, OldID: i.ClaudeSessionID, NewID: sessionID,
+				HookEvent: status.Event,
+			})
 			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
 			i.hookSessionID = sessionID
@@ -2583,6 +2611,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 			}
+		} else {
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
+			})
 		}
 	case i.Tool == "codex":
 		if sessionID == i.CodexSessionID {
