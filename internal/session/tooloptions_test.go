@@ -774,6 +774,89 @@ func TestUnmarshalOpenCodeOptions_WrongTool(t *testing.T) {
 	}
 }
 
+func TestStripResumeFields(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          json.RawMessage
+		wantSessionID  string
+		wantMode       string
+		wantSkipPerms  bool
+		wantPassthrough bool // true = expect input returned unchanged
+	}{
+		{
+			name:            "nil input",
+			input:           nil,
+			wantPassthrough: true,
+		},
+		{
+			name:            "empty input",
+			input:           json.RawMessage{},
+			wantPassthrough: true,
+		},
+		{
+			name: "strips resume fields, preserves skip_permissions",
+			input: mustMarshalToolOptions(&ClaudeOptions{
+				SessionMode:     "resume",
+				ResumeSessionID: "abc-123",
+				SkipPermissions: true,
+			}),
+			wantSessionID: "",
+			wantMode:      "",
+			wantSkipPerms: true,
+		},
+		{
+			name: "no resume fields present",
+			input: mustMarshalToolOptions(&ClaudeOptions{
+				SkipPermissions: true,
+				UseChrome:       true,
+			}),
+			wantSessionID: "",
+			wantMode:      "",
+			wantSkipPerms: true,
+		},
+		{
+			name:            "invalid JSON returns input unchanged",
+			input:           json.RawMessage(`{not valid`),
+			wantPassthrough: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripResumeFields(tt.input)
+
+			if tt.wantPassthrough {
+				if string(got) != string(tt.input) {
+					t.Errorf("expected passthrough, got %s", got)
+				}
+				return
+			}
+
+			opts, err := UnmarshalClaudeOptions(got)
+			if err != nil {
+				t.Fatalf("UnmarshalClaudeOptions failed: %v", err)
+			}
+			if opts.ResumeSessionID != tt.wantSessionID {
+				t.Errorf("ResumeSessionID = %q, want %q", opts.ResumeSessionID, tt.wantSessionID)
+			}
+			if opts.SessionMode != tt.wantMode {
+				t.Errorf("SessionMode = %q, want %q", opts.SessionMode, tt.wantMode)
+			}
+			if opts.SkipPermissions != tt.wantSkipPerms {
+				t.Errorf("SkipPermissions = %v, want %v", opts.SkipPermissions, tt.wantSkipPerms)
+			}
+		})
+	}
+}
+
+func mustMarshalToolOptions(opts ToolOptions) json.RawMessage {
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
 func TestClaudeOptions_RoundTrip(t *testing.T) {
 	// Test complete round-trip serialization
 	original := &ClaudeOptions{

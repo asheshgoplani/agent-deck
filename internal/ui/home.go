@@ -6735,7 +6735,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		tool = sourceSession.Tool
 		command = sourceSession.Command
 		if len(sourceSession.ToolOptionsJSON) > 0 {
-			toolOptionsJSON = sourceSession.ToolOptionsJSON
+			toolOptionsJSON = session.StripResumeFields(sourceSession.ToolOptionsJSON)
 		}
 		if sourceSession.GeminiYoloMode != nil && *sourceSession.GeminiYoloMode {
 			geminiYoloMode = true
@@ -6760,7 +6760,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 			tool = mostRecent.Tool
 			command = mostRecent.Command
 			if len(mostRecent.ToolOptionsJSON) > 0 {
-				toolOptionsJSON = mostRecent.ToolOptionsJSON
+				toolOptionsJSON = session.StripResumeFields(mostRecent.ToolOptionsJSON)
 			}
 			if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
 				geminiYoloMode = true

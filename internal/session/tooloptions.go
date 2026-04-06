@@ -282,6 +282,35 @@ func UnmarshalOpenCodeOptions(data json.RawMessage) (*OpenCodeOptions, error) {
 	return &opts, nil
 }
 
+// StripResumeFields removes session-specific fields (resume_session_id,
+// session_mode) from serialized ToolOptionsJSON so that a new session
+// inheriting another session's settings starts fresh instead of resuming
+// the source conversation.  Other options (skip_permissions, etc.) are
+// preserved.  Returns the input unchanged when it is nil/empty or when
+// unmarshalling fails.
+func StripResumeFields(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+
+	var wrapper struct {
+		Tool    string         `json:"tool"`
+		Options map[string]any `json:"options"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return raw
+	}
+
+	delete(wrapper.Options, "resume_session_id")
+	delete(wrapper.Options, "session_mode")
+
+	cleaned, err := json.Marshal(wrapper)
+	if err != nil {
+		return raw
+	}
+	return cleaned
+}
+
 // UnmarshalClaudeOptions deserializes ClaudeOptions from JSON wrapper
 func UnmarshalClaudeOptions(data json.RawMessage) (*ClaudeOptions, error) {
 	if len(data) == 0 {
