@@ -1397,8 +1397,9 @@ func handleSessionSend(profile string, args []string) {
 	// default mode: full retry budget after readiness check.
 	if *noWait {
 		if err := sendWithRetryTarget(tmuxSess, message, false, sendRetryOptions{
-			maxRetries: 8,
-			checkDelay: 150 * time.Millisecond,
+			maxRetries:     8,
+			checkDelay:     150 * time.Millisecond,
+			maxFullResends: -1, // no-wait: message already delivered, never re-send
 		}); err != nil {
 			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -1478,8 +1479,9 @@ type sendRetryTarget interface {
 }
 
 type sendRetryOptions struct {
-	maxRetries int
-	checkDelay time.Duration
+	maxRetries     int
+	checkDelay     time.Duration
+	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
 }
 
 func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) error {
@@ -1515,7 +1517,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// with no activity and no unsent prompt, assume the message was lost
 	// during TUI init and re-send the full message.
 	const fullResendThreshold = 8
-	const maxFullResends = 3
+	maxFullResends := 3 // default
+	if opts.maxFullResends > 0 {
+		maxFullResends = opts.maxFullResends
+	} else if opts.maxFullResends < 0 {
+		maxFullResends = 0
+	}
 	waitingNoMarkerChecks := 0
 	waitingNoActivityChecks := 0
 	activeChecks := 0

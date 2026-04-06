@@ -459,6 +459,39 @@ func TestSendWithRetryTarget_FullResendMaxLimit(t *testing.T) {
 	}
 }
 
+func TestSendWithRetryTarget_NoWaitDoesNotResend(t *testing.T) {
+	// Regression test for issue #479: --no-wait sends message twice.
+	// When maxFullResends is negative (disabled), the verification loop
+	// must never Ctrl+C + re-send even if the session stays in "waiting"
+	// past the fullResendThreshold window.
+	n := 12
+	statuses := make([]string, n)
+	panes := make([]string, n)
+	for i := range statuses {
+		statuses[i] = "waiting"
+		panes[i] = ""
+	}
+	mock := &mockSendRetryTarget{
+		statuses: statuses,
+		panes:    panes,
+	}
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries:     n,
+		checkDelay:     0,
+		maxFullResends: -1, // disabled, as used by --no-wait
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
+		t.Fatalf("expected 0 SendCtrlC calls (resend disabled), got %d", got)
+	}
+	// Only the initial send, no resends
+	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
+		t.Fatalf("expected 1 SendKeysAndEnter call (initial only), got %d", got)
+	}
+}
+
 // skipIfNoTmuxServer skips the test if tmux is not available or not running.
 func skipIfNoTmuxServer(t *testing.T) {
 	t.Helper()
