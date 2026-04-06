@@ -719,7 +719,8 @@ func buildDaemonPath(agentDeckPath string) string {
 	return strings.Join(ordered, ":")
 }
 
-// conductorHeartbeatScript is the shell script that sends a heartbeat to a conductor session
+// conductorHeartbeatScript is the shell script that sends a heartbeat to a conductor session.
+// Uses grep instead of sed for JSON parsing to stay portable across GNU and BSD (macOS).
 const conductorHeartbeatScript = `#!/bin/bash
 # Heartbeat for conductor: {NAME} (profile: {PROFILE})
 # Sends a check-in message to the conductor session (non-blocking)
@@ -727,14 +728,14 @@ const conductorHeartbeatScript = `#!/bin/bash
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
-# Check if conductor is enabled
-ENABLED=$(agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | tr -d '\n' | sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')
-if [ "$ENABLED" != "true" ]; then
+# Check if conductor is enabled (grep -o works on both GNU and BSD)
+ENABLED=$(agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -o '"enabled"[[:space:]]*:[[:space:]]*true')
+if [ -z "$ENABLED" ]; then
     exit 0
 fi
 
 # Only send if the session is running
-STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
     agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention." --no-wait -q
@@ -1261,10 +1262,18 @@ func LaunchdPlistPath() (string, error) {
 }
 
 // findPython3 resolves python3 for daemon configs.
-// Prefer the current PATH (so pyenv/asdf-selected interpreters win),
-// then fall back to common absolute locations for non-interactive environments.
+// Prefer the conductor venv (has required deps like toml), then the current
+// PATH (so pyenv/asdf-selected interpreters win), then common absolute paths.
 func findPython3() string {
-	// Respect the user's current shell environment first.
+	// Prefer the conductor venv python which has bridge dependencies installed.
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		venvPython := filepath.Join(homeDir, ".agent-deck", "conductor", "venv", "bin", "python3")
+		if _, err := os.Stat(venvPython); err == nil {
+			return venvPython
+		}
+	}
+
+	// Respect the user's current shell environment.
 	if p, err := exec.LookPath("python3"); err == nil {
 		if abs, absErr := filepath.Abs(p); absErr == nil {
 			return abs
