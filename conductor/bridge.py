@@ -13,6 +13,8 @@ The bridge aggregates status across all profiles.
 Dependencies: pip3 install aiogram toml
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
