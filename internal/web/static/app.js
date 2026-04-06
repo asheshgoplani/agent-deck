@@ -6,6 +6,7 @@
   const menuBackdrop = document.getElementById("menu-backdrop")
   const pushTools = document.getElementById("push-tools")
   const pushToggle = document.getElementById("push-toggle")
+  const restartAllBtn = document.getElementById("restart-all-btn")
   const pushStatus = document.getElementById("push-status")
   const metaState = document.getElementById("meta-state")
   const terminalRoot = document.getElementById("terminal-root")
@@ -73,6 +74,12 @@
 
     state.menuOpen = next
     document.body.classList.toggle("menu-open", next)
+
+    // Record open timestamp so we can suppress spurious closes from
+    // viewport shifts (toolbar hide, keyboard mis-detection) on mobile.
+    if (next && changed) {
+      state.menuOpenedAt = Date.now()
+    }
     if (menuPanel) {
       const hidden = isSmallDisplay() ? !next : false
       menuPanel.setAttribute("aria-hidden", hidden ? "true" : "false")
@@ -86,19 +93,25 @@
       )
     }
 
-    if (next && changed && menuFilter) {
-      window.setTimeout(() => {
-        try {
-          menuFilter.focus({ preventScroll: true })
-        } catch (_err) {
-          menuFilter.focus()
-        }
-      }, 60)
+    if (next && changed) {
+      // On mobile, dismiss the virtual keyboard by blurring whatever is
+      // focused (often xterm.js's hidden textarea).  Without this, the
+      // keyboard stays up or reappears and the viewport-shift detection
+      // immediately closes the menu.
+      if (document.activeElement && document.activeElement !== document.body) {
+        document.activeElement.blur()
+      }
     }
   }
 
   function closeMenuForMobile() {
     if (!isSmallDisplay()) {
+      return
+    }
+    // Guard against spurious closes right after the menu was opened.
+    // On mobile (e.g. Galaxy Fold), opening the menu can trigger
+    // viewport shifts that are mis-detected as keyboard events.
+    if (Date.now() - (state.menuOpenedAt || 0) < 400) {
       return
     }
     setMenuOpen(false)
@@ -566,6 +579,73 @@
     renderTopBarState()
   }
 
+  async function apiPost(path, body) {
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    }
+    if (state.authToken) {
+      headers.Authorization = `Bearer ${state.authToken}`
+    }
+    const response = await fetch(apiPathWithToken(path), {
+      method: "POST",
+      headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error((err.error && err.error.message) || `request failed: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  async function quickCreateSession(groupPath) {
+    try {
+      await apiPost("/api/session/quick-create", { groupPath })
+      await loadMenu()
+    } catch (error) {
+      console.error("quick-create failed:", error)
+    }
+  }
+
+  async function restartAllSessions() {
+    try {
+      const result = await apiPost("/api/session/restart-all")
+      console.log(`restart-all: ${result.restarted} restarted, ${result.failed} failed`)
+      await loadMenu()
+    } catch (error) {
+      console.error("restart-all failed:", error)
+    }
+  }
+
+  async function startSession(sessionId) {
+    try {
+      await apiPost(`/api/session/${sessionId}/start`)
+      disconnectWS({ intentional: true })
+      state.wsSessionId = null
+      await loadMenu()
+      selectSession(sessionId, true)
+      const session = findSessionById(sessionId)
+      if (session) {
+        renderTerminal(session)
+      }
+    } catch (error) {
+      console.error("start-session failed:", error)
+    }
+  }
+
+  async function stopSession(sessionId) {
+    try {
+      await apiPost(`/api/session/${sessionId}/stop`)
+      if (state.selectedSessionId === sessionId) {
+        state.selectedSessionId = null
+      }
+      await loadMenu()
+    } catch (error) {
+      console.error("stop-session failed:", error)
+    }
+  }
+
   async function loadMenu() {
     try {
       setConnectionState("idle", "loading menu")
@@ -839,6 +919,20 @@
     menuRoot.innerHTML = ""
     menuRoot.appendChild(fragment)
 
+    // Show "Restart All" button when there are error sessions
+    const hasErrorSessions = snapshot.items.some(
+      (i) =>
+        i.type === "session" &&
+        i.session &&
+        (i.session.status === "error" ||
+          i.session.status === "stopped" ||
+          i.session.status === "exited"),
+    )
+    const menuActions = document.getElementById("menu-actions")
+    if (menuActions) {
+      menuActions.hidden = !hasErrorSessions
+    }
+
     const selected = findSessionById(state.selectedSessionId)
     renderTopBarState()
     renderTerminal(selected)
@@ -875,10 +969,21 @@
     count.className = "group-count"
     count.textContent = `(${item.group.sessionCount || 0})`
 
+    const addBtn = document.createElement("button")
+    addBtn.type = "button"
+    addBtn.className = "group-action-btn"
+    addBtn.textContent = "+"
+    addBtn.title = "New session"
+    addBtn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      quickCreateSession(groupPath)
+    })
+
     row.appendChild(indent)
     row.appendChild(marker)
     row.appendChild(name)
     row.appendChild(count)
+    row.appendChild(addBtn)
     btn.appendChild(row)
     return btn
   }
@@ -913,10 +1018,42 @@
     tool.className = "tool-badge"
     tool.textContent = session.tool || "shell"
 
+    const isRunning =
+      session.status === "running" ||
+      session.status === "waiting" ||
+      session.status === "starting"
+    const isError =
+      session.status === "error" ||
+      session.status === "stopped" ||
+      session.status === "exited"
+
+    const stopBtn = document.createElement("button")
+    stopBtn.type = "button"
+    stopBtn.className = "session-action-btn"
+    stopBtn.textContent = "\u00D7"
+    stopBtn.title = "Delete session"
+    stopBtn.addEventListener("click", (e) => {
+      e.stopPropagation()
+      stopSession(session.id)
+    })
+
     row.appendChild(indent)
     row.appendChild(status)
     row.appendChild(title)
     row.appendChild(tool)
+    if (isError) {
+      const startBtn = document.createElement("button")
+      startBtn.type = "button"
+      startBtn.className = "session-action-btn session-start-btn"
+      startBtn.textContent = "\u25B6"
+      startBtn.title = "Start session"
+      startBtn.addEventListener("click", (e) => {
+        e.stopPropagation()
+        startSession(session.id)
+      })
+      row.appendChild(startBtn)
+    }
+    row.appendChild(stopBtn)
     btn.appendChild(row)
     return btn
   }
@@ -1603,6 +1740,12 @@
     renderMenu()
   })
 
+  if (restartAllBtn) {
+    restartAllBtn.addEventListener("click", () => {
+      restartAllSessions()
+    })
+  }
+
   if (menuToggle) {
     menuToggle.addEventListener("click", () => {
       setMenuOpen(!state.menuOpen)
@@ -1611,6 +1754,11 @@
 
   if (menuBackdrop) {
     menuBackdrop.addEventListener("click", () => {
+      // Ignore taps that arrive within 300ms of the menu opening —
+      // on touch devices the same gesture can propagate to the backdrop.
+      if (Date.now() - (state.menuOpenedAt || 0) < 300) {
+        return
+      }
       setMenuOpen(false)
     })
   }

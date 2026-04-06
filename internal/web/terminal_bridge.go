@@ -144,8 +144,15 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return err
 	}
 
-	// Do not call `tmux resize-window` here: that changes shared tmux window
-	// dimensions and causes web resizing to leak into other attached clients.
+	// Explicitly resize the tmux window so programs inside the session
+	// observe the updated dimensions. The attach uses ignore-size to
+	// prevent this client from *implicitly* shrinking the window for
+	// other attached clients, but an explicit resize is needed for the
+	// web terminal to render at the correct size.
+	cmd := tmuxCommand("resize-window", "-t", b.tmuxSession,
+		"-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows))
+	_ = cmd.Run()
+
 	return nil
 }
 
