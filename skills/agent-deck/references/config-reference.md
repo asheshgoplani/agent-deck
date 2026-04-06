@@ -11,6 +11,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[docker] Section](#docker-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
+- [[display] Section](#display-section)
 - [[global_search] Section](#global_search-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -189,6 +190,23 @@ notify_in_cli = true          # Show in CLI commands
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+## [display] Section
+
+Rendering and display settings.
+
+```toml
+[display]
+full_repaint = false              # Force full screen clear every render (for terminals with grapheme issues)
+default_filter = "active"         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
+active_filter_label = "Open"      # Label for the active filter pill (default: "Open")
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `full_repaint` | bool | `false` | Force full redraws (fix for Ghostty 1.3+ drift). Also via `AGENTDECK_REPAINT=full`. |
+| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` hides error/stopped sessions. Auto-clears if no sessions match. |
+| `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
 
 ## [global_search] Section
 
