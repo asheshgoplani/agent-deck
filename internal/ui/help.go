@@ -232,6 +232,13 @@ func (h *HelpOverlay) View() string {
 				{helpKey, "This help"},
 			},
 		},
+		{
+			title: "STARTUP FLAGS",
+			items: [][2]string{
+				{"--group <name>", "Launch scoped to a group"},
+				{"--profile <name>", "Use specific profile"},
+			},
+		},
 	}
 
 	for i := range sections {

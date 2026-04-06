@@ -107,6 +107,103 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 	})
 }
 
+func TestExtractGroupFlag(t *testing.T) {
+	tests := []struct {
+		name          string
+		args          []string
+		wantGroup     string
+		wantRemaining []string
+	}{
+		{
+			name:          "no flag",
+			args:          []string{"list"},
+			wantGroup:     "",
+			wantRemaining: []string{"list"},
+		},
+		{
+			name:          "--group=work equals form",
+			args:          []string{"--group=work"},
+			wantGroup:     "work",
+			wantRemaining: nil,
+		},
+		{
+			name:          "--group work space form",
+			args:          []string{"--group", "work"},
+			wantGroup:     "work",
+			wantRemaining: nil,
+		},
+		{
+			name:          "-g work short form",
+			args:          []string{"-g", "work"},
+			wantGroup:     "work",
+			wantRemaining: nil,
+		},
+		{
+			name:          "-g=work short equals form",
+			args:          []string{"-g=work"},
+			wantGroup:     "work",
+			wantRemaining: nil,
+		},
+		{
+			name:          "combined with -p",
+			args:          []string{"-p", "myprofile", "-g", "work"},
+			wantGroup:     "work",
+			wantRemaining: []string{"-p", "myprofile"},
+		},
+		{
+			name:          "subgroup path",
+			args:          []string{"--group", "clients/acme"},
+			wantGroup:     "clients/acme",
+			wantRemaining: nil,
+		},
+		{
+			name:          "group flag before subcommand",
+			args:          []string{"-g", "work", "list"},
+			wantGroup:     "work",
+			wantRemaining: []string{"list"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotGroup, gotRemaining := extractGroupFlag(tt.args)
+			if gotGroup != tt.wantGroup {
+				t.Errorf("group: got %q, want %q", gotGroup, tt.wantGroup)
+			}
+			if len(gotRemaining) != len(tt.wantRemaining) {
+				t.Errorf("remaining length: got %d (%v), want %d (%v)", len(gotRemaining), gotRemaining, len(tt.wantRemaining), tt.wantRemaining)
+				return
+			}
+			for i, arg := range gotRemaining {
+				if arg != tt.wantRemaining[i] {
+					t.Errorf("remaining[%d]: got %q, want %q", i, arg, tt.wantRemaining[i])
+				}
+			}
+		})
+	}
+}
+
+func TestGroupScopeValidation(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"work", "work"},
+		{"Work", "work"},
+		{"My Projects", "my-projects"},
+		{"work/frontend", "work/frontend"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := normalizeGroupPath(tt.input)
+			if got != tt.want {
+				t.Errorf("normalizeGroupPath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsDuplicateSession(t *testing.T) {
 	instances := []*session.Instance{
 		{ID: "abc123", Title: "Test Session", ProjectPath: "/home/user/project"},

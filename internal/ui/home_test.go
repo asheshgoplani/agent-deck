@@ -2172,3 +2172,180 @@ func TestMatchesStatusFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestSetGroupScope(t *testing.T) {
+	home := NewHome()
+
+	// Default is empty
+	if home.groupScope != "" {
+		t.Errorf("expected empty groupScope by default, got %q", home.groupScope)
+	}
+
+	// Set a group scope
+	home.SetGroupScope("work")
+	if home.groupScope != "work" {
+		t.Errorf("expected groupScope %q, got %q", "work", home.groupScope)
+	}
+
+	// Overwrite with another value
+	home.SetGroupScope("clients/acme")
+	if home.groupScope != "clients/acme" {
+		t.Errorf("expected groupScope %q, got %q", "clients/acme", home.groupScope)
+	}
+}
+
+func TestGroupScopeNormalization(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"work", "work"},
+		{"Work", "work"},
+		{"My Group", "my-group"},
+		{"MY GROUP", "my-group"},
+		{"clients/Acme Corp", "clients/acme-corp"},
+		{"already-normalized", "already-normalized"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			home := NewHome()
+			home.SetGroupScope(tt.input)
+			if home.groupScope != tt.want {
+				t.Errorf("SetGroupScope(%q): got %q, want %q", tt.input, home.groupScope, tt.want)
+			}
+		})
+	}
+}
+
+func TestRebuildFlatItemsGroupScope(t *testing.T) {
+	h := &Home{}
+	h.groupScope = "work"
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("s1", "/tmp/p1", "work"),
+		session.NewInstanceWithGroup("s2", "/tmp/p2", "work/frontend"),
+		session.NewInstanceWithGroup("s3", "/tmp/p3", "personal"),
+	}
+	h.groupTree = session.NewGroupTree(instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			if item.Session.GroupPath == "personal" {
+				t.Errorf("found session in 'personal' group, expected only work and children")
+			}
+		}
+		if item.Type == session.ItemTypeGroup && item.Path == "personal" {
+			t.Errorf("found 'personal' group header, expected only work and children")
+		}
+	}
+
+	found := map[string]bool{}
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			found[item.Session.Title] = true
+		}
+	}
+	if !found["s1"] {
+		t.Error("missing session s1 (work group)")
+	}
+	if !found["s2"] {
+		t.Error("missing session s2 (work/frontend group)")
+	}
+}
+
+func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
+	h := &Home{}
+	h.groupScope = "work"
+	h.statusFilter = session.StatusRunning
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("running-work", "/tmp/p1", "work"),
+		session.NewInstanceWithGroup("idle-work", "/tmp/p2", "work"),
+		session.NewInstanceWithGroup("running-personal", "/tmp/p3", "personal"),
+	}
+	instances[0].Status = session.StatusRunning
+	instances[1].Status = session.StatusIdle
+	instances[2].Status = session.StatusRunning
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeSession && item.Session != nil {
+			if item.Session.GroupPath == "personal" {
+				t.Errorf("found personal session, expected only work group")
+			}
+			if item.Session.Status != session.StatusRunning {
+				t.Errorf("found non-running session %q, expected only running", item.Session.Title)
+			}
+		}
+	}
+}
+
+func TestIsInGroupScope(t *testing.T) {
+	h := &Home{}
+
+	// No scope set: everything is in scope
+	if !h.isInGroupScope("anything") {
+		t.Error("expected all paths in scope when groupScope is empty")
+	}
+
+	h.groupScope = "work"
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"work", true},
+		{"work/frontend", true},
+		{"work/frontend/react", true},
+		{"personal", false},
+		{"worker", false}, // should NOT match (not a child)
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := h.isInGroupScope(tt.path); got != tt.want {
+				t.Errorf("isInGroupScope(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScopedGroupPaths(t *testing.T) {
+	h := &Home{}
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("s1", "/tmp/p1", "work"),
+		session.NewInstanceWithGroup("s2", "/tmp/p2", "work/frontend"),
+		session.NewInstanceWithGroup("s3", "/tmp/p3", "personal"),
+	}
+	h.groupTree = session.NewGroupTree(instances)
+
+	// No scope: returns all paths
+	allPaths := h.scopedGroupPaths()
+	if len(allPaths) < 3 {
+		t.Errorf("expected at least 3 group paths without scope, got %d", len(allPaths))
+	}
+
+	// With scope: returns only work and children
+	h.groupScope = "work"
+	scopedPaths := h.scopedGroupPaths()
+	for _, p := range scopedPaths {
+		if !h.isInGroupScope(p) {
+			t.Errorf("scopedGroupPaths returned %q which is not in scope", p)
+		}
+	}
+	// Verify personal is excluded
+	for _, p := range scopedPaths {
+		if p == "personal" {
+			t.Error("scopedGroupPaths should not include 'personal' when scoped to 'work'")
+		}
+	}
+}
