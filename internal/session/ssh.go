@@ -5,12 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
+	"github.com/creack/pty"
 	"golang.org/x/term"
 )
 
@@ -69,16 +74,17 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 // Attach connects interactively to a remote agent-deck session.
-// This manages the local terminal directly (rather than letting SSH do it)
-// so that Ctrl+Q can be intercepted regardless of the terminal's key
-// reporting mode (raw byte 0x11, xterm modifyOtherKeys, or kitty CSI u).
+// Uses a local PTY so that SSH can detect the terminal dimensions and
+// propagate them to the remote side. Handles SIGWINCH to keep the remote
+// PTY in sync when the local terminal is resized, and sends SIGWINCH to
+// self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
 
 	sshArgs := []string{
-		"-tt", // force remote PTY even though local stdin is a pipe
+		"-tt", // force remote PTY
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
 		"-o", "ControlPersist=600",
@@ -87,26 +93,74 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	}
 
 	cmd := exec.Command("ssh", sshArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 
-	sshStdin, err := cmd.StdinPipe()
+	// Start SSH with a local PTY so it can detect terminal dimensions.
+	// Without this, piping stdin causes SSH to default to 80x24.
+	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
+		return fmt.Errorf("failed to start ssh with pty: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Set the PTY slave to raw mode so all bytes pass through transparently.
+	if _, err := term.MakeRaw(int(ptmx.Fd())); err != nil {
+		return fmt.Errorf("failed to set pty raw mode: %w", err)
 	}
 
+	// Save original terminal state and set raw mode.
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return fmt.Errorf("failed to set raw mode: %w", err)
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ssh: %w", err)
-	}
+	// Handle SIGWINCH to resize the PTY when the local terminal is resized.
+	sigwinch := make(chan os.Signal, 1)
+	signal.Notify(sigwinch, syscall.SIGWINCH)
+	sigwinchDone := make(chan struct{})
+	defer func() {
+		signal.Stop(sigwinch)
+		close(sigwinchDone)
+	}()
 
-	// Forward stdin to SSH, intercepting Ctrl+Q to detach
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-sigwinchDone:
+				return
+			case _, ok := <-sigwinch:
+				if !ok {
+					return
+				}
+				if ws, err := pty.GetsizeFull(os.Stdin); err == nil {
+					_ = pty.Setsize(ptmx, ws)
+				}
+			}
+		}
+	}()
+
+	// Initial resize to propagate current terminal dimensions.
+	sigwinch <- syscall.SIGWINCH
+
+	detachCh := make(chan struct{})
+	outputDone := make(chan struct{})
+
+	// Copy PTY output to stdout.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(outputDone)
+		_, _ = io.Copy(os.Stdout, ptmx)
+	}()
+
+	// Read stdin, intercept Ctrl+Q (all encodings), forward the rest.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		buf := make([]byte, 256)
 		for {
 			n, err := os.Stdin.Read(buf)
@@ -117,20 +171,51 @@ func (r *SSHRunner) Attach(sessionID string) error {
 
 			if idx := tmux.IndexCtrlQ(data); idx >= 0 {
 				if idx > 0 {
-					_, _ = sshStdin.Write(data[:idx])
+					_, _ = ptmx.Write(data[:idx])
 				}
-				_ = sshStdin.Close()
-				_ = cmd.Process.Kill()
+				close(detachCh)
 				return
 			}
 
-			if _, err := sshStdin.Write(data); err != nil {
+			if _, err := ptmx.Write(data); err != nil {
 				break
 			}
 		}
 	}()
 
-	_ = cmd.Wait()
+	// Wait for SSH to exit.
+	cmdDone := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cmdDone <- cmd.Wait()
+	}()
+
+	// Block until detach or SSH exit.
+	select {
+	case <-detachCh:
+	case <-cmdDone:
+	}
+
+	// Cleanup: close PTY and wait for output to drain.
+	_ = ptmx.Close()
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	select {
+	case <-outputDone:
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Reset terminal styles that may have leaked from the remote session.
+	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")
+
+	// Send SIGWINCH to self so Bubble Tea re-queries terminal dimensions
+	// and redraws the TUI with the correct layout on return.
+	if p, err := os.FindProcess(os.Getpid()); err == nil {
+		_ = p.Signal(syscall.SIGWINCH)
+	}
+
 	return nil
 }
 
