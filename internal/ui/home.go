@@ -7348,6 +7348,13 @@ func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
 
+	// Re-enable Kitty keyboard protocol so the attached session (e.g. Claude
+	// Code) receives extended key sequences like Shift+Enter. The TUI pops
+	// the protocol at startup for Bubble Tea compatibility; push mode 1
+	// here and pop again on return.
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.Attach(ctx, a.detachByte)
 }
@@ -7387,6 +7394,9 @@ type remoteCreateAndAttachCmd struct {
 }
 
 func (r remoteCreateAndAttachCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	sessionID, err := r.runner.CreateSession(ctx)
 	if err != nil {
@@ -7407,6 +7417,9 @@ type attachWindowCmd struct {
 }
 
 func (a attachWindowCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
 }
@@ -7440,6 +7453,9 @@ type remoteAttachCmd struct {
 }
 
 func (r remoteAttachCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	return r.runner.Attach(r.sessionID)
 }
 
