@@ -4937,13 +4937,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.groupTree.MoveGroupUp(item.Path)
 				h.rebuildFlatItems()
 				h.moveCursorToGroup(item.Path)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			case session.ItemTypeSession:
 				sessionID := item.Session.ID
 				h.groupTree.MoveSessionUp(item.Session)
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sessionID)
-			default:
-				h.rebuildFlatItems()
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			}
 			h.saveInstances()
 		}
@@ -4958,13 +4962,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.groupTree.MoveGroupDown(item.Path)
 				h.rebuildFlatItems()
 				h.moveCursorToGroup(item.Path)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			case session.ItemTypeSession:
 				sessionID := item.Session.ID
 				h.groupTree.MoveSessionDown(item.Session)
 				h.rebuildFlatItems()
 				h.moveCursorToSession(sessionID)
-			default:
-				h.rebuildFlatItems()
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			}
 			h.saveInstances()
 		}
