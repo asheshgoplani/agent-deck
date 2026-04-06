@@ -169,6 +169,7 @@ type NewDialog struct {
 	branchInput     textinput.Model
 	branchAutoSet   bool   // true if branch was auto-derived from session name.
 	branchPrefix    string // configured prefix for auto-generated branch names.
+	branchPicker    *BranchPickerDialog
 	// Docker sandbox support.
 	sandboxEnabled    bool
 	inheritedExpanded bool             // whether the inherited settings section is expanded.
@@ -289,6 +290,7 @@ func NewNewDialog() *NewDialog {
 		pathInput:       pathInput,
 		commandInput:    commandInput,
 		branchInput:     branchInput,
+		branchPicker:    NewBranchPickerDialog(),
 		claudeOptions:   NewClaudeOptionsPanel(),
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
@@ -336,6 +338,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 	// Keep commandCursor at previously set default (don't reset to 0)
 	d.updateToolOptions()
 	// Reset worktree fields from global config defaults.
@@ -409,6 +414,9 @@ func (d *NewDialog) GetSelectedGroup() string {
 func (d *NewDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
+	if d.branchPicker != nil {
+		d.branchPicker.SetSize(width, height)
+	}
 }
 
 // SetPathSuggestions sets the available path suggestions for autocomplete
@@ -421,6 +429,11 @@ func (d *NewDialog) SetPathSuggestions(paths []string) {
 // IsRecentPickerOpen returns whether the recent sessions picker is visible.
 func (d *NewDialog) IsRecentPickerOpen() bool {
 	return d.showRecentPicker && len(d.recentSessions) > 0
+}
+
+// IsBranchPickerOpen returns whether the inline branch result list is visible.
+func (d *NewDialog) IsBranchPickerOpen() bool {
+	return d.branchPicker != nil && d.branchPicker.IsVisible()
 }
 
 // SetRecentSessions sets the list of recently deleted session configs.
@@ -578,6 +591,9 @@ func (d *NewDialog) Show() {
 // Hide hides the dialog
 func (d *NewDialog) Hide() {
 	d.visible = false
+	if d.branchPicker != nil {
+		d.branchPicker.Hide()
+	}
 }
 
 // IsVisible returns whether the dialog is visible
@@ -940,6 +956,21 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			if selected, handled := d.branchPicker.Update(msg); handled {
+				if d.branchPicker == nil || !d.branchPicker.IsVisible() {
+					d.branchInput.Focus()
+				}
+				if selected != "" {
+					d.branchInput.SetValue(selected)
+					d.branchInput.SetCursor(len(selected))
+					d.branchAutoSet = false
+					d.ClearError()
+				}
+				return d, nil
+			}
+		}
+
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
 			switch msg.String() {
@@ -1080,6 +1111,21 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
 				}
 				d.suggestionNavigated = true
+				return d, nil
+			}
+
+		case "ctrl+f":
+			if cur == focusBranch {
+				if d.branchPicker == nil {
+					d.branchPicker = NewBranchPickerDialog()
+				}
+				d.branchPicker.SetSize(d.width, d.height)
+				if err := d.branchPicker.Show(strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\""), d.branchInput.Value()); err != nil {
+					d.SetError(err.Error())
+				} else {
+					d.ClearError()
+					d.branchInput.Focus()
+				}
 				return d, nil
 			}
 
@@ -1346,6 +1392,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		d.branchInput, cmd = d.branchInput.Update(msg)
 		if d.branchInput.Value() != oldBranch {
 			d.branchAutoSet = false
+			if d.branchPicker != nil && d.branchPicker.IsVisible() {
+				d.branchPicker.SetQuery(d.branchInput.Value())
+			}
 		}
 	case focusOptions:
 		if d.toolOptions != nil {
@@ -1717,6 +1766,11 @@ func (d *NewDialog) View() string {
 		content.WriteString("  ")
 		content.WriteString(d.branchInput.View())
 		content.WriteString("\n")
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			content.WriteString("  ")
+			content.WriteString(strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  "))
+			content.WriteString("\n")
+		}
 	}
 
 	// Tool options panel
@@ -1748,6 +1802,12 @@ func (d *NewDialog) View() string {
 			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
 		} else {
 			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+		}
+	} else if cur == focusBranch {
+		if d.branchPicker != nil && d.branchPicker.IsVisible() {
+			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
+		} else {
+			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()

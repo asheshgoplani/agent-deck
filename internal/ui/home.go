@@ -4384,6 +4384,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog, cmd = h.newDialog.Update(msg)
 		return h, cmd
 	}
+	// When branch search results are visible, let the dialog consume Enter/Esc/navigation
+	// before the outer dialog-level handlers create/cancel the session.
+	if h.newDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
+	}
 
 	switch msg.String() {
 	case "enter":
@@ -6161,6 +6168,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleForkDialogKey handles keyboard input for the fork dialog
 func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if h.forkDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.forkDialog, cmd = h.forkDialog.Update(msg)
+		return h, cmd
+	}
+
 	switch msg.String() {
 	case "enter":
 		// Validate before proceeding

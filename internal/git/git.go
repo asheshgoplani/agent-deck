@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -358,6 +359,126 @@ func SanitizeBranchName(name string) string {
 	sanitized = strings.Trim(sanitized, "-")
 
 	return sanitized
+}
+
+func getDefaultRemote(repoDir string) (string, error) {
+	remotes, err := listRemotes(repoDir)
+	if err != nil {
+		return "", err
+	}
+	if len(remotes) == 0 {
+		return "", errors.New("no git remotes configured")
+	}
+
+	currentBranch, err := GetCurrentBranch(repoDir)
+	if err == nil && currentBranch != "" && currentBranch != "HEAD" {
+		cmd := exec.Command("git", "-C", repoDir, "config", "--get", "branch."+currentBranch+".remote")
+		output, err := cmd.Output()
+		if err == nil {
+			remote := strings.TrimSpace(string(output))
+			if remote != "" {
+				return remote, nil
+			}
+		}
+	}
+
+	for _, remote := range remotes {
+		if remote == "origin" {
+			return remote, nil
+		}
+	}
+
+	if len(remotes) == 1 {
+		return remotes[0], nil
+	}
+
+	return "", fmt.Errorf("could not determine default remote from %d remotes", len(remotes))
+}
+
+func listRemotes(repoDir string) ([]string, error) {
+	cmd := exec.Command("git", "-C", repoDir, "remote")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remotes: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var remotes []string
+	for _, line := range lines {
+		remote := strings.TrimSpace(line)
+		if remote != "" {
+			remotes = append(remotes, remote)
+		}
+	}
+	return remotes, nil
+}
+
+func listRefShortNames(repoDir string, refs ...string) ([]string, error) {
+	args := []string{"-C", repoDir, "for-each-ref", "--format=%(refname:short)"}
+	args = append(args, refs...)
+	cmd := exec.Command("git", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list refs: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var names []string
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// ListBranchCandidates returns unique branch names from local branches and all
+// configured remotes. Local branches use plain names; remote branches keep
+// their remote prefix (for example "origin/main").
+func ListBranchCandidates(repoDir string) ([]string, error) {
+	if !IsGitRepo(repoDir) {
+		return nil, errors.New("not a git repository")
+	}
+
+	repoRoot, err := GetWorktreeBaseRoot(repoDir)
+	if err == nil && repoRoot != "" {
+		repoDir = repoRoot
+	}
+
+	branches, err := listRefShortNames(repoDir, "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]struct{}, len(branches))
+	for _, branch := range branches {
+		seen[branch] = struct{}{}
+	}
+
+	remotes, err := listRemotes(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, remote := range remotes {
+		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+remote)
+		if err != nil {
+			return nil, err
+		}
+		for _, branch := range remoteBranches {
+			if branch == remote || branch == remote+"/HEAD" {
+				continue
+			}
+			seen[branch] = struct{}{}
+		}
+	}
+
+	branches = branches[:0]
+	for branch := range seen {
+		branches = append(branches, branch)
+	}
+	sort.Strings(branches)
+	return branches, nil
 }
 
 // HasUncommittedChanges checks if the repository at dir has uncommitted changes
