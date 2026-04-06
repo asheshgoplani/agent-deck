@@ -2415,10 +2415,19 @@ func TestBuildClaudeResumeCommand_ExportsInstanceID(t *testing.T) {
 func TestBuildClaudeResumeCommand_IncludesInitScript(t *testing.T) {
 	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	origHome := os.Getenv("HOME")
-	tmpHome := t.TempDir()
 	os.Unsetenv("CLAUDE_CONFIG_DIR")
-	os.Setenv("HOME", tmpHome)
-	ClearUserConfigCache()
+	os.Setenv("HOME", t.TempDir())
+
+	// Inject config with init_script directly into cache
+	userConfigCacheMu.Lock()
+	userConfigCache = &UserConfig{
+		Shell: ShellSettings{
+			InitScript: `eval "$(direnv hook bash)"`,
+		},
+		MCPs: make(map[string]MCPDef),
+	}
+	userConfigCacheMu.Unlock()
+
 	defer func() {
 		if origConfigDir != "" {
 			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
@@ -2426,14 +2435,6 @@ func TestBuildClaudeResumeCommand_IncludesInitScript(t *testing.T) {
 		os.Setenv("HOME", origHome)
 		ClearUserConfigCache()
 	}()
-
-	// Write a config with an init_script
-	configDir := filepath.Join(tmpHome, ".agent-deck")
-	os.MkdirAll(configDir, 0o755)
-	os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`[shell]
-init_script = "eval \"$(direnv hook bash)\""
-`), 0o644)
-	ClearUserConfigCache()
 
 	inst := NewInstanceWithTool("test-resume-env", "/tmp/test", "claude")
 	inst.ClaudeSessionID = "resume-session-789"

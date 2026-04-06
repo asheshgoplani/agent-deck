@@ -3970,8 +3970,7 @@ func (i *Instance) Restart() error {
 	} else if i.Tool == "gemini" && i.GeminiSessionID != "" {
 		command = i.buildGeminiCommand("gemini")
 	} else if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
-		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		command = fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
+		command = i.buildOpenCodeCommand("opencode")
 	} else if i.Tool == "codex" && i.CodexSessionID != "" {
 		command = i.buildCodexCommand("codex")
 	} else {
@@ -4060,9 +4059,13 @@ func (i *Instance) Restart() error {
 }
 
 // buildClaudeResumeCommand builds the claude resume command with proper config options
-// Respects: CLAUDE_CONFIG_DIR, dangerous_mode from user config
+// Respects: CLAUDE_CONFIG_DIR, dangerous_mode, and [shell].env_files + init_script
 // CLAUDE_SESSION_ID is set via host-side SetEnvironment (called by SyncSessionIDsToTmux after restart)
 func (i *Instance) buildClaudeResumeCommand() string {
+	// Source env files and init_script so resumed sessions have the same
+	// shell environment as freshly started ones (fixes #409).
+	envPrefix := i.buildEnvSourceCommand()
+
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
 	claudeCmd := GetClaudeCommand()
@@ -4116,12 +4119,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s --resume %s%s",
-			configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+		return fmt.Sprintf("%s%s%s --resume %s%s",
+			envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s --session-id %s%s",
-		configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+	return fmt.Sprintf("%s%s%s --session-id %s%s",
+		envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.
