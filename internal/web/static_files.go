@@ -40,6 +40,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Defense-in-depth: prevent the auth token from leaking via the Referer
+	// header to any external resources loaded by the page. The JavaScript
+	// token-stripping (history.replaceState) is the primary mitigation;
+	// this header ensures no Referer is sent even if the script runs late.
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(index)

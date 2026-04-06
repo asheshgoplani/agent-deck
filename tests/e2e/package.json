@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "bunx repterm .",
-    "test:verbose": "bunx repterm . --verbose"
+    "test:verbose": "bunx repterm . --verbose",
+    "test:playwright": "npx playwright test",
+    "test:playwright:ui": "npx playwright test --ui"
   },
   "keywords": [],
   "author": "",
@@ -14,5 +16,8 @@
   "dependencies": {
     "@playwright/test": "^1.59.1",
     "repterm": "^0.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
   }
 }

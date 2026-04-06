@@ -12,9 +12,9 @@
   "icons": [
     {
       "src": "/static/icons/logo.svg",
-      "sizes": "120x80",
-      "type": "image/svg",
-      "purpose": "any maskable"
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ]
 }

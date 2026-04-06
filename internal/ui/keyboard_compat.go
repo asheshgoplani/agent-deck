@@ -145,6 +145,85 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	return &msg
 }
 
+// ParseModifyOtherKeys parses an xterm modifyOtherKeys escape sequence and
+// returns the equivalent tea.KeyMsg. Returns nil if the data is not a valid
+// modifyOtherKeys sequence.
+//
+// The modifyOtherKeys format is:  ESC '[' '27' ';' <modifier> ';' <codepoint> '~'
+//
+// tmux with extended-keys sends this format. The modifier encoding is the same
+// as CSI u (1 + bitmask).
+func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
+	// Minimum: ESC [ 2 7 ; <mod> ; <code> ~  (9 bytes)
+	if len(data) < 9 {
+		return nil
+	}
+	if data[0] != 0x1b || data[1] != '[' {
+		return nil
+	}
+	if data[len(data)-1] != '~' {
+		return nil
+	}
+
+	// Interior between '[' and '~': must be "27;<modifier>;<codepoint>"
+	interior := data[2 : len(data)-1]
+
+	// Split on semicolons: expect exactly ["27", modifier, codepoint]
+	parts := bytes.Split(interior, []byte{';'})
+	if len(parts) != 3 {
+		return nil
+	}
+	prefix := parseDecimalBytes(parts[0])
+	if prefix != 27 {
+		return nil
+	}
+	modifier := parseDecimalBytes(parts[1])
+	if modifier < 1 {
+		return nil
+	}
+	codepoint := parseDecimalBytes(parts[2])
+	if codepoint < 0 {
+		return nil
+	}
+
+	// Reuse the same modifier logic as ParseCSIu
+	bitmask := modifier - 1
+	shiftHeld := (bitmask & 0x01) != 0
+	ctrlHeld := (bitmask & 0x04) != 0
+
+	switch codepoint {
+	case 13:
+		msg := tea.KeyMsg{Type: tea.KeyEnter}
+		return &msg
+	case 9:
+		msg := tea.KeyMsg{Type: tea.KeyTab}
+		return &msg
+	case 27:
+		msg := tea.KeyMsg{Type: tea.KeyEsc}
+		return &msg
+	case 127:
+		msg := tea.KeyMsg{Type: tea.KeyBackspace}
+		return &msg
+	case 32:
+		msg := tea.KeyMsg{Type: tea.KeySpace}
+		return &msg
+	}
+
+	if ctrlHeld && codepoint >= 97 && codepoint <= 122 {
+		ctrlRune := rune(codepoint - 96)
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ctrlRune}}
+		return &msg
+	}
+
+	r := rune(codepoint)
+	if shiftHeld && r >= 'a' && r <= 'z' {
+		r = r - 'a' + 'A'
+	}
+
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}
+	return &msg
+}
+
 // parseDecimalBytes parses a decimal integer from a byte slice.
 // Returns -1 if the slice is empty or contains non-digit characters.
 func parseDecimalBytes(b []byte) int {
@@ -168,6 +247,7 @@ type csiuReader struct {
 	src    io.Reader
 	outBuf []byte // pending translated bytes to emit
 	inBuf  []byte // buffered input bytes not yet processed
+	err    error  // pending source error to return after draining buffers
 }
 
 // NewCSIuReader returns a reader that wraps r and translates any CSI u
@@ -190,92 +270,123 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 
-	// Read new bytes from the source into the internal buffer.
-	tmp := make([]byte, len(p))
-	n, err := c.src.Read(tmp)
-	if n > 0 {
-		c.inBuf = append(c.inBuf, tmp[:n]...)
-	}
+	for {
+		if c.err != nil {
+			return 0, c.err
+		}
 
-	// Process everything currently in inBuf.
-	processed := c.translate(c.inBuf)
-	c.inBuf = c.inBuf[:0]
+		// Read new bytes from the source into the internal buffer.
+		tmp := make([]byte, len(p))
+		n, err := c.src.Read(tmp)
+		if n > 0 {
+			c.inBuf = append(c.inBuf, tmp[:n]...)
+		}
 
-	if len(processed) == 0 {
-		return 0, err
-	}
+		processed := c.translate(err == io.EOF)
+		if len(processed) > 0 {
+			copied := copy(p, processed)
+			if copied < len(processed) {
+				c.outBuf = append(c.outBuf, processed[copied:]...)
+			}
+			if err != nil {
+				c.err = err
+			}
+			return copied, nil
+		}
 
-	copied := copy(p, processed)
-	if copied < len(processed) {
-		c.outBuf = append(c.outBuf, processed[copied:]...)
+		if err != nil {
+			c.err = err
+			return 0, err
+		}
 	}
-	return copied, err
 }
 
-// translate scans buf for CSI u sequences and replaces them with the
-// legacy byte representation of the corresponding key. All other bytes are
-// returned unchanged.
-func (c *csiuReader) translate(buf []byte) []byte {
-	if len(buf) == 0 {
-		return buf
+// translate scans c.inBuf for CSI u / modifyOtherKeys sequences and replaces
+// complete matches with their legacy byte representation. Incomplete ESC[
+// sequences are left buffered for the next Read call.
+func (c *csiuReader) translate(final bool) []byte {
+	if len(c.inBuf) == 0 {
+		return nil
 	}
 
-	var out []byte
+	out := make([]byte, 0, len(c.inBuf))
 	i := 0
-	for i < len(buf) {
+	for i < len(c.inBuf) {
 		// Look for ESC '[' to start a potential CSI sequence.
-		if buf[i] != 0x1b || i+2 >= len(buf) || buf[i+1] != '[' {
-			if out == nil {
-				out = buf[:0:0] // start building output lazily
-			}
-			out = append(out, buf[i])
+		if c.inBuf[i] != 0x1b {
+			out = append(out, c.inBuf[i])
+			i++
+			continue
+		}
+
+		// Preserve a lone ESC as-is to avoid hanging standalone escape.
+		if i+1 >= len(c.inBuf) {
+			out = append(out, c.inBuf[i])
+			i++
+			continue
+		}
+		if c.inBuf[i+1] != '[' {
+			out = append(out, c.inBuf[i])
 			i++
 			continue
 		}
 
 		// We have ESC '['. Scan forward for the terminator.
 		j := i + 2
-		for j < len(buf) && buf[j] != 'u' && buf[j] != 'A' && buf[j] != 'B' &&
-			buf[j] != 'C' && buf[j] != 'D' && buf[j] != 'H' && buf[j] != 'F' &&
-			buf[j] != '~' {
+		for j < len(c.inBuf) && c.inBuf[j] != 'u' && c.inBuf[j] != 'A' &&
+			c.inBuf[j] != 'B' && c.inBuf[j] != 'C' && c.inBuf[j] != 'D' &&
+			c.inBuf[j] != 'H' && c.inBuf[j] != 'F' && c.inBuf[j] != '~' {
 			j++
 		}
 
-		if j >= len(buf) {
-			// Incomplete sequence — pass ESC through and continue
-			if out == nil {
-				out = buf[:0:0]
+		if j >= len(c.inBuf) {
+			if final {
+				out = append(out, c.inBuf[i:]...)
+				i = len(c.inBuf)
 			}
-			out = append(out, buf[i])
-			i++
-			continue
+			break
 		}
 
-		if buf[j] != 'u' {
-			// Not a CSI u sequence — pass through as-is
-			if out == nil {
-				out = buf[:0:0]
+		seq := c.inBuf[i : j+1]
+		if c.inBuf[j] != 'u' {
+			// Check for modifyOtherKeys format: ESC[27;modifier;codepoint~
+			if c.inBuf[j] == '~' {
+				if msg := ParseModifyOtherKeys(seq); msg != nil {
+					switch msg.Type {
+					case tea.KeyEnter:
+						out = append(out, '\r')
+					case tea.KeyTab:
+						out = append(out, '\t')
+					case tea.KeyEsc:
+						out = append(out, 0x1b)
+					case tea.KeyBackspace:
+						out = append(out, 127)
+					case tea.KeySpace:
+						out = append(out, ' ')
+					case tea.KeyRunes:
+						for _, r := range msg.Runes {
+							out = append(out, []byte(string(r))...)
+						}
+					default:
+						out = append(out, seq...)
+					}
+					i = j + 1
+					continue
+				}
 			}
-			out = append(out, buf[i:j+1]...)
-			i = j + 1
-			continue
-		}
-
-		// Potential CSI u sequence: buf[i..j] inclusive
-		seq := buf[i : j+1]
-		msg := ParseCSIu(seq)
-		if msg == nil {
-			// Not a valid CSI u, pass through
-			if out == nil {
-				out = buf[:0:0]
-			}
+			// Not a CSI u or modifyOtherKeys sequence — pass through as-is
 			out = append(out, seq...)
 			i = j + 1
 			continue
 		}
 
-		if out == nil {
-			out = buf[:0:0]
+		// Potential CSI u sequence: c.inBuf[i..j] inclusive
+		msg := ParseCSIu(seq)
+		if msg == nil {
+			// Not a valid CSI u, pass through
+			out = append(out, seq...)
+			i = j + 1
+			continue
 		}
 
 		// Translate to legacy bytes
@@ -302,9 +413,6 @@ func (c *csiuReader) translate(buf []byte) []byte {
 		i = j + 1
 	}
 
-	if out == nil {
-		// No CSI u sequences found — return original buffer directly
-		return buf
-	}
+	c.inBuf = append(c.inBuf[:0], c.inBuf[i:]...)
 	return out
 }

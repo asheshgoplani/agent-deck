@@ -57,6 +57,26 @@ func BranchExists(repoDir, branchName string) bool {
 	return err == nil
 }
 
+func remoteBranchExists(repoDir, remoteName, branchName string) bool {
+	cmd := exec.Command("git", "-C", repoDir, "show-ref", "--verify", "--quiet", "refs/remotes/"+remoteName+"/"+branchName)
+	err := cmd.Run()
+	return err == nil
+}
+
+type worktreeBranchMode int
+
+const (
+	worktreeBranchNew worktreeBranchMode = iota
+	worktreeBranchLocal
+	worktreeBranchRemote
+)
+
+type worktreeBranchResolution struct {
+	Branch string
+	Mode   worktreeBranchMode
+	Remote string
+}
+
 // ValidateBranchName validates that a branch name follows git's naming rules
 func ValidateBranchName(name string) error {
 	if name == "" {
@@ -152,13 +172,22 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 		return errors.New("not a git repository")
 	}
 
-	var cmd *exec.Cmd
+	resolution, err := resolveWorktreeBranch(repoDir, branchName)
+	if err != nil {
+		return err
+	}
 
-	if BranchExists(repoDir, branchName) {
-		// Use existing branch
+	var cmd *exec.Cmd
+	switch resolution.Mode {
+	case worktreeBranchLocal:
+		// Reuse an existing local branch.
 		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", worktreePath, branchName)
-	} else {
-		// Create new branch with -b flag
+	case worktreeBranchRemote:
+		// Create a local tracking branch from the default remote.
+		remoteRef := resolution.Remote + "/" + branchName
+		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "--track", "-b", branchName, worktreePath, remoteRef)
+	default:
+		// Create a new local branch.
 		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
 	}
 
@@ -361,6 +390,29 @@ func SanitizeBranchName(name string) string {
 	return sanitized
 }
 
+func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution, error) {
+	if !IsGitRepo(repoDir) {
+		return worktreeBranchResolution{}, errors.New("not a git repository")
+	}
+
+	resolution := worktreeBranchResolution{
+		Branch: branchName,
+		Mode:   worktreeBranchNew,
+	}
+
+	if BranchExists(repoDir, branchName) {
+		resolution.Mode = worktreeBranchLocal
+		return resolution, nil
+	}
+
+	defaultRemote, err := getDefaultRemote(repoDir)
+	if err == nil && defaultRemote != "" && remoteBranchExists(repoDir, defaultRemote, branchName) {
+		resolution.Mode = worktreeBranchRemote
+		resolution.Remote = defaultRemote
+	}
+
+	return resolution, nil
+}
 func getDefaultRemote(repoDir string) (string, error) {
 	remotes, err := listRemotes(repoDir)
 	if err != nil {
@@ -433,9 +485,8 @@ func listRefShortNames(repoDir string, refs ...string) ([]string, error) {
 	return names, nil
 }
 
-// ListBranchCandidates returns unique branch names from local branches and all
-// configured remotes. Local branches use plain names; remote branches keep
-// their remote prefix (for example "origin/main").
+// ListBranchCandidates returns unique branch names from local branches and the
+// default remote, normalized to plain branch names without a remote prefix.
 func ListBranchCandidates(repoDir string) ([]string, error) {
 	if !IsGitRepo(repoDir) {
 		return nil, errors.New("not a git repository")
@@ -456,17 +507,18 @@ func ListBranchCandidates(repoDir string) ([]string, error) {
 		seen[branch] = struct{}{}
 	}
 
-	remotes, err := listRemotes(repoDir)
-	if err != nil {
-		return nil, err
-	}
-	for _, remote := range remotes {
-		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+remote)
+	if defaultRemote, err := getDefaultRemote(repoDir); err == nil && defaultRemote != "" {
+		remoteBranches, err := listRefShortNames(repoDir, "refs/remotes/"+defaultRemote)
 		if err != nil {
 			return nil, err
 		}
+		prefix := defaultRemote + "/"
 		for _, branch := range remoteBranches {
-			if branch == remote || branch == remote+"/HEAD" {
+			if branch == defaultRemote+"/HEAD" {
+				continue
+			}
+			branch = strings.TrimPrefix(branch, prefix)
+			if branch == "" {
 				continue
 			}
 			seen[branch] = struct{}{}
