@@ -135,9 +135,12 @@ def run_cli(
                 # Kill the entire process group so grandchildren (e.g. tmux send-keys)
                 # don't survive as orphans and jam the pane's input queue.
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
+            except OSError:
                 proc.kill()  # fallback: kill direct child only
-            proc.communicate()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             return subprocess.CompletedProcess(cmd, 1, "", "timeout")
     except FileNotFoundError:
         log.error("agent-deck not found in PATH")
