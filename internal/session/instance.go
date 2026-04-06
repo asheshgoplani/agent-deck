@@ -3851,9 +3851,12 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
-	// For Codex: refresh session ID before restart even when a stale ID is already
-	// present in memory. tmux env is authoritative and can rotate (e.g. /new).
-	if i.Tool == "codex" {
+	// For Codex: try to update session ID, but only if we don't already have one.
+	// When we already have a known session ID (from the database), trust it —
+	// the disk scan can return a wrong ID when multiple instances share the same
+	// project_path. The process probe is authoritative but only works when the
+	// process is running, which it isn't during a restart.
+	if i.Tool == "codex" && i.CodexSessionID == "" {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
