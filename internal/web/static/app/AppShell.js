@@ -14,6 +14,7 @@ import { GroupNameDialog } from './GroupNameDialog.js'
 import { TerminalPanel } from './TerminalPanel.js'
 import { CostDashboard } from './CostDashboard.js'
 import { SettingsPanel } from './SettingsPanel.js'
+import { ToastContainer } from './Toast.js'
 
 export function AppShell() {
   const sidebarOpen = sidebarOpenSignal.value
@@ -154,6 +155,7 @@ export function AppShell() {
           </div>
         </div>
       `}
+      <${ToastContainer} />
     </div>
   `
 }

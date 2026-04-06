@@ -3,6 +3,7 @@ import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
 import { selectedIdSignal, sessionCostsSignal, confirmDialogSignal } from './state.js'
 import { apiFetch } from './api.js'
+import { addToast } from './Toast.js'
 
 const STATUS_COLORS = {
   running:  'bg-tn-green animate-pulse',
@@ -20,21 +21,47 @@ export function SessionRow({ item, focused }) {
   const costLabel = (costUSD != null && costUSD >= 0.001)
     ? '$' + costUSD.toFixed(2)
     : null
-  const dotColor = STATUS_COLORS[session.status] || 'bg-tn-muted'
+
+  // Optimistic UI: override displayed status while mutation is in-flight
+  const [optimisticStatus, setOptimisticStatus] = useState(null)
+  const [mutating, setMutating] = useState(false)
+  const displayStatus = optimisticStatus || session.status
+  const dotColor = STATUS_COLORS[displayStatus] || 'bg-tn-muted'
   const [hovered, setHovered] = useState(false)
 
   function handleClick() {
     selectedIdSignal.value = session.id
   }
 
+  async function handleMutation(apiCall, pendingStatus) {
+    setOptimisticStatus(pendingStatus)
+    setMutating(true)
+    try {
+      await apiCall()
+    } catch (err) {
+      setOptimisticStatus(null)
+      addToast(err.message || 'Action failed')
+    } finally {
+      setMutating(false)
+      // SSE will deliver the real status; clear optimistic override after a short delay
+      setTimeout(() => setOptimisticStatus(null), 3000)
+    }
+  }
+
   function handleStop(e) {
     e.stopPropagation()
-    apiFetch('POST', '/api/sessions/' + session.id + '/stop')
+    handleMutation(
+      () => apiFetch('POST', '/api/sessions/' + session.id + '/stop'),
+      'stopped'
+    )
   }
 
   function handleRestart(e) {
     e.stopPropagation()
-    apiFetch('POST', '/api/sessions/' + session.id + '/restart')
+    handleMutation(
+      () => apiFetch('POST', '/api/sessions/' + session.id + '/restart'),
+      'starting'
+    )
   }
 
   function handleDelete(e) {
@@ -80,21 +107,23 @@ export function SessionRow({ item, focused }) {
         `}
         <span class="flex items-center gap-0.5 flex-shrink-0 ml-1 transition-opacity
           ${(hovered || focused || isSelected) ? 'opacity-100' : 'opacity-0 pointer-events-none'}">
-          ${(session.status === 'running' || session.status === 'waiting') && html`
-            <button type="button" onClick=${handleStop} title="Stop (s)" aria-label="Stop session"
+          ${(displayStatus === 'running' || displayStatus === 'waiting') && html`
+            <button type="button" onClick=${handleStop} disabled=${mutating} title="Stop (s)" aria-label="Stop session"
               class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded
                      dark:text-tn-muted hover:dark:text-tn-yellow hover:dark:bg-tn-yellow/10
-                     text-gray-400 hover:text-yellow-600 hover:bg-yellow-50 transition-colors">
+                     text-gray-400 hover:text-yellow-600 hover:bg-yellow-50 transition-colors
+                     disabled:opacity-40 disabled:pointer-events-none">
               <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                 <rect x="5" y="5" width="10" height="10" rx="1"/>
               </svg>
             </button>
           `}
-          ${(session.status === 'idle' || session.status === 'stopped' || session.status === 'error') && html`
-            <button type="button" onClick=${handleRestart} title="Restart (r)" aria-label="Restart session"
+          ${(displayStatus === 'idle' || displayStatus === 'stopped' || displayStatus === 'error') && html`
+            <button type="button" onClick=${handleRestart} disabled=${mutating} title="Restart (r)" aria-label="Restart session"
               class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded
                      dark:text-tn-muted hover:dark:text-tn-green hover:dark:bg-tn-green/10
-                     text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors">
+                     text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors
+                     disabled:opacity-40 disabled:pointer-events-none">
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                       d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>

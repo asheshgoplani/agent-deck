@@ -1,7 +1,7 @@
 // SessionList.js -- Renders groups + sessions from sessionsSignal
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { sessionsSignal, selectedIdSignal, authTokenSignal, sessionCostsSignal, focusedIdSignal } from './state.js'
+import { sessionsSignal, selectedIdSignal, authTokenSignal, sessionCostsSignal, focusedIdSignal, searchQuerySignal } from './state.js'
 import { isGroupExpanded, groupExpandedSignal } from './groupState.js'
 import { GroupRow } from './GroupRow.js'
 import { SessionRow } from './SessionRow.js'
@@ -44,9 +44,29 @@ function hasCollapsedAncestor(path) {
   return false
 }
 
+function fuzzyMatch(text, query) {
+  if (!query) return true
+  const lower = (text || '').toLowerCase()
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+  return terms.every(term => lower.includes(term))
+}
+
+function matchesSearch(item, query) {
+  if (!query) return true
+  if (item.type === 'group' && item.group) {
+    return fuzzyMatch(item.group.name + ' ' + item.group.path, query)
+  }
+  if (item.type === 'session' && item.session) {
+    const s = item.session
+    return fuzzyMatch([s.title, s.id, s.groupPath, s.path, s.tool].join(' '), query)
+  }
+  return true
+}
+
 export function SessionList() {
   const items = sessionsSignal.value
   const focusedId = focusedIdSignal.value
+  const query = searchQuerySignal.value
 
   useKeyboardNav()
 
@@ -61,20 +81,25 @@ export function SessionList() {
     return () => { window.__preactSessionListActive = false }
   }, [])
 
-  if (!items || items.length === 0) {
+  // When searching, show all matching sessions (ignore group collapse state)
+  const filtered = query
+    ? items.filter(item => matchesSearch(item, query))
+    : items
+
+  if (!filtered || filtered.length === 0) {
     return html`<div class="px-sp-12 py-sp-16 dark:text-tn-muted text-gray-400 text-sm">
-      No sessions
+      ${query ? 'No matching sessions' : 'No sessions'}
     </div>`
   }
 
   return html`<ul class="flex flex-col gap-0.5 py-sp-4" role="list" id="preact-session-list">
-    ${items.map(item => {
+    ${filtered.map(item => {
       if (item.type === 'group' && item.group) {
-        if (hasCollapsedAncestor(item.group.path)) return null
+        if (!query && hasCollapsedAncestor(item.group.path)) return null
         return html`<${GroupRow} key=${item.group.path} item=${item} />`
       }
       if (item.type === 'session' && item.session) {
-        if (hasCollapsedAncestor(item.session.groupPath)) return null
+        if (!query && hasCollapsedAncestor(item.session.groupPath)) return null
         const isFocused = focusedId === item.session.id
         return html`<${SessionRow} key=${item.session.id} item=${item} focused=${isFocused} />`
       }

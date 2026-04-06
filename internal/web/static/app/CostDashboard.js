@@ -3,6 +3,7 @@
 import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { apiFetch } from './api.js'
+import { themeSignal } from './state.js'
 
 const CHART_COLORS = ['#7aa2f7','#bb9af7','#7dcfff','#9ece6a','#e0af68','#f7768e','#73daca','#ff9e64']
 
@@ -61,6 +62,12 @@ export function CostDashboard() {
 
         if (!dailyCanvasRef.current || !modelCanvasRef.current) return
 
+        // Theme-aware chart colors
+        const isDark = document.documentElement.classList.contains('dark')
+        const tickColor = isDark ? '#565f89' : '#6b7280'
+        const gridColor = isDark ? '#1f2335' : '#e5e7eb'
+        const legendColor = isDark ? '#c0caf5' : '#374151'
+
         const dates = dailyData || []
         const labels = dates.map(d => d.date.slice(5))
         const costs = dates.map(d => d.cost_usd)
@@ -82,10 +89,10 @@ export function CostDashboard() {
             responsive: true,
             plugins: { legend: { display: false } },
             scales: {
-              x: { ticks: { color: '#565f89' }, grid: { color: '#1f2335' } },
+              x: { ticks: { color: tickColor }, grid: { color: gridColor } },
               y: {
-                ticks: { color: '#565f89', callback: v => '$' + v.toFixed(2) },
-                grid: { color: '#1f2335' },
+                ticks: { color: tickColor, callback: v => '$' + v.toFixed(2) },
+                grid: { color: gridColor },
               },
             },
           },
@@ -109,7 +116,7 @@ export function CostDashboard() {
             plugins: {
               legend: {
                 position: 'bottom',
-                labels: { color: '#c0caf5', font: { size: 11 } },
+                labels: { color: legendColor, font: { size: 11 } },
               },
             },
           },
@@ -124,7 +131,7 @@ export function CostDashboard() {
     return () => {
       cancelled = true
     }
-  }, [loading, error])
+  }, [loading, error, themeSignal.value])
 
   // Cleanup chart instances on unmount
   useEffect(() => {

@@ -62,3 +62,10 @@ export const pushEndpointSignal = signal('')
 
 // Info drawer open/close state (Phase 10: replaces showSettings local state in Topbar)
 export const infoDrawerOpenSignal = signal(false)
+
+// Sidebar search query (Issue A: search/filter)
+export const searchQuerySignal = signal('')
+export const searchVisibleSignal = signal(false)
+
+// Global error toasts (Issue F)
+export const toastsSignal = signal([])
