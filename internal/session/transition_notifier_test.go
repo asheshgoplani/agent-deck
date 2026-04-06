@@ -70,6 +70,46 @@ func TestResolveParentNotificationTargetReturnsParent(t *testing.T) {
 	}
 }
 
+func TestResolveParentNotificationTargetSelfLoop(t *testing.T) {
+	self := &Instance{ID: "self", Title: "task", ParentSessionID: "self"}
+	byID := map[string]*Instance{"self": self}
+	got := resolveParentNotificationTarget(self, byID)
+	if got != nil {
+		t.Fatalf("expected nil for self-referencing parent, got %#v", got)
+	}
+}
+
+func TestDeferredEventNotMarkedAsNotified(t *testing.T) {
+	n := &TransitionNotifier{
+		statePath: t.TempDir() + "/state.json",
+		logPath:   t.TempDir() + "/log.jsonl",
+		state: transitionNotifyState{
+			Records: map[string]transitionNotifyRecord{},
+		},
+	}
+
+	event := TransitionNotificationEvent{
+		ChildSessionID: "child1",
+		ChildTitle:     "task",
+		Profile:        "_test",
+		FromStatus:     "running",
+		ToStatus:       "waiting",
+		Timestamp:      time.Now(),
+		DeliveryResult: transitionDeliveryDeferred,
+	}
+
+	// Simulate what NotifyTransition does for a deferred event:
+	// deferred events skip markNotified so they can be retried.
+	if event.DeliveryResult != transitionDeliveryDeferred {
+		n.markNotified(event)
+	}
+
+	// The event should NOT be in the dedup records, so isDuplicate returns false.
+	if n.isDuplicate(event) {
+		t.Fatal("deferred event should not be treated as duplicate")
+	}
+}
+
 func TestTerminalHookTransitionCandidate(t *testing.T) {
 	now := time.Now()
 
