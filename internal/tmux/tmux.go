@@ -2850,10 +2850,10 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 			}
 		}
 		lowerContent := strings.ToLower(recentContent)
-		// "esc to interrupt" always appears in the last 1-2 status bar lines of the
-		// pane. Limiting to 3 lines prevents matching model-generated prose output
-		// that happens to contain the phrase (e.g. conductor status reports).
-		statusBarLines := lastNLines(content, 3)
+		// Claude Code's status bar lives below the last horizontal separator (────).
+		// Use structural boundary detection instead of a fixed line count, which is
+		// robust even when the status bar wraps on narrow terminals.
+		statusBarLines := linesAfterLastSeparator(content)
 		for _, str := range patterns.BusyStrings {
 			lowerStr := strings.ToLower(str)
 			if !strings.Contains(lowerContent, lowerStr) {

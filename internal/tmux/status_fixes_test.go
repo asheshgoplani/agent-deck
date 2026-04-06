@@ -555,6 +555,20 @@ esc to interrupt`,
 ` + separatorLine,
 			wantBusy: false,
 		},
+		{
+			// Narrow terminal (e.g. 40 cols): the status bar wraps across 4+ lines.
+			// A fixed lastNLines(content, 3) would miss "esc to interrupt" if it
+			// landed on the 4th+ line from the bottom. The separator-based approach
+			// catches all lines after the last separator regardless of count.
+			name: "busy - narrow terminal wrapping status bar over 4 lines",
+			content: "Some output here\n" +
+				separatorLine + "\n" +
+				"  ⏵⏵ bypass permissions\n" +
+				"on · esc to interrupt ·\n" +
+				"ctrl+t to show tasks ·\n" +
+				"ctrl+r to toggle tools",
+			wantBusy: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -564,6 +578,51 @@ esc to interrupt`,
 			got := sess.hasBusyIndicator(tt.content)
 			if got != tt.wantBusy {
 				t.Errorf("hasBusyIndicator() = %v, want %v\nContent:\n%s", got, tt.wantBusy, tt.content)
+			}
+		})
+	}
+}
+
+func TestLinesAfterLastSeparator(t *testing.T) {
+	const sep = "────────────────────────"
+
+	tests := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{
+			name:    "standard layout - status bar after separator",
+			content: "some output\n" + sep + "\n  ⏵⏵ bypass · esc to interrupt\n",
+			want:    []string{"  ⏵⏵ bypass · esc to interrupt"},
+		},
+		{
+			name:    "separator as last line - idle layout",
+			content: "some output\n" + sep + "\n❯\n" + sep + "\n",
+			want:    []string{"❯"},
+		},
+		{
+			name:    "no separator - fallback to last 3 lines",
+			content: "line one\nline two\nline three\nline four\n",
+			want:    []string{"line two", "line three", "line four"},
+		},
+		{
+			name:    "trailing blank lines stripped",
+			content: "output\n" + sep + "\nstatus line\n\n\n",
+			want:    []string{"status line"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := linesAfterLastSeparator(tt.content)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d lines %v, want %d lines %v", len(got), got, len(tt.want), tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("line[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}
