@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -671,6 +672,314 @@ func TestWaitOutputRetrieval_StaleSessionID(t *testing.T) {
 		}
 		if resp.Content != "Hello! How can I help?" {
 			t.Errorf("expected 'Hello! How can I help?', got %q", resp.Content)
+		}
+	})
+}
+
+// writeClaudeJSONL creates a JSONL file with a user message and an assistant response
+// at the given timestamp. Returns the file path.
+func writeClaudeJSONL(t *testing.T, projectsDir, sessionID, userMsg, assistantMsg, timestamp string) string {
+	t.Helper()
+	file := filepath.Join(projectsDir, sessionID+".jsonl")
+
+	type message struct {
+		Role    string      `json:"role"`
+		Content interface{} `json:"content"`
+	}
+	type record struct {
+		SessionID string   `json:"sessionId"`
+		Type      string   `json:"type"`
+		Message   *message `json:"message,omitempty"`
+		Timestamp string   `json:"timestamp,omitempty"`
+	}
+
+	var lines []string
+
+	// Summary line
+	summaryBytes, _ := json.Marshal(record{SessionID: sessionID, Type: "summary"})
+	lines = append(lines, string(summaryBytes))
+
+	// User message
+	userRec, _ := json.Marshal(record{
+		SessionID: sessionID,
+		Type:      "user",
+		Message:   &message{Role: "user", Content: userMsg},
+		Timestamp: timestamp,
+	})
+	lines = append(lines, string(userRec))
+
+	// Assistant message (content as array of blocks, matching real Claude format)
+	blocks := []map[string]string{{"type": "text", "text": assistantMsg}}
+	assistantRec, _ := json.Marshal(record{
+		SessionID: sessionID,
+		Type:      "assistant",
+		Message:   &message{Role: "assistant", Content: blocks},
+		Timestamp: timestamp,
+	})
+	lines = append(lines, string(assistantRec))
+
+	if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+		t.Fatalf("failed to write JSONL: %v", err)
+	}
+	return file
+}
+
+// setFastFreshOutputConfig overrides waitForFreshOutput timing for fast tests.
+func setFastFreshOutputConfig(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	freshOutputTestConfig = &freshOutputConfig{
+		pollInterval: 50 * time.Millisecond,
+		timeout:      timeout,
+	}
+	t.Cleanup(func() { freshOutputTestConfig = nil })
+}
+
+// TestWaitForFreshOutput_ReturnsNewResponse verifies that waitForFreshOutput
+// polls until a response newer than sentAt appears in the JSONL file.
+func TestWaitForFreshOutput_ReturnsNewResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := "/test/fresh-output"
+	encodedPath := session.ConvertToClaudeDirName(projectPath)
+	projectsDir := filepath.Join(tmpDir, "projects", encodedPath)
+	if err := os.MkdirAll(projectsDir, 0755); err != nil {
+		t.Fatalf("failed to create projects dir: %v", err)
+	}
+
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+	t.Cleanup(func() {
+		os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		session.ClearUserConfigCache()
+	})
+	session.ClearUserConfigCache()
+
+	sessionID := "fresh-output-session-id"
+
+	t.Run("stale response is skipped until fresh one appears", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 2*time.Second)
+
+		// Write an OLD response (before sentAt)
+		oldTimestamp := "2026-01-01T00:00:00Z"
+		writeClaudeJSONL(t, projectsDir, sessionID, "old question", "old answer", oldTimestamp)
+
+		inst := session.NewInstance("fresh-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		sentAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+		// In a goroutine, simulate Claude flushing a new response after a short delay
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			newTimestamp := "2026-03-01T00:00:05Z"
+			writeClaudeJSONL(t, projectsDir, sessionID, "new question", "new answer", newTimestamp)
+		}()
+
+		resp, err := waitForFreshOutput(inst, sentAt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Content != "new answer" {
+			t.Errorf("expected 'new answer', got %q", resp.Content)
+		}
+	})
+
+	t.Run("returns stale response on timeout rather than failing", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 300*time.Millisecond)
+
+		// Write a response that will always be older than sentAt
+		oldTimestamp := "2026-01-01T00:00:00Z"
+		writeClaudeJSONL(t, projectsDir, sessionID, "only question", "only answer", oldTimestamp)
+
+		inst := session.NewInstance("timeout-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		// sentAt is well after the only response — freshness poll will time out
+		sentAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+		resp, err := waitForFreshOutput(inst, sentAt)
+		if err != nil {
+			t.Fatalf("should not error even on timeout, got: %v", err)
+		}
+		// Should still return the stale response rather than nil
+		if resp.Content != "only answer" {
+			t.Errorf("expected fallback to 'only answer', got %q", resp.Content)
+		}
+	})
+
+	t.Run("immediately returns if response is already fresh", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 2*time.Second)
+
+		freshTimestamp := "2026-06-01T12:00:00Z"
+		writeClaudeJSONL(t, projectsDir, sessionID, "question", "instant answer", freshTimestamp)
+
+		inst := session.NewInstance("instant-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		sentAt := time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC) // 1 hour before response
+
+		start := time.Now()
+		resp, err := waitForFreshOutput(inst, sentAt)
+		elapsed := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Content != "instant answer" {
+			t.Errorf("expected 'instant answer', got %q", resp.Content)
+		}
+		if elapsed > 500*time.Millisecond {
+			t.Errorf("expected fast return for already-fresh response, took %v", elapsed)
+		}
+	})
+
+	t.Run("same-second timestamp accepted via skew tolerance", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 2*time.Second)
+
+		// Timestamp is exactly the same second as sentAt (second precision)
+		writeClaudeJSONL(t, projectsDir, sessionID, "q", "same-second answer", "2026-04-01T10:00:00Z")
+
+		inst := session.NewInstance("skew-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		// sentAt at the exact same second — the 250ms tolerance should accept it
+		// because the timestamp (whole-second) is only 0ms "before" sentAt.
+		sentAt := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+
+		resp, err := waitForFreshOutput(inst, sentAt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Content != "same-second answer" {
+			t.Errorf("expected 'same-second answer', got %q", resp.Content)
+		}
+	})
+
+	t.Run("response 1s before sentAt rejected with tighter tolerance", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 300*time.Millisecond)
+
+		// Response timestamp is 1 second BEFORE sentAt — outside the 250ms tolerance
+		writeClaudeJSONL(t, projectsDir, sessionID, "q", "old-ish answer", "2026-04-01T09:59:59Z")
+
+		inst := session.NewInstance("tight-skew-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		sentAt := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+
+		resp, err := waitForFreshOutput(inst, sentAt)
+		if err != nil {
+			t.Fatalf("should not error even on timeout, got: %v", err)
+		}
+		// Falls through to timeout since 1s > 250ms tolerance, returns stale
+		if resp.Content != "old-ish answer" {
+			t.Errorf("expected fallback to 'old-ish answer', got %q", resp.Content)
+		}
+	})
+
+	t.Run("non-claude tool skips freshness polling", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 2*time.Second)
+
+		inst := session.NewInstance("codex-test", projectPath)
+		inst.Tool = "codex"
+
+		start := time.Now()
+		resp, err := waitForFreshOutput(inst, time.Now())
+		elapsed := time.Since(start)
+
+		// Codex path goes straight to GetLastResponseBestEffort, no polling
+		if elapsed > 500*time.Millisecond {
+			t.Errorf("non-claude tool should skip polling, took %v", elapsed)
+		}
+		// Just verify no crash; response content depends on codex session state
+		_ = resp
+		_ = err
+	})
+
+	t.Run("unparseable timestamp falls through to timeout", func(t *testing.T) {
+		setFastFreshOutputConfig(t, 300*time.Millisecond)
+
+		// Write JSONL with a non-RFC3339 timestamp
+		writeClaudeJSONL(t, projectsDir, sessionID, "q", "bad-ts answer", "not-a-timestamp")
+
+		inst := session.NewInstance("bad-ts-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = sessionID
+
+		sentAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		resp, err := waitForFreshOutput(inst, sentAt)
+		if err != nil {
+			t.Fatalf("should not error, got: %v", err)
+		}
+		// Falls through to timeout, returns last response
+		if resp.Content != "bad-ts answer" {
+			t.Errorf("expected 'bad-ts answer', got %q", resp.Content)
+		}
+	})
+}
+
+// TestSessionOutput_RefreshesSessionID verifies that the session ID refresh
+// logic would correctly update a stale ClaudeSessionID before reading output.
+func TestSessionOutput_RefreshesSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectPath := "/test/output-refresh"
+	encodedPath := session.ConvertToClaudeDirName(projectPath)
+	projectsDir := filepath.Join(tmpDir, "projects", encodedPath)
+	if err := os.MkdirAll(projectsDir, 0755); err != nil {
+		t.Fatalf("failed to create projects dir: %v", err)
+	}
+
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+	t.Cleanup(func() {
+		os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		session.ClearUserConfigCache()
+	})
+	session.ClearUserConfigCache()
+
+	// Create the "real" current session JSONL
+	realSessionID := "current-active-session"
+	writeClaudeJSONL(t, projectsDir, realSessionID, "hello", "Hi there!", "2026-03-01T00:00:01Z")
+
+	t.Run("stale ID fails then refreshed ID succeeds", func(t *testing.T) {
+		inst := session.NewInstance("output-refresh-test", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = "stale-nonexistent-id"
+
+		// Direct read with stale ID fails
+		_, err := inst.GetLastResponse()
+		if err == nil {
+			t.Fatal("expected error with stale session ID, got nil")
+		}
+
+		// Simulate the refresh that handleSessionOutput now does
+		inst.ClaudeSessionID = realSessionID
+		inst.ClaudeDetectedAt = time.Now()
+
+		resp, err := inst.GetLastResponseBestEffort()
+		if err != nil {
+			t.Fatalf("unexpected error after refresh: %v", err)
+		}
+		if resp.Content != "Hi there!" {
+			t.Errorf("expected 'Hi there!', got %q", resp.Content)
+		}
+	})
+
+	t.Run("best-effort returns graceful empty when disk scan cannot recover", func(t *testing.T) {
+		inst := session.NewInstance("output-disk-fallback", projectPath)
+		inst.Tool = "claude"
+		inst.ClaudeSessionID = "totally-bogus-id"
+
+		resp, err := inst.GetLastResponseBestEffort()
+		if err != nil {
+			t.Fatalf("best-effort should not error for Claude, got: %v", err)
+		}
+		if resp.Content != "" {
+			t.Errorf("expected empty graceful response, got %q", resp.Content)
 		}
 	})
 }
