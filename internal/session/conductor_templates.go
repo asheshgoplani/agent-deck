@@ -1395,7 +1395,7 @@ def create_slack_app(config: dict):
         # Links [text](url) -> <url|text>
         text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"<\2|\1>", text)
         # Bullet lists: - item or * item -> bullet char item
-        text = re.sub(r"^(\s*)[-*]\s+", r"\1\u2022 ", text, flags=re.MULTILINE)
+        text = re.sub(r"^(\s*)[-*]\s+", "\\1\u2022 ", text, flags=re.MULTILINE)
 
         # Restore inline code.
         for i, code in enumerate(inline_codes):

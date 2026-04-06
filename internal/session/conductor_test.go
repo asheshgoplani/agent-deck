@@ -2191,6 +2191,13 @@ func TestBridgeTemplate_ContainsMarkdownToSlackConverter(t *testing.T) {
 		t.Error("template should contain bullet list regex ^(\\s*)[-*]\\s+")
 	}
 
+	// Regression: bullet replacement must NOT use r"..." prefix (#408).
+	// r"\1\u2022 " passes \u literally to re.sub, which crashes with "bad escape \u".
+	// The correct form is "\\1\u2022 " (non-raw string so \u2022 becomes the bullet char).
+	if strings.Contains(template, `r"\1\u2022 "`) {
+		t.Error("bullet replacement must not use raw string r\"\\1\\u2022 \" (causes re.error: bad escape \\u); use \"\\\\1\\u2022 \" instead (#408)")
+	}
+
 	// Code block protection.
 	if !strings.Contains(template, "code_blocks = []") {
 		t.Error("template should contain code block protection list")
