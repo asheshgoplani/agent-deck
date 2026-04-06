@@ -788,7 +788,12 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
 	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
 	if startWithInitialProcess {
-		args = append(args, command)
+		cmdToStart := command
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
+			cmdToStart = fmt.Sprintf("bash -c '%s'", escapedCmd)
+		}
+		args = append(args, cmdToStart)
 	}
 
 	if !s.LaunchInUserScope {
@@ -1297,9 +1302,9 @@ func (s *Session) Start(command string) error {
 		workDir = os.Getenv("HOME")
 	}
 
-	// Create new tmux session in detached mode.
-	// Sandbox sessions launch command as the pane process for dead-pane restart.
-	// Non-sandbox sessions keep the legacy shell+send flow.
+	// Create new tmux session in detached mode with the command as the initial
+	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
+	// Commands containing bash-specific syntax are wrapped for fish compatibility.
 	launcher, args := s.startCommandSpec(workDir, command)
 	cmd := exec.Command(launcher, args...)
 	output, err := cmd.CombinedOutput()
@@ -1403,7 +1408,7 @@ func (s *Session) Start(command string) error {
 		}
 	}
 
-	// Legacy behavior for non-sandbox sessions: start shell first, then send command.
+	// Fallback: if RunCommandAsInitialProcess is false, send command via send-keys.
 	if command != "" && !s.RunCommandAsInitialProcess {
 		cmdToSend := command
 		// Commands containing bash-specific syntax must be wrapped for fish users.
