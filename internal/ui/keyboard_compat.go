@@ -21,6 +21,7 @@ package ui
 import (
 	"bytes"
 	"io"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -40,7 +41,14 @@ func DisableKittyKeyboard(w io.Writer) {
 // Call this before attaching to a session that needs Kitty keyboard support
 // (e.g. Claude Code). Pair with DisableKittyKeyboard to pop the stack on
 // return.
+//
+// No-op when running inside tmux: tmux does not forward Kitty protocol
+// sequences correctly and enabling it causes ESC to be received as literal
+// "27u" by inner processes.
 func EnableKittyKeyboard(w io.Writer) {
+	if os.Getenv("TMUX") != "" {
+		return
+	}
 	_, _ = io.WriteString(w, "\x1b[>1u")
 }
 
