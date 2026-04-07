@@ -15,6 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"path/filepath"
+
+	"github.com/BurntSushi/toml"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
@@ -68,16 +71,16 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		return fmt.Errorf("session %s does not exist", s.Name)
 	}
 
-	// Clear scrollback before attaching to prevent stale content from a
-	// previously-attached session bleeding into the new one (#419).
-	// 1. Clear tmux's internal pane scrollback history.
-	clearTarget := s.Name + ":"
-	clearCmd := exec.Command("tmux", "clear-history", "-t", clearTarget)
-	_ = clearCmd.Run()
-	// 2. Clear the outer terminal emulator's scrollback buffer.
-	//    \033[3J is the "Erase Saved Lines" escape (ED param 3) supported
-	//    by iTerm2, Terminal.app, Ghostty, and most modern emulators.
-	_, _ = os.Stdout.WriteString("\033[3J")
+	// Optionally clear scrollback before attaching to prevent stale content
+	// from a previously-attached session bleeding into the new one (#419).
+	// Disabled by default so users keep their scroll history.
+	// Enable via [tmux] clear_scrollback_on_attach = true in config.toml.
+	if shouldClearScrollback() {
+		clearTarget := s.Name + ":"
+		clearCmd := exec.Command("tmux", "clear-history", "-t", clearTarget)
+		_ = clearCmd.Run()
+		_, _ = os.Stdout.WriteString("\033[3J")
+	}
 
 	// Create context with cancel for detach
 	ctx, cancel := context.WithCancel(ctx)
@@ -385,4 +388,23 @@ func (s *Session) StreamOutput(ctx context.Context, w io.Writer) error {
 		}
 		return nil
 	}
+}
+
+// shouldClearScrollback reads the user config to check if scrollback clearing
+// is enabled. Returns false on any error (safe default: preserve scrollback).
+func shouldClearScrollback() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	configPath := filepath.Join(home, ".agent-deck", "config.toml")
+	var cfg struct {
+		Tmux struct {
+			ClearScrollbackOnAttach bool `toml:"clear_scrollback_on_attach"`
+		} `toml:"tmux"`
+	}
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		return false
+	}
+	return cfg.Tmux.ClearScrollbackOnAttach
 }

@@ -208,6 +208,21 @@ active_filter_label = "Open"      # Label for the active filter pill (default: "
 | `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` hides error/stopped sessions. Auto-clears if no sessions match. |
 | `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
 
+## [tmux] Section
+
+Tmux session behavior.
+
+```toml
+[tmux]
+inject_status_line = true         # Inject agent-deck status line into tmux
+clear_scrollback_on_attach = false # Clear scrollback buffer when attaching to a session
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inject_status_line` | bool | `true` | Inject custom status line into tmux sessions. Set `false` to keep your own tmux status config. |
+| `clear_scrollback_on_attach` | bool | `false` | Clear tmux pane scrollback and terminal saved-lines buffer on each attach. Prevents cross-session output bleed but destroys scroll history. |
+
 ## [global_search] Section
 
 Search across all Claude conversations.

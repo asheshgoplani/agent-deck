@@ -883,6 +883,15 @@ type TmuxSettings struct {
 	// Example: window_style_override = "default"
 	WindowStyleOverride string `toml:"window_style_override"`
 
+	// ClearScrollbackOnAttach controls whether the tmux pane scrollback and
+	// terminal emulator saved-lines buffer are cleared each time you attach
+	// to a session. When true, output from a previously-attached session is
+	// erased so it does not bleed into the new one. When false (default),
+	// scrollback is preserved, allowing you to scroll up through earlier
+	// output after detaching and re-attaching.
+	// Default: false
+	ClearScrollbackOnAttach bool `toml:"clear_scrollback_on_attach"`
+
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
