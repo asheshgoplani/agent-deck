@@ -47,6 +47,13 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Multi-repo flag
+	var addPaths []string
+	fs.Func("add-path", "Additional repo path for multi-repo session (repeatable)", func(s string) error {
+		addPaths = append(addPaths, s)
+		return nil
+	})
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 
@@ -70,6 +77,7 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println("  agent-deck launch . -c claude -m \"Fix bug\" --no-wait")
 		fmt.Println("  agent-deck launch . -c \"codex --dangerously-bypass-approvals-and-sandbox\"")
 		fmt.Println("  agent-deck launch . -g ard --no-parent -c claude -m \"Run review\"")
+		fmt.Println("  agent-deck launch . -c claude --add-path /path/to/repo2 --add-path /path/to/repo3")
 	}
 
 	// Reorder args: move path to end so flags are parsed correctly
@@ -140,9 +148,9 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// Handle worktree creation
+	// Handle worktree creation (single-repo only; multi-repo delegates to SetupMultiRepo below)
 	var worktreePath, worktreeRepoRoot string
-	if wtBranch != "" {
+	if wtBranch != "" && len(addPaths) == 0 {
 		if !git.IsGitRepo(path) {
 			out.Error(fmt.Sprintf("%s is not a git repository", path), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -284,6 +292,44 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreeBranch = wtBranch
 	}
 
+	if len(addPaths) > 0 {
+		// Resolve, validate, and collect additional paths
+		resolvedPaths := make([]string, 0, len(addPaths))
+		for _, p := range addPaths {
+			abs, err := filepath.Abs(session.ExpandPath(p))
+			if err != nil {
+				out.Error(fmt.Sprintf("failed to resolve --add-path %s: %v", p, err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			info, err := os.Stat(abs)
+			if err != nil {
+				out.Error(fmt.Sprintf("--add-path %s does not exist", abs), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			if !info.IsDir() {
+				out.Error(fmt.Sprintf("--add-path %s is not a directory", abs), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			resolvedPaths = append(resolvedPaths, abs)
+		}
+		// Honour -b in multi-repo mode: fail fast if branch already exists in any repo
+		if createNewBranch && wtBranch != "" {
+			allPaths := append([]string{path}, resolvedPaths...)
+			for _, p := range allPaths {
+				if repoRoot, err := git.GetWorktreeBaseRoot(p); err == nil {
+					if git.BranchExists(repoRoot, wtBranch) {
+						out.Error(fmt.Sprintf("branch '%s' already exists in %s (remove -b to reuse it)", wtBranch, p), ErrCodeInvalidOperation)
+						os.Exit(1)
+					}
+				}
+			}
+		}
+		if err := session.SetupMultiRepo(newInstance, resolvedPaths, wtBranch, session.GetMultiRepoBaseDir()); err != nil {
+			out.Error(fmt.Sprintf("failed to set up multi-repo session: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
 	if *resumeSession != "" {
 		newInstance.ClaudeSessionID = *resumeSession
 		newInstance.ClaudeDetectedAt = time.Now()
@@ -400,6 +446,10 @@ func handleLaunch(profile string, args []string) {
 	if worktreePath != "" {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
+	}
+	if newInstance.IsMultiRepo() {
+		jsonData["multi_repo"] = true
+		jsonData["multi_repo_paths"] = newInstance.AllProjectPaths()
 	}
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)

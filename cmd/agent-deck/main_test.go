@@ -274,3 +274,87 @@ func TestIsDuplicateSession(t *testing.T) {
 		})
 	}
 }
+
+func TestReorderArgsForFlagParsing_AddPath(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "add-path value not treated as positional",
+			args: []string{".", "--add-path", "/other/repo", "-c", "claude"},
+			want: []string{"--add-path", "/other/repo", "-c", "claude", "."},
+		},
+		{
+			name: "multiple add-path flags",
+			args: []string{".", "--add-path", "/repo1", "--add-path", "/repo2"},
+			want: []string{"--add-path", "/repo1", "--add-path", "/repo2", "."},
+		},
+		{
+			name: "add-path with worktree branch",
+			args: []string{".", "--add-path", "/other/repo", "-w", "feature/branch", "-b"},
+			want: []string{"--add-path", "/other/repo", "-w", "feature/branch", "-b", "."},
+		},
+		{
+			name: "no add-path flag",
+			args: []string{".", "-c", "claude"},
+			want: []string{"-c", "claude", "."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reorderArgsForFlagParsing(tt.args)
+			if len(got) != len(tt.want) {
+				t.Fatalf("len=%d (%v), want len=%d (%v)", len(got), got, len(tt.want), tt.want)
+			}
+			for i, arg := range got {
+				if arg != tt.want[i] {
+					t.Errorf("[%d]: got %q, want %q", i, arg, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestAddPathValidation(t *testing.T) {
+	// Validate that ExpandPath + Abs + Stat pattern works for --add-path values
+	t.Run("tilde expansion", func(t *testing.T) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skip("cannot get home dir")
+		}
+		expanded := session.ExpandPath("~/")
+		if expanded != home && expanded != home+"/" {
+			t.Errorf("ExpandPath(~/): got %q, want %q", expanded, home)
+		}
+	})
+
+	t.Run("nonexistent path fails stat", func(t *testing.T) {
+		_, err := os.Stat("/tmp/agent-deck-test-nonexistent-path-xyz")
+		if err == nil {
+			t.Skip("path unexpectedly exists")
+		}
+		if !os.IsNotExist(err) {
+			t.Errorf("expected IsNotExist error, got %v", err)
+		}
+	})
+
+	t.Run("file path rejected as not-a-dir", func(t *testing.T) {
+		f, err := os.CreateTemp("", "agent-deck-test-*.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer os.Remove(f.Name())
+		f.Close()
+
+		info, err := os.Stat(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.IsDir() {
+			t.Error("expected file to not be a directory")
+		}
+	})
+}

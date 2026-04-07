@@ -61,6 +61,86 @@ func TestCleanupMultiRepoTempDir(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestAddPathToMultiRepo(t *testing.T) {
+	// Create a temp parent dir (simulating MultiRepoTempDir)
+	parentDir := t.TempDir()
+	// Create a temp repo dir to add
+	repoDir := t.TempDir()
+
+	inst := &Instance{
+		ID:               "abc12345",
+		MultiRepoEnabled: true,
+		MultiRepoTempDir: parentDir,
+		ProjectPath:      filepath.Join(parentDir, "existing-repo"),
+		AdditionalPaths:  []string{},
+	}
+
+	createdPath, err := AddPathToMultiRepo(inst, repoDir)
+	require.NoError(t, err)
+
+	// Should have created a symlink inside parentDir
+	assert.Equal(t, filepath.Join(parentDir, filepath.Base(repoDir)), createdPath)
+	link, err := os.Readlink(createdPath)
+	require.NoError(t, err)
+	assert.Equal(t, repoDir, link)
+
+	// AdditionalPaths should be updated
+	assert.Contains(t, inst.AdditionalPaths, createdPath)
+}
+
+func TestAddPathToMultiRepo_NameConflict(t *testing.T) {
+	parentDir := t.TempDir()
+	repoDir := t.TempDir()
+	repoName := filepath.Base(repoDir)
+
+	inst := &Instance{
+		ID:               "abc12345",
+		MultiRepoEnabled: true,
+		MultiRepoTempDir: parentDir,
+	}
+
+	// Pre-create a conflicting entry
+	conflictPath := filepath.Join(parentDir, repoName)
+	require.NoError(t, os.MkdirAll(conflictPath, 0o755))
+
+	createdPath, err := AddPathToMultiRepo(inst, repoDir)
+	require.NoError(t, err)
+
+	// Should have used -1 suffix to avoid conflict
+	assert.Equal(t, filepath.Join(parentDir, repoName+"-1"), createdPath)
+}
+
+func TestAddPathToMultiRepo_AutoInit(t *testing.T) {
+	// Session not yet multi-repo — parent dir inferred from ProjectPath
+	parentDir := t.TempDir()
+	repoDir := t.TempDir()
+	existingRepo := filepath.Join(parentDir, "gateway-services")
+	require.NoError(t, os.MkdirAll(existingRepo, 0o755))
+
+	inst := &Instance{
+		ID:          "abc12345",
+		ProjectPath: existingRepo,
+	}
+
+	createdPath, err := AddPathToMultiRepo(inst, repoDir)
+	require.NoError(t, err)
+
+	assert.True(t, inst.MultiRepoEnabled)
+	assert.Equal(t, parentDir, inst.MultiRepoTempDir)
+	assert.Equal(t, filepath.Join(parentDir, filepath.Base(repoDir)), createdPath)
+	assert.Contains(t, inst.AdditionalPaths, createdPath)
+}
+
+func TestAddPathToMultiRepo_NotMultiRepo(t *testing.T) {
+	// Relative/empty ProjectPath — cannot infer parent
+	inst := &Instance{ProjectPath: "relative"}
+	repoDir := t.TempDir()
+	_, err := AddPathToMultiRepo(inst, repoDir)
+	// Should succeed by auto-init (parent of "relative" is ".")
+	// Actually "." is filtered, so it errors
+	assert.Error(t, err)
+}
+
 func TestDeduplicateDirnames(t *testing.T) {
 	tests := []struct {
 		name     string

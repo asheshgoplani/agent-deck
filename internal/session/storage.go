@@ -722,10 +722,15 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// Convert Status enum to string for tmux package
 			// This restores the exact status across app restarts
 			previousStatus := statusToString(instData.Status)
+			// Multi-repo sessions use the parent dir as working dir, not ProjectPath
+			reconnectWorkDir := instData.ProjectPath
+			if instData.MultiRepoEnabled && instData.MultiRepoTempDir != "" {
+				reconnectWorkDir = instData.MultiRepoTempDir
+			}
 			tmuxSess = tmux.ReconnectSessionLazy(
 				instData.TmuxSession,
 				instData.Title,
-				instData.ProjectPath,
+				reconnectWorkDir,
 				instData.Command,
 				previousStatus,
 			)

@@ -662,6 +662,11 @@ type WorktreeSettings struct {
 	// Set to "" to disable auto-prefixing (just the session name).
 	// Default: "feature/" when not set.
 	BranchPrefix *string `toml:"branch_prefix"`
+
+	// MultiRepoBaseDir overrides the default base directory used when creating
+	// multi-repo session symlink/worktree directories.
+	// Default: ~/.agent-deck/multi-repo-worktrees
+	MultiRepoBaseDir string `toml:"multi_repo_base_dir"`
 }
 
 // Template returns the path template if set, or empty string if nil.
@@ -678,6 +683,21 @@ func (w *WorktreeSettings) Prefix() string {
 		return "feature/"
 	}
 	return *w.BranchPrefix
+}
+
+// MultiRepoBase returns the effective base directory for multi-repo sessions.
+// Expands a leading ~/ to the user home directory.
+// Returns ~/.agent-deck/multi-repo-worktrees if not configured.
+func (w *WorktreeSettings) MultiRepoBase() string {
+	if w.MultiRepoBaseDir != "" {
+		if strings.HasPrefix(w.MultiRepoBaseDir, "~/") {
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, w.MultiRepoBaseDir[2:])
+		}
+		return w.MultiRepoBaseDir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".agent-deck", "multi-repo-worktrees")
 }
 
 // GlobalSearchSettings defines global conversation search configuration
@@ -1478,6 +1498,16 @@ func GetWorktreeSettings() WorktreeSettings {
 	return settings
 }
 
+// GetMultiRepoBaseDir returns the configured base directory for multi-repo sessions.
+func GetMultiRepoBaseDir() string {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".agent-deck", "multi-repo-worktrees")
+	}
+	return config.Worktree.MultiRepoBase()
+}
+
 // GetUpdateSettings returns update settings with defaults applied
 func GetUpdateSettings() UpdateSettings {
 	config, err := LoadUserConfig()
@@ -1793,6 +1823,8 @@ auto_cleanup = true
 #   {branch}         -> sanitized (human-friendly, may collide)
 #   {branch-escaped} -> URL-escaped (collision-resistant, reversible)
 # path_template = "../worktrees/{repo-name}/{branch}"
+# Base directory for multi-repo session symlink/worktree dirs (default: ~/.agent-deck/multi-repo-worktrees)
+# multi_repo_base_dir = "~/my-workspaces/multi-repo"
 
 # Default scope for MCP operations: "local", "global", or "user"
 # "local" writes to .mcp.json (project-only, default)
