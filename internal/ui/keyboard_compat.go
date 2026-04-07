@@ -34,14 +34,13 @@ func DisableKittyKeyboard(w io.Writer) {
 	_, _ = io.WriteString(w, "\x1b[<u")
 }
 
-// EnableKittyKeyboard writes the escape sequence that pushes Kitty keyboard
-// mode 1 (disambiguate) onto the protocol stack. This re-enables extended key
-// reporting so that sequences like Shift+Enter are sent as CSI u codes.
-// Call this before attaching to a session that needs Kitty keyboard support
-// (e.g. Claude Code). Pair with DisableKittyKeyboard to pop the stack on
-// return.
+// EnableKittyKeyboard pushes Kitty keyboard protocol onto the stack so that
+// the attached session receives extended key sequences like Shift+Enter.
+// Uses flags=0 (no disambiguation) to avoid encoding plain ESC as CSI 27u,
+// which breaks applications that expect a bare \x1b.
+// Pair with DisableKittyKeyboard to pop the stack on return.
 func EnableKittyKeyboard(w io.Writer) {
-	_, _ = io.WriteString(w, "\x1b[>1u")
+	_, _ = io.WriteString(w, "\x1b[>0u")
 }
 
 // RestoreKittyKeyboard writes the escape sequence that pops the keyboard mode

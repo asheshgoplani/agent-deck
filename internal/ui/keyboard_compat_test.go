@@ -130,25 +130,25 @@ func TestDisableKittyKeyboard(t *testing.T) {
 	}
 }
 
-// TestEnableKittyKeyboard tests that EnableKittyKeyboard pushes mode 1.
+// TestEnableKittyKeyboard tests that EnableKittyKeyboard pushes mode 0.
 func TestEnableKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
 	EnableKittyKeyboard(&buf)
 	got := buf.String()
-	want := "\x1b[>1u"
+	want := "\x1b[>0u"
 	if got != want {
 		t.Errorf("EnableKittyKeyboard wrote %q, want %q", got, want)
 	}
 }
 
-// TestKittyKeyboardPushPopBalance verifies that EnableKittyKeyboard (push mode 1)
+// TestKittyKeyboardPushPopBalance verifies that EnableKittyKeyboard (push mode 0)
 // followed by DisableKittyKeyboard (pop) produces balanced escape sequences.
 func TestKittyKeyboardPushPopBalance(t *testing.T) {
 	var buf bytes.Buffer
 	EnableKittyKeyboard(&buf)
 	DisableKittyKeyboard(&buf)
 	got := buf.String()
-	want := "\x1b[>1u\x1b[<u"
+	want := "\x1b[>0u\x1b[<u"
 	if got != want {
 		t.Errorf("push+pop sequence = %q, want %q", got, want)
 	}
