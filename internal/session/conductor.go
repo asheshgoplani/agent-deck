@@ -720,7 +720,7 @@ func buildDaemonPath(agentDeckPath string) string {
 }
 
 // conductorHeartbeatScript is the shell script that sends a heartbeat to a conductor session.
-// Uses grep instead of sed for JSON parsing to stay portable across GNU and BSD (macOS).
+// Uses grep -q and awk for JSON parsing to stay portable across GNU and BSD (macOS).
 const conductorHeartbeatScript = `#!/bin/bash
 # Heartbeat for conductor: {NAME} (profile: {PROFILE})
 # Sends a check-in message to the conductor session (non-blocking)
@@ -728,14 +728,13 @@ const conductorHeartbeatScript = `#!/bin/bash
 SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
-# Check if conductor is enabled (grep -o works on both GNU and BSD)
-ENABLED=$(agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -o '"enabled"[[:space:]]*:[[:space:]]*true')
-if [ -z "$ENABLED" ]; then
+# Check if conductor is enabled (grep -q is POSIX; no output capture needed)
+if ! agent-deck -p "$PROFILE" conductor status --json 2>/dev/null | grep -q '"enabled".*true'; then
     exit 0
 fi
 
 # Only send if the session is running
-STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
+STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | awk -F'"' '/"status"/{print $4; exit}')
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
     agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention." --no-wait -q
