@@ -599,6 +599,7 @@ func main() {
 		homeModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
 	)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
