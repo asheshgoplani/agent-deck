@@ -21,6 +21,7 @@ package ui
 import (
 	"bytes"
 	"io"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -153,20 +154,63 @@ func parseDecimalBytes(b []byte) int {
 // csiuReader is an io.Reader that intercepts Kitty keyboard protocol (CSI u)
 // sequences in the byte stream and translates them into legacy byte sequences
 // that Bubble Tea can parse. All other bytes pass through unchanged.
+//
+// It also implements Fd(), Write(), and Close() by delegating to the underlying
+// *os.File (when present) so that Bubble Tea can detect the terminal and enable
+// raw mode. Without these methods, Bubble Tea skips raw mode and the terminal
+// echoes keystrokes instead of routing them to the TUI.
 type csiuReader struct {
 	src    io.Reader
-	outBuf []byte // pending translated bytes to emit
-	inBuf  []byte // buffered input bytes not yet processed
+	file   *os.File // underlying file for Fd/Write/Close delegation
+	outBuf []byte   // pending translated bytes to emit
+	inBuf  []byte   // buffered input bytes not yet processed
 }
 
 // NewCSIuReader returns a reader that wraps r and translates any CSI u
 // sequences to their legacy equivalents. This is a belt-and-suspenders
 // fallback for terminals that do not honor DisableKittyKeyboard.
+//
+// If r is an *os.File the returned reader also exposes Fd(), Write(), and
+// Close() so that Bubble Tea can detect the terminal and enable raw mode.
 func NewCSIuReader(r io.Reader) io.Reader {
-	return &csiuReader{
+	c := &csiuReader{
 		src:   r,
 		inBuf: make([]byte, 0, 256),
 	}
+
+	if f, ok := r.(*os.File); ok {
+		c.file = f
+	}
+
+	return c
+}
+
+// Fd returns the file descriptor of the underlying *os.File. Bubble Tea uses
+// this to detect terminal input and enable raw mode.
+func (c *csiuReader) Fd() uintptr {
+	if c.file != nil {
+		return c.file.Fd()
+	}
+
+	return 0
+}
+
+// Write delegates to the underlying *os.File.
+func (c *csiuReader) Write(p []byte) (int, error) {
+	if c.file != nil {
+		return c.file.Write(p)
+	}
+
+	return 0, io.ErrClosedPipe
+}
+
+// Close delegates to the underlying *os.File.
+func (c *csiuReader) Close() error {
+	if c.file != nil {
+		return c.file.Close()
+	}
+
+	return nil
 }
 
 // Read implements io.Reader. It reads from the underlying source, translates
