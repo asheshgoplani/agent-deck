@@ -1875,3 +1875,153 @@ func TestConductorClearOnCompact(t *testing.T) {
 		t.Error("non-conductor-prefixed title should return false")
 	}
 }
+
+// --- Smart heartbeat tests ---
+
+func TestSmartHeartbeatScriptTemplate(t *testing.T) {
+	// Verify the smart heartbeat template has the expected structure
+	if !strings.Contains(conductorSmartHeartbeatScript, "# Smart heartbeat for conductor:") {
+		t.Error("smart heartbeat script should contain identifying comment")
+	}
+	if !strings.Contains(conductorSmartHeartbeatScript, "STATE_FILE=") {
+		t.Error("smart heartbeat script should reference a state file")
+	}
+	if !strings.Contains(conductorSmartHeartbeatScript, "exit 0") {
+		t.Error("smart heartbeat script should exit early when states match")
+	}
+	if !strings.Contains(conductorSmartHeartbeatScript, "{NAME}") {
+		t.Error("smart heartbeat script should contain {NAME} placeholder")
+	}
+	if !strings.Contains(conductorSmartHeartbeatScript, "{PROFILE}") {
+		t.Error("smart heartbeat script should contain {PROFILE} placeholder")
+	}
+}
+
+func TestInstallHeartbeatScript_Standard(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a fake conductor dir structure
+	name := "test-std"
+	condDir := filepath.Join(tmpDir, name)
+	if err := os.MkdirAll(condDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	// Write script directly using the template (simulating InstallHeartbeatScript without real home dir)
+	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
+	script = strings.ReplaceAll(script, "{PROFILE}", "default")
+	script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
+	scriptPath := filepath.Join(condDir, "heartbeat.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("failed to read script: %v", err)
+	}
+
+	// Standard script should NOT contain smart heartbeat markers
+	if strings.Contains(string(content), "Smart heartbeat") {
+		t.Error("standard heartbeat script should not contain smart heartbeat markers")
+	}
+	if strings.Contains(string(content), "STATE_FILE") {
+		t.Error("standard heartbeat script should not contain STATE_FILE")
+	}
+	if !strings.Contains(string(content), "# Heartbeat for conductor: "+name) {
+		t.Error("standard script should contain conductor name in comment")
+	}
+}
+
+func TestInstallHeartbeatScript_Smart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a fake conductor dir structure
+	name := "test-smart"
+	condDir := filepath.Join(tmpDir, name)
+	if err := os.MkdirAll(condDir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	// Write smart script directly using the template
+	script := strings.ReplaceAll(conductorSmartHeartbeatScript, "{NAME}", name)
+	script = strings.ReplaceAll(script, "{PROFILE}", "work")
+	scriptPath := filepath.Join(condDir, "heartbeat.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("failed to read script: %v", err)
+	}
+
+	contentStr := string(content)
+
+	// Smart script should contain state-diffing logic
+	if !strings.Contains(contentStr, "# Smart heartbeat for conductor: "+name) {
+		t.Error("smart script should contain conductor name in comment")
+	}
+	if !strings.Contains(contentStr, "STATE_FILE=") {
+		t.Error("smart script should reference STATE_FILE")
+	}
+	if !strings.Contains(contentStr, ".heartbeat-state") {
+		t.Error("smart script should use .heartbeat-state file")
+	}
+	if !strings.Contains(contentStr, `grep -v "^conductor-`+name+`:"`) {
+		t.Error("smart script should exclude own conductor from state snapshot")
+	}
+	// Should still have the actual heartbeat send logic
+	if !strings.Contains(contentStr, "session send") {
+		t.Error("smart script should still send heartbeat message when state changes")
+	}
+	// Profile flag should be present for non-default profiles
+	if !strings.Contains(contentStr, `-p "$PROFILE"`) {
+		t.Error("smart script for non-default profile should contain -p flag")
+	}
+}
+
+func TestSmartHeartbeatScript_DefaultProfileOmitsFlag(t *testing.T) {
+	script := strings.ReplaceAll(conductorSmartHeartbeatScript, "{NAME}", "test")
+	script = strings.ReplaceAll(script, "{PROFILE}", DefaultProfile)
+	script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
+
+	if strings.Contains(script, `-p "$PROFILE"`) {
+		t.Error("smart heartbeat for default profile should not contain -p flag")
+	}
+}
+
+func TestHeartbeatSmartConfigDefault(t *testing.T) {
+	settings := ConductorSettings{}
+	if settings.HeartbeatSmart {
+		t.Error("HeartbeatSmart should default to false")
+	}
+}
+
+func TestManagedScriptDetection_Smart(t *testing.T) {
+	// Verify that the smart script comment is detectable as a managed script
+	script := strings.ReplaceAll(conductorSmartHeartbeatScript, "{NAME}", "test")
+	script = strings.ReplaceAll(script, "{PROFILE}", "default")
+
+	isManaged := (strings.Contains(script, "# Heartbeat for conductor:") ||
+		strings.Contains(script, "# Smart heartbeat for conductor:")) &&
+		strings.Contains(script, `SESSION="conductor-`)
+
+	if !isManaged {
+		t.Error("smart heartbeat script should be detectable as a managed script")
+	}
+}
+
+func TestManagedScriptDetection_Standard(t *testing.T) {
+	// Verify the standard script is still detectable
+	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", "test")
+	script = strings.ReplaceAll(script, "{PROFILE}", "default")
+
+	isManaged := (strings.Contains(script, "# Heartbeat for conductor:") ||
+		strings.Contains(script, "# Smart heartbeat for conductor:")) &&
+		strings.Contains(script, `SESSION="conductor-`)
+
+	if !isManaged {
+		t.Error("standard heartbeat script should be detectable as a managed script")
+	}
+}

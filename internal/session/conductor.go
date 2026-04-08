@@ -23,6 +23,11 @@ type ConductorSettings struct {
 	// Default: 15
 	HeartbeatInterval int `toml:"heartbeat_interval"`
 
+	// HeartbeatSmart enables state-diffing for heartbeat: the heartbeat script
+	// only sends a check-in when session states have changed since the last run.
+	// Default: false (every timer tick sends a heartbeat)
+	HeartbeatSmart bool `toml:"heartbeat_smart"`
+
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
 	Profiles []string `toml:"profiles"`
@@ -406,14 +411,23 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact 
 
 // InstallHeartbeatScript writes the heartbeat.sh script for a conductor.
 // This is a standalone heartbeat that works without Telegram.
-func InstallHeartbeatScript(name, profile string) error {
+// If smart is true, installs the state-diffing variant that only fires on changes.
+func InstallHeartbeatScript(name, profile string, smart ...bool) error {
 	dir, err := ConductorNameDir(name)
 	if err != nil {
 		return err
 	}
 	profile = normalizeConductorProfile(profile)
 
-	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
+	useSmart := len(smart) > 0 && smart[0]
+	var template string
+	if useSmart {
+		template = conductorSmartHeartbeatScript
+	} else {
+		template = conductorHeartbeatScript
+	}
+
+	script := strings.ReplaceAll(template, "{NAME}", name)
 	script = strings.ReplaceAll(script, "{PROFILE}", profile)
 	if profile == DefaultProfile {
 		// For default profile, omit -p flag entirely
@@ -607,6 +621,41 @@ SESSION="conductor-{NAME}"
 PROFILE="{PROFILE}"
 
 # Only send if the session is running
+STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
+    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check all sessions in the {PROFILE} profile. List any waiting sessions, auto-respond where safe, and report what needs my attention." --no-wait -q
+fi
+`
+
+// conductorSmartHeartbeatScript wraps the heartbeat with state-diffing.
+// It snapshots session states and only forwards to the real heartbeat logic
+// when something has changed since the last run.
+const conductorSmartHeartbeatScript = `#!/bin/bash
+# Smart heartbeat for conductor: {NAME} (profile: {PROFILE})
+# Only sends a check-in when session states have changed since the last run.
+
+SESSION="conductor-{NAME}"
+PROFILE="{PROFILE}"
+STATE_DIR=$(dirname "$0")
+STATE_FILE="$STATE_DIR/.heartbeat-state"
+
+# Snapshot current state: sorted "title:status" pairs (exclude this conductor)
+CURRENT=$(agent-deck -p "$PROFILE" list --json 2>/dev/null | tr -d '\n' | sed 's/},{/}\n{/g' | sed -n 's/.*"title"[[:space:]]*:[[:space:]]*"\([^"]*\)".*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1:\2/p' | grep -v "^conductor-{NAME}:" | sort)
+
+PREVIOUS=""
+if [ -f "$STATE_FILE" ]; then
+    PREVIOUS=$(cat "$STATE_FILE")
+fi
+
+if [ "$CURRENT" = "$PREVIOUS" ]; then
+    exit 0
+fi
+
+# State changed — save and run the heartbeat
+echo "$CURRENT" > "$STATE_FILE"
+
+# Only send if the conductor session is running
 STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | tr -d '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
@@ -998,11 +1047,14 @@ func MigrateConductorLearnings() ([]string, error) {
 
 // MigrateConductorHeartbeatScripts refreshes managed heartbeat scripts to the
 // current template without touching custom user-authored scripts.
+// It respects the heartbeat_smart global setting when choosing which template to use.
 func MigrateConductorHeartbeatScripts() ([]string, error) {
 	conductors, err := ListConductors()
 	if err != nil {
 		return nil, err
 	}
+
+	settings := GetConductorSettings()
 
 	var migrated []string
 	for _, meta := range conductors {
@@ -1012,7 +1064,11 @@ func MigrateConductorHeartbeatScripts() ([]string, error) {
 		}
 
 		scriptPath := filepath.Join(dir, "heartbeat.sh")
-		expected := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", meta.Name)
+		template := conductorHeartbeatScript
+		if settings.HeartbeatSmart {
+			template = conductorSmartHeartbeatScript
+		}
+		expected := strings.ReplaceAll(template, "{NAME}", meta.Name)
 		expected = strings.ReplaceAll(expected, "{PROFILE}", normalizeConductorProfile(meta.Profile))
 		if normalizeConductorProfile(meta.Profile) == DefaultProfile {
 			expected = strings.ReplaceAll(expected, `-p "$PROFILE" `, "")
@@ -1029,7 +1085,8 @@ func MigrateConductorHeartbeatScripts() ([]string, error) {
 		}
 
 		existingStr := string(existing)
-		managedScript := strings.Contains(existingStr, "# Heartbeat for conductor:") &&
+		managedScript := (strings.Contains(existingStr, "# Heartbeat for conductor:") ||
+			strings.Contains(existingStr, "# Smart heartbeat for conductor:")) &&
 			strings.Contains(existingStr, `SESSION="conductor-`)
 		if !managedScript {
 			continue
