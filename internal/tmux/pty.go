@@ -68,15 +68,17 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		return fmt.Errorf("session %s does not exist", s.Name)
 	}
 
-	// Clear scrollback before attaching to prevent stale content from a
-	// previously-attached session bleeding into the new one (#419).
-	// 1. Clear tmux's internal pane scrollback history.
-	clearTarget := s.Name + ":"
-	clearCmd := exec.Command("tmux", "clear-history", "-t", clearTarget)
-	_ = clearCmd.Run()
-	// 2. Clear the outer terminal emulator's scrollback buffer.
-	//    \033[3J is the "Erase Saved Lines" escape (ED param 3) supported
-	//    by iTerm2, Terminal.app, Ghostty, and most modern emulators.
+	// Clear the outer terminal emulator's scrollback before attaching so
+	// the previously-attached session's output does not linger in the
+	// outer terminal's scrollback buffer (#419). \033[3J is the "Erase
+	// Saved Lines" escape (ED param 3) supported by iTerm2, Terminal.app,
+	// Ghostty, and most modern emulators.
+	//
+	// Do NOT call `tmux clear-history` here. tmux pane histories are
+	// per-pane, so session A's history is never in session B's pane —
+	// clearing on attach fixes no bleed, and it wipes the attached pane's
+	// own scrollback, which breaks mouse-wheel navigation in copy-mode
+	// (the scroll indicator shows [0/0]).
 	_, _ = os.Stdout.WriteString("\033[3J")
 
 	// Create context with cancel for detach
