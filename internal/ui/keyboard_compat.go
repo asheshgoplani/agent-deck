@@ -26,12 +26,18 @@ import (
 )
 
 // DisableKittyKeyboard writes the escape sequence that pops the Kitty keyboard
-// protocol stack, restoring the previous keyboard mode. If nothing was on the
-// stack, this is a safe no-op. After this call, Kitty-protocol-aware terminals
-// stop sending CSI u sequences and revert to legacy key reporting. Terminals
-// that do not support the protocol ignore the sequence.
+// protocol stack, undoing a previous EnableKittyKeyboard push. This is used
+// after detaching from a session to restore the dashboard's keyboard mode.
+// Terminals that do not support the protocol ignore the sequence.
 func DisableKittyKeyboard(w io.Writer) {
 	_, _ = io.WriteString(w, "\x1b[<u")
+}
+
+// PushLegacyKeyboardMode writes the escape sequence that pushes keyboard mode 0
+// (legacy) on the Kitty keyboard protocol stack. Use this at program startup to
+// force legacy key reporting. Pair with RestoreKittyKeyboard (pop) on exit.
+func PushLegacyKeyboardMode(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[>0u")
 }
 
 // EnableKittyKeyboard writes the escape sequence that pushes Kitty keyboard

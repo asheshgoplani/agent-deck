@@ -4476,6 +4476,12 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "enter":
+		// When path suggestions are navigated, Enter accepts the suggestion.
+		if h.newDialog.IsPathSuggestionActive() {
+			h.newDialog.AcceptPathSuggestion()
+			return h, nil
+		}
+
 		// When multi-repo path list is focused, let the dialog handle enter (edit/save path).
 		if h.newDialog.IsMultiRepoEditing() {
 			var cmd tea.Cmd
@@ -4599,6 +4605,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 
 	case "esc":
+		// If path suggestions are navigated, dismiss them first.
+		if h.newDialog.IsPathSuggestionActive() {
+			h.newDialog.DismissPathSuggestions()
+			return h, nil
+		}
 		h.newDialog.Hide()
 		h.clearError() // Clear any validation error
 		return h, nil
