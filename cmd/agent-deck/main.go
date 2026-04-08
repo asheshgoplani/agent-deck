@@ -607,11 +607,19 @@ func main() {
 	ui.DisableKittyKeyboard(os.Stdout)
 	defer ui.RestoreKittyKeyboard(os.Stdout)
 
+	// NOTE: Do not pass `tea.WithInput(ui.NewCSIuReader(os.Stdin))` here.
+	// Bubble Tea only switches the TTY into raw mode when its input is the
+	// real *os.File for stdin; wrapping stdin in a custom io.Reader makes
+	// the type assertion fail and the terminal stays in cooked mode, so
+	// arrow keys echo as `^[[A`/`^[[B` and Bubble Tea never sees them as
+	// key events. (See #535 / the v1.4.1 regression.) DisableKittyKeyboard
+	// above already asks Wayland terminals to fall back to legacy reporting,
+	// which is sufficient for the Shift+letter case the wrapper was
+	// supposed to address.
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
-		tea.WithInput(ui.NewCSIuReader(os.Stdin)),
 	)
 
 	// Start maintenance worker (background goroutine, respects config toggle)
