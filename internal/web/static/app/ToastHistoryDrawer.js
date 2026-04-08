@@ -84,7 +84,7 @@ export function ToastHistoryDrawer() {
                   ? 'dark:bg-tn-red/10 bg-red-50 dark:text-tn-red text-red-700'
                   : 'dark:text-tn-fg text-gray-700'}"
             >
-              <span class="text-xs font-mono dark:text-tn-muted text-gray-400">
+              <span class="text-xs font-mono dark:text-tn-muted text-gray-600">
                 ${formatTime(t.createdAt)} \u00b7 ${t.type}
               </span>
               <span class="text-sm">${t.message}</span>
