@@ -595,8 +595,10 @@ func main() {
 	ui.DisableKittyKeyboard(os.Stdout)
 	defer ui.RestoreKittyKeyboard(os.Stdout)
 
+	input := ui.NewCSIuReader(os.Stdin)
 	p := tea.NewProgram(
 		homeModel,
+		tea.WithInput(input),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
