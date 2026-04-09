@@ -596,6 +596,10 @@ func (c *ClaudeSettings) GetHooksEnabled() bool {
 
 // GeminiSettings defines Gemini CLI configuration
 type GeminiSettings struct {
+	// Command is the Gemini CLI command or binary to use (e.g., "gemini", "gemini-proxy")
+	// Default: "gemini"
+	Command string `toml:"command"`
+
 	// YoloMode enables --yolo flag for Gemini sessions (auto-approve all actions)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
@@ -612,6 +616,10 @@ type GeminiSettings struct {
 
 // OpenCodeSettings defines OpenCode CLI configuration
 type OpenCodeSettings struct {
+	// Command is the OpenCode CLI command or binary to use (e.g., "opencode", "opencode-proxy")
+	// Default: "opencode"
+	Command string `toml:"command"`
+
 	// DefaultModel is the model to use for new OpenCode sessions
 	// Format: "provider/model" (e.g., "anthropic/claude-sonnet-4-5-20250929")
 	// If empty, OpenCode uses its own default
@@ -629,6 +637,10 @@ type OpenCodeSettings struct {
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
+	// Command is the Codex CLI command or binary to use (e.g., "codex", "codex-proxy")
+	// Default: "codex"
+	Command string `toml:"command"`
+
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`

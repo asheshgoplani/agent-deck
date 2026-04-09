@@ -697,14 +697,18 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		}
 	}
 
-	// If baseCommand is just "gemini", handle specially
-	if baseCommand == "gemini" {
+	geminiCmd := GetGeminiCommand()
+
+	// If baseCommand is a standard start (canonical or configured binary), handle specially
+	isStandardStart := baseCommand == "gemini" || baseCommand == geminiCmd
+	if isStandardStart {
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
 			// GEMINI_YOLO_MODE and GEMINI_SESSION_ID are propagated via host-side
 			// SetEnvironment after tmux start. No inline tmux set-environment.
 			return envPrefix + fmt.Sprintf(
-				"gemini --resume %s%s%s",
+				"%s --resume %s%s%s",
+				geminiCmd,
 				i.GeminiSessionID,
 				yoloFlag,
 				modelFlag,
@@ -716,7 +720,8 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		// because Gemini processes the "." prompt which takes too long
 		// GEMINI_YOLO_MODE is propagated via host-side SetEnvironment after tmux start.
 		return envPrefix + fmt.Sprintf(
-			`gemini%s%s`,
+			`%s%s%s`,
+			geminiCmd,
 			yoloFlag,
 			modelFlag,
 		)
@@ -724,6 +729,16 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 
 	// For custom commands (e.g., resume commands), return as-is
 	return envPrefix + baseCommand
+}
+
+// GetOpenCodeCommand returns the configured OpenCode command/binary.
+// Priority: 1) UserConfig setting, 2) Default "opencode"
+func GetOpenCodeCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.OpenCode.Command != "" {
+		return userConfig.OpenCode.Command
+	}
+	return "opencode"
 }
 
 // buildOpenCodeCommand builds the command for OpenCode CLI
@@ -740,20 +755,21 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+	opencodeCmd := GetOpenCodeCommand()
+	extraFlags := i.buildOpenCodeExtraFlags()
 
-	// If baseCommand is just "opencode", handle specially
-	if baseCommand == "opencode" {
-		extraFlags := i.buildOpenCodeExtraFlags()
-
+	// If baseCommand is a standard start (canonical or configured binary), handle specially
+	isStandardStart := baseCommand == "opencode" || baseCommand == opencodeCmd
+	if isStandardStart {
 		// If we already have a session ID, use resume with -s flag.
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.OpenCodeSessionID != "" {
-			return envPrefix + fmt.Sprintf("opencode -s %s%s",
-				i.OpenCodeSessionID, extraFlags)
+			return envPrefix + fmt.Sprintf("%s -s %s%s",
+				opencodeCmd, i.OpenCodeSessionID, extraFlags)
 		}
 
 		// Start OpenCode fresh - session ID will be captured async after startup
-		return envPrefix + "opencode" + extraFlags
+		return envPrefix + opencodeCmd + extraFlags
 	}
 
 	// For custom commands (e.g., fork commands), return as-is
@@ -790,6 +806,16 @@ func (i *Instance) DetectOpenCodeSession() {
 	i.detectOpenCodeSessionAsync()
 }
 
+// GetCodexCommand returns the configured Codex command/binary.
+// Priority: 1) UserConfig setting, 2) Default "codex"
+func GetCodexCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.Codex.Command != "" {
+		return userConfig.Codex.Command
+	}
+	return "codex"
+}
+
 // buildCodexCommand builds the command for OpenAI Codex CLI
 // resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
 func (i *Instance) resolveCodexYoloFlag() string {
@@ -822,19 +848,21 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		i.ID, i.Title, i.Tool)
 	envPrefix += agentdeckEnvPrefix
 
+	codexCmd := GetCodexCommand()
 	yoloFlag := i.resolveCodexYoloFlag()
 
-	// If baseCommand is just "codex", handle specially
-	if baseCommand == "codex" {
+	// If baseCommand is a standard start (canonical or configured binary), handle specially
+	isStandardStart := baseCommand == "codex" || baseCommand == codexCmd
+	if isStandardStart {
 		// If we already have a session ID, use resume.
 		// CODEX_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("codex%s resume %s",
-				yoloFlag, i.CodexSessionID)
+			return envPrefix + fmt.Sprintf("%s%s resume %s",
+				codexCmd, yoloFlag, i.CodexSessionID)
 		}
 
 		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + "codex" + yoloFlag
+		return envPrefix + codexCmd + yoloFlag
 	}
 
 	// For custom commands (e.g., resume commands), preserve env propagation.

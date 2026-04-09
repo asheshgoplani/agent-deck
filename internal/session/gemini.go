@@ -17,6 +17,16 @@ import (
 // geminiConfigDirOverride allows tests to override config directory
 var geminiConfigDirOverride string
 
+// GetGeminiCommand returns the configured Gemini command/binary.
+// Priority: 1) UserConfig setting, 2) Default "gemini"
+func GetGeminiCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.Gemini.Command != "" {
+		return userConfig.Gemini.Command
+	}
+	return "gemini"
+}
+
 // GetGeminiConfigDir returns ~/.gemini
 // Unlike Claude, Gemini has no GEMINI_CONFIG_DIR env var override
 func GetGeminiConfigDir() string {
