@@ -222,22 +222,22 @@ export function CostDashboard() {
         <div class="dark:bg-tn-card bg-white rounded-lg p-4">
           <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">Today</div>
           <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.today_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-400 mt-1">${summary.today_events} events</div>
+          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.today_events} events</div>
         </div>
         <div class="dark:bg-tn-card bg-white rounded-lg p-4">
           <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">This Week</div>
           <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.week_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-400 mt-1">${summary.week_events} events</div>
+          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.week_events} events</div>
         </div>
         <div class="dark:bg-tn-card bg-white rounded-lg p-4">
           <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">This Month</div>
           <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.month_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-400 mt-1">${summary.month_events} events</div>
+          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">${summary.month_events} events</div>
         </div>
         <div class="dark:bg-tn-card bg-white rounded-lg p-4">
           <div class="text-xs dark:text-tn-muted text-gray-500 uppercase">Projected</div>
           <div class="text-2xl font-bold dark:text-[#7dcfff] text-teal-600 mt-1">${fmt(summary.projected_usd)}</div>
-          <div class="text-xs dark:text-tn-muted text-gray-400 mt-1">based on 7-day avg</div>
+          <div class="text-xs dark:text-tn-muted text-gray-600 mt-1">based on 7-day avg</div>
         </div>
       </div>
 
