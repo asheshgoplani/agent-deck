@@ -4081,6 +4081,16 @@ func GetActiveSession() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// SplitPane opens a vertical split (side-by-side) in the session's current
+// window, starting a shell in the given working directory.
+func (s *Session) SplitPane(workDir string) error {
+	args := []string{"split-window", "-h", "-t", s.Name}
+	if workDir != "" {
+		args = append(args, "-c", workDir)
+	}
+	return exec.Command("tmux", args...).Run()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 
 // DiscoverAllTmuxSessions returns all tmux sessions (including non-Agent Deck ones)

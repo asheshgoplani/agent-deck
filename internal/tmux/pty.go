@@ -55,6 +55,37 @@ func IndexCtrlQ(data []byte) int {
 	return IndexDetachKey(data, 17)
 }
 
+// splitKeyByte is the raw ASCII byte for Ctrl+T (0x14).
+const splitKeyByte = 0x14
+
+// stripSplitKey removes the first Ctrl+T sequence from data (raw byte or
+// escape-sequence encoding) and returns the remaining bytes and true.
+// Returns the original data and false if no Ctrl+T was found.
+func stripSplitKey(data []byte) ([]byte, bool) {
+	// Try raw byte first.
+	if idx := bytes.IndexByte(data, splitKeyByte); idx >= 0 {
+		out := make([]byte, 0, len(data)-1)
+		out = append(out, data[:idx]...)
+		out = append(out, data[idx+1:]...)
+		return out, true
+	}
+	// Derive keyCode for escape sequence matching (Ctrl+T = 0x14 -> 't' = 116).
+	keyCode := splitKeyByte + 96
+	for _, seq := range []string{
+		fmt.Sprintf("\x1b[27;5;%d~", keyCode),
+		fmt.Sprintf("\x1b[%d;5u", keyCode),
+	} {
+		seqBytes := []byte(seq)
+		if idx := bytes.Index(data, seqBytes); idx >= 0 {
+			out := make([]byte, 0, len(data)-len(seqBytes))
+			out = append(out, data[:idx]...)
+			out = append(out, data[idx+len(seqBytes):]...)
+			return out, true
+		}
+	}
+	return data, false
+}
+
 // Attach attaches to the tmux session with full PTY support.
 // The configured detach key (default Ctrl+Q) will detach and return to the caller.
 // Pass an optional detachByte to override the default (0x11 / Ctrl+Q).
@@ -212,6 +243,16 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 				close(detachCh)
 				cancel()
 				return
+			}
+
+			// Check for Ctrl+T (split terminal). Strip the key sequence
+			// from the buffer, open a split pane, and forward remaining bytes.
+			if remaining, found := stripSplitKey(buf[:n]); found {
+				if len(remaining) > 0 {
+					_, _ = ptmx.Write(remaining)
+				}
+				_ = s.SplitPane(s.WorkDir)
+				continue
 			}
 
 			// Forward other input to tmux PTY
