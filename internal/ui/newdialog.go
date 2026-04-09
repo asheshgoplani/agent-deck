@@ -163,6 +163,7 @@ type NewDialog struct {
 	allPathSuggestions   []string // full unfiltered set of path suggestions.
 	pathSuggestionCursor int      // tracks selected suggestion in dropdown.
 	suggestionNavigated  bool     // tracks if user explicitly navigated suggestions.
+	suggestionsActive    bool     // true when arrow-key focus is inside the suggestions dropdown.
 	pathSoftSelected     bool     // true when path text is "soft selected" (ready to replace on type).
 	// Worktree support.
 	worktreeEnabled bool
@@ -323,6 +324,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.nameInput.Focus()
 	d.suggestionNavigated = false // reset on show
 	d.pathSuggestionCursor = 0    // reset cursor too
+	d.suggestionsActive = false
 	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
 	d.showRecentPicker = false    // reset recent picker
 	d.recentSessionCursor = 0
@@ -901,8 +903,9 @@ func (d *NewDialog) updateFocus() {
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 
-	// Manage soft-select: re-activate when entering path field with a value.
+	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false
+	d.suggestionsActive = false
 	switch d.currentTarget() {
 	case focusName:
 		d.nameInput.Focus()
@@ -1010,6 +1013,36 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.recentSessionCursor = 0
 			d.previewRecentSession(d.recentSessions[0])
 			return d, nil
+		}
+
+		// Suggestions dropdown active: arrow keys navigate, space/enter select, left/esc exit.
+		if d.suggestionsActive && len(d.pathSuggestions) > 0 {
+			switch msg.String() {
+			case "down", "j":
+				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+				d.suggestionNavigated = true
+				return d, nil
+			case "up", "k":
+				d.pathSuggestionCursor--
+				if d.pathSuggestionCursor < 0 {
+					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+				}
+				d.suggestionNavigated = true
+				return d, nil
+			case " ", "enter":
+				if d.pathSuggestionCursor < len(d.pathSuggestions) {
+					d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+					d.pathInput.SetCursor(len(d.pathInput.Value()))
+				}
+				d.suggestionsActive = false
+				d.pathInput.Focus()
+				return d, nil
+			case "left", "h", "esc":
+				d.suggestionsActive = false
+				d.pathInput.Focus()
+				return d, nil
+			}
+			return d, nil // consume all other keys while dropdown is active
 		}
 
 		// Soft-select interception for path field
@@ -1130,6 +1163,15 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
+			// Enter suggestions dropdown when pressing down on path field.
+			isPathEditing := cur == focusPath || (cur == focusMultiRepo && d.multiRepoEditing)
+			if isPathEditing && len(d.pathSuggestions) > 0 {
+				d.suggestionsActive = true
+				d.suggestionNavigated = true
+				d.pathSoftSelected = false
+				d.pathInput.Blur()
+				return d, nil
+			}
 			if cur == focusConductor {
 				total := len(d.conductorSessions) + 1 // +1 for "None"
 				if d.conductorCursor < total-1 {
@@ -1365,6 +1407,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		d.pathInput, cmd = d.pathInput.Update(msg)
 		if d.pathInput.Value() != oldValue {
 			d.suggestionNavigated = false
+			d.suggestionsActive = false
 			d.pathSuggestionCursor = 0
 			d.pathCycler.Reset()
 			d.filterPathSuggestions()
@@ -1380,6 +1423,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.pathInput, cmd = d.pathInput.Update(msg)
 			if d.pathInput.Value() != oldValue {
 				d.suggestionNavigated = false
+				d.suggestionsActive = false
 				d.pathSuggestionCursor = 0
 				d.pathCycler.Reset()
 				d.filterPathSuggestions()
@@ -1801,7 +1845,7 @@ func (d *NewDialog) View() string {
 		if d.pathSoftSelected {
 			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
 		} else {
-			helpText = "Tab autocomplete │ ^N/^P recent │ ↑↓ navigate │ Enter create │ Esc cancel"
+			helpText = "Tab autocomplete │ ↓ browse │ ^N/^P cycle │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
@@ -1933,19 +1977,32 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 
 	// Footer with keybinding hints
 	var footerText string
-	if len(d.pathSuggestions) < len(d.allPathSuggestions) {
-		footerText = fmt.Sprintf(" %d/%d matching │ ^N/^P cycle │ Tab accept ",
-			len(d.pathSuggestions), len(d.allPathSuggestions))
+	if d.suggestionsActive {
+		if len(d.pathSuggestions) < len(d.allPathSuggestions) {
+			footerText = fmt.Sprintf(" %d/%d matching │ ↑/↓ navigate │ Space select │ Esc back ",
+				len(d.pathSuggestions), len(d.allPathSuggestions))
+		} else {
+			footerText = " ↑/↓ navigate │ Space select │ Esc back "
+		}
 	} else {
-		footerText = " ^N/^P cycle │ Tab accept "
+		if len(d.pathSuggestions) < len(d.allPathSuggestions) {
+			footerText = fmt.Sprintf(" %d/%d matching │ ↓ browse │ ^N/^P cycle │ Tab accept ",
+				len(d.pathSuggestions), len(d.allPathSuggestions))
+		} else {
+			footerText = " ↓ browse │ ^N/^P cycle │ Tab accept "
+		}
 	}
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
 
-	// Wrap in a bordered menu box
+	// Wrap in a bordered menu box — accent border when actively browsing.
+	borderColor := ColorBorder
+	if d.suggestionsActive {
+		borderColor = ColorCyan
+	}
 	menuStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorBorder).
+		BorderForeground(borderColor).
 		Background(menuBg).
 		Padding(0, 1)
 
