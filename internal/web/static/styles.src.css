@@ -698,3 +698,20 @@ body {
 }
 } /* === END @layer base === */
 /* ===== END folded contents of original internal/web/static/styles.css ===== */
+
+/* ----- Phase 7 / Plan 02 -- WEB-P1-2 fluid sidebar utility ----- */
+/* Custom utility consumed by AppShell.js <aside> via `md:sidebar-fluid`.
+   The clamp formula is the locked v1.5.0 quick win per ROADMAP Phase 7
+   success criterion 2: floor 260 px (tablet usability), ideal 22vw
+   (~282 px at 1280, ~422 px at 1920 -> clamped to 380), ceiling 380 px
+   so the sidebar never dominates. Mobile (<768 px) keeps the existing
+   fixed w-72 (288 px) overlay because the `md:` variant only applies
+   at >=768 px. Drag-to-resize is deferred to v1.6 (V16-WEB-01).
+
+   IMPORTANT: must use Tailwind v4 `@utility` directive (not `@layer
+   utilities`) so the class participates in responsive variants like
+   `md:sidebar-fluid`. `@layer utilities` declarations are NOT made
+   variant-aware by Tailwind v4. */
+@utility sidebar-fluid {
+  width: clamp(260px, 22vw, 380px);
+}

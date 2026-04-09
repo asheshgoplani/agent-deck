@@ -5,7 +5,7 @@
 // Desktop (1024px+): sidebar always visible
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { sidebarOpenSignal, sidebarWidthSignal, clampSidebarWidth, selectedIdSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal, mutationsEnabledSignal } from './state.js'
+import { sidebarOpenSignal, selectedIdSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal, mutationsEnabledSignal } from './state.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
@@ -17,52 +17,7 @@ import { SettingsPanel } from './SettingsPanel.js'
 import { ToastContainer } from './Toast.js'
 import { ToastHistoryDrawer } from './ToastHistoryDrawer.js'
 
-function SidebarResizeHandle() {
-  function onPointerDown(e) {
-    e.preventDefault()
-    const startX = e.clientX
-    const startWidth = sidebarWidthSignal.value
-    const target = e.currentTarget
-    try { target.setPointerCapture(e.pointerId) } catch (_) {}
-
-    function onMove(ev) {
-      const delta = ev.clientX - startX
-      sidebarWidthSignal.value = clampSidebarWidth(startWidth + delta)
-    }
-    function onUp(ev) {
-      target.removeEventListener('pointermove', onMove)
-      target.removeEventListener('pointerup', onUp)
-      target.removeEventListener('pointercancel', onUp)
-      try { target.releasePointerCapture(ev.pointerId) } catch (_) {}
-      try {
-        localStorage.setItem('sidebar-width', String(sidebarWidthSignal.value))
-      } catch (_) {}
-    }
-    target.addEventListener('pointermove', onMove)
-    target.addEventListener('pointerup', onUp)
-    target.addEventListener('pointercancel', onUp)
-  }
-
-  return html`
-    <div
-      class="hidden md:block absolute top-0 bottom-0 w-2 -ml-1 cursor-col-resize z-20 select-none
-             hover:dark:bg-tn-blue/30 hover:bg-blue-200"
-      style="left: ${sidebarWidthSignal.value}px;"
-      data-testid="sidebar-resize-handle"
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Resize sidebar"
-      onPointerDown=${onPointerDown}
-    ></div>
-  `
-}
-
 export function AppShell() {
-  function isDesktop() {
-    return typeof window !== 'undefined' && window.innerWidth >= 768
-  }
-  // Subscribe to sidebarWidthSignal so the inline width re-renders on drag.
-  const sidebarWidth = sidebarWidthSignal.value
   const sidebarOpen = sidebarOpenSignal.value
   const showCreateSession = createSessionDialogSignal.value
   const confirmData = confirmDialogSignal.value
@@ -145,9 +100,9 @@ export function AppShell() {
           border-r dark:border-tn-muted/20 border-gray-200
           transform transition-transform duration-200
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-          md:relative md:z-auto
+          md:relative md:z-auto md:sidebar-fluid
           lg:translate-x-0
-        " style=${isDesktop() ? `width: ${sidebarWidth}px;` : ''}>
+        ">
           <div class="flex items-center justify-between px-sp-12 py-sp-8 border-b dark:border-tn-muted/20 border-gray-200">
             <span class="text-xs font-semibold uppercase tracking-wide dark:text-tn-muted text-gray-500">Sessions</span>
             <span class="flex items-center gap-1">
@@ -178,8 +133,6 @@ export function AppShell() {
           </div>
           <${Sidebar} />
         </aside>
-
-        <${SidebarResizeHandle} />
 
         <!-- Main content: terminal and costs tabs -->
         <!-- TerminalPanel is always rendered (CSS hidden when costs active) to preserve xterm.js + WebSocket -->
