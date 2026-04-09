@@ -6,6 +6,27 @@ import (
 	"time"
 )
 
+func isShellPromptLikeLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+
+	// Classic one-line prompts.
+	for _, prompt := range []string{"$ ", "# ", "% ", "❯ ", "➜ ", "> "} {
+		if strings.HasSuffix(trimmed+" ", prompt) {
+			return true
+		}
+		if idx := strings.Index(trimmed, prompt); idx >= 0 && idx <= 48 {
+			return true
+		}
+	}
+
+	// Powerline / patched-font prompts often render separators but no trailing
+	// "$" or "%" in capture-pane output.
+	return strings.ContainsAny(trimmed, "")
+}
+
 // isPaneShellReady returns true when the last non-empty line of pane output ends
 // with a recognised shell prompt character ($, %, #, >) optionally followed by
 // trailing whitespace.
@@ -20,12 +41,11 @@ func isPaneShellReady(output string) bool {
 
 	// Walk backwards to find the last non-empty line.
 	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimRight(lines[i], " \t")
+		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		last := trimmed[len(trimmed)-1]
-		return last == '$' || last == '%' || last == '#' || last == '>'
+		return isShellPromptLikeLine(trimmed)
 	}
 
 	// All lines were empty or input was empty.
@@ -39,7 +59,7 @@ func waitForPaneReady(s *Session, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		output, err := s.CapturePaneFresh()
-		if err == nil && isPaneShellReady(output) {
+		if err == nil && isPaneShellReady(StripANSI(output)) {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)

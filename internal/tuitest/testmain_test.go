@@ -5,12 +5,20 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestMain ensures all tuitest smoke tests use the _test profile to prevent
 // accidental modification of production session data.
 // See CLAUDE.md: "Never delete these TestMain files."
 func TestMain(m *testing.M) {
+	restoreHome, err := testutil.SetupTestHome()
+	if err != nil {
+		panic(err)
+	}
+	defer restoreHome()
+
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 
 	code := m.Run()

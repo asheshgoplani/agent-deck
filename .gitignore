@@ -54,6 +54,7 @@ Thumbs.db
 
 .worktrees
 agent-deck-test
+.tmp-test-build/
 
 # Tailwind brute-force diff gate scratch file (make css temp artifact)
 internal/web/static/.brute-tw.src.css

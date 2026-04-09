@@ -1920,7 +1920,7 @@ func (i *Instance) Start() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -2037,7 +2037,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -4014,7 +4014,7 @@ func (i *Instance) Restart() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
