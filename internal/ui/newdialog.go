@@ -1064,11 +1064,24 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.pathCycler.Reset()
 				d.filterPathSuggestions()
 				return d, nil // consume the key
-			case tea.KeyLeft, tea.KeyRight:
+			case tea.KeyRight:
+				// → enters the suggestions dropdown (if available).
+				if len(d.pathSuggestions) > 0 {
+					d.pathSoftSelected = false
+					d.suggestionsActive = true
+					d.suggestionNavigated = true
+					return d, nil
+				}
+				// No suggestions: just exit soft-select into edit mode.
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+			case tea.KeyLeft:
 				d.pathSoftSelected = false
 				d.pathInput.Focus() // exit soft-select, allow editing
 			}
-			// Tab, Enter, Esc, Ctrl+N, Ctrl+P, Up, Down fall through to existing handlers
+			// Tab, Enter, Esc, Ctrl+N, Ctrl+P, Up, Down fall through to existing handlers.
+			// Down specifically falls through to the normal "move to next field" handler
+			// so the user can keep navigating the form without entering the dropdown.
 		}
 
 		switch msg.String() {
@@ -1163,12 +1176,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
-			// Enter suggestions dropdown when pressing down on path field.
+			// Enter suggestions dropdown when pressing down on path field,
+			// but only when actively editing (not when soft-selected — ↓ should
+			// move to the next form field in that case).
 			isPathEditing := cur == focusPath || (cur == focusMultiRepo && d.multiRepoEditing)
-			if isPathEditing && len(d.pathSuggestions) > 0 {
+			if isPathEditing && !d.pathSoftSelected && len(d.pathSuggestions) > 0 {
 				d.suggestionsActive = true
 				d.suggestionNavigated = true
-				d.pathSoftSelected = false
 				d.pathInput.Blur()
 				return d, nil
 			}
@@ -1843,7 +1857,7 @@ func (d *NewDialog) View() string {
 	helpText := recentPrefix + "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
 	if cur == focusPath {
 		if d.pathSoftSelected {
-			helpText = "Type to replace │ ←→ to edit │ ^N/^P recent │ Tab next │ Esc cancel"
+			helpText = "Type to replace │ ← edit │ → browse suggestions │ Tab next │ Esc cancel"
 		} else {
 			helpText = "Tab autocomplete │ ↓ browse │ ^N/^P cycle │ Enter create │ Esc cancel"
 		}
