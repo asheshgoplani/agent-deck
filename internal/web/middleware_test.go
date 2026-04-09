@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -201,4 +202,66 @@ func TestMiddleware_ByteSavings(t *testing.T) {
 	if len(raw) >= len(body)/2 {
 		t.Errorf("gzip did not halve size: input=%d output=%d", len(body), len(raw))
 	}
+}
+
+func TestMiddleware_E2EGzipsEmbeddedStyles(t *testing.T) {
+	// End-to-end: load the real bundled styles.css from disk, serve it
+	// through gzipAndCacheStatic, and assert Content-Encoding: gzip AND
+	// a meaningfully smaller payload.
+	//
+	// This test catches regressions where someone removes the
+	// gzipAndCacheStatic wrapper from server.go line 101 while leaving
+	// middleware.go untouched -- because it exercises the real embedded
+	// asset rather than a synthetic string.
+	if testing.Short() {
+		t.Skip("skipping e2e in -short")
+	}
+
+	cssBytes, err := readEmbeddedStyleCSS(t)
+	if err != nil {
+		t.Skipf("cannot read embedded styles.css: %v", err)
+	}
+	if len(cssBytes) < 1024 {
+		t.Skipf("styles.css is too small (%d bytes) to exercise gzip threshold", len(cssBytes))
+	}
+
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		_, _ = w.Write(cssBytes)
+	})
+	srv := httptest.NewServer(gzipAndCacheStatic(stub))
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/static/styles.css", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if ce := resp.Header.Get("Content-Encoding"); ce != "gzip" {
+		t.Fatalf("want Content-Encoding=gzip, got %q", ce)
+	}
+	gzippedBody, _ := io.ReadAll(resp.Body)
+	if len(gzippedBody) >= len(cssBytes) {
+		t.Errorf("gzip did not compress: input=%d output=%d", len(cssBytes), len(gzippedBody))
+	}
+	// Log the savings so the verification is human-readable
+	t.Logf("styles.css gzip savings: %d -> %d bytes (%.1f%%)",
+		len(cssBytes), len(gzippedBody),
+		float64(len(gzippedBody))*100.0/float64(len(cssBytes)))
+}
+
+// readEmbeddedStyleCSS loads the bundled styles.css via the simplest
+// path available. `go test` runs with cwd = the package directory
+// (internal/web/), so the relative path to the embed source is
+// ./static/styles.css.
+func readEmbeddedStyleCSS(t *testing.T) ([]byte, error) {
+	t.Helper()
+	data, err := os.ReadFile("static/styles.css")
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
