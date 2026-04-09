@@ -331,11 +331,11 @@ func (c *csiuReader) translate(final bool) []byte {
 			continue
 		}
 
-		// We have ESC '['. Scan forward for the terminator.
+		// We have ESC '['. Scan forward for the CSI final byte.
+		// CSI final bytes are in the range 0x40-0x7E (@ through ~).
+		// Only 'u' and '~' get special handling; everything else passes through.
 		j := i + 2
-		for j < len(c.inBuf) && c.inBuf[j] != 'u' && c.inBuf[j] != 'A' &&
-			c.inBuf[j] != 'B' && c.inBuf[j] != 'C' && c.inBuf[j] != 'D' &&
-			c.inBuf[j] != 'H' && c.inBuf[j] != 'F' && c.inBuf[j] != '~' {
+		for j < len(c.inBuf) && (c.inBuf[j] < 0x40 || c.inBuf[j] > 0x7E) {
 			j++
 		}
 

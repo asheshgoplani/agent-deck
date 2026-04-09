@@ -5,7 +5,7 @@
 // Desktop (1024px+): sidebar always visible
 import { html } from 'htm/preact'
 import { useEffect } from 'preact/hooks'
-import { sidebarOpenSignal, sidebarWidthSignal, clampSidebarWidth, selectedIdSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal } from './state.js'
+import { sidebarOpenSignal, sidebarWidthSignal, clampSidebarWidth, selectedIdSignal, createSessionDialogSignal, confirmDialogSignal, groupNameDialogSignal, activeTabSignal, infoDrawerOpenSignal, mutationsEnabledSignal } from './state.js'
 import { Sidebar } from './Sidebar.js'
 import { Topbar } from './Topbar.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
@@ -15,6 +15,7 @@ import { TerminalPanel } from './TerminalPanel.js'
 import { CostDashboard } from './CostDashboard.js'
 import { SettingsPanel } from './SettingsPanel.js'
 import { ToastContainer } from './Toast.js'
+import { ToastHistoryDrawer } from './ToastHistoryDrawer.js'
 
 function SidebarResizeHandle() {
   function onPointerDown(e) {
@@ -82,6 +83,26 @@ export function AppShell() {
     return () => {
       if (vanillaApp) vanillaApp.style.display = ''
     }
+  }, [])
+
+  // WEB-P0-4 prevention layer: read webMutations from /api/settings on mount.
+  // Defaults to true (optimistic); flips to false if the server is in
+  // read-only mutations mode. When false, SessionRow hides its write
+  // toolbar and CreateSessionDialog early-returns null, so users cannot
+  // click write buttons and generate 403 error spam that would flood the
+  // toast stack (06-04's mitigation layer handles any leaks).
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && typeof data.webMutations === 'boolean') {
+          mutationsEnabledSignal.value = data.webMutations
+        }
+      })
+      .catch(() => {
+        // Network failure — keep optimistic default (true) so the UI
+        // does not lock out legitimate users on transient failures.
+      })
   }, [])
 
   // Close info drawer on Escape key
@@ -203,6 +224,7 @@ export function AppShell() {
         </div>
       `}
       <${ToastContainer} />
+      <${ToastHistoryDrawer} />
     </div>
   `
 }

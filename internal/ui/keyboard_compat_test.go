@@ -205,6 +205,51 @@ func TestCSIuReaderPassesStandardEscapeSequences(t *testing.T) {
 	}
 }
 
+// TestCSIuReaderPassesSGRMouseEvents verifies that SGR mouse sequences
+// (final byte 'M'/'m') pass through correctly and don't eat subsequent input.
+// Regression test: the original terminator set omitted 'M' and 'm', causing
+// mouse events to consume following arrow key sequences.
+func TestCSIuReaderPassesSGRMouseEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "mouse press then arrow up",
+			input: "\x1b[<0;10;20M\x1b[A",
+			want:  "\x1b[<0;10;20M\x1b[A",
+		},
+		{
+			name:  "mouse release then arrow down",
+			input: "\x1b[<0;10;20m\x1b[B",
+			want:  "\x1b[<0;10;20m\x1b[B",
+		},
+		{
+			name:  "mouse move then keystroke",
+			input: "\x1b[<35;5;15M" + "j",
+			want:  "\x1b[<35;5;15M" + "j",
+		},
+		{
+			name:  "mouse between two arrows",
+			input: "\x1b[A\x1b[<0;1;1M\x1b[B",
+			want:  "\x1b[A\x1b[<0;1;1M\x1b[B",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(bytes.NewReader([]byte(tt.input)))
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != tt.want {
+				t.Errorf("got %q, want %q", string(out), tt.want)
+			}
+		})
+	}
+}
+
 // TestCSIuReaderMixedInput verifies mixed input is correctly handled.
 func TestCSIuReaderMixedInput(t *testing.T) {
 	// "a" + shift+r CSI u + "b"

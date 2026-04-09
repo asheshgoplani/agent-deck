@@ -182,11 +182,16 @@ test.describe('BUG #3 / CRIT-03 — session/group name bounding-box width greate
   test('structural: SessionRow.js outer button class contains min-w-0', () => {
     const p = join(__dirname, '..', '..', '..', 'internal', 'web', 'static', 'app', 'SessionRow.js');
     const src = readFileSync(p, 'utf-8');
-    // Expect `group w-full min-w-0 flex items-center` verbatim on the outer button.
-    const outerButtonRe = /group w-full\s+min-w-0\s+flex items-center/;
+    // Expect `group w-full min-w-0 ... flex items-center` on the outer button.
+    // After WEB-P0-3 (plan 06-03) landed `relative` between `min-w-0` and
+    // `flex items-center` to anchor the absolute-positioned action toolbar,
+    // this regex allows optional positional utilities between min-w-0 and
+    // flex. The load-bearing invariant for this BUG #3 / CRIT-03 gate is
+    // that `min-w-0` is still present on the outer button class list.
+    const outerButtonRe = /group w-full\s+min-w-0(?:\s+[-\w\[\]/:.]+)*\s+flex items-center/;
     expect(
       outerButtonRe.test(src),
-      'SessionRow.js outer button class string is missing min-w-0 — BUG #3. Expected `group w-full min-w-0 flex items-center` on the outer button.',
+      'SessionRow.js outer button class string is missing min-w-0 — BUG #3. Expected `group w-full min-w-0 [...] flex items-center` on the outer button.',
     ).toBe(true);
   });
 

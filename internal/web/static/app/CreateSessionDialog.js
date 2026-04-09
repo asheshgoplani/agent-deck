@@ -3,7 +3,7 @@
 // Submits POST /api/sessions with { title, tool, projectPath }.
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
-import { createSessionDialogSignal } from './state.js'
+import { createSessionDialogSignal, mutationsEnabledSignal } from './state.js'
 import { apiFetch } from './api.js'
 
 export function CreateSessionDialog() {
@@ -12,6 +12,15 @@ export function CreateSessionDialog() {
   const [path, setPath] = useState('')
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // WEB-P0-4 prevention layer: when mutations are disabled (server
+  // webMutations=false), do not render the dialog at all. The caller
+  // that sets createSessionDialogSignal.value = true should already be
+  // gated on the same signal, but this is a defensive guard in case
+  // the dialog is opened via some other path (keyboard shortcut,
+  // direct signal manipulation, etc.). Placed AFTER the useState hooks
+  // so Preact's hook order stays stable across re-renders (rules-of-hooks).
+  if (!mutationsEnabledSignal.value) return null
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -65,7 +74,7 @@ export function CreateSessionDialog() {
                      hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors">
               Cancel
             </button>
-            <button type="submit" disabled=${submitting}
+            <button type="submit" disabled=${submitting || !mutationsEnabledSignal.value}
               class="px-4 py-2 min-h-[44px] rounded dark:bg-tn-blue/20 bg-blue-100
                      dark:text-tn-blue text-blue-700
                      hover:dark:bg-tn-blue/30 hover:bg-blue-200 transition-colors

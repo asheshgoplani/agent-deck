@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-04-09
+
+### Fixed
+- Restore TUI keyboard input on all terminals (iTerm2, Ghostty, WezTerm, Kitty, tmux). Arrow keys, j/k, and mouse scroll were broken in v1.4.1 because `CSIuReader` wrapping `os.Stdin` made Bubble Tea skip raw-mode setup (`tcsetattr`), leaving the TTY in cooked mode and echoing escape sequences as text. Fixes #539, #544. ([#541](https://github.com/asheshgoplani/agent-deck/pull/541))
+- Fix CSI final-byte whitelist in `csiuReader.translate` to include SGR mouse terminators (`M`/`m`), so mouse events are no longer corrupted when the reader is used. ([#541](https://github.com/asheshgoplani/agent-deck/pull/541))
+- Remove `EnableKittyKeyboard(os.Stdout)` / `DisableKittyKeyboard(os.Stdout)` pairs from all four attach paths (`attachCmd`, `remoteCreateAndAttachCmd`, `attachWindowCmd`, `remoteAttachCmd`) in `internal/ui/home.go`. Writing `ESC[>1u` to the outer terminal before `tmux attach` put Ghostty (and other kitty-protocol terminals) into CSI u mode; tmux could not translate these sequences for the inner application, causing arrow keys to appear as raw escape codes. Restores v0.28.3 attach behavior. Fixes #546. ([#547](https://github.com/asheshgoplani/agent-deck/pull/547))
+
+### Added
+- Integration tests for TUI keyboard input (`internal/integration/tui_input_test.go`) to prevent future regressions in raw-mode setup and CSI handling.
+
 ## [0.25.1] - 2026-03-11
 
 ### Added

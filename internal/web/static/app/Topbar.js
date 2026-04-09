@@ -5,17 +5,18 @@ import { ProfileDropdown } from './ProfileDropdown.js'
 import { ConnectionIndicator } from './ConnectionIndicator.js'
 import { activeTabSignal, infoDrawerOpenSignal } from './state.js'
 import { PushControls } from './PushControls.js'
+import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
 
 export function Topbar({ onToggleSidebar, sidebarOpen }) {
   return html`
     <header class="flex items-center justify-between px-sp-12 py-sp-8
       dark:bg-tn-panel bg-white border-b dark:border-tn-muted/20 border-gray-200
-      flex-shrink-0 relative z-50">
+      flex-shrink-0 relative z-sticky">
       <div class="flex items-center gap-3 min-w-0">
         <button
           type="button"
           onClick=${onToggleSidebar}
-          class="lg:hidden p-2 -ml-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
+          class="lg:hidden relative z-topbar-primary pointer-events-auto p-2 -ml-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
           aria-label=${sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
           aria-expanded=${sidebarOpen}
         >
@@ -39,7 +40,7 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
           <span class="font-semibold text-sm dark:text-tn-fg text-gray-900 md:hidden lg:inline">Agent Deck</span>
         </span>
       </div>
-      <div class="flex items-center gap-3 flex-shrink-0">
+      <div class="relative z-topbar flex items-center gap-3 flex-shrink-0">
         <button
           type="button"
           onClick=${() => { activeTabSignal.value = activeTabSignal.value === 'costs' ? 'terminal' : 'costs' }}
@@ -62,6 +63,7 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
         >
           Info
         </button>
+        <${ToastHistoryDrawerToggle} />
         <${PushControls} />
       </div>
     </header>

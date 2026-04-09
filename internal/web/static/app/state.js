@@ -109,3 +109,29 @@ export const toastsSignal = signal([])
 
 // Keyboard shortcuts overlay open/close (BUG #14 / UX-03)
 export const shortcutsOverlaySignal = signal(false)
+
+// Toast history (WEB-P0-4 + POL-7): capped at 50 dismissed toasts.
+// Persisted to localStorage key `agentdeck_toast_history`.
+// Schema is localStorage-only per milestone rule: NO SQLite schema changes.
+function initialToastHistory() {
+  try {
+    const stored = localStorage.getItem('agentdeck_toast_history')
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (Array.isArray(parsed)) return parsed.slice(-50)
+    }
+  } catch (_) {
+    // localStorage may throw in incognito/privacy modes; start empty.
+  }
+  return []
+}
+export const toastHistorySignal = signal(initialToastHistory())
+
+// Toast history drawer open/close (WEB-P0-4 + POL-7)
+export const toastHistoryOpenSignal = signal(false)
+
+// Mutations gate (WEB-P0-4 prevention layer): when /api/settings returns
+// webMutations=false, the UI hides write buttons so users cannot generate
+// 403 error spam. Defaults to true (optimistic) until AppShell mount fetches
+// /api/settings and assigns the real value.
+export const mutationsEnabledSignal = signal(true)

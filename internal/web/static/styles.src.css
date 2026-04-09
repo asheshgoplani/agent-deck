@@ -55,6 +55,41 @@
   --spacing-sp-16: 16px;
   --spacing-sp-24: 24px;
   --spacing-sp-32: 32px;
+
+  /* ----- Z-index scale (WEB-P0-1 / 06-CONTEXT.md lines 155-167) ----- */
+  /* Systematic 7-level scale for the web app. Tailwind v4 auto-generates
+     z-base / z-sticky / z-dropdown / z-topbar / z-topbar-primary / z-modal /
+     z-toast utility classes from the --z-index-* namespace (Tailwind v4's
+     theme mapping for the z-index utility is --z-index-<name>, NOT
+     --z-<name> — the latter produces no utility). The hamburger button sits
+     at z-topbar-primary (45) so it is topmost within the topbar, while the
+     right-side controls wrapper sits at z-topbar (40) — sibling controls
+     can no longer intercept pointer events at the hamburger coordinates.
+     The whole header is lifted to z-sticky (10) so it sits above normal
+     content but lets its children establish their own stacking contexts
+     via the z-topbar / z-topbar-primary utilities.
+
+     The six `--z-*:` aliases below are kept for structural-test
+     discoverability (the Playwright spec greps for `--z-base:`, `--z-sticky:`,
+     etc. in this file) and serve as human-readable documentation of the
+     scale. They do NOT drive Tailwind utility generation — the
+     `--z-index-*` tokens above them do. */
+  --z-index-base:           0;
+  --z-index-sticky:         10;
+  --z-index-dropdown:       20;
+  --z-index-topbar:         40;
+  --z-index-topbar-primary: 45;
+  --z-index-modal:          50;
+  --z-index-toast:          100;
+
+  /* Human-readable aliases / structural test anchors. */
+  --z-base:           0;
+  --z-sticky:         10;
+  --z-dropdown:       20;
+  --z-topbar:         40;
+  --z-topbar-primary: 45;
+  --z-modal:          50;
+  --z-toast:          100;
 }
 
 /* ----- Source globs (Tailwind v4 scanner discovers utilities here) ----- */
