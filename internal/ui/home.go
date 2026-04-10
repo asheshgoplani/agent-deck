@@ -3244,6 +3244,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// Save to recent sessions so newly-created sessions are available
+			// in the recents picker immediately (without needing to delete first).
+			// The dedup key means subsequent deletes/recreates update the same row.
+			if err := h.storage.SaveRecentSession(msg.instance); err != nil {
+				uiLog.Warn("save_recent_session_on_create_err", slog.String("id", msg.instance.ID), slog.String("err", err.Error()))
+			}
+
 			// Save both instances AND groups (critical fix: was losing groups!)
 			// Use forceSave to bypass mtime check - new session creation MUST persist
 			h.forceSaveInstances()
@@ -4476,6 +4483,12 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "enter":
+		// When path suggestions are navigated, Enter accepts the suggestion.
+		if h.newDialog.IsPathSuggestionActive() {
+			h.newDialog.AcceptPathSuggestion()
+			return h, nil
+		}
+
 		// When multi-repo path list is focused, let the dialog handle enter (edit/save path).
 		if h.newDialog.IsMultiRepoEditing() {
 			var cmd tea.Cmd
@@ -4599,6 +4612,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 
 	case "esc":
+		// If path suggestions are navigated, dismiss them first.
+		if h.newDialog.IsPathSuggestionActive() {
+			h.newDialog.DismissPathSuggestions()
+			return h, nil
+		}
 		h.newDialog.Hide()
 		h.clearError() // Clear any validation error
 		return h, nil

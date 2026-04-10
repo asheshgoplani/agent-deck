@@ -161,8 +161,9 @@ type NewDialog struct {
 	parentGroupName      string
 	pathSuggestions      []string // filtered subset of path suggestions shown in dropdown.
 	allPathSuggestions   []string // full unfiltered set of path suggestions.
-	pathSuggestionCursor int      // tracks selected suggestion in dropdown.
-	suggestionNavigated  bool     // tracks if user explicitly navigated suggestions.
+	pathSuggestionCursor    int  // tracks selected suggestion in dropdown.
+	suggestionNavigated     bool // tracks if user explicitly navigated suggestions.
+	pathSuggestionsDismissed bool // true after user presses Esc to dismiss dropdown for free editing.
 	pathSoftSelected     bool     // true when path text is "soft selected" (ready to replace on type).
 	// Worktree support.
 	worktreeEnabled bool
@@ -178,6 +179,7 @@ type NewDialog struct {
 	validationErr          string
 	pathCycler             session.CompletionCycler // Path autocomplete state.
 	suggestionsLineOffset  int                      // Content line where suggestions overlay should appear.
+	recentPickerLineOffset int                      // Content line where recent picker overlay should appear.
 	// Multi-repo mode.
 	multiRepoEnabled    bool
 	multiRepoPaths      []string // All paths when multi-repo is active.
@@ -188,6 +190,8 @@ type NewDialog struct {
 	recentSessionCursor int
 	showRecentPicker    bool
 	recentSnapshot      *dialogSnapshot // saved state to restore on Esc
+	recentFilter        string                       // typeahead filter text
+	recentFiltered      []*statedb.RecentSessionRow  // nil = no filter active
 	// Conducting parent selector.
 	conductorSessions []*session.Instance // nil when no conductors; populated by ShowInGroup
 	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
@@ -321,9 +325,10 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.validationErr = ""
 	d.nameInput.SetValue("")
 	d.nameInput.Focus()
-	d.suggestionNavigated = false // reset on show
-	d.pathSuggestionCursor = 0    // reset cursor too
-	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
+	d.suggestionNavigated = false     // reset on show
+	d.pathSuggestionCursor = 0        // reset cursor too
+	d.pathSuggestionsDismissed = false // show dropdown when path field is focused
+	d.pathCycler.Reset()               // clear stale autocomplete matches from previous show
 	d.showRecentPicker = false    // reset recent picker
 	d.recentSessionCursor = 0
 	d.conductorSessions = conductors
@@ -583,6 +588,34 @@ func (d *NewDialog) filterPathSuggestions() {
 	}
 }
 
+// recentDisplayList returns the filtered recent sessions list, or the full list if no filter is active.
+func (d *NewDialog) recentDisplayList() []*statedb.RecentSessionRow {
+	if d.recentFiltered != nil {
+		return d.recentFiltered
+	}
+	return d.recentSessions
+}
+
+// applyRecentFilter filters recentSessions by the current filter text (case-insensitive,
+// matches on title and project path). Resets cursor to 0.
+func (d *NewDialog) applyRecentFilter() {
+	if d.recentFilter == "" {
+		d.recentFiltered = nil
+		d.recentSessionCursor = 0
+		return
+	}
+	query := strings.ToLower(d.recentFilter)
+	filtered := make([]*statedb.RecentSessionRow, 0)
+	for _, rs := range d.recentSessions {
+		if strings.Contains(strings.ToLower(rs.Title), query) ||
+			strings.Contains(strings.ToLower(rs.ProjectPath), query) {
+			filtered = append(filtered, rs)
+		}
+	}
+	d.recentFiltered = filtered
+	d.recentSessionCursor = 0
+}
+
 // Show makes the dialog visible (uses default group)
 func (d *NewDialog) Show() {
 	d.ShowInGroup("default", "default", "", nil, "")
@@ -734,6 +767,36 @@ func (d *NewDialog) GetMultiRepoPaths() ([]string, bool) {
 // Used by the parent to prevent enter from submitting the form.
 func (d *NewDialog) IsMultiRepoEditing() bool {
 	return d.multiRepoEnabled && d.currentTarget() == focusMultiRepo
+}
+
+// IsPathSuggestionActive returns true when the path suggestions dropdown is
+// visible (path field focused, suggestions exist, not dismissed by the user).
+func (d *NewDialog) IsPathSuggestionActive() bool {
+	cur := d.currentTarget()
+	isPathField := cur == focusPath || (d.multiRepoEnabled && d.multiRepoEditing)
+	return isPathField && !d.pathSuggestionsDismissed && len(d.pathSuggestions) > 0
+}
+
+// AcceptPathSuggestion applies the currently highlighted path suggestion to the
+// path input and dismisses the suggestion navigation state.
+func (d *NewDialog) AcceptPathSuggestion() {
+	if d.pathSuggestionCursor < len(d.pathSuggestions) {
+		d.pathInput.SetValue(d.pathSuggestions[d.pathSuggestionCursor])
+		d.pathInput.SetCursor(len(d.pathInput.Value()))
+	}
+	d.suggestionNavigated = false
+	d.pathSuggestionsDismissed = true // switch to free-edit mode after accepting
+	d.pathCycler.Reset()
+	d.filterPathSuggestions()
+}
+
+// DismissPathSuggestions hides the dropdown so the user can freely edit the path.
+// Arrows/^N/^P will re-open it.
+func (d *NewDialog) DismissPathSuggestions() {
+	d.suggestionNavigated = false
+	d.pathSuggestionsDismissed = true
+	d.pathSuggestionCursor = 0
+	d.pathCycler.Reset()
 }
 
 // GetSelectedCommand returns the currently selected command/tool
@@ -973,23 +1036,32 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
+			displayList := d.recentDisplayList()
 			switch msg.String() {
 			case "ctrl+n", "down":
-				d.recentSessionCursor = (d.recentSessionCursor + 1) % len(d.recentSessions)
-				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
+				if len(displayList) > 0 {
+					d.recentSessionCursor = (d.recentSessionCursor + 1) % len(displayList)
+					d.previewRecentSession(displayList[d.recentSessionCursor])
+				}
 				return d, nil
 			case "ctrl+p", "up":
-				d.recentSessionCursor--
-				if d.recentSessionCursor < 0 {
-					d.recentSessionCursor = len(d.recentSessions) - 1
+				if len(displayList) > 0 {
+					d.recentSessionCursor--
+					if d.recentSessionCursor < 0 {
+						d.recentSessionCursor = len(displayList) - 1
+					}
+					d.previewRecentSession(displayList[d.recentSessionCursor])
 				}
-				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
 				return d, nil
 			case "enter":
-				// Fields already applied via preview — just close picker.
-				d.showRecentPicker = false
-				d.recentSnapshot = nil
-				d.pathSoftSelected = true
+				if len(displayList) > 0 {
+					// Fields already applied via preview — just close picker.
+					d.showRecentPicker = false
+					d.recentSnapshot = nil
+					d.recentFilter = ""
+					d.recentFiltered = nil
+					d.pathSoftSelected = true
+				}
 				return d, nil
 			case "esc", "ctrl+r":
 				// Cancel — restore original form state.
@@ -998,15 +1070,38 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.recentSnapshot = nil
 				}
 				d.showRecentPicker = false
+				d.recentFilter = ""
+				d.recentFiltered = nil
 				return d, nil
+			case "backspace":
+				if len(d.recentFilter) > 0 {
+					d.recentFilter = d.recentFilter[:len(d.recentFilter)-1]
+					d.applyRecentFilter()
+					if len(d.recentDisplayList()) > 0 {
+						d.previewRecentSession(d.recentDisplayList()[d.recentSessionCursor])
+					}
+				}
+				return d, nil
+			default:
+				// Typeahead: printable runes filter the list.
+				if msg.Type == tea.KeyRunes {
+					d.recentFilter += string(msg.Runes)
+					d.applyRecentFilter()
+					if len(d.recentDisplayList()) > 0 {
+						d.previewRecentSession(d.recentDisplayList()[d.recentSessionCursor])
+					}
+					return d, nil
+				}
 			}
-			return d, nil // Consume all other keys while picker is open
+			return d, nil // Consume all other unhandled keys while picker is open
 		}
 
 		// Toggle recent sessions picker
 		if msg.String() == "ctrl+r" && len(d.recentSessions) > 0 {
 			d.recentSnapshot = d.saveSnapshot()
 			d.showRecentPicker = true
+			d.recentFilter = ""
+			d.recentFiltered = nil
 			d.recentSessionCursor = 0
 			d.previewRecentSession(d.recentSessions[0])
 			return d, nil
@@ -1093,24 +1188,36 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 
 		case "ctrl+n":
 			// Next suggestion (when on path field or editing multi-repo path).
-			if (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
-				d.pathSoftSelected = false
-				d.pathInput.Focus() // exit soft-select, focus for future input.
-				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
-				d.suggestionNavigated = true
+			if (cur == focusPath || d.multiRepoEditing) && len(d.allPathSuggestions) > 0 {
+				if d.pathSuggestionsDismissed {
+					d.pathSuggestionsDismissed = false
+					d.filterPathSuggestions()
+				}
+				if len(d.pathSuggestions) > 0 {
+					d.pathSoftSelected = false
+					d.pathInput.Focus()
+					d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+					d.suggestionNavigated = true
+				}
 				return d, nil
 			}
 
 		case "ctrl+p":
 			// Previous suggestion (when on path field or editing multi-repo path).
-			if (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
-				d.pathSoftSelected = false
-				d.pathInput.Focus() // exit soft-select, focus for future input.
-				d.pathSuggestionCursor--
-				if d.pathSuggestionCursor < 0 {
-					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+			if (cur == focusPath || d.multiRepoEditing) && len(d.allPathSuggestions) > 0 {
+				if d.pathSuggestionsDismissed {
+					d.pathSuggestionsDismissed = false
+					d.filterPathSuggestions()
 				}
-				d.suggestionNavigated = true
+				if len(d.pathSuggestions) > 0 {
+					d.pathSoftSelected = false
+					d.pathInput.Focus()
+					d.pathSuggestionCursor--
+					if d.pathSuggestionCursor < 0 {
+						d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+					}
+					d.suggestionNavigated = true
+				}
 				return d, nil
 			}
 
@@ -1130,6 +1237,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			}
 
 		case "down":
+			// Arrow down navigates path suggestions only when dropdown is already visible.
+			if !d.pathSuggestionsDismissed && (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % len(d.pathSuggestions)
+				d.suggestionNavigated = true
+				return d, nil
+			}
 			if cur == focusConductor {
 				total := len(d.conductorSessions) + 1 // +1 for "None"
 				if d.conductorCursor < total-1 {
@@ -1152,6 +1267,17 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "shift+tab", "up":
+			// Arrow up navigates path suggestions only when dropdown is already visible.
+			if msg.String() == "up" && !d.pathSuggestionsDismissed && (cur == focusPath || d.multiRepoEditing) && len(d.pathSuggestions) > 0 {
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+				d.pathSuggestionCursor--
+				if d.pathSuggestionCursor < 0 {
+					d.pathSuggestionCursor = len(d.pathSuggestions) - 1
+				}
+				d.suggestionNavigated = true
+				return d, nil
+			}
 			if cur == focusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
@@ -1175,6 +1301,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "esc":
+			// First Esc: dismiss path suggestions dropdown if visible.
+			if d.IsPathSuggestionActive() {
+				d.DismissPathSuggestions()
+				return d, nil
+			}
 			if d.multiRepoEditing {
 				// Cancel editing, revert to the stored value
 				d.multiRepoEditing = false
@@ -1368,6 +1499,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			d.pathSuggestionCursor = 0
 			d.pathCycler.Reset()
 			d.filterPathSuggestions()
+			// Re-show dropdown when typing produces matches.
+			if len(d.pathSuggestions) > 0 {
+				d.pathSuggestionsDismissed = false
+			}
 		}
 	case focusCommand:
 		if d.commandCursor == 0 {
@@ -1383,6 +1518,9 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.pathSuggestionCursor = 0
 				d.pathCycler.Reset()
 				d.filterPathSuggestions()
+				if len(d.pathSuggestions) > 0 {
+					d.pathSuggestionsDismissed = false
+				}
 			}
 		}
 	case focusWorktree, focusSandbox, focusConductor, focusInherited:
@@ -1453,65 +1591,6 @@ func (d *NewDialog) View() string {
 	content.WriteString(groupInfoStyle.Render("  in group: " + d.parentGroupName))
 	content.WriteString("\n")
 
-	// Recent sessions picker
-	if d.showRecentPicker && len(d.recentSessions) > 0 {
-		pickerHeaderStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		pickerSelectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-		pickerItemStyle := lipgloss.NewStyle().Foreground(ColorComment)
-
-		content.WriteString("\n")
-		content.WriteString(pickerHeaderStyle.Render(
-			fmt.Sprintf("─ Recent Sessions (%d) ─ ↑↓ navigate │ Enter apply │ Esc close ─", len(d.recentSessions)),
-		))
-		content.WriteString("\n")
-
-		maxShow := 5
-		total := len(d.recentSessions)
-		startIdx := 0
-		endIdx := total
-		if total > maxShow {
-			startIdx = d.recentSessionCursor - maxShow/2
-			if startIdx < 0 {
-				startIdx = 0
-			}
-			endIdx = startIdx + maxShow
-			if endIdx > total {
-				endIdx = total
-				startIdx = endIdx - maxShow
-			}
-		}
-
-		if startIdx > 0 {
-			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↑ %d more above", startIdx)))
-			content.WriteString("\n")
-		}
-
-		for i := startIdx; i < endIdx; i++ {
-			rs := d.recentSessions[i]
-			// Format: Name  (tool @ ~/shortened/path)
-			shortPath := rs.ProjectPath
-			if home, err := os.UserHomeDir(); err == nil {
-				shortPath = strings.Replace(shortPath, home, "~", 1)
-			}
-			toolLabel := rs.Tool
-			if toolLabel == "" {
-				toolLabel = "shell"
-			}
-			entry := fmt.Sprintf("%s  (%s @ %s)", rs.Title, toolLabel, shortPath)
-
-			if i == d.recentSessionCursor {
-				content.WriteString(pickerSelectedStyle.Render("  ▶ " + entry))
-			} else {
-				content.WriteString(pickerItemStyle.Render("    " + entry))
-			}
-			content.WriteString("\n")
-		}
-
-		if endIdx < total {
-			content.WriteString(pickerItemStyle.Render(fmt.Sprintf("    ↓ %d more below", total-endIdx)))
-			content.WriteString("\n")
-		}
-	}
 	content.WriteString("\n")
 
 	// Name input
@@ -1523,7 +1602,9 @@ func (d *NewDialog) View() string {
 	content.WriteString("\n")
 	content.WriteString("  ")
 	content.WriteString(d.nameInput.View())
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+	d.recentPickerLineOffset = strings.Count(content.String(), "\n")
+	content.WriteString("\n")
 
 	// Multi-repo checkbox — rendered above path, toggles between single path and path list.
 	multiRepoLabel := "Multi-repo mode"
@@ -1860,6 +1941,19 @@ func (d *NewDialog) View() string {
 		placed = overlayDropdown(placed, suggestionsOverlay, overlayRow, overlayCol)
 	}
 
+	// Overlay recent sessions picker if visible.
+	if recentOverlay := d.renderRecentPickerDropdown(); recentOverlay != "" {
+		dialogHeight := lipgloss.Height(dialog)
+		dialogWidth := lipgloss.Width(dialog)
+		topRow := (d.height - dialogHeight) / 2
+		leftCol := (d.width - dialogWidth) / 2
+
+		overlayRow := topRow + 1 + 2 + d.recentPickerLineOffset
+		overlayCol := leftCol + 1 + 4
+
+		placed = overlayDropdown(placed, recentOverlay, overlayRow, overlayCol)
+	}
+
 	return placed
 }
 
@@ -1875,6 +1969,10 @@ func dropdownMenuBg() lipgloss.Color {
 }
 
 func (d *NewDialog) renderSuggestionsDropdown() string {
+	if d.pathSuggestionsDismissed {
+		return ""
+	}
+
 	cur := d.currentTarget()
 
 	// Single-path mode: show when path focused
@@ -1934,15 +2032,110 @@ func (d *NewDialog) renderSuggestionsDropdown() string {
 	// Footer with keybinding hints
 	var footerText string
 	if len(d.pathSuggestions) < len(d.allPathSuggestions) {
-		footerText = fmt.Sprintf(" %d/%d matching │ ^N/^P cycle │ Tab accept ",
+		footerText = fmt.Sprintf(" %d/%d matching │ ↑↓/^N^P cycle │ Enter accept │ Esc edit ",
 			len(d.pathSuggestions), len(d.allPathSuggestions))
 	} else {
-		footerText = " ^N/^P cycle │ Tab accept "
+		footerText = " ↑↓/^N^P cycle │ Enter accept │ Esc edit "
 	}
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
 
 	// Wrap in a bordered menu box
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Background(menuBg).
+		Padding(0, 1)
+
+	return menuStyle.Render(b.String())
+}
+
+// renderRecentPickerDropdown renders the recent sessions picker as a standalone
+// bordered dropdown for overlay positioning. Returns empty string when hidden.
+func (d *NewDialog) renderRecentPickerDropdown() string {
+	if !d.showRecentPicker || len(d.recentSessions) == 0 {
+		return ""
+	}
+
+	menuBg := dropdownMenuBg()
+	itemStyle := lipgloss.NewStyle().Foreground(ColorComment).Background(menuBg)
+	selectedStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Background(menuBg)
+	filterStyle := lipgloss.NewStyle().Foreground(ColorYellow).Background(menuBg)
+
+	displayList := d.recentDisplayList()
+
+	var b strings.Builder
+
+	// Show filter text if active
+	if d.recentFilter != "" {
+		b.WriteString(filterStyle.Render(fmt.Sprintf("  filter: %s", d.recentFilter)))
+		b.WriteString("\n")
+	}
+
+	if len(displayList) == 0 {
+		b.WriteString(itemStyle.Render("  no matches"))
+	} else {
+		maxShow := 5
+		total := len(displayList)
+		startIdx := 0
+		endIdx := total
+		if total > maxShow {
+			startIdx = d.recentSessionCursor - maxShow/2
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			endIdx = startIdx + maxShow
+			if endIdx > total {
+				endIdx = total
+				startIdx = endIdx - maxShow
+			}
+		}
+
+		if startIdx > 0 {
+			b.WriteString(itemStyle.Render(fmt.Sprintf("  ↑ %d more above", startIdx)))
+			b.WriteString("\n")
+		}
+
+		for i := startIdx; i < endIdx; i++ {
+			if i > startIdx || startIdx > 0 {
+				b.WriteString("\n")
+			}
+			rs := displayList[i]
+			shortPath := rs.ProjectPath
+			if home, err := os.UserHomeDir(); err == nil {
+				shortPath = strings.Replace(shortPath, home, "~", 1)
+			}
+			toolLabel := rs.Tool
+			if toolLabel == "" {
+				toolLabel = "shell"
+			}
+			entry := fmt.Sprintf("%s  (%s @ %s)", rs.Title, toolLabel, shortPath)
+
+			if i == d.recentSessionCursor {
+				b.WriteString(selectedStyle.Render("▶ " + entry))
+			} else {
+				b.WriteString(itemStyle.Render("  " + entry))
+			}
+		}
+
+		if endIdx < total {
+			b.WriteString("\n")
+			b.WriteString(itemStyle.Render(fmt.Sprintf("  ↓ %d more below", total-endIdx)))
+		}
+	}
+
+	// Footer
+	var footerText string
+	if d.recentFilter != "" {
+		footerText = fmt.Sprintf(" %d/%d matching │ ↑↓ navigate │ Enter apply │ Esc cancel ",
+			len(displayList), len(d.recentSessions))
+	} else {
+		footerText = fmt.Sprintf(" %d sessions │ type to filter │ ↑↓ navigate │ Enter apply │ Esc cancel ",
+			len(d.recentSessions))
+	}
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Background(menuBg).Render(footerText))
+
 	menuStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorBorder).
