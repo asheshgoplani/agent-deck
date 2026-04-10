@@ -5101,6 +5101,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						h.isAttaching.Store(true)
 						return h, tea.Exec(attachWindowCmd{session: tmuxSess, windowIndex: item.WindowIndex, detachByte: h.detachByte()}, func(err error) tea.Msg {
 							h.isAttaching.Store(false)
+							// Reset keyboard mode after tea has restored its terminal state.
+							// Runs in the Bubble Tea goroutine after tea.Exec returns control.
+							ResetKeyboardMode(os.Stdout)
 							parentInst.MarkAccessed()
 							return statusUpdateMsg{}
 						})
@@ -5440,6 +5443,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.isAttaching.Store(true)
 			return h, tea.Exec(attachCmd{session: termSession, detachByte: h.detachByte()}, func(err error) tea.Msg {
 				h.isAttaching.Store(false)
+				ResetKeyboardMode(os.Stdout)
 				return statusUpdateMsg{}
 			})
 		}
@@ -7405,6 +7409,14 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 		// causing a blank screen on return from attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
 
+		// Reset keyboard mode after tea has restored its terminal state.
+		// Inner apps (e.g. Claude Code) may have pushed Kitty keyboard mode
+		// via tmux extended-keys forwarding; without popping, Ctrl+letter
+		// combos get encoded as CSI u sequences that Bubble Tea can't parse.
+		// Keyboard mode escape sequences are safe here (they don't affect
+		// the visible display, unlike screen-clearing codes).
+		ResetKeyboardMode(os.Stdout)
+
 		// NOTE: No manual screen clear here. Bubble Tea's RestoreTerminal()
 		// re-enters alt screen which handles clearing. Direct fmt.Print
 		// of escape codes races with the Bubble Tea renderer.
@@ -7485,12 +7497,15 @@ func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
 
-	// Defensive pop of the Kitty keyboard protocol stack after return. Inner
-	// apps (e.g. Claude Code) may push mode 1 during attach via tmux extended-
-	// keys forwarding; without popping, Ctrl+letter combos get encoded as CSI u
-	// sequences that Bubble Tea v1.3.10 cannot parse. Pop is a no-op if nothing
-	// was pushed.
-	defer DisableKittyKeyboard(os.Stdout)
+	// Aggressive keyboard reset on return. Inner apps (e.g. Claude Code) may
+	// push Kitty keyboard mode 1 (or more) via tmux extended-keys forwarding
+	// during attach, and some apps enable xterm modifyOtherKeys. Without a
+	// reset, Ctrl+letter combos get encoded as CSI u / modifyOtherKeys
+	// sequences that Bubble Tea v1.3.10 cannot parse.
+	// Uses ResetKeyboardMode (multi-pop + modifyOtherKeys off) rather than a
+	// single pop because multiple pushes may be stacked. The sequences are
+	// no-ops on terminals that don't support the protocols.
+	defer ResetKeyboardMode(os.Stdout)
 
 	ctx := context.Background()
 	return a.session.Attach(ctx, a.detachByte)
@@ -7518,6 +7533,7 @@ func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteCreateAndAttachCmd{runner: runner}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		ResetKeyboardMode(os.Stdout)
 		if err != nil {
 			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
 		}
@@ -7531,7 +7547,7 @@ type remoteCreateAndAttachCmd struct {
 }
 
 func (r remoteCreateAndAttachCmd) Run() error {
-	defer DisableKittyKeyboard(os.Stdout)
+	defer ResetKeyboardMode(os.Stdout)
 
 	ctx := context.Background()
 	sessionID, err := r.runner.CreateSession(ctx)
@@ -7553,7 +7569,7 @@ type attachWindowCmd struct {
 }
 
 func (a attachWindowCmd) Run() error {
-	defer DisableKittyKeyboard(os.Stdout)
+	defer ResetKeyboardMode(os.Stdout)
 
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
@@ -7577,6 +7593,7 @@ func (h *Home) attachRemoteSession(remoteName, sessionID string) tea.Cmd {
 	h.isAttaching.Store(true)
 	return tea.Exec(remoteAttachCmd{runner: runner, sessionID: sessionID}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
+		ResetKeyboardMode(os.Stdout)
 		return statusUpdateMsg{}
 	})
 }
@@ -7588,7 +7605,7 @@ type remoteAttachCmd struct {
 }
 
 func (r remoteAttachCmd) Run() error {
-	defer DisableKittyKeyboard(os.Stdout)
+	defer ResetKeyboardMode(os.Stdout)
 
 	return r.runner.Attach(r.sessionID)
 }
