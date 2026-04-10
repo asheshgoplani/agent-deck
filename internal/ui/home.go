@@ -3244,6 +3244,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// Save to recent sessions so newly-created sessions are available
+			// in the recents picker immediately (without needing to delete first).
+			// The dedup key means subsequent deletes/recreates update the same row.
+			if err := h.storage.SaveRecentSession(msg.instance); err != nil {
+				uiLog.Warn("save_recent_session_on_create_err", slog.String("id", msg.instance.ID), slog.String("err", err.Error()))
+			}
+
 			// Save both instances AND groups (critical fix: was losing groups!)
 			// Use forceSave to bypass mtime check - new session creation MUST persist
 			h.forceSaveInstances()
