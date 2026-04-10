@@ -598,13 +598,14 @@ func main() {
 		}()
 	}
 
-	// Disable the Kitty keyboard protocol before starting the TUI.
-	// Wayland terminals (Ghostty, Foot, Alacritty) send keys using CSI u
-	// encoding by default; Bubble Tea v1.3.10 does not parse those sequences,
-	// so uppercase shortcuts and uppercase text input are silently dropped.
-	// Pushing keyboard mode 0 (legacy) restores standard key reporting.
-	// Terminals that don't support the protocol ignore this sequence safely.
-	ui.DisableKittyKeyboard(os.Stdout)
+	// Aggressively reset keyboard encoding before starting the TUI. This
+	// recovers from stuck state (e.g. an inner app pushed Kitty mode 1 via
+	// tmux extended-keys forwarding during a previous run but didn't pop it,
+	// or xterm modifyOtherKeys was left enabled). Without this reset,
+	// Ctrl+letter combos may be sent as CSI u / modifyOtherKeys escape
+	// sequences that Bubble Tea v1.3.10 can't parse — so shortcuts like
+	// Ctrl+R, Ctrl+N, Ctrl+P get silently dropped in the TUI.
+	ui.ResetKeyboardMode(os.Stdout)
 	defer ui.RestoreKittyKeyboard(os.Stdout)
 
 	p := tea.NewProgram(

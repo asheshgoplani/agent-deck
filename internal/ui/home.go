@@ -7485,6 +7485,13 @@ func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
 
+	// Defensive pop of the Kitty keyboard protocol stack after return. Inner
+	// apps (e.g. Claude Code) may push mode 1 during attach via tmux extended-
+	// keys forwarding; without popping, Ctrl+letter combos get encoded as CSI u
+	// sequences that Bubble Tea v1.3.10 cannot parse. Pop is a no-op if nothing
+	// was pushed.
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.Attach(ctx, a.detachByte)
 }
@@ -7524,6 +7531,8 @@ type remoteCreateAndAttachCmd struct {
 }
 
 func (r remoteCreateAndAttachCmd) Run() error {
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	sessionID, err := r.runner.CreateSession(ctx)
 	if err != nil {
@@ -7544,6 +7553,8 @@ type attachWindowCmd struct {
 }
 
 func (a attachWindowCmd) Run() error {
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
 }
@@ -7577,6 +7588,8 @@ type remoteAttachCmd struct {
 }
 
 func (r remoteAttachCmd) Run() error {
+	defer DisableKittyKeyboard(os.Stdout)
+
 	return r.runner.Attach(r.sessionID)
 }
 

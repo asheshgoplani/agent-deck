@@ -34,6 +34,24 @@ func DisableKittyKeyboard(w io.Writer) {
 	_, _ = io.WriteString(w, "\x1b[<u")
 }
 
+// ResetKeyboardMode aggressively resets the terminal's keyboard encoding back
+// to legacy mode. This is used at startup to recover from any stuck state left
+// behind by a previous run (e.g. an inner app pushed Kitty mode 1 via tmux
+// extended-keys forwarding but didn't pop it on exit, or xterm modifyOtherKeys
+// was enabled by a tool that crashed).
+//
+// The sequence does three things:
+//  1. Pops the Kitty keyboard stack up to 5 times (clear any stuck pushes).
+//  2. Explicitly disables xterm modifyOtherKeys (another Ctrl+letter encoding).
+//  3. Terminals that don't support either protocol ignore the sequences.
+//
+// Without this, Ctrl+letter combos may be sent as CSI u / xterm-modifyOtherKeys
+// escape sequences that Bubble Tea v1.3.10 cannot parse, so shortcuts like
+// Ctrl+R, Ctrl+N, Ctrl+P get silently dropped.
+func ResetKeyboardMode(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[<u\x1b[<u\x1b[<u\x1b[<u\x1b[<u\x1b[>4;0m")
+}
+
 // EnableKittyKeyboard writes the escape sequence that pushes Kitty keyboard
 // mode 1 (disambiguate) onto the protocol stack. This re-enables extended key
 // reporting so that sequences like Shift+Enter are sent as CSI u codes.
