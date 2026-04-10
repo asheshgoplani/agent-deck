@@ -1,21 +1,64 @@
 // Topbar.js -- Full-width topbar with sidebar toggle, brand, connection, theme, profile, info drawer toggle
+// WEB-P1-5: on viewports <600 px, the right-side controls (Costs, Connection,
+// Theme, Profile, Info, ToastHistory, Push) collapse into an overflow `⋯` popover menu.
+// Desktop layout is unchanged (>=600 px shows the existing inline buttons).
+// Hamburger preserves Phase 6 06-02 z-topbar-primary + pointer-events-auto invariant.
 import { html } from 'htm/preact'
+import { useState, useEffect, useRef } from 'preact/hooks'
 import { ThemeToggle } from './ThemeToggle.js'
 import { ProfileDropdown } from './ProfileDropdown.js'
 import { ConnectionIndicator } from './ConnectionIndicator.js'
 import { activeTabSignal, infoDrawerOpenSignal } from './state.js'
 import { PushControls } from './PushControls.js'
+import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
 
 export function Topbar({ onToggleSidebar, sidebarOpen }) {
+  const [overflowOpen, setOverflowOpen] = useState(false)
+  const overflowRef = useRef(null)
+  const overflowBtnRef = useRef(null)
+
+  // Click-outside dismissal (mirrors ProfileDropdown.js pattern)
+  useEffect(() => {
+    if (!overflowOpen) return
+    function onClickOutside(e) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target) &&
+          overflowBtnRef.current && !overflowBtnRef.current.contains(e.target)) {
+        setOverflowOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [overflowOpen])
+
+  // Escape-key dismissal (separate effect to keep handlers cleanly separated)
+  useEffect(() => {
+    if (!overflowOpen) return
+    function onKey(e) {
+      if (e.key === 'Escape') setOverflowOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [overflowOpen])
+
+  function toggleCosts() {
+    activeTabSignal.value = activeTabSignal.value === 'costs' ? 'terminal' : 'costs'
+    setOverflowOpen(false)
+  }
+
+  function toggleInfo() {
+    infoDrawerOpenSignal.value = !infoDrawerOpenSignal.value
+    setOverflowOpen(false)
+  }
+
   return html`
     <header class="flex items-center justify-between px-sp-12 py-sp-8
       dark:bg-tn-panel bg-white border-b dark:border-tn-muted/20 border-gray-200
-      flex-shrink-0 relative z-50">
+      flex-shrink-0 relative z-sticky">
       <div class="flex items-center gap-3 min-w-0">
         <button
           type="button"
           onClick=${onToggleSidebar}
-          class="lg:hidden p-2 -ml-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
+          class="lg:hidden relative z-topbar-primary pointer-events-auto p-2 -ml-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
           aria-label=${sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
           aria-expanded=${sidebarOpen}
         >
@@ -39,10 +82,14 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
           <span class="font-semibold text-sm dark:text-tn-fg text-gray-900 md:hidden lg:inline">Agent Deck</span>
         </span>
       </div>
-      <div class="flex items-center gap-3 flex-shrink-0">
+
+      <!-- Desktop right-side controls (>=600 px) -- existing layout, hidden on mobile.
+           Keeps the Phase 6 06-02 invariant: this wrapper uses z-topbar (NOT z-topbar-primary)
+           so the hamburger always sits above sibling controls per p6-bug1-hamburger.spec.ts. -->
+      <div class="relative z-topbar flex items-center gap-3 flex-shrink-0 max-[599px]:hidden">
         <button
           type="button"
-          onClick=${() => { activeTabSignal.value = activeTabSignal.value === 'costs' ? 'terminal' : 'costs' }}
+          onClick=${toggleCosts}
           class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors px-3 py-2 min-h-[44px] flex items-center rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
           aria-label=${activeTabSignal.value === 'costs' ? 'Switch to terminal' : 'Open cost dashboard'}
           title="Cost Dashboard"
@@ -54,7 +101,7 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
         <${ProfileDropdown} />
         <button
           type="button"
-          onClick=${() => { infoDrawerOpenSignal.value = !infoDrawerOpenSignal.value }}
+          onClick=${toggleInfo}
           class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors px-3 py-2 min-h-[44px] flex items-center rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
           title="Toggle info panel"
           aria-expanded=${infoDrawerOpenSignal.value}
@@ -62,7 +109,71 @@ export function Topbar({ onToggleSidebar, sidebarOpen }) {
         >
           Info
         </button>
+        <${ToastHistoryDrawerToggle} />
         <${PushControls} />
+      </div>
+
+      <!-- Mobile overflow trigger (<600 px) -- collapses all right-side controls. -->
+      <div class="hidden max-[599px]:flex items-center gap-1 flex-shrink-0 relative">
+        <button
+          ref=${overflowBtnRef}
+          type="button"
+          onClick=${() => setOverflowOpen(!overflowOpen)}
+          class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors relative z-topbar-primary"
+          aria-haspopup="menu"
+          aria-expanded=${overflowOpen}
+          aria-label="More options"
+          title="More options"
+        >
+          <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M10 3a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM10 8.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM10 14a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/>
+          </svg>
+        </button>
+        ${overflowOpen && html`
+          <div
+            ref=${overflowRef}
+            role="menu"
+            aria-label="More options menu"
+            class="absolute top-full right-0 mt-1 rounded-lg shadow-lg
+                   dark:bg-tn-panel bg-white border dark:border-tn-muted/20 border-gray-200
+                   min-w-[220px] max-w-[90vw] py-1 z-topbar-primary"
+          >
+            <button
+              role="menuitem"
+              type="button"
+              onClick=${toggleCosts}
+              class="w-full text-left px-3 py-2 min-h-[44px] text-sm dark:text-tn-fg text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
+            >
+              ${activeTabSignal.value === 'costs' ? 'Terminal' : 'Costs'}
+            </button>
+            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
+              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Status:</span>
+              <${ConnectionIndicator} />
+            </div>
+            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
+              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Theme:</span>
+              <${ThemeToggle} />
+            </div>
+            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
+              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Profile:</span>
+              <${ProfileDropdown} />
+            </div>
+            <button
+              role="menuitem"
+              type="button"
+              onClick=${toggleInfo}
+              class="w-full text-left px-3 py-2 min-h-[44px] text-sm dark:text-tn-fg text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
+            >
+              Info
+            </button>
+            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
+              <${ToastHistoryDrawerToggle} />
+            </div>
+            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
+              <${PushControls} />
+            </div>
+          </div>
+        `}
       </div>
     </header>
   `

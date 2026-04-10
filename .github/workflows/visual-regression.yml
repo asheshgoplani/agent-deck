@@ -1,0 +1,72 @@
+name: Visual Regression
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  visual-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: make build
+
+      - name: Install Playwright dependencies
+        working-directory: tests/e2e
+        run: npm ci
+
+      - name: Start test server
+        run: |
+          env -u AGENTDECK_INSTANCE_ID -u TMUX -u TMUX_PANE -u TERM_PROGRAM \
+            AGENTDECK_PROFILE=_test \
+            ./build/agent-deck -p _test web \
+            --listen 127.0.0.1:18420 --token test &
+          echo "TEST_SERVER_PID=$!" >> $GITHUB_ENV
+
+          # Wait for readiness
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18420/healthz > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Pull Playwright Docker image
+        run: docker pull mcr.microsoft.com/playwright:v1.59.1-jammy
+
+      - name: Run visual regression tests
+        env:
+          WORKSPACE: ${{ github.workspace }}
+        working-directory: tests/e2e
+        run: |
+          docker run --rm --network=host \
+            -v "${WORKSPACE}/tests/e2e:/work" \
+            -w /work \
+            mcr.microsoft.com/playwright:v1.59.1-jammy \
+            npx playwright test \
+              --config=pw-visual-regression.config.ts
+
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-regression-diffs
+          path: tests/e2e/test-results/
+          retention-days: 30
+
+      - name: Stop test server
+        if: always()
+        run: kill ${{ env.TEST_SERVER_PID }} 2>/dev/null || true

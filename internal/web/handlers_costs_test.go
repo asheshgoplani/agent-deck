@@ -154,11 +154,68 @@ func TestCostsBatchEmptyIDs(t *testing.T) {
 func TestCostsBatchMethodNotAllowed(t *testing.T) {
 	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/costs/batch", nil)
+	// PERF-I: POST is now allowed (JSON body form). PUT / DELETE / PATCH
+	// remain disallowed so the 405 path still has coverage.
+	req := httptest.NewRequest(http.MethodPut, "/api/costs/batch", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("expected 405 for PUT, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCostsBatchPOSTJSONBody exercises the PERF-I POST form with a JSON
+// body — mirrors TestCostsBatch but uses the new transport. Guards the
+// 414 URI Too Long regression that would come back if the frontend fell
+// back to GET + query string for long session lists.
+func TestCostsBatchPOSTJSONBody(t *testing.T) {
+	store := newTestCostStore(t)
+	if err := store.WriteCostEvent(costs.CostEvent{
+		ID:               "evt-post-1",
+		SessionID:        "sessA",
+		Timestamp:        time.Now(),
+		Model:            "claude-sonnet-4-6",
+		CostMicrodollars: 75000,
+	}); err != nil {
+		t.Fatalf("WriteCostEvent sessA: %v", err)
+	}
+
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	srv.SetCostStore(store)
+
+	body := strings.NewReader(`{"ids":["sessA","sessB"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/costs/batch", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Costs map[string]float64 `json:"costs"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := resp.Costs["sessA"]; got < 0.074 || got > 0.076 {
+		t.Errorf("sessA cost = %f, want ~0.075", got)
+	}
+}
+
+func TestCostsBatchPOSTInvalidBody(t *testing.T) {
+	store := newTestCostStore(t)
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	srv.SetCostStore(store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/costs/batch", strings.NewReader("not-json"))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid json, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

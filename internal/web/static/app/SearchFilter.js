@@ -46,7 +46,7 @@ export function SearchFilter() {
         type="button"
         onClick=${() => { searchVisibleSignal.value = true }}
         class="w-full flex items-center gap-2 px-sp-12 py-2 text-xs
-               dark:text-tn-muted text-gray-400 hover:dark:text-tn-fg hover:text-gray-600
+               dark:text-tn-muted text-gray-600 hover:dark:text-tn-fg hover:text-gray-800
                hover:dark:bg-tn-muted/10 hover:bg-gray-100
                transition-colors rounded"
         title="Filter sessions (/ or ⌘K)"

@@ -1,5 +1,6 @@
 // GroupRow.js -- Collapsible group header row
 import { html } from 'htm/preact'
+import { useState } from 'preact/hooks'
 import { groupExpandedSignal, toggleGroup, isGroupExpanded } from './groupState.js'
 import { groupNameDialogSignal, confirmDialogSignal, sessionsSignal, searchQuerySignal } from './state.js'
 import { apiFetch } from './api.js'
@@ -44,9 +45,21 @@ function countVisibleChildren(groupPath, query) {
 
 export function GroupRow({ item }) {
   const group = item.group
-  // Read groupExpandedSignal.value to subscribe this component
+  // PERF-G: hold the collapse state locally in a useState so toggling one
+  // group does not force a render of every other GroupRow via shared
+  // signal subscription alone. We still subscribe to groupExpandedSignal
+  // so external changes (SSE deltas, cross-tab sync) propagate to this
+  // row; when they do, we mirror the signal into local state via a safe
+  // set-state-during-render check. Preact's useState bailout short-circuits
+  // the rerender when local state already matches the derived external
+  // value, so unrelated group toggles cost zero extra renders for this row.
   void groupExpandedSignal.value
-  const expanded = isGroupExpanded(group.path, group.expanded)
+  const externalExpanded = isGroupExpanded(group.path, group.expanded)
+  const [isOpen, setIsOpen] = useState(externalExpanded)
+  if (externalExpanded !== isOpen) {
+    setIsOpen(externalExpanded)
+  }
+  const expanded = isOpen
 
   function handleRename(e) {
     e.stopPropagation()
@@ -81,23 +94,27 @@ export function GroupRow({ item }) {
       <button
         type="button"
         onClick=${() => toggleGroup(group.path, group.expanded)}
-        class="group w-full min-w-0 flex items-center gap-sp-8 px-sp-12 py-2.5 min-h-[44px] text-xs font-semibold
-          uppercase tracking-wide dark:text-tn-muted text-gray-500
+        class="group w-full min-w-0 flex items-center gap-sp-8 px-sp-12 py-1 min-h-[40px] text-xs font-semibold
+          uppercase tracking-wide dark:text-tn-muted text-gray-700
           dark:bg-tn-muted/5 bg-gray-50/50
           hover:dark:bg-tn-muted/10 hover:bg-gray-100
-          hover:dark:text-tn-fg hover:text-gray-700 transition-colors"
+          hover:dark:text-tn-fg hover:text-gray-900 transition-colors"
         style="padding-left: calc(${item.level || 0} * 1rem + 0.75rem)"
         aria-expanded=${expanded}
       >
         <span class="text-base leading-none select-none">${expanded ? '\u25BE' : '\u25B8'}</span>
         <span class="flex-1 truncate min-w-0 text-left" title=${group.name || group.path}>${group.name || group.path}</span>
-        <span class="dark:text-tn-muted/60 text-gray-400 font-normal">
+        <span class="dark:text-tn-muted/60 text-gray-600 font-normal">
           (${countVisibleChildren(group.path, searchQuerySignal.value)})
         </span>
         <span
           onClick=${(e) => e.stopPropagation()}
           onMouseDown=${(e) => e.stopPropagation()}
-          class="hidden group-hover:flex items-center gap-0.5 flex-shrink-0"
+          class="flex items-center gap-0.5 flex-shrink-0
+            opacity-0 pointer-events-none
+            group-hover:opacity-100 group-hover:pointer-events-auto
+            group-focus-within:opacity-100 group-focus-within:pointer-events-auto
+            transition-opacity duration-[120ms] motion-reduce:transition-none"
         >
           <button type="button" onClick=${handleCreateGroup} title="New subgroup" aria-label="Create subgroup"
             class="min-w-[36px] min-h-[36px] flex items-center justify-center rounded

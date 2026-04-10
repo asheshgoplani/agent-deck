@@ -523,16 +523,28 @@ func (s *Server) handleCostsSessionDetail(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleCostsBatch dispatches GET /api/costs/batch and POST /api/costs/batch.
+// PERF-I: the POST form takes a JSON body {"ids":["sess1","sess2",...]}
+// so large batches do not hit the 414 URI Too Long limit that the GET
+// query-string form triggers once the sidebar grows past ~50 sessions.
+// The GET form stays in place for one release as a backward-compat safety
+// net; both forms reuse the same body-computation helper.
 func (s *Server) handleCostsBatch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleCostsBatchGET(w, r)
+	case http.MethodPost:
+		s.handleCostsBatchPOST(w, r)
+	default:
 		writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
-		return
 	}
+}
+
+func (s *Server) handleCostsBatchGET(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		return
 	}
-	// Graceful: no cost store means empty costs, not an error
 	if s.costStore == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"costs": map[string]float64{}})
 		return
@@ -545,11 +557,42 @@ func (s *Server) handleCostsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ids := strings.Split(rawIDs, ",")
+	writeJSON(w, http.StatusOK, map[string]any{"costs": s.computeBatchCosts(ids)})
+}
+
+// handleCostsBatchPOST is the PERF-I successor to the GET handler. Accepts
+// { "ids": ["sess1", "sess2", ...] } in the JSON body to avoid 414 URI
+// Too Long when many sessions are queried. The response shape is
+// identical to the GET variant.
+func (s *Server) handleCostsBatchPOST(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+		return
+	}
+	if s.costStore == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"costs": map[string]float64{}})
+		return
+	}
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid json body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"costs": map[string]float64{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"costs": s.computeBatchCosts(req.IDs)})
+}
+
+func (s *Server) computeBatchCosts(ids []string) map[string]float64 {
 	const maxBatch = 200
 	if len(ids) > maxBatch {
 		ids = ids[:maxBatch]
 	}
-
 	sessionCosts := make(map[string]float64, len(ids))
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
@@ -562,8 +605,7 @@ func (s *Server) handleCostsBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionCosts[id] = microToUSD(summary.TotalCostMicrodollars)
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"costs": sessionCosts})
+	return sessionCosts
 }
 
 func microToUSD(microdollars int64) float64 {

@@ -84,7 +84,12 @@ func TestVendorFilesServed(t *testing.T) {
 		"/static/vendor/xterm.css",
 		"/static/vendor/addon-fit.mjs",
 		"/static/vendor/addon-webgl.mjs",
-		"/static/vendor/addon-canvas.js",
+		// vendor/addon-canvas.js was deleted in Phase 8 / Plan 03 (PERF-C).
+		// xterm v6 does not reference the canvas renderer anywhere in the
+		// first-party code. The TerminalPanel.js fallback path still has a
+		// `typeof window.CanvasAddon !== 'undefined'` guard which is now
+		// always false, making the canvas fallback inert. See the 404 gate
+		// in TestAddonCanvasDeleted below.
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
@@ -95,6 +100,34 @@ func TestVendorFilesServed(t *testing.T) {
 		if w.Body.Len() == 0 {
 			t.Errorf("GET %s: empty body", path)
 		}
+	}
+}
+
+// TestAddonCanvasDeleted is the regression gate for Phase 8 / Plan 03
+// (PERF-C). xterm v6 never references the canvas renderer, so the 94 KB
+// vendor file was dead weight. This test ensures the file stays deleted:
+//  1. /static/vendor/addon-canvas.js returns 404 via the static file server
+//  2. index.html does not <script src> the file
+func TestAddonCanvasDeleted(t *testing.T) {
+	s := NewServer(Config{Token: "test-token"})
+
+	// Index must not reference addon-canvas.js
+	req := httptest.NewRequest(http.MethodGet, "/?token=test-token", nil)
+	w := httptest.NewRecorder()
+	s.handleIndex(w, req)
+	body := w.Body.String()
+	if strings.Contains(body, "/static/vendor/addon-canvas.js") {
+		t.Error("index.html must NOT reference /static/vendor/addon-canvas.js (deleted in plan 08-03)")
+	}
+
+	// Static file server must 404 on the deleted path
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", s.staticFileServer()))
+	req2 := httptest.NewRequest(http.MethodGet, "/static/vendor/addon-canvas.js", nil)
+	w2 := httptest.NewRecorder()
+	mux.ServeHTTP(w2, req2)
+	if w2.Code != 404 {
+		t.Errorf("GET /static/vendor/addon-canvas.js: expected 404, got %d", w2.Code)
 	}
 }
 

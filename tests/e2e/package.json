@@ -18,6 +18,7 @@
     "repterm": "^0.1.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
     "@playwright/test": "^1.44.0",
     "@types/node": "^25.5.2"
   }

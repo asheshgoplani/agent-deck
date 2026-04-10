@@ -29,7 +29,7 @@ export function SettingsPanel() {
   }
 
   if (!settings) {
-    return html`<div class="text-xs dark:text-tn-muted text-gray-400">Loading...</div>`
+    return html`<div class="text-xs dark:text-tn-muted text-gray-600">Loading...</div>`
   }
 
   return html`<div class="space-y-1 text-xs">

@@ -43,7 +43,10 @@ test.describe('BUG #7 / LAYT-04 — selected session visual indicator', () => {
   test('structural: SessionRow.js has border-l-4 on outer button', () => {
     const src = readSrc();
     // Outer button class must contain border-l-4 (selector uses any border style).
-    const re = /class="group w-full min-w-0 flex items-center[\s\S]*?border-l-4/;
+    // Plan 06-03 inserted `relative` between min-w-0 and `flex items-center`
+    // to anchor the absolute-positioned action toolbar, so this regex
+    // permits optional positional utilities between them.
+    const re = /class="group w-full min-w-0(?:\s+[-\w\[\]/:.]+)*\s+flex items-center[\s\S]*?border-l-4/;
     expect(
       re.test(src),
       'SessionRow.js outer button class must include border-l-4. LAYT-04 bumps the selected-row accent bar from 2px to 4px for visible distinction.',
@@ -52,7 +55,7 @@ test.describe('BUG #7 / LAYT-04 — selected session visual indicator', () => {
 
   test('structural: SessionRow.js no longer has border-l-2 on outer button', () => {
     const src = readSrc();
-    const re = /class="group w-full min-w-0 flex items-center[\s\S]*?border-l-2(\s|"|\${)/;
+    const re = /class="group w-full min-w-0(?:\s+[-\w\[\]/:.]+)*\s+flex items-center[\s\S]*?border-l-2(\s|"|\${)/;
     expect(
       re.test(src),
       'SessionRow.js outer button still has border-l-2. LAYT-04 replaces border-l-2 with border-l-4 (same width on selected AND unselected rows, differing only by color and tint).',

@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-04-10
+
+v1.5.0 is the Premium Web App milestone. The web interface gets P0/P1 bug fixes, performance optimization (first-load wire size from 668 KB to under 150 KB gzipped), UX polish, and automated visual regression testing.
+
+### Fixed
+- [Phase 5, v1.4.1] Six critical regressions: Shift+letter key drops (CSI u), tmux scrollback clearing, mousewheel [0/0], conductor heartbeat on Linux, tmux PATH detection, bash -c quoting. (REG-01..06)
+- [Phase 6] Mobile hamburger menu clickable at all viewports <=768px with systematic 7-level z-index scale. (WEB-P0-1)
+- [Phase 6] Profile switcher: single profile shows read-only label; multi profile shows non-interactive list with help text for CLI switching. (WEB-P0-2)
+- [Phase 6] Session title truncation: action buttons use absolute positioning with hover-reveal, no longer reserving 90px of space. (WEB-P0-3)
+- [Phase 6] Write-protected mode: mutationsEnabled=false hides all write buttons; toast auto-dismisses at 5s with stack cap of 3 and history drawer for dismissed toasts. (WEB-P0-4, POL-7)
+- [Phase 7] Terminal panel fills container on attach, no empty gray space below terminal. (WEB-P1-1)
+- [Phase 7] Sidebar width fluid via clamp(260px, 22vw, 380px) on screens >=1280px. (WEB-P1-2)
+- [Phase 7] Sidebar row density increased to 40px per row (from ~52px); 20+ sessions visible at 1080p. (WEB-P1-3)
+- [Phase 7] Empty-state dashboard uses centered card layout with max-width 1024px. (WEB-P1-4)
+- [Phase 7] Mobile topbar overflow menu for controls on viewports <600px. (WEB-P1-5)
+
+### Performance
+- [Phase 8] gzip compression on static file handler via klauspost/compress/gzhttp; ~518 KB saved per cold load. (PERF-A)
+- [Phase 8] Chart.js script tag deferred to unblock HTML parser. (PERF-B)
+- [Phase 8] xterm canvas addon removed (dead code); fallback chain is now WebGL then DOM only. (PERF-C)
+- [Phase 8] WebGL addon lazy-loaded on desktop only; mobile skips import entirely, saving 126 KB. (PERF-D)
+- [Phase 8] Event listener leak fixed via AbortController; listener count at rest drops from 290 to ~50. (PERF-E)
+- [Phase 8] Search input debounced at 250ms; typing lag drops from 33ms to <8ms. (PERF-F)
+- [Phase 8] SessionRow memoized; group collapse no longer rerenders 152 unrelated components. (PERF-G)
+- [Phase 8] ES modules bundled via esbuild with code splitting and cache-busted filenames. (PERF-H)
+- [Phase 8] Cost batch endpoint converted from GET to POST, preventing 414 URI Too Long. (PERF-I)
+- [Phase 8] Immutable cache headers on hashed assets (1-year max-age). (PERF-J)
+- [Phase 8] SessionList virtualized for 50+ sessions via hand-rolled useVirtualList hook. (PERF-K)
+
+### Added
+- [Phase 9] Skeleton loading state with CSS-only animate-pulse during initial sidebar render. (POL-1)
+- [Phase 9] Action button 120ms opacity fade transitions with prefers-reduced-motion support. (POL-2)
+- [Phase 9] Profile dropdown filters out _* test profiles, scrollable at 300px max-height. (POL-3)
+- [Phase 9] Group divider gap reduced from 48px to 12-16px for tighter sidebar density. (POL-4)
+- [Phase 9] Cost dashboard uses locale-aware currency formatting via Intl.NumberFormat. (POL-5)
+- [Phase 9] Light theme re-audited across all surfaces for contrast and consistency. (POL-6)
+- [Phase 10] Playwright visual regression tests with committed baselines; CI blocks merge on >0.1% pixel diff. (TEST-A)
+- [Phase 10] Lighthouse CI on every PR with byte-weight hard gates and soft performance thresholds. (TEST-B)
+- [Phase 10] Functional E2E tests for session lifecycle and group CRUD. (TEST-C)
+- [Phase 10] Mobile E2E at 3 viewports: iPhone SE, iPhone 14, iPad. (TEST-D)
+- [Phase 10] Weekly regression alerting workflow: runs visual + Lighthouse, posts issue on failure. (TEST-E)
+
+## [1.4.2] - 2026-04-09
+
+### Fixed
+- Restore TUI keyboard input on all terminals (iTerm2, Ghostty, WezTerm, Kitty, tmux). Arrow keys, j/k, and mouse scroll were broken in v1.4.1 because `CSIuReader` wrapping `os.Stdin` made Bubble Tea skip raw-mode setup (`tcsetattr`), leaving the TTY in cooked mode and echoing escape sequences as text. Fixes #539, #544. ([#541](https://github.com/asheshgoplani/agent-deck/pull/541))
+- Fix CSI final-byte whitelist in `csiuReader.translate` to include SGR mouse terminators (`M`/`m`), so mouse events are no longer corrupted when the reader is used. ([#541](https://github.com/asheshgoplani/agent-deck/pull/541))
+- Remove `EnableKittyKeyboard(os.Stdout)` / `DisableKittyKeyboard(os.Stdout)` pairs from all four attach paths (`attachCmd`, `remoteCreateAndAttachCmd`, `attachWindowCmd`, `remoteAttachCmd`) in `internal/ui/home.go`. Writing `ESC[>1u` to the outer terminal before `tmux attach` put Ghostty (and other kitty-protocol terminals) into CSI u mode; tmux could not translate these sequences for the inner application, causing arrow keys to appear as raw escape codes. Restores v0.28.3 attach behavior. Fixes #546. ([#547](https://github.com/asheshgoplani/agent-deck/pull/547))
+
+### Added
+- Integration tests for TUI keyboard input (`internal/integration/tui_input_test.go`) to prevent future regressions in raw-mode setup and CSI handling.
+
 ## [0.25.1] - 2026-03-11
 
 ### Added

@@ -1,0 +1,44 @@
+{
+  "ci": {
+    "collect": {
+      "startServerCommand": "AGENTDECK_PROFILE=_test ./build/agent-deck web --listen 127.0.0.1:19999 --token test",
+      "startServerReadyPattern": "Listening on",
+      "url": [
+        "http://127.0.0.1:19999/"
+      ],
+      "numberOfRuns": 5,
+      "settings": {
+        "preset": "desktop",
+        "throttling": {
+          "rttMs": 40,
+          "throughputKbps": 10240,
+          "cpuSlowdownMultiplier": 1
+        },
+        "skipAudits": [
+          "uses-http2",
+          "canonical",
+          "maskable-icon",
+          "tap-targets"
+        ]
+      }
+    },
+    "assert": {
+      "assertions": {
+        "total-byte-weight": ["error", { "maxNumericValue": 180000 }],
+        "resource-summary:script:size": ["error", { "maxNumericValue": 120000 }],
+        "first-contentful-paint": ["warn", { "maxNumericValue": 800 }],
+        "largest-contentful-paint": ["warn", { "maxNumericValue": 1500 }],
+        "total-blocking-time": ["warn", { "maxNumericValue": 200 }],
+        "speed-index": ["warn", { "maxNumericValue": 1500 }],
+        "cumulative-layout-shift": ["error", { "maxNumericValue": 0.1 }],
+        "is-on-https": "off",
+        "uses-http2": "off",
+        "redirects-http": "off",
+        "maskable-icon": "off"
+      }
+    },
+    "upload": {
+      "target": "temporary-public-storage"
+    }
+  }
+}

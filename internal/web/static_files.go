@@ -6,12 +6,38 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 //go:generate tailwindcss -i ./static/styles.src.css -o ./static/styles.css --minify
 
 //go:embed static/*
 var embeddedStaticFiles embed.FS
+
+// webAssets is the process-wide Assets instance used by handleIndex to
+// substitute {{ASSET:...}} placeholders in index.html. Loaded lazily on
+// first use; LoadAssetsFromFS tolerates a missing manifest and returns a
+// dev-mode instance so the serving path never errors just because
+// bundle.go has not been run. PERF-H rollback: set AGENTDECK_WEB_BUNDLE=0
+// in the environment to force dev mode regardless of manifest presence.
+var (
+	webAssetsOnce sync.Once
+	webAssets     *Assets
+)
+
+func getWebAssets() *Assets {
+	webAssetsOnce.Do(func() {
+		a, err := LoadAssetsFromFS(embeddedStaticFiles, "static/dist/manifest.json")
+		if err != nil {
+			// Manifest is malformed. Degrade to dev mode rather than
+			// returning an error at serve time — the startup log is a
+			// better place to flag this than a 500 on every page load.
+			a = newDevAssets()
+		}
+		webAssets = a
+	})
+	return webAssets
+}
 
 func (s *Server) staticFileServer() http.Handler {
 	sub, err := fs.Sub(embeddedStaticFiles, "static")
@@ -42,6 +68,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PERF-H: substitute {{ASSET:logical}} placeholders with the resolved
+	// URLs from the bundler manifest. In dev mode (no manifest) this is
+	// a no-op string pass that rewrites placeholders to /static/<logical>
+	// unchanged. In prod mode, each placeholder resolves to the hashed
+	// output path emitted by bundle.go.
+	substituted := getWebAssets().SubstitutePlaceholders(string(index))
+
 	// Defense-in-depth: prevent the auth token from leaking via the Referer
 	// header to any external resources loaded by the page. The JavaScript
 	// token-stripping (history.replaceState) is the primary mitigation;
@@ -50,7 +83,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(index)
+	_, _ = w.Write([]byte(substituted))
 }
 
 func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
