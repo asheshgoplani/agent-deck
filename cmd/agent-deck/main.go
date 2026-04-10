@@ -604,7 +604,7 @@ func main() {
 	// so uppercase shortcuts and uppercase text input are silently dropped.
 	// Pushing keyboard mode 0 (legacy) restores standard key reporting.
 	// Terminals that don't support the protocol ignore this sequence safely.
-	ui.PushLegacyKeyboardMode(os.Stdout)
+	ui.DisableKittyKeyboard(os.Stdout)
 	defer ui.RestoreKittyKeyboard(os.Stdout)
 
 	p := tea.NewProgram(
