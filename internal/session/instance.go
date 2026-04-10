@@ -73,6 +73,7 @@ type Instance struct {
 	Order             int    `json:"order"`                         // Position within group (for reorder persistence)
 	ParentSessionID   string `json:"parent_session_id,omitempty"`   // Links to parent session (makes this a sub-session)
 	ParentProjectPath string `json:"parent_project_path,omitempty"` // Parent's project path (for --add-dir access)
+	IsConductor       bool   `json:"is_conductor,omitempty"`        // True if this session is a conductor orchestrator
 
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
@@ -148,6 +149,7 @@ type Instance struct {
 
 	// Hook-based status detection (set by StatusFileWatcher from Claude Code hooks)
 	hookStatus     string    // running, idle, waiting, dead (empty = no hook data)
+	hookEvent      string    // Hook event name that caused the last status (e.g. "PermissionRequest")
 	hookSessionID  string    // Session ID from hook payload
 	hookLastUpdate time.Time // When hook status was last received
 
@@ -388,7 +390,7 @@ func (inst *Instance) ClearParent() {
 
 // NewInstance creates a new session instance
 func NewInstance(title, projectPath string) *Instance {
-	id := generateID()
+	id := GenerateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
@@ -414,7 +416,7 @@ func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 
 // NewInstanceWithTool creates a new session with tool-specific initialization
 func NewInstanceWithTool(title, projectPath, tool string) *Instance {
-	id := generateID()
+	id := GenerateID()
 	tmuxSess := tmux.NewSession(title, projectPath)
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
@@ -481,21 +483,16 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		return baseCommand
 	}
 
-	// Get options - either from instance or create defaults from config
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		// Fall back to config defaults
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
-
-	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
+	claudeCmd := GetClaudeCommand()
+	hasCustomCommand := claudeCmd != "claude"
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured (env var or config.toml)
 	// If NOT explicit, we don't set it in the command - let the shell's environment handle it.
 	// This is critical for WSL and other environments where users have CLAUDE_CONFIG_DIR
 	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
-	// Also skip if using a custom command alias (alias handles config dir).
+	// Also skip if using a custom command (alias handles config dir)
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicit() {
 		configDir := GetClaudeConfigDir()
@@ -506,6 +503,14 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
+
+	// Get options - either from instance or create defaults from config
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		// Fall back to config defaults
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
 
 	// If baseCommand is just "claude", build the appropriate command
 	if baseCommand == "claude" {
@@ -587,32 +592,6 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	return baseCommand
 }
 
-func resolveClaudeLaunchCommand(opts *ClaudeOptions) (cmd string, hasCustomCommand bool) {
-	if opts == nil {
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
-
-	configuredCmd := GetClaudeCommand()
-	if configuredCmd == "" {
-		configuredCmd = "claude"
-	}
-
-	hasCustomCommand = configuredCmd != "claude"
-	if hasCustomCommand {
-		return configuredCmd, true
-	}
-
-	if opts != nil {
-		if opts.UseHappy {
-			return "happy", false
-		}
-		return configuredCmd, false
-	}
-
-	return configuredCmd, false
-}
-
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
 // It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
 func (i *Instance) buildBashExportPrefix() string {
@@ -655,6 +634,8 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	if opts != nil {
 		if opts.SkipPermissions {
 			flags = append(flags, "--dangerously-skip-permissions")
+		} else if opts.AutoMode {
+			flags = append(flags, "--permission-mode auto")
 		} else if opts.AllowSkipPermissions {
 			flags = append(flags, "--allow-dangerously-skip-permissions")
 		}
@@ -807,8 +788,8 @@ func (i *Instance) DetectOpenCodeSession() {
 	i.detectOpenCodeSessionAsync()
 }
 
-// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled
-// (per-session override > global config), or "".
+// buildCodexCommand builds the command for OpenAI Codex CLI
+// resolveCodexYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
 func (i *Instance) resolveCodexYoloFlag() string {
 	opts := i.GetCodexOptions()
 	if opts != nil && opts.YoloMode != nil {
@@ -826,17 +807,6 @@ func (i *Instance) resolveCodexYoloFlag() string {
 	return ""
 }
 
-func (i *Instance) resolveCodexUseHappy() bool {
-	opts := i.GetCodexOptions()
-	if opts != nil && opts.UseHappy != nil {
-		return *opts.UseHappy
-	}
-	if config, err := LoadUserConfig(); err == nil && config != nil {
-		return config.Codex.UseHappy
-	}
-	return false
-}
-
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
@@ -851,22 +821,18 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
-	codexCmd := "codex"
-	if i.resolveCodexUseHappy() {
-		codexCmd = "happy codex"
-	}
 
 	// If baseCommand is just "codex", handle specially
 	if baseCommand == "codex" {
 		// If we already have a session ID, use resume.
 		// CODEX_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("%s%s resume %s",
-				codexCmd, yoloFlag, i.CodexSessionID)
+			return envPrefix + fmt.Sprintf("codex%s resume %s",
+				yoloFlag, i.CodexSessionID)
 		}
 
 		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + codexCmd + yoloFlag
+		return envPrefix + "codex" + yoloFlag
 	}
 
 	// For custom commands (e.g., resume commands), preserve env propagation.
@@ -1686,6 +1652,15 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		return missingProbeDep
 	}
 
+	// When we already have a session ID and the process probe didn't find a
+	// running process, add our current ID to the exclude set so the disk scan
+	// won't reassign it to another instance that shares the same project path.
+	// The disk scan should only discover *new* sessions (e.g. after /new rotation),
+	// not re-discover the same ID we already own.
+	if i.CodexSessionID != "" && excludeIDs != nil {
+		excludeIDs[i.CodexSessionID] = true
+	}
+
 	if sessionID := i.queryCodexSession(excludeIDs, allowUnscoped); sessionID != "" {
 		changed := sessionID != i.CodexSessionID
 		if sessionID != i.CodexSessionID {
@@ -1831,6 +1806,18 @@ func (i *Instance) applyWrapper(command string) (string, error) {
 	return wrapper, nil
 }
 
+// hasEffectiveWrapper returns true if the instance has a wrapper configured,
+// either directly on the instance or via the tool definition in config.toml.
+func (i *Instance) hasEffectiveWrapper() bool {
+	if i.Wrapper != "" {
+		return true
+	}
+	if toolDef := GetToolDef(i.Tool); toolDef != nil && toolDef.Wrapper != "" {
+		return true
+	}
+	return false
+}
+
 // loadCustomPatternsFromConfig loads detection patterns from built-in defaults + config.toml
 // overrides, and sets them on the tmux session for status detection and tool auto-detection.
 // Works for ALL tools: built-in (claude, gemini, opencode, codex) and custom.
@@ -1862,8 +1849,16 @@ func (i *Instance) loadCustomPatternsFromConfig() {
 // Returns nil if no overrides apply.
 func (i *Instance) buildTmuxOptionOverrides() map[string]string {
 	var overrides map[string]string
-	if tmuxCfg := GetTmuxSettings(); len(tmuxCfg.Options) > 0 {
+	tmuxCfg := GetTmuxSettings()
+	if len(tmuxCfg.Options) > 0 {
 		overrides = maps.Clone(tmuxCfg.Options)
+	}
+	if tmuxCfg.WindowStyleOverride != "" {
+		if overrides == nil {
+			overrides = make(map[string]string)
+		}
+		overrides["window-style"] = tmuxCfg.WindowStyleOverride
+		overrides["window-active-style"] = tmuxCfg.WindowStyleOverride
 	}
 	// Sandbox sessions need remain-on-exit so dead-pane detection works.
 	// Non-sandbox sessions use default tmux behaviour (pane closes on exit).
@@ -1923,7 +1918,8 @@ func (i *Instance) Start() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2039,7 +2035,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2346,6 +2343,7 @@ func (i *Instance) UpdateStatus() error {
 	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
+			i.hookEvent = hs.Event
 			i.hookLastUpdate = hs.UpdatedAt
 			i.hookSessionID = hs.SessionID
 			// Reset stale acknowledged flag from ReconnectSessionLazy.
@@ -2385,7 +2383,8 @@ func (i *Instance) UpdateStatus() error {
 			} else {
 				// Check acknowledgment: orange (waiting) vs gray (idle)
 				// Acknowledge() is called when user attaches to a session.
-				// ResetAcknowledged() is called by u key or when new activity occurs.
+				// ResetAcknowledged() is called by UpdateHookStatus on any new
+				// waiting event, and by the u key / new activity.
 				if i.tmuxSession != nil && i.tmuxSession.IsAcknowledged() {
 					i.Status = StatusIdle
 				} else {
@@ -2497,10 +2496,11 @@ func (i *Instance) UpdateStatus() error {
 
 			// Update Codex session tracking (non-blocking, best-effort)
 			if i.Tool == "codex" {
-				var exclude map[string]bool
-				if i.CodexSessionID == "" {
-					exclude = i.collectOtherCodexSessionIDs()
-				}
+				// Always collect other instances' session IDs to prevent the
+				// disk scan from assigning a session that belongs to another
+				// instance. Without this, instances that share the same
+				// project_path can all claim the same Codex session file.
+				exclude := i.collectOtherCodexSessionIDs()
 				i.UpdateCodexSession(exclude)
 			}
 		}
@@ -2522,6 +2522,7 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	// Read from tmux environment (set by capture-resume pattern)
 	if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 		if i.ClaudeSessionID != sessionID {
+			rejected := false
 			// Quality gate: don't adopt a zombie ID from tmux env when current has real data
 			if i.ClaudeSessionID != "" {
 				currentHasData := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
@@ -2532,11 +2533,27 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 						slog.String("zombie_id", sessionID),
 						slog.String("reason", "tmux_env_has_zombie_id"),
 					)
+					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+						Source: "tmux_env", OldID: i.ClaudeSessionID, Candidate: sessionID,
+						Reason: "zombie_id_no_conversation_data",
+					})
 					// Don't adopt the zombie; skip the update but still refresh prompt below
+					rejected = true
 					sessionID = i.ClaudeSessionID
 				}
 			}
-			i.ClaudeSessionID = sessionID
+			if !rejected {
+				action := "bind"
+				if i.ClaudeSessionID != "" {
+					action = "rebind"
+				}
+				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+					InstanceID: i.ID, Tool: i.Tool, Action: action,
+					Source: "tmux_env", OldID: i.ClaudeSessionID, NewID: sessionID,
+				})
+				i.ClaudeSessionID = sessionID
+			}
 		}
 		i.ClaudeDetectedAt = time.Now()
 	}
@@ -2552,91 +2569,21 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 	}
 }
 
-// collectOtherClaudeSessionIDs enumerates all agent-deck tmux sessions (except this one)
-// and returns the set of CLAUDE_SESSION_ID values they own. Used to avoid stealing
-// another instance's session when scanning for the most recent .jsonl on disk.
-func (i *Instance) collectOtherClaudeSessionIDs() map[string]bool {
-	exclude := make(map[string]bool)
-
-	tmuxSessions, err := tmux.ListAgentDeckSessions()
-	if err != nil {
-		return exclude
-	}
-
-	myTmuxName := ""
-	if i.tmuxSession != nil {
-		myTmuxName = i.tmuxSession.Name
-	}
-
-	for _, sessName := range tmuxSessions {
-		if sessName == myTmuxName {
-			continue
-		}
-		// Read CLAUDE_SESSION_ID from the other tmux session
-		other := &tmux.Session{Name: sessName}
-		if id, err := other.GetEnvironment("CLAUDE_SESSION_ID"); err == nil && id != "" {
-			exclude[id] = true
-		}
-	}
-
-	return exclude
-}
-
-// syncClaudeSessionFromDisk scans the filesystem for the most recent session file,
-// excluding IDs owned by other agent-deck instances. If a different (newer) session
-// is found, it updates ClaudeSessionID, ClaudeDetectedAt, and the tmux env var.
-// This handles the case where /clear in Claude Code creates a new session UUID
-// that the tmux env var doesn't know about yet.
+// syncClaudeSessionFromDisk is a legacy shim kept for compatibility.
+// Disk scan is intentionally NOT authoritative for session identity.
+// Session ID binding must come from tmux env and/or hook session anchor.
 func (i *Instance) syncClaudeSessionFromDisk() {
 	if !IsClaudeCompatible(i.Tool) {
 		return
 	}
-
-	configDir := GetClaudeConfigDir()
-	exclude := i.collectOtherClaudeSessionIDs()
-
-	activeID := findActiveSessionIDExcluding(configDir, i.ProjectPath, exclude)
-	if activeID == "" || activeID == i.ClaudeSessionID {
-		return
-	}
-
-	// Quality gate: don't replace a session with real conversation data with a zombie
-	// (a zombie is a session file with no conversation data, typically from a crashed startup)
-	if i.ClaudeSessionID != "" {
-		currentHasData := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
-		candidateHasData := sessionHasConversationData(activeID, i.ProjectPath)
-
-		// Decision matrix:
-		//   current=real, candidate=real   → ACCEPT (handles /clear: both real, newer wins)
-		//   current=real, candidate=zombie  → REJECT (never replace real with zombie)
-		//   current=zombie, candidate=real  → ACCEPT (upgrade from zombie to real)
-		//   current=zombie, candidate=zombie → REJECT (don't swap zombies)
-		if currentHasData && !candidateHasData {
-			sessionLog.Debug("claude_session_sync_rejected_zombie",
-				slog.String("current_id", i.ClaudeSessionID),
-				slog.String("zombie_id", activeID),
-				slog.String("reason", "candidate_has_no_conversation_data"),
-			)
-			return
-		}
-		if !currentHasData && !candidateHasData {
-			sessionLog.Debug("claude_session_sync_rejected_zombie",
-				slog.String("current_id", i.ClaudeSessionID),
-				slog.String("candidate_id", activeID),
-				slog.String("reason", "both_have_no_conversation_data"),
-			)
-			return
-		}
-	}
-
-	sessionLog.Debug("claude_session_update_from_disk", slog.String("old_id", i.ClaudeSessionID), slog.String("new_id", activeID))
-	i.ClaudeSessionID = activeID
-	i.ClaudeDetectedAt = time.Now()
-
-	// Sync back to tmux environment so restart uses the new ID
-	if i.tmuxSession != nil && i.tmuxSession.Exists() {
-		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", activeID)
-	}
+	sessionLog.Debug("claude_session_disk_scan_disabled",
+		slog.String("instance", i.ID),
+		slog.String("reason", "disk_scan_not_authoritative"),
+	)
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: "scan_disabled",
+		Source: "disk_scan", Reason: "disk_scan_not_authoritative",
+	})
 }
 
 // UpdateHookStatus updates the instance's hook-based status fields.
@@ -2649,13 +2596,32 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	// Detect whether this is genuinely new data (newer timestamp than last seen).
+	// Only reset acknowledgment on new events — not on re-application of the same
+	// stale hook file, which would undo the user's intentional acknowledge.
+	isNewEvent := status.UpdatedAt.After(i.hookLastUpdate)
+
 	i.hookStatus = status.Status
+	i.hookEvent = status.Event
 	i.hookLastUpdate = status.UpdatedAt
+
+	// Permission-type events are always attention-needed, even if the user
+	// previously acknowledged this session. A mid-task permission block is new
+	// activity that the user must respond to — unlike Stop (task complete) which
+	// can stay grey if already seen.
+	// Handles both PermissionRequest events and Notification/permission_prompt.
+	if isNewEvent && status.Status == "waiting" && i.tmuxSession != nil {
+		if status.Event == "PermissionRequest" || status.Event == "Notification" {
+			i.tmuxSession.ResetAcknowledged()
+		}
+	}
 
 	// Resolve session ID from hook payload first, then sidecar anchor.
 	sessionID := strings.TrimSpace(status.SessionID)
+	hookSource := "hook_payload"
 	if sessionID == "" {
 		sessionID = ReadHookSessionAnchor(i.ID)
+		hookSource = "hook_anchor"
 	}
 	if sessionID == "" {
 		return
@@ -2669,11 +2635,20 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
 		if i.ClaudeSessionID == "" || sessionHasConversationData(sessionID, i.ProjectPath) {
+			action := "bind"
+			if i.ClaudeSessionID != "" {
+				action = "rebind"
+			}
 			sessionLog.Debug("claude_session_update_from_hook",
 				slog.String("old_id", i.ClaudeSessionID),
 				slog.String("new_id", sessionID),
 				slog.String("event", status.Event),
 			)
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: action,
+				Source: hookSource, OldID: i.ClaudeSessionID, NewID: sessionID,
+				HookEvent: status.Event,
+			})
 			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
 			i.hookSessionID = sessionID
@@ -2681,6 +2656,12 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 			if i.tmuxSession != nil && i.tmuxSession.Exists() {
 				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
 			}
+		} else {
+			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
+			})
 		}
 	case i.Tool == "codex":
 		if sessionID == i.CodexSessionID {
@@ -3082,9 +3063,8 @@ func (i *Instance) GetLastResponse() (*ResponseOutput, error) {
 // Behavior for Claude:
 // 1. Try structured JSONL read via stored ClaudeSessionID.
 // 2. Refresh ID from tmux env and retry.
-// 3. Scan disk for active session ID and retry.
-// 4. Fallback to terminal parsing.
-// 5. If still unavailable, return an empty response (no error).
+// 3. Fallback to terminal parsing.
+// 4. If still unavailable, return an empty response (no error).
 //
 // Behavior for Gemini (mirrors Claude):
 // 1. Try structured JSON read via stored GeminiSessionID.
@@ -3104,14 +3084,6 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 		if sessionID := i.GetSessionIDFromTmux(); sessionID != "" {
 			i.ClaudeSessionID = sessionID
 			i.ClaudeDetectedAt = time.Now()
-			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
-				return recovered, nil
-			}
-		}
-
-		// Fallback: detect latest session on disk (handles startup race / stale ID)
-		i.syncClaudeSessionFromDisk()
-		if i.ClaudeSessionID != "" {
 			if recovered, recoverErr := i.getClaudeLastResponse(); recoverErr == nil {
 				return recovered, nil
 			}
@@ -3766,11 +3738,6 @@ func (i *Instance) Restart() error {
 		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
 	}
 
-	// Sync Claude session from disk before restart to pick up /clear session changes
-	if IsClaudeCompatible(i.Tool) {
-		i.syncClaudeSessionFromDisk()
-	}
-
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
@@ -3884,13 +3851,16 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
-	// For Codex: ALWAYS update session to get the most recent one
-	// Krudony fix: don't skip when we already have an ID - the user may have started a NEW session
-	if i.Tool == "codex" {
+	// For Codex: try to update session ID, but only if we don't already have one.
+	// When we already have a known session ID (from the database), trust it —
+	// the disk scan can return a wrong ID when multiple instances share the same
+	// project_path. The process probe is authoritative but only works when the
+	// process is running, which it isn't during a restart.
+	if i.Tool == "codex" && i.CodexSessionID == "" {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
-		if missingDep := i.updateCodexSession(nil, true); missingDep != "" {
+		if missingDep := i.updateCodexSession(i.collectOtherCodexSessionIDs(), true); missingDep != "" {
 			i.mu.Lock()
 			i.pendingCodexRestartWarning = codexProbeMissingWarning(missingDep)
 			i.mu.Unlock()
@@ -4000,8 +3970,7 @@ func (i *Instance) Restart() error {
 	} else if i.Tool == "gemini" && i.GeminiSessionID != "" {
 		command = i.buildGeminiCommand("gemini")
 	} else if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
-		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		command = fmt.Sprintf("opencode -s %s", i.OpenCodeSessionID)
+		command = i.buildOpenCodeCommand("opencode")
 	} else if i.Tool == "codex" && i.CodexSessionID != "" {
 		command = i.buildCodexCommand("codex")
 	} else {
@@ -4042,7 +4011,8 @@ func (i *Instance) Restart() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 
@@ -4088,19 +4058,18 @@ func (i *Instance) Restart() error {
 	return nil
 }
 
-// buildClaudeResumeCommand builds the Claude resume command with proper config options.
-// Respects: CLAUDE_CONFIG_DIR, use_happy, and dangerous_mode from user/session config.
+// buildClaudeResumeCommand builds the claude resume command with proper config options
+// Respects: CLAUDE_CONFIG_DIR, dangerous_mode, and [shell].env_files + init_script
 // CLAUDE_SESSION_ID is set via host-side SetEnvironment (called by SyncSessionIDsToTmux after restart)
 func (i *Instance) buildClaudeResumeCommand() string {
-	opts := i.GetClaudeOptions()
-	if opts == nil {
-		userConfig, _ := LoadUserConfig()
-		opts = NewClaudeOptions(userConfig)
-	}
+	// Source env files and init_script so resumed sessions have the same
+	// shell environment as freshly started ones (fixes #409).
+	envPrefix := i.buildEnvSourceCommand()
 
-	// Get the configured Claude command (e.g., "claude", "cdw", "happy")
-	// If a custom command alias is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it.
-	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
+	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
+	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
+	claudeCmd := GetClaudeCommand()
+	hasCustomCommand := claudeCmd != "claude"
 
 	// Check if CLAUDE_CONFIG_DIR is explicitly configured
 	// If NOT explicit, don't set it - let the shell's environment handle it
@@ -4115,7 +4084,15 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
+
+	// Get per-session permission settings (falls back to config if not persisted)
+	opts := i.GetClaudeOptions()
+	if opts == nil {
+		userConfig, _ := LoadUserConfig()
+		opts = NewClaudeOptions(userConfig)
+	}
 	dangerousMode := opts.SkipPermissions
+	autoMode := opts.AutoMode
 	allowDangerousMode := opts.AllowSkipPermissions
 
 	// Check if session has actual conversation data
@@ -4128,10 +4105,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		slog.Bool("use_resume", useResume),
 	)
 
-	// Build dangerous mode flag (--dangerously-skip-permissions wins over --allow-...)
+	// Build permission flag (--dangerously-skip-permissions wins over --permission-mode auto wins over --allow-...)
 	dangerousFlag := ""
 	if dangerousMode {
 		dangerousFlag = " --dangerously-skip-permissions"
+	} else if autoMode {
+		dangerousFlag = " --permission-mode auto"
 	} else if allowDangerousMode {
 		dangerousFlag = " --allow-dangerously-skip-permissions"
 	}
@@ -4140,12 +4119,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// after the tmux session is restarted. No inline tmux set-environment in the shell string
 	// (which silently fails inside Docker sandbox containers).
 	if useResume {
-		return fmt.Sprintf("%s%s --resume %s%s",
-			configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+		return fmt.Sprintf("%s%s%s --resume %s%s",
+			envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 	}
 	// Session was never interacted with - use --session-id to create fresh session.
-	return fmt.Sprintf("%s%s --session-id %s%s",
-		configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+	return fmt.Sprintf("%s%s%s --session-id %s%s",
+		envPrefix, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.
@@ -4270,9 +4249,6 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 		return "", fmt.Errorf("cannot build fork command: target instance is nil")
 	}
 
-	// Sync session from disk to pick up /clear session changes before forking
-	i.syncClaudeSessionFromDisk()
-
 	if !i.CanFork() {
 		return "", fmt.Errorf("cannot fork: no active Claude session")
 	}
@@ -4280,8 +4256,7 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	workDir := target.ProjectPath
 
 	// IMPORTANT: For capture-resume commands (which contain $(...) syntax), we MUST use
-	// the default launch binary ("claude" or "happy") + explicit env exports, NOT a
-	// custom command alias like "cdw".
+	// "claude" binary + explicit env exports, NOT a custom command alias like "cdw".
 	// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 	// and shell aliases are not available in non-interactive bash shells.
 	bashExportPrefix := target.buildBashExportPrefix()
@@ -4290,11 +4265,6 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	if opts == nil {
 		userConfig, _ := LoadUserConfig()
 		opts = NewClaudeOptions(userConfig)
-	}
-
-	claudeCmd, hasCustomCommand := resolveClaudeLaunchCommand(opts)
-	if hasCustomCommand {
-		claudeCmd = "claude"
 	}
 
 	// Build extra flags from options (for fork, we use ToArgsForFork which excludes session mode)
@@ -4309,9 +4279,9 @@ func (i *Instance) buildClaudeForkCommandForTarget(target *Instance, opts *Claud
 	target.ClaudeSessionID = forkUUID
 	cmd := fmt.Sprintf(
 		`cd '%s' && `+
-			`%sexec %s --session-id "%s" --resume %s --fork-session%s`,
+			`%sexec claude --session-id "%s" --resume %s --fork-session%s`,
 		workDir,
-		bashExportPrefix, claudeCmd, forkUUID, i.ClaudeSessionID, extraFlags)
+		bashExportPrefix, forkUUID, i.ClaudeSessionID, extraFlags)
 	cmd, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", err
@@ -4991,6 +4961,16 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	// Always pre-wrap in bash -c when a wrapper is configured. Wrappers use
+	// execvp() which cannot interpret shell syntax, so without this any
+	// metacharacter in cmd (inline env vars, &&, $(), etc.) would be passed
+	// as literal argv. Wrapping unconditionally is both safe and simpler than
+	// trying to detect which commands need it.
+	if i.hasEffectiveWrapper() {
+		escaped := strings.ReplaceAll(cmd, "'", "'\"'\"'")
+		cmd = fmt.Sprintf("bash -c '%s'", escaped)
+	}
+
 	wrapped, err := i.applyWrapper(cmd)
 	if err != nil {
 		return "", "", err
@@ -5219,7 +5199,8 @@ func generateUUID() string {
 }
 
 // generateID generates a unique session ID
-func generateID() string {
+// GenerateID creates a unique session identifier.
+func GenerateID() string {
 	return fmt.Sprintf("%s-%d", randomString(8), time.Now().Unix())
 }
 

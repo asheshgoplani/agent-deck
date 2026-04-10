@@ -1,13 +1,45 @@
+/* ===== Light mode (default) ===== */
 :root {
-  --bg: #f6f8fb;
+  /* Palette */
+  --bg: #e6e7ed;
   --panel: #ffffff;
-  --text: #1f2937;
+  --card: #f0f1f5;
+  --text: #363c4d;
   --muted: #6b7280;
   --border: #d4d9e2;
-  --accent: #0f766e;
+  --accent: #2959aa;
+
+  /* Spacing scale */
+  --sp-4: 4px;
+  --sp-8: 8px;
+  --sp-12: 12px;
+  --sp-16: 16px;
+  --sp-24: 24px;
+  --sp-32: 32px;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+
+  /* Layout */
   --topbar-height: 56px;
   --app-height: 100vh;
   --keyboard-inset: 0px;
+}
+
+/* ===== Dark mode (Tokyo Night) ===== */
+html.dark {
+  --bg: #1a1b26;
+  --panel: #16161e;
+  --card: #24283b;
+  --text: #a9b1d6;
+  --muted: #787c99;
+  --border: rgba(120, 124, 153, 0.2);
+  --accent: #7aa2f7;
 }
 
 html,
@@ -21,10 +53,14 @@ body {
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
   color: var(--text);
-  background: linear-gradient(160deg, #f8fbff 0%, #eef3f9 55%, #e6edf6 100%);
+  background: var(--bg);
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .app {
@@ -64,7 +100,7 @@ body {
   height: 36px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   font-size: 1.1rem;
   line-height: 1;
@@ -102,7 +138,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 4px 10px;
-  background: #fff;
+  background: var(--panel);
 }
 
 .meta.state-idle {
@@ -145,13 +181,13 @@ body {
 
 .menu-panel {
   border-right: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--panel);
   display: flex;
   flex-direction: column;
 }
 
 .terminal-panel {
-  background: rgba(255, 255, 255, 0.45);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
 }
@@ -200,7 +236,7 @@ body {
   height: 34px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
   color: var(--text);
   font: inherit;
   cursor: pointer;
@@ -226,7 +262,7 @@ body {
   padding: 0 10px;
   font-size: 0.95rem;
   color: var(--text);
-  background: #fff;
+  background: var(--panel);
 }
 
 .menu-filter:focus {
@@ -237,7 +273,7 @@ body {
 .menu-list {
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--panel);
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -246,8 +282,8 @@ body {
 .menu-item {
   width: 100%;
   border: 0;
-  border-bottom: 1px solid #eef2f8;
-  background: #fff;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
   color: inherit;
   text-align: left;
   padding: 8px 10px;
@@ -260,16 +296,16 @@ body {
 }
 
 .menu-item:hover {
-  background: #f7fbff;
+  background: var(--card);
 }
 
 .menu-item.selected {
-  background: #e9f7f5;
+  background: var(--card);
 }
 
 .menu-item.group {
   font-weight: 600;
-  color: #0b4f52;
+  color: var(--accent);
 }
 
 .menu-item.session {
@@ -418,6 +454,11 @@ body {
   display: none;
 }
 
+/* Typography utilities */
+.text-label   { font-size: var(--text-xs); }
+.text-body    { font-size: var(--text-base); }
+.text-heading { font-size: var(--text-lg); font-weight: 600; }
+
 @media (max-width: 900px) {
   .menu-toggle {
     display: inline-flex;
@@ -445,7 +486,7 @@ body {
     transition: transform 180ms ease-out;
     border-right: 1px solid var(--border);
     border-bottom: 0;
-    background: #fff;
+    background: var(--panel);
     box-shadow: 0 14px 28px rgba(15, 23, 42, 0.26);
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
@@ -488,5 +529,22 @@ body {
     min-height: 240px;
     height: 60vh;
     max-height: 60vh;
+  }
+}
+
+/* Toast slide-in animation */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}
+
+@media (max-width: 768px) {
+  :root {
+    --text-base: 16px;
+    --text-sm: 14px;
+    --text-xs: 13px;
   }
 }

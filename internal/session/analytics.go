@@ -85,6 +85,10 @@ var modelContextWindowPrefixes = []struct {
 	// 3.x models: 200k context
 	{"claude-3-5", 200000},
 	{"claude-3-opus", 200000},
+	// MiniMax models
+	{"MiniMax-M2.7", 1000000},       // 1M context
+	{"MiniMax-M2.5-highspeed", 204000}, // 204K context (must precede M2.5)
+	{"MiniMax-M2.5", 204000},        // 204K context
 }
 
 // contextWindowForModel returns the context window size for a model ID.
@@ -123,6 +127,11 @@ var modelPricing = map[string]ModelPricing{
 	"claude-opus-4-20250514":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
 	"claude-3-5-sonnet":        {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
 	"claude-3-5-haiku":         {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.0},
+	// MiniMax models
+	"MiniMax-M2.7":           {Input: 0.70, Output: 2.80},
+	"MiniMax-M2.7-highspeed": {Input: 0.35, Output: 1.40},
+	"MiniMax-M2.5":           {Input: 0.50, Output: 2.00},
+	"MiniMax-M2.5-highspeed": {Input: 0.15, Output: 0.60},
 	// Default fallback uses Sonnet pricing
 	"default": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
 }

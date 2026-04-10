@@ -413,7 +413,6 @@ func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution
 
 	return resolution, nil
 }
-
 func getDefaultRemote(repoDir string) (string, error) {
 	remotes, err := listRemotes(repoDir)
 	if err != nil {

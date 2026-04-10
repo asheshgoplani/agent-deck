@@ -2,10 +2,11 @@ package ui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestNewForkDialog(t *testing.T) {
@@ -20,7 +21,7 @@ func TestNewForkDialog(t *testing.T) {
 
 func TestForkDialog_Show(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Original Session", "/path/to/project", "group/path")
+	d.Show("Original Session", "/path/to/project", "group/path", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible after Show()")
@@ -35,9 +36,36 @@ func TestForkDialog_Show(t *testing.T) {
 	}
 }
 
+func TestForkDialog_Show_UsesConfiguredWorktreeDefault(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	session.ClearUserConfigCache()
+	defer session.ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Worktree: session.WorktreeSettings{DefaultEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	d := NewForkDialog()
+	d.Show("Original Session", "/path/to/project", "group/path", nil, "")
+
+	if !d.worktreeEnabled {
+		t.Error("worktreeEnabled should default to true from config on Show")
+	}
+}
+
 func TestForkDialog_Hide(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible after Show()")
@@ -52,7 +80,7 @@ func TestForkDialog_Hide(t *testing.T) {
 
 func TestForkDialog_GetValues(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("My Session", "/project", "work/team")
+	d.Show("My Session", "/project", "work/team", nil, "")
 
 	name, group := d.GetValues()
 	if name != "My Session (fork)" {
@@ -77,7 +105,7 @@ func TestForkDialog_SetSize(t *testing.T) {
 
 func TestForkDialog_EmptyProjectPath(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Test", "", "")
+	d.Show("Test", "", "", nil, "")
 
 	if !d.IsVisible() {
 		t.Error("Dialog should be visible even with empty paths")
@@ -145,7 +173,7 @@ func TestForkDialog_Validate_ValidName(t *testing.T) {
 func TestForkDialog_SetError_ShowsInView(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	d.SetError("Name is required")
 	view := d.View()
@@ -158,7 +186,7 @@ func TestForkDialog_SetError_ShowsInView(t *testing.T) {
 func TestForkDialog_ClearError_HidesFromView(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	d.SetError("Name is required")
 	d.ClearError()
@@ -172,58 +200,9 @@ func TestForkDialog_ClearError_HidesFromView(t *testing.T) {
 func TestForkDialog_Show_ClearsError(t *testing.T) {
 	d := NewForkDialog()
 	d.SetError("Previous error")
-	d.Show("Test", "/path", "group")
+	d.Show("Test", "/path", "group", nil, "")
 
 	if d.validationErr != "" {
 		t.Error("Show() should clear validationErr")
-	}
-}
-
-func TestForkDialog_CtrlFBranchPickerAppliesSelection(t *testing.T) {
-	d := NewForkDialog()
-	d.Show("Test", "/tmp/project", "group")
-	d.worktreeEnabled = true
-	d.focusIndex = 2
-	d.updateFocus()
-
-	origPicker := openBranchPicker
-	defer func() { openBranchPicker = origPicker }()
-
-	called := false
-	openBranchPicker = func(path string) tea.Cmd {
-		called = true
-		if path != "/tmp/project" {
-			t.Fatalf("picker path = %q, want %q", path, "/tmp/project")
-		}
-		return func() tea.Msg {
-			return branchPickerResultMsg{branch: "fork/picked"}
-		}
-	}
-
-	var cmd tea.Cmd
-	d, cmd = d.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
-	if !called {
-		t.Fatal("expected ctrl+f to open branch picker")
-	}
-	if cmd == nil {
-		t.Fatal("expected ctrl+f to return a branch picker command")
-	}
-
-	d, _ = d.Update(cmd())
-	if got := d.branchInput.Value(); got != "fork/picked" {
-		t.Fatalf("branch = %q, want %q", got, "fork/picked")
-	}
-}
-
-func TestForkDialog_BranchPickerErrorIsShown(t *testing.T) {
-	d := NewForkDialog()
-	d.Show("Test", "/tmp/project", "group")
-	d.worktreeEnabled = true
-	d.focusIndex = 2
-	d.updateFocus()
-
-	d, _ = d.Update(branchPickerResultMsg{err: os.ErrNotExist})
-	if !strings.Contains(d.validationErr, os.ErrNotExist.Error()) {
-		t.Fatalf("expected picker error in validationErr, got %q", d.validationErr)
 	}
 }

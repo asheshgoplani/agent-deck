@@ -47,6 +47,9 @@ type Item struct {
 	WindowName          string             // Tmux window name (for ItemTypeWindow)
 	WindowSessionID     string             // Parent session ID (for ItemTypeWindow)
 	WindowTool          string             // Detected tool in this window (claude, gemini, etc.)
+	CreatingID          string             // Non-empty for placeholder items (worktree creation in progress)
+	CreatingTitle       string             // Display title for creating placeholder
+	CreatingTool        string             // Tool for creating placeholder
 }
 
 // Group represents a group of sessions

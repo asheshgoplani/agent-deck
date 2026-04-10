@@ -1,11 +1,11 @@
-const CACHE_VERSION = "agentdeck-shell-v2"
+const CACHE_VERSION = "agentdeck-shell-v3"
 const SHELL_CACHE = CACHE_VERSION
 const APP_SHELL_URLS = [
   "/",
   "/manifest.webmanifest",
   "/static/index.html",
   "/static/styles.css",
-  "/static/app.js",
+  "/static/app/main.js",
   "/static/icons/logo.svg",
 ]
 

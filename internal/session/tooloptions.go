@@ -27,6 +27,10 @@ type ClaudeOptions struct {
 	// AllowSkipPermissions adds --allow-dangerously-skip-permissions flag
 	// Only used when SkipPermissions is false (SkipPermissions takes precedence)
 	AllowSkipPermissions bool `json:"allow_skip_permissions,omitempty"`
+	// AutoMode adds --permission-mode auto flag
+	// Uses a classifier model to auto-approve safe operations while blocking risky ones.
+	// Only used when SkipPermissions is false (SkipPermissions takes precedence).
+	AutoMode bool `json:"auto_mode,omitempty"`
 	// UseChrome adds --chrome flag
 	UseChrome bool `json:"use_chrome,omitempty"`
 	// UseTeammateMode adds --teammate-mode tmux flag
@@ -62,6 +66,8 @@ func (o *ClaudeOptions) ToArgs() []string {
 	// Permission flags (mutually exclusive, SkipPermissions takes precedence)
 	if o.SkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	} else if o.AutoMode {
+		args = append(args, "--permission-mode", "auto")
 	} else if o.AllowSkipPermissions {
 		args = append(args, "--allow-dangerously-skip-permissions")
 	}
@@ -82,6 +88,8 @@ func (o *ClaudeOptions) ToArgsForFork() []string {
 
 	if o.SkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	} else if o.AutoMode {
+		args = append(args, "--permission-mode", "auto")
 	} else if o.AllowSkipPermissions {
 		args = append(args, "--allow-dangerously-skip-permissions")
 	}
@@ -103,6 +111,7 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 	if config != nil {
 		opts.UseHappy = config.Claude.UseHappy
 		opts.SkipPermissions = config.Claude.GetDangerousMode()
+		opts.AutoMode = config.Claude.AutoMode
 		opts.AllowSkipPermissions = config.Claude.AllowDangerousMode
 	}
 	return opts
@@ -281,6 +290,35 @@ func UnmarshalOpenCodeOptions(data json.RawMessage) (*OpenCodeOptions, error) {
 	}
 
 	return &opts, nil
+}
+
+// StripResumeFields removes session-specific fields (resume_session_id,
+// session_mode) from serialized ToolOptionsJSON so that a new session
+// inheriting another session's settings starts fresh instead of resuming
+// the source conversation.  Other options (skip_permissions, etc.) are
+// preserved.  Returns the input unchanged when it is nil/empty or when
+// unmarshalling fails.
+func StripResumeFields(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+
+	var wrapper struct {
+		Tool    string         `json:"tool"`
+		Options map[string]any `json:"options"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return raw
+	}
+
+	delete(wrapper.Options, "resume_session_id")
+	delete(wrapper.Options, "session_mode")
+
+	cleaned, err := json.Marshal(wrapper)
+	if err != nil {
+		return raw
+	}
+	return cleaned
 }
 
 // UnmarshalClaudeOptions deserializes ClaudeOptions from JSON wrapper

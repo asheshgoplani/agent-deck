@@ -15,9 +15,9 @@ type ClaudeOptionsPanel struct {
 	// Resume session ID input (only for mode=resume)
 	resumeIDInput textinput.Model
 	// Checkbox states
-	useHappy             bool
 	skipPermissions      bool
 	allowSkipPermissions bool
+	autoMode             bool
 	useChrome            bool
 	useTeammateMode      bool
 	// Focus tracking
@@ -31,10 +31,8 @@ type ClaudeOptionsPanel struct {
 // Focus indices for NewDialog mode:
 // 0: Session mode (radio)
 // 1: Resume ID input (only when mode=resume)
-// 2: Use happy checkbox
-// 3: Skip permissions checkbox
-// 4: Chrome checkbox
-// 5: Teammate checkbox
+// 2: Skip permissions checkbox
+// 3: Chrome checkbox
 
 // Focus indices for ForkDialog mode:
 // 0: Skip permissions checkbox
@@ -51,7 +49,7 @@ func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
 		sessionMode:   0, // new
 		resumeIDInput: resumeInput,
 		isForkMode:    false,
-		focusCount:    6, // Will adjust dynamically
+		focusCount:    5, // Will adjust dynamically
 	}
 }
 
@@ -68,9 +66,9 @@ func NewClaudeOptionsPanelForFork() *ClaudeOptionsPanel {
 // SetDefaults applies default values from config
 func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 	if config != nil {
-		p.useHappy = config.Claude.UseHappy
 		p.skipPermissions = config.Claude.GetDangerousMode()
 		p.allowSkipPermissions = config.Claude.AllowDangerousMode
+		p.autoMode = config.Claude.AutoMode
 	}
 }
 
@@ -88,9 +86,9 @@ func (p *ClaudeOptionsPanel) SetFromOptions(opts *session.ClaudeOptions) {
 	default:
 		p.sessionMode = 0
 	}
-	p.useHappy = opts.UseHappy
 	p.skipPermissions = opts.SkipPermissions
 	p.allowSkipPermissions = opts.AllowSkipPermissions
+	p.autoMode = opts.AutoMode
 	p.useChrome = opts.UseChrome
 	p.useTeammateMode = opts.UseTeammateMode
 	p.updateInputFocus()
@@ -122,9 +120,9 @@ func (p *ClaudeOptionsPanel) AtTop() bool {
 // GetOptions returns current options as ClaudeOptions
 func (p *ClaudeOptionsPanel) GetOptions() *session.ClaudeOptions {
 	opts := &session.ClaudeOptions{
-		UseHappy:             p.useHappy,
 		SkipPermissions:      p.skipPermissions,
 		AllowSkipPermissions: p.allowSkipPermissions,
+		AutoMode:             p.autoMode,
 		UseChrome:            p.useChrome,
 		UseTeammateMode:      p.useTeammateMode,
 	}
@@ -215,8 +213,10 @@ func (p *ClaudeOptionsPanel) handleSpaceKey() {
 		case 0:
 			p.skipPermissions = !p.skipPermissions
 		case 1:
-			p.useChrome = !p.useChrome
+			p.autoMode = !p.autoMode
 		case 2:
+			p.useChrome = !p.useChrome
+		case 3:
 			p.useTeammateMode = !p.useTeammateMode
 		}
 	} else {
@@ -225,10 +225,10 @@ func (p *ClaudeOptionsPanel) handleSpaceKey() {
 		case "sessionMode":
 			// Cycle through modes on space
 			p.sessionMode = (p.sessionMode + 1) % 3
-		case "useHappy":
-			p.useHappy = !p.useHappy
 		case "skipPermissions":
 			p.skipPermissions = !p.skipPermissions
+		case "autoMode":
+			p.autoMode = !p.autoMode
 		case "chrome":
 			p.useChrome = !p.useChrome
 		case "teammateMode":
@@ -244,8 +244,10 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 		case 0:
 			return "skipPermissions"
 		case 1:
-			return "chrome"
+			return "autoMode"
 		case 2:
+			return "chrome"
+		case 3:
 			return "teammateMode"
 		}
 	} else {
@@ -261,13 +263,13 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 			}
 			idx-- // Adjust for missing resume input
 		}
-		// 2: use happy
+		// 2: skip permissions
 		if idx == 1 {
-			return "useHappy"
-		}
-		// 3: skip permissions
-		if idx == 2 {
 			return "skipPermissions"
+		}
+		// 3: auto mode
+		if idx == 2 {
+			return "autoMode"
 		}
 		// 4: chrome
 		if idx == 3 {
@@ -284,10 +286,10 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 // getFocusCount returns the number of focusable elements
 func (p *ClaudeOptionsPanel) getFocusCount() int {
 	if p.isForkMode {
-		return 3 // skip, chrome, teammate
+		return 4 // skip, auto, chrome, teammate
 	}
 
-	count := 5 // session mode, use happy, skip, chrome, teammate
+	count := 5 // session mode, skip, auto, chrome, teammate
 	if p.sessionMode == 2 {
 		count++ // resume input
 	}
@@ -331,8 +333,12 @@ func (p *ClaudeOptionsPanel) viewForkMode(labelStyle, activeStyle, dimStyle, hea
 	var content string
 	content += headerStyle.Render("─ Advanced Options ─") + "\n"
 	content += renderCheckboxLine("Skip permissions", p.skipPermissions, p.focusIndex == 0)
-	content += renderCheckboxLine("Chrome mode", p.useChrome, p.focusIndex == 1)
-	content += renderCheckboxLine("Teammate mode", p.useTeammateMode, p.focusIndex == 2)
+	content += renderCheckboxLine("Auto mode", p.autoMode, p.focusIndex == 1)
+	if p.autoMode && p.skipPermissions {
+		content += dimStyle.Render("    ↑ overridden by skip permissions") + "\n"
+	}
+	content += renderCheckboxLine("Chrome mode", p.useChrome, p.focusIndex == 2)
+	content += renderCheckboxLine("Teammate mode", p.useTeammateMode, p.focusIndex == 3)
 	return content
 }
 
@@ -363,12 +369,15 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 		focusIdx++
 	}
 
-	// Use happy checkbox
-	content += renderCheckboxLine("Use happy wrapper", p.useHappy, p.focusIndex == focusIdx)
-	focusIdx++
-
 	// Skip permissions checkbox
 	content += renderCheckboxLine("Skip permissions", p.skipPermissions, p.focusIndex == focusIdx)
+	focusIdx++
+
+	// Auto mode checkbox
+	content += renderCheckboxLine("Auto mode", p.autoMode, p.focusIndex == focusIdx)
+	if p.autoMode && p.skipPermissions {
+		content += dimStyle.Render("    ↑ overridden by skip permissions") + "\n"
+	}
 	focusIdx++
 
 	// Chrome checkbox

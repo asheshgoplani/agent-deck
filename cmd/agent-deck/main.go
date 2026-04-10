@@ -31,7 +31,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-const Version = "0.27.5"
+var Version = "1.3.3" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -441,8 +441,31 @@ func main() {
 		}()
 	}
 
+	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
+	var groupScope string
+	groupScope, args = extractGroupFlag(args)
+
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)
+	// Apply group scope if specified via --group / -g flag
+	if groupScope != "" {
+		normalizedGroup := normalizeGroupPath(groupScope)
+		// Validate group exists by loading current sessions
+		if storage, err := session.NewStorageWithProfile(profile); err == nil {
+			if _, groups, err := storage.LoadWithGroups(); err == nil {
+				groupTree := session.NewGroupTreeWithGroups(nil, groups)
+				if _, exists := groupTree.Groups[normalizedGroup]; !exists {
+					fmt.Fprintf(os.Stderr, "Error: group '%s' not found\n", groupScope)
+					os.Exit(2)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
+		}
+		homeModel.SetGroupScope(normalizedGroup)
+	}
 
 	// ═══════════════════════════════════════════════════════════════════
 	// Cost Tracking Initialization
@@ -622,6 +645,40 @@ func extractProfileFlag(args []string) (string, []string) {
 	}
 
 	return profile, remaining
+}
+
+// extractGroupFlag extracts -g or --group from args, returning the group path and remaining args.
+// This only applies to the TUI launch path; subcommands like add/launch have their own -g flag.
+func extractGroupFlag(args []string) (string, []string) {
+	var group string
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// Check for -g=value or --group=value
+		if strings.HasPrefix(arg, "-g=") {
+			group = strings.TrimPrefix(arg, "-g=")
+			continue
+		}
+		if strings.HasPrefix(arg, "--group=") {
+			group = strings.TrimPrefix(arg, "--group=")
+			continue
+		}
+
+		// Check for -g value or --group value
+		if arg == "-g" || arg == "--group" {
+			if i+1 < len(args) {
+				group = args[i+1]
+				i++ // Skip the value
+				continue
+			}
+		}
+
+		remaining = append(remaining, arg)
+	}
+
+	return group, remaining
 }
 
 // reorderArgsForFlagParsing moves the path argument to the end of args
@@ -1064,7 +1121,8 @@ func handleAdd(profile string, args []string) {
 
 			// Create worktree atomically (git handles existence checks).
 			// This avoids a TOCTOU race from separate check-then-create steps.
-			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr)
+			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {
 					fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)
 					fmt.Fprintf(os.Stderr, "Tip: Use 'agent-deck add %s' to add the existing worktree\n", worktreePath)
@@ -1072,6 +1130,9 @@ func handleAdd(profile string, args []string) {
 				}
 				fmt.Fprintf(os.Stderr, "Error: failed to create worktree: %v\n", err)
 				os.Exit(1)
+			}
+			if setupErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 
 			fmt.Printf("Created worktree at: %s\n", worktreePath)
@@ -1362,6 +1423,7 @@ func handleList(profile string, args []string) {
 			Tool          string    `json:"tool"`
 			Command       string    `json:"command,omitempty"`
 			Status        string    `json:"status"`
+			TmuxSession   string    `json:"tmux_session,omitempty"`
 			Profile       string    `json:"profile"`
 			CreatedAt     time.Time `json:"created_at"`
 			SSHHost       string    `json:"ssh_host,omitempty"`
@@ -1370,7 +1432,7 @@ func handleList(profile string, args []string) {
 		sessions := make([]sessionJSON, len(instances))
 		for i, inst := range instances {
 			_ = inst.UpdateStatus()
-			sessions[i] = sessionJSON{
+			sj := sessionJSON{
 				ID:            inst.ID,
 				Title:         inst.Title,
 				Path:          inst.ProjectPath,
@@ -1383,6 +1445,10 @@ func handleList(profile string, args []string) {
 				SSHHost:       inst.SSHHost,
 				SSHRemotePath: inst.SSHRemotePath,
 			}
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				sj.TmuxSession = tmuxSess.Name
+			}
+			sessions[i] = sj
 		}
 		output, err := json.MarshalIndent(sessions, "", "  ")
 		if err != nil {
@@ -2253,10 +2319,11 @@ func printHelp() {
 	fmt.Printf("Agent Deck v%s\n", Version)
 	fmt.Println("Terminal session manager for AI coding agents")
 	fmt.Println()
-	fmt.Println("Usage: agent-deck [-p profile] [command]")
+	fmt.Println("Usage: agent-deck [-p profile] [-g group] [command]")
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile (default: 'default')")
+	fmt.Println("  -g, --group <name>     Launch TUI scoped to a specific group")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  (none)           Start the TUI")

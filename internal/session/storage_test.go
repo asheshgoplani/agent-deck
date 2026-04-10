@@ -315,3 +315,89 @@ func TestStorageSaveWithGroups_PersistsSandboxConfig(t *testing.T) {
 		t.Fatalf("loaded sandbox container = %q, want agent-deck-sandbox-sandboxed-1", loaded[0].SandboxContainer)
 	}
 }
+
+// TestSaveSessionData_PreservesGroupSortOrder verifies that saving session data
+// with stored groups preserves the sort_order, matching the fix in #465.
+func TestSaveSessionData_PreservesGroupSortOrder(t *testing.T) {
+	s := newTestStorage(t)
+	now := time.Now()
+
+	instances := []*Instance{
+		{
+			ID:          "s1",
+			Title:       "Session Alpha",
+			ProjectPath: "/tmp/alpha",
+			GroupPath:   "backend",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   now,
+		},
+		{
+			ID:          "s2",
+			Title:       "Session Beta",
+			ProjectPath: "/tmp/beta",
+			GroupPath:   "frontend",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   now,
+		},
+		{
+			ID:          "s3",
+			Title:       "Session Gamma",
+			ProjectPath: "/tmp/gamma",
+			GroupPath:   "infra",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   now,
+		},
+	}
+
+	// Simulate user-reordered groups: infra=0, frontend=1, backend=2.
+	// Alphabetical would be backend=0, frontend=1, infra=2.
+	storedGroups := []*GroupData{
+		{Name: "infra", Path: "infra", Expanded: true, Order: 0},
+		{Name: "frontend", Path: "frontend", Expanded: true, Order: 1},
+		{Name: "backend", Path: "backend", Expanded: false, Order: 2},
+	}
+
+	// Save using NewGroupTreeWithGroups (the fixed path).
+	groupTree := NewGroupTreeWithGroups(instances, storedGroups)
+	if err := s.SaveWithGroups(instances, groupTree); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	// Reload and verify sort_order is preserved.
+	_, reloadedGroups, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+
+	groupByPath := make(map[string]*GroupData, len(reloadedGroups))
+	for _, g := range reloadedGroups {
+		groupByPath[g.Path] = g
+	}
+
+	for _, want := range storedGroups {
+		got, ok := groupByPath[want.Path]
+		if !ok {
+			t.Fatalf("group %q not found after reload", want.Path)
+		}
+		if got.Order != want.Order {
+			t.Errorf("group %q: Order = %d, want %d", want.Path, got.Order, want.Order)
+		}
+		if got.Expanded != want.Expanded {
+			t.Errorf("group %q: Expanded = %v, want %v", want.Path, got.Expanded, want.Expanded)
+		}
+	}
+
+	// Verify the bug: NewGroupTree (without stored groups) loses custom order.
+	resetTree := NewGroupTree(instances)
+	infraGroup := resetTree.Groups["infra"]
+	backendGroup := resetTree.Groups["backend"]
+	if infraGroup.Order == 0 && backendGroup.Order == 2 {
+		t.Error("NewGroupTree unexpectedly preserved custom order; test premise is wrong")
+	}
+}

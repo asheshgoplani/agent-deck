@@ -117,9 +117,33 @@ func isSocketAlive(socketPath string) bool {
 	return true
 }
 
+// dangerousEnvVars are environment variables that could be used for code injection
+// (e.g., LD_PRELOAD to load arbitrary shared libraries). These are rejected when
+// passed via MCP config to prevent malicious .mcp.json files from hijacking processes.
+var dangerousEnvVars = map[string]bool{
+	"LD_PRELOAD":      true,
+	"LD_LIBRARY_PATH": true,
+	"DYLD_INSERT_LIBRARIES":    true,
+	"DYLD_LIBRARY_PATH":        true,
+	"DYLD_FRAMEWORK_PATH":      true,
+	"DYLD_FALLBACK_LIBRARY_PATH": true,
+}
+
+// mcpSocketDir returns a user-private directory for MCP sockets instead of /tmp.
+func mcpSocketDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), fmt.Sprintf("agentdeck-%d", os.Getuid()))
+	}
+	return filepath.Join(home, ".agent-deck", "sockets")
+}
+
 func NewSocketProxy(ctx context.Context, name, command string, args []string, env map[string]string) (*SocketProxy, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("agentdeck-mcp-%s.sock", name))
+
+	sockDir := mcpSocketDir()
+	_ = os.MkdirAll(sockDir, 0700)
+	socketPath := filepath.Join(sockDir, fmt.Sprintf("mcp-%s.sock", name))
 
 	// Check if socket already exists and is alive (another agent-deck instance owns it)
 	if isSocketAlive(socketPath) {
@@ -163,7 +187,7 @@ func (p *SocketProxy) Start() error {
 	}
 
 	logDir := filepath.Join(os.Getenv("HOME"), ".agent-deck", "logs", "mcppool")
-	_ = os.MkdirAll(logDir, 0755)
+	_ = os.MkdirAll(logDir, 0700)
 	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s_socket.log", p.name))
 
 	logWriter, err := os.Create(p.logFile)
@@ -175,6 +199,11 @@ func (p *SocketProxy) Start() error {
 	p.mcpProcess = exec.CommandContext(p.ctx, p.command, p.args...)
 	cmdEnv := os.Environ()
 	for k, v := range p.env {
+		// Reject environment variables that could be used for code injection.
+		if dangerousEnvVars[k] {
+			proxyLog.Warn("rejected_dangerous_env", slog.String("mcp", p.name), slog.String("var", k))
+			continue
+		}
 		cmdEnv = append(cmdEnv, fmt.Sprintf("%s=%s", k, v))
 	}
 	p.mcpProcess.Env = cmdEnv
@@ -218,6 +247,10 @@ func (p *SocketProxy) Start() error {
 		return err
 	}
 	p.listener = listener
+
+	// Restrict socket permissions to owner-only to prevent other users
+	// from connecting and injecting MCP requests.
+	_ = os.Chmod(p.socketPath, 0600)
 
 	proxyLog.Info("socket_listening", slog.String("mcp", p.name), slog.String("path", p.socketPath))
 

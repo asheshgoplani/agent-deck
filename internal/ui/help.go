@@ -215,6 +215,7 @@ func (h *HelpOverlay) View() string {
 			title: "SEARCH & FILTER",
 			items: [][2]string{
 				{searchKey, "Open search"},
+				{FilterKeyActive, "Filter open (hide errors)"},
 				{"/waiting", "Filter waiting"},
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
@@ -229,6 +230,13 @@ func (h *HelpOverlay) View() string {
 				{"Ctrl+Q", "Detach from session"},
 				{quitKey, "Quit"},
 				{helpKey, "This help"},
+			},
+		},
+		{
+			title: "STARTUP FLAGS",
+			items: [][2]string{
+				{"--group <name>", "Launch scoped to a group"},
+				{"--profile <name>", "Use specific profile"},
 			},
 		},
 	}

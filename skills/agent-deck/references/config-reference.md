@@ -11,6 +11,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[docker] Section](#docker-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
+- [[display] Section](#display-section)
 - [[global_search] Section](#global_search-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -57,8 +58,8 @@ Claude Code integration settings.
 ```toml
 [claude]
 config_dir = "~/.claude"           # Path to Claude config directory
-use_happy = false                  # Launch Claude via happy
 dangerous_mode = true              # Enable --dangerously-skip-permissions
+auto_mode = false                  # Enable --permission-mode auto (classifier-based)
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
 env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
@@ -70,9 +71,9 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 |-----|------|---------|-------------|
 | `config_dir` | string | `~/.claude` | Claude config directory. Override with `CLAUDE_CONFIG_DIR` env. |
 | `profiles.<name>.claude.config_dir` | string | none | Profile-specific Claude config directory. Takes precedence over `[claude].config_dir` when that profile is active. |
-| `use_happy` | bool | `false` | Launch built-in Claude sessions via `happy`. Ignored when `[claude].command` is set to a custom alias/command. |
-| `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `allow_dangerous_mode`. |
-| `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` is true. |
+| `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `auto_mode` and `allow_dangerous_mode`. |
+| `auto_mode` | bool | `false` | Adds `--permission-mode auto`. A classifier model auto-approves safe operations while blocking risky ones. Ignored when `dangerous_mode` is true. |
+| `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` or `auto_mode` is true. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 
 Config resolution order for Claude config dir:
@@ -119,13 +120,11 @@ Codex CLI integration settings.
 ```toml
 [codex]
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
-use_happy = false  # Launch Codex via happy codex
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
-| `use_happy` | bool | `false` | Launch built-in Codex sessions via `happy codex`. Can be overridden per-session. |
 
 ## [docker] Section
 
@@ -191,6 +190,23 @@ notify_in_cli = true          # Show in CLI commands
 | `check_enabled` | bool | `true` | Enable startup update checks. |
 | `check_interval_hours` | int | `24` | Hours between checks. |
 | `notify_in_cli` | bool | `true` | Show updates in CLI (not just TUI). |
+
+## [display] Section
+
+Rendering and display settings.
+
+```toml
+[display]
+full_repaint = false              # Force full screen clear every render (for terminals with grapheme issues)
+default_filter = "active"         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
+active_filter_label = "Open"      # Label for the active filter pill (default: "Open")
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `full_repaint` | bool | `false` | Force full redraws (fix for Ghostty 1.3+ drift). Also via `AGENTDECK_REPAINT=full`. |
+| `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` hides error/stopped sessions. Auto-clears if no sessions match. |
+| `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
 
 ## [global_search] Section
 
@@ -416,7 +432,6 @@ ignore_missing_env_files = true
 
 [claude]
 config_dir = "~/.claude"
-use_happy = false
 dangerous_mode = true
 env_file = "~/.claude.env"
 
@@ -425,7 +440,6 @@ config_dir = "~/.claude-work"
 
 [codex]
 yolo_mode = false
-use_happy = false
 
 [docker]
 default_enabled = false

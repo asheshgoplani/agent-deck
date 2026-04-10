@@ -304,7 +304,7 @@ func handleWorktreeCleanup(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, false)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
 		os.Exit(1)
@@ -459,8 +459,8 @@ func handleWorktreeCleanup(profile string, args []string) {
 			}
 		}
 
-		// Save updated session data (uses existing saveSessionData which rebuilds GroupTree)
-		if err := saveSessionData(storage, remaining); err != nil {
+		// Save updated session data
+		if err := saveSessionData(storage, remaining, groups); err != nil {
 			out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -523,7 +523,7 @@ func handleWorktreeFinish(profile string, args []string) {
 	}
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -668,7 +668,7 @@ func handleWorktreeFinish(profile string, args []string) {
 			remaining = append(remaining, i)
 		}
 	}
-	if err := saveSessionData(storage, remaining); err != nil {
+	if err := saveSessionData(storage, remaining, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session data: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

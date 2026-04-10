@@ -381,12 +381,51 @@ func TestGetTheme_Light(t *testing.T) {
 	}
 }
 
+func TestResolveTheme_COLORFGBGOverridesOS(t *testing.T) {
+	// Setup: explicit "system" theme so ResolveTheme falls through to
+	// auto-detection where COLORFGBG should be checked.
+	tempDir := t.TempDir()
+	t.Setenv("HOME", tempDir)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+	config := &UserConfig{Theme: "system"}
+	_ = SaveUserConfig(config)
+
+	tests := []struct {
+		name      string
+		colorfgbg string
+		want      string
+	}{
+		{"dark terminal (bg=0)", "15;0", "dark"},
+		{"dark terminal (bg=1)", "15;1", "dark"},
+		{"light terminal (bg=15)", "0;15", "light"},
+		{"light terminal (bg=8)", "0;8", "light"},
+		{"three-part dark", "12;7;0", "dark"},
+		{"three-part light", "12;7;15", "light"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COLORFGBG", tt.colorfgbg)
+			ClearUserConfigCache()
+
+			got := ResolveTheme()
+			if got != tt.want {
+				t.Errorf("ResolveTheme() with COLORFGBG=%q: got %q, want %q", tt.colorfgbg, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorktreeConfig(t *testing.T) {
 	// Create temp config with worktree settings
 	tmpDir := t.TempDir()
 	configContent := `
 [worktree]
 default_location = "subdirectory"
+default_enabled = true
 auto_cleanup = false
 `
 	configPath := filepath.Join(tmpDir, "config.toml")
@@ -403,6 +442,9 @@ auto_cleanup = false
 
 	if config.Worktree.DefaultLocation != "subdirectory" {
 		t.Errorf("Expected DefaultLocation 'subdirectory', got %q", config.Worktree.DefaultLocation)
+	}
+	if !config.Worktree.DefaultEnabled {
+		t.Error("Expected DefaultEnabled to be true")
 	}
 	if config.Worktree.AutoCleanup {
 		t.Error("Expected AutoCleanup to be false")
@@ -464,6 +506,7 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	config := &UserConfig{
 		Worktree: WorktreeSettings{
 			DefaultLocation: "subdirectory",
+			DefaultEnabled:  true,
 			AutoCleanup:     false,
 		},
 	}
@@ -473,6 +516,9 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	settings := GetWorktreeSettings()
 	if settings.DefaultLocation != "subdirectory" {
 		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "subdirectory")
+	}
+	if !settings.DefaultEnabled {
+		t.Error("GetWorktreeSettings DefaultEnabled: should be true from config")
 	}
 	if settings.AutoCleanup {
 		t.Error("GetWorktreeSettings AutoCleanup: should be false from config")
@@ -565,15 +611,15 @@ show_analytics = false
 func TestPreviewSettingsDefaults(t *testing.T) {
 	cfg := &UserConfig{}
 
-	// Default: output ON, analytics OFF, notes ON
+	// Default: output ON, analytics OFF, notes OFF
 	if !cfg.GetShowOutput() {
 		t.Error("GetShowOutput should default to true")
 	}
 	if cfg.GetShowAnalytics() {
 		t.Error("GetShowAnalytics should default to false")
 	}
-	if !cfg.GetShowNotes() {
-		t.Error("GetShowNotes should default to true")
+	if cfg.GetShowNotes() {
+		t.Error("GetShowNotes should default to false")
 	}
 }
 
@@ -631,8 +677,8 @@ show_output = true
 	if config.GetShowAnalytics() {
 		t.Error("GetShowAnalytics should default to false when not set")
 	}
-	if !config.GetShowNotes() {
-		t.Error("GetShowNotes should default to true when not set")
+	if config.GetShowNotes() {
+		t.Error("GetShowNotes should default to false when not set")
 	}
 }
 
@@ -656,6 +702,29 @@ show_notes = false
 
 	if config.GetShowNotes() {
 		t.Error("GetShowNotes should be false when explicitly disabled")
+	}
+}
+
+func TestPreviewSettingsShowNotesExplicitTrue(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	content := `
+[preview]
+show_notes = true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if !config.GetShowNotes() {
+		t.Error("GetShowNotes should be true when explicitly enabled")
 	}
 }
 
@@ -1042,5 +1111,53 @@ inject_status_line = true
 	settings := GetTmuxSettings()
 	if !settings.GetInjectStatusLine() {
 		t.Error("GetInjectStatusLine should be true when set to true")
+	}
+}
+
+func TestGetTmuxSettings_LaunchInUserScope_Default(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if settings.GetLaunchInUserScope() {
+		t.Error("GetLaunchInUserScope should default to false when not set")
+	}
+}
+
+func TestGetTmuxSettings_LaunchInUserScope_True(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[tmux]
+launch_in_user_scope = true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if !settings.GetLaunchInUserScope() {
+		t.Error("GetLaunchInUserScope should be true when set to true")
 	}
 }

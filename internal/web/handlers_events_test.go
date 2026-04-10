@@ -198,6 +198,62 @@ func TestMenuEventsStreamPushesChanges(t *testing.T) {
 	}
 }
 
+func TestSSEReconnectSnapshot(t *testing.T) {
+	// This test verifies that every new SSE connection to /events/menu
+	// receives a full "menu" event as the very first event.
+	// This is the SYNC-04 reconnect contract: on reconnect, the client
+	// receives complete state, not a diff. No separate REST fetch needed.
+	testSnapshot := &MenuSnapshot{
+		Profile:       "reconnect-test",
+		TotalGroups:   1,
+		TotalSessions: 2,
+		Items: []MenuItem{
+			{Index: 0, Type: MenuItemTypeGroup, Group: &MenuGroup{Name: "g1", Path: "g1"}},
+			{Index: 1, Type: MenuItemTypeSession, Session: &MenuSession{ID: "s1", Title: "Session 1", Status: "running"}},
+		},
+	}
+
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	srv.menuData = &fakeMenuDataLoader{snapshot: testSnapshot}
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/events/menu")
+	if err != nil {
+		t.Fatalf("SSE request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	eventType, eventData, err := readSSEEvent(reader)
+	if err != nil {
+		t.Fatalf("failed to read first SSE event: %v", err)
+	}
+
+	if eventType != "menu" {
+		t.Fatalf("expected first SSE event type 'menu', got '%s'", eventType)
+	}
+
+	var snapshot MenuSnapshot
+	if err := json.Unmarshal([]byte(eventData), &snapshot); err != nil {
+		t.Fatalf("failed to unmarshal SSE snapshot data: %v", err)
+	}
+	if snapshot.Profile != "reconnect-test" {
+		t.Fatalf("expected profile 'reconnect-test', got '%s'", snapshot.Profile)
+	}
+	if snapshot.TotalSessions != 2 {
+		t.Fatalf("expected 2 sessions in snapshot, got %d", snapshot.TotalSessions)
+	}
+}
+
 func readSSEEvent(r *bufio.Reader) (string, string, error) {
 	var (
 		event string

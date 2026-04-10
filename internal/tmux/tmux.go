@@ -59,6 +59,22 @@ func resolvedAgentDeckTheme() string {
 			}
 		}
 	}
+	// Check the terminal's own declaration before asking the OS.
+	// COLORFGBG is set by iTerm2 and other terminals; format is "fg;bg"
+	// where bg < 8 means a dark background. This catches the common case
+	// where macOS is in light mode but the terminal profile is dark.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if idx := strings.LastIndex(colorfgbg, ";"); idx >= 0 {
+			var bg int
+			if _, err := fmt.Sscanf(colorfgbg[idx+1:], "%d", &bg); err == nil {
+				if bg < 8 {
+					return "dark"
+				}
+				return "light"
+			}
+		}
+	}
+
 	isDark, err := dark.IsDarkMode()
 	if err != nil {
 		return "dark"
@@ -104,6 +120,50 @@ var ErrCaptureTimeout = errors.New("capture-pane timed out")
 
 const SessionPrefix = "agentdeck_"
 
+// serverAlive tracks whether the tmux server is responsive.
+// When the server is dead, all subprocess calls take ~3s to fail.
+// This flag short-circuits expensive status loops to prevent UI freezes.
+var (
+	serverAliveMu   sync.RWMutex
+	serverAliveVal  = true
+	serverAliveTime time.Time
+)
+
+// IsServerAlive returns whether the tmux server was recently reachable.
+// Result is cached for 5 seconds to avoid redundant checks.
+func IsServerAlive() bool {
+	serverAliveMu.RLock()
+	if !serverAliveTime.IsZero() && time.Since(serverAliveTime) < 5*time.Second {
+		alive := serverAliveVal
+		serverAliveMu.RUnlock()
+		return alive
+	}
+	serverAliveMu.RUnlock()
+
+	// Quick probe: 1-second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}").CombinedOutput()
+	alive := err == nil || (!strings.Contains(string(out), "server exited") &&
+		!strings.Contains(string(out), "lost server") &&
+		ctx.Err() != context.DeadlineExceeded)
+
+	// "no server running" with quick response is fine - server just has no sessions
+	if err != nil && strings.Contains(string(out), "no server running") {
+		alive = true
+	}
+
+	serverAliveMu.Lock()
+	serverAliveVal = alive
+	serverAliveTime = time.Now()
+	serverAliveMu.Unlock()
+
+	if !alive {
+		perfLog.Warn("tmux_server_dead")
+	}
+	return alive
+}
+
 // Session cache - reduces subprocess spawns from O(n) to O(1) per tick
 // Instead of calling `tmux has-session` and `tmux display-message` for each session,
 // we call `tmux list-sessions` ONCE and cache both existence and activity timestamps
@@ -144,8 +204,10 @@ func RefreshSessionCache() {
 		statusLog.Debug("refresh_cache_subprocess_fallback")
 	}
 
-	// Subprocess fallback: list-windows -a
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
+	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -655,6 +717,11 @@ type Session struct {
 	// Sandbox sessions enable this so pane-dead detection can restart exited tools.
 	RunCommandAsInitialProcess bool
 
+	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
+	// so the server is owned by the user's systemd manager instead of the current
+	// login session scope.
+	LaunchInUserScope bool
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -688,6 +755,56 @@ const (
 	envCacheTTL        = 30 * time.Second
 	startupStateWindow = 2 * time.Minute
 )
+
+func sanitizeSystemdUnitComponent(raw string) string {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "session"
+	}
+	if len(out) > 48 {
+		out = strings.Trim(out[:48], "-")
+		if out == "" {
+			return "session"
+		}
+	}
+	return out
+}
+
+func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
+	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
+	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
+	if startWithInitialProcess {
+		cmdToStart := command
+		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
+			escapedCmd := strings.ReplaceAll(command, "'", "'\"'\"'")
+			cmdToStart = fmt.Sprintf("bash -c '%s'", escapedCmd)
+		}
+		args = append(args, cmdToStart)
+	}
+
+	if !s.LaunchInUserScope {
+		return "tmux", args
+	}
+
+	unitName := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
+	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitName, "tmux"}
+	scopeArgs = append(scopeArgs, args...)
+	return "systemd-run", scopeArgs
+}
 
 // invalidateCache clears the CapturePane cache.
 // MUST be called after any action that might change terminal content.
@@ -974,7 +1091,9 @@ func generateShortID() string {
 
 // SetEnvironment sets an environment variable for this tmux session
 func (s *Session) SetEnvironment(key, value string) error {
-	cmd := exec.Command("tmux", "set-environment", "-t", s.Name, key, value)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "set-environment", "-t", s.Name, key, value)
 	err := cmd.Run()
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
@@ -989,11 +1108,14 @@ func (s *Session) SetEnvironment(key, value string) error {
 
 func (s *Session) ApplyThemeOptions() error {
 	themeStyle := currentTmuxThemeStyle()
-	args := []string{
-		"set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";",
-		"set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";",
-		"set-option", "-t", s.Name, "status-style", themeStyle.statusStyle,
+	var args []string
+	if _, ok := s.OptionOverrides["window-style"]; !ok {
+		args = append(args, "set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";")
 	}
+	if _, ok := s.OptionOverrides["window-active-style"]; !ok {
+		args = append(args, "set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";")
+	}
+	args = append(args, "set-option", "-t", s.Name, "status-style", themeStyle.statusStyle)
 	if s.injectStatusLine {
 		args = append(args,
 			";", "set-option", "-t", s.Name, "status-right", s.themedStatusRight(themeStyle),
@@ -1016,7 +1138,9 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 	}
 	s.envCacheMu.RUnlock()
 
-	cmd := exec.Command("tmux", "show-environment", "-t", s.Name, key)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "show-environment", "-t", s.Name, key)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)
@@ -1181,30 +1305,31 @@ func (s *Session) Start(command string) error {
 		workDir = os.Getenv("HOME")
 	}
 
-	// Create new tmux session in detached mode.
-	// Sandbox sessions launch command as the pane process for dead-pane restart.
-	// Non-sandbox sessions keep the legacy shell+send flow.
-	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
-	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
-	if startWithInitialProcess {
-		args = append(args, command)
-	}
-	cmd := exec.Command("tmux", args...)
+	// Create new tmux session in detached mode with the command as the initial
+	// process. This avoids the slow shell-wait-sendkeys path (~2s pane ready poll).
+	// Commands containing bash-specific syntax are wrapped for fish compatibility.
+	launcher, args := s.startCommandSpec(workDir, command)
+	cmd := exec.Command(launcher, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
-			statusLog.Warn("tmux_stale_socket_recovery_failed",
-				slog.String("session", s.Name),
-				slog.String("error", recoverErr.Error()),
-			)
-		} else if recovered {
-			statusLog.Warn("tmux_start_retry_after_socket_recovery",
-				slog.String("session", s.Name),
-			)
-			output, err = exec.Command("tmux", args...).CombinedOutput()
+		if launcher == "tmux" {
+			if recovered, recoverErr := recoverFromStaleDefaultSocketIfNeeded(string(output)); recoverErr != nil {
+				statusLog.Warn("tmux_stale_socket_recovery_failed",
+					slog.String("session", s.Name),
+					slog.String("error", recoverErr.Error()),
+				)
+			} else if recovered {
+				statusLog.Warn("tmux_start_retry_after_socket_recovery",
+					slog.String("session", s.Name),
+				)
+				output, err = exec.Command(launcher, args...).CombinedOutput()
+			}
 		}
 	}
 	if err != nil {
+		if launcher == "systemd-run" {
+			return fmt.Errorf("failed to create tmux session via systemd user scope: %w (output: %s)", err, string(output))
+		}
 		return fmt.Errorf("failed to create tmux session: %w (output: %s)", err, string(output))
 	}
 
@@ -1230,18 +1355,22 @@ func (s *Session) Start(command string) error {
 	// via OptionOverrides to avoid changing behaviour for non-sandbox sessions.
 	themeStyle := currentTmuxThemeStyle()
 
-	_ = exec.Command("tmux",
-		"set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";",
-		"set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";",
+	startArgs := make([]string, 0, 40)
+	if _, ok := s.OptionOverrides["window-style"]; !ok {
+		startArgs = append(startArgs, "set-option", "-t", s.Name, "window-style", themeStyle.windowStyle, ";")
+	}
+	if _, ok := s.OptionOverrides["window-active-style"]; !ok {
+		startArgs = append(startArgs, "set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";")
+	}
+	startArgs = append(startArgs,
 		"set-option", "-t", s.Name, "mouse", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set-option", "-t", s.Name, "-q", "extended-keys", "on").Run()
-
-	// Idempotent: only append terminal-features if not already present
-	ensureTerminalFeatures("hyperlinks", "extkeys")
+		"set", "-sq", "extended-keys", "on", ";",
+		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	_ = exec.Command("tmux", startArgs...).Run()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
@@ -1274,7 +1403,7 @@ func (s *Session) Start(command string) error {
 	// sending keys before the shell is ready causes them to be silently swallowed.
 	// Non-fatal best-effort guard: if the timeout expires, log a warning and continue
 	// anyway (degraded path, same as the behaviour before this guard was added).
-	if command != "" && !startWithInitialProcess {
+	if command != "" && !s.RunCommandAsInitialProcess {
 		paneReadyTimeout := 2 * time.Second
 		if platform.IsWSL() {
 			paneReadyTimeout = 5 * time.Second
@@ -1288,8 +1417,8 @@ func (s *Session) Start(command string) error {
 		}
 	}
 
-	// Legacy behavior for non-sandbox sessions: start shell first, then send command.
-	if command != "" && !startWithInitialProcess {
+	// Fallback: if RunCommandAsInitialProcess is false, send command via send-keys.
+	if command != "" && !s.RunCommandAsInitialProcess {
 		cmdToSend := command
 		// Commands containing bash-specific syntax must be wrapped for fish users.
 		if strings.Contains(command, "$(") || strings.Contains(command, "session_id=") {
@@ -1410,31 +1539,6 @@ func (s *Session) ConfigureStatusBar() {
 	_ = exec.Command("tmux", args...).Run()
 }
 
-// ensureTerminalFeatures appends terminal features only if not already present.
-// This prevents the terminal-features list from growing on every session start (#366).
-func ensureTerminalFeatures(features ...string) {
-	out, err := exec.Command("tmux", "show", "-sv", "terminal-features").Output()
-	if err != nil {
-		// tmux too old or server not running — append unconditionally as best-effort
-		if len(features) > 0 {
-			val := ",*:" + strings.Join(features, ":")
-			_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
-		}
-		return
-	}
-	existing := string(out)
-	var missing []string
-	for _, f := range features {
-		if !strings.Contains(existing, f) {
-			missing = append(missing, f)
-		}
-	}
-	if len(missing) > 0 {
-		val := ",*:" + strings.Join(missing, ":")
-		_ = exec.Command("tmux", "set", "-asq", "terminal-features", val).Run()
-	}
-}
-
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
 // Safe to call multiple times - just sets the options again
 //
@@ -1479,13 +1583,11 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "history-limit", "10000", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
-		"set-option", "-t", s.Name, "-q", "extended-keys", "on")
+		"set", "-sq", "extended-keys", "on", ";",
+		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
 	_ = enhanceCmd.Run()
-
-	// Idempotent: only append terminal-features if not already present
-	ensureTerminalFeatures("hyperlinks", "extkeys")
 
 	return nil
 }
@@ -2879,13 +2981,17 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 			}
 		}
 		lowerContent := strings.ToLower(recentContent)
+		// "esc to interrupt" always appears in the last 1-2 status bar lines of the
+		// pane. Limiting to 3 lines prevents matching model-generated prose output
+		// that happens to contain the phrase (e.g. conductor status reports).
+		statusBarLines := lastNLines(content, 3)
 		for _, str := range patterns.BusyStrings {
 			lowerStr := strings.ToLower(str)
 			if !strings.Contains(lowerContent, lowerStr) {
 				continue
 			}
 			if strings.Contains(lowerStr, "interrupt") &&
-				!hasInterruptBusyContext(recentLines, lowerStr, spinnerChars) {
+				!hasInterruptBusyContext(statusBarLines, lowerStr, spinnerChars) {
 				statusLog.Debug("busy_string_ignored_no_context",
 					slog.String("session", shortName),
 					slog.String("pattern", str))

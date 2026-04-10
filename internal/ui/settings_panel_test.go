@@ -922,7 +922,7 @@ func TestSettingsPanel_PreviewSettings_GetConfigPreservesHiddenFields(t *testing
 
 	showNotes := false
 	showTools := false
-	panel.originalConfig = &session.UserConfig{
+	original := &session.UserConfig{
 		Preview: session.PreviewSettings{
 			ShowNotes:        &showNotes,
 			NotesOutputSplit: 0.42,
@@ -931,12 +931,17 @@ func TestSettingsPanel_PreviewSettings_GetConfigPreservesHiddenFields(t *testing
 			},
 		},
 	}
+	panel.LoadConfig(original)
+	panel.originalConfig = original
 
 	config := panel.GetConfig()
 
+	// ShowNotes is now editable; LoadConfig sets it from original
 	if config.Preview.ShowNotes == nil || *config.Preview.ShowNotes {
-		t.Fatal("Preview.ShowNotes should be preserved as false")
+		t.Fatal("Preview.ShowNotes should be false after loading config with false")
 	}
+	// NotesOutputSplit is now editable; LoadConfig converts 0.42 -> 42% -> int(42)
+	// GetConfig converts back: 42 / 100.0 = 0.42
 	if config.Preview.NotesOutputSplit != 0.42 {
 		t.Fatalf("Preview.NotesOutputSplit = %v, want 0.42", config.Preview.NotesOutputSplit)
 	}

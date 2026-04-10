@@ -24,10 +24,11 @@ type SetupWizard struct {
 
 	// Step 2: Claude settings (only if Claude selected)
 	dangerousMode        bool
+	autoMode             bool
 	useDefaultConfigDir  bool
 	customConfigDir      string
 	configDirInput       textinput.Model
-	claudeSettingsCursor int // 0=dangerous mode, 1=config dir
+	claudeSettingsCursor int // 0=dangerous mode, 1=auto mode, 2=config dir
 
 	// Theme setting
 	selectedTheme int // 0=dark, 1=light
@@ -146,6 +147,7 @@ func (w *SetupWizard) GetConfig() *session.UserConfig {
 	// Set Claude settings
 	dangerousModeVal := w.dangerousMode
 	config.Claude.DangerousMode = &dangerousModeVal
+	config.Claude.AutoMode = w.autoMode
 	if !w.useDefaultConfigDir && w.customConfigDir != "" {
 		config.Claude.ConfigDir = w.customConfigDir
 	}
@@ -221,7 +223,7 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 			case stepClaudeSettings:
 				w.claudeSettingsCursor--
 				if w.claudeSettingsCursor < 0 {
-					w.claudeSettingsCursor = 1
+					w.claudeSettingsCursor = 2
 				}
 			}
 			return w, nil
@@ -231,7 +233,7 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 			case stepToolSelection:
 				w.selectedTool = (w.selectedTool + 1) % len(w.toolOptions)
 			case stepClaudeSettings:
-				w.claudeSettingsCursor = (w.claudeSettingsCursor + 1) % 2
+				w.claudeSettingsCursor = (w.claudeSettingsCursor + 1) % 3
 			}
 			return w, nil
 
@@ -241,6 +243,8 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 				case 0:
 					w.dangerousMode = !w.dangerousMode
 				case 1:
+					w.autoMode = !w.autoMode
+				case 2:
 					w.useDefaultConfigDir = !w.useDefaultConfigDir
 					if !w.useDefaultConfigDir {
 						w.configDirInput.Focus()
@@ -424,10 +428,26 @@ func (w *SetupWizard) View() string {
 		content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("    Skip permission prompts (--dangerously-skip-permissions)"))
 		content.WriteString("\n\n")
 
-		// Config directory radio buttons
+		// Auto mode checkbox
+		checkbox = checkboxOff
+		if w.autoMode {
+			checkbox = checkboxOn
+		}
 		cursor = "  "
 		style = labelStyle
 		if w.claudeSettingsCursor == 1 {
+			cursor = "> "
+			style = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+		}
+		content.WriteString(cursor + checkbox + " " + style.Render("Enable auto mode"))
+		content.WriteString("\n")
+		content.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Render("    Classifier-based auto-approval (--permission-mode auto)"))
+		content.WriteString("\n\n")
+
+		// Config directory radio buttons
+		cursor = "  "
+		style = labelStyle
+		if w.claudeSettingsCursor == 2 {
 			cursor = "> "
 			style = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
 		}

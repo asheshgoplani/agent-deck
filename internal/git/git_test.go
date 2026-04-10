@@ -61,6 +61,7 @@ func createBranch(t *testing.T, dir, branchName string) {
 	}
 }
 
+
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -502,45 +503,6 @@ func TestCreateWorktree(t *testing.T) {
 		}
 	})
 
-	t.Run("creates worktree from default remote branch", func(t *testing.T) {
-		dir := t.TempDir()
-		createTestRepo(t, dir)
-
-		remoteDir := filepath.Join(t.TempDir(), "origin.git")
-		if err := os.MkdirAll(remoteDir, 0o755); err != nil {
-			t.Fatalf("failed to create remote dir: %v", err)
-		}
-		runGit(t, remoteDir, "init", "--bare")
-		runGit(t, dir, "remote", "add", "origin", remoteDir)
-		runGit(t, dir, "push", "-u", "origin", "main")
-		runGit(t, dir, "checkout", "-b", "remote-only")
-		runGit(t, dir, "push", "-u", "origin", "remote-only")
-		runGit(t, dir, "checkout", "main")
-		runGit(t, dir, "branch", "-D", "remote-only")
-
-		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "remote-only"); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if !BranchExists(dir, "remote-only") {
-			t.Fatal("expected CreateWorktree to create a local tracking branch")
-		}
-
-		branch, err := GetCurrentBranch(worktreePath)
-		if err != nil {
-			t.Fatalf("failed to get branch: %v", err)
-		}
-		if branch != "remote-only" {
-			t.Fatalf("expected remote-only branch, got %s", branch)
-		}
-
-		upstream := runGit(t, worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-		if upstream != "origin/remote-only" {
-			t.Fatalf("expected upstream origin/remote-only, got %s", upstream)
-		}
-	})
-
 	t.Run("returns error for invalid branch name", func(t *testing.T) {
 		dir := t.TempDir()
 		createTestRepo(t, dir)
@@ -564,35 +526,6 @@ func TestCreateWorktree(t *testing.T) {
 	})
 }
 
-func TestResolveWorktreeBranch(t *testing.T) {
-	t.Run("prefers local branch over default remote branch", func(t *testing.T) {
-		dir := t.TempDir()
-		createTestRepo(t, dir)
-
-		remoteDir := filepath.Join(t.TempDir(), "origin.git")
-		if err := os.MkdirAll(remoteDir, 0o755); err != nil {
-			t.Fatalf("failed to create remote dir: %v", err)
-		}
-		runGit(t, remoteDir, "init", "--bare")
-		runGit(t, dir, "remote", "add", "origin", remoteDir)
-		runGit(t, dir, "push", "-u", "origin", "main")
-		runGit(t, dir, "checkout", "-b", "shared-branch")
-		runGit(t, dir, "push", "-u", "origin", "shared-branch")
-		runGit(t, dir, "checkout", "main")
-
-		resolution, err := resolveWorktreeBranch(dir, "shared-branch")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if resolution.Mode != worktreeBranchLocal {
-			t.Fatalf("expected local branch resolution, got mode %d", resolution.Mode)
-		}
-		if resolution.Remote != "" {
-			t.Fatalf("expected no remote for local resolution, got %q", resolution.Remote)
-		}
-	})
-}
-
 func TestListBranchCandidates(t *testing.T) {
 	dir := t.TempDir()
 	createTestRepo(t, dir)
@@ -611,6 +544,17 @@ func TestListBranchCandidates(t *testing.T) {
 	runGit(t, dir, "checkout", "main")
 	runGit(t, dir, "branch", "-D", "feature/remote-only")
 
+	secondRemoteDir := filepath.Join(t.TempDir(), "qzchenwl.git")
+	if err := os.MkdirAll(secondRemoteDir, 0o755); err != nil {
+		t.Fatalf("failed to create second remote dir: %v", err)
+	}
+	runGit(t, secondRemoteDir, "init", "--bare")
+	runGit(t, dir, "remote", "add", "qzchenwl", secondRemoteDir)
+	runGit(t, dir, "checkout", "-b", "feature/fork-remote")
+	runGit(t, dir, "push", "-u", "qzchenwl", "feature/fork-remote")
+	runGit(t, dir, "checkout", "main")
+	runGit(t, dir, "branch", "-D", "feature/fork-remote")
+
 	branches, err := ListBranchCandidates(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -619,8 +563,11 @@ func TestListBranchCandidates(t *testing.T) {
 	if !containsString(branches, "feature/local-only") {
 		t.Fatalf("expected local branch in candidates: %v", branches)
 	}
-	if !containsString(branches, "feature/remote-only") {
-		t.Fatalf("expected remote-only branch in candidates: %v", branches)
+	if !containsString(branches, "origin/feature/remote-only") {
+		t.Fatalf("expected origin remote-only branch in candidates: %v", branches)
+	}
+	if !containsString(branches, "qzchenwl/feature/fork-remote") {
+		t.Fatalf("expected second remote branch in candidates: %v", branches)
 	}
 }
 

@@ -1,11 +1,14 @@
 package statedb
 
 import (
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func newTestDB(t *testing.T) *StateDB {
@@ -679,5 +682,253 @@ func TestRecentSessions_DedupIdenticalConfig(t *testing.T) {
 	}
 	if len(rows) != 1 {
 		t.Fatalf("expected deduped row count 1, got %d", len(rows))
+	}
+}
+
+// --- Schema Migration Tests ---
+// These tests verify that Migrate() correctly upgrades databases created with older schemas.
+// Incident (2026-03-26): PR #385 added the "acknowledged" column without an ALTER TABLE
+// migration, breaking all existing users upgrading from v0.26.x.
+
+// createV1SchemaDB creates a database with the v0.26.x schema (before "acknowledged" column,
+// before recent_sessions, before cost_events). Returns an open *StateDB.
+func createV1SchemaDB(t *testing.T) *StateDB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := rawDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		t.Fatalf("WAL: %v", err)
+	}
+
+	// v1 schema: instances WITHOUT acknowledged column, no recent_sessions, no cost_events
+	for _, stmt := range []string{
+		`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO metadata (key, value) VALUES ('schema_version', '1')`,
+		`CREATE TABLE instances (
+			id              TEXT PRIMARY KEY,
+			title           TEXT NOT NULL,
+			project_path    TEXT NOT NULL,
+			group_path      TEXT NOT NULL DEFAULT 'my-sessions',
+			sort_order      INTEGER NOT NULL DEFAULT 0,
+			command         TEXT NOT NULL DEFAULT '',
+			wrapper         TEXT NOT NULL DEFAULT '',
+			tool            TEXT NOT NULL DEFAULT 'shell',
+			status          TEXT NOT NULL DEFAULT 'error',
+			tmux_session    TEXT NOT NULL DEFAULT '',
+			created_at      INTEGER NOT NULL,
+			last_accessed   INTEGER NOT NULL DEFAULT 0,
+			parent_session_id TEXT NOT NULL DEFAULT '',
+			worktree_path     TEXT NOT NULL DEFAULT '',
+			worktree_repo     TEXT NOT NULL DEFAULT '',
+			worktree_branch   TEXT NOT NULL DEFAULT '',
+			tool_data       TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE TABLE groups (
+			path         TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			expanded     INTEGER NOT NULL DEFAULT 1,
+			sort_order   INTEGER NOT NULL DEFAULT 0,
+			default_path TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE instance_heartbeats (
+			pid        INTEGER PRIMARY KEY,
+			started    INTEGER NOT NULL,
+			heartbeat  INTEGER NOT NULL,
+			is_primary INTEGER NOT NULL DEFAULT 0
+		)`,
+	} {
+		if _, err := rawDB.Exec(stmt); err != nil {
+			t.Fatalf("create v1 schema: %v\nSQL: %s", err, stmt)
+		}
+	}
+
+	// Insert a session to simulate existing user data
+	now := time.Now().Unix()
+	if _, err := rawDB.Exec(`
+		INSERT INTO instances (id, title, project_path, group_path, sort_order, tool, status, created_at, tool_data)
+		VALUES ('existing-1', 'My Session', '/home/user/project', 'conductor', 0, 'claude', 'idle', ?, '{}')
+	`, now); err != nil {
+		t.Fatalf("insert v1 instance: %v", err)
+	}
+
+	rawDB.Close()
+
+	// Reopen through StateDB
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open after v1 creation: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// TestMigrate_OldSchema_AcknowledgedColumn verifies that upgrading from v1 schema
+// (without "acknowledged" column) to current schema works. This is the exact scenario
+// that broke all v0.26.x users in the v0.27.0 release.
+func TestMigrate_OldSchema_AcknowledgedColumn(t *testing.T) {
+	db := createV1SchemaDB(t)
+
+	// Run Migrate() on the old schema: should add the acknowledged column
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate() on v1 schema failed: %v", err)
+	}
+
+	// Verify existing data survived the migration
+	instances, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances after migrate: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance after migrate, got %d", len(instances))
+	}
+	if instances[0].ID != "existing-1" || instances[0].Title != "My Session" {
+		t.Errorf("instance data corrupted: %+v", instances[0])
+	}
+
+	// Verify acknowledged column works (the exact operation that broke in v0.27.0)
+	if err := db.SetAcknowledged("existing-1", true); err != nil {
+		t.Fatalf("SetAcknowledged after migrate: %v", err)
+	}
+
+	statuses, err := db.ReadAllStatuses()
+	if err != nil {
+		t.Fatalf("ReadAllStatuses after migrate: %v", err)
+	}
+	if !statuses["existing-1"].Acknowledged {
+		t.Error("expected acknowledged=true after SetAcknowledged on migrated DB")
+	}
+
+	// Verify WriteStatus also works (clears acknowledged when running)
+	if err := db.WriteStatus("existing-1", "running", "claude"); err != nil {
+		t.Fatalf("WriteStatus after migrate: %v", err)
+	}
+	statuses, _ = db.ReadAllStatuses()
+	if statuses["existing-1"].Acknowledged {
+		t.Error("running status should clear acknowledged flag on migrated DB")
+	}
+}
+
+// TestMigrate_OldSchema_NewTablesCreated verifies that new tables (recent_sessions,
+// cost_events) are created when migrating from v1 schema.
+func TestMigrate_OldSchema_NewTablesCreated(t *testing.T) {
+	db := createV1SchemaDB(t)
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate() on v1 schema failed: %v", err)
+	}
+
+	// Verify recent_sessions table was created and works
+	if err := db.SaveRecentSession(&RecentSessionRow{
+		Title:       "test-recent",
+		ProjectPath: "/tmp",
+		GroupPath:   "default",
+		Tool:        "claude",
+		ToolOptions: json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatalf("SaveRecentSession on migrated DB: %v", err)
+	}
+
+	recent, err := db.LoadRecentSessions()
+	if err != nil {
+		t.Fatalf("LoadRecentSessions on migrated DB: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Errorf("expected 1 recent session, got %d", len(recent))
+	}
+
+	// Verify cost_events table was created (just check it's queryable)
+	var count int
+	if err := db.DB().QueryRow("SELECT COUNT(*) FROM cost_events").Scan(&count); err != nil {
+		t.Fatalf("cost_events table not created by Migrate(): %v", err)
+	}
+}
+
+// TestMigrate_OldSchema_NewInstanceCreation verifies that creating a NEW instance works
+// on a migrated v1 database. This catches issues where INSERT statements reference
+// columns that don't exist in the upgraded schema.
+func TestMigrate_OldSchema_NewInstanceCreation(t *testing.T) {
+	db := createV1SchemaDB(t)
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate() on v1 schema failed: %v", err)
+	}
+
+	// Create a new instance (simulates what the TUI does when user creates a session)
+	if err := db.SaveInstance(&InstanceRow{
+		ID:          "new-after-migrate",
+		Title:       "New Session",
+		ProjectPath: "/tmp/new",
+		GroupPath:   "conductor",
+		Tool:        "claude",
+		Status:      "starting",
+		CreatedAt:   time.Now(),
+		ToolData:    json.RawMessage(`{"claude_session_id":"test"}`),
+	}); err != nil {
+		t.Fatalf("SaveInstance on migrated DB: %v", err)
+	}
+
+	// Load and verify both old and new instances exist
+	instances, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances (1 old + 1 new), got %d", len(instances))
+	}
+}
+
+// TestMigrate_OldSchema_SchemaVersionUpdated verifies the schema version is bumped after migration.
+func TestMigrate_OldSchema_SchemaVersionUpdated(t *testing.T) {
+	db := createV1SchemaDB(t)
+
+	// Verify pre-migration version
+	preVersion, err := db.GetMeta("schema_version")
+	if err != nil {
+		t.Fatalf("GetMeta before migrate: %v", err)
+	}
+	if preVersion != "1" {
+		t.Fatalf("expected schema_version=1 before migrate, got %q", preVersion)
+	}
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate(): %v", err)
+	}
+
+	// Verify post-migration version matches current SchemaVersion
+	postVersion, err := db.GetMeta("schema_version")
+	if err != nil {
+		t.Fatalf("GetMeta after migrate: %v", err)
+	}
+	expected := "4" // current SchemaVersion
+	if postVersion != expected {
+		t.Errorf("expected schema_version=%s after migrate, got %q", expected, postVersion)
+	}
+}
+
+// TestMigrate_Idempotent verifies that running Migrate() twice on the same DB is safe.
+func TestMigrate_Idempotent(t *testing.T) {
+	db := createV1SchemaDB(t)
+
+	// First migration
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("first Migrate(): %v", err)
+	}
+
+	// Second migration (should be a no-op, not error)
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("second Migrate() failed (not idempotent): %v", err)
+	}
+
+	// Verify data is intact
+	instances, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances after double migrate: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Errorf("expected 1 instance after double migrate, got %d", len(instances))
 	}
 }

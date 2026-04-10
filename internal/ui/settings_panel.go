@@ -20,9 +20,7 @@ const (
 	SettingDefaultTool
 	SettingDangerousMode
 	SettingClaudeConfigDir
-	SettingClaudeUseHappy
 	SettingGeminiYoloMode
-	SettingCodexUseHappy
 	SettingCodexYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
@@ -34,11 +32,22 @@ const (
 	SettingRecentDays
 	SettingShowOutput
 	SettingShowAnalytics
+	SettingShowNotes
+	SettingNotesOutputSplit
 	SettingMaintenanceEnabled
+	SettingStatsEnabled
+	SettingStatsRefresh
+	SettingStatsFormat
+	SettingStatsShowCPU
+	SettingStatsShowRAM
+	SettingStatsShowDisk
+	SettingStatsShowNetwork
+	SettingStatsShowGPU
+	SettingStatsShowLoad
 )
 
 // Total number of navigable settings.
-const settingsCount = 19
+const settingsCount = 28
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -59,9 +68,7 @@ type SettingsPanel struct {
 	dangerousMode       bool
 	claudeConfigDir     string
 	claudeConfigIsScope bool // true = profile override, false = global [claude]
-	claudeUseHappy      bool
 	geminiYoloMode      bool
-	codexUseHappy       bool
 	codexYoloMode       bool
 	checkForUpdates     bool
 	autoUpdate          bool
@@ -73,7 +80,18 @@ type SettingsPanel struct {
 	recentDays          int
 	showOutput          bool
 	showAnalytics       bool
+	showNotes           bool
+	notesOutputSplit    int // percentage 10-90 (displayed as %, stored as 0.10-0.90)
 	maintenanceEnabled  bool
+	statsEnabled        bool
+	statsRefreshSecs    int
+	statsFormat         int // 0=compact, 1=full, 2=minimal
+	statsShowCPU        bool
+	statsShowRAM        bool
+	statsShowDisk       bool
+	statsShowNetwork    bool
+	statsShowGPU        bool
+	statsShowLoad       bool
 
 	// Text input state
 	editingText bool
@@ -105,6 +123,12 @@ var (
 	themeValues = []string{"dark", "light", "system"}
 )
 
+// Stats format names for radio selection
+var (
+	statsFormatNames  = []string{"Compact", "Full", "Minimal"}
+	statsFormatValues = []string{"compact", "full", "minimal"}
+)
+
 // NewSettingsPanel creates a new settings panel
 func NewSettingsPanel() *SettingsPanel {
 	return &SettingsPanel{
@@ -118,6 +142,13 @@ func NewSettingsPanel() *SettingsPanel {
 		recentDays:          90,
 		showOutput:          true,  // Default: output ON (shows launch animation)
 		showAnalytics:       false, // Default: analytics OFF (opt-in)
+		notesOutputSplit:    33,    // Default: 33%
+		statsEnabled:        true,  // Default: stats ON
+		statsRefreshSecs:    5,     // Default: 5 seconds
+		statsShowCPU:        true,
+		statsShowRAM:        true,
+		statsShowDisk:       true,
+		statsShowNetwork:    true,
 	}
 }
 
@@ -206,7 +237,6 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.dangerousMode = config.Claude.GetDangerousMode()
 	s.claudeConfigDir = config.Claude.ConfigDir
 	s.claudeConfigIsScope = false
-	s.claudeUseHappy = config.Claude.UseHappy
 	if s.profile != "" && config.Profiles != nil {
 		if profileCfg, ok := config.Profiles[s.profile]; ok && profileCfg.Claude.ConfigDir != "" {
 			s.claudeConfigDir = profileCfg.Claude.ConfigDir
@@ -218,7 +248,6 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.geminiYoloMode = config.Gemini.YoloMode
 
 	// Codex settings
-	s.codexUseHappy = config.Codex.UseHappy
 	s.codexYoloMode = config.Codex.YoloMode
 
 	// Update settings
@@ -253,9 +282,38 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Preview settings
 	s.showOutput = config.GetShowOutput()
 	s.showAnalytics = config.GetShowAnalytics()
+	s.showNotes = config.GetShowNotes()
+	split := config.Preview.GetNotesOutputSplit()
+	s.notesOutputSplit = int(split * 100)
+	if s.notesOutputSplit < 10 {
+		s.notesOutputSplit = 10
+	} else if s.notesOutputSplit > 90 {
+		s.notesOutputSplit = 90
+	}
 
 	// Maintenance settings.
 	s.maintenanceEnabled = config.Maintenance.Enabled
+
+	// System stats settings
+	s.statsEnabled = config.SystemStats.GetEnabled()
+	s.statsRefreshSecs = config.SystemStats.GetRefreshSeconds()
+	s.statsFormat = 0 // compact by default
+	for i, val := range statsFormatValues {
+		if val == config.SystemStats.GetFormat() {
+			s.statsFormat = i
+			break
+		}
+	}
+	showSet := make(map[string]bool)
+	for _, stat := range config.SystemStats.GetShow() {
+		showSet[stat] = true
+	}
+	s.statsShowCPU = showSet["cpu"]
+	s.statsShowRAM = showSet["ram"]
+	s.statsShowDisk = showSet["disk"]
+	s.statsShowNetwork = showSet["network"]
+	s.statsShowGPU = showSet["gpu"]
+	s.statsShowLoad = showSet["load"]
 }
 
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
@@ -296,17 +354,6 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		MCPs:        make(map[string]session.MCPDef),
 	}
 
-	if s.originalConfig != nil {
-		config.Claude = s.originalConfig.Claude
-		config.Gemini = s.originalConfig.Gemini
-		config.Codex = s.originalConfig.Codex
-		config.Updates = s.originalConfig.Updates
-		config.Logs = s.originalConfig.Logs
-		config.GlobalSearch = s.originalConfig.GlobalSearch
-		config.Preview = s.originalConfig.Preview
-		config.Maintenance = s.originalConfig.Maintenance
-	}
-
 	// Theme
 	if s.selectedTheme < len(themeValues) {
 		config.Theme = themeValues[s.selectedTheme]
@@ -320,7 +367,6 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	// Claude settings
 	dangerousModeVal := s.dangerousMode
 	config.Claude.DangerousMode = &dangerousModeVal
-	config.Claude.UseHappy = s.claudeUseHappy
 	if !s.claudeConfigIsScope {
 		config.Claude.ConfigDir = s.claudeConfigDir
 	}
@@ -329,7 +375,6 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Gemini.YoloMode = s.geminiYoloMode
 
 	// Codex settings
-	config.Codex.UseHappy = s.codexUseHappy
 	config.Codex.YoloMode = s.codexYoloMode
 
 	// Update settings
@@ -353,9 +398,40 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Preview.ShowOutput = &showOutput
 	showAnalytics := s.showAnalytics
 	config.Preview.ShowAnalytics = &showAnalytics
+	showNotes := s.showNotes
+	config.Preview.ShowNotes = &showNotes
+	config.Preview.NotesOutputSplit = float64(s.notesOutputSplit) / 100.0
 
 	// Maintenance settings.
 	config.Maintenance.Enabled = s.maintenanceEnabled
+
+	// System stats settings
+	statsEnabled := s.statsEnabled
+	config.SystemStats.Enabled = &statsEnabled
+	config.SystemStats.RefreshSeconds = s.statsRefreshSecs
+	if s.statsFormat >= 0 && s.statsFormat < len(statsFormatValues) {
+		config.SystemStats.Format = statsFormatValues[s.statsFormat]
+	}
+	var showStats []string
+	if s.statsShowCPU {
+		showStats = append(showStats, "cpu")
+	}
+	if s.statsShowRAM {
+		showStats = append(showStats, "ram")
+	}
+	if s.statsShowDisk {
+		showStats = append(showStats, "disk")
+	}
+	if s.statsShowNetwork {
+		showStats = append(showStats, "network")
+	}
+	if s.statsShowGPU {
+		showStats = append(showStats, "gpu")
+	}
+	if s.statsShowLoad {
+		showStats = append(showStats, "load")
+	}
+	config.SystemStats.Show = showStats
 
 	// Preserve original MCPs, Tools, and Docker settings.
 	if s.originalConfig != nil {
@@ -363,8 +439,6 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.Tools = s.originalConfig.Tools
 		config.MCPPool = s.originalConfig.MCPPool
 		config.Docker = s.originalConfig.Docker
-		config.Preview.ShowNotes = s.originalConfig.Preview.ShowNotes
-		config.Preview.NotesOutputSplit = s.originalConfig.Preview.NotesOutputSplit
 		config.Preview.Analytics = s.originalConfig.Preview.Analytics
 		config.Profiles = s.originalConfig.Profiles
 		// Keep global Claude config when editing profile-specific override.
@@ -486,6 +560,27 @@ func (s *SettingsPanel) adjustValue(delta int) bool {
 			changed = true
 			s.needsRestart = true
 		}
+
+	case SettingNotesOutputSplit:
+		newVal := s.notesOutputSplit + (delta * 5)
+		if newVal >= 10 && newVal <= 90 {
+			s.notesOutputSplit = newVal
+			changed = true
+		}
+
+	case SettingStatsRefresh:
+		newVal := s.statsRefreshSecs + delta
+		if newVal >= 2 && newVal <= 300 {
+			s.statsRefreshSecs = newVal
+			changed = true
+		}
+
+	case SettingStatsFormat:
+		newVal := s.statsFormat + delta
+		if newVal >= 0 && newVal < len(statsFormatNames) {
+			s.statsFormat = newVal
+			changed = true
+		}
 	}
 
 	return changed
@@ -500,16 +595,8 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.dangerousMode = !s.dangerousMode
 		return true
 
-	case SettingClaudeUseHappy:
-		s.claudeUseHappy = !s.claudeUseHappy
-		return true
-
 	case SettingGeminiYoloMode:
 		s.geminiYoloMode = !s.geminiYoloMode
-		return true
-
-	case SettingCodexUseHappy:
-		s.codexUseHappy = !s.codexUseHappy
 		return true
 
 	case SettingCodexYoloMode:
@@ -541,8 +628,40 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.showAnalytics = !s.showAnalytics
 		return true
 
+	case SettingShowNotes:
+		s.showNotes = !s.showNotes
+		return true
+
 	case SettingMaintenanceEnabled:
 		s.maintenanceEnabled = !s.maintenanceEnabled
+		return true
+
+	case SettingStatsEnabled:
+		s.statsEnabled = !s.statsEnabled
+		return true
+
+	case SettingStatsShowCPU:
+		s.statsShowCPU = !s.statsShowCPU
+		return true
+
+	case SettingStatsShowRAM:
+		s.statsShowRAM = !s.statsShowRAM
+		return true
+
+	case SettingStatsShowDisk:
+		s.statsShowDisk = !s.statsShowDisk
+		return true
+
+	case SettingStatsShowNetwork:
+		s.statsShowNetwork = !s.statsShowNetwork
+		return true
+
+	case SettingStatsShowGPU:
+		s.statsShowGPU = !s.statsShowGPU
+		return true
+
+	case SettingStatsShowLoad:
+		s.statsShowLoad = !s.statsShowLoad
 		return true
 	}
 
@@ -691,12 +810,6 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingClaudeConfigDir) {
 		line = highlightStyle.Render(line)
 	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
-
-	line = s.renderCheckbox("Use happy wrapper", s.claudeUseHappy) + " - Launch Claude via happy"
-	if s.cursor == int(SettingClaudeUseHappy) {
-		line = highlightStyle.Render(line)
-	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
 	// GEMINI
@@ -713,12 +826,6 @@ func (s *SettingsPanel) View() string {
 	// CODEX
 	content.WriteString(sectionStyle.Render("CODEX"))
 	content.WriteString("\n")
-
-	line = s.renderCheckbox("Use happy wrapper", s.codexUseHappy) + " - Launch Codex via happy"
-	if s.cursor == int(SettingCodexUseHappy) {
-		line = highlightStyle.Render(line)
-	}
-	content.WriteString("  " + labelStyle.Render(line) + "\n")
 
 	// YOLO mode checkbox
 	line = s.renderCheckbox("YOLO mode", s.codexYoloMode) + " - Bypass approvals and sandbox"
@@ -804,6 +911,18 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingShowAnalytics) {
 		line = highlightStyle.Render(line)
 	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Show Notes", s.showNotes) + " - Session notes in preview"
+	if s.cursor == int(SettingShowNotes) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderNumber("Notes/Output split:", s.notesOutputSplit, "%")
+	if s.cursor == int(SettingNotesOutputSplit) {
+		line = highlightStyle.Render(line)
+	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
 	// MAINTENANCE
@@ -818,6 +937,70 @@ func (s *SettingsPanel) View() string {
 		line = highlightStyle.Render(line)
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
+	// SYSTEM STATS
+	content.WriteString(sectionStyle.Render("SYSTEM STATS"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Enabled", s.statsEnabled) + " - Show CPU, RAM, etc. in status bar"
+	if s.cursor == int(SettingStatsEnabled) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderNumber("Refresh interval:", s.statsRefreshSecs, "sec")
+	if s.cursor == int(SettingStatsRefresh) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = "Format: " + s.renderRadioGroup(statsFormatNames, s.statsFormat, s.cursor == int(SettingStatsFormat))
+	if s.cursor == int(SettingStatsFormat) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	content.WriteString(dimStyle.Render("  Visible stats:") + "\n")
+
+	line = s.renderCheckbox("CPU", s.statsShowCPU)
+	if s.cursor == int(SettingStatsShowCPU) {
+		line = highlightStyle.Render(line)
+	}
+	cpuCol := "  " + labelStyle.Render(line)
+
+	line = s.renderCheckbox("RAM", s.statsShowRAM)
+	if s.cursor == int(SettingStatsShowRAM) {
+		line = highlightStyle.Render(line)
+	}
+	ramCol := "  " + labelStyle.Render(line)
+
+	line = s.renderCheckbox("Disk", s.statsShowDisk)
+	if s.cursor == int(SettingStatsShowDisk) {
+		line = highlightStyle.Render(line)
+	}
+	diskCol := "  " + labelStyle.Render(line)
+
+	content.WriteString(cpuCol + ramCol + diskCol + "\n")
+
+	line = s.renderCheckbox("Network", s.statsShowNetwork)
+	if s.cursor == int(SettingStatsShowNetwork) {
+		line = highlightStyle.Render(line)
+	}
+	netCol := "  " + labelStyle.Render(line)
+
+	line = s.renderCheckbox("GPU", s.statsShowGPU)
+	if s.cursor == int(SettingStatsShowGPU) {
+		line = highlightStyle.Render(line)
+	}
+	gpuCol := "  " + labelStyle.Render(line)
+
+	line = s.renderCheckbox("Load", s.statsShowLoad)
+	if s.cursor == int(SettingStatsShowLoad) {
+		line = highlightStyle.Render(line)
+	}
+	loadCol := "  " + labelStyle.Render(line)
+
+	content.WriteString(netCol + gpuCol + loadCol + "\n\n")
 
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
@@ -856,21 +1039,30 @@ func (s *SettingsPanel) View() string {
 			7,  // SettingDefaultTool
 			11, // SettingDangerousMode
 			12, // SettingClaudeConfigDir
-			13, // SettingClaudeUseHappy
-			16, // SettingGeminiYoloMode
-			19, // SettingCodexUseHappy
-			20, // SettingCodexYoloMode
-			23, // SettingCheckForUpdates
-			24, // SettingAutoUpdate
-			27, // SettingLogMaxSize
-			27, // SettingLogMaxLines (shares line with LogMaxSize)
-			28, // SettingRemoveOrphans
-			31, // SettingGlobalSearchEnabled
-			32, // SettingSearchTier
-			33, // SettingRecentDays
-			36, // SettingShowOutput
-			37, // SettingShowAnalytics
+			15, // SettingGeminiYoloMode
+			18, // SettingCodexYoloMode
+			21, // SettingCheckForUpdates
+			22, // SettingAutoUpdate
+			25, // SettingLogMaxSize
+			25, // SettingLogMaxLines (shares line with LogMaxSize)
+			26, // SettingRemoveOrphans
+			29, // SettingGlobalSearchEnabled
+			30, // SettingSearchTier
+			31, // SettingRecentDays
+			34, // SettingShowOutput
+			35, // SettingShowAnalytics
+			36, // SettingShowNotes
+			37, // SettingNotesOutputSplit
 			40, // SettingMaintenanceEnabled
+			43, // SettingStatsEnabled
+			44, // SettingStatsRefresh
+			45, // SettingStatsFormat
+			47, // SettingStatsShowCPU (row with RAM, Disk)
+			47, // SettingStatsShowRAM
+			47, // SettingStatsShowDisk
+			48, // SettingStatsShowNetwork (row with GPU, Load)
+			48, // SettingStatsShowGPU
+			48, // SettingStatsShowLoad
 		}
 		cursorLine := cursorToLine[s.cursor]
 

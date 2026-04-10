@@ -2,8 +2,11 @@
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
-VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION=$(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
+
+# Pin Go toolchain to 1.24.0 to prevent Go 1.25+ runtime regression on macOS
+export GOTOOLCHAIN=go1.24.0
 
 # Build the binary
 build:
@@ -74,7 +77,7 @@ release-local:
 	@test -n "$$GITHUB_TOKEN" || (echo "ERROR: GITHUB_TOKEN not set" && exit 1)
 	@test -n "$$HOMEBREW_TAP_GITHUB_TOKEN" || (echo "ERROR: HOMEBREW_TAP_GITHUB_TOKEN not set" && exit 1)
 	@TAG=$$(git describe --tags --exact-match 2>/dev/null) || (echo "ERROR: HEAD is not tagged. Run: git tag vX.Y.Z" && exit 1); \
-	CODE_VERSION=$$(grep 'const Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/'); \
+	CODE_VERSION=$$(grep 'var Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/'); \
 	TAG_VERSION=$${TAG#v}; \
 	if [ "$$TAG_VERSION" != "$$CODE_VERSION" ]; then \
 		echo "ERROR: Tag $$TAG ($$TAG_VERSION) != code Version $$CODE_VERSION"; \
@@ -83,7 +86,7 @@ release-local:
 	echo "Version: $$CODE_VERSION"
 	@echo "=== Running tests ==="
 	go test -race ./...
-	@echo "=== Running GoReleaser (pinned to go1.24.0) ==="
-	GOTOOLCHAIN=go1.24.0 goreleaser release --clean
+	@echo "=== Running GoReleaser ==="
+	goreleaser release --clean
 	@echo "=== Release complete ==="
 	@echo "Verify: gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"

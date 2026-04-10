@@ -150,7 +150,7 @@ func handleSessionStart(profile string, args []string) {
 	initialMessage := mergeFlags(*message, *messageShort)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -196,7 +196,7 @@ func handleSessionStart(profile string, args []string) {
 	inst.PostStartSync(3 * time.Second)
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -247,7 +247,7 @@ func handleSessionStop(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -283,7 +283,7 @@ func handleSessionStop(profile string, args []string) {
 	}
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -321,7 +321,7 @@ func handleSessionRestart(profile string, args []string) {
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
 	// Load sessions
-	storage, instances, _, err := loadSessionData(profile)
+	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -354,7 +354,7 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	// Save updated state
-	if err := saveSessionData(storage, instances); err != nil {
+	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -516,9 +516,13 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			if err := git.CreateWorktree(repoRoot, worktreePath, wtBranch); err != nil {
+			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr)
+			if err != nil {
 				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
+			}
+			if setupErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 		}
 
@@ -737,11 +741,8 @@ func handleSessionShow(profile string, args []string) {
 		}
 	}
 
-	if inst.Exists() {
-		tmuxSession := inst.GetTmuxSession()
-		if tmuxSession != nil {
-			jsonData["tmux_session"] = tmuxSession.Name
-		}
+	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
+		jsonData["tmux_session"] = tmuxSession.Name
 	}
 
 	// Build human-readable output
@@ -982,10 +983,9 @@ func loadSessionData(profile string) (*session.Storage, []*session.Instance, []*
 	return storage, instances, groupsData, nil
 }
 
-// saveSessionData saves session data with groups
-func saveSessionData(storage *session.Storage, instances []*session.Instance) error {
-	// Rebuild group tree from instances
-	groupTree := session.NewGroupTree(instances)
+// saveSessionData saves session data with groups, preserving stored group metadata (sort_order).
+func saveSessionData(storage *session.Storage, instances []*session.Instance, groups []*session.GroupData) error {
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	return storage.SaveWithGroups(instances, groupTree)
 }
 
@@ -1390,14 +1390,19 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
+	// Record send time before the actual send so we can verify output freshness.
+	// Captured early to avoid false negatives from clock skew.
+	sentAt := time.Now()
+
 	// Send message atomically (text + Enter in single tmux invocation).
 	// --no-wait: skip readiness waiting, but still do a short retry/verification
 	// loop to avoid silent "pasted but not submitted" races.
 	// default mode: full retry budget after readiness check.
 	if *noWait {
 		if err := sendWithRetryTarget(tmuxSess, message, false, sendRetryOptions{
-			maxRetries: 8,
-			checkDelay: 150 * time.Millisecond,
+			maxRetries:     8,
+			checkDelay:     150 * time.Millisecond,
+			maxFullResends: -1, // no-wait: message already delivered, never re-send
 		}); err != nil {
 			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -1435,14 +1440,16 @@ func handleSessionSend(profile string, args []string) {
 			}
 		}
 
-		// Fetch and print last response (like session output -q)
-		response, err := inst.GetLastResponseBestEffort()
+		// Wait for the JSONL to contain a response newer than sentAt.
+		// The status check (waitForCompletion) detects the UI prompt reappearing,
+		// but the JSONL file may not be flushed yet — poll until it is.
+		response, err := waitForFreshOutput(inst, sentAt)
 		if err != nil {
 			// Fallback: reload session from DB in case tmux env was also stale
 			// (e.g., /clear created a new session that TUI or hooks detected)
 			if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
 				if freshInst, _, _ := ResolveSession(sessionRef, freshInstances); freshInst != nil {
-					response, err = freshInst.GetLastResponseBestEffort()
+					response, err = waitForFreshOutput(freshInst, sentAt)
 				}
 			}
 		}
@@ -1477,8 +1484,9 @@ type sendRetryTarget interface {
 }
 
 type sendRetryOptions struct {
-	maxRetries int
-	checkDelay time.Duration
+	maxRetries     int
+	checkDelay     time.Duration
+	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
 }
 
 func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) error {
@@ -1514,7 +1522,12 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	// with no activity and no unsent prompt, assume the message was lost
 	// during TUI init and re-send the full message.
 	const fullResendThreshold = 8
-	const maxFullResends = 3
+	maxFullResends := 3 // default
+	if opts.maxFullResends > 0 {
+		maxFullResends = opts.maxFullResends
+	} else if opts.maxFullResends < 0 {
+		maxFullResends = 0
+	}
 	waitingNoMarkerChecks := 0
 	waitingNoActivityChecks := 0
 	activeChecks := 0
@@ -1707,6 +1720,85 @@ func waitForCompletion(checker statusChecker, timeout time.Duration) (string, er
 	}
 }
 
+// freshOutputConfig holds tunable parameters for waitForFreshOutput.
+// Tests override these via freshOutputTestConfig; production uses defaults.
+type freshOutputConfig struct {
+	pollInterval time.Duration
+	timeout      time.Duration
+}
+
+// freshOutputTestConfig, when non-nil, overrides the default timing constants.
+// Only set from tests.
+var freshOutputTestConfig *freshOutputConfig
+
+// waitForFreshOutput polls the session's JSONL file until it contains an assistant
+// response with a timestamp not before sentAt (with a 250ms skew tolerance).
+// This bridges the gap between the UI prompt reappearing (detected by
+// waitForCompletion) and the JSONL being flushed to disk.
+//
+// For non-Claude tools (Codex, Gemini, etc.) the JSONL freshness check is
+// skipped entirely to avoid an unnecessary 5s penalty, since those tools
+// don't use the same JSONL format.
+//
+// Falls back to the best-effort response if the freshness timeout expires,
+// logging a warning to stderr so the caller knows the data may be stale.
+func waitForFreshOutput(inst *session.Instance, sentAt time.Time) (*session.ResponseOutput, error) {
+	// Non-Claude tools don't use JSONL timestamps — skip the freshness loop.
+	if !session.IsClaudeCompatible(inst.Tool) {
+		return inst.GetLastResponseBestEffort()
+	}
+
+	pollInterval := 250 * time.Millisecond
+	timeout := 5 * time.Second
+	if cfg := freshOutputTestConfig; cfg != nil {
+		pollInterval = cfg.pollInterval
+		timeout = cfg.timeout
+	}
+
+	// Allow 250ms of clock skew / rounding tolerance.
+	// Claude's JSONL timestamps may have only second precision, and local
+	// time.Now() can be slightly ahead of Claude's clock. Tighter than the
+	// original 2s to reduce false positives on genuinely stale output.
+	threshold := sentAt.Add(-250 * time.Millisecond)
+
+	deadline := time.Now().Add(timeout)
+	var lastResp *session.ResponseOutput
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		resp, err := inst.GetLastResponseBestEffort()
+		if err != nil {
+			lastErr = err
+			time.Sleep(pollInterval)
+			continue
+		}
+		lastResp = resp
+		lastErr = nil
+
+		// If the response has a timestamp, check freshness
+		if resp.Timestamp != "" {
+			if ts, parseErr := time.Parse(time.RFC3339Nano, resp.Timestamp); parseErr == nil {
+				if !ts.Before(threshold) {
+					return resp, nil
+				}
+			} else if ts, parseErr := time.Parse(time.RFC3339, resp.Timestamp); parseErr == nil {
+				if !ts.Before(threshold) {
+					return resp, nil
+				}
+			}
+		}
+
+		time.Sleep(pollInterval)
+	}
+
+	// Freshness timeout: return whatever we have but warn that it may be stale
+	if lastResp != nil {
+		fmt.Fprintf(os.Stderr, "Warning: output freshness timeout (%s) — response may be stale\n", timeout)
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
 // handleSessionOutput gets the last response from a session
 func handleSessionOutput(profile string, args []string) {
 	fs := flag.NewFlagSet("session output", flag.ExitOnError)
@@ -1748,6 +1840,16 @@ func handleSessionOutput(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	// Refresh session ID from tmux env before reading output.
+	// The DB-stored ClaudeSessionID may be stale if /clear created a new session
+	// or PostStartSync timed out. This matches the refresh in handleSessionSend.
+	if session.IsClaudeCompatible(inst.Tool) {
+		if freshID := inst.GetSessionIDFromTmux(); freshID != "" {
+			inst.ClaudeSessionID = freshID
+			inst.ClaudeDetectedAt = time.Now()
+		}
 	}
 
 	// Get the last response (best-effort fallback for smoother CLI reads)
@@ -1897,6 +1999,10 @@ func handleSessionCurrent(profileArg string, args []string) {
 		"id":      instData.ID,
 		"path":    instData.ProjectPath,
 		"status":  status,
+	}
+
+	if instData.TmuxSession != "" {
+		jsonData["tmux_session"] = instData.TmuxSession
 	}
 
 	if instData.GroupPath != "" {

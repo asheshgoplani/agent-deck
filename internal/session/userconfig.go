@@ -126,6 +126,9 @@ type UserConfig struct {
 
 	// Costs defines cost tracking and budget settings
 	Costs CostsSettings `toml:"costs"`
+
+	// SystemStats defines system stats display settings (CPU, RAM, etc.)
+	SystemStats SystemStatsSettings `toml:"system_stats"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -306,7 +309,7 @@ type PreviewSettings struct {
 	ShowAnalytics *bool `toml:"show_analytics"`
 
 	// ShowNotes shows session notes section in preview pane
-	// Default: true (pointer to distinguish "not set" from "explicitly false")
+	// Default: false (pointer to distinguish "not set" from "explicitly true")
 	ShowNotes *bool `toml:"show_notes"`
 
 	// Analytics configures which sections to show in the analytics panel
@@ -444,10 +447,10 @@ func (p *PreviewSettings) GetAnalyticsSettings() AnalyticsDisplaySettings {
 	return p.Analytics
 }
 
-// GetShowNotes returns whether to show notes section, defaulting to true
+// GetShowNotes returns whether to show notes section, defaulting to false
 func (p *PreviewSettings) GetShowNotes() bool {
 	if p.ShowNotes == nil {
-		return true // Default: notes ON
+		return false // Default: notes OFF
 	}
 	return *p.ShowNotes
 }
@@ -516,7 +519,7 @@ func (c *UserConfig) GetShowAnalytics() bool {
 	return c.Preview.GetShowAnalytics()
 }
 
-// GetShowNotes returns whether to show notes section, defaulting to true
+// GetShowNotes returns whether to show notes section, defaulting to false
 func (c *UserConfig) GetShowNotes() bool {
 	return c.Preview.GetShowNotes()
 }
@@ -547,6 +550,13 @@ type ClaudeSettings struct {
 	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
 	// Default: false
 	AllowDangerousMode bool `toml:"allow_dangerous_mode"`
+
+	// AutoMode enables --permission-mode auto flag for Claude sessions
+	// A classifier model reviews commands before they run, blocking scope escalation
+	// and hostile-content-driven actions while letting routine work proceed without prompts.
+	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
+	// Default: false
+	AutoMode bool `toml:"auto_mode"`
 
 	// EnvFile is a .env file specific to Claude sessions
 	// Sourced AFTER global [shell].env_files
@@ -637,6 +647,11 @@ type CodexSettings struct {
 type WorktreeSettings struct {
 	// AutoCleanup: remove worktree when session is deleted
 	AutoCleanup bool `toml:"auto_cleanup"`
+
+	// DefaultEnabled controls whether worktree creation is pre-selected in
+	// new-session and fork dialogs by default.
+	// Default: false
+	DefaultEnabled bool `toml:"default_enabled"`
 
 	// DefaultLocation: "sibling" (next to repo), "subdirectory" (inside .worktrees/),
 	// or a custom path (e.g., "~/worktrees") creating <path>/<repo_name>/<branch>
@@ -863,6 +878,20 @@ type TmuxSettings struct {
 	// Default: true (nil = use default true)
 	InjectStatusLine *bool `toml:"inject_status_line"`
 
+	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
+	// so the tmux server lives under the user's systemd manager instead of the
+	// current login session scope. This keeps tmux alive when an SSH session
+	// scope is torn down. Default: false.
+	LaunchInUserScope bool `toml:"launch_in_user_scope"`
+
+	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
+	// all sessions, overriding the theme default. Use "default" to let your terminal
+	// emulator's background show through instead of agent-deck's theme color.
+	// Empty string (default) means use the theme's built-in value.
+	// Takes precedence over the same keys in Options if both are set.
+	// Example: window_style_override = "default"
+	WindowStyleOverride string `toml:"window_style_override"`
+
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
@@ -874,6 +903,12 @@ func (t TmuxSettings) GetInjectStatusLine() bool {
 		return true
 	}
 	return *t.InjectStatusLine
+}
+
+// GetLaunchInUserScope returns whether new tmux servers should be launched
+// under the user's systemd manager, defaulting to false.
+func (t TmuxSettings) GetLaunchInUserScope() bool {
+	return t.LaunchInUserScope
 }
 
 // DockerSettings defines Docker sandbox configuration.
@@ -942,6 +977,34 @@ type DisplaySettings struct {
 	// Can also be enabled via AGENTDECK_REPAINT=full env var.
 	// Default: false
 	FullRepaint bool `toml:"full_repaint"`
+
+	// DefaultFilter sets the initial status filter when the TUI opens.
+	// Valid values: "" (all, default), "active" (hides error/stopped),
+	// "running", "waiting", "idle", "error".
+	// If set to "active" and no non-error sessions exist, falls back to showing all.
+	DefaultFilter string `toml:"default_filter"`
+
+	// ActiveFilterLabel sets the label shown on the filter pill when the active
+	// filter is engaged. Default: "Open". Examples: "Active", "Live", "Open".
+	ActiveFilterLabel string `toml:"active_filter_label"`
+}
+
+// ValidDefaultFilters lists acceptable values for DefaultFilter.
+var ValidDefaultFilters = map[string]bool{
+	"":        true,
+	"active":  true,
+	"running": true,
+	"waiting": true,
+	"idle":    true,
+	"error":   true,
+}
+
+// GetDefaultFilter returns the validated default_filter value, falling back to "" on invalid input.
+func (d DisplaySettings) GetDefaultFilter() string {
+	if ValidDefaultFilters[d.DefaultFilter] {
+		return d.DefaultFilter
+	}
+	return ""
 }
 
 // GetFullRepaint returns whether full-repaint mode is active, checking
@@ -1344,6 +1407,22 @@ func ResolveTheme() string {
 	if theme != "system" {
 		return theme
 	}
+	// Check the terminal's own declaration before asking the OS.
+	// COLORFGBG is set by iTerm2 and other terminals; format is "fg;bg"
+	// where bg < 8 means a dark background. This catches the common case
+	// where macOS is in light mode but the terminal profile is dark.
+	if colorfgbg := os.Getenv("COLORFGBG"); colorfgbg != "" {
+		if idx := strings.LastIndex(colorfgbg, ";"); idx >= 0 {
+			var bg int
+			if _, err := fmt.Sscanf(colorfgbg[idx+1:], "%d", &bg); err == nil {
+				if bg < 8 {
+					return "dark"
+				}
+				return "light"
+			}
+		}
+	}
+
 	isDark, err := dark.IsDarkMode()
 	if err != nil {
 		return "dark"
@@ -1644,7 +1723,7 @@ func CreateExampleConfig() error {
 
 # Preview settings (optional)
 # [preview]
-# show_notes = true
+# show_notes = false
 # notes_output_split = 0.33
 
 # Claude Code integration
@@ -1717,6 +1796,8 @@ default_tool = "claude"
 [worktree]
 # Where to create worktrees: "sibling" (next to repo) or "subdirectory" (inside repo)
 default_location = "sibling"
+# Pre-check "Create in worktree" in new-session and fork dialogs (default: false)
+# default_enabled = true
 # Automatically remove worktree when session is deleted
 auto_cleanup = true
 # Custom path template (overrides default_location if set)
@@ -1745,6 +1826,13 @@ auto_cleanup = true
 # agent-deck stops mutating the global tmux notification bar / number key bindings
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
+# launch_in_user_scope starts new tmux servers with systemd-run --user --scope
+# so they are not tied to the current login session scope (useful for SSH/tmux).
+# Default: false
+# launch_in_user_scope = true
+# window_style_override sets the tmux window-style for all sessions, overriding
+# the theme default. Use "default" to let your terminal's background show through.
+# window_style_override = "default"
 # Override tmux options applied to every session (applied after defaults)
 # Options matching agent-deck's managed keys (status, status-style,
 # status-left-length, status-right, status-right-length) will cause agent-deck
@@ -2005,4 +2093,56 @@ func (c CostsSettings) GetTimezone() string {
 		return c.Timezone
 	}
 	return "Local"
+}
+
+// SystemStatsSettings configures the system stats display in the status bar.
+type SystemStatsSettings struct {
+	// Enabled controls whether system stats are collected and displayed (default: true)
+	Enabled *bool `toml:"enabled"`
+
+	// RefreshSeconds sets the collection interval in seconds (default: 5, min: 2)
+	RefreshSeconds int `toml:"refresh_seconds"`
+
+	// Format controls display density: "compact" (icons), "full" (labels), "minimal" (values only)
+	Format string `toml:"format"`
+
+	// Show lists which stats to display: "cpu", "ram", "disk", "load", "gpu", "network"
+	Show []string `toml:"show"`
+}
+
+// GetEnabled returns whether system stats display is enabled (default: true).
+func (s SystemStatsSettings) GetEnabled() bool {
+	if s.Enabled != nil {
+		return *s.Enabled
+	}
+	return true
+}
+
+// GetRefreshSeconds returns the collection interval, clamped to [2, 300].
+func (s SystemStatsSettings) GetRefreshSeconds() int {
+	if s.RefreshSeconds >= 2 {
+		if s.RefreshSeconds > 300 {
+			return 300
+		}
+		return s.RefreshSeconds
+	}
+	return 5
+}
+
+// GetFormat returns the display format (default: "compact").
+func (s SystemStatsSettings) GetFormat() string {
+	switch s.Format {
+	case "full", "minimal":
+		return s.Format
+	default:
+		return "compact"
+	}
+}
+
+// GetShow returns the list of stats to display. Defaults to cpu, ram, disk, network.
+func (s SystemStatsSettings) GetShow() []string {
+	if len(s.Show) > 0 {
+		return s.Show
+	}
+	return []string{"cpu", "ram", "disk", "network"}
 }

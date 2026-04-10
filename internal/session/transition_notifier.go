@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	transitionDeliverySent    = "sent"
-	transitionDeliveryFailed  = "failed"
-	transitionDeliveryDropped = "dropped_no_target"
+	transitionDeliverySent     = "sent"
+	transitionDeliveryFailed   = "failed"
+	transitionDeliveryDropped  = "dropped_no_target"
+	transitionDeliveryDeferred = "deferred_target_busy"
 )
 
 type TransitionNotificationEvent struct {
@@ -112,7 +113,10 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 	}
 
 	result := n.dispatch(event)
-	n.markNotified(result)
+	// Don't mark deferred events as notified so the next poll cycle retries delivery.
+	if result.DeliveryResult != transitionDeliveryDeferred {
+		n.markNotified(result)
+	}
 	n.logEvent(result)
 	return result
 }
@@ -143,6 +147,17 @@ func (n *TransitionNotifier) dispatch(event TransitionNotificationEvent) Transit
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
 		event.DeliveryResult = transitionDeliveryDropped
+		return event
+	}
+
+	// Defer delivery when the target session is busy (running) to avoid
+	// interrupting its in-progress response. The event will be retried on
+	// the next daemon poll cycle since deferred events are not marked as notified.
+	_ = parent.UpdateStatus()
+	if parent.GetStatusThreadSafe() == StatusRunning {
+		event.TargetSessionID = parent.ID
+		event.TargetKind = "parent"
+		event.DeliveryResult = transitionDeliveryDeferred
 		return event
 	}
 

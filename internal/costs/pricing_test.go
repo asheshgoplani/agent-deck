@@ -71,6 +71,36 @@ func TestPricerUserOverride(t *testing.T) {
 	assert.Equal(t, int64(99_000_000), mp.OutputPerMtokMicro)
 }
 
+func TestMiniMaxPricing(t *testing.T) {
+	p := NewPricer(PricerConfig{})
+
+	tests := []struct {
+		model string
+		input int64
+		output int64
+	}{
+		{"MiniMax-M2.7", 700_000, 2_800_000},
+		{"MiniMax-M2.7-highspeed", 350_000, 1_400_000},
+		{"MiniMax-M2.5", 500_000, 2_000_000},
+		{"MiniMax-M2.5-highspeed", 150_000, 600_000},
+	}
+
+	for _, tt := range tests {
+		mp, ok := p.GetPrice(tt.model)
+		assert.True(t, ok, "model %s should have pricing", tt.model)
+		assert.Equal(t, tt.input, mp.InputPerMtokMicro, "model %s input pricing", tt.model)
+		assert.Equal(t, tt.output, mp.OutputPerMtokMicro, "model %s output pricing", tt.model)
+	}
+}
+
+func TestMiniMaxComputeCost(t *testing.T) {
+	p := NewPricer(PricerConfig{})
+	// MiniMax-M2.7: input=$0.70/Mtok, output=$2.80/Mtok
+	// 1M input = $0.70, 1M output = $2.80 → total $3.50 = 3,500,000 microdollars
+	cost := p.ComputeCost("MiniMax-M2.7", 1_000_000, 1_000_000, 0, 0)
+	assert.Equal(t, int64(3_500_000), cost)
+}
+
 func TestPricerModelNormalization(t *testing.T) {
 	p := NewPricer(PricerConfig{})
 	mp, ok := p.GetPrice("claude-sonnet-4-6-20260301")

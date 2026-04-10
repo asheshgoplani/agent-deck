@@ -491,6 +491,7 @@ func handleConductorSetup(profile string, args []string) {
 		dir, _ := session.ConductorNameDir(name)
 		newInst := session.NewInstanceWithGroupAndTool(sessionTitle, dir, "conductor", spec.Agent)
 		newInst.Command = spec.DefaultCommand
+		newInst.IsConductor = true
 		instances = append(instances, newInst)
 
 		sessionID = newInst.ID

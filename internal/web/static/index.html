@@ -3,82 +3,104 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0f766e" />
+    <meta name="theme-color" content="#1a1b26" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Agent Deck" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="/static/icons/logo.svg" sizes="120x80" />
+    <link rel="icon" href="/static/icons/logo.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/static/icons/logo.svg" />
-    <title>Agent Deck Web</title>
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css"
-    />
+    <title>Agent Deck</title>
+
+    <!-- 1. Theme init (synchronous, prevents flash of wrong theme) -->
+    <script>
+      ;(function() {
+        var t = localStorage.getItem('theme')
+        if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark')
+        }
+      })()
+    </script>
+
+    <!-- 2. Tailwind Play CDN (vendored, no external requests) -->
+    <script src="/static/vendor/tailwind.js"></script>
+
+
+    <!-- 3. Tailwind config: Tokyo Night palette + dark mode via selector -->
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+            },
+            fontSize: {
+              'xs': '12px',
+              'sm': '14px',
+              'base': '14px',
+              'lg': '16px',
+              'xl': '20px',
+              '2xl': '24px',
+            },
+            spacing: {
+              'sp-4': '4px',
+              'sp-8': '8px',
+              'sp-12': '12px',
+              'sp-16': '16px',
+              'sp-24': '24px',
+              'sp-32': '32px',
+            },
+            colors: {
+              'tn-bg':     '#1a1b26',
+              'tn-panel':  '#16161e',
+              'tn-fg':     '#a9b1d6',
+              'tn-muted':  '#787c99',
+              'tn-blue':   '#7aa2f7',
+              'tn-green':  '#73daca',
+              'tn-red':    '#f7768e',
+              'tn-yellow': '#e0af68',
+              'tn-purple': '#bb9af7',
+              'tn-card':   '#24283b',
+              'tn-light-bg':    '#e6e7ed',
+              'tn-light-panel': '#d6d8df',
+              'tn-light-fg':    '#363c4d',
+              'tn-light-blue':  '#2959aa',
+            }
+          }
+        }
+      }
+    </script>
+
+    <!-- 3b. Chart.js UMD (sets window.Chart, must load before ES modules) -->
+    <script src="/static/chart.umd.min.js"></script>
+
+    <!-- 4. Import map: single Preact instance via bare specifiers -->
+    <script type="importmap">
+    {
+      "imports": {
+        "preact":          "/static/vendor/preact.mjs",
+        "preact/hooks":    "/static/vendor/preact-hooks.mjs",
+        "htm/preact":      "/static/vendor/htm.mjs",
+        "@preact/signals": "/static/vendor/signals.mjs",
+        "@xterm/xterm":       "/static/vendor/xterm.mjs",
+        "@xterm/addon-fit":   "/static/vendor/addon-fit.mjs",
+        "@xterm/addon-webgl": "/static/vendor/addon-webgl.mjs"
+      }
+    }
+    </script>
+
+    <!-- 5. Preact app entry (module, deferred by default) -->
+    <script type="module" src="/static/app/main.js"></script>
+
+    <link rel="stylesheet" href="/static/vendor/xterm.css" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
-    <div class="app">
-      <header class="topbar">
-        <div class="topbar-left">
-          <button
-            id="menu-toggle"
-            class="menu-toggle"
-            type="button"
-            aria-label="Open sessions menu"
-            aria-controls="menu-panel"
-            aria-expanded="false"
-          >
-            ☰
-          </button>
-          <div class="brand">Agent Deck Web</div>
-        </div>
-        <a href="/costs" class="costs-btn" title="Cost Dashboard" id="costs-link">💰 Costs</a>
-        <div class="meta" id="meta-state">connecting</div>
-      </header>
+  <body class="bg-gray-100 dark:bg-tn-bg text-gray-900 dark:text-tn-fg min-h-screen">
+    <!-- Preact app mounts here -->
+    <div id="app-root" class="min-h-screen"></div>
 
-      <main class="layout">
-        <aside class="menu-panel" id="menu-panel">
-          <h2>Sessions</h2>
-          <div class="menu-tools">
-            <input
-              id="menu-filter"
-              class="menu-filter"
-              type="search"
-              placeholder="Filter sessions..."
-              autocomplete="off"
-            />
-            <div class="push-tools" id="push-tools" hidden>
-              <button id="push-toggle" class="push-toggle" type="button">
-                Enable notifications
-              </button>
-              <div class="push-status" id="push-status">
-                Push unavailable.
-              </div>
-            </div>
-          </div>
-          <div class="menu-list" id="menu-root">
-            <div class="menu-empty">Loading session menu...</div>
-          </div>
-        </aside>
-
-        <section class="terminal-panel">
-          <h2>Terminal</h2>
-          <div class="terminal-placeholder" id="terminal-root">
-            Select a session from the menu to start terminal streaming.
-          </div>
-        </section>
-      </main>
-      <button
-        id="menu-backdrop"
-        class="menu-backdrop"
-        type="button"
-        aria-label="Close sessions menu"
-      ></button>
-    </div>
-
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-    <script src="/static/app.js"></script>
+    <!-- xterm.js Canvas renderer addon (UMD, loaded by TerminalPanel.js) -->
+    <script src="/static/vendor/addon-canvas.js"></script>
   </body>
 </html>

@@ -37,11 +37,13 @@ type ConfirmDialog struct {
 	remoteName string // Remote name for remote session confirmations.
 
 	// Pending session creation data (for ConfirmCreateDirectory)
-	pendingSessionName      string
-	pendingSessionPath      string
-	pendingSessionCommand   string
-	pendingSessionGroupPath string
-	pendingToolOptionsJSON  json.RawMessage // Generic tool options (claude, codex, etc.)
+	pendingSessionName       string
+	pendingSessionPath       string
+	pendingSessionCommand    string
+	pendingSessionGroupPath  string
+	pendingToolOptionsJSON   json.RawMessage // Generic tool options (claude, codex, etc.)
+	pendingParentSessionID   string
+	pendingParentProjectPath string
 }
 
 // NewConfirmDialog creates a new confirmation dialog
@@ -109,6 +111,8 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	command string,
 	groupPath string,
 	toolOptionsJSON json.RawMessage,
+	parentSessionID string,
+	parentProjectPath string,
 ) {
 	c.visible = true
 	c.confirmType = ConfirmCreateDirectory
@@ -119,6 +123,8 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	c.pendingSessionCommand = command
 	c.pendingSessionGroupPath = groupPath
 	c.pendingToolOptionsJSON = toolOptionsJSON
+	c.pendingParentSessionID = parentSessionID
+	c.pendingParentProjectPath = parentProjectPath
 }
 
 // ShowInstallHooks shows confirmation for installing Claude Code hooks
@@ -130,8 +136,8 @@ func (c *ConfirmDialog) ShowInstallHooks() {
 }
 
 // GetPendingSession returns the pending session creation data
-func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage) {
-	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON
+func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, parentSessionID, parentProjectPath string) {
+	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingParentSessionID, c.pendingParentProjectPath
 }
 
 // Hide hides the dialog.

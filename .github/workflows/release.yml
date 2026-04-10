@@ -29,7 +29,7 @@ jobs:
       - name: Validate tag matches code version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          CODE=$(grep 'const Version' cmd/agent-deck/main.go | sed 's/.*"\(.*\)".*/\1/')
+          CODE=$(grep 'var Version' cmd/agent-deck/main.go | head -1 | sed 's/.*= "\([^"]*\)".*/\1/')
           if [ "$TAG" != "$CODE" ]; then
             echo "ERROR: Tag v$TAG does not match code Version $CODE"
             exit 1

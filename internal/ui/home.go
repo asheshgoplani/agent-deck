@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -42,6 +44,27 @@ var Version = "0.0.0"
 // SetVersion sets the current version for update checking
 func SetVersion(v string) {
 	Version = v
+}
+
+// CreatingSession is a lightweight placeholder shown in the UI while
+// a worktree + session is being created asynchronously.
+// It is NOT a real session.Instance — it is excluded from save, polling, and search.
+type CreatingSession struct {
+	ID        string    // Temporary ID for tracking
+	Title     string
+	Tool      string
+	GroupPath string
+	StartTime time.Time
+}
+
+// isCreatingPlaceholder returns true if the currently selected flat item is a
+// worktree-creation placeholder (not a real session). Actions like attach,
+// delete, fork, and restart must be suppressed for these items.
+func (h *Home) isCreatingPlaceholder() bool {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return false
+	}
+	return h.flatItems[h.cursor].CreatingID != ""
 }
 
 // Structured loggers for UI components
@@ -104,6 +127,14 @@ const (
 	minTerminalWidth  = 40 // Reduced from 80 - supports mobile terminals
 	minTerminalHeight = 12 // Reduced from 20 - supports smaller screens
 )
+
+// FilterKeyActive is the keyboard shortcut for the "open" status filter
+// (shows all sessions except error/stopped). Change this constant to rebind.
+const FilterKeyActive = "%"
+
+// FilterModeActive is the filter value for "open" sessions: excludes error/stopped.
+// This is NOT a session status (never assigned to a session), just a filter mode.
+const FilterModeActive session.Status = "active"
 
 // Mouse interaction thresholds
 const doubleClickThreshold = 500 * time.Millisecond
@@ -205,6 +236,7 @@ type Home struct {
 	viewOffset     int            // First visible item index (for scrolling)
 	isAttaching    atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
 	statusFilter   session.Status // Filter sessions by status ("" = all, or specific status)
+	groupScope     string         // Limit TUI to a specific group path ("" = all groups)
 	previewMode    PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
 	err            error
 	errTime        time.Time  // When error occurred (for auto-dismiss)
@@ -288,8 +320,9 @@ type Home struct {
 	launchingSessions  map[string]time.Time // sessionID -> creation time
 	resumingSessions   map[string]time.Time // sessionID -> resume time (for restart/resume)
 	mcpLoadingSessions map[string]time.Time // sessionID -> MCP reload time
-	forkingSessions    map[string]time.Time // sessionID -> fork start time (fork in progress)
-	animationFrame     int                  // Current frame for spinner animation
+	forkingSessions    map[string]time.Time          // sessionID -> fork start time (fork in progress)
+	creatingSessions   map[string]*CreatingSession   // tempID -> placeholder for worktree creation in progress
+	animationFrame     int                           // Current frame for spinner animation
 
 	// Context for cleanup
 	ctx    context.Context
@@ -338,7 +371,9 @@ type Home struct {
 
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
-	fullRepaint bool
+	fullRepaint       bool
+	defaultFilter     string // from config.toml [display] default_filter
+	activeFilterLabel string // from config.toml [display] active_filter_label
 
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
@@ -393,6 +428,10 @@ type Home struct {
 	costRefreshTime   time.Time
 	showCostDashboard bool
 	costDashboard     costDashboard
+
+	// System stats collector (CPU, RAM, disk, etc.)
+	sysStatsCollector *sysinfo.Collector
+	sysStatsConfig    session.SystemStatsSettings
 }
 
 // reloadState preserves UI state during storage reload
@@ -476,6 +515,7 @@ type loadSessionsMsg struct {
 type sessionCreatedMsg struct {
 	instance *session.Instance
 	err      error
+	tempID   string // matches creatingSessions key for placeholder removal
 }
 
 type sessionForkedMsg struct {
@@ -679,6 +719,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
+		creatingSessions:     make(map[string]*CreatingSession),
 		lastLogActivity:      make(map[string]time.Time),
 		windowsCollapsed:     make(map[string]bool),
 		worktreeDirtyCache:   make(map[string]bool),
@@ -701,11 +742,19 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	h.reloadHotkeysFromConfig()
 
-	// Cache full-repaint setting (config.toml [display] full_repaint or AGENTDECK_REPAINT=full)
+	// Cache display settings (config.toml [display])
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		h.fullRepaint = cfg.Display.GetFullRepaint()
+		h.defaultFilter = cfg.Display.GetDefaultFilter()
+		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
+		h.sysStatsConfig = cfg.SystemStats
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
+	}
+
+	// Initialize system stats collector if enabled
+	if h.sysStatsConfig.GetEnabled() {
+		h.sysStatsCollector = sysinfo.NewCollector(h.sysStatsConfig.GetRefreshSeconds(), nil)
 	}
 
 	// Keep settings panel profile-aware so profile overrides (e.g., Claude config dir)
@@ -714,6 +763,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	// Restore persisted UI state (preview mode, status filter, cursor position)
 	h.loadUIState()
+
+	// Apply default_filter from config if no filter was restored from persisted state.
+	// Auto-clears if no sessions match (handled in rebuildFlatItems).
+	if h.statusFilter == "" && h.defaultFilter != "" {
+		h.statusFilter = session.Status(h.defaultFilter)
+	}
 
 	tmuxSettings := session.GetTmuxSettings()
 	h.manageTmuxNotifications = tmuxSettings.GetInjectStatusLine()
@@ -925,6 +980,49 @@ func (h *Home) SetCostBudget(budget *costs.BudgetChecker) {
 	h.costBudget = budget
 }
 
+// SetGroupScope limits the TUI to sessions within the given group path.
+// The path is normalized: lowercased and spaces replaced with hyphens.
+func (h *Home) SetGroupScope(path string) {
+	h.groupScope = strings.ToLower(strings.ReplaceAll(path, " ", "-"))
+}
+
+// isInGroupScope returns true if the given path is within the active group scope.
+// Returns true for all paths when no scope is set.
+func (h *Home) isInGroupScope(path string) bool {
+	if h.groupScope == "" {
+		return true
+	}
+	return path == h.groupScope || strings.HasPrefix(path, h.groupScope+"/")
+}
+
+// scopedGroupPaths returns group paths filtered to the active scope.
+// Returns all paths when no scope is set.
+func (h *Home) scopedGroupPaths() []string {
+	allPaths := h.groupTree.GetGroupPaths()
+	if h.groupScope == "" {
+		return allPaths
+	}
+	var scoped []string
+	for _, p := range allPaths {
+		if h.isInGroupScope(p) {
+			scoped = append(scoped, p)
+		}
+	}
+	return scoped
+}
+
+// groupScopeDisplayName returns the human-readable name for the active group scope.
+// Falls back to the raw scope path if the group is not found in the tree.
+func (h *Home) groupScopeDisplayName() string {
+	if h.groupScope == "" {
+		return ""
+	}
+	if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+		return group.Name
+	}
+	return h.groupScope
+}
+
 // refreshCostTotals updates cached cost totals from the store.
 // Throttled to run at most every 10 seconds.
 func (h *Home) refreshCostTotals() {
@@ -1104,6 +1202,16 @@ func (h *Home) moveCursorToSession(sessionID string) {
 	}
 }
 
+// moveCursorToGroup moves the cursor to the flat item matching the given group path.
+func (h *Home) moveCursorToGroup(path string) {
+	for i, fi := range h.flatItems {
+		if fi.Type == session.ItemTypeGroup && fi.Path == path {
+			h.cursor = i
+			return
+		}
+	}
+}
+
 // rebuildFlatItems rebuilds the flattened view from group tree
 func (h *Home) rebuildFlatItems() {
 	h.jumpMode = false
@@ -1117,7 +1225,7 @@ func (h *Home) rebuildFlatItems() {
 		groupsWithMatches := make(map[string]bool)
 		for _, item := range allItems {
 			if item.Type == session.ItemTypeSession && item.Session != nil {
-				if item.Session.Status == h.statusFilter {
+				if matchesStatusFilter(h.statusFilter, item.Session.Status) {
 					// Mark this session's group and all parent groups as having matches
 					groupsWithMatches[item.Path] = true
 					// Also mark parent paths
@@ -1140,7 +1248,7 @@ func (h *Home) rebuildFlatItems() {
 				}
 			} else if item.Type == session.ItemTypeSession && item.Session != nil {
 				// Keep session if it matches the filter
-				if item.Session.Status == h.statusFilter {
+				if matchesStatusFilter(h.statusFilter, item.Session.Status) {
 					filtered = append(filtered, item)
 				}
 			}
@@ -1154,6 +1262,17 @@ func (h *Home) rebuildFlatItems() {
 		}
 	} else {
 		h.flatItems = allItems
+	}
+
+	// Apply group scope filter (composes with status filter above)
+	if h.groupScope != "" {
+		scoped := make([]session.Item, 0, len(h.flatItems))
+		for _, item := range h.flatItems {
+			if h.isInGroupScope(item.Path) {
+				scoped = append(scoped, item)
+			}
+		}
+		h.flatItems = scoped
 	}
 
 	// Inject window items after sessions that have 2+ windows
@@ -1238,6 +1357,41 @@ func (h *Home) rebuildFlatItems() {
 
 	// Invalidate mouse double-click tracking (item indices may have shifted)
 	h.lastClickIndex = -1
+
+	// Inject creating session placeholders (worktree creation in progress)
+	for _, creating := range h.creatingSessions {
+		item := session.Item{
+			Type:          session.ItemTypeSession,
+			Level:         1,
+			Path:          creating.GroupPath,
+			CreatingID:    creating.ID,
+			CreatingTitle: creating.Title,
+			CreatingTool:  creating.Tool,
+		}
+		// Insert at the appropriate group position
+		inserted := false
+		if creating.GroupPath != "" {
+			for i := len(h.flatItems) - 1; i >= 0; i-- {
+				fi := h.flatItems[i]
+				if fi.Type == session.ItemTypeGroup && fi.Path == creating.GroupPath {
+					// Insert after the group header
+					h.flatItems = append(h.flatItems[:i+1], append([]session.Item{item}, h.flatItems[i+1:]...)...)
+					inserted = true
+					break
+				}
+				if fi.Path == creating.GroupPath && (fi.Type == session.ItemTypeSession || fi.CreatingID != "") {
+					// Insert after the last session in this group
+					h.flatItems = append(h.flatItems[:i+1], append([]session.Item{item}, h.flatItems[i+1:]...)...)
+					inserted = true
+					break
+				}
+			}
+		}
+		if !inserted {
+			// No group found or no group — append at end (before remotes)
+			h.flatItems = append(h.flatItems, item)
+		}
+	}
 
 	// Ensure cursor is valid
 	if h.cursor >= len(h.flatItems) {
@@ -1483,6 +1637,11 @@ func (h *Home) Init() tea.Cmd {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		h.setupWizard.Show()
 		h.setupWizard.SetSize(h.width, h.height)
+	}
+
+	// Start system stats collection
+	if h.sysStatsCollector != nil {
+		h.sysStatsCollector.Start()
 	}
 
 	cmds := []tea.Cmd{
@@ -2028,8 +2187,29 @@ func (h *Home) getSelectedSession() *session.Instance {
 }
 
 type sessionRenderState struct {
-	status session.Status
-	tool   string
+	status    session.Status
+	tool      string
+	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
+}
+
+// cleanPaneTitle strips spinner/done marker characters from a tmux pane title
+// and returns the task description. Returns "" for default/generic titles.
+func cleanPaneTitle(title string) string {
+	if title == "" {
+		return ""
+	}
+	// Strip known spinner/done markers, plus any Braille chars (U+2800-28FF)
+	// that Claude Code may use as spinner frames beyond the canonical set.
+	cleaned := tmux.StripSpinnerRunes(title)
+	cleaned = strings.TrimLeftFunc(cleaned, func(r rune) bool {
+		return r >= 0x2800 && r <= 0x28FF
+	})
+	cleaned = strings.TrimSpace(cleaned)
+	switch cleaned {
+	case "", "Claude Code", "Gemini CLI", "Codex CLI":
+		return ""
+	}
+	return cleaned
 }
 
 func (h *Home) getSessionRenderSnapshot() map[string]sessionRenderState {
@@ -2054,10 +2234,17 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 		if inst == nil {
 			continue
 		}
-		snap[inst.ID] = sessionRenderState{
+		state := sessionRenderState{
 			status: inst.GetStatusThreadSafe(),
 			tool:   inst.GetToolThreadSafe(),
 		}
+		// Look up pane title from the already-refreshed tmux cache.
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+			}
+		}
+		snap[inst.ID] = state
 	}
 	h.sessionRenderSnapshot.Store(snap)
 }
@@ -2209,6 +2396,12 @@ func (h *Home) backgroundStatusUpdate() {
 
 	totalStart := time.Now()
 	if hotUntil := h.navigationHotUntil.Load(); hotUntil > 0 && time.Now().UnixNano() < hotUntil {
+		return
+	}
+
+	// Fast-fail: skip entire status loop when tmux server is dead.
+	// Without this, every subprocess call takes ~3s to fail, causing 30-50s UI freezes.
+	if !tmux.IsServerAlive() {
 		return
 	}
 
@@ -3002,6 +3195,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionCreatedMsg:
+		// Remove the creating placeholder (if any) — always, on success or error
+		if msg.tempID != "" {
+			delete(h.creatingSessions, msg.tempID)
+		}
+
 		// Handle reload scenario: session was already started in tmux, we MUST save it to JSON
 		// even during reload, otherwise the session becomes orphaned (exists in tmux but not in storage)
 		h.reloadMu.Lock()
@@ -3024,6 +3222,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			h.setError(msg.err)
+			if msg.tempID != "" {
+				h.rebuildFlatItems() // Remove placeholder from list
+			}
 		} else {
 			h.instancesMu.Lock()
 			h.instances = append(h.instances, msg.instance)
@@ -3958,6 +4159,15 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tea.KeyMsg:
+		// Temporary key diagnostic — writes directly to /tmp/agentdeck-keys.log
+		if f, err := os.OpenFile("/tmp/agentdeck-keys.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			fmt.Fprintf(f, "key raw=%q type=%d runes=%q jump=%v wizard=%v settings=%v help=%v search=%v newdlg=%v costdash=%v notes=%v skill=%v\n",
+				msg.String(), msg.Type, string(msg.Runes),
+				h.jumpMode, h.setupWizard.IsVisible(), h.settingsPanel.IsVisible(),
+				h.helpOverlay.IsVisible(), h.search.IsVisible(), h.newDialog.IsVisible(),
+				h.showCostDashboard, h.notesEditing, h.skillDialog.IsVisible())
+			f.Close()
+		}
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
 
@@ -4269,6 +4479,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.newDialog, cmd = h.newDialog.Update(msg)
 		return h, cmd
 	}
+	// When branch search results are visible, let the dialog consume Enter/Esc/navigation
+	// before the outer dialog-level handlers create/cancel the session.
+	if h.newDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
+	}
 
 	switch msg.String() {
 	case "enter":
@@ -4329,11 +4546,14 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		parentSessionID := h.newDialog.GetParentSessionID()
+		parentProjectPath := h.newDialog.GetParentProjectPath()
+
 		// Only non-worktree sessions may need interactive "create directory" confirmation.
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -4351,6 +4571,28 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			additionalPaths = multiRepoPaths[1:]
 		}
 
+		// Show immediate placeholder in UI while worktree + session is created async
+		var tempID string
+		if worktreeEnabled && branchName != "" {
+			tempID = session.GenerateID()
+			h.creatingSessions[tempID] = &CreatingSession{
+				ID:        tempID,
+				Title:     name,
+				Tool:      command,
+				GroupPath: groupPath,
+				StartTime: time.Now(),
+			}
+			h.rebuildFlatItems()
+			// Auto-select the placeholder
+			for i, item := range h.flatItems {
+				if item.CreatingID == tempID {
+					h.cursor = i
+					h.syncViewport()
+					break
+				}
+			}
+		}
+
 		return h, h.createSessionInGroupWithWorktreeAndOptions(
 			name,
 			path,
@@ -4364,6 +4606,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			multiRepoEnabled,
 			additionalPaths,
+			parentSessionID,
+			parentProjectPath,
+			tempID,
 		)
 
 	case "esc":
@@ -4673,7 +4918,9 @@ func (h *Home) mouseYToItemIndex(y int) int {
 
 // handleMainKey handles keys in main view
 func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	key := h.normalizeMainKey(msg.String())
+	raw := msg.String()
+	key := h.normalizeMainKey(raw)
+	uiLog.Info("keypress", "raw", raw, "normalized", key, "type", msg.Type, "runes", string(msg.Runes))
 	if key == "" {
 		return h, nil
 	}
@@ -4938,12 +5185,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupUp(item.Path)
+				h.rebuildFlatItems()
+				h.moveCursorToGroup(item.Path)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			case session.ItemTypeSession:
-				h.groupTree.MoveSessionUp(item.Session)
-			}
-			h.rebuildFlatItems()
-			if h.cursor > 0 {
-				h.cursor--
+				if item.Session != nil {
+					sessionID := item.Session.ID
+					h.groupTree.MoveSessionUp(item.Session)
+					h.rebuildFlatItems()
+					h.moveCursorToSession(sessionID)
+					if h.cursor >= len(h.flatItems) {
+						h.cursor = max(0, len(h.flatItems)-1)
+					}
+				}
 			}
 			h.saveInstances()
 		}
@@ -4956,12 +5212,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch item.Type {
 			case session.ItemTypeGroup:
 				h.groupTree.MoveGroupDown(item.Path)
+				h.rebuildFlatItems()
+				h.moveCursorToGroup(item.Path)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
 			case session.ItemTypeSession:
-				h.groupTree.MoveSessionDown(item.Session)
-			}
-			h.rebuildFlatItems()
-			if h.cursor < len(h.flatItems)-1 {
-				h.cursor++
+				if item.Session != nil {
+					sessionID := item.Session.ID
+					h.groupTree.MoveSessionDown(item.Session)
+					h.rebuildFlatItems()
+					h.moveCursorToSession(sessionID)
+					if h.cursor >= len(h.flatItems) {
+						h.cursor = max(0, len(h.flatItems)-1)
+					}
+				}
 			}
 			h.saveInstances()
 		}
@@ -5036,7 +5301,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession {
-				h.groupDialog.ShowMove(h.groupTree.GetGroupPaths())
+				h.groupDialog.ShowMove(h.scopedGroupPaths())
 			}
 		}
 		return h, nil
@@ -5088,7 +5353,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// - Group header: defaults to subgroup, Tab toggles to root
 		// - Grouped session: defaults to root, Tab toggles to subgroup
 		// - Ungrouped item: root only, no toggle
-		if h.cursor < len(h.flatItems) {
+		if h.groupScope != "" {
+			// Scoped mode: create subgroups under scope root or its children
+			if h.cursor < len(h.flatItems) {
+				item := h.flatItems[h.cursor]
+				if item.Type == session.ItemTypeGroup {
+					h.groupDialog.ShowCreateSubgroup(item.Group.Path, item.Group.Name)
+				} else {
+					h.groupDialog.ShowCreateSubgroup(h.groupScope, h.groupScopeDisplayName())
+				}
+			} else {
+				h.groupDialog.ShowCreateSubgroup(h.groupScope, h.groupScopeDisplayName())
+			}
+		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeGroup {
 				// On group header: default to subgroup mode
@@ -5238,6 +5515,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Auto-select parent group from current cursor position
 		groupPath := session.DefaultGroupPath
 		groupName := session.DefaultGroupName
+		if h.groupScope != "" {
+			// Scoped mode: default to scope root
+			groupPath = h.groupScope
+			if group, exists := h.groupTree.Groups[h.groupScope]; exists {
+				groupName = group.Name
+			}
+		}
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			switch item.Type {
@@ -5253,7 +5537,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		defaultPath := h.getDefaultPathForGroup(groupPath)
-		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath)
+		conductors := h.activeConductorSessions()
+		suggestedParentID := h.suggestConductorParent()
+		h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, conductors, suggestedParentID)
 		return h, nil
 
 	case "N":
@@ -5275,8 +5561,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath {
+			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
+			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
+				h.setError(fmt.Errorf("cannot delete the scoped root group"))
 			}
 		}
 		return h, nil
@@ -5541,13 +5829,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
-	case "C":
-		// Cost dashboard
-		if h.costStore != nil {
-			h.showCostDashboard = true
-			h.costDashboard = newCostDashboard(h.costStore, h.width, h.height)
-			return h, nil
+	case FilterKeyActive, "shift+5":
+		// Filter to open sessions (excludes error/stopped)
+		if h.statusFilter == FilterModeActive {
+			h.statusFilter = "" // Toggle off
+		} else {
+			h.statusFilter = FilterModeActive
 		}
+		h.rebuildFlatItems()
+		return h, nil
 	}
 
 	return h, nil
@@ -5576,7 +5866,7 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ConfirmCreateDirectory:
 		switch msg.String() {
 		case "y", "Y":
-			name, path, command, groupPath, pendingToolOpts := h.confirmDialog.GetPendingSession()
+			name, path, command, groupPath, pendingToolOpts, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 			h.confirmDialog.Hide()
 			if err := os.MkdirAll(path, 0o755); err != nil {
 				h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -5595,6 +5885,9 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				pendingToolOpts,
 				false,
 				nil,
+				parentSessionID,
+				parentProjectPath,
+				"", // no placeholder — non-worktree sessions are fast
 			)
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
@@ -5718,6 +6011,10 @@ func (h *Home) performQuit(shutdownPool bool) tea.Cmd {
 // This is called via quitMsg after the splash screen has had time to render
 func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 	return func() tea.Msg {
+		// Stop system stats collector
+		if h.sysStatsCollector != nil {
+			h.sysStatsCollector.Stop()
+		}
 		// Signal background worker to stop
 		h.cancel()
 		// Wait for background worker to finish (prevents race on shutdown)
@@ -5993,6 +6290,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleForkDialogKey handles keyboard input for the fork dialog
 func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if h.forkDialog.IsBranchPickerOpen() {
+		var cmd tea.Cmd
+		h.forkDialog, cmd = h.forkDialog.Update(msg)
+		return h, cmd
+	}
+
 	switch msg.String() {
 	case "enter":
 		// Validate before proceeding
@@ -6042,8 +6345,10 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					opts.WorktreeBranch = branchName
 				}
 
+				parentID := h.forkDialog.GetParentSessionID()
+				parentPath := h.forkDialog.GetParentProjectPath()
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled())
+				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled(), parentID, parentPath)
 			}
 		}
 		h.forkDialog.Hide()
@@ -6292,11 +6597,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	multiRepoEnabled bool,
 	additionalPaths []string,
+	parentSessionID, parentProjectPath string,
+	tempID string,
 ) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
 		if err := tmux.IsTmuxAvailable(); err != nil {
-			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err)}
+			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err), tempID: tempID}
 		}
 
 		if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepoEnabled {
@@ -6308,10 +6615,15 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				worktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
-				if err := git.CreateWorktree(worktreeRepoRoot, worktreePath, worktreeBranch); err != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err)}
+				var setupBuf bytes.Buffer
+				setupErr, err := git.CreateWorktreeWithSetup(worktreeRepoRoot, worktreePath, worktreeBranch, &setupBuf, &setupBuf)
+				if err != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
+				}
+				if setupErr != nil {
+					uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", setupBuf.String()))
 				}
 			}
 			path = worktreePath
@@ -6380,7 +6692,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees",
 					fmt.Sprintf("%s-%s", sanitizedBranch, inst.ID[:8]))
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr), tempID: tempID}
 				}
 				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
 					parentDir = resolved
@@ -6444,7 +6756,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				home, _ := os.UserHomeDir()
 				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr)}
+					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), tempID: tempID}
 				}
 				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
 					parentDir = resolved
@@ -6474,6 +6786,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			}
 		}
 
+		if parentSessionID != "" {
+			inst.SetParentWithPath(parentSessionID, parentProjectPath)
+		}
+
 		uiLog.Info("session_create_starting",
 			slog.String("tool", inst.Tool),
 			slog.String("path", inst.ProjectPath),
@@ -6481,10 +6797,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		)
 		if err := inst.Start(); err != nil {
 			uiLog.Error("session_create_failed", slog.String("error", err.Error()))
-			return sessionCreatedMsg{err: err}
+			return sessionCreatedMsg{err: err, tempID: tempID}
 		}
 		uiLog.Info("session_create_succeeded", slog.String("id", inst.ID))
-		return sessionCreatedMsg{instance: inst}
+		return sessionCreatedMsg{instance: inst, tempID: tempID}
 	}
 }
 
@@ -6502,10 +6818,9 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if source == nil {
 		return nil
 	}
-	// Use source title with " (fork)" suffix
 	title := source.Title + " (fork)"
 	groupPath := source.GroupPath
-	return h.forkSessionCmd(source, title, groupPath)
+	return h.forkSessionCmd(source, title, groupPath, source.ParentSessionID, source.ParentProjectPath)
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
@@ -6527,7 +6842,11 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		}
 	}
 	if groupPath == "" {
-		groupPath = session.DefaultGroupPath
+		if h.groupScope != "" {
+			groupPath = h.groupScope
+		} else {
+			groupPath = session.DefaultGroupPath
+		}
 	}
 
 	projectPath := ""
@@ -6542,7 +6861,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		tool = sourceSession.Tool
 		command = sourceSession.Command
 		if len(sourceSession.ToolOptionsJSON) > 0 {
-			toolOptionsJSON = sourceSession.ToolOptionsJSON
+			toolOptionsJSON = session.StripResumeFields(sourceSession.ToolOptionsJSON)
 		}
 		if sourceSession.GeminiYoloMode != nil && *sourceSession.GeminiYoloMode {
 			geminiYoloMode = true
@@ -6567,7 +6886,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 			tool = mostRecent.Tool
 			command = mostRecent.Command
 			if len(mostRecent.ToolOptionsJSON) > 0 {
-				toolOptionsJSON = mostRecent.ToolOptionsJSON
+				toolOptionsJSON = session.StripResumeFields(mostRecent.ToolOptionsJSON)
 			}
 			if mostRecent.GeminiYoloMode != nil && *mostRecent.GeminiYoloMode {
 				geminiYoloMode = true
@@ -6608,7 +6927,54 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"", "", "", // no worktree
 		geminiYoloMode, false, toolOptionsJSON,
 		false, nil, // no multi-repo
+		"", "", // no parent
+		"", // no placeholder
 	)
+}
+
+// suggestConductorParent returns the ID of the most contextually relevant conductor
+// based on the current cursor position: the cursor session itself if it's a conductor,
+// or the conductor pointed to by its ParentSessionID.
+func (h *Home) suggestConductorParent() string {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return ""
+	}
+	item := h.flatItems[h.cursor]
+	if item.Type != session.ItemTypeSession || item.Session == nil {
+		return ""
+	}
+	inst := item.Session
+	// Cursor is directly on a conductor.
+	if inst.IsConductor {
+		return inst.ID
+	}
+	// Cursor is on a session that has a conductor parent.
+	if inst.ParentSessionID != "" {
+		h.instancesMu.RLock()
+		parent, ok := h.instanceByID[inst.ParentSessionID]
+		h.instancesMu.RUnlock()
+		if ok && parent.IsConductor {
+			return parent.ID
+		}
+	}
+	return ""
+}
+
+// activeConductorSessions returns all non-stopped, non-error conductor sessions
+// in the current profile (h.instances is already scoped to the active profile).
+func (h *Home) activeConductorSessions() []*session.Instance {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+
+	var out []*session.Instance
+	for _, inst := range h.instances {
+		if inst.IsConductor &&
+			inst.Status != session.StatusError &&
+			inst.Status != session.StatusStopped {
+			out = append(out, inst)
+		}
+	}
+	return out
 }
 
 // mostRecentPathInGroup returns the project path of the most recently created
@@ -6637,14 +7003,16 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 		return nil
 	}
 	// Pre-populate dialog with source session info
-	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath)
+	conductors := h.activeConductorSessions()
+	suggestedParentID := h.suggestConductorParent()
+	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID)
 	return nil
 }
 
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
-func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false)
+func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, parentSessionID, parentProjectPath)
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, Claude options, and optional sandbox.
@@ -6654,6 +7022,7 @@ func (h *Home) forkSessionCmdWithOptions(
 	title, groupPath string,
 	opts *session.ClaudeOptions,
 	sandboxEnabled bool,
+	parentSessionID, parentProjectPath string,
 ) tea.Cmd {
 	if source == nil {
 		return nil
@@ -6682,8 +7051,13 @@ func (h *Home) forkSessionCmdWithOptions(
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				if err := git.CreateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch); err != nil {
+				var setupBuf bytes.Buffer
+				setupErr, err := git.CreateWorktreeWithSetup(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch, &setupBuf, &setupBuf)
+				if err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
+				}
+				if setupErr != nil {
+					uiLog.Warn("worktree_setup_script_failed", slog.String("error", setupErr.Error()), slog.String("output", setupBuf.String()))
 				}
 			}
 		}
@@ -6743,6 +7117,10 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 			inst.ProjectPath = newProjectPath
 			inst.AdditionalPaths = newAdditionalPaths
+		}
+
+		if parentSessionID != "" {
+			inst.SetParentWithPath(parentSessionID, parentProjectPath)
 		}
 
 		if err := inst.Start(); err != nil {
@@ -7096,6 +7474,13 @@ func (a attachCmd) Run() error {
 	// NOTE: Screen clearing is ONLY done in the tea.Exec callback (after Attach returns)
 	// Removing clear screen here prevents double-clearing which corrupts terminal state
 
+	// Re-enable Kitty keyboard protocol so the attached session (e.g. Claude
+	// Code) receives extended key sequences like Shift+Enter. The TUI pops
+	// the protocol at startup for Bubble Tea compatibility; push mode 1
+	// here and pop again on return.
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.Attach(ctx, a.detachByte)
 }
@@ -7135,6 +7520,9 @@ type remoteCreateAndAttachCmd struct {
 }
 
 func (r remoteCreateAndAttachCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	sessionID, err := r.runner.CreateSession(ctx)
 	if err != nil {
@@ -7155,6 +7543,9 @@ type attachWindowCmd struct {
 }
 
 func (a attachWindowCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	ctx := context.Background()
 	return a.session.AttachWindow(ctx, a.windowIndex, a.detachByte)
 }
@@ -7188,6 +7579,9 @@ type remoteAttachCmd struct {
 }
 
 func (r remoteAttachCmd) Run() error {
+	EnableKittyKeyboard(os.Stdout)
+	defer DisableKittyKeyboard(os.Stdout)
+
 	return r.runner.Attach(r.sessionID)
 }
 
@@ -7286,12 +7680,24 @@ func (h *Home) renderFilterBar() string {
 	// Build pills
 	var pills []string
 
-	// "All" pill
-	allLabel := "All"
-	if h.statusFilter == "" {
-		pills = append(pills, activePillStyle.Render(allLabel))
+	// "All" / "Open" pill
+	isActive := h.statusFilter == FilterModeActive
+	activeLabel := h.activeFilterLabel
+	if activeLabel == "" {
+		activeLabel = "Open"
+	}
+	// "All" is shorter than "Open" — pad with a trailing space outside the pill
+	// so toggling doesn't shift the bar, without extending the highlight.
+	allPad := ""
+	if len(activeLabel) > len("All") {
+		allPad = " "
+	}
+	if isActive {
+		pills = append(pills, activePillStyle.Render(activeLabel))
+	} else if h.statusFilter == "" {
+		pills = append(pills, activePillStyle.Render("All")+allPad)
 	} else {
-		pills = append(pills, inactivePillStyle.Render(allLabel))
+		pills = append(pills, inactivePillStyle.Render("All")+allPad)
 	}
 
 	// Running pill (green when active, dim if 0)
@@ -7328,7 +7734,7 @@ func (h *Home) renderFilterBar() string {
 		pills = append(pills, dimPillStyle.Render(waitingLabel))
 	}
 
-	// Idle pill (gray when active)
+	// Idle pill (gray when selected, dimmed when active filter hides it)
 	idleLabel := fmt.Sprintf("○ %d", idle)
 	if h.statusFilter == session.StatusIdle {
 		pills = append(pills, lipgloss.NewStyle().
@@ -7336,16 +7742,16 @@ func (h *Home) renderFilterBar() string {
 			Background(ColorTextDim).
 			Bold(true).
 			Padding(0, 1).Render(idleLabel))
-	} else if idle > 0 {
+	} else if idle == 0 {
+		pills = append(pills, dimPillStyle.Render(idleLabel))
+	} else {
 		pills = append(pills, lipgloss.NewStyle().
 			Foreground(ColorText).
 			Background(ColorSurface).
 			Padding(0, 1).Render(idleLabel))
-	} else {
-		pills = append(pills, dimPillStyle.Render(idleLabel))
 	}
 
-	// Error pill (red when active)
+	// Error pill (red when selected, dimmed when active filter hides it)
 	if errored > 0 || h.statusFilter == session.StatusError {
 		errorLabel := fmt.Sprintf("✕ %d", errored)
 		if h.statusFilter == session.StatusError {
@@ -7354,6 +7760,8 @@ func (h *Home) renderFilterBar() string {
 				Background(ColorRed).
 				Bold(true).
 				Padding(0, 1).Render(errorLabel))
+		} else if isActive {
+			pills = append(pills, dimPillStyle.Render(errorLabel))
 		} else if errored > 0 {
 			pills = append(pills, lipgloss.NewStyle().
 				Foreground(ColorRed).
@@ -7362,9 +7770,8 @@ func (h *Home) renderFilterBar() string {
 		}
 	}
 
-	// Hint for keyboard shortcuts (shift+number to filter, 0 to clear)
-	hintStyle := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
-	hint := hintStyle.Render("  !@#$ filter • 0 all")
+	// Hint for keyboard shortcuts (cached — content is static)
+	hint := cachedFilterBarHint()
 
 	// Join pills with spaces (leading space replaces Padding)
 	filterRow := " " + strings.Join(pills, " ") + hint
@@ -7501,6 +7908,12 @@ func (h *Home) View() string {
 			Bold(true)
 		titleText = "Agent Deck " + profileStyle.Render("["+h.profile+"]")
 	}
+	if h.groupScope != "" {
+		scopeStyle := lipgloss.NewStyle().
+			Foreground(ColorPurple).
+			Bold(true)
+		titleText += " " + scopeStyle.Render("["+h.groupScopeDisplayName()+"]")
+	}
 	title := titleStyle.Render(titleText)
 
 	// Status-based stats (more useful than group/session counts)
@@ -7550,6 +7963,16 @@ func (h *Home) View() string {
 		stats += statsSep + costText
 	}
 	_ = weekMicro // reserved for future weekly display
+
+	// System stats segment (CPU, RAM, etc.)
+	if h.sysStatsCollector != nil {
+		sysStats := h.sysStatsCollector.Get()
+		formatted := sysinfo.Format(sysStats, h.sysStatsConfig.GetFormat(), h.sysStatsConfig.GetShow())
+		if formatted != "" {
+			sysStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			stats += statsSep + sysStyle.Render(formatted)
+		}
+	}
 
 	// Version badge (right-aligned, subtle inline style - no border to keep single line)
 	versionStyle := lipgloss.NewStyle().
@@ -8951,6 +9374,25 @@ func (h *Home) renderSessionList(width, height int) string {
 			contentHeight = 5
 		}
 
+		// Group-scoped empty state
+		if h.groupScope != "" {
+			hints := []string{}
+			if key := h.actionKey(hotkeyNewSession); key != "" {
+				hints = append(hints, fmt.Sprintf("Press %s to create a session", key))
+			}
+			emptyContent := renderEmptyStateResponsive(EmptyStateConfig{
+				Icon:     "⬡",
+				Title:    "No sessions in " + h.groupScopeDisplayName(),
+				Subtitle: "This group is empty",
+				Hints:    hints,
+			}, contentWidth, contentHeight)
+
+			return lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(ColorBorder).
+				Render(emptyContent)
+		}
+
 		hints := make([]string, 0, 3)
 		if key := h.actionKey(hotkeyNewSession); key != "" {
 			hints = append(hints, fmt.Sprintf("Press %s to create a new session", key))
@@ -9107,7 +9549,11 @@ func (h *Home) renderItem(
 	case session.ItemTypeGroup:
 		h.renderGroupItem(b, item, selected, itemIndex, groupStats)
 	case session.ItemTypeSession:
-		h.renderSessionItem(b, item, selected, snapshot)
+		if item.CreatingID != "" {
+			h.renderCreatingSessionItem(b, item, selected)
+		} else {
+			h.renderSessionItem(b, item, selected, snapshot)
+		}
 	case session.ItemTypeWindow:
 		h.renderWindowItem(b, item, selected)
 	case session.ItemTypeRemoteGroup:
@@ -9204,6 +9650,86 @@ const (
 
 // renderSessionItem renders a single session item for the left panel
 // PERFORMANCE: Uses cached styles from styles.go to avoid allocations
+func (h *Home) renderCreatingPreview(creating *CreatingSession, width, height int) string {
+	var b strings.Builder
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	centerStyle := lipgloss.NewStyle().
+		Width(width - 4).
+		Align(lipgloss.Center)
+
+	// Spinner line
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(ColorPurple).
+		Bold(true)
+	spinnerLine := spinnerStyle.Render(spinner + "  " + spinner + "  " + spinner)
+	b.WriteString("\n\n")
+	b.WriteString(centerStyle.Render(spinnerLine))
+	b.WriteString("\n\n")
+
+	// Title
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ColorPurple).
+		Bold(true)
+	b.WriteString(centerStyle.Render(titleStyle.Render("🔨 Creating Worktree")))
+	b.WriteString("\n\n")
+
+	// Description
+	descStyle := lipgloss.NewStyle().
+		Foreground(ColorText)
+	b.WriteString(centerStyle.Render(descStyle.Render("Setting up " + creating.Title + "...")))
+	b.WriteString("\n\n")
+
+	// Elapsed time
+	elapsed := time.Since(creating.StartTime).Truncate(time.Second)
+	timeStyle := lipgloss.NewStyle().
+		Foreground(ColorTextDim).
+		Italic(true)
+	b.WriteString(centerStyle.Render(timeStyle.Render(fmt.Sprintf("Elapsed: %s", elapsed))))
+	b.WriteString("\n\n")
+
+	// Progress dots animation
+	dots := strings.Repeat("·", (h.animationFrame%4)+1) + strings.Repeat(" ", 3-h.animationFrame%4)
+	dotStyle := lipgloss.NewStyle().Foreground(ColorPurple)
+	b.WriteString(centerStyle.Render(dotStyle.Render(dots)))
+
+	return b.String()
+}
+
+func (h *Home) renderCreatingSessionItem(
+	b *strings.Builder,
+	item session.Item,
+	selected bool,
+) {
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	// Selection styling
+	if selected {
+		b.WriteString(lipgloss.NewStyle().
+			Foreground(ColorAccent).
+			Bold(true).
+			Render("▸ "))
+	} else {
+		b.WriteString("  ")
+	}
+
+	// Tree connector
+	if item.Level > 0 {
+		b.WriteString(TreeConnectorStyle.Render("├── "))
+	}
+
+	// Spinner + title
+	spinnerStyle := lipgloss.NewStyle().Foreground(ColorPurple)
+	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+	b.WriteString(spinnerStyle.Render(spinner))
+	b.WriteString(" ")
+	b.WriteString(titleStyle.Render(item.CreatingTitle))
+	b.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true).Render(" (creating worktree...)"))
+	b.WriteString("\n")
+}
+
 func (h *Home) renderSessionItem(
 	b *strings.Builder,
 	item session.Item,
@@ -9310,10 +9836,13 @@ func (h *Home) renderSessionItem(
 		status = statusStyle.Render(statusIcon)
 		// Tree connector also gets selection styling
 		treeStyle = TreeConnectorSelStyle
-		// Rebuild baseIndent with selection styling for sub-sessions
-		if item.IsSubSession && !item.ParentIsLastInGroup {
+		// Rebuild baseIndent with selection arrow for sub-sessions
+		// Replace the │ (or empty space) with ▶ so the arrow doesn't squeeze
+		// between tree connector characters (e.g. " │▶├─" → " ▶ ├─")
+		if item.IsSubSession {
 			groupIndent := strings.Repeat(treeEmpty, max(0, item.Level-2))
-			baseIndent = groupIndent + " " + treeStyle.Render("│")
+			baseIndent = groupIndent + SessionSelectionPrefix.Render(" ▶")
+			selectionPrefix = " "
 		}
 	}
 
@@ -9401,7 +9930,7 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [yolo] [worktree] [sandbox] [multi-repo] [ssh]
+	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
 		"%s%s%s%s%s %s%s%s%s%s%s%s",
 		baseIndent,
@@ -9417,6 +9946,21 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge,
 		sshBadge,
 	)
+
+	// Append pane title filling remaining row space (only for the selected item).
+	// lipgloss.Width(row) accounts for indentation, tree connectors, and all badges,
+	// so deeply-nested sessions with many badges naturally get less pane title space.
+	if selected && instState.paneTitle != "" {
+		remaining := h.width - lipgloss.Width(row) - 2 // -2 for trailing margin
+		if remaining > 10 {
+			pt := instState.paneTitle
+			if lipgloss.Width(pt) > remaining {
+				pt = ansi.Truncate(pt, remaining, "…")
+			}
+			row += DimStyle.Render(" " + pt)
+		}
+	}
+
 	b.WriteString(row)
 	b.WriteString("\n")
 }
@@ -9948,6 +10492,15 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	if len(h.flatItems) == 0 || h.cursor >= len(h.flatItems) {
 		// Show different message when there are no sessions vs just no selection
 		if len(h.flatItems) == 0 {
+			// Group-scoped empty preview
+			if h.groupScope != "" {
+				return renderEmptyStateResponsive(EmptyStateConfig{
+					Icon:     "✦",
+					Title:    h.groupScopeDisplayName(),
+					Subtitle: "Group scope active",
+					Hints:    []string{"Only sessions in this group are shown"},
+				}, width, height)
+			}
 			hints := make([]string, 0, 2)
 			if key := h.actionKey(hotkeyNewSession); key != "" {
 				hints = append(hints, fmt.Sprintf("Press %s to create your first session", key))
@@ -9958,19 +10511,27 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			if len(hints) == 0 {
 				hints = append(hints, "Create or import sessions to get started")
 			}
-			return renderEmptyStateResponsive(EmptyStateConfig{
+			content := renderEmptyStateResponsive(EmptyStateConfig{
 				Icon:     "✦",
 				Title:    "Ready to Go",
 				Subtitle: "Your workspace is set up",
 				Hints:    hints,
 			}, width, height)
+			if statsBlock := h.renderSystemStatsBlock(width); statsBlock != "" {
+				content += "\n" + statsBlock
+			}
+			return content
 		}
-		return renderEmptyStateResponsive(EmptyStateConfig{
+		content := renderEmptyStateResponsive(EmptyStateConfig{
 			Icon:     "◇",
 			Title:    "No Selection",
 			Subtitle: "Select a session to preview",
 			Hints:    nil,
 		}, width, height)
+		if statsBlock := h.renderSystemStatsBlock(width); statsBlock != "" {
+			content += "\n" + statsBlock
+		}
+		return content
 	}
 
 	item := h.flatItems[h.cursor]
@@ -9996,6 +10557,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			}, width, height)
 		}
 		item.Session = parentInst
+	}
+
+	// Creating session placeholder: show dedicated animation
+	if item.CreatingID != "" {
+		if creating, ok := h.creatingSessions[item.CreatingID]; ok {
+			return h.renderCreatingPreview(creating, width, height)
+		}
+		return ""
 	}
 
 	// Session preview
@@ -10501,7 +11070,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	showAnalytics := config != nil && config.GetShowAnalytics() &&
 		(session.IsClaudeCompatible(selected.Tool) || selected.Tool == "gemini")
 	showOutput := config == nil || config.GetShowOutput() // Default to true if config fails
-	showNotes := config == nil || config.GetShowNotes()   // Default to true if config fails
+	showNotes := config != nil && config.GetShowNotes() // Default to false if config fails
 	notesOutputSplit := 0.33
 	if config != nil {
 		notesOutputSplit = config.Preview.GetNotesOutputSplit()
@@ -11623,4 +12192,125 @@ func getSessionContent(inst *session.Instance) (string, error) {
 	}
 
 	return content, nil
+}
+
+// renderSystemStatsBlock renders a detailed system stats block for the empty state preview pane.
+func (h *Home) renderSystemStatsBlock(width int) string {
+	if h.sysStatsCollector == nil {
+		return ""
+	}
+
+	stats := h.sysStatsCollector.Get()
+	show := h.sysStatsConfig.GetShow()
+	showSet := make(map[string]bool, len(show))
+	for _, s := range show {
+		showSet[s] = true
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(ColorComment).Width(8)
+	valStyle := lipgloss.NewStyle().Foreground(ColorText)
+	barWidth := width - 20
+	if barWidth < 10 {
+		barWidth = 10
+	}
+	if barWidth > 40 {
+		barWidth = 40
+	}
+
+	var lines []string
+
+	titleStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+	lines = append(lines, titleStyle.Render("  System"))
+	lines = append(lines, "")
+
+	if showSet["cpu"] && stats.CPU.Available {
+		bar := renderBar(stats.CPU.UsagePercent, barWidth)
+		lines = append(lines, fmt.Sprintf("  %s %s %s", labelStyle.Render("CPU"), bar, valStyle.Render(fmt.Sprintf("%.0f%%", stats.CPU.UsagePercent))))
+	}
+	if showSet["ram"] && stats.Memory.Available {
+		bar := renderBar(stats.Memory.UsagePercent, barWidth)
+		used := sysinfo.FormatBytes(stats.Memory.UsedBytes)
+		total := sysinfo.FormatBytes(stats.Memory.TotalBytes)
+		lines = append(lines, fmt.Sprintf("  %s %s %s", labelStyle.Render("RAM"), bar, valStyle.Render(fmt.Sprintf("%s/%s", used, total))))
+	}
+	if showSet["disk"] && stats.Disk.Available {
+		bar := renderBar(stats.Disk.UsagePercent, barWidth)
+		used := sysinfo.FormatBytes(stats.Disk.UsedBytes)
+		total := sysinfo.FormatBytes(stats.Disk.TotalBytes)
+		lines = append(lines, fmt.Sprintf("  %s %s %s", labelStyle.Render("Disk"), bar, valStyle.Render(fmt.Sprintf("%s/%s", used, total))))
+	}
+	if showSet["load"] && stats.Load.Available {
+		lines = append(lines, fmt.Sprintf("  %s %s", labelStyle.Render("Load"), valStyle.Render(fmt.Sprintf("%.2f  %.2f  %.2f", stats.Load.Load1, stats.Load.Load5, stats.Load.Load15))))
+	}
+	if showSet["gpu"] && stats.GPU.Available {
+		bar := renderBar(stats.GPU.UsagePercent, barWidth)
+		label := "GPU"
+		if stats.GPU.Name != "" {
+			label = "GPU"
+		}
+		lines = append(lines, fmt.Sprintf("  %s %s %s", labelStyle.Render(label), bar, valStyle.Render(fmt.Sprintf("%.0f%%", stats.GPU.UsagePercent))))
+	}
+	if showSet["network"] && stats.Network.Available {
+		rx := sysinfo.FormatBytesPerSec(stats.Network.RxBytesPerSec)
+		tx := sysinfo.FormatBytesPerSec(stats.Network.TxBytesPerSec)
+		lines = append(lines, fmt.Sprintf("  %s %s", labelStyle.Render("Net"), valStyle.Render(fmt.Sprintf("↓ %s  ↑ %s", rx, tx))))
+	}
+
+	if len(lines) <= 2 {
+		return ""
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderBar creates an ASCII progress bar: [████░░░░░░]
+func renderBar(percent float64, width int) string {
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+
+	filled := int(percent / 100 * float64(width))
+	empty := width - filled
+
+	var color lipgloss.Color
+	switch {
+	case percent >= 90:
+		color = ColorRed
+	case percent >= 70:
+		color = ColorYellow
+	default:
+		color = ColorGreen
+	}
+
+	filledStyle := lipgloss.NewStyle().Foreground(color)
+	emptyStyle := lipgloss.NewStyle().Foreground(ColorBorder)
+
+	return filledStyle.Render(strings.Repeat("█", filled)) + emptyStyle.Render(strings.Repeat("░", empty))
+}
+
+// matchesStatusFilter returns true if the given session status matches the
+// current filter. For FilterModeActive, everything except error/stopped matches
+// (including StatusStarting — sessions being launched count as active).
+func matchesStatusFilter(filter, status session.Status) bool {
+	if filter == FilterModeActive {
+		return status != session.StatusError && status != session.StatusStopped
+	}
+	return status == filter
+}
+
+// cachedFilterBarHint returns the static filter bar hint string.
+// Cached after first call since the content never changes after theme init.
+var _cachedFilterBarHint string
+
+func cachedFilterBarHint() string {
+	if _cachedFilterBarHint == "" {
+		_cachedFilterBarHint = lipgloss.NewStyle().
+			Foreground(ColorComment).
+			Faint(true).
+			Render("  !@#$ filter • 0 all • " + FilterKeyActive + " open")
+	}
+	return _cachedFilterBarHint
 }
