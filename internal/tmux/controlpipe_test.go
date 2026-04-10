@@ -18,7 +18,7 @@ func createTestSession(t *testing.T, suffix string) string {
 	t.Helper()
 	skipIfNoTmuxServer(t)
 
-	name := SessionPrefix + "cptest-" + suffix
+	name := SessionPrefix + "cptest-" + suffix + "-" + generateShortID()
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", name)
 	require.NoError(t, cmd.Run(), "failed to create test session %s", name)
 

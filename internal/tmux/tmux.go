@@ -2201,6 +2201,10 @@ func (s *Session) GetStatus() (string, error) {
 	if len(shortName) > 12 {
 		shortName = shortName[:12]
 	}
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	if tool == "" {
+		tool = "shell"
+	}
 
 	if !s.Exists() {
 		s.mu.Lock()
@@ -2374,6 +2378,20 @@ func (s *Session) GetStatus() (string, error) {
 				s.lastStableStatus = "waiting"
 				s.startupAt = time.Time{}
 				statusLog.Debug("prompt_detected_waiting", slog.String("session", shortName))
+				return "waiting", nil
+			}
+
+			// Shell sessions can have themed prompts that are hard to classify from
+			// capture-pane output. If the pane already has visible content, stop
+			// treating it as startup-pending and fall through to waiting/idle.
+			if tool == "shell" && strings.TrimSpace(content) != "" {
+				s.resetPromptNoBusyHoldLocked()
+				if s.lastStableStatus != "waiting" {
+					s.stateTracker.waitingSince = time.Now()
+				}
+				s.lastStableStatus = "waiting"
+				s.startupAt = time.Time{}
+				statusLog.Debug("shell_content_waiting", slog.String("session", shortName))
 				return "waiting", nil
 			}
 
@@ -2636,6 +2654,10 @@ func (s *Session) getStatusFallback() (string, error) {
 	if len(shortName) > 12 {
 		shortName = shortName[:12]
 	}
+	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	if tool == "" {
+		tool = "shell"
+	}
 
 	rawContent, err := s.CapturePane()
 	if err != nil {
@@ -2724,6 +2746,12 @@ func (s *Session) getStatusFallback() (string, error) {
 			acknowledged:   false, // Start unacknowledged so stopped sessions show YELLOW
 			waitingSince:   now,   // Track when session became waiting
 		}
+		if tool == "shell" && strings.TrimSpace(content) != "" {
+			s.lastStableStatus = "waiting"
+			s.startupAt = time.Time{}
+			statusLog.Debug("fallback_init_shell_waiting", slog.String("session", shortName))
+			return "waiting", nil
+		}
 		if s.inStartupWindowLocked() {
 			s.lastStableStatus = "starting"
 			statusLog.Debug("fallback_init_starting", slog.String("session", shortName))
@@ -2736,6 +2764,15 @@ func (s *Session) getStatusFallback() (string, error) {
 
 	if s.stateTracker.lastHash == "" {
 		s.stateTracker.lastHash = currentHash
+		if tool == "shell" && strings.TrimSpace(content) != "" {
+			if s.lastStableStatus != "waiting" {
+				s.stateTracker.waitingSince = time.Now()
+			}
+			s.lastStableStatus = "waiting"
+			s.startupAt = time.Time{}
+			statusLog.Debug("fallback_restored_shell_waiting", slog.String("session", shortName))
+			return "waiting", nil
+		}
 		if s.inStartupWindowLocked() {
 			s.lastStableStatus = "starting"
 			statusLog.Debug("fallback_restored_starting", slog.String("session", shortName))
@@ -3064,6 +3101,9 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 // Callers in GetStatus() already hold s.mu, so we must not re-lock.
 func (s *Session) hasPromptIndicator(content string) bool {
 	tool := inferToolFromSessionFields(s.detectedTool, s.customToolName, s.Command)
+	if tool == "" {
+		tool = "shell"
+	}
 	patterns := s.resolvedPatterns
 	if patterns == nil {
 		patterns = defaultResolvedPatternsForTool(tool)
@@ -3085,9 +3125,6 @@ func (s *Session) hasPromptIndicator(content string) bool {
 				return true
 			}
 		}
-	}
-	if tool == "" {
-		return false
 	}
 	// Reuse cached detector if tool hasn't changed (avoids allocation per call)
 	if s.cachedPromptDetector == nil || s.cachedPromptDetectorTool != tool {

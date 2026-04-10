@@ -27,6 +27,13 @@ func TestMain(m *testing.M) {
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()
 
+	restoreHome, err := testutil.SetupTestHome()
+	if err != nil {
+		panic(err)
+	}
+	defer restoreHome()
+	ClearUserConfigCache()
+
 	// Force test profile to prevent production data corruption
 	// See CLAUDE.md: "2025-12-11 Incident: Tests with AGENTDECK_PROFILE=work overwrote ALL 36 production sessions"
 	os.Setenv("AGENTDECK_PROFILE", "_test")

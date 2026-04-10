@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
@@ -13,6 +14,13 @@ func TestMain(m *testing.M) {
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()
+
+	restoreHome, err := testutil.SetupTestHome()
+	if err != nil {
+		panic(err)
+	}
+	defer restoreHome()
+	session.ClearUserConfigCache()
 
 	// Force test profile to prevent production data corruption.
 	os.Setenv("AGENTDECK_PROFILE", "_test")
