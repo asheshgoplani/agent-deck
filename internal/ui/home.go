@@ -1668,6 +1668,10 @@ func (h *Home) Init() tea.Cmd {
 // checkForUpdate checks for updates asynchronously
 func (h *Home) checkForUpdate() tea.Cmd {
 	return func() tea.Msg {
+		settings := session.GetUpdateSettings()
+		if !settings.CheckEnabled {
+			return updateCheckMsg{info: nil}
+		}
 		info, _ := update.CheckForUpdate(Version, false)
 		return updateCheckMsg{info: info}
 	}
@@ -4146,15 +4150,6 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case tea.KeyMsg:
-		// Temporary key diagnostic — writes directly to /tmp/agentdeck-keys.log
-		if f, err := os.OpenFile("/tmp/agentdeck-keys.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-			fmt.Fprintf(f, "key raw=%q type=%d runes=%q jump=%v wizard=%v settings=%v help=%v search=%v newdlg=%v costdash=%v notes=%v skill=%v\n",
-				msg.String(), msg.Type, string(msg.Runes),
-				h.jumpMode, h.setupWizard.IsVisible(), h.settingsPanel.IsVisible(),
-				h.helpOverlay.IsVisible(), h.search.IsVisible(), h.newDialog.IsVisible(),
-				h.showCostDashboard, h.notesEditing, h.skillDialog.IsVisible())
-			f.Close()
-		}
 		// Track user activity for adaptive status updates
 		h.lastUserInputTime = time.Now()
 
@@ -11373,7 +11368,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		// Strip trailing empty lines BEFORE truncation
 		// This ensures we show actual content, not empty trailing lines when space is limited
 		// (Terminal output often ends with empty lines at cursor position)
-		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		// Use ansi.Strip before TrimSpace so lines containing only ANSI background
+		// codes + spaces (e.g. Claude Code's input-box highlight row) are also
+		// recognised as visually empty and removed.
+		for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
 			lines = lines[:len(lines)-1]
 		}
 
@@ -11424,20 +11422,20 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		consecutiveEmpty := 0
 		const maxConsecutiveEmpty = 2 // Allow up to 2 consecutive empty lines
 
-		isLightTheme := GetCurrentTheme() == ThemeLight
 		for _, line := range lines {
 			// Strip dangerous control characters (\r, \b, etc.) but preserve
 			// ANSI escape sequences (ESC = 0x1b) so colors and formatting
 			// from the captured terminal output pass through to display.
 			safeLine := stripControlCharsPreserveANSI(line)
 
-			// In light theme, remap captured ANSI background colors to the
-			// current preview surface instead of stripping them completely.
-			// This preserves the soft highlighted blocks used by tools like
-			// Codex without letting dark background bands bleed through.
-			if isLightTheme {
-				safeLine = remapANSIBackground(safeLine, previewSurfaceANSI())
-			}
+			// Strip background-color SGR parameters from all captured lines.
+			// This prevents input-box and message-container highlights from tools
+			// like Claude Code from rendering as a visible white or dark bar in the
+			// preview pane.  We use a proper SGR parser (stripSGRBackgrounds) rather
+			// than a simple regex so that compound sequences such as \x1b[0;47m or
+			// \x1b[1;42m are also handled correctly.  Foreground colors, bold,
+			// italic, underline and other non-background attributes are preserved.
+			safeLine = stripSGRBackgrounds(safeLine)
 
 			// Check if visually empty (strip ANSI for this check)
 			stripped := ansi.Strip(safeLine)
@@ -11626,6 +11624,76 @@ func stripControlCharsPreserveANSI(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// ansiSGRRE matches any ANSI SGR escape sequence (ESC [ ... m).
+// Used by stripSGRBackgrounds to locate and rewrite SGR sequences.
+var ansiSGRRE = regexp.MustCompile(`\x1b\[([\d;]*)m`)
+
+// stripSGRBackgrounds removes background-color SGR parameters from every ANSI
+// SGR escape sequence in s while preserving all other attributes (foreground
+// colors, bold, italic, underline, reverse, etc.).
+//
+// It handles both simple sequences (ESC[47m) and compound sequences that mix
+// multiple parameters (ESC[0;47m, ESC[1;42m, ESC[38;2;R;G;B;48;2;R;G;Bm]).
+// Background parameters removed: 40-47, 49, 100-107, 48;5;n, 48;2;r;g;b.
+func stripSGRBackgrounds(s string) string {
+	return ansiSGRRE.ReplaceAllStringFunc(s, func(seq string) string {
+		// Extract parameter bytes between ESC[ and m.
+		params := seq[2 : len(seq)-1]
+
+		// Keep full-reset sequences (ESC[m, ESC[0m) unchanged — they reset
+		// the background too, which is exactly what we want.
+		if params == "" || params == "0" || params == "00" {
+			return seq
+		}
+
+		parts := strings.Split(params, ";")
+		kept := make([]string, 0, len(parts))
+
+		for i := 0; i < len(parts); {
+			n, err := strconv.Atoi(parts[i])
+			if err != nil {
+				// Non-numeric parameter — keep as-is.
+				kept = append(kept, parts[i])
+				i++
+				continue
+			}
+
+			switch {
+			case n >= 40 && n <= 47: // standard 8 background colors
+				i++
+			case n == 49: // default background color
+				i++
+			case n >= 100 && n <= 107: // bright / high-intensity background colors
+				i++
+			case n == 48: // extended background color
+				// 48;5;n  — 256-color background  (3 params total)
+				// 48;2;r;g;b — truecolor background (5 params total)
+				if i+1 < len(parts) {
+					sub, _ := strconv.Atoi(parts[i+1])
+					if sub == 5 && i+2 < len(parts) {
+						i += 3 // skip 48;5;n
+					} else if sub == 2 && i+4 < len(parts) {
+						i += 5 // skip 48;2;r;g;b
+					} else {
+						i++ // unknown subtype — skip only the 48
+					}
+				} else {
+					i++
+				}
+			default:
+				kept = append(kept, parts[i])
+				i++
+			}
+		}
+
+		if len(kept) == 0 {
+			// All parameters were background — drop the whole sequence.
+			return ""
+		}
+		return "\x1b[" + strings.Join(kept, ";") + "m"
+	})
 }
 
 // ansiBackgroundRE matches ANSI background color escape sequences:
