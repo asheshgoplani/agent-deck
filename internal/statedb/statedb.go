@@ -963,6 +963,37 @@ func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedT
 	return n > 0, nil
 }
 
+// LookupWatcherEventSessionByDedupKey queries the session_id for a specific event.
+// Returns ("", nil) if no matching event exists or session_id is empty.
+func (s *StateDB) LookupWatcherEventSessionByDedupKey(watcherID, dedupKey string) (string, error) {
+	var sessionID string
+	err := s.db.QueryRow(
+		`SELECT session_id FROM watcher_events WHERE watcher_id = ? AND dedup_key = ?`,
+		watcherID, dedupKey,
+	).Scan(&sessionID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return sessionID, err
+}
+
+// UpdateWatcherEventSessionID sets the session_id on an existing watcher event.
+// Returns an error if no matching row exists (0 rows affected).
+func (s *StateDB) UpdateWatcherEventSessionID(watcherID, dedupKey, sessionID string) error {
+	result, err := s.db.Exec(
+		`UPDATE watcher_events SET session_id = ? WHERE watcher_id = ? AND dedup_key = ?`,
+		sessionID, watcherID, dedupKey,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("no watcher event found for watcher_id=%q dedup_key=%q", watcherID, dedupKey)
+	}
+	return nil
+}
+
 // pruneWatcherEvents keeps only the newest maxCount events for a watcher.
 func (s *StateDB) pruneWatcherEvents(watcherID string, maxCount int) error {
 	_, err := s.db.Exec(`

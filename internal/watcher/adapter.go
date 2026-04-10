@@ -57,6 +57,18 @@ type Event struct {
 
 	// RawPayload holds the adapter-specific raw data for debugging and audit
 	RawPayload json.RawMessage `json:"raw_payload,omitempty"`
+
+	// CustomDedupKey overrides the computed SHA-256 DedupKey when non-empty.
+	// Used by adapters that need deterministic keys (e.g., Slack: "slack-{CHANNEL}-{TS}").
+	CustomDedupKey string `json:"custom_dedup_key,omitempty"`
+
+	// ParentDedupKey holds the dedup key of the parent event for thread replies.
+	// When non-empty, the engine looks up the parent's session_id for thread routing.
+	ParentDedupKey string `json:"parent_dedup_key,omitempty"`
+
+	// ThreadSessionID is populated by the engine's writerLoop when a thread reply
+	// is routed to an existing session. Empty means spawn a new session.
+	ThreadSessionID string `json:"thread_session_id,omitempty"`
 }
 
 // DedupKey returns a deterministic hex-encoded SHA-256 hash of the event's
@@ -64,6 +76,9 @@ type Event struct {
 // field-boundary collisions (e.g., sender="a|b" vs sender="a", subject="|b").
 // Identical events from the same source at the same time produce the same key.
 func (e Event) DedupKey() string {
+	if e.CustomDedupKey != "" {
+		return e.CustomDedupKey
+	}
 	h := sha256.New()
 	// Pipe-delimited to prevent boundary collisions across field combinations
 	fmt.Fprintf(h, "%s|%s|%s|%s", e.Source, e.Sender, e.Subject, e.Timestamp.UTC().Format(time.RFC3339Nano))
