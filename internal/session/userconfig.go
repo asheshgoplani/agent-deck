@@ -129,6 +129,12 @@ type UserConfig struct {
 
 	// SystemStats defines system stats display settings (CPU, RAM, etc.)
 	SystemStats SystemStatsSettings `toml:"system_stats"`
+
+	// These flags track whether update keys were explicitly defined in TOML.
+	// They are runtime metadata only (never persisted).
+	updatesCheckEnabledDefined  bool `toml:"-"`
+	updatesCheckIntervalDefined bool `toml:"-"`
+	updatesNotifyInCLIDefined   bool `toml:"-"`
 }
 
 // OpenClawSettings configures the OpenClaw gateway connection.
@@ -1079,12 +1085,17 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 
 	var config UserConfig
-	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+	meta, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
 		// Return error so caller can display it to user
 		// Still cache default to prevent repeated parse attempts
 		userConfigCache = &defaultUserConfig
 		return userConfigCache, fmt.Errorf("config.toml parse error: %w", err)
 	}
+
+	config.updatesCheckEnabledDefined = meta.IsDefined("updates", "check_enabled")
+	config.updatesCheckIntervalDefined = meta.IsDefined("updates", "check_interval_hours")
+	config.updatesNotifyInCLIDefined = meta.IsDefined("updates", "notify_in_cli")
 
 	// Initialize maps if nil
 	if config.Tools == nil {
@@ -1510,14 +1521,14 @@ func GetUpdateSettings() UpdateSettings {
 
 	settings := config.Updates
 
-	// Apply defaults for unset values
-	// CheckEnabled defaults to true (need to detect if section exists)
-	if config.Updates.CheckIntervalHours == 0 {
+	// Apply defaults only when keys are not explicitly defined.
+	if !config.updatesCheckEnabledDefined {
 		settings.CheckEnabled = true
-		settings.CheckIntervalHours = 24
+	}
+	if !config.updatesNotifyInCLIDefined {
 		settings.NotifyInCLI = true
 	}
-	if settings.CheckIntervalHours <= 0 {
+	if !config.updatesCheckIntervalDefined || settings.CheckIntervalHours <= 0 {
 		settings.CheckIntervalHours = 24
 	}
 

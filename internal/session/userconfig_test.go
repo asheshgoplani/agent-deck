@@ -315,6 +315,72 @@ func TestSaveUserConfig(t *testing.T) {
 	}
 }
 
+func TestGetUpdateSettings_RespectsExplicitCheckEnabledFalseWithoutInterval(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir agent-deck dir: %v", err)
+	}
+
+	configContent := `
+[updates]
+check_enabled = false
+auto_update = false
+`
+	configPath := filepath.Join(agentDeckDir, UserConfigFileName)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetUpdateSettings()
+	if settings.CheckEnabled {
+		t.Fatalf("CheckEnabled: got %v, want false", settings.CheckEnabled)
+	}
+	if settings.CheckIntervalHours != 24 {
+		t.Fatalf("CheckIntervalHours: got %d, want 24", settings.CheckIntervalHours)
+	}
+	if !settings.NotifyInCLI {
+		t.Fatalf("NotifyInCLI: got %v, want true", settings.NotifyInCLI)
+	}
+}
+
+func TestGetUpdateSettings_DefaultsWhenUpdatesSectionMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir agent-deck dir: %v", err)
+	}
+
+	configContent := `default_tool = "claude"`
+	configPath := filepath.Join(agentDeckDir, UserConfigFileName)
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetUpdateSettings()
+	if !settings.CheckEnabled {
+		t.Fatalf("CheckEnabled: got %v, want true", settings.CheckEnabled)
+	}
+	if settings.CheckIntervalHours != 24 {
+		t.Fatalf("CheckIntervalHours: got %d, want 24", settings.CheckIntervalHours)
+	}
+	if !settings.NotifyInCLI {
+		t.Fatalf("NotifyInCLI: got %v, want true", settings.NotifyInCLI)
+	}
+}
+
 func TestGetTheme_Default(t *testing.T) {
 	// Setup: use temp directory with no config
 	tempDir := t.TempDir()
