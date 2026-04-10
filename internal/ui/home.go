@@ -4167,8 +4167,8 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.setupWizard.IsVisible() {
 			var cmd tea.Cmd
 			h.setupWizard, cmd = h.setupWizard.Update(msg)
-			// Check if user pressed Enter on final step
-			if msg.String() == "enter" && h.setupWizard.IsComplete() {
+			// Check if wizard completed (Enter on final step, or Esc on welcome to use defaults)
+			if h.setupWizard.IsComplete() {
 				// Save config and close wizard
 				config := h.setupWizard.GetConfig()
 				if err := session.SaveUserConfig(config); err != nil {

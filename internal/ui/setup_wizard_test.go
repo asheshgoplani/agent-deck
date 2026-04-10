@@ -293,6 +293,45 @@ func TestSetupWizard_ViewNonEmpty(t *testing.T) {
 	}
 }
 
+func TestSetupWizard_EscOnWelcomeCompletes(t *testing.T) {
+	wizard := NewSetupWizard()
+	wizard.Show()
+	wizard.SetSize(80, 24)
+
+	// Esc on welcome step should complete the wizard with defaults
+	wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !wizard.IsComplete() {
+		t.Error("Esc on welcome step should complete the wizard")
+	}
+
+	// Config should have sensible defaults
+	config := wizard.GetConfig()
+	if config.DefaultTool != "claude" {
+		t.Errorf("Default tool should be 'claude', got %q", config.DefaultTool)
+	}
+}
+
+func TestSetupWizard_EscOnNonWelcomeGoesBack(t *testing.T) {
+	wizard := NewSetupWizard()
+	wizard.Show()
+	wizard.SetSize(80, 24)
+
+	// Advance to tool selection
+	wizard.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if wizard.currentStep != 1 {
+		t.Fatalf("Expected step 1 after Enter, got %d", wizard.currentStep)
+	}
+
+	// Esc on tool selection should go back to welcome, not complete
+	wizard.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if wizard.currentStep != 0 {
+		t.Errorf("Esc on tool selection: got step %d, want 0", wizard.currentStep)
+	}
+	if wizard.IsComplete() {
+		t.Error("Esc on non-welcome step should not complete the wizard")
+	}
+}
+
 func TestSetupWizard_GetConfig_DefaultTheme(t *testing.T) {
 	wizard := NewSetupWizard()
 	config := wizard.GetConfig()
