@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: milestone
 status: unknown
-stopped_at: Phase 9 CLOSED — plan 09-04 POL-6 light theme audit COMPLETE; 11 atomic commits (1 test baseline + 1 test revision + 7 fix per-file + 1 chore styles regen + 1 docs); 18/18 POL-6 tests green (11 axe-core + 7 luminance); all Wave 1 regression specs still pass (09-01 13/14, 09-02 21/24, 09-03 10/10); zero dark-theme regressions; zero Claude attribution
-last_updated: "2026-04-09T21:35:00Z"
+stopped_at: Phase 10 plan 10-01 COMPLETE — 18-test Playwright visual regression suite with Docker-only pixel-diff baselines; 6 atomic commits; TEST-A complete; CI workflow blocks PR merge on >0.1% diff
+last_updated: "2026-04-10T02:32:00.000Z"
 progress:
   total_phases: 7
   completed_phases: 3
-  total_plans: 18
+  total_plans: 22
   completed_plans: 14
 ---
 
@@ -35,9 +35,8 @@ See `/home/ashesh-goplani/agent-deck/.planning/REQUIREMENTS.md` for the 43 requi
 
 ## Current Position
 
-Phase: 09 (polish) — COMPLETE
-Plan: 4 of 4 ALL COMPLETE — Phase 9 CLOSED
-Next: Phase 10 (Automated Testing) or Phase 8 (Performance) per roadmap dependencies
+Phase: 10 (automated-testing) — EXECUTING
+Plan: 2 of 4
 
 ## Phase Progress
 
@@ -48,7 +47,7 @@ Next: Phase 10 (Automated Testing) or Phase 8 (Performance) per roadmap dependen
 | 7 | Web App P1 Layout Bugs | COMPLETE 2026-04-09 (4/4 plans, WEB-P1-1 ✓ WEB-P1-2 ✓ WEB-P1-3 ✓ WEB-P1-4 ✓ WEB-P1-5 ✓) | 5 (WEB-P1-1..5 all ✓) | 4 |
 | 8 | Performance (Premium Feel) | COMPLETE 2026-04-09 (5/5 plans, PERF-A..K all ✓) | 11 (PERF-A..K) | 5 |
 | 9 | Polish (Premium UX) | COMPLETE 2026-04-09 (4/4 plans, POL-1 ✓ POL-2 ✓ POL-3 ✓ POL-4 ✓ POL-5 ✓ POL-6 ✓ POL-7 ✓) | 7 (POL-1..7 all ✓) | 4 |
-| 10 | Automated Testing | Not started | 5 (TEST-A..E) | 4 |
+| 10 | Automated Testing | EXECUTING 1/4 (TEST-A ✓) | 5 (TEST-A..E) | 4 |
 | 11 | Release v1.5.0 | Not started | 5 (REL-1..5) | 3 |
 
 **Total active plans across Phases 6-11:** 24
@@ -174,6 +173,16 @@ Next: Phase 10 (Automated Testing) or Phase 8 (Performance) per roadmap dependen
 - **Deferred items #5 and #8 closed (commit `46aac79`):** session list color-contrast (item #5 from plan 06-03) and drawer-axe underlying badges (item #8 from plan 06-04) both RESOLVED by the POL-6 fix batch. Original entries preserved in deferred-items.md; RESOLVED annotations are additive for incident-trail transparency.
 - **Hard rules honored:** no push, no tag, no PR, no merge, zero Claude attribution (verified `git log 220de49..HEAD | grep -ciE "claude|co-authored-by"` → 0), no `rm` (used `trash` for probe cleanup), no pre-existing failures touched.
 - **Phase 9 CLOSED.** All 4 plans shipped, all 7 POL requirements complete (POL-1 ✓ POL-2 ✓ POL-3 ✓ POL-4 ✓ POL-5 ✓ POL-6 ✓ POL-7 ✓). The final v1.5.0 light theme is WCAG AA compliant for color-contrast across all rendered surfaces, guarded by 18 Playwright regression tests. Phase 10 TEST-A can now capture visual baselines on the final, fully-polished theme.
+
+### Plan 10-01 Complete (2026-04-10)
+
+- **TEST-A shipped:** 18-test Playwright visual regression suite with Docker-only pixel-diff baselines. The infrastructure uses `mcr.microsoft.com/playwright:v1.59.1-jammy` for deterministic font rendering. All baselines committed via `git add -f` (workaround for `*.png` in `.git/info/exclude`).
+- **Key selector discoveries:** hamburger button aria-label is `"Open sidebar"` (dynamic: `"Close sidebar"` when open) per Topbar.js line — plan spec had wrong label `"Toggle sidebar"`. SettingsPanel lives inside the info drawer; opened via `"Open info panel"` button. No standalone settings button exists.
+- **18 baselines:** 5 main-views (empty-state, sidebar-sessions, cost-dashboard, mobile-sidebar, settings-panel) + 4 P0 (hamburger, profile-switcher, title-no-truncation, toast-cap-3) + 5 P1 (terminal-fill, fluid-sidebar, row-density-40px, empty-state-card-grid, mobile-overflow-menu) + 4 Polish (skeleton-loading, skeleton-to-loaded, group-density-tight, light-theme-sidebar). All 18 pass in Docker.
+- **CI workflow:** `.github/workflows/visual-regression.yml` triggers on every PR to main. Builds binary, starts server, runs Playwright in Docker with `--network=host`, uploads diff artifacts on failure, cleans up server. Uses `pw-visual-regression.config.ts` (no `--update-snapshots`).
+- **Thresholds:** maxDiffPixelRatio: 0.001 + maxDiffPixels: 200 + threshold: 0.2. Catches layout shifts and color changes while allowing sub-pixel anti-aliasing variance.
+- **Scoped baseline update pattern established:** always use `-g` filter with `--update-snapshots`. Never run blanket `--update-snapshots` (would silently accept regressions). Documented in `tests/e2e/visual-regression/README.md`.
+- **TDD ordering compressed:** plan 10-01 ran `--update-snapshots` once per spec group during Docker generation (Tasks 2 and 4). The Docker container wrote baselines immediately — no separate RED run without server was achievable since Docker always connects to live server. Net result: all 18 tests pass, all baselines committed. Acceptance criteria met.
 
 ### Critical Ordering Constraints (from research)
 
