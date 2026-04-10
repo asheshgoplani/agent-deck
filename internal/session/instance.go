@@ -1920,7 +1920,15 @@ func (i *Instance) Start() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	// Only sandboxed sessions run the command as the pane's initial process
+	// (required for dead-pane detection via remain-on-exit). Non-shell tools
+	// use the send-keys-into-interactive-shell path so that Ctrl+Z suspend and
+	// fg resume work correctly — running claude et al. directly as the pane's
+	// initial process means there's no interactive shell parent to handle the
+	// stopped job, so SIGTSTP leaves the pane in an unrecoverable state.
+	// This reverts the non-shell case of the PR #503 perf optimization, which
+	// regressed the PR #328 Ctrl+Z fix.
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -2037,7 +2045,15 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	// Only sandboxed sessions run the command as the pane's initial process
+	// (required for dead-pane detection via remain-on-exit). Non-shell tools
+	// use the send-keys-into-interactive-shell path so that Ctrl+Z suspend and
+	// fg resume work correctly — running claude et al. directly as the pane's
+	// initial process means there's no interactive shell parent to handle the
+	// stopped job, so SIGTSTP leaves the pane in an unrecoverable state.
+	// This reverts the non-shell case of the PR #503 perf optimization, which
+	// regressed the PR #328 Ctrl+Z fix.
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -4014,7 +4030,15 @@ func (i *Instance) Restart() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	// Only sandboxed sessions run the command as the pane's initial process
+	// (required for dead-pane detection via remain-on-exit). Non-shell tools
+	// use the send-keys-into-interactive-shell path so that Ctrl+Z suspend and
+	// fg resume work correctly — running claude et al. directly as the pane's
+	// initial process means there's no interactive shell parent to handle the
+	// stopped job, so SIGTSTP leaves the pane in an unrecoverable state.
+	// This reverts the non-shell case of the PR #503 perf optimization, which
+	// regressed the PR #328 Ctrl+Z fix.
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
