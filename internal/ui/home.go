@@ -5838,6 +5838,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleConfirmDialogKey handles keys when confirmation dialog is visible
 func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Let the dialog handle arrow/tab navigation first.
+	h.confirmDialog.Update(msg)
+
 	switch h.confirmDialog.GetConfirmType() {
 	case ConfirmQuitWithPool:
 		switch msg.String() {
@@ -5849,6 +5852,12 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.confirmDialog.Hide()
 			h.isQuitting = true
 			return h, h.performQuit(true)
+		case "enter":
+			// Activate focused button: 0=keep, 1=shutdown
+			shutdown := h.confirmDialog.GetFocusedButton() == 1
+			h.confirmDialog.Hide()
+			h.isQuitting = true
+			return h, h.performQuit(shutdown)
 		case "esc":
 			h.confirmDialog.Hide()
 			h.isQuitting = false
@@ -5859,29 +5868,13 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ConfirmCreateDirectory:
 		switch msg.String() {
 		case "y", "Y":
-			name, path, command, groupPath, pendingToolOpts, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
-			h.confirmDialog.Hide()
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				h.setError(fmt.Errorf("failed to create directory: %w", err))
-				return h, nil
+			return h, h.confirmCreateDirectory()
+		case "enter":
+			if h.confirmDialog.GetFocusedButton() == 0 {
+				return h, h.confirmCreateDirectory()
 			}
-			return h, h.createSessionInGroupWithWorktreeAndOptions(
-				name,
-				path,
-				command,
-				groupPath,
-				"",
-				"",
-				"",
-				false,
-				false,
-				pendingToolOpts,
-				false,
-				nil,
-				parentSessionID,
-				parentProjectPath,
-				"", // no placeholder — non-worktree sessions are fast
-			)
+			h.confirmDialog.Hide()
+			return h, nil
 		case "n", "N", "esc":
 			h.confirmDialog.Hide()
 			return h, nil
@@ -5891,88 +5884,138 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ConfirmInstallHooks:
 		switch msg.String() {
 		case "y", "Y":
-			h.confirmDialog.Hide()
-			h.pendingHooksPrompt = false
-			configDir := session.GetClaudeConfigDir()
-			if _, err := session.InjectClaudeHooks(configDir); err != nil {
-				uiLog.Warn("hook_install_failed", slog.String("error", err.Error()))
-			} else {
-				uiLog.Info("claude_hooks_installed", slog.String("config_dir", configDir))
+			return h, h.confirmInstallHooks()
+		case "enter":
+			if h.confirmDialog.GetFocusedButton() == 0 {
+				return h, h.confirmInstallHooks()
 			}
-			// Start the status file watcher
-			hookWatcher, err := session.NewStatusFileWatcher(nil)
-			if err != nil {
-				uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
-			} else {
-				h.hookWatcher = hookWatcher
-				go hookWatcher.Start()
-			}
-			// Remember user's choice
-			if db := statedb.GetGlobal(); db != nil {
-				_ = db.SetMeta("hooks_prompted", "accepted")
-			}
-			return h, nil
+			return h, h.declineInstallHooks()
 		case "n", "N", "esc":
-			h.confirmDialog.Hide()
-			h.pendingHooksPrompt = false
-			// Remember user declined
-			if db := statedb.GetGlobal(); db != nil {
-				_ = db.SetMeta("hooks_prompted", "declined")
-			}
-			return h, nil
+			return h, h.declineInstallHooks()
 		}
 		return h, nil
 
 	default:
-		// Handle delete confirmations (session/group)
+		// Handle delete/close confirmations (session/group/remote)
 		switch msg.String() {
 		case "y", "Y":
-			// User confirmed - perform the deletion
-			switch h.confirmDialog.GetConfirmType() {
-			case ConfirmDeleteSession:
-				sessionID := h.confirmDialog.GetTargetID()
-				if inst := h.getInstanceByID(sessionID); inst != nil {
-					h.confirmDialog.Hide()
-					return h, h.deleteSession(inst)
-				}
-			case ConfirmCloseSession:
-				sessionID := h.confirmDialog.GetTargetID()
-				if inst := h.getInstanceByID(sessionID); inst != nil {
-					h.confirmDialog.Hide()
-					return h, h.closeSession(inst)
-				}
-			case ConfirmDeleteGroup:
-				groupPath := h.confirmDialog.GetTargetID()
-				h.groupTree.DeleteGroup(groupPath)
-				h.instancesMu.Lock()
-				h.instances = h.groupTree.GetAllInstances()
-				h.instancesMu.Unlock()
-				h.rebuildFlatItems()
-				h.saveInstances()
-			case ConfirmDeleteRemoteSession:
-				sessionID := h.confirmDialog.GetTargetID()
-				remoteName := h.confirmDialog.GetRemoteName()
-				title := h.confirmDialog.targetName
-				h.confirmDialog.Hide()
-				return h, h.deleteRemoteSession(remoteName, sessionID, title)
-			case ConfirmCloseRemoteSession:
-				sessionID := h.confirmDialog.GetTargetID()
-				remoteName := h.confirmDialog.GetRemoteName()
-				title := h.confirmDialog.targetName
-				h.confirmDialog.Hide()
-				return h, h.closeRemoteSession(remoteName, sessionID, title)
+			return h, h.confirmAction()
+		case "enter":
+			if h.confirmDialog.GetFocusedButton() == 0 {
+				return h, h.confirmAction()
 			}
 			h.confirmDialog.Hide()
 			return h, nil
-
 		case "n", "N", "esc":
-			// User cancelled
 			h.confirmDialog.Hide()
 			return h, nil
 		}
 	}
 
 	return h, nil
+}
+
+// confirmAction executes the confirmed destructive action.
+func (h *Home) confirmAction() tea.Cmd {
+	switch h.confirmDialog.GetConfirmType() {
+	case ConfirmDeleteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.deleteSession(inst)
+		}
+	case ConfirmCloseSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.closeSession(inst)
+		}
+	case ConfirmDeleteGroup:
+		groupPath := h.confirmDialog.GetTargetID()
+		h.groupTree.DeleteGroup(groupPath)
+		h.instancesMu.Lock()
+		h.instances = h.groupTree.GetAllInstances()
+		h.instancesMu.Unlock()
+		h.rebuildFlatItems()
+		h.saveInstances()
+	case ConfirmDeleteRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		h.confirmDialog.Hide()
+		return h.deleteRemoteSession(remoteName, sessionID, title)
+	case ConfirmCloseRemoteSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		remoteName := h.confirmDialog.GetRemoteName()
+		title := h.confirmDialog.targetName
+		h.confirmDialog.Hide()
+		return h.closeRemoteSession(remoteName, sessionID, title)
+	}
+	h.confirmDialog.Hide()
+	return nil
+}
+
+// confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
+func (h *Home) confirmCreateDirectory() tea.Cmd {
+	name, path, command, groupPath, pendingToolOpts, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	h.confirmDialog.Hide()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		h.setError(fmt.Errorf("failed to create directory: %w", err))
+		return nil
+	}
+	return h.createSessionInGroupWithWorktreeAndOptions(
+		name,
+		path,
+		command,
+		groupPath,
+		"",
+		"",
+		"",
+		false,
+		false,
+		pendingToolOpts,
+		false,
+		nil,
+		parentSessionID,
+		parentProjectPath,
+		"", // no placeholder — non-worktree sessions are fast
+	)
+}
+
+// confirmInstallHooks handles the "yes" action for ConfirmInstallHooks.
+func (h *Home) confirmInstallHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.pendingHooksPrompt = false
+	configDir := session.GetClaudeConfigDir()
+	if _, err := session.InjectClaudeHooks(configDir); err != nil {
+		uiLog.Warn("hook_install_failed", slog.String("error", err.Error()))
+	} else {
+		uiLog.Info("claude_hooks_installed", slog.String("config_dir", configDir))
+	}
+	// Start the status file watcher
+	hookWatcher, err := session.NewStatusFileWatcher(nil)
+	if err != nil {
+		uiLog.Warn("hook_watcher_init_failed", slog.String("error", err.Error()))
+	} else {
+		h.hookWatcher = hookWatcher
+		go hookWatcher.Start()
+	}
+	// Remember user's choice
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("hooks_prompted", "accepted")
+	}
+	return nil
+}
+
+// declineInstallHooks handles the "no" action for ConfirmInstallHooks.
+func (h *Home) declineInstallHooks() tea.Cmd {
+	h.confirmDialog.Hide()
+	h.pendingHooksPrompt = false
+	// Remember user declined
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetMeta("hooks_prompted", "declined")
+	}
+	return nil
 }
 
 // tryQuit checks if MCP pool is running and shows confirmation dialog, or quits directly
