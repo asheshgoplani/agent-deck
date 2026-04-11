@@ -27,6 +27,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -366,11 +367,22 @@ func main() {
 		}
 	}
 
-	// Set up signal handling for graceful shutdown and crash dumps
+	// Set up signal handling for graceful shutdown and crash dumps.
+	// SIGHUP is included so closing the terminal window doesn't orphan tmux
+	// control-mode subscribers (previously they were reparented to PID 1 and
+	// leaked on every non-TUI exit path — Ctrl+C handled here, tab close via
+	// SIGHUP, external kill via SIGTERM).
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		// Close the pipe manager first so its child `tmux -C` subprocesses
+		// die with us instead of getting reparented to init. Home's own
+		// performFinalShutdown does the same thing but only runs when the
+		// user quits via the TUI — signals bypass it entirely.
+		if pm := tmux.GetPipeManager(); pm != nil {
+			pm.Close()
+		}
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.ResignPrimary()
 			_ = db.UnregisterInstance()

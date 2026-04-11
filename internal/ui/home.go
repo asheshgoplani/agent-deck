@@ -815,6 +815,16 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.instancesMu.RUnlock()
 	}
 
+	// Reap orphaned tmux control-mode subscribers left behind by previously-
+	// crashed agent-deck instances. When a parent dies without running shutdown,
+	// its tmux -C children get reparented to PID 1 and keep consuming tmux event
+	// fan-out forever. Running multiple instances makes this accumulate quickly.
+	if killed, err := tmux.CleanupOrphanedControlPipes(); err != nil {
+		pipeUILog.Debug("orphan_cleanup_failed", slog.String("error", err.Error()))
+	} else if killed > 0 {
+		pipeUILog.Info("orphan_cleanup_reaped", slog.Int("count", killed))
+	}
+
 	// Control mode pipes: event-driven, zero-subprocess status detection
 	pm := tmux.NewPipeManager(h.ctx, outputCallback)
 
