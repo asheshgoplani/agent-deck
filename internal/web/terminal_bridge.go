@@ -136,11 +136,18 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return fmt.Errorf("invalid dimensions: cols=%d rows=%d", cols, rows)
 	}
 
-	// Do NOT call pty.Setsize here. Resizing the local PTY sends SIGWINCH to
-	// the tmux attach process, which causes the tmux server to recalculate the
-	// window size. Even with "ignore-size" on the attach client, this can race
-	// with the TUI client's dimensions. The web terminal should adapt to the
-	// size provided by the tmux session, not the other way around.
+	// Resize the tmux window so output reflows to match the web viewport.
+	cmd := tmuxCommand("resize-window", "-t", b.tmuxSession, "-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("tmux resize-window: %w", err)
+	}
+
+	// Resize the local PTY so the tmux attach client doesn't clip output to its
+	// default 80x24 dimensions.
+	if err := pty.Setsize(b.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+		return fmt.Errorf("pty setsize: %w", err)
+	}
+
 	return nil
 }
 
