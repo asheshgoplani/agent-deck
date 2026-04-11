@@ -35,6 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/watcher"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
@@ -210,6 +211,8 @@ type Home struct {
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
+	watcherPanel         *WatcherPanel         // For showing watcher status and events
+	watcherEngine        *watcher.Engine       // nil until Init (D-07: lifecycle tied to TUI startup)
 
 	// Configurable hotkeys
 	hotkeys        map[string]string // action -> configured key
@@ -627,6 +630,12 @@ type worktreeFinishResultMsg struct {
 	err          error
 }
 
+// watcherEventMsg is produced by listenForWatcherEvent when a new event arrives from the engine.
+type watcherEventMsg struct{ event watcher.Event }
+
+// watcherHealthMsg is produced by listenForWatcherHealth when the engine emits a health state update.
+type watcherHealthMsg struct{ state watcher.HealthState }
+
 // statusUpdateRequest is sent to the background worker with current viewport info
 type statusUpdateRequest struct {
 	viewOffset    int      // Current scroll position
@@ -701,6 +710,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
+		watcherPanel:         NewWatcherPanel(),
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
@@ -1662,6 +1672,9 @@ func (h *Home) Init() tea.Cmd {
 		cmds = append(cmds, listenForThemeChange(h.themeWatcher))
 	}
 
+	// Start watcher engine (D-07: lifecycle tied to TUI startup)
+	cmds = append(cmds, h.startWatcherEngine())
+
 	return tea.Batch(cmds...)
 }
 
@@ -1699,6 +1712,30 @@ func listenForThemeChange(tw *ThemeWatcher) tea.Cmd {
 	}
 }
 
+// listenForWatcherEvent waits for the next event from the engine's EventCh.
+// Must be re-issued after each event to keep listening (Bubble Tea cmd pattern).
+func listenForWatcherEvent(ch <-chan watcher.Event) tea.Cmd {
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return watcherEventMsg{event: evt}
+	}
+}
+
+// listenForWatcherHealth waits for the next health state from the engine's HealthCh.
+// Must be re-issued after each state to keep listening.
+func listenForWatcherHealth(ch <-chan watcher.HealthState) tea.Cmd {
+	return func() tea.Msg {
+		state, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return watcherHealthMsg{state: state}
+	}
+}
+
 func (h *Home) stopThemeWatcher() {
 	if h.themeWatcher != nil {
 		h.themeWatcher.Close()
@@ -1713,6 +1750,81 @@ func (h *Home) startThemeWatcher() tea.Cmd {
 		return nil
 	}
 	return listenForThemeChange(h.themeWatcher)
+}
+
+// startWatcherEngine initialises and starts the watcher engine from statedb state.
+// Watchers marked status="running" are registered as adapters before Start() is called.
+// Returns a tea.Batch of channel listener commands, or nil if no watchers exist.
+func (h *Home) startWatcherEngine() tea.Cmd {
+	db := statedb.GetGlobal()
+	if db == nil {
+		return nil
+	}
+
+	rows, err := db.LoadWatchers()
+	if err != nil || len(rows) == 0 {
+		return nil
+	}
+
+	// Load user config for watcher settings.
+	cfg, _ := session.LoadUserConfig()
+	var watcherCfg session.WatcherSettings
+	if cfg != nil {
+		watcherCfg = cfg.Watcher
+	}
+
+	// Build engine config.
+	router, _ := watcher.LoadFromWatcherDir() // nil on error (no clients.json yet)
+	healthInterval := time.Duration(watcherCfg.GetHealthCheckIntervalSeconds()) * time.Second
+
+	engineCfg := watcher.EngineConfig{
+		DB:                  db,
+		Router:              router,
+		MaxEventsPerWatcher: watcherCfg.GetMaxEventsPerWatcher(),
+		HealthCheckInterval: healthInterval,
+	}
+	eng := watcher.NewEngine(engineCfg)
+
+	maxSilenceMinutes := watcherCfg.GetMaxSilenceMinutes()
+
+	// Register all running watchers as adapters.
+	for _, row := range rows {
+		if row.Status != "running" {
+			continue
+		}
+		var adapter watcher.WatcherAdapter
+		switch row.Type {
+		case "webhook":
+			adapter = &watcher.WebhookAdapter{}
+		case "ntfy":
+			adapter = &watcher.NtfyAdapter{}
+		case "slack":
+			adapter = &watcher.SlackAdapter{}
+		case "github":
+			adapter = &watcher.GitHubAdapter{}
+		default:
+			continue
+		}
+
+		adapterCfg := watcher.AdapterConfig{
+			Type:     row.Type,
+			Name:     row.Name,
+			Settings: map[string]string{},
+		}
+		eng.RegisterAdapter(row.ID, adapter, adapterCfg, maxSilenceMinutes)
+	}
+
+	if err := eng.Start(); err != nil {
+		uiLog.Warn("watcher_engine_start_failed", "error", err.Error())
+		return nil
+	}
+
+	h.watcherEngine = eng
+
+	return tea.Batch(
+		listenForWatcherEvent(eng.EventCh()),
+		listenForWatcherHealth(eng.HealthCh()),
+	)
 }
 
 // propagateThemeToSessions updates COLORFGBG in all running tmux sessions
@@ -2942,6 +3054,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.syncViewport() // Recalculate viewport when window size changes
 		h.setupWizard.SetSize(msg.Width, msg.Height)
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
+		h.watcherPanel.SetSize(msg.Width, msg.Height)
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
 		return h, nil
 
@@ -4002,6 +4115,39 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case watcherEventMsg:
+		// Refresh watcher panel data on new events and re-register listener.
+		h.refreshWatcherPanel()
+		if h.watcherEngine != nil {
+			return h, listenForWatcherEvent(h.watcherEngine.EventCh())
+		}
+		return h, nil
+
+	case watcherHealthMsg:
+		// Update health display and re-register listener.
+		h.refreshWatcherPanel()
+		// Dispatch health alert to conductor session on warning/error transitions (D-22, D-23).
+		if msg.state.Status == watcher.HealthStatusWarning || msg.state.Status == watcher.HealthStatusError {
+			h.dispatchHealthAlert(msg.state)
+		}
+		if h.watcherEngine != nil {
+			return h, listenForWatcherHealth(h.watcherEngine.HealthCh())
+		}
+		return h, nil
+
+	case WatcherActionMsg:
+		db := statedb.GetGlobal()
+		if db != nil {
+			switch msg.Action {
+			case "start":
+				_ = db.UpdateWatcherStatus(msg.WatcherID, "running")
+			case "stop":
+				_ = db.UpdateWatcherStatus(msg.WatcherID, "stopped")
+			}
+		}
+		h.refreshWatcherPanel()
+		return h, nil
+
 	case tickMsg:
 		var remoteFetchCmd tea.Cmd
 
@@ -4184,6 +4330,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					h.newDialog.SetDefaultTool(defaultTool)
 				}
 			}
+			return h, cmd
+		}
+
+		// Handle watcher panel (before settings panel)
+		if h.watcherPanel.IsVisible() {
+			var cmd tea.Cmd
+			h.watcherPanel, cmd = h.watcherPanel.Update(msg)
 			return h, cmd
 		}
 
@@ -4750,6 +4903,7 @@ func (h *Home) handleJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h *Home) hasModalVisible() bool {
 	return h.initialLoading || h.isQuitting || h.notesEditing || h.jumpMode ||
 		h.setupWizard.IsVisible() || h.settingsPanel.IsVisible() ||
+		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
@@ -5409,6 +5563,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.settingsPanel.SetSize(h.width, h.height)
 		return h, nil
 
+	case "w":
+		// Open watcher panel
+		h.refreshWatcherPanel()
+		h.watcherPanel.Show()
+		h.watcherPanel.SetSize(h.width, h.height)
+		return h, nil
+
 	case "E":
 		// Exec an interactive shell inside the sandbox container.
 		if selected := h.getSelectedSession(); selected != nil && selected.IsSandboxed() &&
@@ -6049,6 +6210,11 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		if h.globalSearchIndex != nil {
 			h.globalSearchIndex.Close()
 		}
+		// Stop watcher engine (D-07: lifecycle tied to TUI)
+		if h.watcherEngine != nil {
+			h.watcherEngine.Stop()
+			h.watcherEngine = nil
+		}
 		// Shutdown or disconnect from MCP pool based on user choice
 		if err := session.ShutdownGlobalPool(shutdownPool); err != nil {
 			mcpUILog.Warn("pool_shutdown_error", slog.String("error", err.Error()))
@@ -6066,6 +6232,115 @@ func (h *Home) performFinalShutdown(shutdownPool bool) tea.Cmd {
 		h.saveInstances()
 
 		return tea.Quit()
+	}
+}
+
+// refreshWatcherPanel loads watcher and event data from statedb and updates the panel.
+// Safe to call when watcherPanel is hidden; data is preloaded for when the panel opens.
+func (h *Home) refreshWatcherPanel() {
+	db := statedb.GetGlobal()
+	if db == nil {
+		return
+	}
+
+	watchers, err := db.LoadWatchers()
+	if err != nil {
+		return
+	}
+
+	items := make([]WatcherDisplayItem, len(watchers))
+	for i, w := range watchers {
+		healthStatus := w.Status // default: same as status
+		if w.Status == "running" {
+			healthStatus = "healthy"
+		}
+		items[i] = WatcherDisplayItem{
+			ID:            w.ID,
+			Name:          w.Name,
+			Type:          w.Type,
+			Status:        w.Status,
+			HealthStatus:  healthStatus,
+			Conductor:     w.Conductor,
+		}
+
+		// Count events in the last hour to compute events-per-hour rate.
+		events, evtErr := db.LoadWatcherEvents(w.ID, 100)
+		if evtErr == nil {
+			cutoff := time.Now().Add(-time.Hour)
+			count := 0
+			for _, e := range events {
+				if e.CreatedAt.After(cutoff) {
+					count++
+				}
+			}
+			items[i].EventsPerHour = float64(count)
+		}
+	}
+	h.watcherPanel.SetWatchers(items)
+
+	// If a watcher is selected in detail mode, load its recent events.
+	if sel := h.watcherPanel.SelectedWatcher(); sel != nil {
+		events, evtErr := db.LoadWatcherEvents(sel.ID, 10)
+		if evtErr == nil {
+			displayEvents := make([]WatcherEventDisplay, len(events))
+			for i, e := range events {
+				displayEvents[i] = WatcherEventDisplay{
+					Timestamp: e.CreatedAt,
+					Sender:    e.Sender,
+					Subject:   e.Subject,
+					RoutedTo:  e.RoutedTo,
+					SessionID: e.SessionID,
+				}
+			}
+			h.watcherPanel.SetEvents(displayEvents)
+		}
+	}
+}
+
+// dispatchHealthAlert sends a health alert message to the conductor session associated
+// with the watcher that entered warning or error state (D-22, D-23, TUI-03).
+func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
+	db := statedb.GetGlobal()
+	if db == nil {
+		return
+	}
+
+	watchers, err := db.LoadWatchers()
+	if err != nil {
+		return
+	}
+
+	var conductorName string
+	for _, w := range watchers {
+		if w.Name == state.WatcherName && w.Conductor != "" {
+			conductorName = w.Conductor
+			break
+		}
+	}
+	if conductorName == "" {
+		return // No conductor configured, skip alert.
+	}
+
+	// Build alert message (D-23): include name, status, reason, and suggested action.
+	alertMsg := fmt.Sprintf("[WATCHER HEALTH ALERT] Watcher %q transitioned to %s: %s. Suggested action: check watcher configuration and source connectivity.",
+		state.WatcherName, state.Status, state.Message)
+
+	// Find the conductor session by title and deliver via tmux send-keys (T-16-08).
+	sessionTitle := session.ConductorSessionTitle(conductorName)
+	h.instancesMu.RLock()
+	instances := h.instances
+	h.instancesMu.RUnlock()
+	for _, inst := range instances {
+		if inst.Title == sessionTitle {
+			ts := inst.GetTmuxSession()
+			if ts != nil && ts.Name != "" {
+				tmuxName := ts.Name
+				go func() {
+					_ = exec.Command("tmux", "send-keys", "-t", tmuxName, alertMsg, "Enter").Run()
+				}()
+			}
+			break
+		}
 	}
 }
 
@@ -7813,6 +8088,11 @@ func (h *Home) View() string {
 	// Setup wizard takes over entire screen
 	if h.setupWizard.IsVisible() {
 		return h.setupWizard.View()
+	}
+
+	// Watcher panel is modal (before settings panel)
+	if h.watcherPanel.IsVisible() {
+		return h.watcherPanel.View()
 	}
 
 	// Settings panel is modal
