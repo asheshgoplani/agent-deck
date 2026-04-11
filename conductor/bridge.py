@@ -3,12 +3,14 @@
 Conductor Bridge: Telegram & Slack <-> Agent-Deck conductor sessions (multi-conductor).
 
 A thin bridge that:
-  A) Forwards Telegram/Slack messages -> conductor session (via agent-deck CLI)
+  A) Forwards Telegram/Slack messages -> conductor session (via agent-deck CLI or ACP)
   B) Forwards conductor responses -> Telegram/Slack
   C) Runs a periodic heartbeat to trigger conductor status checks
 
 Discovers conductors dynamically from meta.json files in ~/.agent-deck/conductor/*/
 Each conductor has its own name, profile, and heartbeat settings.
+Copilot conductors (agent=copilot) use the Agent Client Protocol (ACP) over stdio
+instead of the agent-deck CLI.
 
 Dependencies: pip3 install toml aiogram slack-bolt slack-sdk
   - aiogram is only needed if Telegram is configured
@@ -33,6 +35,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 import toml
+
+# ACP client for copilot-agent conductors
+from acp import ACPConnection, PromptResult
 
 # Conditional imports for Telegram
 try:
@@ -67,6 +72,133 @@ SLACK_MAX_LENGTH = 40000
 
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
+
+# ---------------------------------------------------------------------------
+# ACP connection registry (for copilot-agent conductors)
+# ---------------------------------------------------------------------------
+
+# Active ACP connections keyed by conductor name
+_acp_connections: dict[str, ACPConnection] = {}
+# ACP session IDs keyed by conductor name
+_acp_sessions: dict[str, str] = {}
+
+
+def is_acp_conductor(conductor: dict) -> bool:
+    """Check if a conductor uses ACP (copilot agent type)."""
+    return conductor.get("agent", "").lower() == "copilot"
+
+
+def _get_acp_conductor_meta(name: str) -> dict | None:
+    """Load meta.json for a conductor and return it if it's ACP-backed."""
+    meta_path = CONDUCTOR_DIR / name / "meta.json"
+    if not meta_path.exists():
+        return None
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+        if is_acp_conductor(meta):
+            return meta
+    except (json.JSONDecodeError, IOError):
+        pass
+    return None
+
+
+async def get_or_create_acp_connection(name: str, meta: dict) -> ACPConnection | None:
+    """Get an existing ACP connection or create a new one for a copilot conductor.
+
+    Returns the connection if successful, None on failure.
+    """
+    conn = _acp_connections.get(name)
+    if conn and conn.is_running:
+        return conn
+
+    # Build command from meta or defaults
+    command = ["copilot", "--acp", "--stdio"]
+    cwd = str(CONDUCTOR_DIR / name)
+
+    # Merge env from meta.json
+    env = {}
+    if meta.get("env"):
+        env.update(meta["env"])
+
+    log.info("Starting ACP connection for conductor %s", name)
+    conn = ACPConnection(command=command, cwd=cwd, env=env if env else None)
+    try:
+        await conn.start()
+    except Exception as e:
+        log.error("Failed to start ACP connection for %s: %s", name, e)
+        return None
+
+    _acp_connections[name] = conn
+
+    # Create a session
+    try:
+        session_id = await conn.new_session(cwd=cwd)
+        _acp_sessions[name] = session_id
+    except Exception as e:
+        log.error("Failed to create ACP session for %s: %s", name, e)
+        await conn.stop()
+        _acp_connections.pop(name, None)
+        return None
+
+    return conn
+
+
+async def send_to_acp_conductor(
+    name: str,
+    message: str,
+    meta: dict,
+    timeout: int = RESPONSE_TIMEOUT,
+) -> tuple[bool, str]:
+    """Send a message to a copilot conductor via ACP and wait for the response.
+
+    Returns (success, response_text).
+    """
+    conn = await get_or_create_acp_connection(name, meta)
+    if not conn:
+        return False, ""
+
+    session_id = _acp_sessions.get(name)
+    if not session_id:
+        return False, ""
+
+    try:
+        result: PromptResult = await conn.prompt(session_id, message, timeout=float(timeout))
+        return True, result.text
+    except Exception as e:
+        log.error("ACP prompt failed for %s: %s", name, e)
+        # Connection may be dead — remove so next call recreates
+        _acp_connections.pop(name, None)
+        _acp_sessions.pop(name, None)
+        try:
+            await conn.stop()
+        except Exception:
+            pass
+        return False, ""
+
+
+def get_acp_conductor_status(name: str) -> str:
+    """Get the status of an ACP conductor based on connection state.
+
+    Returns status string compatible with agent-deck session statuses.
+    """
+    conn = _acp_connections.get(name)
+    if not conn or not conn.is_running:
+        return "stopped"
+    # ACP connections are always "waiting" when not actively processing
+    # (we don't have a running/active distinction for ACP)
+    return "waiting"
+
+
+async def stop_all_acp_connections() -> None:
+    """Stop all active ACP connections. Called during bridge shutdown."""
+    for name, conn in list(_acp_connections.items()):
+        try:
+            await conn.stop()
+        except Exception as e:
+            log.error("Error stopping ACP connection %s: %s", name, e)
+    _acp_connections.clear()
+    _acp_sessions.clear()
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -275,7 +407,9 @@ def send_to_conductor(
     reply_callback: ReplyCallback | None = None,
     force_queue: bool = False,
 ) -> tuple[bool, str]:
-    """Send a message to the conductor session.
+    """Send a message to a CLI-based conductor session (claude, codex).
+
+    For ACP (copilot) conductors, use send_to_conductor_async instead.
 
     Returns (success, response_text). When wait_for_reply=False, response_text is "".
 
@@ -338,6 +472,51 @@ def send_to_conductor(
         )
         return False, ""
     return True, result.stdout.strip()
+
+
+def _conductor_name_from_session(session_title: str) -> str:
+    """Extract the conductor name from a session title (conductor-{name})."""
+    return session_title.removeprefix("conductor-")
+
+
+async def send_to_conductor_async(
+    session: str,
+    message: str,
+    profile: str | None = None,
+    wait_for_reply: bool = False,
+    response_timeout: int = RESPONSE_TIMEOUT,
+    reply_callback: ReplyCallback | None = None,
+    force_queue: bool = False,
+) -> tuple[bool, str]:
+    """Async-aware send that routes to ACP or CLI based on conductor agent type.
+
+    For ACP (copilot) conductors, sends directly via the ACP connection.
+    For CLI conductors, delegates to send_to_conductor via executor.
+
+    Returns (success, response_text).
+    """
+    name = _conductor_name_from_session(session)
+    meta = _get_acp_conductor_meta(name)
+
+    if meta:
+        # ACP conductor — send via ACP connection directly (async native)
+        return await send_to_acp_conductor(name, message, meta, timeout=response_timeout)
+
+    # CLI conductor — delegate to sync function in executor
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        functools.partial(
+            send_to_conductor,
+            session,
+            message,
+            profile=profile,
+            wait_for_reply=wait_for_reply,
+            response_timeout=response_timeout,
+            reply_callback=reply_callback,
+            force_queue=force_queue,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -449,11 +628,20 @@ async def _drain_queue() -> None:
                 continue
 
             message, profile, reply_callback = items[0]
-            loop = asyncio.get_running_loop()
-            status = await loop.run_in_executor(
-                None,
-                functools.partial(get_session_status, session, profile=profile),
-            )
+
+            # Determine if this is an ACP conductor session
+            conductor_name = _conductor_name_from_session(session)
+            conductor_meta = _get_acp_conductor_meta(conductor_name) if conductor_name else None
+            is_acp = conductor_meta is not None
+
+            if is_acp:
+                status = get_acp_conductor_status(conductor_name)
+            else:
+                loop = asyncio.get_running_loop()
+                status = await loop.run_in_executor(
+                    None,
+                    functools.partial(get_session_status, session, profile=profile),
+                )
 
             # Still busy or transient CLI failure — retry next cycle
             if status in ("running", "active", "starting", "unknown"):
@@ -474,48 +662,79 @@ async def _drain_queue() -> None:
                 continue
 
             # Conductor is ready — deliver the message and wait for the response
-            result = await loop.run_in_executor(
-                None,
-                functools.partial(
-                    run_cli,
-                    "session", "send", session, message,
-                    "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
-                    profile=profile,
-                    timeout=max(RESPONSE_TIMEOUT + 30, 60),
-                ),
-            )
-            if result.returncode == 0:
-                items.popleft()
-                remaining = len(items)
-                if not remaining:
-                    _message_queue.pop(session, None)
-                log.info(
-                    "Conductor %s delivered queued message (%d remaining)",
-                    session, remaining,
-                )
-                if reply_callback is not None:
-                    text = result.stdout.strip() or "[No output from conductor.]"
-                    loop.create_task(_fire_callback(reply_callback, text))
-            else:
-                stderr = result.stderr.strip()
-                if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+            if is_acp:
+                ok, response_text = await send_to_acp_conductor(conductor_name, message, conductor_meta)
+                if ok:
+                    items.popleft()
+                    remaining = len(items)
+                    if not remaining:
+                        _message_queue.pop(session, None)
                     log.info(
-                        "Conductor %s busy again during drain, will retry",
-                        session,
+                        "ACP conductor %s delivered queued message (%d remaining)",
+                        session, remaining,
                     )
+                    if reply_callback is not None:
+                        text = response_text.strip() if response_text else "[No output from conductor.]"
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_fire_callback(reply_callback, text))
                 else:
                     log.error(
-                        "Failed to deliver queued message to %s: %s — dropping",
-                        session, stderr,
+                        "Failed to deliver queued message to ACP conductor %s — dropping",
+                        session,
                     )
                     items.popleft()
                     if not items:
                         _message_queue.pop(session, None)
                     if reply_callback is not None:
+                        loop = asyncio.get_running_loop()
                         loop.create_task(_fire_callback(
                             reply_callback,
-                            f"[Queued message could not be delivered — send failed: {stderr[:100]}]",
+                            "[Queued message could not be delivered — ACP send failed.]",
                         ))
+            else:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        run_cli,
+                        "session", "send", session, message,
+                        "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
+                        profile=profile,
+                        timeout=max(RESPONSE_TIMEOUT + 30, 60),
+                    ),
+                )
+                if result.returncode == 0:
+                    items.popleft()
+                    remaining = len(items)
+                    if not remaining:
+                        _message_queue.pop(session, None)
+                    log.info(
+                        "Conductor %s delivered queued message (%d remaining)",
+                        session, remaining,
+                    )
+                    if reply_callback is not None:
+                        text = result.stdout.strip() or "[No output from conductor.]"
+                        loop.create_task(_fire_callback(reply_callback, text))
+                else:
+                    stderr = result.stderr.strip()
+                    if "timeout" in stderr.lower() or "not ready" in stderr.lower():
+                        log.info(
+                            "Conductor %s busy again during drain, will retry",
+                            session,
+                        )
+                    else:
+                        log.error(
+                            "Failed to deliver queued message to %s: %s — dropping",
+                            session, stderr,
+                        )
+                        items.popleft()
+                        if not items:
+                            _message_queue.pop(session, None)
+                        if reply_callback is not None:
+                            loop.create_task(_fire_callback(
+                                reply_callback,
+                                f"[Queued message could not be delivered — send failed: {stderr[:100]}]",
+                            ))
 
         # Exit check AFTER the session loop — avoids missing items enqueued during drain
         if not _message_queue:
@@ -572,7 +791,17 @@ def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
 
 
 async def ensure_conductor_running(name: str, profile: str) -> bool:
-    """Ensure the conductor session exists and is running."""
+    """Ensure the conductor session exists and is running.
+
+    For ACP (copilot) conductors, ensures the ACP connection is active.
+    For CLI conductors (claude, codex), ensures the agent-deck session is running.
+    """
+    meta = _get_acp_conductor_meta(name)
+    if meta:
+        # ACP conductor: ensure connection is up
+        conn = await get_or_create_acp_connection(name, meta)
+        return conn is not None and conn.is_running
+
     session_title = conductor_session_title(name)
     loop = asyncio.get_running_loop()
     status = await loop.run_in_executor(
@@ -1058,11 +1287,14 @@ def create_telegram_bot(config: dict):
         profiles = get_unique_profiles()
         profile_tag = f"[{target_profile}] " if len(profiles) > 1 else ""
 
-        # Check if conductor is busy — non-blocking via executor
-        loop = asyncio.get_running_loop()
-        conductor_status = await loop.run_in_executor(
-            None, functools.partial(get_session_status, session_title, profile=target_profile)
-        )
+        # Check if conductor is busy
+        if is_acp_conductor(target_conductor):
+            conductor_status = get_acp_conductor_status(target_conductor["name"])
+        else:
+            loop = asyncio.get_running_loop()
+            conductor_status = await loop.run_in_executor(
+                None, functools.partial(get_session_status, session_title, profile=target_profile)
+            )
         was_busy = conductor_status in ("running", "active", "starting")
 
         log.info("User message -> [%s]: %s", target_profile, cleaned_msg[:100])
@@ -1085,7 +1317,7 @@ def create_telegram_bot(config: dict):
                 for chunk in split_message(html):
                     await tg_bot.send_message(tg_chat_id, chunk, parse_mode="HTML")
 
-            ok, _ = send_to_conductor(
+            ok, _ = await send_to_conductor_async(
                 session_title,
                 cleaned_msg,
                 profile=target_profile,
@@ -1103,18 +1335,14 @@ def create_telegram_bot(config: dict):
             )
             return
 
-        # Conductor is free — send and wait for reply (non-blocking via executor)
+        # Conductor is free — send and wait for reply
         await message.answer(f"{profile_tag}\u23f3")  # typing indicator before blocking
-        ok, response = await loop.run_in_executor(
-            None,
-            functools.partial(
-                send_to_conductor,
-                session_title,
-                cleaned_msg,
-                profile=target_profile,
-                wait_for_reply=True,
-                response_timeout=RESPONSE_TIMEOUT,
-            ),
+        ok, response = await send_to_conductor_async(
+            session_title,
+            cleaned_msg,
+            profile=target_profile,
+            wait_for_reply=True,
+            response_timeout=RESPONSE_TIMEOUT,
         )
         if not ok:
             await message.answer(
@@ -1252,11 +1480,14 @@ def create_slack_app(config: dict):
             )
             return
 
-        # Check if conductor is busy — non-blocking via executor
-        loop = asyncio.get_running_loop()
-        conductor_status = await loop.run_in_executor(
-            None, functools.partial(get_session_status, session_title, profile=profile)
-        )
+        # Check if conductor is busy
+        if is_acp_conductor(target):
+            conductor_status = get_acp_conductor_status(target["name"])
+        else:
+            loop = asyncio.get_running_loop()
+            conductor_status = await loop.run_in_executor(
+                None, functools.partial(get_session_status, session_title, profile=profile)
+            )
         was_busy = conductor_status in ("running", "active", "starting")
 
         log.info("Slack message -> [%s]: %s", target["name"], cleaned_msg[:100])
@@ -1280,7 +1511,7 @@ def create_slack_app(config: dict):
                     text = f"{header}{chunk}" if i == 0 else chunk
                     await _safe_say(say, text=text, thread_ts=thread_ts)
 
-            ok, _ = send_to_conductor(
+            ok, _ = await send_to_conductor_async(
                 session_title, cleaned_msg, profile=profile,
                 wait_for_reply=False, reply_callback=_slack_reply,
                 force_queue=True,
@@ -1300,13 +1531,9 @@ def create_slack_app(config: dict):
             return
 
         await _safe_say(say, text=f"{name_tag}\u23f3", thread_ts=thread_ts)  # before blocking
-        ok, response = await loop.run_in_executor(
-            None,
-            functools.partial(
-                send_to_conductor,
-                session_title, cleaned_msg, profile=profile,
-                wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
-            ),
+        ok, response = await send_to_conductor_async(
+            session_title, cleaned_msg, profile=profile,
+            wait_for_reply=True, response_timeout=RESPONSE_TIMEOUT,
         )
         if not ok:
             await _safe_say(
@@ -1657,11 +1884,14 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
 
                 # Check if conductor is busy — skip heartbeat if so
                 # (heartbeats are periodic; no point queueing them)
-                loop = asyncio.get_running_loop()
-                conductor_status = await loop.run_in_executor(
-                    None,
-                    functools.partial(get_session_status, session_title, profile=profile),
-                )
+                if is_acp_conductor(conductor):
+                    conductor_status = get_acp_conductor_status(name)
+                else:
+                    loop = asyncio.get_running_loop()
+                    conductor_status = await loop.run_in_executor(
+                        None,
+                        functools.partial(get_session_status, session_title, profile=profile),
+                    )
                 if conductor_status in ("running", "active", "starting"):
                     log.info(
                         "Heartbeat [%s]: conductor busy (%s), skipping this cycle",
@@ -1669,19 +1899,14 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                     )
                     continue
 
-                # Send heartbeat to conductor (wrapped in executor — blocks up to
-                # RESPONSE_TIMEOUT seconds and must not freeze the event loop)
-                loop = asyncio.get_running_loop()
-                ok, response = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        send_to_conductor,
-                        session_title,
-                        heartbeat_msg,
-                        profile=profile,
-                        wait_for_reply=True,
-                        response_timeout=RESPONSE_TIMEOUT,
-                    ),
+                # Send heartbeat to conductor
+                # ACP conductors use async-native send; CLI conductors use executor
+                ok, response = await send_to_conductor_async(
+                    session_title,
+                    heartbeat_msg,
+                    profile=profile,
+                    wait_for_reply=True,
+                    response_timeout=RESPONSE_TIMEOUT,
                 )
                 if not ok:
                     log.error(
@@ -1826,6 +2051,7 @@ async def main():
         await asyncio.gather(*tasks)
     finally:
         heartbeat_task.cancel()
+        await stop_all_acp_connections()
         if telegram_bot:
             await telegram_bot.session.close()
         if slack_handler:

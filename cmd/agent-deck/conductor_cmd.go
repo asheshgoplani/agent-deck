@@ -106,7 +106,7 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
-	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude or codex)")
+	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude, codex, or copilot)")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up")
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
@@ -133,7 +133,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fmt.Println("  -agent string")
-		fmt.Println("        Conductor agent runtime: claude or codex (default \"claude\")")
+		fmt.Println("        Conductor agent runtime: claude, codex, or copilot (default \"claude\")")
 		fmt.Println("  -description string")
 		fmt.Println("        Description for this conductor")
 		fmt.Println("  -heartbeat")
@@ -1193,6 +1193,7 @@ func printConductorHelp() {
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck -p work conductor setup ryan --description \"Ryan project\"")
 	fmt.Println("  agent-deck -p work conductor setup review --agent codex --description \"Codex reviewer\"")
+	fmt.Println("  agent-deck -p work conductor setup ops --agent copilot --description \"Copilot ops (ACP)\"")
 	fmt.Println("  agent-deck -p work conductor setup infra --no-heartbeat")
 	fmt.Println("  agent-deck conductor list")
 	fmt.Println("  agent-deck conductor status")

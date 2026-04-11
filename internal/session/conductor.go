@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	ConductorAgentClaude = "claude"
-	ConductorAgentCodex  = "codex"
+	ConductorAgentClaude  = "claude"
+	ConductorAgentCodex   = "codex"
+	ConductorAgentCopilot = "copilot"
 )
 
 // ConductorAgentSpec describes conductor-specific behavior for an agent runtime.
@@ -41,6 +42,13 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 		DisplayName:            "Codex",
 		DefaultCommand:         "codex",
 		InstructionsFileName:   "AGENTS.md",
+		SupportsClearOnCompact: false,
+	},
+	ConductorAgentCopilot: {
+		Agent:                  ConductorAgentCopilot,
+		DisplayName:            "GitHub Copilot",
+		DefaultCommand:         "copilot",
+		InstructionsFileName:   "COPILOT.md",
 		SupportsClearOnCompact: false,
 	},
 }
@@ -204,7 +212,7 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 	normalized := normalizeConductorAgent(agent)
 	spec, ok := conductorAgentSpecs[normalized]
 	if !ok {
-		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex)
+		return ConductorAgentSpec{}, fmt.Errorf("unsupported conductor agent %q (supported: %s, %s, %s)", agent, ConductorAgentClaude, ConductorAgentCodex, ConductorAgentCopilot)
 	}
 	return spec, nil
 }
