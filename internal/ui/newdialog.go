@@ -376,6 +376,9 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.worktreeEnabled = userConfig.Worktree.DefaultEnabled
+		if d.worktreeEnabled {
+			d.branchAutoSet = true
+		}
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
 	}

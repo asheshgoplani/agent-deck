@@ -1045,6 +1045,69 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 	}
 }
 
+func TestNewDialog_ShowInGroup_DefaultWorktree_SetsBranchAutoSet(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	session.ClearUserConfigCache()
+	defer session.ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Worktree: session.WorktreeSettings{DefaultEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	d := NewNewDialog()
+	d.ShowInGroup("projects", "Projects", "", nil, "")
+
+	if !d.worktreeEnabled {
+		t.Fatal("worktreeEnabled should be true from config default")
+	}
+	if !d.branchAutoSet {
+		t.Error("branchAutoSet should be true when worktree is enabled by config default")
+	}
+}
+
+func TestNewDialog_ShowInGroup_DefaultWorktree_AutoPopulatesBranchFromName(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	session.ClearUserConfigCache()
+	defer session.ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Worktree: session.WorktreeSettings{DefaultEnabled: true},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	d := NewNewDialog()
+	d.ShowInGroup("projects", "Projects", "", nil, "")
+	d.nameInput.SetValue("amber-falcon")
+
+	// Simulate the name-change handler: it calls autoBranchFromName() only when branchAutoSet is true.
+	if d.worktreeEnabled && d.branchAutoSet {
+		d.autoBranchFromName()
+	}
+
+	if got := d.branchInput.Value(); got != "feature/amber-falcon" {
+		t.Errorf("branch = %q, want %q; branch should auto-populate when worktree is default-enabled", got, "feature/amber-falcon")
+	}
+}
+
 // ===== Soft-Select Tests =====
 
 func TestNewDialog_SoftSelect_InitialState(t *testing.T) {
