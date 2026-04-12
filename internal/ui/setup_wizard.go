@@ -210,6 +210,11 @@ func (w *SetupWizard) Update(msg tea.Msg) (*SetupWizard, tea.Cmd) {
 			return w, nil
 
 		case "esc", "backspace":
+			if w.currentStep == stepWelcome {
+				// On welcome step, Esc means "use defaults and skip wizard"
+				w.complete = true
+				return w, nil
+			}
 			w.prevStep()
 			return w, nil
 
