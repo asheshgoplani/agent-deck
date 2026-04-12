@@ -924,6 +924,7 @@ func handleAdd(profile string, args []string) {
 	parent := fs.String("parent", "", "Parent session (creates sub-session, inherits group)")
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking (use 'session set-parent' later to link manually)")
+	noTransitionNotify := fs.Bool("no-transition-notify", false, "Suppress transition event notifications to parent session")
 	quickCreate := fs.Bool("quick", false, "Auto-generate session name (adjective-noun)")
 	quickCreateShort := fs.Bool("Q", false, "Auto-generate session name (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1272,6 +1273,11 @@ func handleAdd(profile string, args []string) {
 	// Set parent if specified (includes parent's project path for --add-dir access)
 	if parentInstance != nil {
 		newInstance.SetParentWithPath(parentInstance.ID, parentInstance.ProjectPath)
+	}
+
+	// Suppress transition notifications if requested
+	if *noTransitionNotify {
+		newInstance.NoTransitionNotify = true
 	}
 
 	// Set command if provided
