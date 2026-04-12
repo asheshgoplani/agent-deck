@@ -813,7 +813,7 @@ func (i *Instance) resolveCodexYoloFlag() string {
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
 func (i *Instance) buildCodexCommand(baseCommand string) string {
-	if i.Tool != "codex" {
+	if !IsCodexCompatible(i.Tool) {
 		return baseCommand
 	}
 
@@ -824,21 +824,17 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	yoloFlag := i.resolveCodexYoloFlag()
 
-	// If baseCommand is just "codex", handle specially
-	if baseCommand == "codex" {
-		// If we already have a session ID, use resume.
-		// CODEX_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
-		if i.CodexSessionID != "" {
-			return envPrefix + fmt.Sprintf("codex%s resume %s",
-				yoloFlag, i.CodexSessionID)
-		}
-
-		// Start Codex fresh - session ID will be captured async after startup
-		return envPrefix + "codex" + yoloFlag
+	command := strings.TrimSpace(baseCommand)
+	if command == "" {
+		command = "codex"
 	}
 
-	// For custom commands (e.g., resume commands), preserve env propagation.
-	return envPrefix + baseCommand
+	if i.CodexSessionID != "" {
+		return envPrefix + fmt.Sprintf("%s%s resume %s",
+			command, yoloFlag, i.CodexSessionID)
+	}
+
+	return envPrefix + command + yoloFlag
 }
 
 // detectOpenCodeSessionAsync detects the OpenCode session ID after startup
@@ -1607,7 +1603,7 @@ func (i *Instance) UpdateCodexSession(excludeIDs map[string]bool) {
 // updateCodexSession refreshes Codex session ID from env/process-files/disk.
 // Returns missing dependency name when probe prerequisites are unavailable.
 func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe bool) string {
-	if i.Tool != "codex" {
+	if !IsCodexCompatible(i.Tool) {
 		return ""
 	}
 
@@ -1891,7 +1887,7 @@ func (i *Instance) Start() error {
 		command = i.buildOpenCodeCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
-	case i.Tool == "codex":
+	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
@@ -1920,7 +1916,7 @@ func (i *Instance) Start() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -1982,7 +1978,7 @@ func (i *Instance) Start() error {
 
 	// Start async session ID detection for Codex
 	// This runs in background and captures the session ID once Codex creates it
-	if i.Tool == "codex" {
+	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
 
@@ -2009,7 +2005,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "opencode":
 		command = i.buildOpenCodeCommand(i.Command)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
-	case i.Tool == "codex":
+	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	default:
@@ -2037,7 +2033,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	// Start the tmux session
@@ -2087,7 +2083,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	if i.Tool == "opencode" {
 		go i.detectOpenCodeSessionAsync()
 	}
-	if i.Tool == "codex" {
+	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
 
@@ -2158,7 +2154,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 			}
 			// Gate Codex sends on prompt readiness: wait for "codex>" or
 			// "Continue?" to be visible before considering the agent ready.
-			if i.Tool == "codex" {
+			if IsCodexCompatible(i.Tool) {
 				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					detector := tmux.NewPromptDetector("codex")
@@ -2256,7 +2252,7 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 const errorRecheckInterval = 30 * time.Second
 
 func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
-	if tool != "codex" {
+	if !IsCodexCompatible(tool) {
 		return hookFastPathWindow
 	}
 
@@ -2361,7 +2357,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -2374,7 +2370,7 @@ func (i *Instance) UpdateStatus() error {
 				i.tmuxSession.ResetAcknowledged()
 			}
 		case "waiting":
-			if i.Tool == "codex" {
+			if IsCodexCompatible(i.Tool) {
 				// Codex completion should surface as attention-needed.
 				// Keep this as waiting and let tmux settle to idle if the user
 				// has acknowledged and no new activity appears.
@@ -2403,7 +2399,7 @@ func (i *Instance) UpdateStatus() error {
 					i.ClaudeSessionID = i.hookSessionID
 					i.ClaudeDetectedAt = time.Now()
 				}
-			case i.Tool == "codex":
+			case IsCodexCompatible(i.Tool):
 				if i.hookSessionID != i.CodexSessionID {
 					i.CodexSessionID = i.hookSessionID
 					i.CodexDetectedAt = time.Now()
@@ -2448,19 +2444,22 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusError
 	}
 
-	// Update tool detection dynamically (enables fork when Claude starts).
-	// Only override for built-in tools — custom tools (openclaw, etc.) must not be
-	// clobbered by the fallback "shell" detection from content sniffing.
+	// Update tool detection dynamically (enables fork when wrapped tools start).
+	// Only built-in tool identities are rewritten here. Custom tools like
+	// "my-codex" should keep their configured identity even when tmux correctly
+	// detects the wrapped CLI as Codex.
 	if detectedTool := i.tmuxSession.DetectTool(); detectedTool != "" {
-		switch detectedTool {
-		case "claude", "gemini", "opencode", "codex":
-			i.Tool = detectedTool
-		case "shell":
-			// Only override if current tool is also a built-in (or already shell).
-			// Custom tools should keep their configured identity.
-			switch i.Tool {
-			case "", "shell", "claude", "gemini", "opencode", "codex":
+		if !isBuiltinToolName(i.Tool) && GetToolDef(i.Tool) != nil {
+			// Preserve configured custom tool names.
+		} else {
+			switch detectedTool {
+			case "claude", "gemini", "opencode", "codex":
 				i.Tool = detectedTool
+			case "shell":
+				switch i.Tool {
+				case "", "shell", "claude", "gemini", "opencode", "codex":
+					i.Tool = detectedTool
+				}
 			}
 		}
 	}
@@ -2471,16 +2470,16 @@ func (i *Instance) UpdateStatus() error {
 	if i.Status == StatusRunning || i.Status == StatusWaiting {
 		interval := 2 * time.Second
 		// Bootstrap unknown IDs faster for newly-started sessions.
-		switch i.Tool {
-		case "claude":
+		switch {
+		case IsClaudeCompatible(i.Tool):
 			if i.ClaudeSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
-		case "gemini":
+		case i.Tool == "gemini":
 			if i.GeminiSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
-		case "codex":
+		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
@@ -2497,7 +2496,7 @@ func (i *Instance) UpdateStatus() error {
 			}
 
 			// Update Codex session tracking (non-blocking, best-effort)
-			if i.Tool == "codex" {
+			if IsCodexCompatible(i.Tool) {
 				// Always collect other instances' session IDs to prevent the
 				// disk scan from assigning a session that belongs to another
 				// instance. Without this, instances that share the same
@@ -2665,7 +2664,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
 			})
 		}
-	case i.Tool == "codex":
+	case IsCodexCompatible(i.Tool):
 		if sessionID == i.CodexSessionID {
 			return
 		}
@@ -3554,10 +3553,10 @@ func (i *Instance) getTerminalLastResponse() (*ResponseOutput, error) {
 	}
 
 	// Parse based on tool type
-	switch i.Tool {
-	case "gemini":
+	switch {
+	case i.Tool == "gemini":
 		return parseGeminiOutput(content)
-	case "codex":
+	case IsCodexCompatible(i.Tool):
 		return parseCodexOutput(content)
 	default:
 		return parseGenericOutput(content, i.Tool)
@@ -3858,7 +3857,7 @@ func (i *Instance) Restart() error {
 	// the disk scan can return a wrong ID when multiple instances share the same
 	// project_path. The process probe is authoritative but only works when the
 	// process is running, which it isn't during a restart.
-	if i.Tool == "codex" && i.CodexSessionID == "" {
+	if IsCodexCompatible(i.Tool) && i.CodexSessionID == "" {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
@@ -3871,7 +3870,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// If Codex session AND tmux session exists, use respawn-pane
-	if i.Tool == "codex" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+	if IsCodexCompatible(i.Tool) && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		// Try to get session ID from tmux environment if not already set
 		if i.CodexSessionID == "" {
 			if envID, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && envID != "" {
@@ -3884,7 +3883,7 @@ func (i *Instance) Restart() error {
 		if i.CodexSessionID == "" {
 			i.CodexStartedAt = time.Now().UnixMilli()
 		}
-		resumeCmd, containerName, err := i.prepareCommand(i.buildCodexCommand("codex"))
+		resumeCmd, containerName, err := i.prepareCommand(i.buildCodexCommand(i.Command))
 		if err != nil {
 			return err
 		}
@@ -3974,8 +3973,8 @@ func (i *Instance) Restart() error {
 		command = i.buildGeminiCommand("gemini")
 	} else if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
 		command = i.buildOpenCodeCommand("opencode")
-	} else if i.Tool == "codex" && i.CodexSessionID != "" {
-		command = i.buildCodexCommand("codex")
+	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
+		command = i.buildCodexCommand(i.Command)
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -3987,7 +3986,7 @@ func (i *Instance) Restart() error {
 			command = i.buildOpenCodeCommand(i.Command)
 			// Record start time for async session ID detection
 			i.OpenCodeStartedAt = time.Now().UnixMilli()
-		case i.Tool == "codex":
+		case IsCodexCompatible(i.Tool):
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
@@ -4014,7 +4013,7 @@ func (i *Instance) Restart() error {
 	// Build tmux option overrides from config (e.g. allow-passthrough = "all").
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
-	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
+	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed()
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
@@ -4047,7 +4046,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// Start async session ID detection for Codex (if no ID yet)
-	if i.Tool == "codex" && i.CodexSessionID == "" {
+	if IsCodexCompatible(i.Tool) && i.CodexSessionID == "" {
 		go i.detectCodexSessionAsync()
 	}
 
@@ -4177,13 +4176,13 @@ func (i *Instance) CanRestart() bool {
 	}
 
 	// Codex sessions with known session ID can always be restarted
-	if i.Tool == "codex" && i.CodexSessionID != "" {
+	if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		return true
 	}
 
 	// Codex sessions without ID can still restart (will start fresh)
 	// This allows restart even before session ID is detected
-	if i.Tool == "codex" {
+	if IsCodexCompatible(i.Tool) {
 		return true
 	}
 

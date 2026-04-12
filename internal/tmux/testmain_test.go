@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // skipIfNoTmuxServer skips the test if tmux binary is missing or server isn't running.
@@ -24,6 +26,12 @@ func skipIfNoTmuxServer(t *testing.T) {
 // accidental modification of production data.
 // CRITICAL: This was missing and caused test data to overwrite production sessions!
 func TestMain(m *testing.M) {
+	restoreHome, err := testutil.SetupTestHome()
+	if err != nil {
+		panic(err)
+	}
+	defer restoreHome()
+
 	// Force _test profile for all tests in this package
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 

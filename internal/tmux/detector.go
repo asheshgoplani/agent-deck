@@ -420,20 +420,13 @@ func (d *PromptDetector) hasShellPrompt(content string) bool {
 		return false
 	}
 
-	// Get last non-empty line
-	var lastLine string
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed != "" {
-			lastLine = trimmed
-			break
-		}
+	checkLines := lines
+	if len(checkLines) > 5 {
+		checkLines = checkLines[len(checkLines)-5:]
 	}
 
-	// Common shell prompt endings
-	shellPrompts := []string{"$ ", "# ", "% ", "❯ ", "➜ ", "> "}
-	for _, prompt := range shellPrompts {
-		if strings.HasSuffix(lastLine+" ", prompt) {
+	for _, line := range checkLines {
+		if isShellPromptLikeLine(line) {
 			return true
 		}
 	}
@@ -443,11 +436,6 @@ func (d *PromptDetector) hasShellPrompt(content string) bool {
 		"(Y/n)", "[Y/n]", "(y/N)", "[y/N]",
 		"(yes/no)", "[yes/no]",
 		"Continue?", "Proceed?",
-	}
-	// Check last 5 lines for confirmation prompts
-	checkLines := lines
-	if len(checkLines) > 5 {
-		checkLines = checkLines[len(checkLines)-5:]
 	}
 	recentContent := strings.Join(checkLines, "\n")
 	for _, pattern := range confirmPatterns {
