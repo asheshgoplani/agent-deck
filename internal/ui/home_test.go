@@ -1283,6 +1283,30 @@ func TestRemoteSelectionNOpensNewDialog(t *testing.T) {
 	}
 }
 
+func TestSelectedRemotePreviewTarget(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	remoteName, sessionID, previewKey, ok := home.selectedRemotePreviewTarget()
+	if !ok {
+		t.Fatal("selectedRemotePreviewTarget should resolve remote selection")
+	}
+	if remoteName != "myserver" {
+		t.Fatalf("remoteName = %q, want %q", remoteName, "myserver")
+	}
+	if sessionID != "remote-123" {
+		t.Fatalf("sessionID = %q, want %q", sessionID, "remote-123")
+	}
+	if previewKey != "remote:myserver:remote-123" {
+		t.Fatalf("previewKey = %q, want %q", previewKey, "remote:myserver:remote-123")
+	}
+}
+
 func TestRemoteSelectionQuickCreateStillRunsRemoteCommand(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -1307,6 +1331,30 @@ func TestRemoteSelectionQuickCreateStillRunsRemoteCommand(t *testing.T) {
 	}
 }
 
+func TestRenderRemotePreviewIncludesCachedResponse(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:     "remote-123",
+		Title:  "remote-session",
+		Status: "waiting",
+		Path:   "/srv/project",
+	}
+	item := session.Item{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}
+
+	home.previewCache[remotePreviewCacheKey("myserver", "remote-123")] = "Remote answer"
+
+	rendered := home.renderRemotePreview(item, 80, 20)
+	if !strings.Contains(rendered, "Last response") {
+		t.Fatalf("rendered preview should include last response header, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "Remote answer") {
+		t.Fatalf("rendered preview should include cached remote response, got: %q", rendered)
+	}
+}
+
 func TestRemoteGroupSelectionNOpensNewDialog(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -1325,6 +1373,56 @@ func TestRemoteGroupSelectionNOpensNewDialog(t *testing.T) {
 	}
 	if !h.newDialog.IsVisible() {
 		t.Fatal("pressing n on remote group should open new session dialog")
+	}
+}
+
+func TestRenderRemotePreviewShowsEmptyStateAfterFetch(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:     "remote-123",
+		Title:  "remote-session",
+		Status: "waiting",
+		Path:   "/srv/project",
+	}
+	item := session.Item{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}
+	key := remotePreviewCacheKey("myserver", "remote-123")
+
+	home.previewCache[key] = ""
+	home.previewCacheTime[key] = time.Now()
+
+	rendered := home.renderRemotePreview(item, 80, 20)
+	if !strings.Contains(rendered, "No response available yet.") {
+		t.Fatalf("rendered preview should show empty-state copy after a fetch, got: %q", rendered)
+	}
+	if strings.Contains(rendered, "Fetching remote preview...") {
+		t.Fatalf("rendered preview should not keep showing the loading state after an empty fetch, got: %q", rendered)
+	}
+}
+
+func TestPreviewFetchedMsgUpdatesCacheTimeOnError(t *testing.T) {
+	home := NewHome()
+	key := remotePreviewCacheKey("myserver", "remote-123")
+	home.previewFetchingID = key
+	before := time.Now()
+
+	model, _ := home.Update(previewFetchedMsg{previewKey: key, err: fmt.Errorf("fetch failed")})
+	updated := model.(*Home)
+
+	if updated.previewFetchingID != "" {
+		t.Fatal("previewFetchingID should be cleared after fetch completion")
+	}
+	cacheTime, ok := updated.previewCacheTime[key]
+	if !ok {
+		t.Fatal("preview cache time should be recorded even when fetch fails")
+	}
+	if cacheTime.Before(before) {
+		t.Fatalf("preview cache time %v should be at or after %v", cacheTime, before)
+	}
+	if _, ok := updated.previewCache[key]; ok {
+		t.Fatal("preview content should not be cached when fetch fails")
 	}
 }
 

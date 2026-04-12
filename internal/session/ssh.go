@@ -261,6 +261,34 @@ func (r *SSHRunner) FetchSessions(ctx context.Context) ([]RemoteSessionInfo, err
 	return sessions, nil
 }
 
+type remoteSessionOutputJSON struct {
+	Content string `json:"content"`
+}
+
+func parseRemoteSessionOutput(output []byte) (string, error) {
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 {
+		return "", nil
+	}
+
+	var parsed remoteSessionOutputJSON
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return "", fmt.Errorf("failed to parse remote session output: %w", err)
+	}
+
+	return parsed.Content, nil
+}
+
+// FetchSessionOutput retrieves the last response content for a remote session.
+func (r *SSHRunner) FetchSessionOutput(ctx context.Context, sessionID string) (string, error) {
+	output, err := r.Run(ctx, "session", "output", sessionID, "--json")
+	if err != nil {
+		return "", err
+	}
+
+	return parseRemoteSessionOutput(output)
+}
+
 // DetectPlatform returns the remote host's OS and architecture (e.g., "linux", "amd64").
 func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, err error) {
 	_ = os.MkdirAll(sshControlDir, 0700)
