@@ -391,6 +391,41 @@ func TestBuildEnvSourceCommand_IncludesTheme(t *testing.T) {
 	}
 }
 
+func TestBuildEnvSourceCommand_SandboxSkipsThemeExport(t *testing.T) {
+	// Save and restore original config cache
+	userConfigCacheMu.Lock()
+	origCache := userConfigCache
+	userConfigCacheMu.Unlock()
+	defer func() {
+		userConfigCacheMu.Lock()
+		userConfigCache = origCache
+		userConfigCacheMu.Unlock()
+	}()
+
+	// Ensure no parent COLORFGBG
+	t.Setenv("COLORFGBG", "")
+	os.Unsetenv("COLORFGBG")
+
+	// Set up light theme config
+	userConfigCacheMu.Lock()
+	userConfigCache = &UserConfig{
+		Theme: "light",
+		MCPs:  make(map[string]MCPDef),
+	}
+	userConfigCacheMu.Unlock()
+
+	inst := &Instance{
+		Tool:        "opencode",
+		ProjectPath: "/tmp",
+		Sandbox:     &SandboxConfig{Enabled: true, Image: "example/sandbox:latest"},
+	}
+	result := inst.buildEnvSourceCommand()
+
+	if strings.Contains(result, "COLORFGBG") {
+		t.Errorf("buildEnvSourceCommand() = %q, should not contain COLORFGBG for sandboxed sessions", result)
+	}
+}
+
 func TestShellSettings_GetIgnoreMissingEnvFiles(t *testing.T) {
 	trueBool := true
 	falseBool := false

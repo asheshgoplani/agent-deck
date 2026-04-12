@@ -63,6 +63,7 @@ RUN npm install -g @google/gemini-cli@0
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
     /root/.local/share/opencode \
+    /root/.local/state/opencode \
     /root/.codex \
     /root/.gemini \
     /root/.ssh

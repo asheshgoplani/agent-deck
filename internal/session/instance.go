@@ -4994,18 +4994,22 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 }
 
 // terminalEnvVars are always passed through to containers for proper UI/theming.
-var terminalEnvVars = []string{"TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"}
+var terminalEnvVars = []string{"TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR", "COLORFGBG"}
 
 // collectDockerEnvVars returns host environment variables to forward to containers.
 // Each call reads fresh values from the host environment via os.LookupEnv so that
 // changes between session starts (e.g. updated TERM) are picked up immediately.
-// Terminal-related variables (TERM, COLORTERM, FORCE_COLOR, NO_COLOR) are always
+// Terminal-related variables (TERM, COLORTERM, FORCE_COLOR, NO_COLOR, COLORFGBG) are always
 // included when set. Additional names from DockerSettings.Environment are appended.
 func collectDockerEnvVars(names []string) map[string]string {
 	env := make(map[string]string, len(terminalEnvVars)+len(names))
 	for _, name := range terminalEnvVars {
 		if val, ok := os.LookupEnv(name); ok {
 			env[name] = val
+			continue
+		}
+		if name == "COLORFGBG" {
+			env[name] = ThemeColorFGBG()
 		}
 	}
 	for _, name := range names {
@@ -5089,7 +5093,47 @@ func ensureContainerRunning(
 		}
 	}
 
+	// Migration guard: older containers were created with root-owned tmpfs mounts
+	// for /root/.npm and /root/.cache. With --user uid:gid this causes plugin
+	// bootstrap failures (EACCES mkdir '/root/.npm/_cacache'). Recreate the
+	// container once if those paths are not writable.
+	cacheWritable := sandboxCacheDirsWritable(ctx, ctr)
+	tmpExecutable := sandboxTmpExecutable(ctx, ctr)
+	if !cacheWritable || !tmpExecutable {
+		sessionLog.Warn(
+			"sandbox_recreating_for_runtime_compat",
+			slog.Bool("cache_writable", cacheWritable),
+			slog.Bool("tmp_executable", tmpExecutable),
+		)
+		if rmErr := ctr.Remove(ctx, true); rmErr != nil {
+			return fmt.Errorf("removing incompatible sandbox container: %w", rmErr)
+		}
+		cfg := buildSandboxConfig(inst, userCfg, homeDir, bindMounts, homeMounts)
+		if _, createErr := ctr.Create(ctx, cfg); createErr != nil {
+			return fmt.Errorf("recreating sandbox container: %w", createErr)
+		}
+		if startErr := ctr.Start(ctx); startErr != nil {
+			return fmt.Errorf("starting recreated sandbox container: %w", startErr)
+		}
+	}
+
 	return nil
+}
+
+func sandboxCacheDirsWritable(ctx context.Context, ctr *docker.Container) bool {
+	return sandboxExecProbe(ctx, ctr, "test -w /root/.npm && test -w /root/.cache")
+}
+
+func sandboxTmpExecutable(ctx context.Context, ctr *docker.Container) bool {
+	probe := `f=/tmp/.agent_deck_exec_probe.sh; printf '#!/bin/sh\nexit 0\n' > "$f" && chmod +x "$f" && "$f" >/dev/null 2>&1 && rm -f "$f"`
+	return sandboxExecProbe(ctx, ctr, probe)
+}
+
+func sandboxExecProbe(ctx context.Context, ctr *docker.Container, script string) bool {
+	prefix := ctr.ExecPrefixNonInteractive()
+	args := append(prefix[1:], "bash", "-lc", script)
+	_, err := exec.CommandContext(ctx, prefix[0], args...).CombinedOutput()
+	return err == nil
 }
 
 // buildSandboxConfig assembles the ContainerConfig from session and user settings.

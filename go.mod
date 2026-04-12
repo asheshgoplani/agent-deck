@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	cloud.google.com/go/pubsub v1.50.1
+	al.essio.dev/pkg/shellescape v1.6.0
 	github.com/BurntSushi/toml v1.5.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/charmbracelet/bubbles v0.21.0

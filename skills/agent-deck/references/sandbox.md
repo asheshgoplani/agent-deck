@@ -87,7 +87,7 @@ See the full [Configuration Reference](config-reference.md) for details.
 
 Agent Deck automatically shares your host tool credentials with sandboxed containers so agents can authenticate without re-login. This works for all supported tools: Claude Code, Codex, Gemini, and OpenCode.
 
-For each tool whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`), Agent Deck syncs credential files into a **shared sandbox directory** and bind-mounts it into containers:
+For each tool whose host config directory exists (e.g. `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.local/share/opencode/`, `~/.local/state/opencode/`, `~/.config/opencode/`), Agent Deck syncs credential files into a **shared sandbox directory** and bind-mounts it into containers:
 
 1. On every session start, host config files are synced into `~/<tool>/sandbox/`.
 2. **Seed files** (e.g. onboarding flags) use write-once semantics — they are only written if absent, preserving any state accumulated by the container.
@@ -119,6 +119,8 @@ Each tool's sandbox directory lives inside that tool's own config directory:
 ~/.codex/sandbox/                  # Codex sandbox
 ~/.gemini/sandbox/                 # Gemini sandbox
 ~/.local/share/opencode/sandbox/   # OpenCode sandbox
+~/.local/state/opencode/sandbox/   # OpenCode state sandbox
+~/.config/opencode/sandbox/        # OpenCode config sandbox
 ```
 
 These directories persist on the host and are shared across all containers. Deleting a tool's config directory (e.g. `rm -rf ~/.codex/`) removes everything related to that tool, including its sandbox directory. The `sandbox/` subdirectories are safe to delete manually if you want to reset state.
@@ -142,7 +144,7 @@ Example: `agent-deck-my-refactor-a1b2c3d4`
 ## Environment Variables
 
 These terminal-related variables are always passed through for proper UI/theming:
-- `TERM`, `COLORTERM`, `FORCE_COLOR`, `NO_COLOR`
+- `TERM`, `COLORTERM`, `FORCE_COLOR`, `NO_COLOR`, `COLORFGBG`
 
 Pass additional variables (like API keys) through to containers by adding them to config:
 
@@ -232,6 +234,8 @@ rm -rf ~/.claude/sandbox/
 rm -rf ~/.codex/sandbox/
 rm -rf ~/.gemini/sandbox/
 rm -rf ~/.local/share/opencode/sandbox/
+rm -rf ~/.local/state/opencode/sandbox/
+rm -rf ~/.config/opencode/sandbox/
 ```
 
 They will be re-created automatically on the next session start.

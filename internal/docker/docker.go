@@ -150,12 +150,20 @@ func (c *Container) Create(ctx context.Context, cfg *ContainerConfig) (string, e
 		"--pids-limit=4096",
 		// Read-only root filesystem — writable paths are explicitly mounted as tmpfs below.
 		"--read-only",
-		"--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
+		// Keep /tmp executable: OpenCode/OpenTUI loads a native render library
+		// from /tmp via dlopen, which fails when /tmp is mounted noexec.
+		"--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
 		"--tmpfs", "/var/tmp:rw,noexec,nosuid,size=128m",
-		// Node.js and npm require writable cache/config directories.
-		"--tmpfs", "/root/.npm:rw,nosuid,size=256m",
-		"--tmpfs", "/root/.cache:rw,nosuid,size=512m",
 	}
+
+	// Node.js and npm require writable cache directories. The container runs as
+	// host UID:GID, so set tmpfs ownership explicitly; otherwise Docker creates
+	// root-owned 0755 tmpfs mounts and npm fails with EACCES under /root/.npm.
+	tmpfsUserOpts := fmt.Sprintf("uid=%d,gid=%d", os.Getuid(), os.Getgid())
+	args = append(args,
+		"--tmpfs", "/root/.npm:rw,nosuid,size=256m,"+tmpfsUserOpts+",mode=1777",
+		"--tmpfs", "/root/.cache:rw,nosuid,size=512m,"+tmpfsUserOpts+",mode=1777",
+	)
 
 	if cfg.workingDir != "" {
 		args = append(args, "--workdir", cfg.workingDir)
@@ -259,6 +267,12 @@ func (c *Container) Remove(ctx context.Context, force bool) error {
 // Returns ["docker", "exec", "-it", name].
 func (c *Container) ExecPrefix() []string {
 	return []string{"docker", "exec", "-it", c.name}
+}
+
+// ExecPrefixNonInteractive returns the command prefix for non-interactive
+// execution inside this container. Returns ["docker", "exec", name].
+func (c *Container) ExecPrefixNonInteractive() []string {
+	return []string{"docker", "exec", c.name}
 }
 
 // ExecPrefixWithEnv returns the command prefix with -e flags for runtime env vars.

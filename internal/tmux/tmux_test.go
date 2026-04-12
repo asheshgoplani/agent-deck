@@ -2822,6 +2822,82 @@ func TestStartCommandSpec_InitialProcess_ShellSyntaxValid(t *testing.T) {
 	}
 }
 
+func TestWrapRespawnCommand_UsesBashRegardlessOfShellEnv(t *testing.T) {
+	t.Setenv("SHELL", "/usr/bin/fish")
+
+	wrapped, err := wrapRespawnCommand("claude --session-id abc")
+	require.NoError(t, err)
+	require.Contains(t, wrapped, " -lc ")
+	require.Contains(t, wrapped, "claude --session-id abc")
+}
+
+func TestWrapRespawnCommand_PreservesQuotedPayloads(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{
+			name: "embedded single quotes",
+			cmd:  `echo 'hello world' && echo done`,
+		},
+		{
+			name: "nested quoted payload",
+			cmd:  `bash -c 'stty susp undef; echo '"'"'hello world'"'"''`,
+		},
+		{
+			name: "subshell and mixed quotes",
+			cmd:  `session_id=$(echo "abc") || session_id=""; echo "$session_id"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wrapped, err := wrapRespawnCommand(tc.cmd)
+			require.NoError(t, err)
+			require.Contains(t, wrapped, " -lc ")
+
+			run := exec.Command("sh", "-c", wrapped)
+			out, err := run.CombinedOutput()
+			require.NoError(t, err, "wrapped command failed: %s", string(out))
+		})
+	}
+}
+
+func TestWrapRespawnCommand_ErrorsWhenBashUnavailable(t *testing.T) {
+	_, err := wrapRespawnCommandWithResolver("echo ok", func(file string) (string, error) {
+		return "", exec.ErrNotFound
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "bash not found")
+}
+
+func TestStartCommandSpec_DoesNotDoubleWrapBashC(t *testing.T) {
+	s := &Session{
+		Name:                       "agentdeck_test_abcdef12",
+		WorkDir:                    "/tmp",
+		RunCommandAsInitialProcess: true,
+	}
+
+	cmd := `bash -c 'stty susp undef; docker exec -it agent-deck-test bash -c '\''export COLORFGBG='\''\''\''15;0'\''\''\'' && opencode -s ses_abc'\'''`
+	_, args := s.startCommandSpec("/tmp", cmd)
+	require.NotEmpty(t, args)
+	require.Equal(t, cmd, args[len(args)-1])
+}
+
+func TestStartCommandSpec_WrapsNonBashCommands(t *testing.T) {
+	s := &Session{
+		Name:                       "agentdeck_test_abcdef12",
+		WorkDir:                    "/tmp",
+		RunCommandAsInitialProcess: true,
+	}
+
+	_, args := s.startCommandSpec("/tmp", `export COLORFGBG='15;0' && opencode -s ses_abc`)
+	require.NotEmpty(t, args)
+	require.True(t, strings.HasPrefix(args[len(args)-1], "bash -c '"))
+}
+
 func TestResolvedAgentDeckTheme_COLORFGBG(t *testing.T) {
 	// Use temp HOME with no config so we fall through to auto-detection.
 	tempDir := t.TempDir()

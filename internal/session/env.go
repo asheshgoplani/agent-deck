@@ -23,8 +23,14 @@ func (i *Instance) buildEnvSourceCommand() string {
 
 	// 1. Theme environment (COLORFGBG) so tools like Codex detect light/dark theme.
 	// Set early so env files or init scripts can override if needed.
-	if themeExport := themeEnvExport(); themeExport != "" {
-		sources = append(sources, themeExport)
+	// For sandboxed sessions, COLORFGBG is injected via docker exec environment
+	// forwarding (collectDockerEnvVars) instead of inline shell export. Inline
+	// export uses a semicolon-containing value (e.g. "15;0") that becomes fragile
+	// under nested bash -c quoting chains used by sandbox command wrappers.
+	if !i.IsSandboxed() {
+		if themeExport := themeEnvExport(); themeExport != "" {
+			sources = append(sources, themeExport)
+		}
 	}
 
 	config, _ := LoadUserConfig()

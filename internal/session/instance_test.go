@@ -2274,6 +2274,16 @@ func TestCollectDockerEnvVars(t *testing.T) {
 	}
 }
 
+func TestCollectDockerEnvVars_ColorFGBGFallback(t *testing.T) {
+	// Cannot use t.Parallel() because t.Setenv mutates process env.
+	t.Setenv("COLORFGBG", "")
+	os.Unsetenv("COLORFGBG")
+
+	result := collectDockerEnvVars(nil)
+	require.Contains(t, result, "COLORFGBG")
+	require.NotEmpty(t, result["COLORFGBG"])
+}
+
 func TestNewSandboxConfig(t *testing.T) {
 	t.Parallel()
 

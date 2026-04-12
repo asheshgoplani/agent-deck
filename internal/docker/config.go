@@ -49,6 +49,16 @@ var agentConfigMounts = []AgentConfigMount{
 		skipEntries:     []string{"sandbox"},
 	},
 	{
+		hostRel:         ".local/state/opencode",
+		containerSuffix: ".local/state/opencode",
+		skipEntries:     []string{"sandbox"},
+	},
+	{
+		hostRel:         ".config/opencode",
+		containerSuffix: ".config/opencode",
+		skipEntries:     []string{"sandbox"},
+	},
+	{
 		hostRel:         ".codex",
 		containerSuffix: ".codex",
 		skipEntries:     []string{"sandbox"},
