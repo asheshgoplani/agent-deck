@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestOpenCodeSessionMatching tests the session matching logic for OpenCode
@@ -38,35 +39,39 @@ func TestOpenCodeSessionMatching(t *testing.T) {
 	tests := []struct {
 		name        string
 		projectPath string
-		startTime   int64
+		currentID   string
 		wantID      string
 		wantMatch   bool
 	}{
 		{
 			name:        "Finds most recent session for matching directory",
 			projectPath: "/Users/ashesh/claude-deck",
-			startTime:   1768982150000, // After OLD, before NEW updated
-			wantID:      "ses_NEW001",  // Should pick the most recently updated one
+			wantID:      "ses_NEW001", // Should pick the most recently updated one
 			wantMatch:   true,
 		},
 		{
-			name:        "Picks most recent even when startTime is very recent",
+			name:        "Keeps existing session when it still belongs to project",
 			projectPath: "/Users/ashesh/claude-deck",
-			startTime:   1768982500000, // After all sessions
-			wantID:      "ses_NEW001",  // Should still pick most recent for directory
+			currentID:   "ses_OLD001",
+			wantID:      "ses_OLD001",
 			wantMatch:   true,
 		},
 		{
 			name:        "Ignores sessions from different directories",
 			projectPath: "/Users/ashesh/other-project",
-			startTime:   1768982000000,
 			wantID:      "ses_OTHER001", // Only session matching this directory
+			wantMatch:   true,
+		},
+		{
+			name:        "Falls back to most recent when existing session is missing",
+			projectPath: "/Users/ashesh/claude-deck",
+			currentID:   "ses_MISSING001",
+			wantID:      "ses_NEW001",
 			wantMatch:   true,
 		},
 		{
 			name:        "No match for unknown directory",
 			projectPath: "/Users/ashesh/nonexistent",
-			startTime:   1768982000000,
 			wantID:      "",
 			wantMatch:   false,
 		},
@@ -75,20 +80,14 @@ func TestOpenCodeSessionMatching(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse mock sessions
-			var sessions []struct {
-				ID        string `json:"id"`
-				Directory string `json:"directory"`
-				Path      string `json:"path"`
-				Created   int64  `json:"created"`
-				Updated   int64  `json:"updated"`
-			}
+			var sessions []openCodeSessionMetadata
 
 			if err := json.Unmarshal([]byte(mockSessionsJSON), &sessions); err != nil {
 				t.Fatalf("Failed to parse mock sessions: %v", err)
 			}
 
 			// Apply the matching logic (same as queryOpenCodeSession but testable)
-			gotID := findBestOpenCodeSession(sessions, tt.projectPath)
+			gotID := findBestOpenCodeSession(sessions, tt.projectPath, tt.currentID)
 
 			if tt.wantMatch {
 				if gotID != tt.wantID {
@@ -101,49 +100,6 @@ func TestOpenCodeSessionMatching(t *testing.T) {
 			}
 		})
 	}
-}
-
-// findBestOpenCodeSession is a testable version of the session matching logic
-// This should match the algorithm used in queryOpenCodeSession()
-func findBestOpenCodeSession(sessions []struct {
-	ID        string `json:"id"`
-	Directory string `json:"directory"`
-	Path      string `json:"path"`
-	Created   int64  `json:"created"`
-	Updated   int64  `json:"updated"`
-}, projectPath string) string {
-	var bestMatch string
-	var bestMatchTime int64
-
-	for _, sess := range sessions {
-		// Check directory match (normalize paths)
-		sessDir := sess.Directory
-		if sessDir == "" {
-			sessDir = sess.Path
-		}
-
-		normalizedSessDir := normalizePath(sessDir)
-		normalizedProjectPath := normalizePath(projectPath)
-
-		if sessDir == "" || normalizedSessDir != normalizedProjectPath {
-			continue
-		}
-
-		// Pick the most recently updated session for this directory
-		// OpenCode automatically resumes the most recent session,
-		// so we should track that same session
-		updatedAt := sess.Updated
-		if updatedAt == 0 {
-			updatedAt = sess.Created
-		}
-
-		if bestMatch == "" || updatedAt > bestMatchTime {
-			bestMatch = sess.ID
-			bestMatchTime = updatedAt
-		}
-	}
-
-	return bestMatch
 }
 
 // TestOpenCodeBuildCommand tests the command building for OpenCode sessions
@@ -213,4 +169,73 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestApplyOpenCodeSessionCandidate_BindsWhenEmpty(t *testing.T) {
+	inst := &Instance{Tool: "opencode"}
+
+	changed := inst.applyOpenCodeSessionCandidate("ses_NEW001")
+
+	if !changed {
+		t.Fatal("expected change when binding first OpenCode session ID")
+	}
+	if inst.OpenCodeSessionID != "ses_NEW001" {
+		t.Fatalf("OpenCodeSessionID = %q, want %q", inst.OpenCodeSessionID, "ses_NEW001")
+	}
+	if inst.OpenCodeDetectedAt.IsZero() {
+		t.Fatal("OpenCodeDetectedAt should be set when binding OpenCode session ID")
+	}
+}
+
+func TestApplyOpenCodeSessionCandidate_RebindsWhenDifferent(t *testing.T) {
+	inst := &Instance{
+		Tool:              "opencode",
+		OpenCodeSessionID: "ses_OLD001",
+		OpenCodeDetectedAt: time.Now().Add(
+			-1 * time.Hour,
+		),
+	}
+
+	changed := inst.applyOpenCodeSessionCandidate("ses_NEW001")
+
+	if !changed {
+		t.Fatal("expected change when OpenCode session rotates")
+	}
+	if inst.OpenCodeSessionID != "ses_NEW001" {
+		t.Fatalf("OpenCodeSessionID = %q, want %q", inst.OpenCodeSessionID, "ses_NEW001")
+	}
+}
+
+func TestApplyOpenCodeSessionCandidate_NoChangeWhenSame(t *testing.T) {
+	detectedAt := time.Now().Add(-5 * time.Minute)
+	inst := &Instance{
+		Tool:               "opencode",
+		OpenCodeSessionID:  "ses_SAME001",
+		OpenCodeDetectedAt: detectedAt,
+	}
+
+	changed := inst.applyOpenCodeSessionCandidate("ses_SAME001")
+
+	if changed {
+		t.Fatal("expected no change when candidate matches current OpenCode session ID")
+	}
+	if inst.OpenCodeSessionID != "ses_SAME001" {
+		t.Fatalf("OpenCodeSessionID = %q, want %q", inst.OpenCodeSessionID, "ses_SAME001")
+	}
+	if !inst.OpenCodeDetectedAt.Equal(detectedAt) {
+		t.Fatal("OpenCodeDetectedAt should remain unchanged when candidate matches current ID")
+	}
+}
+
+func TestApplyOpenCodeSessionCandidate_IgnoresEmptyCandidate(t *testing.T) {
+	inst := &Instance{Tool: "opencode", OpenCodeSessionID: "ses_EXISTING001"}
+
+	changed := inst.applyOpenCodeSessionCandidate("")
+
+	if changed {
+		t.Fatal("expected no change when OpenCode candidate is empty")
+	}
+	if inst.OpenCodeSessionID != "ses_EXISTING001" {
+		t.Fatalf("OpenCodeSessionID = %q, want %q", inst.OpenCodeSessionID, "ses_EXISTING001")
+	}
 }
