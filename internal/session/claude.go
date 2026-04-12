@@ -224,20 +224,35 @@ func getMCPInfoUncached(projectPath string) *MCPInfo {
 }
 
 // GetClaudeConfigDir returns the Claude config directory for the active profile.
+// Delegates to GetClaudeConfigDirForGroup with no group context.
+func GetClaudeConfigDir() string {
+	return GetClaudeConfigDirForGroup("")
+}
+
+// IsClaudeConfigDirExplicit returns true if the Claude config directory is
+// explicitly configured (via CLAUDE_CONFIG_DIR env var, profile override, or global config.toml setting).
+// Delegates to IsClaudeConfigDirExplicitForGroup with no group context.
+func IsClaudeConfigDirExplicit() bool {
+	return IsClaudeConfigDirExplicitForGroup("")
+}
+
+// GetClaudeConfigDirForGroup returns the Claude config directory, checking group overrides first.
 // Priority:
 // 1. CLAUDE_CONFIG_DIR env var
-// 2. profile-specific override: [profiles.<profile>.claude].config_dir
-// 3. global setting: [claude].config_dir
-// 4. default: ~/.claude
-func GetClaudeConfigDir() string {
-	// 1. Check env var (highest priority)
+// 2. group-specific override: [groups."<group>".claude].config_dir
+// 3. profile-specific override: [profiles.<profile>.claude].config_dir
+// 4. global setting: [claude].config_dir
+// 5. default: ~/.claude
+func GetClaudeConfigDirForGroup(groupPath string) string {
 	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
 		return ExpandPath(envDir)
 	}
 
-	// 2. Check user config (profile-specific first, then global)
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil {
+		if groupDir := userConfig.GetGroupClaudeConfigDir(groupPath); groupDir != "" {
+			return groupDir
+		}
 		profile := GetEffectiveProfile("")
 		if profileDir := userConfig.GetProfileClaudeConfigDir(profile); profileDir != "" {
 			return profileDir
@@ -247,28 +262,22 @@ func GetClaudeConfigDir() string {
 		}
 	}
 
-	// 3. Default to ~/.claude
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".claude")
 }
 
-// IsClaudeConfigDirExplicit returns true if the Claude config directory is
-// explicitly configured (via CLAUDE_CONFIG_DIR env var, profile override, or global config.toml setting).
-// When false, the user is using the default path and we should NOT override
-// CLAUDE_CONFIG_DIR in commands, allowing the shell's environment to be respected.
-//
-// This is critical for WSL and other environments where users may have
-// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc - agent-deck should not
-// override that with a hardcoded default path.
-func IsClaudeConfigDirExplicit() bool {
-	// Check env var
+// IsClaudeConfigDirExplicitForGroup returns true if the Claude config directory is
+// explicitly configured at any level (env var, group override, profile override, or global).
+func IsClaudeConfigDirExplicitForGroup(groupPath string) bool {
 	if os.Getenv("CLAUDE_CONFIG_DIR") != "" {
 		return true
 	}
 
-	// Check user config (profile-specific first, then global)
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil {
+		if userConfig.GetGroupClaudeConfigDir(groupPath) != "" {
+			return true
+		}
 		profile := GetEffectiveProfile("")
 		if userConfig.GetProfileClaudeConfigDir(profile) != "" {
 			return true

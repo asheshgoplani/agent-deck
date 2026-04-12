@@ -230,6 +230,7 @@ func (i *Instance) getToolInlineEnv() string {
 }
 
 // getToolEnvFile returns the env_file setting for the current tool.
+// For Claude sessions, group-specific env_file takes priority over global [claude].env_file.
 func (i *Instance) getToolEnvFile() string {
 	config, _ := LoadUserConfig()
 	if config == nil {
@@ -238,6 +239,9 @@ func (i *Instance) getToolEnvFile() string {
 
 	switch i.Tool {
 	case "claude":
+		if groupEnv := config.GetGroupClaudeEnvFile(i.GroupPath); groupEnv != "" {
+			return groupEnv
+		}
 		return config.Claude.EnvFile
 	case "gemini":
 		return config.Gemini.EnvFile

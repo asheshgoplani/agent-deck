@@ -61,6 +61,12 @@ type UserConfig struct {
 	// config_dir = "~/.claude-work"
 	Profiles map[string]ProfileSettings `toml:"profiles"`
 
+	// Groups defines optional per-group overrides.
+	// Example:
+	// [groups."my-group".claude]
+	// config_dir = "~/.claude-my-group"
+	Groups map[string]GroupSettings `toml:"groups"`
+
 	// Gemini defines Gemini CLI integration settings
 	Gemini GeminiSettings `toml:"gemini"`
 
@@ -189,6 +195,21 @@ type ProfileSettings struct {
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir"`
+}
+
+// GroupSettings defines per-group configuration overrides.
+type GroupSettings struct {
+	// Claude defines Claude Code overrides for a specific group.
+	Claude GroupClaudeSettings `toml:"claude"`
+}
+
+// GroupClaudeSettings defines group-specific Claude overrides.
+type GroupClaudeSettings struct {
+	// ConfigDir overrides [claude].config_dir for sessions in this group.
+	ConfigDir string `toml:"config_dir"`
+
+	// EnvFile overrides [claude].env_file for sessions in this group.
+	EnvFile string `toml:"env_file"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -578,6 +599,30 @@ func (c *UserConfig) GetProfileClaudeConfigDir(profile string) string {
 		return ""
 	}
 	return ExpandPath(profileCfg.Claude.ConfigDir)
+}
+
+// GetGroupClaudeConfigDir returns the group-specific Claude config directory, if configured.
+func (c *UserConfig) GetGroupClaudeConfigDir(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	groupCfg, ok := c.Groups[groupPath]
+	if !ok || groupCfg.Claude.ConfigDir == "" {
+		return ""
+	}
+	return ExpandPath(groupCfg.Claude.ConfigDir)
+}
+
+// GetGroupClaudeEnvFile returns the group-specific Claude env file, if configured.
+func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	groupCfg, ok := c.Groups[groupPath]
+	if !ok || groupCfg.Claude.EnvFile == "" {
+		return ""
+	}
+	return groupCfg.Claude.EnvFile
 }
 
 // GetDangerousMode returns whether dangerous mode is enabled, defaulting to true

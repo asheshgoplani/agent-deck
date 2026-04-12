@@ -496,8 +496,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
 	// Also skip if using a custom command (alias handles config dir)
 	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicit() {
-		configDir := GetClaudeConfigDir()
+	if !hasCustomCommand && IsClaudeConfigDirExplicitForGroup(i.GroupPath) {
+		configDir := GetClaudeConfigDirForGroup(i.GroupPath)
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
@@ -598,8 +598,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 // It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
 func (i *Instance) buildBashExportPrefix() string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-	if IsClaudeConfigDirExplicit() {
-		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", GetClaudeConfigDir())
+	if IsClaudeConfigDirExplicitForGroup(i.GroupPath) {
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", GetClaudeConfigDirForGroup(i.GroupPath))
 	}
 	return prefix
 }
@@ -4078,8 +4078,8 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// If NOT explicit, don't set it - let the shell's environment handle it
 	// Also skip if using a custom command (alias handles config dir)
 	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicit() {
-		configDir := GetClaudeConfigDir()
+	if !hasCustomCommand && IsClaudeConfigDirExplicitForGroup(i.GroupPath) {
+		configDir := GetClaudeConfigDirForGroup(i.GroupPath)
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 

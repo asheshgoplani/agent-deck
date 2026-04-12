@@ -4562,8 +4562,8 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 		// This is critical for WSL and other environments where users have
 		// CLAUDE_CONFIG_DIR set in their .bashrc/.zshrc
 		var cmdBuilder strings.Builder
-		if session.IsClaudeConfigDirExplicit() {
-			configDir := session.GetClaudeConfigDir()
+		if session.IsClaudeConfigDirExplicitForGroup(inst.GroupPath) {
+			configDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
 			cmdBuilder.WriteString(fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir))
 		}
 		cmdBuilder.WriteString("claude --resume ")

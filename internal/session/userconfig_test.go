@@ -1130,6 +1130,114 @@ launch_in_user_scope = true
 	}
 }
 
+func TestUserConfig_GroupClaudeConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[claude]
+config_dir = "~/.claude-global"
+
+[groups."team-a".claude]
+config_dir = "~/.claude-team-a"
+
+[groups."team-b".claude]
+config_dir = "~/.claude-team-b"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if got := config.GetGroupClaudeConfigDir("team-a"); got == "" {
+		t.Fatal("GetGroupClaudeConfigDir(team-a) returned empty string")
+	}
+
+	if got, want := config.Groups["team-a"].Claude.ConfigDir, "~/.claude-team-a"; got != want {
+		t.Errorf("Groups[team-a].Claude.ConfigDir = %q, want %q", got, want)
+	}
+	if got, want := config.Groups["team-b"].Claude.ConfigDir, "~/.claude-team-b"; got != want {
+		t.Errorf("Groups[team-b].Claude.ConfigDir = %q, want %q", got, want)
+	}
+}
+
+func TestUserConfig_GroupClaudeConfigDir_Empty(t *testing.T) {
+	var config UserConfig
+	if got := config.GetGroupClaudeConfigDir("nonexistent"); got != "" {
+		t.Errorf("GetGroupClaudeConfigDir(nonexistent) = %q, want empty", got)
+	}
+	if got := config.GetGroupClaudeConfigDir(""); got != "" {
+		t.Errorf("GetGroupClaudeConfigDir('') = %q, want empty", got)
+	}
+}
+
+func TestUserConfig_GroupClaudeConfigDir_NestedPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[groups."projects/team-a".claude]
+config_dir = "~/.claude-team-a"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if got, want := config.Groups["projects/team-a"].Claude.ConfigDir, "~/.claude-team-a"; got != want {
+		t.Errorf("Groups[projects/team-a].Claude.ConfigDir = %q, want %q", got, want)
+	}
+}
+
+func TestUserConfig_GroupClaudeEnvFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[claude]
+env_file = "~/.claude-global.env"
+
+[groups."team-a".claude]
+env_file = "~/.claude-team-a.env"
+
+[groups."team-b".claude]
+config_dir = "~/.claude-team-b"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	// Group with env_file set
+	if got, want := config.GetGroupClaudeEnvFile("team-a"), "~/.claude-team-a.env"; got != want {
+		t.Errorf("GetGroupClaudeEnvFile(team-a) = %q, want %q", got, want)
+	}
+
+	// Group without env_file (only config_dir)
+	if got := config.GetGroupClaudeEnvFile("team-b"); got != "" {
+		t.Errorf("GetGroupClaudeEnvFile(team-b) = %q, want empty", got)
+	}
+
+	// Nonexistent group
+	if got := config.GetGroupClaudeEnvFile("unknown"); got != "" {
+		t.Errorf("GetGroupClaudeEnvFile(unknown) = %q, want empty", got)
+	}
+
+	// Empty group path
+	if got := config.GetGroupClaudeEnvFile(""); got != "" {
+		t.Errorf("GetGroupClaudeEnvFile('') = %q, want empty", got)
+	}
+}
+
 func TestWatcherSettingsDefaults(t *testing.T) {
 	// Zero-value WatcherSettings (as if no [watcher] section in config.toml)
 	var ws WatcherSettings
