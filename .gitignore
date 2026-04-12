@@ -57,3 +57,4 @@ agent-deck-test
 
 # Tailwind brute-force diff gate scratch file (make css temp artifact)
 internal/web/static/.brute-tw.src.css
+/dist
