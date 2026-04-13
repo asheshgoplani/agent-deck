@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -2156,7 +2157,197 @@ func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 	}
 }
 
-// --- Slack markdown-to-mrkdwn converter tests ---
+// --- Smart heartbeat tests ---
+
+func TestConductorSmartHeartbeatScript_TemplateStructure(t *testing.T) {
+	// Smart variant must be identifiable as a managed script (different comment header)
+	if !strings.Contains(conductorSmartHeartbeatScript, "# Smart heartbeat for conductor:") {
+		t.Error("smart heartbeat script must contain its identifying comment header")
+	}
+	// Must reference the state file placeholder so InstallHeartbeatScript can interpolate it
+	if !strings.Contains(conductorSmartHeartbeatScript, "{STATE_FILE}") {
+		t.Error("smart heartbeat script must contain {STATE_FILE} placeholder")
+	}
+	// Must short-circuit when the snapshot matches
+	if !strings.Contains(conductorSmartHeartbeatScript, `if [ "$CURRENT" = "$PREVIOUS" ]`) {
+		t.Error("smart heartbeat script must compare CURRENT against PREVIOUS")
+	}
+	// Must keep the same conductor-status enabled guard as the standard script
+	if !strings.Contains(conductorSmartHeartbeatScript, "conductor status") {
+		t.Error("smart heartbeat script must check conductor status before sending")
+	}
+	// Must keep the same idle/waiting gate so we don't poke a running conductor
+	if !strings.Contains(conductorSmartHeartbeatScript, `STATUS=$(`) {
+		t.Error("smart heartbeat script must read the conductor session status")
+	}
+	// Must use the same group-scoped message as the standard heartbeat
+	if !strings.Contains(conductorSmartHeartbeatScript, "Check sessions in your group") {
+		t.Error("smart heartbeat script must use the group-scoped check-in message")
+	}
+	// Must use atomic write (tmp + mv) so a crash mid-write doesn't corrupt state
+	if !strings.Contains(conductorSmartHeartbeatScript, "$STATE_FILE.tmp") {
+		t.Error("smart heartbeat script must persist state via an atomic tmp+rename")
+	}
+}
+
+func TestInstallHeartbeatScript_StandardWritesScriptWithoutSmartMarkers(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const name = "alpha"
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		t.Fatalf("ConductorNameDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir conductor dir: %v", err)
+	}
+
+	if err := InstallHeartbeatScript(name, "default", false); err != nil {
+		t.Fatalf("InstallHeartbeatScript: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "heartbeat.sh"))
+	if err != nil {
+		t.Fatalf("read heartbeat.sh: %v", err)
+	}
+	got := string(content)
+
+	if !strings.Contains(got, "# Heartbeat for conductor: "+name) {
+		t.Error("standard script should contain the conductor's name in its header")
+	}
+	if strings.Contains(got, "Smart heartbeat") || strings.Contains(got, "STATE_FILE") {
+		t.Error("standard script must not contain smart-heartbeat markers")
+	}
+	if strings.Contains(got, `-p "$PROFILE"`) {
+		t.Error("default profile script should have the -p flag stripped")
+	}
+}
+
+func TestInstallHeartbeatScript_SmartInterpolatesStateFileAndPreservesProfile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const name = "beta"
+	const profile = "work"
+
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		t.Fatalf("ConductorNameDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir conductor dir: %v", err)
+	}
+
+	if err := InstallHeartbeatScript(name, profile, true); err != nil {
+		t.Fatalf("InstallHeartbeatScript: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "heartbeat.sh"))
+	if err != nil {
+		t.Fatalf("read heartbeat.sh: %v", err)
+	}
+	got := string(content)
+
+	if !strings.Contains(got, "# Smart heartbeat for conductor: "+name) {
+		t.Error("smart script should contain its identifying header with the conductor name")
+	}
+	wantStatePath := filepath.Join(dir, "heartbeat.state")
+	if !strings.Contains(got, wantStatePath) {
+		t.Errorf("smart script should reference the absolute state file path %q", wantStatePath)
+	}
+	if strings.Contains(got, "{STATE_FILE}") {
+		t.Error("smart script must not leave the {STATE_FILE} placeholder in the output")
+	}
+	if !strings.Contains(got, `-p "$PROFILE"`) {
+		t.Error("non-default profile script must keep the -p flag")
+	}
+	if !strings.Contains(got, `PROFILE="`+profile+`"`) {
+		t.Errorf("smart script should set PROFILE to %q", profile)
+	}
+	// Permissions should be executable.
+	info, err := os.Stat(filepath.Join(dir, "heartbeat.sh"))
+	if err != nil {
+		t.Fatalf("stat heartbeat.sh: %v", err)
+	}
+	if info.Mode().Perm()&0o100 == 0 {
+		t.Errorf("heartbeat.sh should be executable, got mode %v", info.Mode().Perm())
+	}
+}
+
+func TestInstallHeartbeatScript_SmartDefaultProfileStripsFlag(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const name = "gamma"
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		t.Fatalf("ConductorNameDir: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir conductor dir: %v", err)
+	}
+
+	if err := InstallHeartbeatScript(name, DefaultProfile, true); err != nil {
+		t.Fatalf("InstallHeartbeatScript: %v", err)
+	}
+
+	content, _ := os.ReadFile(filepath.Join(dir, "heartbeat.sh"))
+	got := string(content)
+	if strings.Contains(got, `-p "$PROFILE"`) {
+		t.Error("smart script for default profile must strip the -p flag")
+	}
+	if !strings.Contains(got, "# Smart heartbeat for conductor: "+name) {
+		t.Error("smart script should still carry the smart heartbeat header")
+	}
+}
+
+func TestInstallHeartbeatScript_SmartScriptIsExecutableShell(t *testing.T) {
+	// Sanity-check the rendered script with `bash -n` so a syntax regression in
+	// the template (e.g. an unbalanced quote in the awk one-liner) shows up at
+	// `go test` time rather than the next time a heartbeat fires in production.
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	const name = "delta"
+	dir, _ := ConductorNameDir(name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir conductor dir: %v", err)
+	}
+	if err := InstallHeartbeatScript(name, DefaultProfile, true); err != nil {
+		t.Fatalf("InstallHeartbeatScript: %v", err)
+	}
+
+	cmd := exec.Command("bash", "-n", filepath.Join(dir, "heartbeat.sh"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("smart heartbeat script failed shell syntax check: %v\n%s", err, out)
+	}
+}
+
+func TestConductorSettings_HeartbeatSmartDefault(t *testing.T) {
+	if (ConductorSettings{}).HeartbeatSmart {
+		t.Error("HeartbeatSmart must default to false to preserve existing behavior")
+	}
+}
+
+func TestMigrateConductorHeartbeatScripts_DetectsSmartHeader(t *testing.T) {
+	// Both header strings must be recognised as managed so that a script
+	// installed in smart mode is still picked up by the migration sweep that
+	// refreshes managed templates.
+	smart := strings.ReplaceAll(conductorSmartHeartbeatScript, "{NAME}", "x")
+	smart = strings.ReplaceAll(smart, "{PROFILE}", "default")
+	smart = strings.ReplaceAll(smart, "{STATE_FILE}", "/tmp/x")
+
+	if !strings.Contains(smart, "# Smart heartbeat for conductor:") ||
+		!strings.Contains(smart, `SESSION="conductor-`) {
+		t.Fatal("rendered smart script missing tokens the migration sweep relies on")
+	}
+}
 
 func TestBridgeTemplate_ContainsMarkdownToSlackConverter(t *testing.T) {
 	template := conductorBridgePy
