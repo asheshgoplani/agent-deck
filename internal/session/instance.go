@@ -285,6 +285,11 @@ type Instance struct {
 	// Set by MCP dialog Apply() to avoid race condition where Apply writes
 	// config then Restart immediately overwrites it with different pool state
 	SkipMCPRegenerate bool `json:"-"` // Don't persist, transient flag
+
+	// lastVCSCheck tracks when we last verified the on-disk VCS type matches
+	// WorktreeType. After deserializing instances from disk the stored type
+	// may be stale (e.g. a repo was converted from git to jujutsu).
+	lastVCSCheck time.Time
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -479,6 +484,50 @@ func (inst *Instance) Backend() (vcs.Backend, error) {
 		return jujutsu.NewJJBackend(inst.WorktreePath)
 	}
 	return nil, fmt.Errorf("Unrecognized VCS type: %s", inst.WorktreeType)
+}
+
+// vcsCheckInterval controls how often reconcileWorktreeType re-probes the
+// on-disk VCS type. The check spawns subprocesses (jj root / git rev-parse)
+// so we avoid running it on every status tick.
+const vcsCheckInterval = 10 * time.Minute
+
+// reconcileWorktreeType checks the actual VCS type on disk and updates
+// WorktreeType if it doesn't match. This handles the case where an instance
+// was deserialized from disk but the underlying repo has changed VCS type
+// (e.g. converted from git to jujutsu or vice-versa). Must be called with
+// inst.mu held.
+func (inst *Instance) reconcileWorktreeType() {
+	if inst.WorktreePath == "" {
+		return
+	}
+	if !inst.lastVCSCheck.IsZero() && time.Since(inst.lastVCSCheck) < vcsCheckInterval {
+		return
+	}
+	inst.lastVCSCheck = time.Now()
+
+	var detected string
+	if _, err := jujutsu.NewJJBackend(inst.WorktreePath); err == nil {
+		detected = string(WorktreeTypeJujutsu)
+	} else if _, err := git.NewGitBackend(inst.WorktreePath); err == nil {
+		detected = string(WorktreeTypeGit)
+	} else {
+		// Neither VCS detected; leave WorktreeType as-is.
+		return
+	}
+
+	stored := inst.WorktreeType
+	if stored == "" {
+		stored = string(WorktreeTypeGit) // default
+	}
+	if detected != stored {
+		sessionLog.Info("worktree_type_reconciled",
+			slog.String("id", inst.ID),
+			slog.String("old", stored),
+			slog.String("new", detected),
+			slog.String("path", inst.WorktreePath),
+		)
+		inst.WorktreeType = detected
+	}
 }
 
 // IsWorktree returns true if this session is running in a git worktree
@@ -2807,6 +2856,10 @@ func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 func (i *Instance) UpdateStatus() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+
+	// On the first status check after deserialization, verify the on-disk VCS
+	// type matches the stored WorktreeType and correct it if needed.
+	i.reconcileWorktreeType()
 
 	// Short grace period for tmux initialization (not Claude startup)
 	// Use lastStartTime for accuracy on restarts, fallback to CreatedAt
