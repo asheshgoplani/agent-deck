@@ -2488,3 +2488,91 @@ func TestScopedGroupPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusUpdateMsg_PreservesSelectedSessionAcrossRebuild(t *testing.T) {
+	h := newAttachReturnTestHome()
+	s1 := session.NewInstanceWithGroup("first", "/tmp/first", "work")
+	s1.ID = "s1"
+	s2 := session.NewInstanceWithGroup("second", "/tmp/second", "work")
+	s2.ID = "s2"
+	setAttachReturnTestInstances(h, []*session.Instance{s1, s2})
+
+	h.groupTree = session.NewGroupTree([]*session.Instance{s2, s1})
+
+	model, _ := h.Update(statusUpdateMsg{})
+	home := model.(*Home)
+
+	if got := selectedSessionID(home); got != s2.ID {
+		t.Fatalf("selected session = %q, want %q", got, s2.ID)
+	}
+}
+
+func TestStatusUpdateMsg_FollowsNotificationSwitchSession(t *testing.T) {
+	h := newAttachReturnTestHome()
+	s1 := session.NewInstanceWithGroup("first", "/tmp/first", "work")
+	s1.ID = "s1"
+	s2 := session.NewInstanceWithGroup("second", "/tmp/second", "work")
+	s2.ID = "s2"
+	setAttachReturnTestInstances(h, []*session.Instance{s1, s2})
+
+	h.lastNotifSwitchID = s1.ID
+	h.groupTree = session.NewGroupTree([]*session.Instance{s2, s1})
+
+	model, _ := h.Update(statusUpdateMsg{})
+	home := model.(*Home)
+
+	if got := selectedSessionID(home); got != s1.ID {
+		t.Fatalf("selected session = %q, want switched session %q", got, s1.ID)
+	}
+	if home.lastNotifSwitchID != "" {
+		t.Fatalf("lastNotifSwitchID = %q, want cleared", home.lastNotifSwitchID)
+	}
+}
+
+func TestAttachReturnGraceSuppressesPreviewRefresh(t *testing.T) {
+	h := NewHome()
+	now := time.Now()
+	h.beginAttachReturnGrace(now)
+
+	if !h.shouldSuppressPreviewRefresh(now.Add(attachReturnPreviewGrace / 2)) {
+		t.Fatal("expected preview refresh suppression during attach-return grace period")
+	}
+	if h.shouldSuppressPreviewRefresh(now.Add(attachReturnPreviewGrace + 100*time.Millisecond)) {
+		t.Fatal("expected preview refresh suppression to expire after grace period")
+	}
+	if hotUntil := time.Unix(0, h.navigationHotUntil.Load()); !hotUntil.After(now) {
+		t.Fatal("expected navigation hot window after attach return")
+	}
+}
+
+func newAttachReturnTestHome() *Home {
+	h := NewHome()
+	h.width = 100
+	h.height = 30
+	h.initialLoading = false
+	return h
+}
+
+func setAttachReturnTestInstances(h *Home, instances []*session.Instance) {
+	h.instancesMu.Lock()
+	h.instances = instances
+	h.instanceByID = make(map[string]*session.Instance, len(instances))
+	for _, inst := range instances {
+		h.instanceByID[inst.ID] = inst
+	}
+	h.instancesMu.Unlock()
+	h.groupTree = session.NewGroupTree(instances)
+	h.rebuildFlatItems()
+	h.moveCursorToSession(instances[len(instances)-1].ID)
+}
+
+func selectedSessionID(h *Home) string {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return ""
+	}
+	item := h.flatItems[h.cursor]
+	if item.Type == session.ItemTypeSession && item.Session != nil {
+		return item.Session.ID
+	}
+	return ""
+}
