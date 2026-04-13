@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -245,10 +246,11 @@ func parseDecimalBytes(b []byte) int {
 // sequences in the byte stream and translates them into legacy byte sequences
 // that Bubble Tea can parse. All other bytes pass through unchanged.
 type csiuReader struct {
-	src    io.Reader
-	outBuf []byte // pending translated bytes to emit
-	inBuf  []byte // buffered input bytes not yet processed
-	err    error  // pending source error to return after draining buffers
+	src         io.Reader
+	outBuf      []byte // pending translated bytes to emit
+	inBuf       []byte // buffered input bytes not yet processed
+	err         error  // pending source error to return after draining buffers
+	replyFilter termreply.Filter
 }
 
 // csiuFileReader wraps a *os.File and overrides Read with CSI u translation.
@@ -306,7 +308,14 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 		tmp := make([]byte, len(p))
 		n, err := c.src.Read(tmp)
 		if n > 0 {
-			c.inBuf = append(c.inBuf, tmp[:n]...)
+			chunk := tmp[:n]
+			if termreply.Active() || c.replyFilter.Active() {
+				chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
+			}
+			c.inBuf = append(c.inBuf, chunk...)
+		}
+		if err == io.EOF && (termreply.Active() || c.replyFilter.Active()) {
+			c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, termreply.Active(), true)...)
 		}
 
 		processed := c.translate(err == io.EOF)

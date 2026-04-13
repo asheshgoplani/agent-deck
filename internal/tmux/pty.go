@@ -15,9 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
+
+const attachOutputDrainTimeout = 250 * time.Millisecond
+const attachReplyQuarantine = 2 * time.Second
 
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. detachByte is the raw ASCII byte (e.g. 0x11 for Ctrl+Q).
@@ -53,6 +58,23 @@ func IndexDetachKey(data []byte, detachByte byte) int {
 // This is a convenience wrapper around IndexDetachKey with the default Ctrl+Q byte.
 func IndexCtrlQ(data []byte) int {
 	return IndexDetachKey(data, 17)
+}
+
+func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration) (bool, time.Duration) {
+	start := time.Now()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-outputDone:
+		return true, time.Since(start)
+	case <-timer.C:
+		return false, time.Since(start)
+	}
+}
+
+func flushDetachInput(fd int) error {
+	return unix.IoctlSetInt(fd, unix.TCFLSH, unix.TCIFLUSH)
 }
 
 // Attach attaches to the tmux session with full PTY support.
@@ -156,9 +178,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// Channel for I/O errors (buffered to prevent goroutine leaks)
 	ioErrors := make(chan error, 2)
 
-	// Timeout to ignore initial terminal control sequences (50ms)
 	startTime := time.Now()
-	const controlSeqTimeout = 50 * time.Millisecond
 	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
 	const clearScrollback = "\033[3J"
 	outputDone := make(chan struct{})
@@ -184,6 +204,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 32)
+		var replyFilter termreply.Filter
 		for {
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
@@ -198,21 +219,21 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 				return
 			}
 
-			// Discard initial terminal ESC sequences (within first 50ms).
-			// These are things like terminal capability queries sent on attach.
-			// Only drop bytes starting with ESC (0x1b). Non-ESC bytes
-			// (including Ctrl+C / 0x03, Ctrl+Z / 0x1a) are forwarded immediately.
-			if time.Since(startTime) < controlSeqTimeout && n > 0 && buf[0] == 0x1b {
-				continue
+			chunk := buf[:n]
+			if time.Since(startTime) < attachReplyQuarantine || replyFilter.Active() {
+				chunk = replyFilter.Consume(chunk, time.Since(startTime) < attachReplyQuarantine, false)
+				if len(chunk) == 0 {
+					continue
+				}
 			}
 
 			// Check for the detach key anywhere in the input chunk.
 			// Some terminals coalesce reads, so detach must not require a single-byte read.
 			// Handles raw byte, xterm modifyOtherKeys, and kitty CSI u encodings.
-			if idx := IndexDetachKey(buf[:n], detach); idx >= 0 {
+			if idx := IndexDetachKey(chunk, detach); idx >= 0 {
 				// Forward any bytes before the detach key, then detach.
 				if idx > 0 {
-					if _, err := ptmx.Write(buf[:idx]); err != nil {
+					if _, err := ptmx.Write(chunk[:idx]); err != nil {
 						select {
 						case ioErrors <- fmt.Errorf("PTY write error: %w", err):
 						default:
@@ -226,7 +247,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 			}
 
 			// Forward other input to tmux PTY
-			if _, err := ptmx.Write(buf[:n]); err != nil {
+			if _, err := ptmx.Write(chunk); err != nil {
 				// Report PTY write error
 				select {
 				case ioErrors <- fmt.Errorf("PTY write error: %w", err):
@@ -245,6 +266,8 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		cmdDone <- cmd.Wait()
 	}()
 
+	didDetach := false
+
 	// Ensures we don't return to Bubble Tea while PTY output is still being written.
 	// This avoids terminal style leakage (for example underline/hyperlink state)
 	// from the attached client into the Agent Deck UI.
@@ -255,9 +278,14 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		signal.Reset(syscall.SIGINT)
 		cancel()
 		_ = ptmx.Close()
-		select {
-		case <-outputDone:
-		case <-time.After(20 * time.Millisecond):
+		_, _ = waitForAttachOutputDrain(outputDone, attachOutputDrainTimeout)
+		// Prompts can issue terminal capability/color queries as they redraw during
+		// detach. Kitty replies on stdin; if those queued bytes survive until Bubble Tea
+		// resumes, they can leak as literal fragments like terminal version strings or
+		// rgb payloads in the TUI.
+		if didDetach {
+			_ = flushDetachInput(int(os.Stdin.Fd()))
+			termreply.QuarantineFor(attachReplyQuarantine)
 		}
 		// Clear host terminal scrollback before returning to TUI.
 		// The on-attach clear at the top of Attach() covers the "next attach" direction;
@@ -272,6 +300,7 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	select {
 	case <-detachCh:
 		// User pressed the detach key, detach gracefully
+		didDetach = true
 		attachErr = nil
 	case err := <-cmdDone:
 		if err != nil {

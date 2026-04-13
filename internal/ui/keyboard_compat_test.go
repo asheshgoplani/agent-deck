@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/termreply"
 )
 
 type chunkedReader struct {
@@ -516,6 +519,75 @@ func TestCSIuReaderBuffersSplitModifyOtherKeysSequence(t *testing.T) {
 	}
 	if string(out) != "S" {
 		t.Errorf("split modifyOtherKeys sequence: got %q, want %q", string(out), "S")
+	}
+}
+
+func TestCSIuReaderDropsTerminalRepliesDuringQuarantine(t *testing.T) {
+	t.Cleanup(termreply.Clear)
+	termreply.QuarantineFor(time.Second)
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "drops OSC color reply",
+			input: "\x1b]11;rgb:d3d3/f5f5/f5f5\x07",
+		},
+		{
+			name:  "drops DCS kitty version reply",
+			input: "\x1bP>|kitty(0.44.0)\x1b\\",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(bytes.NewReader([]byte(tt.input)))
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != "" {
+				t.Fatalf("expected terminal reply to be discarded, got %q", string(out))
+			}
+		})
+	}
+}
+
+func TestCSIuReaderDropsSplitTerminalRepliesDuringQuarantine(t *testing.T) {
+	t.Cleanup(termreply.Clear)
+	termreply.QuarantineFor(time.Second)
+
+	r := NewCSIuReader(&chunkedReader{
+		chunks: [][]byte{
+			[]byte("\x1bP>|kitty"),
+			[]byte("(0.44.0)\x1b\\"),
+			[]byte("\x1b]11;rgb:d3d3/f5f5"),
+			[]byte("/d3d3/f5f5\x07"),
+			[]byte("j"),
+		},
+	})
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "j" {
+		t.Fatalf("expected split terminal replies to be discarded, got %q", string(out))
+	}
+}
+
+func TestCSIuReaderPreservesNormalInputDuringQuarantine(t *testing.T) {
+	t.Cleanup(termreply.Clear)
+	termreply.QuarantineFor(time.Second)
+
+	r := NewCSIuReader(bytes.NewReader([]byte("j\r")))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "j\r" {
+		t.Fatalf("expected normal input to survive quarantine, got %q", string(out))
 	}
 }
 

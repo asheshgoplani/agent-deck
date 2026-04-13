@@ -14,10 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/creack/pty"
 	"golang.org/x/term"
 )
+
+const sshAttachReplyQuarantine = 2 * time.Second
 
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"
@@ -206,6 +209,7 @@ func (r *SSHRunner) Attach(sessionID string) error {
 	case <-outputDone:
 	case <-time.After(50 * time.Millisecond):
 	}
+	termreply.QuarantineFor(sshAttachReplyQuarantine)
 
 	// Reset terminal styles that may have leaked from the remote session.
 	_, _ = os.Stdout.WriteString("\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m")
