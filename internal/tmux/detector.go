@@ -81,6 +81,20 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// with a status bar (model · path · branch · usage) below it.
 		return d.hasCodexPromptMarker(content)
 
+	case "copilot":
+		// GitHub Copilot CLI patterns.
+		// Busy indicators take priority.
+		lower := strings.ToLower(content)
+		if strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "ctrl+c to interrupt") {
+			return false
+		}
+		// Copilot uses ❯ as its prompt marker (same as Claude)
+		if strings.Contains(content, "❯") || strings.Contains(content, ">") {
+			return true
+		}
+		return false
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)

@@ -169,7 +169,33 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 	m.userAttached = nil
 	m.userAvailable = nil
 
-	if tool == "gemini" {
+	if tool == "copilot" {
+		// Copilot: Single scope — user-level MCPs from ~/.copilot/mcp-config.json
+		copilotAttachedNames := make(map[string]bool)
+		for _, name := range session.GetCopilotMCPNames() {
+			copilotAttachedNames[name] = true
+		}
+
+		for _, name := range allNames {
+			item := itemsMap[name]
+			if copilotAttachedNames[name] {
+				m.globalAttached = append(m.globalAttached, item)
+			} else {
+				m.globalAvailable = append(m.globalAvailable, item)
+			}
+		}
+
+		// Add orphan MCPs (in mcp-config.json but not in config.toml)
+		for name := range copilotAttachedNames {
+			if !poolNames[name] {
+				m.globalAttached = append(m.globalAttached, MCPItem{
+					Name:        name,
+					Description: "(not in config.toml)",
+					IsOrphan:    true,
+				})
+			}
+		}
+	} else if tool == "gemini" {
 		// Gemini: Only global MCPs from settings.json
 		mcpInfo := session.GetGeminiMCPInfo(projectPath)
 		globalAttachedNames := make(map[string]bool)
@@ -289,8 +315,8 @@ func (m *MCPDialog) Show(projectPath string, sessionID string, tool string) erro
 
 	m.visible = true
 	m.projectPath = projectPath
-	// Gemini only has global scope, Claude uses configured default
-	if tool == "gemini" {
+	// Gemini and Copilot only have global scope, Claude uses configured default
+	if tool == "gemini" || tool == "copilot" {
 		m.scope = MCPScopeGlobal
 	} else {
 		switch session.GetMCPDefaultScope() {
@@ -529,6 +555,26 @@ func (m *MCPDialog) Apply() error {
 		slog.Bool("user_changed", m.userChanged),
 		slog.String("project_path", m.projectPath))
 
+	if m.tool == "copilot" {
+		// Copilot: Single scope, write to ~/.copilot/mcp-config.json
+		// Matches Claude (.mcp.json) and Gemini (settings.json) file-write pattern.
+		// TODO: migrate to --additional-mcp-config for ephemeral injection
+		if m.globalChanged {
+			enabledNames := make([]string, len(m.globalAttached))
+			for i, item := range m.globalAttached {
+				enabledNames[i] = item.Name
+			}
+
+			if err := session.WriteCopilotMCP(enabledNames); err != nil {
+				m.err = err
+				return err
+			}
+
+			session.ClearMCPCache(m.projectPath)
+		}
+		return nil
+	}
+
 	if m.tool == "gemini" {
 		// Gemini: Only global scope, write to settings.json
 		if m.globalChanged {
@@ -618,8 +664,8 @@ func (m *MCPDialog) Update(msg tea.KeyMsg) (*MCPDialog, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
 		// Switch scope: LOCAL -> GLOBAL -> USER -> LOCAL (Claude only)
-		// Gemini only has global scope, so Tab does nothing
-		if m.tool != "gemini" {
+		// Gemini and Copilot only have global scope, so Tab does nothing
+		if m.tool != "gemini" && m.tool != "copilot" {
 			switch m.scope {
 			case MCPScopeLocal:
 				m.scope = MCPScopeGlobal
@@ -676,13 +722,19 @@ func (m *MCPDialog) View() string {
 	title := "MCP Manager"
 	if m.tool == "gemini" {
 		title = "MCP Manager (Gemini)"
+	} else if m.tool == "copilot" {
+		title = "MCP Manager (Copilot)"
 	}
 
 	// Scope tabs - Gemini only has global
 	var tabs string
-	if m.tool == "gemini" {
-		// Gemini: Only show GLOBAL (centered)
-		globalTab := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[GLOBAL]")
+	if m.tool == "gemini" || m.tool == "copilot" {
+		// Gemini/Copilot: Only show GLOBAL (centered)
+		label := "GLOBAL"
+		if m.tool == "copilot" {
+			label = "USER"
+		}
+		globalTab := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[" + label + "]")
 		tabs = "──────────────── " + globalTab + " ────────────────"
 	} else {
 		// Claude: Show LOCAL/GLOBAL/USER tabs
@@ -746,6 +798,8 @@ func (m *MCPDialog) View() string {
 	var scopeDesc string
 	if m.tool == "gemini" {
 		scopeDesc = DimStyle.Render("Writes to: ~/.gemini/settings.json")
+	} else if m.tool == "copilot" {
+		scopeDesc = DimStyle.Render("Writes to: ~/.copilot/mcp-config.json")
 	} else {
 		switch m.scope {
 		case MCPScopeLocal:
@@ -770,7 +824,7 @@ func (m *MCPDialog) View() string {
 	// Hint with consistent styling
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	var hint string
-	if m.tool == "gemini" {
+	if m.tool == "gemini" || m.tool == "copilot" {
 		hint = hintStyle.Render("←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")
 	} else {
 		hint = hintStyle.Render("Tab scope │ ←→ column │ Type jump │ Space move │ Enter apply │ Esc cancel")

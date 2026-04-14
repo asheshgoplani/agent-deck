@@ -164,9 +164,10 @@ func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 		{"gemini", "gemini", 1},
 		{"opencode", "opencode", 2},
 		{"codex", "codex", 3},
-		{"pi", "pi", 4},
-		{"empty", "", 5}, // None
-		{"unknown", "unknown-tool", 5},
+		{"copilot", "copilot", 4},
+		{"pi", "pi", 5},
+		{"empty", "", 6}, // None
+		{"unknown", "unknown-tool", 6},
 	}
 
 	for _, tt := range tests {
@@ -197,8 +198,8 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 
 	panel.LoadConfig(config)
 
-	wantNames := []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Openclaw", "Zeta", "None"}
-	wantValues := []string{"claude", "gemini", "opencode", "codex", "pi", "openclaw", "zeta", ""}
+	wantNames := []string{"Claude", "Gemini", "OpenCode", "Codex", "Copilot", "Pi", "Openclaw", "Zeta", "None"}
+	wantValues := []string{"claude", "gemini", "opencode", "codex", "copilot", "pi", "openclaw", "zeta", ""}
 
 	if !reflect.DeepEqual(panel.toolNames, wantNames) {
 		t.Fatalf("toolNames = %#v, want %#v", panel.toolNames, wantNames)
@@ -206,8 +207,8 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 	if !reflect.DeepEqual(panel.toolValues, wantValues) {
 		t.Fatalf("toolValues = %#v, want %#v", panel.toolValues, wantValues)
 	}
-	if panel.selectedTool != 5 {
-		t.Fatalf("selectedTool = %d, want 5 for openclaw", panel.selectedTool)
+	if panel.selectedTool != 6 {
+		t.Fatalf("selectedTool = %d, want 6 for openclaw", panel.selectedTool)
 	}
 }
 
@@ -354,8 +355,9 @@ func TestSettingsPanel_GetConfig_ToolMapping(t *testing.T) {
 		{"gemini", 1, "gemini"},
 		{"opencode", 2, "opencode"},
 		{"codex", 3, "codex"},
-		{"pi", 4, "pi"},
-		{"none", 5, ""},
+		{"copilot", 4, "copilot"},
+		{"pi", 5, "pi"},
+		{"none", 6, ""},
 	}
 
 	for _, tt := range tests {
@@ -378,7 +380,7 @@ func TestSettingsPanel_GetConfig_CustomToolMapping(t *testing.T) {
 		},
 	})
 
-	panel.selectedTool = 5
+	panel.selectedTool = 6
 	config := panel.GetConfig()
 	if config.DefaultTool != "openclaw" {
 		t.Fatalf("DefaultTool: got %q, want %q", config.DefaultTool, "openclaw")

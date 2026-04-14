@@ -1079,8 +1079,9 @@ func handleAdd(profile string, args []string) {
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini, Codex, or Copilot sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
+	autopilotMode := fs.Bool("autopilot", false, "Enable Autopilot mode for Copilot sessions (auto-approve tools)")
 
 	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
 	// wide `[tmux].socket_name` for this one session. Empty = fall back to
@@ -1111,6 +1112,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add -c opencode --wrapper \"nvim +'terminal {command}' +'startinsert'\" .")
 		fmt.Println("  agent-deck add -c \"codex --dangerously-bypass-approvals-and-sandbox\" .")
 		fmt.Println("  agent-deck add -c gemini --yolo .")
+		fmt.Println("  agent-deck add -c copilot --yolo .")
+		fmt.Println("  agent-deck add -c copilot --autopilot .")
 		fmt.Println("  agent-deck add -c claude -g work .   # -c is shorthand for --cmd")
 		fmt.Println("  agent-deck add -g ard --no-parent -c claude .")
 		fmt.Println("  agent-deck add --quick -c claude .   # Auto-generated name")
@@ -1479,6 +1482,18 @@ func handleAdd(profile string, args []string) {
 	if err := applyCLIYoloOverride(newInstance, *yoloMode || *geminiYoloMode); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *autopilotMode && newInstance.Tool == "copilot" {
+		opts := newInstance.GetCopilotOptions()
+		if opts == nil {
+			opts = &session.CopilotOptions{}
+		}
+		ap := true
+		opts.AutopilotMode = &ap
+		if err := newInstance.SetCopilotOptions(opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set autopilot mode: %v\n", err)
+		}
 	}
 
 	// Add to instances

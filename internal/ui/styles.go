@@ -520,6 +520,7 @@ func initStyles() {
 	ToolStyleCache = map[string]lipgloss.Style{
 		"claude":   lipgloss.NewStyle().Foreground(ColorOrange),
 		"gemini":   lipgloss.NewStyle().Foreground(ColorPurple),
+		"copilot":  lipgloss.NewStyle().Foreground(lipgloss.Color("#F778BA")),
 		"codex":    lipgloss.NewStyle().Foreground(ColorCyan),
 		"pi":       lipgloss.NewStyle().Foreground(ColorAccent),
 		"aider":    lipgloss.NewStyle().Foreground(ColorRed),
@@ -618,6 +619,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorOrange // Anthropic's orange
 	case "gemini":
 		return ColorPurple // Google AI purple
+	case "copilot":
+		return lipgloss.Color("#F778BA") // Copilot pink
 	case "codex":
 		return ColorCyan // Light blue for OpenAI
 	case "pi":

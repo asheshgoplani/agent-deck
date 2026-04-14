@@ -146,7 +146,8 @@ func handleSessionStart(profile string, args []string) {
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	message := fs.String("message", "", "Initial message to send once agent is ready")
 	messageShort := fs.String("m", "", "Initial message to send once agent is ready (short)")
-	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini or Codex sessions")
+	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode when starting Gemini, Codex, or Copilot sessions")
+	autopilotMode := fs.Bool("autopilot", false, "Enable Autopilot mode for Copilot sessions (auto-approve tools)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session start <id|title> [options]")
@@ -200,6 +201,18 @@ func handleSessionStart(profile string, args []string) {
 	if err := applyCLIYoloOverride(inst, *yoloMode); err != nil {
 		out.Error(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	if *autopilotMode && inst.Tool == "copilot" {
+		opts := inst.GetCopilotOptions()
+		if opts == nil {
+			opts = &session.CopilotOptions{}
+		}
+		ap := true
+		opts.AutopilotMode = &ap
+		if err := inst.SetCopilotOptions(opts); err != nil {
+			out.Error(fmt.Sprintf("failed to set autopilot mode: %v", err), ErrCodeInvalidOperation)
+		}
 	}
 
 	// Start the session (with or without initial message)

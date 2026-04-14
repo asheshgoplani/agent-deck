@@ -23,8 +23,18 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool) error {
 		if err := inst.SetCodexOptions(opts); err != nil {
 			return err
 		}
+	case "copilot":
+		yolo := true
+		opts := inst.GetCopilotOptions()
+		if opts == nil {
+			opts = &session.CopilotOptions{}
+		}
+		opts.YoloMode = &yolo
+		if err := inst.SetCopilotOptions(opts); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("--yolo only works with Gemini or Codex sessions")
+		return fmt.Errorf("--yolo only works with Gemini, Codex, or Copilot sessions")
 	}
 	return nil
 }

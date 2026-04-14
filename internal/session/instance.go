@@ -141,6 +141,11 @@ type Instance struct {
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
 
+	// GitHub Copilot CLI integration
+	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
+	CopilotDetectedAt time.Time `json:"copilot_detected_at,omitempty"`
+	CopilotStartedAt  int64     `json:"-"` // Unix millis when we started Copilot (for session matching, not persisted)
+
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
 	Notes             string    `json:"notes,omitempty"`
@@ -976,7 +981,271 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	return envPrefix + command + yoloFlag
 }
 
-// detectOpenCodeSessionAsync detects the OpenCode session ID after startup
+// resolveCopilotYoloFlag returns " --yolo" if yolo mode is enabled (per-session override > global config), or "".
+func (i *Instance) resolveCopilotYoloFlag() string {
+	opts := i.GetCopilotOptions()
+	if opts != nil && opts.YoloMode != nil {
+		if *opts.YoloMode {
+			return " --yolo"
+		}
+		return ""
+	}
+	// Fallback to global config
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Copilot.YoloMode {
+			return " --yolo"
+		}
+	}
+	return ""
+}
+
+// resolveCopilotModelFlag returns " --model <name>" if a model is configured, or "".
+func (i *Instance) resolveCopilotModelFlag() string {
+	opts := i.GetCopilotOptions()
+	if opts != nil && opts.Model != "" {
+		return " --model " + opts.Model
+	}
+	// Fallback to global config
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Copilot.DefaultModel != "" {
+			return " --model " + config.Copilot.DefaultModel
+		}
+	}
+	return ""
+}
+
+// resolveCopilotConfigDirPrefix returns "COPILOT_CONFIG_DIR=<dir> " if explicitly configured, or "".
+func (i *Instance) resolveCopilotConfigDirPrefix() string {
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Copilot.ConfigDir != "" {
+			return fmt.Sprintf("COPILOT_CONFIG_DIR=%s ", ExpandPath(config.Copilot.ConfigDir))
+		}
+	}
+	return ""
+}
+
+// resolveCopilotEffortFlag returns " --effort <level>" if configured, or "".
+func (i *Instance) resolveCopilotEffortFlag() string {
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Copilot.Effort != "" {
+			return " --effort " + config.Copilot.Effort
+		}
+	}
+	return ""
+}
+
+// resolveCopilotAutopilotFlag returns " --autopilot" if enabled (per-session or global config), or "".
+func (i *Instance) resolveCopilotAutopilotFlag() string {
+	// Per-session override from CopilotOptions
+	if opts := i.GetCopilotOptions(); opts != nil && opts.AutopilotMode != nil {
+		if *opts.AutopilotMode {
+			return " --autopilot"
+		}
+		return ""
+	}
+	// Fall back to global config
+	if config, err := LoadUserConfig(); err == nil && config != nil {
+		if config.Copilot.AutopilotMode {
+			return " --autopilot"
+		}
+	}
+	return ""
+}
+
+// buildCopilotExtraFlags builds extra command-line flags for copilot sessions.
+// Handles --add-dir for sub-session access and multi-repo mode.
+func (i *Instance) buildCopilotExtraFlags() string {
+	var flags []string
+
+	// --add-dir: Grant sub-session access to parent's project directory
+	if i.ParentProjectPath != "" {
+		flags = append(flags, fmt.Sprintf("--add-dir %s", i.ParentProjectPath))
+	}
+
+	// Multi-repo: pass all project paths via --add-dir (deduplicated, excluding cwd)
+	if i.MultiRepoEnabled {
+		seen := make(map[string]bool)
+		if i.ParentProjectPath != "" {
+			seen[resolveRealPath(i.ParentProjectPath)] = true
+		}
+		seen[resolveRealPath(i.EffectiveWorkingDir())] = true
+		for _, p := range i.AllProjectPaths() {
+			real := resolveRealPath(p)
+			if seen[real] {
+				continue
+			}
+			seen[real] = true
+			flags = append(flags, fmt.Sprintf("--add-dir %s", p))
+		}
+	}
+
+	if len(flags) == 0 {
+		return ""
+	}
+	return " " + strings.Join(flags, " ")
+}
+
+// resolveCopilotMCPFlag is reserved for future use with --additional-mcp-config.
+// Currently copilot reads MCPs from ~/.copilot/mcp-config.json natively;
+// agent-deck writes to that file via the MCP dialog — matching the pattern
+// used for Claude (.mcp.json) and Gemini (settings.json).
+//
+// TODO: Switch to ephemeral injection via --additional-mcp-config @<tmpfile>
+// (copilot) and --mcp-config (claude) to avoid persistent side effects.
+// See pr/ephemeral-mcp branch for cross-agent implementation.
+func (i *Instance) resolveCopilotMCPFlag() string {
+	return ""
+}
+
+// getCopilotCommand returns the base copilot command.
+// Reads from config [copilot].command, defaults to "gh copilot --".
+func getCopilotCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && userConfig.Copilot.Command != "" {
+		return userConfig.Copilot.Command
+	}
+	return "gh copilot --"
+}
+
+// buildCopilotCommand builds the command for GitHub Copilot CLI
+// Copilot stores sessions in ~/.copilot/session-state/
+// Resume: copilot --resume=<session-id> or copilot --continue
+// Also sources .env files from [shell].env_files and [copilot].env_file
+func (i *Instance) buildCopilotCommand(baseCommand string) string {
+	if i.Tool != "copilot" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
+		i.ID, i.Title, i.Tool)
+	envPrefix += agentdeckEnvPrefix
+	envPrefix += i.resolveCopilotConfigDirPrefix()
+
+	copilotCmd := getCopilotCommand()
+	yoloFlag := i.resolveCopilotYoloFlag()
+	modelFlag := i.resolveCopilotModelFlag()
+	effortFlag := i.resolveCopilotEffortFlag()
+	autopilotFlag := i.resolveCopilotAutopilotFlag()
+	extraFlags := i.buildCopilotExtraFlags()
+	mcpFlag := i.resolveCopilotMCPFlag()
+
+	// If baseCommand matches the copilot command, handle specially
+	if baseCommand == copilotCmd || baseCommand == "copilot" {
+		// If we already have a session ID, use resume.
+		if i.CopilotSessionID != "" {
+			return envPrefix + fmt.Sprintf("%s --resume=%s%s%s%s%s%s%s",
+				copilotCmd, i.CopilotSessionID, yoloFlag, modelFlag, effortFlag, autopilotFlag, extraFlags, mcpFlag)
+		}
+
+		// Start Copilot fresh - session ID will be captured async after startup
+		return envPrefix + copilotCmd + yoloFlag + modelFlag + effortFlag + autopilotFlag + extraFlags + mcpFlag
+	}
+
+	// For custom commands (e.g., resume commands), preserve env propagation.
+	return envPrefix + baseCommand
+}
+
+// detectCopilotSessionAsync detects the Copilot session ID after startup
+// Copilot stores session state in ~/.copilot/session-state/<uuid>/
+// We scan for the most recently modified session directory
+func (i *Instance) detectCopilotSessionAsync() {
+	time.Sleep(2 * time.Second)
+
+	delays := []time.Duration{0, 2 * time.Second, 3 * time.Second, 5 * time.Second}
+
+	for attempt, delay := range delays {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		if sessionID := i.queryCopilotSession(); sessionID != "" {
+			i.CopilotSessionID = sessionID
+			i.CopilotDetectedAt = time.Now()
+
+			if i.tmuxSession != nil {
+				if err := i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", sessionID); err != nil {
+					sessionLog.Warn("copilot_set_env_failed", slog.String("error", err.Error()))
+				}
+			}
+
+			sessionLog.Debug(
+				"copilot_session_detected",
+				slog.String("session_id", sessionID),
+				slog.Int("attempt", attempt+1),
+			)
+			return
+		}
+
+		sessionLog.Debug("copilot_session_not_found", slog.Int("attempt", attempt+1), slog.Int("total", len(delays)))
+	}
+
+	sessionLog.Warn("copilot_detection_failed", slog.Int("attempts", len(delays)))
+}
+
+// queryCopilotSession scans ~/.copilot/session-state/ for the most recent session
+// that was created after this instance started.
+func (i *Instance) queryCopilotSession() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	configDir := filepath.Join(homeDir, ".copilot")
+	if cfg, cfgErr := LoadUserConfig(); cfgErr == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
+		configDir = ExpandPath(cfg.Copilot.ConfigDir)
+	}
+
+	sessionStateDir := filepath.Join(configDir, "session-state")
+	if _, err := os.Stat(sessionStateDir); os.IsNotExist(err) {
+		return ""
+	}
+
+	entries, err := os.ReadDir(sessionStateDir)
+	if err != nil {
+		return ""
+	}
+
+	startedAt := time.UnixMilli(i.CopilotStartedAt)
+	var bestID string
+	var bestTime time.Time
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		name := entry.Name()
+		// Copilot session dirs are UUIDs
+		if len(name) < 32 {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		modTime := info.ModTime()
+		// Only consider sessions created/modified after this instance started
+		if !startedAt.IsZero() && modTime.Before(startedAt) {
+			continue
+		}
+
+		if bestID == "" || modTime.After(bestTime) {
+			bestID = name
+			bestTime = modTime
+		}
+	}
+
+	return bestID
+}
+
+// DetectCopilotSession is the public wrapper for async Copilot session detection
+// Call this for restored sessions that don't have a session ID yet
+func (i *Instance) DetectCopilotSession() {
+	i.detectCopilotSessionAsync()
+}
 // OpenCode generates session IDs internally (format: ses_XXXXX)
 // We query "opencode session list --format json" and match by project directory,
 // picking the most recently updated session (since OpenCode auto-resumes the last session)
@@ -2155,6 +2424,10 @@ func (i *Instance) Start() error {
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "copilot":
+		command = i.buildCopilotCommand(i.Command)
+		// Record start time for session ID detection (Unix millis)
+		i.CopilotStartedAt = time.Now().UnixMilli()
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2258,6 +2531,11 @@ func (i *Instance) Start() error {
 		go i.detectCodexSessionAsync()
 	}
 
+	// Start async session ID detection for Copilot
+	if i.Tool == "copilot" {
+		go i.detectCopilotSessionAsync()
+	}
+
 	return nil
 }
 
@@ -2309,6 +2587,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "copilot":
+		command = i.buildCopilotCommand(i.Command)
+		i.CopilotStartedAt = time.Now().UnixMilli()
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2396,6 +2677,9 @@ func (i *Instance) StartWithMessage(message string) error {
 	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
 	}
+	if i.Tool == "copilot" {
+		go i.detectCopilotSessionAsync()
+	}
 
 	// Send message synchronously (CLI will wait)
 	if message != "" {
@@ -2468,6 +2752,16 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					detector := tmux.NewPromptDetector("codex")
+					if !detector.HasPrompt(content) {
+						continue
+					}
+				}
+			}
+			// Gate Copilot sends on prompt readiness
+			if i.Tool == "copilot" {
+				if rawContent, captureErr := i.tmuxSession.CapturePaneFresh(); captureErr == nil {
+					content := tmux.StripANSI(rawContent)
+					detector := tmux.NewPromptDetector("copilot")
 					if !detector.HasPrompt(content) {
 						continue
 					}
@@ -2654,7 +2948,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "copilot") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -2673,7 +2967,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "copilot") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -2719,6 +3013,11 @@ func (i *Instance) UpdateStatus() error {
 				if i.hookSessionID != i.CodexSessionID {
 					i.CodexSessionID = i.hookSessionID
 					i.CodexDetectedAt = time.Now()
+				}
+			case i.Tool == "copilot":
+				if i.hookSessionID != i.CopilotSessionID {
+					i.CopilotSessionID = i.hookSessionID
+					i.CopilotDetectedAt = time.Now()
 				}
 			case i.Tool == "gemini":
 				if i.hookSessionID != i.GeminiSessionID {
@@ -2770,7 +3069,11 @@ func (i *Instance) UpdateStatus() error {
 		} else {
 			switch detectedTool {
 			case "claude", "gemini", "opencode", "codex":
-				i.Tool = detectedTool
+				// Never override "copilot" — copilot output may mention other tool
+				// names (e.g. "Gemini" as a model) but the tool was set explicitly.
+				if i.Tool != "copilot" {
+					i.Tool = detectedTool
+				}
 			case "shell":
 				switch i.Tool {
 				case "", "shell", "claude", "gemini", "opencode", "codex":
@@ -2799,6 +3102,10 @@ func (i *Instance) UpdateStatus() error {
 			if i.CodexSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
+		case i.Tool == "copilot":
+			if i.CopilotSessionID == "" {
+				interval = 500 * time.Millisecond
+			}
 		}
 		if i.lastSessionMetaSync.IsZero() || time.Since(i.lastSessionMetaSync) >= interval {
 			i.lastSessionMetaSync = time.Now()
@@ -2824,6 +3131,17 @@ func (i *Instance) UpdateStatus() error {
 			// Update OpenCode session tracking (non-blocking, best-effort)
 			if i.Tool == "opencode" {
 				i.UpdateOpenCodeSession()
+			}
+
+			// Update Copilot session tracking (non-blocking, best-effort)
+			if i.Tool == "copilot" && i.CopilotSessionID == "" {
+				if sessionID := i.queryCopilotSession(); sessionID != "" {
+					i.CopilotSessionID = sessionID
+					i.CopilotDetectedAt = time.Now()
+					if i.tmuxSession != nil {
+						_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", sessionID)
+					}
+				}
 			}
 		}
 	}
@@ -3004,6 +3322,22 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 
 		if i.tmuxSession != nil && i.tmuxSession.Exists() {
 			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
+		}
+	case i.Tool == "copilot":
+		if sessionID == i.CopilotSessionID {
+			return
+		}
+		sessionLog.Debug("copilot_session_update_from_hook",
+			slog.String("old_id", i.CopilotSessionID),
+			slog.String("new_id", sessionID),
+			slog.String("event", status.Event),
+		)
+		i.CopilotSessionID = sessionID
+		i.CopilotDetectedAt = time.Now()
+		i.hookSessionID = sessionID
+
+		if i.tmuxSession != nil && i.tmuxSession.Exists() {
+			_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", sessionID)
 		}
 	case i.Tool == "gemini":
 		if sessionID == i.GeminiSessionID {
@@ -3381,6 +3715,11 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	if i.CodexSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
 	}
+
+	// Sync CopilotSessionID
+	if i.CopilotSessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
+	}
 }
 
 func (i *Instance) clearSessionBindingForFreshStart() {
@@ -3470,6 +3809,13 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
 		i.CodexSessionID = id
+	}
+
+	if id, err := i.tmuxSession.GetEnvironment("COPILOT_SESSION_ID"); err == nil && id != "" {
+		i.CopilotSessionID = id
+		if i.CopilotDetectedAt.IsZero() {
+			i.CopilotDetectedAt = time.Now()
+		}
 	}
 }
 
@@ -4371,6 +4717,51 @@ func (i *Instance) Restart() error {
 		return nil
 	}
 
+	// If Copilot session AND tmux session exists, use respawn-pane
+	if i.Tool == "copilot" && i.tmuxSession != nil && i.tmuxSession.Exists() {
+		// Try to get session ID from tmux environment if not already set
+		if i.CopilotSessionID == "" {
+			if envID, err := i.tmuxSession.GetEnvironment("COPILOT_SESSION_ID"); err == nil && envID != "" {
+				i.CopilotSessionID = envID
+				i.CopilotDetectedAt = time.Now()
+				sessionLog.Info("restart_copilot_recovered_id", slog.String("session_id", envID))
+			}
+		}
+
+		if i.CopilotSessionID == "" {
+			i.CopilotStartedAt = time.Now().UnixMilli()
+		}
+		copilotCmd := getCopilotCommand()
+		resumeCmd, containerName, err := i.prepareCommand(i.buildCopilotCommand(copilotCmd))
+		if err != nil {
+			return err
+		}
+		if containerName != "" {
+			i.SandboxContainer = containerName
+		}
+		sessionLog.Info("restart_copilot_respawn", slog.String("command", resumeCmd))
+
+		if err := i.tmuxSession.RespawnPane(resumeCmd); err != nil {
+			sessionLog.Info("restart_copilot_respawn_failed", slog.String("error", err.Error()))
+			return fmt.Errorf("failed to restart Copilot session: %w", err)
+		}
+
+		// If no session ID, start async detection
+		if i.CopilotSessionID == "" {
+			go i.detectCopilotSessionAsync()
+		}
+
+		sessionLog.Info("restart_copilot_respawn_succeeded")
+
+		// Persist .sid sidecar so hook events after restart can be correlated
+		if i.CopilotSessionID != "" {
+			WriteHookSessionAnchor(i.ID, i.CopilotSessionID)
+		}
+
+		i.Status = StatusWaiting
+		return nil
+	}
+
 	// If custom tool with session resume support AND tmux session exists, use respawn-pane.
 	if i.CanRestartGeneric() && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		toolDef := GetToolDef(i.Tool)
@@ -4432,6 +4823,9 @@ func (i *Instance) Restart() error {
 		command = i.buildOpenCodeCommand("opencode")
 	} else if IsCodexCompatible(i.Tool) && i.CodexSessionID != "" {
 		command = i.buildCodexCommand(i.Command)
+	} else if i.Tool == "copilot" && i.CopilotSessionID != "" {
+		copilotCmd := getCopilotCommand()
+		command = i.buildCopilotCommand(copilotCmd)
 	} else {
 		// Route to appropriate command builder based on tool
 		switch {
@@ -4447,6 +4841,10 @@ func (i *Instance) Restart() error {
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
+		case i.Tool == "copilot":
+			command = i.buildCopilotCommand(i.Command)
+			// Record start time for async session ID detection
+			i.CopilotStartedAt = time.Now().UnixMilli()
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4519,6 +4917,11 @@ func (i *Instance) Restart() error {
 	// Start async session ID detection for Codex (if no ID yet)
 	if IsCodexCompatible(i.Tool) && i.CodexSessionID == "" {
 		go i.detectCodexSessionAsync()
+	}
+
+	// Start async session ID detection for Copilot (if no ID yet)
+	if i.Tool == "copilot" && i.CopilotSessionID == "" {
+		go i.detectCopilotSessionAsync()
 	}
 
 	// Start as WAITING - will go GREEN on next tick if Claude shows busy indicator
@@ -4713,6 +5116,16 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// Copilot sessions with known session ID can always be restarted
+	if i.Tool == "copilot" && i.CopilotSessionID != "" {
+		return true
+	}
+
+	// Copilot sessions without ID can still restart (will start fresh)
+	if i.Tool == "copilot" {
+		return true
+	}
+
 	// Custom tools: check if they have session resume support
 	if i.CanRestartGeneric() {
 		return true
@@ -4750,6 +5163,11 @@ func (i *Instance) CanFork() bool {
 	// OpenCode sessions can fork if session ID is recent
 	if i.Tool == "opencode" {
 		return i.CanForkOpenCode()
+	}
+
+	// Copilot sessions can fork by copying session state directory
+	if i.Tool == "copilot" {
+		return i.CopilotSessionID != "" && time.Since(i.CopilotDetectedAt) < 5*time.Minute
 	}
 
 	// Claude sessions can fork if session ID is recent
@@ -5028,6 +5446,105 @@ func (i *Instance) Exists() bool {
 	return i.tmuxSession.Exists()
 }
 
+// getCopilotSessionStateDir returns the path to copilot's session-state directory.
+func getCopilotSessionStateDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	configDir := filepath.Join(homeDir, ".copilot")
+	if cfg, cfgErr := LoadUserConfig(); cfgErr == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
+		configDir = ExpandPath(cfg.Copilot.ConfigDir)
+	}
+	return filepath.Join(configDir, "session-state")
+}
+
+// ForkCopilotWithOptions returns the command to create a forked Copilot session.
+// Copies the source session state directory to a new UUID, then resumes it.
+func (i *Instance) ForkCopilotWithOptions(newTitle, newGroupPath string, opts *CopilotOptions) (string, error) {
+	if i.CopilotSessionID == "" {
+		return "", fmt.Errorf("cannot fork: no active Copilot session")
+	}
+
+	stateDir := getCopilotSessionStateDir()
+	if stateDir == "" {
+		return "", fmt.Errorf("cannot fork: unable to resolve copilot session-state directory")
+	}
+
+	srcDir := filepath.Join(stateDir, i.CopilotSessionID)
+	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+		return "", fmt.Errorf("cannot fork: source session state not found at %s", srcDir)
+	}
+
+	newUUID := generateUUID()
+	dstDir := filepath.Join(stateDir, newUUID)
+
+	// Copy source session state to new directory
+	if err := copyDir(srcDir, dstDir); err != nil {
+		return "", fmt.Errorf("cannot fork: failed to copy session state: %w", err)
+	}
+
+	// Update workspace.yaml in the new directory with the new UUID
+	workspaceFile := filepath.Join(dstDir, "workspace.yaml")
+	if data, err := os.ReadFile(workspaceFile); err == nil {
+		updated := strings.Replace(string(data), i.CopilotSessionID, newUUID, 1)
+		_ = os.WriteFile(workspaceFile, []byte(updated), 0o600)
+	}
+
+	workDir := i.ProjectPath
+	envPrefix := i.buildEnvSourceCommand()
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=copilot ",
+		newUUID[:8], newTitle)
+	envPrefix += agentdeckEnvPrefix
+	envPrefix += i.resolveCopilotConfigDirPrefix()
+
+	copilotCmd := getCopilotCommand()
+	yoloFlag := i.resolveCopilotYoloFlag()
+	modelFlag := i.resolveCopilotModelFlag()
+	effortFlag := i.resolveCopilotEffortFlag()
+	autopilotFlag := i.resolveCopilotAutopilotFlag()
+	mcpFlag := i.resolveCopilotMCPFlag()
+
+	cmd := fmt.Sprintf(`cd '%s' && %s%s --resume=%s%s%s%s%s%s`,
+		workDir, envPrefix, copilotCmd, newUUID,
+		yoloFlag, modelFlag, effortFlag, autopilotFlag, mcpFlag)
+
+	return cmd, nil
+}
+
+// CreateForkedCopilotInstance creates a new Instance configured for forking a Copilot session.
+func (i *Instance) CreateForkedCopilotInstance(newTitle, newGroupPath string) (*Instance, string, error) {
+	return i.CreateForkedCopilotInstanceWithOptions(newTitle, newGroupPath, nil)
+}
+
+// CreateForkedCopilotInstanceWithOptions creates a new Instance for forking with custom options.
+func (i *Instance) CreateForkedCopilotInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *CopilotOptions,
+) (*Instance, string, error) {
+	cmd, err := i.ForkCopilotWithOptions(newTitle, newGroupPath, opts)
+	if err != nil {
+		return nil, "", err
+	}
+
+	forked := NewInstance(newTitle, i.ProjectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Command = cmd
+	forked.Tool = "copilot"
+
+	if opts != nil {
+		if err := forked.SetCopilotOptions(opts); err != nil {
+			sessionLog.Warn("set_copilot_options_failed", slog.String("error", err.Error()))
+		}
+	}
+
+	return forked, cmd, nil
+}
+
 // GetTmuxSession returns the tmux session object
 func (i *Instance) GetTmuxSession() *tmux.Session {
 	return i.tmuxSession
@@ -5126,6 +5643,32 @@ func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 
 // SetOpenCodeOptions stores OpenCode-specific options
 func (i *Instance) SetOpenCodeOptions(opts *OpenCodeOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
+// GetCopilotOptions returns Copilot-specific options, or nil if not set
+func (i *Instance) GetCopilotOptions() *CopilotOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalCopilotOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetCopilotOptions stores Copilot-specific options
+func (i *Instance) SetCopilotOptions(opts *CopilotOptions) error {
 	if opts == nil {
 		i.ToolOptionsJSON = nil
 		return nil

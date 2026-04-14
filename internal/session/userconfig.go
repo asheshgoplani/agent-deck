@@ -28,7 +28,7 @@ const UserConfigFileName = "config.toml"
 // UserConfig represents user-facing configuration in TOML format
 type UserConfig struct {
 	// DefaultTool is the pre-selected AI tool when creating new sessions
-	// Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+	// Valid values: "claude", "gemini", "opencode", "codex", "copilot", "pi", or any custom tool name
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool"`
 
@@ -792,6 +792,33 @@ type CodexSettings struct {
 // Binary: `copilot` from @github/copilot (GA 2026-02-25).
 // Doc: https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli
 type CopilotSettings struct {
+	// Command is the Copilot CLI command to use (e.g., "gh copilot --", "copilot")
+	// Default: "copilot"
+	// Use "gh copilot --" if invoking via the gh CLI extension.
+	Command string `toml:"command"`
+
+	// YoloMode enables --allow-all-tools for Copilot sessions (bypass approvals).
+	// Default: false
+	YoloMode bool `toml:"yolo_mode"`
+
+	// AutopilotMode enables autopilot mode (agent works autonomously).
+	// Default: false
+	AutopilotMode bool `toml:"autopilot_mode"`
+
+	// Effort sets the reasoning effort level (--effort flag).
+	// Valid values: "low", "medium", "high", "xhigh".
+	// If empty, Copilot CLI uses its own default.
+	Effort string `toml:"effort"`
+
+	// DefaultModel is the model to use for new Copilot sessions
+	// (e.g., "gpt-5.2", "claude-sonnet-4.5"). If empty, Copilot CLI uses
+	// its own default.
+	DefaultModel string `toml:"default_model"`
+
+	// ConfigDir is the path to Copilot's config directory.
+	// Default: ~/.copilot
+	ConfigDir string `toml:"config_dir"`
+
 	// EnvFile is a .env file specific to Copilot sessions (sourced before
 	// the `copilot` command runs, like [gemini].env_file). Optional.
 	EnvFile string `toml:"env_file"`
@@ -2199,7 +2226,7 @@ func CreateExampleConfig() error {
 
 # Default AI tool for new sessions
 # When creating a new session (pressing 'n'), this tool will be pre-selected
-# Valid values: "claude", "gemini", "opencode", "codex", "pi", or any custom tool name
+# Valid values: "claude", "gemini", "opencode", "codex", "copilot", "pi", or any custom tool name
 # Leave commented out or empty to default to shell (no pre-selection)
 # default_tool = "claude"
 
@@ -2451,6 +2478,16 @@ auto_cleanup = true
 # command = "gh copilot"
 # icon = "🤖"
 # busy_patterns = ["Generating..."]
+
+# Copilot CLI is a built-in tool. Configure it directly:
+# [copilot]
+# command = "gh copilot --"       # Or "copilot" for standalone binary
+# yolo_mode = false               # --yolo / --allow-all
+# autopilot_mode = false          # --autopilot (autonomous mode)
+# effort = ""                     # Reasoning effort: "low", "medium", "high", "xhigh"
+# default_model = "gpt-5.2"      # --model
+# config_dir = "~/.copilot"      # --config-dir
+# env_file = "~/.env.copilot"
 
 # Example: Custom tool with inline env vars (appears in command picker)
 # [tools.glm]

@@ -605,3 +605,154 @@ func GetUserMCPNames() []string {
 	sort.Strings(names)
 	return names
 }
+
+// getCopilotConfigDir returns the path to copilot's config directory (~/.copilot or override).
+func getCopilotConfigDir() string {
+	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
+		return ExpandPath(cfg.Copilot.ConfigDir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".copilot")
+}
+
+// GetCopilotMCPNames returns the names of MCPs configured in ~/.copilot/mcp-config.json.
+func GetCopilotMCPNames() []string {
+	configDir := getCopilotConfigDir()
+	if configDir == "" {
+		return nil
+	}
+	configFile := filepath.Join(configDir, "mcp-config.json")
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil
+	}
+
+	var config struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(config.MCPServers))
+	for name := range config.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// WriteCopilotMCP writes enabled MCPs from config.toml to ~/.copilot/mcp-config.json.
+// Uses the same MCPServerConfig format but with copilot's "local" type for stdio.
+func WriteCopilotMCP(enabledNames []string) error {
+	configDir := getCopilotConfigDir()
+	if configDir == "" {
+		return fmt.Errorf("cannot determine copilot config directory")
+	}
+	configFile := filepath.Join(configDir, "mcp-config.json")
+
+	availableMCPs := GetAvailableMCPs()
+	pool := GetGlobalPool()
+
+	// Read existing mcp-config.json to preserve entries not managed by agent-deck
+	var existingServers map[string]json.RawMessage
+	if data, err := os.ReadFile(configFile); err == nil {
+		var config struct {
+			MCPServers map[string]json.RawMessage `json:"mcpServers"`
+		}
+		if json.Unmarshal(data, &config) == nil {
+			existingServers = config.MCPServers
+		}
+	}
+
+	// Build agent-deck managed MCP entries
+	agentDeckServers := make(map[string]MCPServerConfig)
+	for _, name := range enabledNames {
+		def, ok := availableMCPs[name]
+		if !ok {
+			continue
+		}
+
+		if def.URL != "" {
+			transport := def.Transport
+			if transport == "" {
+				transport = "http"
+			}
+			agentDeckServers[name] = MCPServerConfig{
+				Type:    transport,
+				URL:     def.URL,
+				Headers: def.Headers,
+			}
+			continue
+		}
+
+		// Try pool socket
+		if socketCfg, used := tryPoolSocket(pool, name, "copilot"); used {
+			agentDeckServers[name] = socketCfg
+			continue
+		}
+
+		// Stdio fallback — copilot uses "local" type instead of "stdio"
+		args := def.Args
+		if args == nil {
+			args = []string{}
+		}
+		env := def.Env
+		if env == nil {
+			env = map[string]string{}
+		}
+		agentDeckServers[name] = MCPServerConfig{
+			Type:    "local",
+			Command: def.Command,
+			Args:    args,
+			Env:     env,
+		}
+	}
+
+	// Merge: preserve non-agent-deck entries, add agent-deck entries
+	mergedServers := make(map[string]json.RawMessage)
+	for name, raw := range existingServers {
+		if _, managed := availableMCPs[name]; !managed {
+			mergedServers[name] = raw
+		}
+	}
+	for name, cfg := range agentDeckServers {
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			continue
+		}
+		mergedServers[name] = raw
+	}
+
+	finalConfig := struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}{
+		MCPServers: mergedServers,
+	}
+
+	data, err := json.MarshalIndent(finalConfig, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal copilot mcp-config.json: %w", err)
+	}
+
+	// Ensure config dir exists
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create copilot config dir: %w", err)
+	}
+
+	// Atomic write
+	tmpPath := configFile + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write copilot mcp-config.json: %w", err)
+	}
+	if err := os.Rename(tmpPath, configFile); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to save copilot mcp-config.json: %w", err)
+	}
+
+	mcpCatLog.Info("wrote_copilot_mcp_config", slog.Int("count", len(agentDeckServers)))
+	return nil
+}
