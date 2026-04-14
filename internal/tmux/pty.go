@@ -198,11 +198,15 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 				return
 			}
 
-			// Discard initial terminal ESC sequences (within first 50ms).
-			// These are things like terminal capability queries sent on attach.
-			// Only drop bytes starting with ESC (0x1b). Non-ESC bytes
-			// (including Ctrl+C / 0x03, Ctrl+Z / 0x1a) are forwarded immediately.
-			if time.Since(startTime) < controlSeqTimeout && n > 0 && buf[0] == 0x1b {
+			// Discard ALL initial terminal data (within first 50ms).
+			// Terminal capability responses (XTVERSION, DA2, DSR) arrive as
+			// multi-part escape sequences that can be split across reads.
+			// For example, Konsole's XTVERSION response:
+			//   Read 1: \eP>|konsole   (starts with ESC — old filter caught this)
+			//   Read 2: 25.12.3\e\\    (starts with '2' — leaked through)
+			// Dropping ALL bytes during the initial window is safe because the
+			// user just selected a session in the TUI and cannot type within 50ms.
+			if time.Since(startTime) < controlSeqTimeout {
 				continue
 			}
 
