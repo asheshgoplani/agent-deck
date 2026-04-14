@@ -28,6 +28,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -201,6 +202,8 @@ type Home struct {
 	geminiModelDialog    *GeminiModelDialog    // For selecting Gemini model
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
+	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
 	watcherEngine        *watcher.Engine       // nil until Init (D-07: lifecycle tied to TUI startup)
 
@@ -700,6 +703,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		geminiModelDialog:    NewGeminiModelDialog(),
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
+		feedbackDialog:       NewFeedbackDialog(),
 		watcherPanel:         NewWatcherPanel(),
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
@@ -3122,6 +3126,18 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.confirmDialog.SetSize(h.width, h.height)
 		}
 
+		// Show feedback popup if user has a new version and hasn't rated yet (D-11/D-12)
+		if h.feedbackDialog != nil && !h.feedbackDialog.IsVisible() {
+			fbState, _ := feedback.LoadState()
+			if feedback.ShouldShow(fbState, Version) {
+				feedback.RecordShown(fbState)
+				_ = feedback.SaveState(fbState)
+				h.feedbackState = fbState
+				h.feedbackDialog.Show(Version, fbState, feedback.NewSender())
+				h.feedbackDialog.SetSize(h.width, h.height)
+			}
+		}
+
 		if msg.err != nil {
 			h.setError(msg.err)
 		} else {
@@ -3714,6 +3730,17 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearMaintenanceMsg:
 		h.maintenanceMsg = ""
+		return h, nil
+
+	case feedbackSentMsg:
+		// Send completed (best-effort). Dialog auto-dismisses via feedbackDismissMsg timer.
+		return h, nil
+
+	case feedbackDismissMsg:
+		// Auto-dismiss timer fired after stepSent confirmation.
+		if h.feedbackDialog != nil && h.feedbackDialog.IsVisible() {
+			h.feedbackDialog.Hide()
+		}
 		return h, nil
 
 	case modelsFetchedMsg:
@@ -4398,6 +4425,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.worktreeFinishDialog.IsVisible() {
 			return h.handleWorktreeFinishDialogKey(msg)
+		}
+		if h.feedbackDialog.IsVisible() {
+			d, cmd := h.feedbackDialog.Update(msg)
+			h.feedbackDialog = d
+			return h, cmd
 		}
 
 		if h.showCostDashboard {
@@ -8065,6 +8097,9 @@ func (h *Home) updateSizes() {
 	h.confirmDialog.SetSize(h.width, h.height)
 	h.geminiModelDialog.SetSize(h.width, h.height)
 	h.worktreeFinishDialog.SetSize(h.width, h.height)
+	if h.feedbackDialog != nil {
+		h.feedbackDialog.SetSize(h.width, h.height)
+	}
 }
 
 // View renders the UI
@@ -8160,6 +8195,9 @@ func (h *Home) View() string {
 	}
 	if h.worktreeFinishDialog.IsVisible() {
 		return h.worktreeFinishDialog.View()
+	}
+	if h.feedbackDialog.IsVisible() {
+		return h.feedbackDialog.View()
 	}
 	if h.showCostDashboard {
 		return h.costDashboard.View()
