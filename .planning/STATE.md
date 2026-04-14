@@ -4,8 +4,8 @@ milestone: v1.5.2
 milestone_name: milestone
 status: executing
 stopped_at: "Phase 03 fully landed. Next step: /gsd-plan-phase 4"
-last_updated: "2026-04-14T14:01:29.700Z"
-last_activity: 2026-04-14 -- Phase 4 planning complete
+last_updated: "2026-04-14T14:11:12.841Z"
+last_activity: 2026-04-14 -- Phase 04 execution started
 progress:
   total_phases: 4
   completed_phases: 3
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-14)
 
 **Core value:** After v1.5.2, SSH logout on Linux+systemd must not kill any agent-deck tmux server, and restarting any dead session must resume the prior Claude conversation — both permanently test-gated.
-**Current focus:** Phase 04 — verification-harness-docs-and-ci-wiring (not started; Phase 03 complete 2026-04-14)
+**Current focus:** Phase 04 — verification-harness-docs-and-ci-wiring
 
 ## Current Position
 
-Phase: 04 (verification-harness-docs-and-ci-wiring) — NOT STARTED
-Plan: 0 of TBD
-Status: Ready to execute
-Last activity: 2026-04-14 -- Phase 4 planning complete
+Phase: 04 (verification-harness-docs-and-ci-wiring) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 04
+Last activity: 2026-04-14 -- Phase 04 execution started
 
 Progress: [██████████] 100%
 

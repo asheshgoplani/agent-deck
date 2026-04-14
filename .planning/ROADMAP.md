@@ -113,9 +113,9 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — scripts/verify-session-persistence.sh + fake-claude stub (SCRIPT-01..06)
-- [ ] 04-02-PLAN.md — CLAUDE.md mandate audit + CHANGELOG.md v1.5.2 line (DOC-01..05)
-- [ ] 04-03-PLAN.md — .github/workflows/session-persistence.yml CI gate (SCRIPT-07)
+- [x] 04-01-PLAN.md — scripts/verify-session-persistence.sh + fake-claude stub (SCRIPT-01..06)
+- [x] 04-02-PLAN.md — CLAUDE.md mandate audit + CHANGELOG.md v1.5.2 line (DOC-01..05)
+- [x] 04-03-PLAN.md — .github/workflows/session-persistence.yml CI gate (SCRIPT-07)
 - [ ] 04-04-PLAN.md — End-to-end verify run + 04-VERIFY.md + STATE.md sign-off (verification-only)
 
 ## Milestone success criteria
