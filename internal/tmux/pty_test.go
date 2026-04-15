@@ -196,6 +196,26 @@ func TestControlSeqTimeout_DropsEscPrefix(t *testing.T) {
 	require.True(t, isEscPrefix, "ESC-prefixed bytes (0x1b...) must be filtered by controlSeqTimeout")
 }
 
+// TestStdinDrain_DropsNonEscDAResponse verifies that the drain window
+// discards ALL bytes (not just ESC-prefixed), catching split DA responses
+// like "1;22;32c" that arrive without their ESC prefix. Fixes #597/#585.
+func TestStdinDrain_DropsNonEscDAResponse(t *testing.T) {
+	startTime := time.Now()
+	const stdinDrainWindow = 150 * time.Millisecond
+
+	// Simulate a split DA1 response: the ESC was consumed in a prior read,
+	// leaving the parameter bytes + final byte.
+	buf := []byte("1;22;32c")
+	n := len(buf)
+
+	withinWindow := time.Since(startTime) < stdinDrainWindow
+	shouldDrop := withinWindow && n > 0
+
+	require.True(t, shouldDrop,
+		"split DA response %q arriving within drain window must be dropped (fixes #597)",
+		string(buf))
+}
+
 // TestControlSeqTimeout_PassesRegularInput verifies that regular ASCII bytes
 // and common control chars are NOT filtered by the ESC-prefix check.
 func TestControlSeqTimeout_PassesRegularInput(t *testing.T) {

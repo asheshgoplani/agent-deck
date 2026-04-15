@@ -156,9 +156,14 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// Channel for I/O errors (buffered to prevent goroutine leaks)
 	ioErrors := make(chan error, 2)
 
-	// Timeout to ignore initial terminal control sequences (50ms)
+	// Drain window: discard ALL stdin bytes for the first 150ms after attach.
+	// Terminal emulators send DA1/DA2 device attribute responses when a new
+	// PTY is created. These responses can arrive split across reads (the ESC
+	// prefix consumed in one read, the parameters in the next), so filtering
+	// by ESC prefix alone is insufficient (#597, #585). A blanket drain for
+	// 150ms catches all responses regardless of framing.
 	startTime := time.Now()
-	const controlSeqTimeout = 50 * time.Millisecond
+	const stdinDrainWindow = 150 * time.Millisecond
 	const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
 	const clearScrollback = "\033[3J"
 	outputDone := make(chan struct{})
@@ -198,11 +203,10 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 				return
 			}
 
-			// Discard initial terminal ESC sequences (within first 50ms).
-			// These are things like terminal capability queries sent on attach.
-			// Only drop bytes starting with ESC (0x1b). Non-ESC bytes
-			// (including Ctrl+C / 0x03, Ctrl+Z / 0x1a) are forwarded immediately.
-			if time.Since(startTime) < controlSeqTimeout && n > 0 && buf[0] == 0x1b {
+			// Discard ALL bytes within the stdin drain window (#597, #585).
+			// DA1/DA2 responses arrive split across reads, so ESC-prefix
+			// filtering alone misses fragments like "1;22;32c".
+			if time.Since(startTime) < stdinDrainWindow {
 				continue
 			}
 
