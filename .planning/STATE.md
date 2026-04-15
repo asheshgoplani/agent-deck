@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5.4
 milestone_name: milestone
-status: executing
-last_updated: "2026-04-15T12:35:43Z"
-last_activity: 2026-04-15 -- Phase 01 plan 01 complete (CFG-01, CFG-02, CFG-04 tests 1/2/3/6 shipped)
+status: planning
+last_updated: "2026-04-15T12:42:32.095Z"
+last_activity: 2026-04-15
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 1
   completed_plans: 1
-  percent: 33
+  percent: 100
 ---
 
 # Project State — v1.5.4
@@ -38,10 +38,10 @@ See `docs/PER-GROUP-CLAUDE-CONFIG-SPEC.md` for the source spec.
 
 ## Current Position
 
-Phase: 01 (custom-command-injection-core-regression-tests) — COMPLETE
-Plan: 1 of 1 — `01-01-PLAN.md` shipped
+Phase: 2
+Plan: Not started
 Status: Phase 01 complete; awaiting Phase 02 planning
-Last activity: 2026-04-15 -- Phase 01 plan 01 complete (CFG-02 closed, CFG-04 tests 1/2/3/6 locked under regression suite)
+Last activity: 2026-04-15
 
 ## Phase Progress
 
