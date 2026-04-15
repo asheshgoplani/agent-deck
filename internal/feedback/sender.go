@@ -15,7 +15,7 @@ import (
 //	https://github.com/asheshgoplani/agent-deck/discussions
 //
 // via: gh api graphql -f query='{ repository(owner:"asheshgoplani",name:"agent-deck") { discussions(first:5) { nodes { id title } } } }'
-const DiscussionNodeID = "D_PLACEHOLDER"
+const DiscussionNodeID = "D_kwDOQh82-s4Alt9V"
 
 // DiscussionURL is the GitHub Discussions page for agent-deck feedback.
 // Note: GitHub Discussions does NOT support ?body= URL parameter prefill
