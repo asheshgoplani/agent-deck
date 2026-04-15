@@ -77,7 +77,7 @@ func printSessionHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
-	fmt.Println("  restart <id>            Restart session (Claude: reload MCPs)")
+	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
@@ -101,6 +101,7 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session start my-project")
 	fmt.Println("  agent-deck session stop abc123")
 	fmt.Println("  agent-deck session restart my-project")
+	fmt.Println("  agent-deck session restart --all                # Restart all active sessions")
 	fmt.Println("  agent-deck session fork my-project -t \"my-project-fork\"")
 	fmt.Println("  agent-deck session attach my-project")
 	fmt.Println("  agent-deck session show                  # Auto-detect current session")
@@ -310,16 +311,17 @@ func handleSessionStop(profile string, args []string) {
 	})
 }
 
-// handleSessionRestart restarts a session
+// handleSessionRestart restarts a session (or all active sessions with --all)
 func handleSessionRestart(profile string, args []string) {
 	fs := flag.NewFlagSet("session restart", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
+	all := fs.Bool("all", false, "Restart all active sessions")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session restart <id|title> [options]")
+		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
 		fmt.Println()
 		fmt.Println("Restart a session. For Claude sessions, this reloads MCPs.")
 		fmt.Println()
@@ -330,13 +332,16 @@ func handleSessionRestart(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck session restart my-project")
+		fmt.Println("  agent-deck session restart --all")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
 	}
 
-	identifier := fs.Arg(0)
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
@@ -344,6 +349,18 @@ func handleSessionRestart(profile string, args []string) {
 	storage, instances, groups, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	if *all {
+		restartAllSessions(out, storage, instances, groups)
+		return
+	}
+
+	identifier := fs.Arg(0)
+	if identifier == "" {
+		out.Error("session identifier required (or use --all)", ErrCodeInvalidOperation)
+		fs.Usage()
 		os.Exit(1)
 	}
 
@@ -408,6 +425,94 @@ func handleSessionRestart(profile string, args []string) {
 		data["warning"] = warning
 	}
 	out.Success(fmt.Sprintf("Restarted session: %s", inst.Title), data)
+}
+
+// restartAllSessions restarts every active session one by one.
+func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*session.Instance, groups []*session.GroupData) {
+	var active []*session.Instance
+	for _, inst := range instances {
+		if inst.Exists() {
+			active = append(active, inst)
+		}
+	}
+
+	if len(active) == 0 {
+		out.Error("no active sessions to restart", ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	var results []map[string]interface{}
+	var failed int
+
+	for _, inst := range active {
+		result := map[string]interface{}{
+			"id":    inst.ID,
+			"title": inst.Title,
+		}
+
+		if !out.jsonMode {
+			fmt.Printf("Restarting %s...\n", inst.Title)
+		}
+
+		if err := inst.Restart(); err != nil {
+			errMsg := fmt.Sprintf("failed to restart session '%s': %v", inst.Title, err)
+			if !out.jsonMode {
+				fmt.Fprintf(os.Stderr, "  Error: %s\n", errMsg)
+			}
+			result["success"] = false
+			result["error"] = errMsg
+			failed++
+			results = append(results, result)
+			continue
+		}
+		inst.LastStartedAt = time.Now()
+
+		warning := inst.ConsumeCodexRestartWarning()
+		if warning != "" && !out.jsonMode {
+			fmt.Fprintf(os.Stderr, "  Warning: %s\n", warning)
+		}
+
+		// If restart created a fresh session (no prior ID), capture the new ID
+		if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID == "" {
+			inst.PostStartSync(3 * time.Second)
+		}
+
+		result["success"] = true
+		if warning != "" {
+			result["warning"] = warning
+		}
+		results = append(results, result)
+
+		if !out.jsonMode {
+			fmt.Printf("  Done: %s\n", inst.Title)
+		}
+	}
+
+	// Save updated state after all restarts
+	if err := saveSessionData(storage, instances, groups); err != nil {
+		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	if out.jsonMode {
+		out.Success("", map[string]interface{}{
+			"success":  failed == 0,
+			"total":    len(active),
+			"restarted": len(active) - failed,
+			"failed":   failed,
+			"sessions": results,
+		})
+	} else if !out.quietMode {
+		fmt.Printf("Restarted %d/%d sessions", len(active)-failed, len(active))
+		if failed > 0 {
+			fmt.Printf(" (%d failed)", failed)
+		}
+		fmt.Println()
+	}
+
+	if failed > 0 {
+		os.Exit(1)
+	}
 }
 
 // handleSessionFork forks a Claude session
