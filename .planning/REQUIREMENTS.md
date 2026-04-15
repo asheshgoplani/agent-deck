@@ -1,151 +1,77 @@
-# Requirements: Agent Deck v1.6.0 — Watcher Framework
+# Requirements: Agent Deck — v1.5.3 Feedback Closeout
 
-**Defined:** 2026-04-10
-**Core Value:** Reliable session management for AI coding agents: users can create, monitor, and control many concurrent agent sessions from anywhere without losing work or context.
-**Milestone target:** v1.6.0
-**Starting point:** v1.5.0
-**Source spec:** `docs/superpowers/specs/2026-04-10-watcher-framework-design.md`
-**Research:** `.planning/research/SUMMARY.md` (synthesized from Stack, Features, Architecture, Pitfalls)
+**Defined:** 2026-04-15
+**Core Value:** Reliable session management for AI coding agents.
+**Source spec:** `docs/FEEDBACK-CLOSEOUT-SPEC.md`
 
-## v1.6.0 Requirements
+## Milestone v1.5.3 Requirements
 
-Requirements for the watcher framework milestone. Each maps to exactly one phase.
+Closeout scope for the in-product feedback feature. No new features. Four requirements, each maps to exactly one phase.
 
-### Schema & Config
+### Feedback Closeout
 
-- [ ] **SCHEMA-01**: Watchers table exists in statedb with full ALTER TABLE migration path (SchemaVersion bumped to 5)
-- [ ] **SCHEMA-02**: Watcher events table exists with UNIQUE(watcher_id, dedup_key) constraint and session_id column for thread reply routing
-- [ ] **SCHEMA-03**: Existing databases upgrade cleanly (TestMigrate_OldSchema_WatcherTablesUpgrade in same PR)
-- [ ] **SCHEMA-04**: Watcher events pruned to 500 rows per watcher on insert with (watcher_id, created_at DESC) index
-- [ ] **SCHEMA-05**: WatcherSettings added to UserConfig with defaults applied in LoadConfig()
-- [ ] **SCHEMA-06**: WatcherMeta struct persisted as meta.json in ~/.agent-deck/watchers/<name>/
+- [ ] **REQ-FB-1** (P0): Real GitHub Discussion node ID replaces `D_PLACEHOLDER` in `internal/feedback/sender.go:18`. Resolution path: run `gh api graphql -f query='{ repository(owner: "asheshgoplani", name: "agent-deck") { discussions(first: 10) { nodes { id title } } } }'` (or the category-scoped variant) and paste the correct `id`.
 
-### Engine Core
+  **Acceptance:**
+  - `DiscussionNodeID != "D_PLACEHOLDER"` — verified by REQ-FB-2 test.
+  - Manual end-to-end test: one `agent-deck feedback 4 "closeout smoke"` invocation from a non-headless host successfully creates a comment in the target Discussion (verify via `gh api` or browser).
+  - The node ID appears in exactly one place (the const). No duplicate literal.
 
-- [x] **ENGINE-01**: WatcherAdapter interface defined (Setup/Listen/Teardown/HealthCheck) with AdapterConfig
-- [x] **ENGINE-02**: Event struct with DedupKey(), JSON serialization, source/sender/subject normalization
-- [x] **ENGINE-03**: Router loads clients.json, matches exact email and wildcard *@domain, exact takes priority
-- [x] **ENGINE-04**: Engine event loop deduplicates via INSERT OR IGNORE + rows-affected (no check-then-insert TOCTOU)
-- [x] **ENGINE-05**: Single-writer goroutine serializes all watcher DB writes (buffered channel pattern)
-- [x] **ENGINE-06**: Health tracker with rolling event rate, silence detection (max_silence_minutes), consecutive error counting
-- [x] **ENGINE-07**: Engine Stop() cancels all adapter contexts without goroutine leaks (goleak test in same PR)
+- [ ] **REQ-FB-2** (P0): Format regression test `TestSender_DiscussionNodeID_IsReal` exists in `internal/feedback/sender_test.go` and asserts:
+  1. `DiscussionNodeID != "D_PLACEHOLDER"`.
+  2. `DiscussionNodeID` matches regex `^D_[A-Za-z0-9_-]{10,}$` (GitHub GraphQL node ID shape — conservative pattern accepting the current encoding).
 
-### Adapters
+  **Acceptance:**
+  - Test exists and is RED against current `D_PLACEHOLDER`, then GREEN after REQ-FB-1.
+  - Test would fail if anyone reintroduces `D_PLACEHOLDER` or a typoed constant.
+  - Independently runnable: `go test -run TestSender_DiscussionNodeID_IsReal ./internal/feedback/`.
 
-- [ ] **ADAPT-01**: Webhook adapter receives HTTP POST on configurable port, normalizes to Event, responds 202 immediately
-- [ ] **ADAPT-02**: ntfy adapter subscribes to topic via SSE stream (bufio.Scanner), auto-reconnects on disconnect
-- [ ] **ADAPT-03**: GitHub adapter verifies X-Hub-Signature-256 HMAC-SHA256, rejects invalid signatures with 401
-- [x] **ADAPT-04**: Slack adapter routes via ntfy bridge with thread reply routing (session_id lookup by parent dedup_key)
-- [ ] **ADAPT-05**: Gmail adapter handles OAuth2 token refresh via ReuseTokenSource, Pub/Sub watch registration via users.Watch()
-- [ ] **ADAPT-06**: Gmail watch_expiry persisted in meta.json, renewal scheduled 1hr before expiry, immediate renewal on startup if within 2hr
+- [ ] **REQ-FB-3** (P1): README has a top-level "Feedback" section (or inside an existing Features section) that states:
+  - User can press `Ctrl+E` in the TUI, or run `agent-deck feedback`, to send feedback.
+  - Feedback posts to a public GitHub Discussion (link the Discussion URL).
 
-### CLI
+  **Acceptance:**
+  - `grep -i "ctrl+e" README.md` returns a match.
+  - `grep -i "agent-deck feedback" README.md` returns a match.
+  - `agent-deck --help` still shows the `feedback` subcommand (no regression).
 
-- [ ] **CLI-01**: `agent-deck watcher create` registers watcher in statedb + creates filesystem directory with meta.json
-- [ ] **CLI-02**: `agent-deck watcher start/stop` manages watcher lifecycle (starts adapter goroutine or cancels context)
-- [ ] **CLI-03**: `agent-deck watcher list` shows all watchers with name, type, status, event rate, health
-- [ ] **CLI-04**: `agent-deck watcher status <name>` shows detailed info including recent events and config
-- [ ] **CLI-05**: `agent-deck watcher test <name>` sends synthetic event through full pipeline, reports routing decision
-- [ ] **CLI-06**: `agent-deck watcher routes` displays all clients.json routing rules with sender patterns and conductors
-- [x] **CLI-07**: `agent-deck watcher import <path>` migrates existing bash issue-watcher to Go watcher (reads channels.json, generates watcher.toml + clients.json entries)
+- [ ] **REQ-FB-4** (P0): CLAUDE.md gains a "Feedback feature: mandatory test coverage" section that:
+  - Names the 22 existing tests at suite granularity: `internal/feedback` (11), `internal/ui` FeedbackDialog (9), `cmd/agent-deck` feedback handler (2), plus the new `TestSender_DiscussionNodeID_IsReal`.
+  - Declares that any PR modifying files in `internal/feedback/**`, `internal/ui/feedback_dialog.go`, `cmd/agent-deck/feedback_cmd.go`, or `internal/platform/headless.go` must include output of `go test ./internal/feedback/... ./internal/ui/... ./cmd/agent-deck/... -run "Feedback|Sender_" -race -count=1` in the PR description.
+  - Declares that reintroducing a placeholder node ID is a blocker, not a warning.
 
-### TUI
+  **Acceptance:** Section is present and references files by path. `grep "Feedback feature: mandatory test coverage" CLAUDE.md` matches.
 
-- [ ] **TUI-01**: Watcher panel toggled with W key showing name, type, status indicator, event rate per hour
-- [ ] **TUI-02**: Selecting a watcher shows recent events (last 10), routing decisions, and quick actions (start/stop/test/edit/logs)
-- [ ] **TUI-03**: Health alerts sent via conductor notification bridge (Telegram/Slack/Discord) when watcher enters warning/error state
-- [ ] **TUI-04**: W key binding audited against all existing single-key bindings in home.go, no conflicts, help overlay updated
+## v1.6.0 Requirements (Paused — Resumes After v1.5.3)
 
-### Intelligence
+The full v1.6.0 Watcher Framework requirement catalog is preserved in `.planning/PROJECT.md` under "Paused Milestone: v1.6.0 — Watcher Framework" and resumes after v1.5.3 ships. Not scoped for this milestone.
 
-- [x] **INTEL-01**: Triage session spawned (via agent-deck launch) for unknown senders, classifies with structured output: ROUTE_TO, SUMMARY, CONFIDENCE
-- [ ] **INTEL-02**: Confirmed triage decisions auto-added to clients.json via atomic write-temp-rename (self-improving routing)
-- [x] **INTEL-03**: Triage rate limited to max 5 sessions per hour to prevent subscription usage spikes
-- [ ] **INTEL-04**: Watcher-creator skill in agent-deck pool enables conversational watcher setup (creates watcher.toml + clients.json entries + conductor if needed)
-
-## v2 Requirements
-
-Deferred to future release. Tracked but not in current roadmap.
-
-### Web Integration
-
-- **WEB-01**: Watcher management panel in web app (start/stop/status/events)
-- **WEB-02**: Real-time event stream in web UI via SSE
-
-### Advanced Adapters
-
-- **ADV-01**: Fathom meeting transcript adapter (webhook-based with participant extraction)
-- **ADV-02**: Fireflies meeting transcript adapter
-- **ADV-03**: IMAP IDLE adapter for non-Gmail providers
-- **ADV-04**: Microsoft Graph webhook adapter for Outlook
-
-### Community
-
-- **COMM-01**: Community adapter SDK for third-party adapters
-- **COMM-02**: Adapter marketplace or registry
-
-## Out of Scope
-
-Explicitly excluded. Documented to prevent scope creep.
+## Out of Scope (v1.5.3)
 
 | Feature | Reason |
 |---------|--------|
-| Always-on LLM router | Config-driven routing handles 95%+ at zero cost; triage fallback for rest |
-| IMAP IDLE adapter | Requires persistent TCP connection; Gmail Pub/Sub is recommended for Google |
-| Web UI watcher panel | TUI + CLI sufficient for v1.6.0; web integration deferred to v1.7+ |
-| Community adapter marketplace | Future possibility after adapter interface stabilizes |
-| Windows native support | Tailscale from Mac/iPhone covers remote access; no validated demand |
-| Managed Agents / Agent SDK | Require API key billing; incompatible with subscription-based Claude Code |
-| Meeting-specific adapters | Generic webhook adapter covers Fathom/Fireflies; specific adapters v1.7+ |
-| Storing full payloads in SQLite | Unbounded growth; events store metadata only, raw payloads in filesystem |
-| Silence windows config | Field reserved in schema; logic deferred to v1.6.1 |
+| Changing the Sender three-tier fallback logic | Already works; changing it expands blast radius beyond closeout. |
+| Changing the FeedbackDialog UI | Feature is UX-complete; out of scope for closeout. |
+| Touching `internal/platform/headless.go` beyond maintaining existing `IsHeadless()` behavior | Not a closeout concern. |
+| Adding new feedback categories | No new features in a closeout milestone. |
+| Any `git push`, `git tag`, `gh pr create`, `gh pr merge` | Hard rule from spec — branch stays local. |
 
 ## Traceability
 
-Which phases cover which requirements. Updated during roadmap creation.
+Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SCHEMA-01 | Phase 12 | Pending |
-| SCHEMA-02 | Phase 12 | Pending |
-| SCHEMA-03 | Phase 12 | Pending |
-| SCHEMA-04 | Phase 12 | Pending |
-| SCHEMA-05 | Phase 12 | Pending |
-| SCHEMA-06 | Phase 12 | Pending |
-| ENGINE-01 | Phase 13 | Complete |
-| ENGINE-02 | Phase 13 | Complete |
-| ENGINE-03 | Phase 13 | Complete |
-| ENGINE-04 | Phase 13 | Complete |
-| ENGINE-05 | Phase 13 | Complete |
-| ENGINE-06 | Phase 13 | Complete |
-| ENGINE-07 | Phase 13 | Complete |
-| ADAPT-01 | Phase 14 | Pending |
-| ADAPT-02 | Phase 14 | Pending |
-| ADAPT-03 | Phase 14 | Pending |
-| ADAPT-04 | Phase 15 | Complete |
-| ADAPT-05 | Phase 17 | Pending |
-| ADAPT-06 | Phase 17 | Pending |
-| CLI-01 | Phase 16 | Pending |
-| CLI-02 | Phase 16 | Pending |
-| CLI-03 | Phase 16 | Pending |
-| CLI-04 | Phase 16 | Pending |
-| CLI-05 | Phase 16 | Pending |
-| CLI-06 | Phase 16 | Pending |
-| CLI-07 | Phase 15 | Complete |
-| TUI-01 | Phase 16 | Pending |
-| TUI-02 | Phase 16 | Pending |
-| TUI-03 | Phase 16 | Pending |
-| TUI-04 | Phase 16 | Pending |
-| INTEL-01 | Phase 18 | Complete |
-| INTEL-02 | Phase 18 | Pending |
-| INTEL-03 | Phase 18 | Complete |
-| INTEL-04 | Phase 18 | Pending |
+| REQ-FB-1 | Phase 2 (Real Discussion Node ID) | Pending |
+| REQ-FB-2 | Phase 1 (RED Format Regression Test) | Pending |
+| REQ-FB-3 | Phase 3 (Docs and Mandate) | Complete |
+| REQ-FB-4 | Phase 3 (Docs and Mandate) | Complete |
 
 **Coverage:**
-- v1.6.0 requirements: 34 total
-- Mapped to phases: 34 (roadmap created 2026-04-10)
-- Unmapped: 0
+- v1.5.3 requirements: 4 total
+- Mapped to phases: 4
+- Unmapped: 0 ✓
 
 ---
-*Requirements defined: 2026-04-10 from design spec with research from `.planning/research/SUMMARY.md`*
-*Last updated: 2026-04-10 after roadmap creation — all 34 requirements mapped to phases 12-18*
+*Requirements defined: 2026-04-15*
+*Last updated: 2026-04-15 after milestone v1.5.3 initialization*
