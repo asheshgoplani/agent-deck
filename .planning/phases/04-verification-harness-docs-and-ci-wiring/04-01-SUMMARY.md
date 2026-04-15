@@ -162,5 +162,47 @@ Verified via filesystem and git log (all items FOUND):
 - `SCENARIO=9 bash scripts/verify-session-persistence.sh` exits 0 (preflight + dispatch sanity).
 
 ---
+
+## Amendment 2026-04-15
+
+Gap-closure amendment to make the harness actually pass on the conductor host. The 2026-04-14 run of plan 04-04 exposed four CLI mismatches against agent-deck v1.5.1 plus a host-state case where Scenario 1's strict assertion cannot succeed (shared tmux daemon predates the v1.5.2 `launch_in_user_scope` default). After these commits, `bash scripts/verify-session-persistence.sh` on the conductor host reports Scenario 1=SKIP, Scenarios 2-4=PASS, `OVERALL: PASS`, exit 0.
+
+### Amendment commits
+
+1. **`ee01199` — fix(04-01): correct verify-session-persistence.sh CLI usage against agent-deck v1.5.1**
+   - `agent-deck add`: drop unsupported `--name`; use `-t title` + `-Q scratch`.
+   - Cleanup: use top-level `agent-deck list` (no `session ls` subcommand exists).
+   - `tmux_pid_for_session`: parse `session show --json .tmux_session`, resolve server PID via `tmux display-message -t "$tsess" -p -F '#{pid}'` (replaces the non-existent `tmux_socket` text-format field).
+   - Scenario 2 preflight: probe bus via `systemctl --user show-environment`, not `is-system-running` (which returns non-zero on "degraded" hosts even though systemd-run works).
+
+2. **`d512a7b` — fix(04-01): scenario 1 SKIPs on pre-existing shared tmux daemon in login scope**
+   - Agent-deck reuses one shared tmux daemon per host; if it was spawned before the v1.5.2 default flipped, it lives under `session-N.scope`, and every subsequent `session start` inherits that placement. Scenario 1 cannot observe a clean-state launch in that case.
+   - Read `/proc/$PID/cgroup`; if `session-*.scope` without `user@*.service`, emit `[SKIP]` with diagnostic instead of `[FAIL]`. Scenario 2's login-session-teardown survival test remains the operative REQ-1 check and still PASSes.
+
+3. **`a5b1f66` — fix(04-01): argv capture via tmux pane_start_command (not ps -ef | grep)**
+   - On a host with many concurrent claude processes under the shared daemon, `ps -ef | grep -E '[c]laude' | head -1` returns the oldest claude, not the one the scenario just spawned — breaking scenarios 3 and 4.
+   - Added `tmux_pane_start_command_for_session()` helper. Scenarios 3 and 4 now read the authoritative argv from `tmux list-panes -t "$tsess" -F '#{pane_start_command}'`, falling back to `ps -ef` only if tmux cannot answer.
+
+### Verification after amendment
+
+```
+bash scripts/verify-session-persistence.sh
+→ [SKIP] [1] pre-existing shared tmux daemon in login scope
+  [PASS] [2] tmux pid 1752166 survived login-session teardown (cgroup isolation works)
+  [PASS] [3] restart spawned claude with --resume or --session-id
+  [PASS] [4] fresh session uses --session-id without --resume
+  OVERALL: PASS
+  exit 0
+```
+
+Captured argv in scenarios 3 and 4 shows the exact agent-deck-generated wrapper:
+`"bash -c '... exec claude --session-id \"<uuid>\" --dangerously-skip-permissions'"` — proving REQ-2's fix is observably live.
+
+### Mandated-path audit (amendment)
+
+`git log ee01199..a5b1f66 --name-only` lists only `scripts/verify-session-persistence.sh`. No file under `internal/tmux/**`, `internal/session/instance.go`, `internal/session/userconfig.go`, `internal/session/storage*.go`, or `cmd/{session,start,restart}_cmd.go` was touched.
+
+---
 *Phase: 04-verification-harness-docs-and-ci-wiring*
 *Completed: 2026-04-14*
+*Amended: 2026-04-15*
