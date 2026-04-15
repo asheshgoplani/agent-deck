@@ -14,7 +14,7 @@ import (
 type feedbackStep int
 
 const (
-	stepRating   feedbackStep = iota
+	stepRating feedbackStep = iota
 	stepComment
 	stepSent
 	stepDismissed
