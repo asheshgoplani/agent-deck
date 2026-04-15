@@ -179,55 +179,6 @@ func TestAttach_CtrlC_DuringDrainWindow(t *testing.T) {
 	}
 }
 
-// TestStdinDrain_DropsAllBytesDuringWindow verifies that the blanket drain
-// discards ALL bytes (including Ctrl+C) within the drain window.
-func TestStdinDrain_DropsAllBytesDuringWindow(t *testing.T) {
-	startTime := time.Now()
-	const stdinDrainWindow = 150 * time.Millisecond
-
-	cases := []struct {
-		name string
-		buf  []byte
-	}{
-		{"ctrl_c", []byte{0x03}},
-		{"esc_sequence", []byte{0x1b, '[', '1', 'm'}},
-		{"split_da_response", []byte("1;22;32c")},
-		{"letter_a", []byte{0x41}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			withinWindow := time.Since(startTime) < stdinDrainWindow
-			require.True(t, withinWindow && len(tc.buf) > 0,
-				"all bytes within drain window must be discarded, including %s", tc.name)
-		})
-	}
-}
-
-// TestStdinDrain_PassesInputAfterWindow verifies that bytes arriving after
-// the 150ms drain window are forwarded to the PTY (not discarded).
-func TestStdinDrain_PassesInputAfterWindow(t *testing.T) {
-	startTime := time.Now().Add(-200 * time.Millisecond) // simulate 200ms elapsed
-	const stdinDrainWindow = 150 * time.Millisecond
-
-	cases := []struct {
-		name string
-		buf  []byte
-	}{
-		{"letter_a", []byte{0x41}},
-		{"ctrl_c", []byte{0x03}},
-		{"ctrl_z", []byte{0x1a}},
-		{"enter", []byte{0x0d}},
-		{"esc_sequence", []byte{0x1b, '[', 'A'}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			pastWindow := time.Since(startTime) >= stdinDrainWindow
-			require.True(t, pastWindow,
-				"bytes after drain window must be forwarded, not discarded: %s", tc.name)
-		})
-	}
-}
-
 // TestCleanupAttach_EmitsScrollbackClear verifies that when Attach() detaches
 // via the detach key (Ctrl+Q), the cleanup code emits \033[3J to clear the
 // host terminal's scrollback buffer before returning to the TUI.
