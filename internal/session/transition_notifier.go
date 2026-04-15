@@ -144,6 +144,11 @@ func (n *TransitionNotifier) dispatch(event TransitionNotificationEvent) Transit
 		return event
 	}
 
+	if child.NoTransitionNotify {
+		event.DeliveryResult = transitionDeliveryDropped
+		return event
+	}
+
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
 		event.DeliveryResult = transitionDeliveryDropped
