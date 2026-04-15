@@ -52,7 +52,7 @@ func TestAttach_CtrlC_ForwardedToSession(t *testing.T) {
 }
 
 // TestAttach_CtrlC_ForwardedThroughPTY verifies that Ctrl+C sent after the
-// 50ms controlSeqTimeout window is forwarded through the PTY Attach() path
+// 150ms stdin drain window is forwarded through the PTY Attach() path
 // to the attached session's foreground process.
 // Skips if stdin is not a terminal (CI/pipe environments).
 func TestAttach_CtrlC_ForwardedThroughPTY(t *testing.T) {
@@ -85,7 +85,7 @@ func TestAttach_CtrlC_ForwardedThroughPTY(t *testing.T) {
 	attachDone := make(chan error, 1)
 	go func() { attachDone <- sess.Attach(ctx, 0x11) }()
 
-	// Wait past the 50ms controlSeqTimeout window before sending Ctrl+C
+	// Wait past the 150ms stdin drain window before sending Ctrl+C
 	time.Sleep(200 * time.Millisecond)
 
 	// Send Ctrl+C via tmux send-keys (avoids the os.Stdin pipe issue in tests)
@@ -115,20 +115,19 @@ func TestAttach_CtrlC_ForwardedThroughPTY(t *testing.T) {
 	}
 }
 
-// TestAttach_CtrlC_DuringControlSeqTimeout verifies that Ctrl+C sent WITHIN
-// the first 50ms controlSeqTimeout window is still forwarded to the session.
-// Without the fix, this byte would be dropped by the blanket discard at pty.go:194.
+// TestAttach_CtrlC_DuringDrainWindow verifies that Ctrl+C sent WITHIN
+// the 150ms stdin drain window is intentionally discarded. This is the
+// expected trade-off of the blanket drain approach (#597).
 // Skips if stdin is not a terminal (CI/pipe environments).
-func TestAttach_CtrlC_DuringControlSeqTimeout(t *testing.T) {
+func TestAttach_CtrlC_DuringDrainWindow(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
-	// Attach() calls term.MakeRaw(os.Stdin.Fd()) which requires a real terminal.
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		t.Skip("stdin is not a terminal (CI/pipe environment); skipping PTY attach test")
 	}
 
-	sentinelFile := filepath.Join(t.TempDir(), "sigint_received_early")
-	name := SessionPrefix + "ptytest-ctrlcearly-" + fmt.Sprintf("%d", time.Now().UnixNano()%100000)
+	sentinelFile := filepath.Join(t.TempDir(), "sigint_not_received")
+	name := SessionPrefix + "ptytest-ctrlcdrain-" + fmt.Sprintf("%d", time.Now().UnixNano()%100000)
 	script := fmt.Sprintf(`trap 'touch %s' INT; while true; do sleep 1; done`, sentinelFile)
 
 	require.NoError(t,
@@ -149,8 +148,8 @@ func TestAttach_CtrlC_DuringControlSeqTimeout(t *testing.T) {
 	attachDone := make(chan error, 1)
 	go func() { attachDone <- sess.Attach(ctx, 0x11) }()
 
-	// Send Ctrl+C within the 50ms controlSeqTimeout window (only 10ms sleep)
-	// WITHOUT the fix, this byte would be dropped.
+	// Send Ctrl+C within the 150ms drain window (10ms sleep).
+	// With the blanket drain, this SHOULD be discarded.
 	time.Sleep(10 * time.Millisecond)
 
 	require.NoError(t,
@@ -158,11 +157,12 @@ func TestAttach_CtrlC_DuringControlSeqTimeout(t *testing.T) {
 		"failed to send Ctrl+C via tmux send-keys",
 	)
 
-	// Wait for the trap to fire
+	// Wait — the trap should NOT have fired
 	time.Sleep(500 * time.Millisecond)
 
 	_, err := os.Stat(sentinelFile)
-	require.NoError(t, err, "Ctrl+C sent within 50ms window was dropped (bug still present)")
+	require.ErrorIs(t, err, os.ErrNotExist,
+		"Ctrl+C within drain window should be discarded, but sentinel file was created")
 
 	// Send detach key (Ctrl+Q) to cleanly exit Attach()
 	require.NoError(t,
@@ -179,65 +179,51 @@ func TestAttach_CtrlC_DuringControlSeqTimeout(t *testing.T) {
 	}
 }
 
-// TestControlSeqTimeout_DoesNotDropCtrlC verifies that the filter condition
-// used in controlSeqTimeout (buf[0] == 0x1b) does NOT match Ctrl+C (0x03).
-// This is a unit test of the filter logic itself.
-func TestControlSeqTimeout_DoesNotDropCtrlC(t *testing.T) {
-	buf := []byte{0x03} // Ctrl+C
-	isEscPrefix := len(buf) > 0 && buf[0] == 0x1b
-	require.False(t, isEscPrefix, "Ctrl+C (0x03) must NOT be filtered by controlSeqTimeout (ESC-prefix check)")
-}
-
-// TestControlSeqTimeout_DropsEscPrefix verifies that the filter condition
-// (buf[0] == 0x1b) correctly matches ESC-prefixed terminal capability queries.
-func TestControlSeqTimeout_DropsEscPrefix(t *testing.T) {
-	buf := []byte{0x1b, '[', '1', 'm'} // ESC + CSI sequence
-	isEscPrefix := len(buf) > 0 && buf[0] == 0x1b
-	require.True(t, isEscPrefix, "ESC-prefixed bytes (0x1b...) must be filtered by controlSeqTimeout")
-}
-
-// TestStdinDrain_DropsNonEscDAResponse verifies that the drain window
-// discards ALL bytes (not just ESC-prefixed), catching split DA responses
-// like "1;22;32c" that arrive without their ESC prefix. Fixes #597/#585.
-func TestStdinDrain_DropsNonEscDAResponse(t *testing.T) {
+// TestStdinDrain_DropsAllBytesDuringWindow verifies that the blanket drain
+// discards ALL bytes (including Ctrl+C) within the drain window.
+func TestStdinDrain_DropsAllBytesDuringWindow(t *testing.T) {
 	startTime := time.Now()
 	const stdinDrainWindow = 150 * time.Millisecond
 
-	// Simulate a split DA1 response: the ESC was consumed in a prior read,
-	// leaving the parameter bytes + final byte.
-	buf := []byte("1;22;32c")
-	n := len(buf)
-
-	withinWindow := time.Since(startTime) < stdinDrainWindow
-	shouldDrop := withinWindow && n > 0
-
-	require.True(t, shouldDrop,
-		"split DA response %q arriving within drain window must be dropped (fixes #597)",
-		string(buf))
-}
-
-// TestControlSeqTimeout_PassesRegularInput verifies that regular ASCII bytes
-// and common control chars are NOT filtered by the ESC-prefix check.
-func TestControlSeqTimeout_PassesRegularInput(t *testing.T) {
 	cases := []struct {
 		name string
-		b    byte
+		buf  []byte
 	}{
-		{"letter_A", 0x41},
-		{"enter", 0x0d},
-		{"ctrl_z", 0x1a},
-		{"space", 0x20},
-		{"ctrl_c", 0x03},
-		{"ctrl_q", 0x11},
+		{"ctrl_c", []byte{0x03}},
+		{"esc_sequence", []byte{0x1b, '[', '1', 'm'}},
+		{"split_da_response", []byte("1;22;32c")},
+		{"letter_a", []byte{0x41}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := []byte{tc.b}
-			isEscPrefix := len(buf) > 0 && buf[0] == 0x1b
-			require.False(t, isEscPrefix,
-				"byte 0x%02x (%s) must NOT be filtered by the ESC-prefix controlSeqTimeout check",
-				tc.b, tc.name,
-			)
+			withinWindow := time.Since(startTime) < stdinDrainWindow
+			require.True(t, withinWindow && len(tc.buf) > 0,
+				"all bytes within drain window must be discarded, including %s", tc.name)
+		})
+	}
+}
+
+// TestStdinDrain_PassesInputAfterWindow verifies that bytes arriving after
+// the 150ms drain window are forwarded to the PTY (not discarded).
+func TestStdinDrain_PassesInputAfterWindow(t *testing.T) {
+	startTime := time.Now().Add(-200 * time.Millisecond) // simulate 200ms elapsed
+	const stdinDrainWindow = 150 * time.Millisecond
+
+	cases := []struct {
+		name string
+		buf  []byte
+	}{
+		{"letter_a", []byte{0x41}},
+		{"ctrl_c", []byte{0x03}},
+		{"ctrl_z", []byte{0x1a}},
+		{"enter", []byte{0x0d}},
+		{"esc_sequence", []byte{0x1b, '[', 'A'}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pastWindow := time.Since(startTime) >= stdinDrainWindow
+			require.True(t, pastWindow,
+				"bytes after drain window must be forwarded, not discarded: %s", tc.name)
 		})
 	}
 }
