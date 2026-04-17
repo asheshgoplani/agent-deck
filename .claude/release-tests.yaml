@@ -450,3 +450,89 @@ tests:
       sleep 30; tmux capture-pane -t agentdeck_t-$i* -p | grep -q '● OK_$i' &&
       echo PASS_$i || echo FAIL_$i; agent-deck remove t-$i; done"
     expected: 10 PASS lines
+- id: issue-604-rename-session-cursor-at-end
+  added: '2026-04-17'
+  task: fix-issue-604
+  file: internal/ui/group_dialog_test.go
+  test_name: TestGroupDialog_ShowRenameSession_CursorAtEnd_Issue604
+  purpose: Regression test for #604 — opening the rename-session dialog must place
+    the cursor at the end of the pre-filled name. Before v1.7.11 the long-lived
+    textinput cursor bled between invocations, landing at min(prev_pos, new_len).
+  source: .planning/fix-issue-604/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestGroupDialog_ShowRenameSession_CursorAtEnd_Issue604
+      -race -count=1 -v
+    expected: pass
+- id: issue-604-rename-group-cursor-at-end
+  added: '2026-04-17'
+  task: fix-issue-604
+  file: internal/ui/group_dialog_test.go
+  test_name: TestGroupDialog_ShowRename_CursorAtEnd_Issue604
+  purpose: Same class of regression as #604 but for the group-rename entry point.
+    Cursor must land at end of pre-filled group name.
+  source: .planning/fix-issue-604/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestGroupDialog_ShowRename_CursorAtEnd_Issue604
+      -race -count=1 -v
+    expected: pass
+- id: issue-604-fresh-cursor-after-create-type
+  added: '2026-04-17'
+  task: fix-issue-604
+  file: internal/ui/group_dialog_test.go
+  test_name: TestGroupDialog_ShowRenameSession_FreshCursor_Issue604
+  purpose: After a Create-type cycle that advances the cursor, opening a rename
+    must reset the cursor to the end of the pre-filled name — not inherit the
+    typing cursor from Create mode.
+  source: .planning/fix-issue-604/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestGroupDialog_ShowRenameSession_FreshCursor_Issue604
+      -race -count=1 -v
+    expected: pass
+- id: issue-618-iterm-clearscrollback-constant
+  added: '2026-04-17'
+  task: fix-issue-618
+  file: internal/tmux/pty_test.go
+  test_name: TestITermClearScrollback_ConstantContents
+  purpose: Guard the iTerm2-specific OSC 1337 ClearScrollback constant. If the
+    constant drifts (typo, wrong terminator, accidental deletion), iTerm2 3.6.x
+    users regress to cross-session scrollback bleedover (#618 = regression of #419).
+  source: .planning/fix-issue-618/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestITermClearScrollback_ConstantContents
+      -race -count=1 -v
+    expected: pass
+- id: issue-618-emit-scrollback-clear-both-escapes
+  added: '2026-04-17'
+  task: fix-issue-618
+  file: internal/tmux/pty_test.go
+  test_name: TestEmitScrollbackClear_IncludesBothEscapes
+  purpose: Parallel-paths guard. Both Attach() entry and cleanupAttach() on
+    detach route through emitScrollbackClear(); this test asserts the helper
+    emits BOTH the generic CSI 3 J escape AND the iTerm2-specific OSC 1337
+    ClearScrollback escape in the correct order (CSI first, OSC second).
+    Prevents silent drift between the two boundaries — the exact regression
+    pattern that bit #419.
+  source: .planning/fix-issue-618/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestEmitScrollbackClear_IncludesBothEscapes
+      -race -count=1 -v
+    expected: pass
+- id: issue-618-cleanup-attach-emits-iterm-osc1337
+  added: '2026-04-17'
+  task: fix-issue-618
+  file: internal/tmux/pty_test.go
+  test_name: TestCleanupAttach_EmitsITermClearScrollback
+  purpose: Live-boundary regression. Detach path (Ctrl+Q) must emit OSC 1337
+    ClearScrollback on stdout so iTerm2 3.6.x actually clears its scrollback
+    (#618). TTY-gated — skips on CI without a terminal.
+  source: .planning/fix-issue-618/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestCleanupAttach_EmitsITermClearScrollback
+      -race -count=1 -v
+    expected: pass

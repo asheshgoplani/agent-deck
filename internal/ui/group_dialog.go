@@ -59,6 +59,7 @@ func (g *GroupDialog) Show() {
 	g.parentName = ""
 	g.validationErr = ""
 	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604: reset cursor — SetValue only clamps, it does not reset.
 	g.nameInput.Focus()
 }
 
@@ -70,6 +71,7 @@ func (g *GroupDialog) ShowCreateSubgroup(parentPath, parentName string) {
 	g.parentName = parentName
 	g.validationErr = ""
 	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604
 	g.nameInput.Focus()
 }
 
@@ -83,6 +85,7 @@ func (g *GroupDialog) ShowCreateWithContext(parentPath, parentName string) {
 	g.contextParentName = parentName
 	g.validationErr = ""
 	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604
 	g.nameInput.Focus()
 
 	if parentPath != "" {
@@ -106,6 +109,7 @@ func (g *GroupDialog) ShowCreateWithContextDefaultRoot(parentPath, parentName st
 	g.contextParentName = parentName
 	g.validationErr = ""
 	g.nameInput.SetValue("")
+	g.nameInput.CursorEnd() // Issue #604
 	g.nameInput.Focus()
 
 	// Default to root mode, Tab toggles to subgroup
@@ -143,6 +147,7 @@ func (g *GroupDialog) ShowRename(currentPath, currentName string) {
 	g.groupPath = currentPath
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
+	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
 	g.nameInput.Focus()
 }
 
@@ -162,6 +167,7 @@ func (g *GroupDialog) ShowRenameSession(sessionID, currentName string) {
 	g.sessionID = sessionID
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
+	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
 	g.nameInput.Focus()
 }
 
