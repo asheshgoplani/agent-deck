@@ -683,6 +683,11 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 		if opts.UseTeammateMode {
 			flags = append(flags, "--teammate-mode tmux")
 		}
+		// --name surfaces the agent-deck session Title inside the Claude
+		// TUI/terminal title bar. shellQuote handles spaces/quotes safely.
+		if opts.SetSessionName && strings.TrimSpace(i.Title) != "" {
+			flags = append(flags, fmt.Sprintf("--name %s", shellQuote(i.Title)))
+		}
 	}
 
 	// Plugin channels: subscribe the claude session to inbound messages from

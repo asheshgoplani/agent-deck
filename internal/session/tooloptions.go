@@ -33,6 +33,10 @@ type ClaudeOptions struct {
 	UseChrome bool `json:"use_chrome,omitempty"`
 	// UseTeammateMode adds --teammate-mode tmux flag
 	UseTeammateMode bool `json:"use_teammate_mode,omitempty"`
+	// SetSessionName adds `--name <Instance.Title>` so the session title
+	// shows up in the Claude TUI/terminal title bar. Populated from
+	// ClaudeSettings.GetSetSessionName() (default true).
+	SetSessionName bool `json:"set_session_name,omitempty"`
 
 	// Transient fields for worktree fork (not persisted)
 	WorkDir          string `json:"-"`
@@ -110,6 +114,7 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 		opts.SkipPermissions = config.Claude.GetDangerousMode()
 		opts.AutoMode = config.Claude.AutoMode
 		opts.AllowSkipPermissions = config.Claude.AllowDangerousMode
+		opts.SetSessionName = config.Claude.GetSetSessionName()
 	}
 	return opts
 }

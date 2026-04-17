@@ -605,6 +605,13 @@ type ClaudeSettings struct {
 	// Power users typically want this enabled for faster iteration
 	DangerousMode *bool `toml:"dangerous_mode"`
 
+	// SetSessionName controls whether agent-deck passes the session Title
+	// to Claude via `--name <title>`. When enabled, the Title shows up in
+	// Claude's terminal title bar and TUI prompt bar so users can tell which
+	// agent-deck session they are attached to from inside the Claude TUI.
+	// Default: true (nil = true). Set to false to opt out.
+	SetSessionName *bool `toml:"set_session_name"`
+
 	// AllowDangerousMode enables --allow-dangerously-skip-permissions flag
 	// This unlocks bypass as an option without activating it by default.
 	// Ignored when dangerous_mode is true (the stronger flag takes precedence).
@@ -704,6 +711,15 @@ func (c *ClaudeSettings) GetDangerousMode() bool {
 		return true
 	}
 	return *c.DangerousMode
+}
+
+// GetSetSessionName returns whether to pass Instance.Title as `--name` to
+// claude, defaulting to true when unset.
+func (c *ClaudeSettings) GetSetSessionName() bool {
+	if c.SetSessionName == nil {
+		return true
+	}
+	return *c.SetSessionName
 }
 
 // GetHooksEnabled returns whether Claude Code hooks are enabled, defaulting to true

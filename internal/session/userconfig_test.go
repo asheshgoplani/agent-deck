@@ -315,6 +315,52 @@ func TestSaveUserConfig(t *testing.T) {
 	}
 }
 
+func TestClaudeSettings_SetSessionName_DefaultsTrue(t *testing.T) {
+	var s ClaudeSettings
+	if !s.GetSetSessionName() {
+		t.Error("GetSetSessionName should default to true when unset")
+	}
+
+	vTrue := true
+	s.SetSessionName = &vTrue
+	if !s.GetSetSessionName() {
+		t.Error("GetSetSessionName should be true when set to true")
+	}
+
+	vFalse := false
+	s.SetSessionName = &vFalse
+	if s.GetSetSessionName() {
+		t.Error("GetSetSessionName should be false when set to false")
+	}
+}
+
+func TestClaudeSettings_SetSessionName_Roundtrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[claude]
+set_session_name = false
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if config.Claude.SetSessionName == nil {
+		t.Fatal("SetSessionName should have been decoded (non-nil)")
+	}
+	if *config.Claude.SetSessionName != false {
+		t.Errorf("SetSessionName = %v, want false", *config.Claude.SetSessionName)
+	}
+	if config.Claude.GetSetSessionName() {
+		t.Error("GetSetSessionName should return false after roundtrip")
+	}
+}
+
 func TestGetTheme_Default(t *testing.T) {
 	// Setup: use temp directory with no config
 	tempDir := t.TempDir()

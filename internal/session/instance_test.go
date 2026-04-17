@@ -2367,6 +2367,116 @@ func TestBuildClaudeExtraFlags_NilOpts(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeExtraFlags_NameIncludesTitle(t *testing.T) {
+	inst := &Instance{Tool: "claude", Title: "my session"}
+	opts := &ClaudeOptions{SetSessionName: true}
+	flags := inst.buildClaudeExtraFlags(opts)
+
+	if !strings.Contains(flags, "--name 'my session'") {
+		t.Errorf("expected --name 'my session', got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_NameOmittedWhenDisabled(t *testing.T) {
+	inst := &Instance{Tool: "claude", Title: "whatever"}
+	opts := &ClaudeOptions{SetSessionName: false}
+	flags := inst.buildClaudeExtraFlags(opts)
+
+	if strings.Contains(flags, "--name") {
+		t.Errorf("SetSessionName=false should omit --name, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_NameOmittedWhenEmptyTitle(t *testing.T) {
+	inst := &Instance{Tool: "claude", Title: ""}
+	opts := &ClaudeOptions{SetSessionName: true}
+	flags := inst.buildClaudeExtraFlags(opts)
+
+	if strings.Contains(flags, "--name") {
+		t.Errorf("empty Title should omit --name, got %q", flags)
+	}
+
+	// Whitespace-only should also be treated as empty
+	inst.Title = "   "
+	flags = inst.buildClaudeExtraFlags(opts)
+	if strings.Contains(flags, "--name") {
+		t.Errorf("whitespace-only Title should omit --name, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_NameEscapesQuotes(t *testing.T) {
+	inst := &Instance{Tool: "claude", Title: "a'b"}
+	opts := &ClaudeOptions{SetSessionName: true}
+	flags := inst.buildClaudeExtraFlags(opts)
+
+	// shellQuote wraps in single quotes and escapes embedded ' as '\''
+	want := `--name 'a'\''b'`
+	if !strings.Contains(flags, want) {
+		t.Errorf("expected %q in flags, got %q", want, flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_NameNotAddedWithNilOpts(t *testing.T) {
+	inst := &Instance{Tool: "claude", Title: "titled"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	// With nil opts, SetSessionName defaults to false (zero value), so no --name
+	if strings.Contains(flags, "--name") {
+		t.Errorf("nil opts should not emit --name, got %q", flags)
+	}
+}
+
+// TestBuildClaudeCommand_IncludesName verifies that, under default config
+// (set_session_name unset == true), the command string passes the Title
+// through as --name.
+func TestBuildClaudeCommand_IncludesName(t *testing.T) {
+	origConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("CLAUDE_CONFIG_DIR")
+	os.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	defer func() {
+		if origConfigDir != "" {
+			os.Setenv("CLAUDE_CONFIG_DIR", origConfigDir)
+		}
+		os.Setenv("HOME", origHome)
+		ClearUserConfigCache()
+	}()
+
+	inst := NewInstanceWithTool("probe-42", "/tmp/test", "claude")
+	cmd := inst.buildClaudeCommand("claude")
+
+	if !strings.Contains(cmd, "--name 'probe-42'") {
+		t.Errorf("expected --name 'probe-42' in command, got: %s", cmd)
+	}
+}
+
+// TestBuildClaudeCommand_ConfigOptOutDropsName verifies that users can opt
+// out via [claude].set_session_name = false in user config.
+func TestBuildClaudeCommand_ConfigOptOutDropsName(t *testing.T) {
+	inst := NewInstanceWithTool("probe-42", "/tmp/test", "claude")
+
+	setSessionNameFalse := false
+	userConfigCacheMu.Lock()
+	userConfigCache = &UserConfig{
+		Claude: ClaudeSettings{
+			SetSessionName: &setSessionNameFalse,
+		},
+	}
+	userConfigCacheMu.Unlock()
+	defer func() {
+		userConfigCacheMu.Lock()
+		userConfigCache = nil
+		userConfigCacheMu.Unlock()
+	}()
+
+	cmd := inst.buildClaudeCommand("claude")
+
+	if strings.Contains(cmd, "--name") {
+		t.Errorf("set_session_name=false should omit --name, got: %s", cmd)
+	}
+}
+
 // TestBuildClaudeCommand_ExportsInstanceID verifies that AGENTDECK_INSTANCE_ID
 // is included in the command string for Claude sessions.
 func TestBuildClaudeCommand_ExportsInstanceID(t *testing.T) {
