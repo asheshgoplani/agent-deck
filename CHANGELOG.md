@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Per-session color tint (plumbing)** (issue [#391](https://github.com/asheshgoplani/agent-deck/issues/391)): sessions now carry an optional `color` field accepting `"#RRGGBB"` truecolor hex or an ANSI-256 palette index (`"0"`..`"255"`). Set via `agent-deck session set <id> color "#ff00aa"`, clear with `agent-deck session set <id> color ""`. The field persists through the SQLite `tool_data` blob and is exposed via `agent-deck list --json`. Validation runs at the CLI boundary so typos (`"red"`, malformed hex, out-of-range ints) are rejected with a diagnostic rather than silently stored. This PR ships the plumbing only — TUI row rendering that consumes the field will land as a follow-up so the change is risk-free for users who don't opt in (default: empty string = no tint, rendering unchanged). Tests: `TestIsValidSessionColor` (17 cases) + `TestSessionSetColor_PersistsValidAndRejectsInvalid` (end-to-end CLI round-trip).
+
 ## [1.7.13] - 2026-04-17
 
 ### Fixed

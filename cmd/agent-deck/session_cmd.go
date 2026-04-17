@@ -856,6 +856,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
+		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
 		fmt.Println()
@@ -867,6 +868,9 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  agent-deck session set my-project claude-session-id \"abc123-def456\"")
 		fmt.Println("  agent-deck session set my-project path /new/path/to/project")
 		fmt.Println("  agent-deck session set my-project wrapper \"nvim +'terminal {command}'\"")
+		fmt.Println("  agent-deck session set my-project color \"#ff00aa\"     # truecolor hex tint")
+		fmt.Println("  agent-deck session set my-project color 203              # ANSI 256-palette pink")
+		fmt.Println("  agent-deck session set my-project color \"\"              # clear (opt-out)")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -892,6 +896,7 @@ func handleSessionSet(profile string, args []string) {
 		"tool":              true,
 		"wrapper":           true,
 		"channels":          true,
+		"color":             true,
 		"claude-session-id": true,
 		"gemini-session-id": true,
 	}
@@ -899,7 +904,7 @@ func handleSessionSet(profile string, args []string) {
 	if !validFields[field] {
 		out.Error(
 			fmt.Sprintf(
-				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, claude-session-id, gemini-session-id",
+				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, color, claude-session-id, gemini-session-id",
 				field,
 			),
 			ErrCodeInvalidOperation,
@@ -964,6 +969,18 @@ func handleSessionSet(profile string, args []string) {
 			}
 		}
 		inst.Channels = parsed
+	case "color":
+		// Per-session color tint (issue #391). Opt-in; empty clears.
+		oldValue = inst.Color
+		trimmed := strings.TrimSpace(value)
+		if !isValidSessionColor(trimmed) {
+			out.Error(
+				fmt.Sprintf("invalid color %q — expected '#RRGGBB', ANSI '0'..'255', or '' to clear", trimmed),
+				ErrCodeInvalidOperation,
+			)
+			os.Exit(1)
+		}
+		inst.Color = trimmed
 	case "claude-session-id":
 		oldValue = inst.ClaudeSessionID
 		inst.ClaudeSessionID = value
@@ -2201,4 +2218,44 @@ func matchInstanceDataByTmuxName(instances []*session.InstanceData, tmuxSessionN
 		}
 	}
 	return nil
+}
+
+// isValidSessionColor validates a per-session color tint (issue #391).
+// Accepts:
+//   - "" (empty / opt-out)
+//   - "#RRGGBB" or "#rrggbb" (24-bit truecolor hex, exactly 6 hex digits)
+//   - "0".."255" (ANSI 256-palette index, decimal)
+//
+// Rejects everything else so typos like "red" or "#12" don't quietly persist
+// into the TUI render layer where they'd fall through to lipgloss defaults
+// with surprising results. Kept as a pure function so the test table stays
+// CLI-free (see TestIsValidSessionColor).
+func isValidSessionColor(v string) bool {
+	if v == "" {
+		return true
+	}
+	// Truecolor hex: '#' + 6 hex digits exactly.
+	if len(v) == 7 && v[0] == '#' {
+		for i := 1; i < 7; i++ {
+			c := v[i]
+			ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !ok {
+				return false
+			}
+		}
+		return true
+	}
+	// ANSI 256-palette index: 0..255 as decimal.
+	n := 0
+	if len(v) == 0 || len(v) > 3 {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 0 && n <= 255
 }

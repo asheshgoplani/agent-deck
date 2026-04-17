@@ -87,6 +87,9 @@ type InstanceData struct {
 	// Plugin channels (persisted for --channels CLI flag on Claude restart)
 	Channels []string `json:"channels,omitempty"`
 
+	// Color is an optional per-session TUI row tint (issue #391). Empty = no tint.
+	Color string `json:"color,omitempty"`
+
 	// Sandbox support
 	Sandbox          *SandboxConfig `json:"sandbox,omitempty"`
 	SandboxContainer string         `json:"sandbox_container,omitempty"`
@@ -303,6 +306,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.MultiRepoEnabled, inst.AdditionalPaths,
 			inst.MultiRepoTempDir, mrWorktrees,
 			inst.Channels,
+			inst.Color, // issue #391
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -448,7 +452,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			sshHost2, sshRemotePath2,
 			mrEnabled2, addPaths2,
 			mrTempDir2, mrWorktrees2,
-			channels2 := statedb.UnmarshalToolData(r.ToolData)
+			channels2,
+			color2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		instances[i] = &InstanceData{
@@ -492,6 +497,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir2,
 			MultiRepoWorktrees: mrWorktrees2,
 			Channels:           channels2,
+			Color:              color2,
 		}
 	}
 
@@ -547,7 +553,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			sshHost, sshRemotePath,
 			mrEnabled, addPaths,
 			mrTempDir, mrWorktrees,
-			channels := statedb.UnmarshalToolData(r.ToolData)
+			channels,
+			color := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
@@ -591,6 +598,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir,
 			MultiRepoWorktrees: mrWorktrees,
 			Channels:           channels,
+			Color:              color,
 		}
 	}
 
@@ -788,6 +796,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Notes:              instData.Notes,
 			LoadedMCPNames:     instData.LoadedMCPNames,
 			Channels:           instData.Channels,
+			Color:              instData.Color,
 			Sandbox:            instData.Sandbox,
 			SandboxContainer:   instData.SandboxContainer,
 			SSHHost:            instData.SSHHost,

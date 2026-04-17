@@ -1522,6 +1522,7 @@ func handleList(profile string, args []string) {
 			SSHHost       string    `json:"ssh_host,omitempty"`
 			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
 			Channels      []string  `json:"channels,omitempty"`
+			Color         string    `json:"color,omitempty"` // issue #391
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -1542,6 +1543,7 @@ func handleList(profile string, args []string) {
 				SSHHost:       inst.SSHHost,
 				SSHRemotePath: inst.SSHRemotePath,
 				Channels:      inst.Channels,
+				Color:         inst.Color,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name

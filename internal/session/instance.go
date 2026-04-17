@@ -128,6 +128,16 @@ type Instance struct {
 	Notes             string    `json:"notes,omitempty"`
 	lastPromptModTime time.Time // mtime cache for updateGeminiLatestPrompt (not serialized)
 
+	// Color is an optional user-chosen tint for this session's TUI row (issue #391).
+	// Accepts a lipgloss-compatible color spec:
+	//   - "#RRGGBB"      - truecolor hex
+	//   - "0".."255"     - ANSI 256-palette index as a decimal string
+	//   - ""             - default (no tint, current rendering unchanged)
+	// Validation happens at CLI/API boundary in cmd/agent-deck/session_cmd.go.
+	// Empty string is the default so the field is fully opt-in and never
+	// changes rendering for users who don't set it.
+	Color string `json:"color,omitempty"`
+
 	// JSONL tail-read cache: skip re-reading if file hasn't grown
 	lastJSONLSize int64
 	lastJSONLPath string
