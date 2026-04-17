@@ -2104,6 +2104,13 @@ func TestSessionHasConversationData(t *testing.T) {
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
+	// Build an Instance pointing at the test project. No conductor/group
+	// config override is set, so GetClaudeConfigDirForInstance(inst) falls
+	// through to the CLAUDE_CONFIG_DIR env var above — preserving the
+	// original semantics of this legacy test.
+	inst := NewInstance("legacy-has-data", projectPath)
+	inst.Tool = "claude"
+
 	t.Run("file with sessionId returns true", func(t *testing.T) {
 		sessionID := "has-session-id"
 		filePath := filepath.Join(projectsDir, sessionID+".jsonl")
@@ -2112,7 +2119,7 @@ func TestSessionHasConversationData(t *testing.T) {
 {"type":"user","sessionId":"has-session-id","text":"hello"}`
 		_ = os.WriteFile(filePath, []byte(content), 0o644)
 
-		if !sessionHasConversationData(sessionID, projectPath) {
+		if !sessionHasConversationData(inst, sessionID) {
 			t.Error("Expected true for file with sessionId")
 		}
 	})
@@ -2124,13 +2131,13 @@ func TestSessionHasConversationData(t *testing.T) {
 {"type":"summary","leafUuid":"def"}`
 		_ = os.WriteFile(filePath, []byte(content), 0o644)
 
-		if sessionHasConversationData(sessionID, projectPath) {
+		if sessionHasConversationData(inst, sessionID) {
 			t.Error("Expected false for file without sessionId")
 		}
 	})
 
 	t.Run("missing file returns false (use --session-id)", func(t *testing.T) {
-		if sessionHasConversationData("nonexistent-file", projectPath) {
+		if sessionHasConversationData(inst, "nonexistent-file") {
 			t.Error("Expected false for missing file (nothing to resume)")
 		}
 	})

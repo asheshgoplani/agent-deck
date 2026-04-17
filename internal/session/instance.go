@@ -541,7 +541,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 			// Resume specific session by ID
 			if opts.ResumeSessionID != "" {
 				// Check if session has actual conversation data
-				if sessionHasConversationData(opts.ResumeSessionID, i.ProjectPath) {
+				if sessionHasConversationData(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
 					return fmt.Sprintf(`%s%s --resume %s%s`,
 						configDirPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
@@ -2732,8 +2732,8 @@ func (i *Instance) UpdateClaudeSession(excludeIDs map[string]bool) {
 			rejected := false
 			// Quality gate: don't adopt a zombie ID from tmux env when current has real data
 			if i.ClaudeSessionID != "" {
-				currentHasData := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
-				candidateHasData := sessionHasConversationData(sessionID, i.ProjectPath)
+				currentHasData := sessionHasConversationData(i, i.ClaudeSessionID)
+				candidateHasData := sessionHasConversationData(i, sessionID)
 				if currentHasData && !candidateHasData {
 					sessionLog.Debug("claude_session_tmux_rejected_zombie",
 						slog.String("current_id", i.ClaudeSessionID),
@@ -2841,7 +2841,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		}
 		// Quality gate: only accept if the hook session has conversation data,
 		// OR if the current session ID is empty (first detection).
-		if i.ClaudeSessionID == "" || sessionHasConversationData(sessionID, i.ProjectPath) {
+		if i.ClaudeSessionID == "" || sessionHasConversationData(i, sessionID) {
 			action := "bind"
 			if i.ClaudeSessionID != "" {
 				action = "rebind"
@@ -4372,7 +4372,7 @@ func (i *Instance) buildClaudeResumeCommand() string {
 
 	// Check if session has actual conversation data
 	// If not, use --session-id instead of --resume to avoid "No conversation found" error
-	useResume := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
+	useResume := sessionHasConversationData(i, i.ClaudeSessionID)
 	sessionLog.Debug(
 		"session_data_build_resume",
 		slog.String("session_id", i.ClaudeSessionID),
@@ -5020,6 +5020,16 @@ func geminiSessionHasConversationData(sessionID, projectPath string) bool {
 // sessionHasConversationData checks if a Claude session file contains actual
 // conversation data (has "sessionId" field in records).
 //
+// Uses the PER-INSTANCE Claude config dir (via GetClaudeConfigDirForInstance)
+// so sessions with [conductors.<name>.claude].config_dir or
+// [groups."<group>".claude].config_dir overrides detect their own JSONL
+// history correctly. Prior versions (≤v1.7.6) consulted the process-wide
+// GetClaudeConfigDir(), which silently ignored per-instance overrides and
+// caused restart-with-history to mis-route to --session-id (Claude rejects
+// that as "already in use") instead of --resume. Passing inst == nil
+// degrades to the global lookup, preserving legacy call sites without an
+// Instance.
+//
 // Returns true if:
 // - File has any "sessionId" field (user interacted with session)
 // - Error reading file (safe fallback - don't risk losing sessions)
@@ -5027,12 +5037,22 @@ func geminiSessionHasConversationData(sessionID, projectPath string) bool {
 // Returns false if:
 // - File doesn't exist (nothing to resume, use --session-id)
 // - File exists but has zero "sessionId" occurrences (never interacted)
-func sessionHasConversationData(sessionID string, projectPath string) bool {
+func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	// Build the session file path
 	// Format: {config_dir}/projects/{encoded_path}/{sessionID}.jsonl
-	configDir := GetClaudeConfigDir()
+	var configDir string
+	if inst != nil {
+		configDir = GetClaudeConfigDirForInstance(inst)
+	} else {
+		configDir = GetClaudeConfigDir()
+	}
 	if configDir == "" {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+
+	projectPath := ""
+	if inst != nil {
+		projectPath = inst.ProjectPath
 	}
 
 	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
@@ -5054,7 +5074,7 @@ func sessionHasConversationData(sessionID string, projectPath string) bool {
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
 		// File doesn't exist at expected location - try cross-project search
 		// This handles path hash mismatches (e.g., session created from different directory)
-		if fallbackPath := findSessionFileInAllProjects(sessionID); fallbackPath != "" {
+		if fallbackPath := findSessionFileInAllProjects(inst, sessionID); fallbackPath != "" {
 			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
 			sessionFile = fallbackPath
 		} else {
@@ -5114,12 +5134,20 @@ func sessionHasConversationData(sessionID string, projectPath string) bool {
 // This handles path hash mismatches when agent-deck runs from a different directory
 // than where the Claude session was originally created.
 // Returns the full path to the session file, or empty string if not found.
-func findSessionFileInAllProjects(sessionID string) string {
+// Uses the PER-INSTANCE config dir (via GetClaudeConfigDirForInstance) when
+// inst is non-nil so sessions with conductor/group config_dir overrides find
+// their own JSONLs. Passing inst == nil degrades to the global lookup.
+func findSessionFileInAllProjects(inst *Instance, sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
 
-	configDir := GetClaudeConfigDir()
+	var configDir string
+	if inst != nil {
+		configDir = GetClaudeConfigDirForInstance(inst)
+	} else {
+		configDir = GetClaudeConfigDir()
+	}
 	if configDir == "" {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}

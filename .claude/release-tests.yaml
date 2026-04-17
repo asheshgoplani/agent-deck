@@ -241,3 +241,35 @@ tests:
     command: go test ./internal/session/ -run TestConductorConfig_SourceLabelGroupWhenGroupBeatsEnv
       -count=1 -v
     expected: pass
+- id: fix-restart-custom-config-dir-respects-per-instance
+  added: '2026-04-17'
+  task: fix-restart-custom-config-dir
+  file: internal/session/conductorconfig_test.go
+  test_name: TestSessionHasConversationData_RespectsPerInstanceConfigDir
+  purpose: sessionHasConversationData must consult per-instance Claude config dir
+    (GetClaudeConfigDirForInstance) so conductors/groups with config_dir overrides
+    detect their own JSONL history on restart. Pre-fix, the global GetClaudeConfigDir()
+    was used, causing restart to mis-route to --session-id (Claude rejects as already-in-use)
+    and the tmux pane to die.
+  source: user-report-2026-04-17-conductor-innotrade
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestSessionHasConversationData_RespectsPerInstanceConfigDir
+      -count=1 -v
+    expected: pass
+- id: fix-restart-custom-config-dir-resume-flag
+  added: '2026-04-17'
+  task: fix-restart-custom-config-dir
+  file: internal/session/conductorconfig_test.go
+  test_name: TestBuildClaudeResumeCommand_UsesResumeWhenPerInstanceHistoryExists
+  purpose: End-to-end live-boundary pin — when JSONL exists only under the per-instance
+    config dir, buildClaudeResumeCommand (output becomes tmux pane_start_command
+    verbatim) emits --resume <uuid>, NOT --session-id. Guards against the v1.7.6
+    regression where restart forked a fresh conversation because sessionHasConversationData
+    ignored conductor/group config_dir overrides.
+  source: user-report-2026-04-17-conductor-innotrade
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestBuildClaudeResumeCommand_UsesResumeWhenPerInstanceHistoryExists
+      -count=1 -v
+    expected: pass
