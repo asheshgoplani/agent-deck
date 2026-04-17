@@ -46,8 +46,15 @@ type tmuxPTYBridge struct {
 	sessionID   string
 	writer      *wsConnWriter
 
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd *exec.Cmd
+
+	// ptmxMu guards ptmx against a concurrent Close/Resize race. Close
+	// closes the PTY file and nils the pointer under the write lock;
+	// Resize reads under the read lock so Setsize cannot hit a freshly
+	// closed fd. Observed as an intermittent TestTmuxPTYBridgeResize
+	// -race failure on CI (v1.7.4, v1.7.5 release workflows).
+	ptmxMu sync.RWMutex
+	ptmx   *os.File
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -130,11 +137,17 @@ func (b *tmuxPTYBridge) WriteInput(data string) error {
 }
 
 func (b *tmuxPTYBridge) Resize(cols, rows int) error {
-	if b == nil || b.ptmx == nil {
+	if b == nil {
 		return fmt.Errorf("bridge not initialized")
 	}
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid dimensions: cols=%d rows=%d", cols, rows)
+	}
+
+	b.ptmxMu.RLock()
+	defer b.ptmxMu.RUnlock()
+	if b.ptmx == nil {
+		return fmt.Errorf("bridge not initialized")
 	}
 
 	var firstErr error
@@ -171,9 +184,12 @@ func (b *tmuxPTYBridge) Close() {
 		return
 	}
 	b.closeOnce.Do(func() {
+		b.ptmxMu.Lock()
 		if b.ptmx != nil {
 			_ = b.ptmx.Close()
+			b.ptmx = nil
 		}
+		b.ptmxMu.Unlock()
 		if b.cmd != nil && b.cmd.Process != nil {
 			pgid, err := syscall.Getpgid(b.cmd.Process.Pid)
 			if err == nil {

@@ -172,3 +172,72 @@ tests:
     command: go test ./cmd/agent-deck/ -run TestSessionShowJSONIncludesChannels -count=1
       -timeout 90s -v
     expected: pass
+- id: fix-config-dir-priority-group-beats-env
+  added: '2026-04-17'
+  task: fix-config-dir-priority
+  file: internal/session/conductorconfig_test.go
+  test_name: TestConductorConfig_GroupBeatsEnv
+  purpose: "[groups.<g>.claude].config_dir wins over CLAUDE_CONFIG_DIR env var \u2014\
+    \ explicit TOML override is more specific than shell-wide default (2026-04-17\
+    \ priority-inversion fix)."
+  source: user-report-2026-04-17
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestConductorConfig_GroupBeatsEnv -count=1
+      -v
+    expected: pass
+- id: fix-config-dir-priority-conductor-beats-env
+  added: '2026-04-17'
+  task: fix-config-dir-priority
+  file: internal/session/conductorconfig_test.go
+  test_name: TestConductorConfig_PrecedenceConductorBeatsEnv
+  purpose: "[conductors.<n>.claude].config_dir wins over CLAUDE_CONFIG_DIR env var\
+    \ \u2014 flipped from old TestConductorConfig_PrecedenceEnvBeatsConductor which\
+    \ codified the buggy env-first order."
+  source: user-report-2026-04-17
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestConductorConfig_PrecedenceConductorBeatsEnv
+      -count=1 -v
+    expected: pass
+- id: fix-config-dir-priority-env-still-beats-profile
+  added: '2026-04-17'
+  task: fix-config-dir-priority
+  file: internal/session/conductorconfig_test.go
+  test_name: TestConductorConfig_EnvBeatsProfile
+  purpose: "Regression guard: env var STILL beats [profiles.<p>.claude].config_dir.\
+    \ Profile is shell-wide-ish and less specific than env; must stay below env in\
+    \ the new priority order."
+  source: user-report-2026-04-17
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestConductorConfig_EnvBeatsProfile
+      -count=1 -v
+    expected: pass
+- id: fix-config-dir-priority-env-still-beats-global
+  added: '2026-04-17'
+  task: fix-config-dir-priority
+  file: internal/session/conductorconfig_test.go
+  test_name: TestConductorConfig_EnvBeatsGlobal
+  purpose: 'Regression guard: env var STILL beats [claude].config_dir top-level global.
+    Global is shell-wide fallback; env remains stronger.'
+  source: user-report-2026-04-17
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestConductorConfig_EnvBeatsGlobal -count=1
+      -v
+    expected: pass
+- id: fix-config-dir-priority-source-label-group
+  added: '2026-04-17'
+  task: fix-config-dir-priority
+  file: internal/session/conductorconfig_test.go
+  test_name: TestConductorConfig_SourceLabelGroupWhenGroupBeatsEnv
+  purpose: "GetClaudeConfigDirSourceForInstance must return source=\"group\" when\
+    \ group TOML beats env \u2014 parallel-paths audit for the (path, source) getter\
+    \ alongside the primary resolver."
+  source: user-report-2026-04-17
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestConductorConfig_SourceLabelGroupWhenGroupBeatsEnv
+      -count=1 -v
+    expected: pass

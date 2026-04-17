@@ -123,22 +123,111 @@ config_dir = "/tmp/group-loses"
 	}
 }
 
-// TestConductorConfig_PrecedenceEnvBeatsConductor locks CFG-11 test 3:
-// the CLAUDE_CONFIG_DIR env var beats a [conductors.<name>.claude] override.
-func TestConductorConfig_PrecedenceEnvBeatsConductor(t *testing.T) {
+// TestConductorConfig_PrecedenceConductorBeatsEnv codifies the CORRECTED
+// priority (fix-config-dir-priority, 2026-04-17): an explicit
+// [conductors.<name>.claude].config_dir TOML override beats a shell-wide
+// CLAUDE_CONFIG_DIR export.
+//
+// This test REPLACES an earlier TestConductorConfig_PrecedenceEnvBeatsConductor
+// that codified the INCORRECT env-first behavior. That priority was wrong
+// because developer shells often export CLAUDE_CONFIG_DIR via aliases
+// (cdp, cdw) to select a profile, and that export shadowed every explicit
+// per-conductor TOML block the user wrote — making config.toml overrides
+// silently useless. The TOML block is scoped to this conductor; the env
+// var is a shell-wide default. More specific wins.
+func TestConductorConfig_PrecedenceConductorBeatsEnv(t *testing.T) {
 	tmpHome := setupConductorTest(t)
-	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-wins")
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-loses")
 	// setupConductorTest's t.Cleanup already restores CLAUDE_CONFIG_DIR.
 
 	writeConductorConfig(t, tmpHome, `
 [conductors.foo.claude]
-config_dir = "/tmp/conductor-loses"
+config_dir = "/tmp/conductor-wins"
 `)
 
 	inst := NewInstanceWithGroupAndTool("conductor-foo", tmpHome, "conductor", "claude")
 	got := GetClaudeConfigDirForInstance(inst)
+	if got != "/tmp/conductor-wins" {
+		t.Errorf("GetClaudeConfigDirForInstance: conductor TOML must beat env; got=%q want=%q", got, "/tmp/conductor-wins")
+	}
+}
+
+// TestConductorConfig_GroupBeatsEnv codifies the CORRECTED priority for
+// group-level TOML overrides. An explicit [groups."<group>".claude].config_dir
+// beats a shell-wide CLAUDE_CONFIG_DIR export.
+//
+// Regression protection: a user with cdp/cdw aliases that export
+// CLAUDE_CONFIG_DIR must still be able to use [groups.innotrade.claude]
+// to force a different dir for that group's sessions.
+func TestConductorConfig_GroupBeatsEnv(t *testing.T) {
+	tmpHome := setupConductorTest(t)
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-loses")
+	writeConductorConfig(t, tmpHome, `
+[groups."innotrade".claude]
+config_dir = "/tmp/group-wins"
+`)
+
+	inst := NewInstanceWithGroupAndTool("some-session", tmpHome, "innotrade", "claude")
+	got := GetClaudeConfigDirForInstance(inst)
+	if got != "/tmp/group-wins" {
+		t.Errorf("GetClaudeConfigDirForInstance: group TOML must beat env; got=%q want=%q", got, "/tmp/group-wins")
+	}
+}
+
+// TestConductorConfig_EnvBeatsProfile locks the remaining correct behavior:
+// env still beats profile. Profile is less specific than env (targets a
+// profile, not a session), so env > profile stays.
+func TestConductorConfig_EnvBeatsProfile(t *testing.T) {
+	tmpHome := setupConductorTest(t)
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-wins")
+	_ = os.Setenv("AGENTDECK_PROFILE", "personal")
+	writeConductorConfig(t, tmpHome, `
+[profiles.personal.claude]
+config_dir = "/tmp/profile-loses"
+`)
+
+	inst := NewInstanceWithGroupAndTool("plain", tmpHome, "", "claude")
+	got := GetClaudeConfigDirForInstance(inst)
 	if got != "/tmp/env-wins" {
-		t.Errorf("GetClaudeConfigDirForInstance with CLAUDE_CONFIG_DIR set = %q, want %q", got, "/tmp/env-wins")
+		t.Errorf("GetClaudeConfigDirForInstance: env must beat profile; got=%q want=%q", got, "/tmp/env-wins")
+	}
+}
+
+// TestConductorConfig_EnvBeatsGlobal locks env > [claude] global fallback.
+// Global is shell-wide too, but less intentional than CLAUDE_CONFIG_DIR.
+func TestConductorConfig_EnvBeatsGlobal(t *testing.T) {
+	tmpHome := setupConductorTest(t)
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-wins")
+	writeConductorConfig(t, tmpHome, `
+[claude]
+config_dir = "/tmp/global-loses"
+`)
+
+	inst := NewInstanceWithGroupAndTool("plain", tmpHome, "", "claude")
+	got := GetClaudeConfigDirForInstance(inst)
+	if got != "/tmp/env-wins" {
+		t.Errorf("GetClaudeConfigDirForInstance: env must beat global; got=%q want=%q", got, "/tmp/env-wins")
+	}
+}
+
+// TestConductorConfig_SourceLabelGroupWhenGroupBeatsEnv mirrors the
+// priority swap into the (path, source) getter. With group set AND env
+// set, source must be "group", not "env".
+func TestConductorConfig_SourceLabelGroupWhenGroupBeatsEnv(t *testing.T) {
+	tmpHome := setupConductorTest(t)
+	_ = os.Setenv("CLAUDE_CONFIG_DIR", "/tmp/env-value")
+	writeConductorConfig(t, tmpHome, `
+[groups."innotrade".claude]
+config_dir = "/tmp/group-value"
+`)
+
+	inst := NewInstanceWithGroupAndTool("some-session", tmpHome, "innotrade", "claude")
+	path, source := GetClaudeConfigDirSourceForInstance(inst)
+	if source != "group" {
+		t.Errorf("source label = %q, want %q (group beats env)", source, "group")
+	}
+	if path != "/tmp/group-value" {
+		t.Errorf("path = %q, want %q", path, "/tmp/group-value")
 	}
 }
 

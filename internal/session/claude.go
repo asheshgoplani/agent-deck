@@ -340,29 +340,34 @@ func conductorNameFromInstance(inst *Instance) string {
 	return name
 }
 
-// GetClaudeConfigDirForInstance returns the Claude config directory,
-// extending GetClaudeConfigDirForGroup with a [conductors.<name>] branch
-// that sits between the env-var check and the group check.
+// GetClaudeConfigDirForInstance returns the Claude config directory for
+// this Instance. Per-instance TOML overrides (conductor, group) beat the
+// shell-wide CLAUDE_CONFIG_DIR env var; less-specific config (profile,
+// global) falls to env and below.
 //
 // Priority (most-specific → least-specific):
 //
-//  1. CLAUDE_CONFIG_DIR env var
-//  2. [conductors.<name>.claude].config_dir — NEW (CFG-08), consulted only when
+//  1. [conductors.<name>.claude].config_dir — consulted only when
 //     Instance.Title starts with "conductor-"
-//  3. [groups."<group>".claude].config_dir   — PR #578 (CFG-01)
+//  2. [groups."<group>".claude].config_dir
+//  3. CLAUDE_CONFIG_DIR env var
 //  4. [profiles.<profile>.claude].config_dir
 //  5. [claude].config_dir
 //  6. ~/.claude
 //
+// Why conductor/group beat env (fix-config-dir-priority, 2026-04-17):
+// developer shells commonly export CLAUDE_CONFIG_DIR via aliases (cdp,
+// cdw) to select a profile. When the user then writes an explicit
+// [conductors.foo.claude] or [groups.bar.claude] block in config.toml,
+// that TOML block is scoped to exactly that conductor/group and is
+// semantically MORE specific than a shell-wide default. The old
+// env-first order silently shadowed every TOML override. Profile/global
+// remain beaten by env because they're shell-wide too (less specific
+// than env in intent).
+//
 // Callers pass the *Instance; conductor name is derived via
-// conductorNameFromInstance. Backward compat: non-conductor sessions
-// (Title without "conductor-" prefix) resolve identically to
-// GetClaudeConfigDirForGroup(inst.GroupPath).
+// conductorNameFromInstance.
 func GetClaudeConfigDirForInstance(inst *Instance) string {
-	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-		return ExpandPath(envDir)
-	}
-
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil {
 		if name := conductorNameFromInstance(inst); name != "" {
@@ -377,6 +382,13 @@ func GetClaudeConfigDirForInstance(inst *Instance) string {
 		if groupDir := userConfig.GetGroupClaudeConfigDir(groupPath); groupDir != "" {
 			return groupDir
 		}
+	}
+
+	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
+		return ExpandPath(envDir)
+	}
+
+	if userConfig != nil {
 		profile := GetEffectiveProfile("")
 		if profileDir := userConfig.GetProfileClaudeConfigDir(profile); profileDir != "" {
 			return profileDir
@@ -391,14 +403,11 @@ func GetClaudeConfigDirForInstance(inst *Instance) string {
 }
 
 // GetClaudeConfigDirSourceForInstance returns the resolved path and the
-// priority-level label. Extends GetClaudeConfigDirSourceForGroup with a
-// "conductor" branch. Keep in sync with GetClaudeConfigDirForInstance —
+// priority-level label. Keep in sync with GetClaudeConfigDirForInstance —
 // both functions must change together if the priority chain ever changes.
+// Source labels: "conductor", "group", "env", "profile", "global",
+// "default".
 func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
-	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-		return ExpandPath(envDir), "env"
-	}
-
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil {
 		if name := conductorNameFromInstance(inst); name != "" {
@@ -413,6 +422,13 @@ func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
 		if groupDir := userConfig.GetGroupClaudeConfigDir(groupPath); groupDir != "" {
 			return groupDir, "group"
 		}
+	}
+
+	if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
+		return ExpandPath(envDir), "env"
+	}
+
+	if userConfig != nil {
 		profile := GetEffectiveProfile("")
 		if profileDir := userConfig.GetProfileClaudeConfigDir(profile); profileDir != "" {
 			return profileDir, "profile"
@@ -426,13 +442,11 @@ func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
 	return filepath.Join(home, ".claude"), "default"
 }
 
-// IsClaudeConfigDirExplicitForInstance mirrors IsClaudeConfigDirExplicitForGroup
-// with the conductor-block branch. Returns true if ANY priority level sets a
-// config dir for this Instance.
+// IsClaudeConfigDirExplicitForInstance returns true if ANY priority level
+// sets a config dir for this Instance. The priority CHAIN is the same as
+// GetClaudeConfigDirForInstance but the boolean is order-insensitive —
+// explicit is explicit regardless of which layer wins.
 func IsClaudeConfigDirExplicitForInstance(inst *Instance) bool {
-	if os.Getenv("CLAUDE_CONFIG_DIR") != "" {
-		return true
-	}
 	userConfig, _ := LoadUserConfig()
 	if userConfig != nil {
 		if name := conductorNameFromInstance(inst); name != "" {
@@ -447,6 +461,11 @@ func IsClaudeConfigDirExplicitForInstance(inst *Instance) bool {
 		if userConfig.GetGroupClaudeConfigDir(groupPath) != "" {
 			return true
 		}
+	}
+	if os.Getenv("CLAUDE_CONFIG_DIR") != "" {
+		return true
+	}
+	if userConfig != nil {
 		profile := GetEffectiveProfile("")
 		if userConfig.GetProfileClaudeConfigDir(profile) != "" {
 			return true

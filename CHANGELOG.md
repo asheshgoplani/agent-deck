@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.6] - 2026-04-17
+
+### Fixed
+- **Priority inversion on `CLAUDE_CONFIG_DIR`**: explicit `[conductors.<name>.claude]` and `[groups."<name>".claude]` TOML overrides now beat the shell-wide `CLAUDE_CONFIG_DIR` env var. Previously, developer shells that exported `CLAUDE_CONFIG_DIR` via profile aliases (`cdp`/`cdw`) silently shadowed every per-conductor/per-group override — making config.toml overrides unreliable for the exact users most likely to use them. Profile/global fallbacks remain weaker than env (they're shell-wide too). Scope: `GetClaudeConfigDirForInstance`, `GetClaudeConfigDirSourceForInstance`, `IsClaudeConfigDirExplicitForInstance` in `internal/session/claude.go`. Group-less variants unchanged.
+- **Web terminal `TestTmuxPTYBridgeResize` -race flake**: added `ptmxMu sync.RWMutex` protecting the PTY file handle against concurrent Close/Resize. Previously intermittent on GH Actions release runs (v1.7.4, v1.7.5).
+
 ## [1.5.4] - 2026-04-16
 
 ### Added
