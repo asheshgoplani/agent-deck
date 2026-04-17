@@ -17,7 +17,6 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
 	"github.com/creack/pty"
-	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -71,10 +70,6 @@ func waitForAttachOutputDrain(outputDone <-chan struct{}, timeout time.Duration)
 	case <-timer.C:
 		return false, time.Since(start)
 	}
-}
-
-func flushDetachInput(fd int) error {
-	return unix.IoctlSetInt(fd, unix.TCFLSH, unix.TCIFLUSH)
 }
 
 // Attach attaches to the tmux session with full PTY support.
