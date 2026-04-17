@@ -11940,6 +11940,12 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			// from the captured terminal output pass through to display.
 			safeLine := stripControlCharsPreserveANSI(line)
 
+			// Strip CSI K (Erase in Line) and CSI J (Erase in Display).
+			// Without this, captured content (e.g. Neovim mini.statusline)
+			// instructs the outer terminal to paint the active SGR
+			// background beyond the pane's truncation point. See #579.
+			safeLine = stripDisplayErasingEscapes(safeLine)
+
 			// In light theme, remap captured ANSI background colors to the
 			// current preview surface instead of stripping them completely.
 			// This preserves the soft highlighted blocks used by tools like
@@ -12142,6 +12148,24 @@ func stripControlCharsPreserveANSI(s string) string {
 //   - ESC[100m..ESC[107m — bright/high-intensity backgrounds
 //   - ESC[48;...m        — 256-color and true-color backgrounds (ESC[48;5;Nm / ESC[48;2;R;G;Bm)
 var ansiBackgroundRE = regexp.MustCompile(`\x1b\[(?:4[0-7]|10[0-7]|48;[0-9;]+)m`)
+
+// eraseEscapesRE matches CSI "Erase in Line" (ESC [ ... K) and CSI
+// "Erase in Display" (ESC [ ... J). These tell the outer terminal to
+// paint the currently-active SGR background across the remainder of
+// the physical row (K) or screen (J). When captured content is
+// rendered inside the preview pane, that paint extends past the pane
+// boundary — the regression reported as #579, where Neovim's
+// mini.statusline leaks its green bar past the right edge. Stripping
+// K/J makes every cell the preview emits explicit, so the outer
+// terminal paints only what fits the truncation budget.
+var eraseEscapesRE = regexp.MustCompile(`\x1b\[[0-9;?]*[KJ]`)
+
+// stripDisplayErasingEscapes removes CSI K / CSI J sequences from
+// captured terminal content while preserving SGR (color/attribute)
+// sequences.
+func stripDisplayErasingEscapes(s string) string {
+	return eraseEscapesRE.ReplaceAllString(s, "")
+}
 
 // previewSurfaceANSI returns a truecolor ANSI background sequence matching
 // the current preview surface. Falls back to empty string if the color is not
