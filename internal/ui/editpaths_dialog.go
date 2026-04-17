@@ -86,8 +86,8 @@ func (d *EditPathsDialog) Hide() {
 	d.validationErr = ""
 }
 
-func (d *EditPathsDialog) IsVisible() bool  { return d.visible }
-func (d *EditPathsDialog) IsEditing() bool   { return d.editing }
+func (d *EditPathsDialog) IsVisible() bool      { return d.visible }
+func (d *EditPathsDialog) IsEditing() bool      { return d.editing }
 func (d *EditPathsDialog) GetSessionID() string { return d.sessionID }
 
 func (d *EditPathsDialog) SetSize(w, h int) {
