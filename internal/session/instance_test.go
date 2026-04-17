@@ -3129,3 +3129,132 @@ func TestForkCommandNoUuidgen(t *testing.T) {
 		t.Errorf("Fork command must NOT use $( shell substitution:\n  cmd: %q", cmd)
 	}
 }
+
+// --- Issue #601 regression guards -------------------------------------------
+// prepareCommand() must apply the user wrapper BEFORE the bash -c wrap so that
+// extra args folded into a "{command} --flag1 --flag2" wrapper end up INSIDE
+// the quoted bash -c payload, not outside it. The old (reversed) order produced
+// "bash -c 'tool' --flag1 --flag2", turning --flag1/--flag2 into bash positional
+// parameters ($0, $1) which the tool never receives.
+
+// TestPrepareCommand_AppliesWrapperBeforeBashWrap pins the exact output shape:
+// every extra flag in the wrapper suffix must live inside the 'bash -c …' quotes.
+func TestPrepareCommand_AppliesWrapperBeforeBashWrap(t *testing.T) {
+	inst := NewInstance("issue-601-unit", "/tmp")
+	inst.Tool = "claude" // wrapper is on Instance; tool just avoids GetToolDef wrapper kicking in
+	inst.Wrapper = "{command} --extra1 --extra2"
+
+	got, _, err := inst.prepareCommand("tool")
+	if err != nil {
+		t.Fatalf("prepareCommand returned error: %v", err)
+	}
+
+	want := `bash -c 'tool --extra1 --extra2'`
+	if got != want {
+		t.Fatalf("prepareCommand output shape wrong.\n  got:  %q\n  want: %q", got, want)
+	}
+
+	// Defense in depth: the trailing flags must NOT appear outside the quoted payload.
+	// Regex matches the BAD shape: bash -c '<anything without --extra>' <--extra...>
+	badShape := regexp.MustCompile(`^bash -c '[^']*' --extra`)
+	if badShape.MatchString(got) {
+		t.Fatalf("flags leaked outside bash -c quotes (issue #601 regression):\n  got: %q", got)
+	}
+}
+
+// TestPrepareCommand_WrapperWithSingleQuoteInCmd_QuotesSafely asserts that
+// after the reorder, a single quote appearing ANYWHERE in the fully-substituted
+// wrapped string (base cmd OR wrapper suffix) is escaped via the close/dq/open
+// ( '"'"' ) pattern — the existing escape used by prepareCommand.
+func TestPrepareCommand_WrapperWithSingleQuoteInCmd_QuotesSafely(t *testing.T) {
+	inst := NewInstance("issue-601-quoting", "/tmp")
+	inst.Tool = "claude"
+	inst.Wrapper = "{command} --trailing"
+
+	// cmd contains a single quote — the fully-substituted string becomes
+	//   echo it's-fine --trailing
+	// which, after escape-and-wrap, must be:
+	//   bash -c 'echo it'"'"'s-fine --trailing'
+	got, _, err := inst.prepareCommand(`echo it's-fine`)
+	if err != nil {
+		t.Fatalf("prepareCommand returned error: %v", err)
+	}
+
+	want := `bash -c 'echo it'"'"'s-fine --trailing'`
+	if got != want {
+		t.Fatalf("quoting escape wrong.\n  got:  %q\n  want: %q", got, want)
+	}
+}
+
+// TestPrepareCommand_NoWrapper_Unchanged guards against the reorder breaking
+// the no-wrapper path: prepareCommand must still return cmd unchanged.
+func TestPrepareCommand_NoWrapper_Unchanged(t *testing.T) {
+	inst := NewInstance("issue-601-nowrap", "/tmp")
+	inst.Tool = "shell" // no built-in wrapper
+	inst.Wrapper = ""
+
+	got, _, err := inst.prepareCommand("echo hi")
+	if err != nil {
+		t.Fatalf("prepareCommand returned error: %v", err)
+	}
+	if got != "echo hi" {
+		t.Fatalf("no-wrapper path should pass cmd through unchanged.\n  got:  %q\n  want: %q", got, "echo hi")
+	}
+}
+
+// TestPrepareCommand_Issue601_ReporterRepro exercises the exact
+// situation from #601: codex-class tool + --cmd with extra flags.
+// This pins the bug at the last in-repo boundary before the string is
+// handed to tmux.Start (and therefore to /bin/sh -c).
+func TestPrepareCommand_Issue601_ReporterRepro(t *testing.T) {
+	inst := NewInstance("issue-601-repro", "/tmp")
+	inst.Tool = "claude"
+	// Mirrors what resolveSessionCommand produces for:
+	//   -c "my-claude-wrapper --session-id UUID --dangerously-skip-permissions"
+	inst.Wrapper = "{command} --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --dangerously-skip-permissions"
+
+	got, _, err := inst.prepareCommand("my-claude-wrapper")
+	if err != nil {
+		t.Fatalf("prepareCommand returned error: %v", err)
+	}
+
+	// Both flags MUST appear inside the same bash -c payload as the base cmd.
+	if !strings.Contains(got, `'my-claude-wrapper --session-id aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --dangerously-skip-permissions'`) {
+		t.Fatalf("issue #601 repro: flags not inside bash -c single-quoted payload.\n  got: %q", got)
+	}
+	// Guard against the bad shape explicitly.
+	if strings.Contains(got, `'my-claude-wrapper' --session-id`) {
+		t.Fatalf("issue #601 BAD SHAPE: flags leaked outside bash -c quotes:\n  got: %q", got)
+	}
+}
+
+// --- Issue #598 regression tests: RefreshLiveSessionIDs ---
+// Cross-session `x` in the TUI captured stale JSONL content because
+// Instance.ClaudeSessionID was never refreshed from the live tmux env before
+// reading. RefreshLiveSessionIDs is the designated refresh point; these tests
+// pin its safety contract.
+
+func TestInstance_RefreshLiveSessionIDs_NoOpWhenTmuxSessionNil(t *testing.T) {
+	inst := NewInstance("sess-598-nil", t.TempDir())
+	inst.Tool = "claude"
+	inst.ClaudeSessionID = "stored-id"
+	// tmuxSession intentionally nil
+	inst.RefreshLiveSessionIDs() // must not panic
+	if inst.ClaudeSessionID != "stored-id" {
+		t.Errorf("ClaudeSessionID mutated with nil tmuxSession: got %q", inst.ClaudeSessionID)
+	}
+}
+
+func TestInstance_RefreshLiveSessionIDs_NoOpForNonAgenticTool(t *testing.T) {
+	inst := NewInstance("sess-598-shell", t.TempDir())
+	inst.Tool = "shell"
+	inst.ClaudeSessionID = "leftover-id"
+	inst.GeminiSessionID = "leftover-gemini"
+	inst.RefreshLiveSessionIDs()
+	if inst.ClaudeSessionID != "leftover-id" {
+		t.Errorf("ClaudeSessionID mutated for non-agentic tool: got %q", inst.ClaudeSessionID)
+	}
+	if inst.GeminiSessionID != "leftover-gemini" {
+		t.Errorf("GeminiSessionID mutated for non-agentic tool: got %q", inst.GeminiSessionID)
+	}
+}
