@@ -5965,6 +5965,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case defaultHotkeyBindings[hotkeyQuickApprove]:
+		// Quick approve: send "1" + Enter to the highlighted Claude session
+		// without attaching. Gated to Claude-compatible tools so a stray press
+		// on a vim/shell session cannot dump a "1" into the buffer. No status
+		// guard - Bash-tool permission prompts in Claude Code don't transition
+		// the session to StatusWaiting, so guarding on it would defeat the
+		// most common use case. Matches the existing "agent-deck session send"
+		// CLI, which has no status guard either.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil &&
+				session.IsClaudeCompatible(item.Session.Tool) {
+				if tmuxSess := item.Session.GetTmuxSession(); tmuxSess != nil {
+					_ = tmuxSess.SendKeysAndEnter("1")
+				}
+			}
+		}
+		return h, nil
+
 	case " ":
 		if len(h.flatItems) > 0 {
 			h.jumpMode = true

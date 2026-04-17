@@ -22,6 +22,7 @@ const (
 	hotkeySkillsManager   = "skills_manager"
 	hotkeyTogglePreview   = "toggle_preview"
 	hotkeyMarkUnread      = "mark_unread"
+	hotkeyQuickApprove    = "quick_approve"
 	hotkeyToggleYolo      = "toggle_yolo"
 	hotkeyQuickFork       = "quick_fork"
 	hotkeyForkWithOptions = "fork_with_options"
@@ -56,6 +57,7 @@ var hotkeyActionOrder = []string{
 	hotkeySkillsManager,
 	hotkeyTogglePreview,
 	hotkeyMarkUnread,
+	hotkeyQuickApprove,
 	hotkeyToggleYolo,
 	hotkeyQuickFork,
 	hotkeyForkWithOptions,
@@ -90,6 +92,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeySkillsManager:   "s",
 	hotkeyTogglePreview:   "v",
 	hotkeyMarkUnread:      "u",
+	hotkeyQuickApprove:    "a",
 	hotkeyToggleYolo:      "y",
 	hotkeyQuickFork:       "f",
 	hotkeyForkWithOptions: "F",

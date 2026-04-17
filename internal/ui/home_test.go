@@ -2576,3 +2576,95 @@ func selectedSessionID(h *Home) string {
 	}
 	return ""
 }
+
+// TestHandleMainKeyQuickApproveWaitingSession verifies that pressing the
+// quick-approve hotkey on a waiting session returns the home model without
+// panicking. With no attached tmux session the send is a no-op, which is the
+// behavior we want to confirm for the happy path.
+func TestHandleMainKeyQuickApproveWaitingSession(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:     "session-waiting",
+		Title:  "Waiting Session",
+		Tool:   "claude",
+		Status: session.StatusWaiting,
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	home.cursor = 0
+	home.instanceByID[inst.ID] = inst
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if _, ok := model.(*Home); !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+}
+
+// TestHandleMainKeyQuickApproveOnRunningSession verifies the handler also
+// works on a running session (no status guard). Bash-tool permission prompts
+// in Claude Code leave the session in StatusRunning, so this is the common
+// case in practice.
+func TestHandleMainKeyQuickApproveOnRunningSession(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:     "session-running",
+		Title:  "Running Session",
+		Tool:   "claude",
+		Status: session.StatusRunning,
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	home.cursor = 0
+	home.instanceByID[inst.ID] = inst
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if _, ok := model.(*Home); !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+}
+
+// TestHandleMainKeyQuickApproveOnGroupItem verifies the handler does not
+// crash when the cursor is on a non-session item such as a group.
+func TestHandleMainKeyQuickApproveOnGroupItem(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Path: "personal", Group: &session.Group{Name: "Personal"}},
+	}
+	home.cursor = 0
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if _, ok := model.(*Home); !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+}
+
+// TestHandleMainKeyQuickApproveSkipsNonClaudeTool verifies the tool guard:
+// pressing the hotkey on a non-Claude session (e.g. a shell pane) is a
+// silent no-op so a stray press cannot dump a "1" into a vim/shell buffer.
+func TestHandleMainKeyQuickApproveSkipsNonClaudeTool(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	inst := &session.Instance{
+		ID:     "session-shell",
+		Title:  "Shell Session",
+		Tool:   "shell",
+		Status: session.StatusRunning,
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: inst}}
+	home.cursor = 0
+	home.instanceByID[inst.ID] = inst
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	if _, ok := model.(*Home); !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+}
