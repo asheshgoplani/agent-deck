@@ -261,6 +261,36 @@ agent-deck worktree cleanup --force
 | **Code review** | Agent reviews PR in worktree while main work continues |
 | **Hotfix work** | Quick branch off main without disrupting feature work |
 
+## Watchers
+
+Watchers listen for inbound events (webhooks, push notifications, GitHub events, Slack messages) and route them into conductor sessions. Use them when the user says **"set up a watcher"**, **"listen for webhooks"**, **"route GitHub events to my conductor"**, **"forward ntfy notifications"**, or similar.
+
+Four adapter types are supported:
+
+| Type | Required flag | Typical use |
+|------|---------------|-------------|
+| `webhook` | `--port` | Generic HTTP listener |
+| `github` | `--secret` | GitHub repo webhooks with HMAC verification |
+| `ntfy` | `--topic` | ntfy.sh push notifications |
+| `slack` | `--topic` | Slack (via Cloudflare Worker bridge) |
+
+```bash
+agent-deck watcher create <type> --name <name> <adapter-flags...>
+agent-deck watcher start <name>
+agent-deck watcher list                # health + events/hour
+agent-deck watcher test <name>         # synthetic event (verify routing)
+```
+
+Full conversational setup flow is available as a separate skill:
+
+```bash
+agent-deck watcher install-skill watcher-creator
+```
+
+After running the install command, read `~/.agent-deck/skills/pool/watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring `~/.agent-deck/watcher/<name>/clients.json` routing.
+
+See `agent-deck watcher --help` for the full command surface and per-adapter examples.
+
 ## Configuration
 
 **File:** `~/.agent-deck/config.toml`

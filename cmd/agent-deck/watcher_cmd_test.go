@@ -653,3 +653,46 @@ func TestSkillDriftCheck_WatcherCreator(t *testing.T) {
 			strings.Join(violations, "\n"))
 	}
 }
+
+// TestWatcherHelp_MentionsAdapterExamples asserts the enriched help output
+// (issue #628) includes a concrete usage example for every supported adapter
+// type, a pointer to the watcher-creator conversational skill, and the README
+// reference link. Guards against future help-text regressions that erase the
+// documentation users need for first-time setup.
+func TestWatcherHelp_MentionsAdapterExamples(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	origStdout := os.Stdout
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+
+	printWatcherHelp()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"watcher create webhook",
+		"watcher create github",
+		"watcher create ntfy",
+		"watcher create slack",
+		"--port",
+		"--secret",
+		"--topic",
+		"watcher-creator",
+		"install-skill",
+		"agent-deck#watchers",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("watcher help missing %q\n\nFull output:\n%s", want, out)
+		}
+	}
+}

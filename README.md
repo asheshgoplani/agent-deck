@@ -336,6 +336,45 @@ agent-deck -p work launch . -c "codex --dangerously-bypass-approvals-and-sandbox
 When `--cmd` includes extra args, agent-deck auto-wraps the tool command so args are preserved reliably.
 Use `--no-parent` only when you explicitly want to disable parent routing/notifications.
 
+### Watchers
+
+Watchers listen for inbound events (webhooks, push notifications, GitHub events, Slack messages) and route them to conductor sessions so running agents can act on them automatically. Four adapter types ship today:
+
+| Type | Use case | Required flags |
+|------|----------|----------------|
+| `webhook` | Generic HTTP POST listener for any service that can fire a webhook | `--port` |
+| `github` | GitHub repository webhooks (issues, PRs, pushes) with HMAC-SHA256 verification | `--secret` |
+| `ntfy` | [ntfy.sh](https://ntfy.sh) push-notification topics (phone / browser → conductor) | `--topic` |
+| `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic` |
+
+```bash
+# Create, start, test — mirrors the four examples from `agent-deck watcher --help`
+agent-deck watcher create webhook  --name my-webhook  --port 9000
+agent-deck watcher create github   --name gh-alerts   --secret $GITHUB_WEBHOOK_SECRET
+agent-deck watcher create ntfy     --name phone       --topic my-private-topic
+agent-deck watcher create slack    --name team-slack  --topic my-slack-topic
+
+agent-deck watcher start  <name>
+agent-deck watcher list                # health + events/hour per watcher
+agent-deck watcher status <name>       # detail view including recent events
+agent-deck watcher test   <name>       # fire a synthetic event to verify routing
+```
+
+Routing rules live under `~/.agent-deck/watcher/<name>/clients.json` — edit to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
+
+**Conversational setup (recommended for first-time use):**
+
+```bash
+agent-deck watcher install-skill watcher-creator
+```
+
+Then, inside a Claude Code session started by agent-deck, ask: *"Use the watcher-creator skill to set up a GitHub watcher"*. The skill walks through adapter selection, required settings, and emits the exact `agent-deck watcher create` command to run.
+
+Safety notes:
+- The GitHub adapter enforces HMAC-SHA256 signature verification on every webhook — a missing/invalid signature drops the event.
+- Events are deduplicated in SQLite by `(watcher_name, event_id)`, so retries from the sender do not double-fire the conductor.
+- Watchers keep per-adapter health in `~/.agent-deck/watcher/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
+
 ### Multi-Tool Support
 
 Agent Deck works with any terminal-based AI tool:

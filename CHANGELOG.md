@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Watcher feature documentation** (issue [#628](https://github.com/asheshgoplani/agent-deck/issues/628)): `agent-deck watcher --help` now documents each adapter type (webhook, github, ntfy, slack) with a concrete usage example, required flags, and a pointer to the conversational `watcher-creator` skill. README gains a dedicated **Watchers** section describing event routing, per-type flags, routing rules in `~/.agent-deck/watcher/<name>/clients.json`, and safety guarantees (HMAC-SHA256 verification on GitHub, SQLite event dedup). No behavior change — docs only. Regression test: `TestWatcherHelp_MentionsAdapterExamples`.
+
 ## [1.7.13] - 2026-04-17
 
 ### Fixed

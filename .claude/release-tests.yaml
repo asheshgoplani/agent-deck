@@ -701,7 +701,7 @@ tests:
   task: fix-617
   file: internal/session/skills_catalog_test.go
   test_name: TestExpandSkillPath_UnknownEnvVarPreserved
-  purpose: Scope guard — only $HOME is expanded. Prevents a future "simplify to os.ExpandEnv" regression from silently inheriting arbitrary process environment ($USER, $PATH, secrets) into config paths.
+  purpose: "Scope guard \u2014 only $HOME is expanded. Prevents a future \"simplify to os.ExpandEnv\" regression from silently inheriting arbitrary process environment ($USER, $PATH, secrets) into config paths."
   source: .planning/fix-617/PLAN.md
   manual: false
   run:
@@ -712,7 +712,7 @@ tests:
   task: fix-617
   file: internal/session/skills_catalog_test.go
   test_name: TestLoadSkillSources_DiscoversSkillsViaDollarHome
-  purpose: End-to-end guard covering the full load→discovery hop — writes a sources.toml with $HOME, populates a pool skill, and asserts ListAvailableSkills finds it. Covers the exact repro in issue-617.
+  purpose: "End-to-end guard covering the full load\u2192discovery hop \u2014 writes a sources.toml with $HOME, populates a pool skill, and asserts ListAvailableSkills finds it. Covers the exact repro in issue-617."
   source: .planning/fix-617/PLAN.md
   manual: false
   run:
@@ -723,7 +723,7 @@ tests:
   task: fix-560-tmux-detach-guidance
   file: cmd/agent-deck/main_test.go
   test_name: TestOuterTmuxGuard
-  purpose: Guards issue-560 regressions — warns-and-exits when TUI is launched inside a non-agentdeck tmux session without AGENT_DECK_ALLOW_OUTER_TMUX=1. Covers three subcases (no-optin blocks, optin passes, no-tmux passes) + defensive narrow-match on opt-in value.
+  purpose: "Guards issue-560 regressions \u2014 warns-and-exits when TUI is launched inside a non-agentdeck tmux session without AGENT_DECK_ALLOW_OUTER_TMUX=1. Covers three subcases (no-optin blocks, optin passes, no-tmux passes) + defensive narrow-match on opt-in value."
   source: gh#560
   manual: false
   run:
@@ -789,7 +789,7 @@ tests:
   task: fix-issue-579
   file: internal/ui/preview_clip_test.go
   test_name: TestRenderPreviewPane_StripsEraseInLine_Issue579
-  purpose: 'Preview pane must not pass CSI K (Erase in Line) through to the outer terminal. Captured content like Neovim mini.statusline ends a row with an active bg SGR plus CSI K; without the sanitizer, the outer terminal paints the rest of that physical row with the active bg, bleeding past the preview boundary into adjacent panels. See issue 579.'
+  purpose: Preview pane must not pass CSI K (Erase in Line) through to the outer terminal. Captured content like Neovim mini.statusline ends a row with an active bg SGR plus CSI K; without the sanitizer, the outer terminal paints the rest of that physical row with the active bg, bleeding past the preview boundary into adjacent panels. See issue 579.
   source: .planning/fix-issue-579/PLAN.md
   manual: false
   run:
@@ -827,4 +827,15 @@ tests:
   manual: false
   run:
     command: go test ./internal/ui/ -run TestRenderPreviewPane_NvimStatusline_NoBleedEscapes_Issue579 -count=1 -v
+    expected: pass
+- id: issue-628-watcher-help-examples
+  added: '2026-04-17'
+  task: feat-628-watcher-docs
+  file: cmd/agent-deck/watcher_cmd_test.go
+  test_name: TestWatcherHelp_MentionsAdapterExamples
+  purpose: "agent-deck watcher --help must include an example for every adapter type (webhook/github/ntfy/slack) plus a pointer to watcher-creator skill and the README anchor \u2014 guards against docs regression that erases first-time-setup guidance."
+  source: issue-628-documentation-for-watcher-feature
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestWatcherHelp_MentionsAdapterExamples -count=1 -v
     expected: pass
