@@ -91,6 +91,9 @@ type UserConfig struct {
 	// Codex defines Codex CLI integration settings
 	Codex CodexSettings `toml:"codex"`
 
+	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
+	Copilot CopilotSettings `toml:"copilot"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -753,6 +756,15 @@ type CodexSettings struct {
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+}
+
+// CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
+// Binary: `copilot` from @github/copilot (GA 2026-02-25).
+// Doc: https://docs.github.com/en/copilot/concepts/agents/about-copilot-cli
+type CopilotSettings struct {
+	// EnvFile is a .env file specific to Copilot sessions (sourced before
+	// the `copilot` command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1587,7 +1599,7 @@ func GetCustomToolNames() []string {
 
 	builtins := map[string]bool{
 		"claude": true, "gemini": true, "opencode": true,
-		"codex": true, "pi": true, "shell": true, "cursor": true, "aider": true,
+		"codex": true, "copilot": true, "pi": true, "shell": true, "cursor": true, "aider": true,
 	}
 
 	var names []string
@@ -1620,6 +1632,8 @@ func GetToolIcon(toolName string) string {
 		return "🌐"
 	case "codex":
 		return "💻"
+	case "copilot":
+		return "🐙"
 	case "pi":
 		return "π"
 	case "cursor":

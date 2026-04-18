@@ -88,6 +88,22 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 			},
 			PromptPatterns: []string{`re:(?m)^\s*pi>\s*`},
 		}
+	case "copilot":
+		// GitHub Copilot CLI (the standalone `copilot` binary, Issue #556).
+		// Busy/prompt strings are conservative; can be tuned via user config
+		// overrides once more real-world transcripts are collected.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"esc to interrupt",
+				"ctrl+c to interrupt",
+				"thinking",
+			},
+			PromptPatterns: []string{
+				"How can I help",
+				`re:(?m)^\s*copilot>\s*`,
+				`re:(?m)^\s*›\s`,
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},

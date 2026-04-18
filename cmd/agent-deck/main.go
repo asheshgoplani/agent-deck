@@ -2702,6 +2702,8 @@ func detectTool(cmd string) string {
 		return "gemini"
 	case strings.Contains(cmd, "codex"):
 		return "codex"
+	case strings.Contains(cmd, "copilot"):
+		return "copilot"
 	case strings.Contains(cmd, "cursor"):
 		return "cursor"
 	default:
