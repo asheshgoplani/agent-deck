@@ -746,6 +746,17 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 				instData.Command,
 				previousStatus,
 			)
+			// Issue #663: for multi-repo sessions ProjectPath is a symlink
+			// inside MultiRepoTempDir (see home.go:7255-7364), so the
+			// restart pane must cwd into the parent dir — not the symlink
+			// target (an individual source repo). Matches the creation-
+			// time assignment at home.go:7364. Without this, Claude's
+			// JSONL is written under a different encoded-path key and the
+			// next Start() silently mints a fresh session instead of
+			// resuming the prior conversation.
+			if instData.MultiRepoEnabled && instData.MultiRepoTempDir != "" {
+				tmuxSess.WorkDir = instData.MultiRepoTempDir
+			}
 			// Pass instance ID for activity hooks (enables real-time status updates)
 			tmuxSess.InstanceID = instData.ID
 			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
