@@ -1477,3 +1477,69 @@ tests:
   run:
     command: go test ./internal/session/ -run TestIssue662_BuildClaudeResumeCommand_RetriesOnceOnSessionEndRace -count=1 -race -v
     expected: pass
+- id: v1729-issue447-movegroupto-tree
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: internal/session/groups_reorganize_test.go
+  test_name: TestMoveGroupTo_WithSubgroups
+  purpose: 'Issue #447 — GroupTree.MoveGroupTo reparents a group and rewrites every subgroup path (and session GroupPath) in one pass.'
+  source: github-issue-447
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestMoveGroupTo_WithSubgroups -count=1 -race -v
+    expected: pass
+- id: v1729-issue447-movegroupto-circular
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: internal/session/groups_reorganize_test.go
+  test_name: TestMoveGroupTo_Circular
+  purpose: 'Issue #447 — MoveGroupTo refuses circular moves (dest == source or a descendant) and leaves the tree intact.'
+  source: github-issue-447
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestMoveGroupTo_Circular -count=1 -race -v
+    expected: pass
+- id: v1729-issue447-group-change-cli-e2e
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: cmd/agent-deck/group_change_test.go
+  test_name: TestGroupChange_RootToSubgroup
+  purpose: 'Issue #447 — end-to-end CLI: group change reparents a group and the change survives SaveWithGroups + reload.'
+  source: github-issue-447
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestGroupChange_RootToSubgroup -count=1 -race -v
+    expected: pass
+- id: v1729-issue447-group-change-rejects-circular
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: cmd/agent-deck/group_change_test.go
+  test_name: TestGroupChange_RejectsCircular
+  purpose: 'Issue #447 — CLI refuses circular moves with a non-zero exit and a diagnostic that names the reason.'
+  source: github-issue-447
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestGroupChange_RejectsCircular -count=1 -race -v
+    expected: pass
+- id: v1729-issue483-session-search-content
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: cmd/agent-deck/session_search_test.go
+  test_name: TestSessionSearch_FindsMessageContent
+  purpose: 'Issue #483 — `agent-deck session search` matches on JSONL message content (not titles) and returns session_id + snippet + cwd. Locks the JSON output shape.'
+  source: github-issue-483
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestSessionSearch_FindsMessageContent -count=1 -race -v
+    expected: pass
+- id: v1729-issue483-session-search-no-matches
+  added: '2026-04-18'
+  task: v1729-issues-447-483
+  file: cmd/agent-deck/session_search_test.go
+  test_name: TestSessionSearch_NoMatches
+  purpose: 'Issue #483 — exit 0 + empty results array when no sessions match; keeps `search | jq` pipelines clean.'
+  source: github-issue-483
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestSessionSearch_NoMatches -count=1 -race -v
+    expected: pass

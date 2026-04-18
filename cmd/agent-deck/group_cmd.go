@@ -28,6 +28,8 @@ func handleGroup(profile string, args []string) {
 		handleGroupDelete(profile, args[1:])
 	case "move", "mv":
 		handleGroupMove(profile, args[1:])
+	case "change", "reparent":
+		handleGroupChange(profile, args[1:])
 	case "reorder", "sort":
 		handleGroupReorder(profile, args[1:])
 	case "help", "--help", "-h":
@@ -51,6 +53,7 @@ func printGroupHelp() {
 	fmt.Println("  update <name>     Update group settings")
 	fmt.Println("  delete <name>     Delete a group")
 	fmt.Println("  move <id> <group> Move session to a different group")
+	fmt.Println("  change <group> [<dest>] Reparent a group (empty dest = move to root)")
 	fmt.Println("  reorder <name>    Reorder a group (--up, --down, --position N)")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -62,6 +65,8 @@ func printGroupHelp() {
 	fmt.Println("  agent-deck group delete work --force")
 	fmt.Println("  agent-deck group move my-project work/frontend")
 	fmt.Println("  agent-deck group move my-project \"\"          # Move to root")
+	fmt.Println("  agent-deck group change project1 work         # Move group 'project1' under 'work'")
+	fmt.Println("  agent-deck group change work/project1          # Move 'work/project1' to root")
 	fmt.Println("  agent-deck group reorder mobile --up")
 	fmt.Println("  agent-deck group reorder mobile --down")
 	fmt.Println("  agent-deck group reorder mobile --position 0")
@@ -1027,4 +1032,136 @@ func reorderGroupArgs(args []string) []string {
 
 	// Return flags first, then positional args
 	return append(flags, positional...)
+}
+
+// handleGroupChange implements issue #447: reparent an entire group (and its
+// subgroups + sessions) under a new parent, or promote it to root when dest
+// is omitted/empty. Reuses GroupTree.MoveGroupTo for the in-memory mutation
+// and persists via storage.SaveAll.
+func handleGroupChange(profile string, args []string) {
+	fs := flag.NewFlagSet("group change", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck group change <source> [<dest>]")
+		fmt.Println()
+		fmt.Println("Reparent a group (and its subgroups/sessions) under <dest>.")
+		fmt.Println("Omit <dest> or pass \"\" / root to promote the group to root.")
+		fmt.Println()
+		fmt.Println("Arguments:")
+		fmt.Println("  <source>   Full path of the group to move (e.g. personal/project1)")
+		fmt.Println("  <dest>     Target parent path (empty = root)")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck group change project1 work")
+		fmt.Println("  agent-deck group change personal/project1 work")
+		fmt.Println("  agent-deck group change work/project1              # Move to root")
+		fmt.Println("  agent-deck group change work/project1 \"\"          # Move to root")
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	source := fs.Arg(0)
+	if source == "" {
+		out.Error("source group path is required", ErrCodeNotFound)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	dest := ""
+	if fs.NArg() >= 2 {
+		dest = fs.Arg(1)
+	}
+	// Normalize "root" / "/" to empty string (root level).
+	if dest == "root" || dest == "/" {
+		dest = ""
+	}
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to initialize storage: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	instances, groups, err := storage.LoadWithGroups()
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to load sessions: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+
+	// Resolve source path (exact or case-insensitive).
+	sourcePath := source
+	if _, ok := groupTree.Groups[sourcePath]; !ok {
+		low := strings.ToLower(sourcePath)
+		matched := false
+		for path := range groupTree.Groups {
+			if strings.ToLower(path) == low {
+				sourcePath = path
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out.Error(fmt.Sprintf("source group %q not found", source), ErrCodeNotFound)
+			os.Exit(2)
+		}
+	}
+
+	// Resolve dest path if non-empty (exact or case-insensitive).
+	destPath := dest
+	if destPath != "" {
+		if _, ok := groupTree.Groups[destPath]; !ok {
+			low := strings.ToLower(destPath)
+			matched := false
+			for path := range groupTree.Groups {
+				if strings.ToLower(path) == low {
+					destPath = path
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				out.Error(fmt.Sprintf("destination group %q not found", dest), ErrCodeNotFound)
+				os.Exit(2)
+			}
+		}
+	}
+
+	if err := groupTree.MoveGroupTo(sourcePath, destPath); err != nil {
+		// Distinguish circular errors for a friendlier exit message.
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	// Compute the new path for output.
+	baseName := sourcePath
+	if idx := strings.LastIndex(sourcePath, "/"); idx >= 0 {
+		baseName = sourcePath[idx+1:]
+	}
+	newPath := baseName
+	if destPath != "" {
+		newPath = destPath + "/" + baseName
+	}
+
+	// Persist.
+	if err := storage.SaveWithGroups(groupTree.GetAllInstances(), groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	out.Success(fmt.Sprintf("Moved group %q to %q", sourcePath, newPath), map[string]interface{}{
+		"from": sourcePath,
+		"to":   newPath,
+	})
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -791,6 +792,92 @@ func (t *GroupTree) RenameGroup(oldPath, newName string) {
 	t.Expanded[newPath] = group.Expanded
 
 	t.rebuildGroupList()
+}
+
+// MoveGroupTo reparents a group (and its entire subtree) under destParentPath.
+// An empty destParentPath promotes the group to root level. Returns an error
+// for: unknown source, source == DefaultGroupPath, unknown destParent,
+// destParent == source or its descendant (circular), or a collision at the
+// target path. Same-parent call is a no-op.
+//
+// This is the engine behind the #447 "group change" CLI / TUI.
+func (t *GroupTree) MoveGroupTo(sourcePath, destParentPath string) error {
+	if sourcePath == "" {
+		return fmt.Errorf("source group path is required")
+	}
+	if sourcePath == DefaultGroupPath {
+		return fmt.Errorf("the default group %q cannot be moved", DefaultGroupPath)
+	}
+
+	src, ok := t.Groups[sourcePath]
+	if !ok {
+		return fmt.Errorf("source group %q does not exist", sourcePath)
+	}
+
+	if destParentPath != "" {
+		if _, ok := t.Groups[destParentPath]; !ok {
+			return fmt.Errorf("destination parent group %q does not exist", destParentPath)
+		}
+	}
+
+	if destParentPath == sourcePath ||
+		strings.HasPrefix(destParentPath, sourcePath+"/") {
+		return fmt.Errorf("cannot move %q under itself or its descendant %q", sourcePath, destParentPath)
+	}
+
+	baseName := sourcePath
+	if idx := strings.LastIndex(sourcePath, "/"); idx >= 0 {
+		baseName = sourcePath[idx+1:]
+	}
+	currentParent := getParentPath(sourcePath)
+	if currentParent == destParentPath {
+		return nil
+	}
+
+	newPath := baseName
+	if destParentPath != "" {
+		newPath = destParentPath + "/" + baseName
+	}
+	if _, collide := t.Groups[newPath]; collide {
+		return fmt.Errorf("target path %q already exists", newPath)
+	}
+
+	subgroupsToRewrite := make(map[string]*Group)
+	for path, g := range t.Groups {
+		if strings.HasPrefix(path, sourcePath+"/") {
+			newSubPath := newPath + path[len(sourcePath):]
+			if _, collide := t.Groups[newSubPath]; collide {
+				return fmt.Errorf("target subpath %q already exists", newSubPath)
+			}
+			for _, sess := range g.Sessions {
+				sess.GroupPath = newSubPath
+			}
+			g.Path = newSubPath
+			subgroupsToRewrite[path] = g
+		}
+	}
+
+	for _, sess := range src.Sessions {
+		sess.GroupPath = newPath
+	}
+	src.Path = newPath
+
+	delete(t.Groups, sourcePath)
+	t.Groups[newPath] = src
+	expanded := t.Expanded[sourcePath]
+	delete(t.Expanded, sourcePath)
+	t.Expanded[newPath] = expanded
+
+	for oldSubPath, g := range subgroupsToRewrite {
+		delete(t.Groups, oldSubPath)
+		t.Groups[g.Path] = g
+		e := t.Expanded[oldSubPath]
+		delete(t.Expanded, oldSubPath)
+		t.Expanded[g.Path] = e
+	}
+
+	t.rebuildGroupList()
+	return nil
 }
 
 // DeleteGroup deletes a group, all its subgroups, and moves all sessions to default

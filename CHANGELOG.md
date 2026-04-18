@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.29] - 2026-04-19
+
+### Added
+- **`agent-deck group change <source> [<dest>]` — reparent an entire group subtree** (issue [#447](https://github.com/asheshgoplani/agent-deck/issues/447)): groups can now be moved as a unit, taking all their subgroups and sessions along. `group change personal/project1 work` places `project1` (and everything beneath it) under `work`, rewriting every descendant path in one atomic persist. Passing an empty destination (`group change work/project1 ""` or simply omitting it) promotes the group back to root level. The new `GroupTree.MoveGroupTo(source, destParent)` engine refuses circular moves (dest == source or a descendant of source), collisions at the target path, and moving the protected default group. Tests: `TestMoveGroupTo_{ToRoot,ToOtherParent,WithSubgroups,DestMissing,Circular,NoOpSameParent,Collision,SourceMissing,DefaultGroupForbidden}` in `internal/session/groups_reorganize_test.go`; `TestGroupChange_{RootToSubgroup,MoveToRoot,RejectsCircular}` end-to-end CLI in `cmd/agent-deck/group_change_test.go`. TUI group-move dialog is intentionally deferred to a follow-up — the CLI is the minimum shippable surface for the feature.
+- **`agent-deck session search <query>` — full-content search across Claude sessions** (issue [#483](https://github.com/asheshgoplani/agent-deck/issues/483)): the global-search index that powers the TUI's (currently-disabled) `G` overlay is now exposed as a first-class CLI so users can grep their conversation history from scripts and one-liners. Returns matching `SessionID`, `cwd`, and a 60-char snippet around the first match; `--json` emits a machine-readable shape with `{query, results, count}`. Flags: `--limit N` (default 20), `--days N` (default 30 — searches files modified in the last N days; `0` = all), `--tier {instant|balanced|auto}` (default auto — switches based on corpus size). Honours `CLAUDE_CONFIG_DIR` so per-profile `cdp` / `cdw` setups search the right tree. Test isolation fix (strip `CLAUDE_CONFIG_DIR=` from subprocess env in `runAgentDeck`) prevents CLI test suites from leaking into the developer's real `~/.claude`. Tests: `TestSessionSearch_{FindsMessageContent,EmptyQuery,NoMatches}` in `cmd/agent-deck/session_search_test.go`.
+
 ## [1.7.28] - 2026-04-19
 
 ### Added

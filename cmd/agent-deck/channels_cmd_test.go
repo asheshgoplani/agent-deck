@@ -69,6 +69,12 @@ func runAgentDeck(
 		if strings.HasPrefix(kv, "HOME=") {
 			continue
 		}
+		// Strip CLAUDE_CONFIG_DIR so the test's isolated HOME/.claude is the
+		// effective Claude config dir — otherwise session search leaks into
+		// the developer's real ~/.claude/projects tree. Added for #483.
+		if strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	env = append(env,

@@ -55,6 +55,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSend(profile, args[1:])
 	case "output":
 		handleSessionOutput(profile, args[1:])
+	case "search":
+		handleSessionSearch(profile, args[1:])
 	case "help", "--help", "-h":
 		printSessionHelp()
 	default:
@@ -83,6 +85,7 @@ func printSessionHelp() {
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  output <id>             Get the last response from a session")
+	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
 	fmt.Println()
@@ -2311,4 +2314,130 @@ func isValidSessionColor(v string) bool {
 		n = n*10 + int(c-'0')
 	}
 	return n >= 0 && n <= 255
+}
+
+// handleSessionSearch implements issue #483 — search across Claude session
+// message content (not just titles). Wraps the internal global-search index
+// behind a CLI surface so users can find past prompts / responses without
+// dropping into the TUI.
+func handleSessionSearch(profile string, args []string) {
+	_ = profile // reserved: future per-profile claudeDir lookup
+	fs := flag.NewFlagSet("session search", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	limit := fs.Int("limit", 20, "Maximum number of results to return")
+	recentDays := fs.Int("days", 30, "Only search sessions modified within the last N days (0 = all)")
+	tierFlag := fs.String("tier", "auto", "Index tier: instant, balanced, auto")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session search <query> [options]")
+		fmt.Println()
+		fmt.Println("Search message content across all Claude sessions.")
+		fmt.Println()
+		fmt.Println("Arguments:")
+		fmt.Println("  <query>   Free-text query (case-insensitive substring match)")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck session search \"MCP server\"")
+		fmt.Println("  agent-deck session search authentication --json")
+		fmt.Println("  agent-deck session search \"database migration\" --limit 5")
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
+	if query == "" {
+		out.Error("query is required", ErrCodeNotFound)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	claudeDir := session.GetClaudeConfigDir()
+	cfg := session.GlobalSearchSettings{
+		Enabled:        true,
+		Tier:           *tierFlag,
+		MemoryLimitMB:  100,
+		RecentDays:     *recentDays,
+		IndexRateLimit: 200,
+	}
+	index, err := session.NewGlobalSearchIndex(claudeDir, cfg)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to initialize search index: %v", err), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	if index == nil {
+		out.Error("search index is disabled", ErrCodeNotFound)
+		os.Exit(1)
+	}
+	defer index.Close()
+
+	// Wait for the background initialLoad to finish. The fs.Size-based tier
+	// detector returns immediately; content population is async. Poll up to
+	// ~3s — enough for most ~.claude/projects but bounded for CLI latency.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !index.IsLoading() {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	results := index.Search(query)
+	if *limit > 0 && len(results) > *limit {
+		results = results[:*limit]
+	}
+
+	type hitJSON struct {
+		SessionID string `json:"session_id"`
+		Snippet   string `json:"snippet"`
+		CWD       string `json:"cwd"`
+		Summary   string `json:"summary,omitempty"`
+		FilePath  string `json:"file_path,omitempty"`
+	}
+
+	hits := make([]hitJSON, 0, len(results))
+	for _, r := range results {
+		if r == nil || r.Entry == nil {
+			continue
+		}
+		hits = append(hits, hitJSON{
+			SessionID: r.Entry.SessionID,
+			Snippet:   r.Snippet,
+			CWD:       r.Entry.CWD,
+			Summary:   r.Entry.Summary,
+			FilePath:  r.Entry.FilePath,
+		})
+	}
+
+	if *jsonOutput {
+		out.Success("", map[string]interface{}{
+			"query":   query,
+			"results": hits,
+			"count":   len(hits),
+		})
+		return
+	}
+
+	if len(hits) == 0 {
+		fmt.Printf("No sessions matched %q\n", query)
+		return
+	}
+	fmt.Printf("Found %d match(es) for %q:\n", len(hits), query)
+	for i, h := range hits {
+		fmt.Printf("%d. %s\n", i+1, h.SessionID)
+		if h.CWD != "" {
+			fmt.Printf("   cwd: %s\n", h.CWD)
+		}
+		if h.Snippet != "" {
+			fmt.Printf("   %s\n", h.Snippet)
+		}
+	}
 }
