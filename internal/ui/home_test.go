@@ -191,6 +191,35 @@ func TestHomeUpdateResize(t *testing.T) {
 	}
 }
 
+// TestHomeUpdateStatusUpdateMsgBatchesKeyboardRestore is a regression guard for
+// PR #613 (Bug 2 from issue #472). After the user detaches from a tmux attach,
+// statusUpdateMsg's non-reload path must return a tea.Batch that includes the
+// RestoreLegacyKeyboardCmd helper alongside tea.EnableMouseCellMotion. If a
+// future refactor drops the keyboard-restore command, capitals silently break
+// on Ghostty after the first tmux attach/detach cycle, and this test catches
+// that regression.
+func TestHomeUpdateStatusUpdateMsgBatchesKeyboardRestore(t *testing.T) {
+	home := NewHome()
+
+	_, cmd := home.Update(statusUpdateMsg{})
+	if cmd == nil {
+		t.Fatal("statusUpdateMsg returned nil cmd; keyboard-restore batch removed?")
+	}
+
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf(
+			"expected statusUpdateMsg to return a tea.BatchMsg (mouse + keyboard restore); got %T. "+
+				"RestoreLegacyKeyboardCmd was likely dropped from the handler, which will regress capitals on Ghostty after tmux detach.",
+			msg,
+		)
+	}
+	if len(batch) < 2 {
+		t.Fatalf("expected batch of >= 2 commands (EnableMouseCellMotion + RestoreLegacyKeyboardCmd); got %d", len(batch))
+	}
+}
+
 func TestHomeUpdateSearch(t *testing.T) {
 	home := NewHome()
 	home.width = 100
@@ -1232,6 +1261,73 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
+func TestRemoteSelectionNOpensNewDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd != nil {
+		t.Fatal("pressing n on remote selection should not execute remote attach command")
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on remote selection should open new session dialog")
+	}
+}
+
+func TestRemoteSelectionQuickCreateStillRunsRemoteCommand(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	_, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})
+	if cmd == nil {
+		t.Fatal("pressing N on remote selection should return remote create command")
+	}
+
+	msg := cmd()
+	createMsg, ok := msg.(sessionCreatedMsg)
+	if !ok {
+		t.Fatalf("command returned %T, want sessionCreatedMsg", msg)
+	}
+	if createMsg.err == nil {
+		t.Fatal("expected error when remote config is unavailable")
+	}
+}
+
+func TestRemoteGroupSelectionNOpensNewDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd != nil {
+		t.Fatal("pressing n on remote group should not execute remote attach command")
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on remote group should open new session dialog")
+	}
+}
+
 func TestRenderHelpBarTiny(t *testing.T) {
 	home := NewHome()
 	home.width = 45 // Tiny mode (<50 cols)
@@ -1324,6 +1420,27 @@ func TestRenderHelpBarMinimalWithSession(t *testing.T) {
 	// Should NOT contain full descriptions
 	if strings.Contains(result, "Attach") {
 		t.Error("Minimal help bar should not contain full descriptions")
+	}
+}
+
+func TestRenderHelpBarMinimalWithFreshRestartableSession(t *testing.T) {
+	home := NewHome()
+	home.width = 55
+	home.height = 30
+
+	testSession := &session.Instance{
+		ID:              "test-456",
+		Title:           "Fresh Restart Session",
+		Tool:            "claude",
+		ClaudeSessionID: "session-xyz",
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeSession, Session: testSession}}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+
+	if !strings.Contains(result, "T") {
+		t.Error("Minimal help bar should contain T key for fresh restart")
 	}
 }
 
@@ -2055,6 +2172,28 @@ func TestRestartSessionCmdSessionMissingReturnsError(t *testing.T) {
 
 	// Build command with a valid instance, then simulate reload/delete before cmd runs.
 	cmd := home.restartSession(inst)
+	home.instancesMu.Lock()
+	delete(home.instanceByID, inst.ID)
+	home.instancesMu.Unlock()
+
+	msg := cmd()
+	restarted, ok := msg.(sessionRestartedMsg)
+	if !ok {
+		t.Fatalf("expected sessionRestartedMsg, got %T", msg)
+	}
+	if restarted.err == nil {
+		t.Fatal("expected error when session no longer exists")
+	}
+	if !strings.Contains(restarted.err.Error(), "session no longer exists") {
+		t.Fatalf("unexpected error: %v", restarted.err)
+	}
+}
+
+func TestRestartSessionFreshCmdSessionMissingReturnsError(t *testing.T) {
+	home := NewHome()
+	inst := session.NewInstance("restart-fresh-test", "/tmp/project")
+
+	cmd := home.restartSessionFresh(inst)
 	home.instancesMu.Lock()
 	delete(home.instanceByID, inst.ID)
 	home.instancesMu.Unlock()

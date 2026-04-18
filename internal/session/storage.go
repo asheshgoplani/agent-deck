@@ -87,6 +87,10 @@ type InstanceData struct {
 	// Plugin channels (persisted for --channels CLI flag on Claude restart)
 	Channels []string `json:"channels,omitempty"`
 
+	// User-supplied claude CLI tokens, appended to every start/resume/fork
+	// command. Persisted so restarts preserve custom flags like --agent/--model.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+
 	// Sandbox support
 	Sandbox          *SandboxConfig `json:"sandbox,omitempty"`
 	SandboxContainer string         `json:"sandbox_container,omitempty"`
@@ -303,6 +307,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.MultiRepoEnabled, inst.AdditionalPaths,
 			inst.MultiRepoTempDir, mrWorktrees,
 			inst.Channels,
+			inst.ExtraArgs,
 		)
 
 		rows[i] = &statedb.InstanceRow{
@@ -448,7 +453,8 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			sshHost2, sshRemotePath2,
 			mrEnabled2, addPaths2,
 			mrTempDir2, mrWorktrees2,
-			channels2 := statedb.UnmarshalToolData(r.ToolData)
+			channels2,
+			extraArgs2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		instances[i] = &InstanceData{
@@ -492,6 +498,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir2,
 			MultiRepoWorktrees: mrWorktrees2,
 			Channels:           channels2,
+			ExtraArgs:          extraArgs2,
 		}
 	}
 
@@ -547,7 +554,8 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			sshHost, sshRemotePath,
 			mrEnabled, addPaths,
 			mrTempDir, mrWorktrees,
-			channels := statedb.UnmarshalToolData(r.ToolData)
+			channels,
+			extraArgs := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
 		data.Instances[i] = &InstanceData{
@@ -591,6 +599,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir,
 			MultiRepoWorktrees: mrWorktrees,
 			Channels:           channels,
+			ExtraArgs:          extraArgs,
 		}
 	}
 
@@ -788,6 +797,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Notes:              instData.Notes,
 			LoadedMCPNames:     instData.LoadedMCPNames,
 			Channels:           instData.Channels,
+			ExtraArgs:          instData.ExtraArgs,
 			Sandbox:            instData.Sandbox,
 			SandboxContainer:   instData.SandboxContainer,
 			SSHHost:            instData.SSHHost,

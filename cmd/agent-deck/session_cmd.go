@@ -856,6 +856,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
+		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
 		fmt.Println("  gemini-session-id  Gemini conversation ID")
 		fmt.Println()
@@ -881,6 +882,11 @@ func handleSessionSet(profile string, args []string) {
 	identifier := fs.Arg(0)
 	field := fs.Arg(1)
 	value := fs.Arg(2)
+	// For extra-args: accept an arbitrary number of positional tokens after
+	// the field name. Use `--` terminator so Go's flag package leaves tokens
+	// starting with `-` alone, e.g.:
+	//   agent-deck session set <id> extra-args -- --model opus
+	extraArgTokens := fs.Args()[2:]
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
@@ -892,6 +898,7 @@ func handleSessionSet(profile string, args []string) {
 		"tool":              true,
 		"wrapper":           true,
 		"channels":          true,
+		"extra-args":        true,
 		"claude-session-id": true,
 		"gemini-session-id": true,
 	}
@@ -899,7 +906,7 @@ func handleSessionSet(profile string, args []string) {
 	if !validFields[field] {
 		out.Error(
 			fmt.Sprintf(
-				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, claude-session-id, gemini-session-id",
+				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, extra-args, claude-session-id, gemini-session-id",
 				field,
 			),
 			ErrCodeInvalidOperation,
@@ -964,6 +971,36 @@ func handleSessionSet(profile string, args []string) {
 			}
 		}
 		inst.Channels = parsed
+	case "extra-args":
+		// extra-args are passed to the claude binary by buildClaudeExtraFlags;
+		// only meaningful for claude sessions. Every positional arg after the
+		// field name is treated as one already-tokenised extra arg. Use `--`
+		// so Go's flag package leaves tokens starting with `-` alone:
+		//   agent-deck session set <id> extra-args -- --model opus
+		// Empty string clears all extra args. Empty tokens mixed with real
+		// ones are dropped (avoid emitting literal `''` to claude).
+		//
+		// Note: extra-args persist in state.db as plaintext. Do NOT pass
+		// secrets like API keys via --extra-arg.
+		if inst.Tool != "claude" {
+			out.Error(
+				fmt.Sprintf("extra-args only supported for claude sessions (this session's tool is %q); claude is the only tool whose builder appends user extra args", inst.Tool),
+				ErrCodeInvalidOperation,
+			)
+			os.Exit(1)
+		}
+		oldValue = strings.Join(inst.ExtraArgs, " ")
+		cleaned := make([]string, 0, len(extraArgTokens))
+		for _, tok := range extraArgTokens {
+			if tok != "" {
+				cleaned = append(cleaned, tok)
+			}
+		}
+		if len(cleaned) == 0 {
+			inst.ExtraArgs = nil
+		} else {
+			inst.ExtraArgs = cleaned
+		}
 	case "claude-session-id":
 		oldValue = inst.ClaudeSessionID
 		inst.ClaudeSessionID = value
@@ -998,6 +1035,19 @@ func handleSessionSet(profile string, args []string) {
 		"old_value": oldValue,
 		"new_value": value,
 	})
+
+	// v1.7.22: emit telegram topology warnings whenever the signals the
+	// validator cares about change (wrapper or channels). The silent-path
+	// case writes nothing — see ValidateTelegramTopology (#658).
+	if field == "wrapper" || field == "channels" {
+		cfgDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
+		globalTelegramEnabled, _ := readTelegramGloballyEnabled(cfgDir)
+		emitTelegramWarnings(os.Stderr, session.TelegramValidatorInput{
+			GlobalEnabled:   globalTelegramEnabled,
+			SessionChannels: inst.Channels,
+			SessionWrapper:  inst.Wrapper,
+		})
+	}
 }
 
 // loadSessionData loads storage and session data for a profile

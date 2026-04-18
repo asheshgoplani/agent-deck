@@ -828,6 +828,237 @@ tests:
   run:
     command: go test ./internal/ui/ -run TestRenderPreviewPane_NvimStatusline_NoBleedEscapes_Issue579 -count=1 -v
     expected: pass
+- id: v1721-launch-as-service-argv-shape
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_launch_as_test.go
+  test_name: TestStartCommandSpec_LaunchAs_Service_UsesServiceForm
+  purpose: 'Pins the exact systemd-run argv for LaunchAs=service — Type=forking, Restart=on-failure, KillMode=control-group, NO --scope, NO --collect. Missing any of these silently defeats the auto-restart guarantee.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStartCommandSpec_LaunchAs_Service_UsesServiceForm -count=1 -v
+    expected: pass
+- id: v1721-launch-as-scope-backcompat
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_launch_as_test.go
+  test_name: TestStartCommandSpec_LaunchAs_Scope_UsesScopeForm
+  purpose: 'Backward-compatibility lifeline. Users who set launch_as="scope" must get the exact PR #467 argv shape. Guards against a future service-mode refactor silently mutating scope-mode semantics.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStartCommandSpec_LaunchAs_Scope_UsesScopeForm -count=1 -v
+    expected: pass
+- id: v1721-launch-as-empty-legacy-respect
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_launch_as_test.go
+  test_name: TestStartCommandSpec_LaunchAs_Empty_RespectsLegacyLaunchInUserScope
+  purpose: 'Zero-behavior-change contract for v1.7.20 users. Unset launch_as must defer fully to LaunchInUserScope — NO accidental switch to service mode, NO accidental switch to direct.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStartCommandSpec_LaunchAs_Empty_RespectsLegacyLaunchInUserScope -count=1 -v
+    expected: pass
+- id: v1721-launch-as-invalid-fallback
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_launch_as_test.go
+  test_name: TestStartCommandSpec_LaunchAs_Invalid_FallsBackToLegacy
+  purpose: 'Typo protection. A misspelled launch_as value must NOT silently opt the user into service mode — must fall through to LaunchInUserScope with a one-line warning log.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStartCommandSpec_LaunchAs_Invalid_FallsBackToLegacy -count=1 -v
+    expected: pass
+- id: v1721-fallback-service-to-scope
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_service_fallback_test.go
+  test_name: TestStart_Service_WhenServiceFails_FallbackToScope
+  purpose: 'Three-tier fallback chain — when service-mode systemd-run fails (rare; e.g. transient-unit Restart= rejected on very old systemd), fall back to scope-mode before falling to direct tmux. Preserves PR #467 isolation even when service mode is broken.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStart_Service_WhenServiceFails_FallbackToScope -count=1 -timeout 60s -v
+    expected: pass
+- id: v1721-fallback-all-three-wraps-error
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_service_fallback_test.go
+  test_name: TestStart_Service_AllThreePathsFail_ErrorIncludesAllThree
+  purpose: 'Observability. When all three tiers fail the error must list every diagnostic so operators can grep one log to find which tier broke.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestStart_Service_AllThreePathsFail_ErrorIncludesAllThree -count=1 -v
+    expected: pass
+- id: v1721-service-restarts-on-sigkill
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_service_integration_test.go
+  test_name: TestTmuxService_RestartsOnUnexpectedKill
+  purpose: 'Headline live-boundary empirical guarantee — the whole point of v1.7.21. Spawn tmux via the exact argv startCommandSpec emits, SIGKILL the daemon, observe systemd bring it back via Restart=on-failure within ~10s. Requires systemd-user; skips cleanly elsewhere.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestTmuxService_RestartsOnUnexpectedKill -count=1 -timeout 60s -v
+    expected: pass
+- id: v1721-service-clean-stop
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/tmux/tmux_service_integration_test.go
+  test_name: TestTmuxService_ExplicitStopDoesNotTriggerRestart
+  purpose: 'Removal semantics. systemctl --user stop must be a CLEAN stop — Restart=on-failure must NOT fire. This guarantees `agent-deck remove` is truly terminal and not papered over by auto-restart.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestTmuxService_ExplicitStopDoesNotTriggerRestart -count=1 -timeout 60s -v
+    expected: pass
+- id: v1721-tmux-settings-get-launch-as
+  added: '2026-04-18'
+  task: v1721-scope-to-service
+  file: internal/session/userconfig_launch_as_test.go
+  test_name: TestTmuxSettings_GetLaunchAs_UnknownValueReturnsEmpty
+  purpose: 'Config parse guard. An unknown launch_as value in config.toml must return "" from GetLaunchAs so the legacy LaunchInUserScope code path kicks in — never a random spawn path.'
+  source: .planning/v1721-scope-to-service/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestTmuxSettings_GetLaunchAs_UnknownValueReturnsEmpty -count=1 -v
+    expected: pass
+- id: v1722-telegram-global-disabled-no-warning
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: internal/session/telegram_validator_test.go
+  test_name: TestTelegramValidator_GlobalDisabled_NoWarning
+  purpose: 'Silent path — when the profile is configured correctly the validator emits zero warnings, keeping logs clean. Locks the no-noise baseline so future guards do not accidentally warn on the supported topology.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestTelegramValidator_GlobalDisabled_NoWarning -count=1 -v
+    expected: pass
+- id: v1722-telegram-global-enabled-warn-antipattern
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: internal/session/telegram_validator_test.go
+  test_name: TestTelegramValidator_GlobalEnabled_OrdinarySession_WarnAntiPattern
+  purpose: 'Root-cause A — detect the profile-wide enablement of telegram@claude-plugins-official in settings.json, the anti-pattern that leaks a bun poller to every claude subprocess.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestTelegramValidator_GlobalEnabled_OrdinarySession_WarnAntiPattern -count=1 -v
+    expected: pass
+- id: v1722-telegram-double-load
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: internal/session/telegram_validator_test.go
+  test_name: TestTelegramValidator_GlobalEnabled_ConductorSession_WarnDoubleLoad
+  purpose: 'Root-cause B — detect the combined global+channels configuration that makes the plugin load twice in one claude process, producing Telegram 409 Conflict.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestTelegramValidator_GlobalEnabled_ConductorSession_WarnDoubleLoad -count=1 -v
+    expected: pass
+- id: v1722-telegram-wrapper-deprecated
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: internal/session/telegram_validator_test.go
+  test_name: TestTelegramValidator_WrapperStateDir_AntiPattern
+  purpose: 'Root-cause C — detect the wrapper-injected TELEGRAM_STATE_DIR anti-pattern and recommend the canonical env_file mechanism. Wrapper fails silently on the fresh-start path due to bash -c argv splitting.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestTelegramValidator_WrapperStateDir_AntiPattern -count=1 -v
+    expected: pass
+- id: v1722-telegram-settings-reader
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: cmd/agent-deck/conductor_cmd_telegram_test.go
+  test_name: TestReadTelegramGloballyEnabled_TrueWhenSettingsHasIt
+  purpose: 'CLI helper parses Claude Code settings.json defensively — missing file and missing key both map to false (safe baseline), explicit true surfaces the anti-pattern.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestReadTelegramGloballyEnabled_ -count=1 -v
+    expected: pass
+- id: v1722-telegram-warn-formatting
+  added: '2026-04-18'
+  task: v1722-telegram-poller-stability
+  file: cmd/agent-deck/conductor_cmd_telegram_test.go
+  test_name: TestConductorSetup_WarnsOnGlobalTelegramEnabled
+  purpose: 'End-to-end CLI surface — the human-facing warning text includes the ⚠ prefix, the GLOBAL_ANTIPATTERN code or label, and the exact settings.json key so users can find and fix the setting.'
+  source: .planning/fix-v1722-telegram-poller-stability/PLAN.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run "TestConductorSetup_WarnsOnGlobalTelegramEnabled|TestConductorSetup_RecommendsEnvFileOverWrapper|TestEmitTelegramWarnings_CleanConfig_Silent" -count=1 -v
+    expected: pass
+- id: v1723-history-loss-rebind-rejects-less-data
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasMoreData
+  purpose: 'Issue #661 manifestation 3 — UserPromptSubmit rebind must refuse to replace a rich current session with a sparser candidate. Size-based rejection with lifecycle action=reject reason=candidate_has_less_conversation_data. Stops conductor history loss across restarts.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasMoreData -count=1 -race -v
+    expected: pass
+- id: v1723-history-loss-rebind-empty-candidate
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasDataCandidateEmpty
+  purpose: 'Preserves v1.7.7 reject path on the UserPromptSubmit route when candidate jsonl has zero sessionId records. Keeps the weaker guarantee alongside the stronger v1.7.23 guard so both are permanent.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasDataCandidateEmpty -count=1 -race -v
+    expected: pass
+- id: v1723-history-loss-rebind-allows-current-empty
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsEmpty
+  purpose: 'Healthy-path guard — when current jsonl has no sessionId records and candidate has data, the first-prompt rebind must proceed. Prevents the v1.7.23 guard from over-rejecting during normal session bring-up.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsEmpty -count=1 -race -v
+    expected: pass
+- id: v1723-history-loss-rebind-allows-cold-start
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsUnset
+  purpose: 'Cold start — with i.ClaudeSessionID == "" the first hook binding must be accepted unconditionally. Guards against the v1.7.23 size comparison blocking the very first bind.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsUnset -count=1 -race -v
+    expected: pass
+- id: v1723-history-loss-flap-replay
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_UpdateHookStatus_RejectsBidirectionalFlap
+  purpose: 'Replay of the travel-conductor 3-restart flap from the real lifecycle.jsonl — rich-id is bound first, then three consecutive fresh UUIDs arrive as UserPromptSubmit candidates. ClaudeSessionID must remain the rich one across all three cycles.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_UpdateHookStatus_RejectsBidirectionalFlap -count=1 -race -v
+    expected: pass
+- id: v1723-history-loss-boundary-resume
+  added: '2026-04-18'
+  task: v1723-history-loss-guard
+  file: internal/session/instance_test.go
+  test_name: TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID
+  purpose: 'Live-runtime-boundary pin — after the flap, the emitted restart command (buildClaudeResumeCommand) must contain --resume <rich-uuid> and never the overwritten fresh UUID. Proves the user-visible fix at the exact layer that regressed.'
+  source: .planning/fix-issue-661/PLAN.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID -count=1 -race -v
+    expected: pass
 - id: issue-434-detach-key-tmux-alias
   added: '2026-04-17'
   task: feat-434-detach-key

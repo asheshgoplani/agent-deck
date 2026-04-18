@@ -1013,6 +1013,27 @@ type TmuxSettings struct {
 	// "field absent" from "explicit false".
 	LaunchInUserScope *bool `toml:"launch_in_user_scope"`
 
+	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
+	// Valid values (case-insensitive, whitespace-trimmed):
+	//   "scope"   — systemd-run --user --scope (PR #467 legacy behavior)
+	//   "service" — systemd-run --user --unit <NAME>.service with
+	//               Type=forking + Restart=on-failure. Adds auto-restart
+	//               if the tmux daemon dies unexpectedly (OOM, SIGKILL,
+	//               kernel signal). Opt-in defense-in-depth.
+	//   "direct"  — plain `tmux new-session` (no systemd isolation).
+	//   "auto"    — service where systemd-user manager is available,
+	//               else direct.
+	//   ""        — unset (default): defer to LaunchInUserScope.
+	//
+	// LaunchAs, when non-empty and valid, takes precedence over
+	// LaunchInUserScope. Unknown values are ignored (fall through to
+	// LaunchInUserScope) so a config typo doesn't silently opt the user
+	// onto an unintended spawn path.
+	//
+	// This is additive — v1.7.20 users get zero behavior change until
+	// they explicitly set launch_as.
+	LaunchAs *string `toml:"launch_as"`
+
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
 	// all sessions, overriding the theme default. Use "default" to let your terminal
 	// emulator's background show through instead of agent-deck's theme color.
@@ -1062,6 +1083,23 @@ func (t TmuxSettings) GetLaunchInUserScope() bool {
 		return *t.LaunchInUserScope
 	}
 	return isSystemdUserScopeAvailable()
+}
+
+// GetLaunchAs returns the canonicalised launch mode string parsed from
+// config.toml's [tmux].launch_as key. Returns "" if the field is unset
+// or contains an unknown value (in which case downstream callers fall
+// back to LaunchInUserScope). v1.7.21+.
+func (t TmuxSettings) GetLaunchAs() string {
+	if t.LaunchAs == nil {
+		return ""
+	}
+	v := strings.ToLower(strings.TrimSpace(*t.LaunchAs))
+	switch v {
+	case "scope", "service", "direct", "auto":
+		return v
+	default:
+		return ""
+	}
 }
 
 // systemdUserScopeAvailable caches the result of probing whether

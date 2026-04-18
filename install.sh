@@ -26,7 +26,22 @@
 #   - Windows - via WSL (uses Linux binary, clipboard via clip.exe)
 #
 
+# Wrap in main() so the entire script is read before execution.
+# Without this, `curl | bash` can fail because `read` commands
+# consume script bytes from stdin, or hit EOF with set -e.
+main() {
+
 set -e
+
+# Read user input from the terminal, even when script is piped (curl | bash).
+# Falls back to stdin when already running interactively.
+prompt_read() {
+    if [[ -t 0 ]]; then
+        read "$@"
+    else
+        read "$@" </dev/tty || true
+    fi
+}
 
 # Colors
 RED='\033[0;31m'
@@ -245,7 +260,7 @@ detect_macos_package_manager() {
                 echo "  $i) $(macos_pkg_mgr_name "$mgr") ($mgr)"
                 ((i++))
             done
-            read -p "Enter choice [1-${#available_mgrs[@]}]: " -n 1 -r
+            prompt_read -p "Enter choice [1-${#available_mgrs[@]}]: " -n 1 -r
             echo
 
             local choice=$((REPLY - 1))
@@ -312,7 +327,7 @@ if ! command -v tmux &> /dev/null; then
                     echo -e "${YELLOW}Warning: automatic tmux install failed in non-interactive mode.${NC}"
                 fi
             else
-                read -p "Install tmux via $mgr_name? [Y/n] " -n 1 -r
+                prompt_read -p "Install tmux via $mgr_name? [Y/n] " -n 1 -r
                 echo
                 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                     install_macos_package "tmux"
@@ -330,7 +345,7 @@ if ! command -v tmux &> /dev/null; then
                     echo -e "${YELLOW}Warning: automatic tmux install via apt failed in non-interactive mode.${NC}"
                 fi
             else
-                read -p "Install tmux via apt? [Y/n] " -n 1 -r
+                prompt_read -p "Install tmux via apt? [Y/n] " -n 1 -r
                 echo
                 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                     echo -e "Installing tmux..."
@@ -344,7 +359,7 @@ if ! command -v tmux &> /dev/null; then
                     echo -e "${YELLOW}Warning: automatic tmux install via dnf failed in non-interactive mode.${NC}"
                 fi
             else
-                read -p "Install tmux via dnf? [Y/n] " -n 1 -r
+                prompt_read -p "Install tmux via dnf? [Y/n] " -n 1 -r
                 echo
                 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                     echo -e "Installing tmux..."
@@ -358,7 +373,7 @@ if ! command -v tmux &> /dev/null; then
                     echo -e "${YELLOW}Warning: automatic tmux install via pacman failed in non-interactive mode.${NC}"
                 fi
             else
-                read -p "Install tmux via pacman? [Y/n] " -n 1 -r
+                prompt_read -p "Install tmux via pacman? [Y/n] " -n 1 -r
                 echo
                 if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                     echo -e "Installing tmux..."
@@ -379,7 +394,7 @@ if ! command -v tmux &> /dev/null; then
             echo -e "${YELLOW}Warning: tmux not found. Continuing without tmux (non-interactive).${NC}"
         else
             echo ""
-            read -p "tmux not found. Continue anyway? [y/N] " -n 1 -r
+            prompt_read -p "tmux not found. Continue anyway? [y/N] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 exit 1
@@ -400,7 +415,7 @@ if ! command -v jq &> /dev/null && [[ "$SKIP_OPTIONAL_DEPS" != "true" ]]; then
     if [[ "$OS" == "darwin" ]]; then
         if [[ -n "$MACOS_PKG_MANAGER" ]]; then
             mgr_name="$(macos_pkg_mgr_name "$MACOS_PKG_MANAGER")"
-            read -p "Install jq via $mgr_name? [Y/n] " -n 1 -r
+            prompt_read -p "Install jq via $mgr_name? [Y/n] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 install_macos_package "jq"
@@ -410,21 +425,21 @@ if ! command -v jq &> /dev/null && [[ "$SKIP_OPTIONAL_DEPS" != "true" ]]; then
         fi
     else
         if command -v apt-get &> /dev/null; then
-            read -p "Install jq via apt? [Y/n] " -n 1 -r
+            prompt_read -p "Install jq via apt? [Y/n] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 echo -e "Installing jq..."
                 sudo apt-get install -y jq
             fi
         elif command -v dnf &> /dev/null; then
-            read -p "Install jq via dnf? [Y/n] " -n 1 -r
+            prompt_read -p "Install jq via dnf? [Y/n] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 echo -e "Installing jq..."
                 sudo dnf install -y jq
             fi
         elif command -v pacman &> /dev/null; then
-            read -p "Install jq via pacman? [Y/n] " -n 1 -r
+            prompt_read -p "Install jq via pacman? [Y/n] " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 echo -e "Installing jq..."
@@ -577,7 +592,7 @@ configure_tmux() {
             echo "  • Added explicit scroll bindings for copy-mode"
             echo "  • Improved terminal compatibility"
             echo ""
-            read -p "Update tmux configuration? [Y/n] " -n 1 -r
+            prompt_read -p "Update tmux configuration? [Y/n] " -n 1 -r
             echo
             if [[ $REPLY =~ ^[Nn]$ ]]; then
                 echo "Skipping tmux config update."
@@ -620,7 +635,7 @@ configure_tmux() {
 
     # Skip prompt if we're updating (user already confirmed)
     if [[ "$NEEDS_UPDATE" != "true" ]]; then
-        read -p "Configure tmux for agent-deck? [Y/n] " -n 1 -r
+        prompt_read -p "Configure tmux for agent-deck? [Y/n] " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Nn]$ ]]; then
             echo "Skipping tmux configuration."
@@ -781,3 +796,7 @@ else
     echo "  3. If using zsh: source ~/.zshrc"
     echo "  4. If using bash: source ~/.bashrc"
 fi
+
+} # end main
+
+main "$@"

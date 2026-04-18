@@ -687,6 +687,56 @@ func TestRemoveWorktree(t *testing.T) {
 			t.Error("expected error for non-existent worktree")
 		}
 	})
+
+	// Regression test for the force-fallback path added in cd46219.
+	// When force=true and `git worktree remove --force` still fails,
+	// RemoveWorktree must fall back to os.RemoveAll + PruneWorktrees.
+	t.Run("force falls back to direct removal when git refuses", func(t *testing.T) {
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		// wtA: target of RemoveWorktree. Deleting its admin metadata under
+		// <repoDir>/.git/worktrees/<name>/ makes `git worktree remove --force`
+		// exit non-zero ("is not a working tree"). The worktree directory
+		// itself stays on disk, so the fallback's os.RemoveAll has real work.
+		wtA := filepath.Join(t.TempDir(), "wtA")
+		if err := CreateWorktree(dir, wtA, "feature-a"); err != nil {
+			t.Fatalf("create wtA: %v", err)
+		}
+		if err := os.RemoveAll(filepath.Join(dir, ".git", "worktrees", filepath.Base(wtA))); err != nil {
+			t.Fatalf("deregister wtA: %v", err)
+		}
+
+		// wtB: directory manually removed, admin entry left dangling.
+		// Gives PruneWorktrees real work so a future refactor that drops
+		// the prune call would fail this test.
+		wtB := filepath.Join(t.TempDir(), "wtB")
+		if err := CreateWorktree(dir, wtB, "feature-b"); err != nil {
+			t.Fatalf("create wtB: %v", err)
+		}
+		if err := os.RemoveAll(wtB); err != nil {
+			t.Fatalf("remove wtB dir: %v", err)
+		}
+
+		if err := RemoveWorktree(dir, wtA, true); err != nil {
+			t.Fatalf("RemoveWorktree(force=true) should succeed via fallback: %v", err)
+		}
+
+		// os.RemoveAll ran: wtA is gone on disk.
+		if _, err := os.Stat(wtA); !os.IsNotExist(err) {
+			t.Errorf("wtA should be removed, stat err=%v", err)
+		}
+
+		// PruneWorktrees ran: wtB's dangling admin entry is swept, leaving
+		// only the main repo worktree.
+		worktrees, err := ListWorktrees(dir)
+		if err != nil {
+			t.Fatalf("list worktrees: %v", err)
+		}
+		if len(worktrees) != 1 {
+			t.Errorf("expected 1 worktree (main only) after prune, got %d: %+v", len(worktrees), worktrees)
+		}
+	})
 }
 
 func TestWorktreeStruct(t *testing.T) {
