@@ -6,14 +6,15 @@ import { join } from 'path';
  * Phase 8 / Plan 02 / Task 1: PERF-E regression test (TerminalPanel listener leak).
  *
  * CURRENT STATE (verified by grep of TerminalPanel.js as of 2026-04-09):
- *   - 9 addEventListener sites inside the main useEffect:
+ *   - 8 addEventListener sites inside the main useEffect:
  *     - 4 container touch listeners (touchstart, touchmove, touchend, touchcancel)
  *     - 1 window resize listener (already uses a LOCAL windowResizeController -- partially done)
- *     - 1 anonymous touchstart preventDefault on container (mobile only)
  *     - 4 ws.addEventListener (open, message, error, close)
+ *   - The mobile-only anonymous touchstart preventDefault was removed when
+ *     mobile console input was enabled; that dropped the site count from 9 to 8.
  *   - Only 1 of these currently uses controller.signal (the window resize block).
  *   - The existing cleanup at line 67 only manually removes the first touchstart; the
- *     remaining 8 listeners leak on every unmount / reconnect.
+ *     remaining 7 listeners leak on every unmount / reconnect.
  *
  * FIX TO ENFORCE (PERF-E):
  *   - ONE new AbortController() declared at the top of the useEffect.
@@ -53,13 +54,13 @@ test.describe('PERF-E -- TerminalPanel listener cleanup via AbortController', ()
     ).toBe(true);
   });
 
-  test('structural: contains controller.signal at least 9 times (one per addEventListener site)', () => {
+  test('structural: contains controller.signal at least 8 times (one per addEventListener site)', () => {
     const src = source();
     const matches = src.match(/controller\.signal/g) || [];
     expect(
       matches.length,
-      `Expected controller.signal to appear on every addEventListener site (>=9), found ${matches.length}. Sites: 4 touch on container + 1 window resize + 1 anonymous touchstart + 4 ws.`,
-    ).toBeGreaterThanOrEqual(9);
+      `Expected controller.signal to appear on every addEventListener site (>=8), found ${matches.length}. Sites: 4 touch on container + 1 window resize + 4 ws. (Mobile-only touchstart preventDefault was removed when mobile input was enabled.)`,
+    ).toBeGreaterThanOrEqual(8);
   });
 
   test('structural: contains controller.abort() in the effect cleanup', () => {
@@ -91,7 +92,7 @@ test.describe('PERF-E -- TerminalPanel listener cleanup via AbortController', ()
     ).toEqual([]);
   });
 
-  test('structural: no manual removeEventListener for the 9 migrated listeners', () => {
+  test('structural: no manual removeEventListener for the 8 migrated listeners', () => {
     const src = source();
     // The AbortController pattern replaces manual removeEventListener.
     // If any removeEventListener for touch* events remains, the cleanup

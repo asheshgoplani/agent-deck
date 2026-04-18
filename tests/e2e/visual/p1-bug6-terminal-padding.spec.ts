@@ -77,12 +77,32 @@ test.describe('BUG #6 / LAYT-03 — terminal panel has 16px padding on all edges
     ).toBe(true);
   });
 
-  test('structural: mobile READ-ONLY banner is untouched', () => {
+  test('structural: mobile READ-ONLY banner is absent (mobile input enabled)', () => {
     const src = readTerminalPanelSrc();
     expect(
       /READ-ONLY: terminal input is disabled on mobile/.test(src),
-      'TerminalPanel.js mobile READ-ONLY banner was removed — LAYT-03 must leave the mobile banner above the padded wrapper intact.',
+      'TerminalPanel.js must NOT render the legacy mobile READ-ONLY banner; mobile input is enabled and only the server --read-only flag disables input now.',
+    ).toBe(false);
+  });
+
+  test('structural: terminal.onData is not gated on !mobile', () => {
+    const src = readTerminalPanelSrc();
+    expect(
+      /if \(!mobile\)\s*\{\s*inputDisposable\s*=\s*terminal\.onData/.test(src),
+      'TerminalPanel.js must not gate terminal.onData behind !mobile; mobile input is enabled.',
+    ).toBe(false);
+    expect(
+      /terminal\.onData\s*\(/.test(src),
+      'TerminalPanel.js must retain an unconditional terminal.onData(...) call to forward keystrokes to the tmux bridge.',
     ).toBe(true);
+  });
+
+  test('structural: disableStdin is not OR-ed with mobile on status messages', () => {
+    const src = readTerminalPanelSrc();
+    expect(
+      /disableStdin\s*=\s*!!payload\.readOnly\s*\|\|\s*mobile/.test(src),
+      'TerminalPanel.js must not OR mobile into disableStdin; only payload.readOnly should disable input.',
+    ).toBe(false);
   });
 
   // RUNTIME — skips without a fixture session; measures real computed styles.
