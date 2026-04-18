@@ -122,6 +122,12 @@ func handleHookHandler() {
 
 	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
 
+	// #572: Sync agent-deck title from Claude Code's --name / /rename value.
+	// Event-driven so user-facing rename lands within one hook tick; silent
+	// no-op when no name is set (sessions started without --name keep the
+	// existing agent-deck adjective-noun title).
+	applyClaudeTitleSync(instanceID, payload.SessionID)
+
 	// Write cost event if this hook contains usage data
 	logCostDebug("hook event=%s instance=%s status=%s", payload.HookEventName, instanceID, status)
 	writeCostEvent(instanceID, data)
