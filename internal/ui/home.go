@@ -4758,8 +4758,11 @@ func (h *Home) createSessionFromGlobalSearch(result *GlobalSearchResult) tea.Cmd
 			projectPath = "."
 		}
 
-		// Create instance
-		inst := session.NewInstanceWithGroupAndTool(title, projectPath, h.getCurrentGroupPath(), "claude")
+		// Create instance. Issue #666: resolveNewSessionGroup rescues empty
+		// cursor-group (Window / RemoteGroup / placeholder flatItems) so
+		// the empty string never reaches NewInstanceWithGroupAndTool, which
+		// would otherwise override the extractGroupPath default with "".
+		inst := session.NewInstanceWithGroupAndTool(title, projectPath, h.resolveNewSessionGroup(), "claude")
 		inst.ClaudeSessionID = result.SessionID
 
 		// Build resume command with config dir and permission flags
@@ -4808,6 +4811,36 @@ func (h *Home) getCurrentGroupPath() string {
 		}
 	}
 	return ""
+}
+
+// resolveNewSessionGroup returns the group path a freshly-created session
+// should land in when no explicit group is chosen via a dialog.
+//
+// Issue #666: the createSessionFromGlobalSearch path (a Claude
+// conversation imported from global search) previously called
+// getCurrentGroupPath() directly and passed its return value into
+// NewInstanceWithGroupAndTool. When the cursor was on a Window,
+// RemoteGroup, RemoteSession, or creating-placeholder item,
+// getCurrentGroupPath returned "" (home.go:4810). That empty string
+// OVERRODE the extractGroupPath default set at construction time inside
+// NewInstanceWithGroupAndTool — producing an Instance with
+// GroupPath="". At the next reload the empty row silently re-derived
+// via extractGroupPath(ProjectPath), making the imported session appear
+// under a path-derived group instead of the one the user was browsing.
+// Exact user-visible symptom: "TUI-created session ends up in a
+// different group, sometimes with a path-derived name."
+//
+// The rescue contract: always return a non-empty, user-recoverable
+// group. Prefer the cursor's group, then the scoped-view root, then
+// DefaultGroupPath as the universal safe default.
+func (h *Home) resolveNewSessionGroup() string {
+	if gp := h.getCurrentGroupPath(); gp != "" {
+		return gp
+	}
+	if h.groupScope != "" {
+		return h.groupScope
+	}
+	return session.DefaultGroupPath
 }
 
 // handleNewDialogKey handles keys when new dialog is visible

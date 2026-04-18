@@ -275,6 +275,21 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	// Convert instances to database rows
 	rows := make([]*statedb.InstanceRow, len(instances))
 	for i, inst := range instances {
+		// Issue #666: belt-and-braces guard. Empty GroupPath should never
+		// reach SQLite — the load-time fallback at convertToInstances already
+		// covers legacy rows, but a regression in a write path (fork, move,
+		// direct mutation) could still slip through. Normalize here so the
+		// next load doesn't need to defend.
+		if inst.GroupPath == "" {
+			storageLog.Warn(
+				"empty_group_path_normalized_on_save",
+				slog.String("instance_id", inst.ID),
+				slog.String("title", inst.Title),
+				slog.String("project_path", inst.ProjectPath),
+				slog.String("normalized_to", DefaultGroupPath),
+			)
+			inst.GroupPath = DefaultGroupPath
+		}
 		tmuxName := ""
 		if inst.tmuxSession != nil {
 			tmuxName = inst.tmuxSession.Name
@@ -773,10 +788,24 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			// Called automatically when user attaches to session
 		}
 
-		// Migrate old sessions without GroupPath
+		// Issue #666: a row with an empty group_path is the symptom of either
+		// (a) a legacy row from pre-GroupPath code or (b) a future regression
+		// in a write path. The old behavior re-derived via
+		// extractGroupPath(ProjectPath), which silently re-parented sessions
+		// to path-derived groups like "tmp" or "home" — the exact user-visible
+		// symptom of #666 ("session disappeared from its assigned group").
+		// The safe contract: route survivors to DefaultGroupPath and log, so
+		// the user sees the group in a known, recoverable place.
 		groupPath := instData.GroupPath
 		if groupPath == "" {
-			groupPath = extractGroupPath(instData.ProjectPath)
+			storageLog.Warn(
+				"empty_group_path_fallback",
+				slog.String("instance_id", instData.ID),
+				slog.String("title", instData.Title),
+				slog.String("project_path", instData.ProjectPath),
+				slog.String("fallback_group", DefaultGroupPath),
+			)
+			groupPath = DefaultGroupPath
 		}
 
 		// Expand tilde in project path (handles paths like ~/project saved from UI)

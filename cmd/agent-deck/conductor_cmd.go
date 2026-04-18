@@ -250,6 +250,15 @@ func handleConductorSetup(profile string, args []string) {
 		emitTelegramWarnings(os.Stderr, session.TelegramValidatorInput{
 			GlobalEnabled: true,
 		})
+		// Issue #666: the v1.7.22 warn-only path was insufficient. Users
+		// missed the warning and kept losing generic child sessions to 409
+		// crashes. Auto-remediate so every profile that setup touches is
+		// left safe.
+		if changed, err := disableTelegramGlobally(cfgDir); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠  could not auto-disable enabledPlugins.telegram in %s/settings.json: %v\n", cfgDir, err)
+		} else if changed {
+			fmt.Fprintf(os.Stdout, "✓ Auto-disabled enabledPlugins.\"%s\" in %s/settings.json (issue #666 remediation)\n", "telegram@claude-plugins-official", cfgDir)
+		}
 	}
 
 	// Step 2: If conductor system not enabled, run first-time setup
