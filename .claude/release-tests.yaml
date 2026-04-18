@@ -1333,9 +1333,10 @@ tests:
   manual: false
   run:
     command: go test ./cmd/agent-deck/ -run TestDetectTool_Copilot -count=1 -race -v
-- id: v1726-issue572-name-sync-find-match
+    expected: pass
+- id: v1728-issue572-name-sync-find-match
   added: '2026-04-18'
-  task: v1726-issue572-auto-sync-title
+  task: v1728-issue572-auto-sync-title
   file: cmd/agent-deck/hook_name_sync_test.go
   test_name: TestFindClaudeSessionName_MatchBySessionID
   purpose: 'Issue #572 — core lookup primitive: scan ~/.claude/sessions/*.json and return the `name` field for the matching sessionId. Proves the filesystem-walk + JSON-decode + sessionId-match wiring before any storage writes.'
@@ -1344,9 +1345,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestFindClaudeSessionName_MatchBySessionID -count=1 -race -v
     expected: pass
-- id: v1726-issue572-name-sync-empty-name-noop
+- id: v1728-issue572-name-sync-empty-name-noop
   added: '2026-04-18'
-  task: v1726-issue572-auto-sync-title
+  task: v1728-issue572-auto-sync-title
   file: cmd/agent-deck/hook_name_sync_test.go
   test_name: TestFindClaudeSessionName_EmptyNameField
   purpose: 'Issue #572 — sessions started without --name (or with name="") must NOT stomp on agent-deck''s auto-generated adjective-noun title. Missing-field and explicit-empty both return "".'
@@ -1355,9 +1356,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestFindClaudeSessionName_EmptyNameField -count=1 -race -v
     expected: pass
-- id: v1726-issue572-apply-title-sync-updates
+- id: v1728-issue572-apply-title-sync-updates
   added: '2026-04-18'
-  task: v1726-issue572-auto-sync-title
+  task: v1728-issue572-auto-sync-title
   file: cmd/agent-deck/hook_name_sync_test.go
   test_name: TestApplyClaudeTitleSync_UpdatesInstance
   purpose: 'Issue #572 end-to-end integration — seeds an instance in SQLite with auto-generated title, seeds a Claude session file with user-set name, calls applyClaudeTitleSync, asserts the title updated in storage. Pins the Storage round-trip so a future refactor to MigrateClaudeProjectDir''s storage layer can''t silently break title sync.'
@@ -1366,9 +1367,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestApplyClaudeTitleSync_UpdatesInstance -count=1 -race -v
     expected: pass
-- id: v1726-issue572-apply-title-sync-no-redundant-write
+- id: v1728-issue572-apply-title-sync-no-redundant-write
   added: '2026-04-18'
-  task: v1726-issue572-auto-sync-title
+  task: v1728-issue572-auto-sync-title
   file: cmd/agent-deck/hook_name_sync_test.go
   test_name: TestApplyClaudeTitleSync_NoopWhenNameEqualsTitle
   purpose: 'Issue #572 — hooks fire on every UserPromptSubmit. If the title already matches the Claude name, the sync must NOT write to SQLite (would thrash WAL and trigger unnecessary notifier re-reads). Asserts DB last-modified timestamp doesn''t advance on the equal-name path.'
@@ -1377,9 +1378,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestApplyClaudeTitleSync_NoopWhenNameEqualsTitle -count=1 -race -v
     expected: pass
-- id: v1726-issue414-move-updates-path
+- id: v1728-issue414-move-updates-path
   added: '2026-04-18'
-  task: v1726-issue414-session-move
+  task: v1728-issue414-session-move
   file: cmd/agent-deck/session_move_test.go
   test_name: TestSessionMove_UpdatesPath
   purpose: 'Issue #414 — the most basic contract: `agent-deck session move <id> <new-path>` accepts the subcommand and persists the new path. On pre-1.7.26 main this fails with "unknown session command: move" (exit 1 from handleSession dispatcher).'
@@ -1388,9 +1389,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestSessionMove_UpdatesPath -count=1 -race -v
     expected: pass
-- id: v1726-issue414-move-migrates-claude-history
+- id: v1728-issue414-move-migrates-claude-history
   added: '2026-04-18'
-  task: v1726-issue414-session-move
+  task: v1728-issue414-session-move
   file: cmd/agent-deck/session_move_test.go
   test_name: TestSessionMove_MigratesClaudeProjectDir
   purpose: 'Issue #414 value-add over plain `session set path` — ~/.claude/projects/<old-slug>/ is renamed to <new-slug>/ so `claude --resume` in the new path picks up prior conversation history. Sentinel file (abc-123.jsonl) confirms byte-for-byte preservation.'
@@ -1399,9 +1400,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestSessionMove_MigratesClaudeProjectDir -count=1 -race -v
     expected: pass
-- id: v1726-issue414-move-copy-flag-preserves-old
+- id: v1728-issue414-move-copy-flag-preserves-old
   added: '2026-04-18'
-  task: v1726-issue414-session-move
+  task: v1728-issue414-session-move
   file: cmd/agent-deck/session_move_test.go
   test_name: TestSessionMove_CopyFlagPreservesOldDir
   purpose: 'Issue #414 --copy flag contract — when multiple sessions share the same Claude projects dir, --copy lets the user migrate one without orphaning the others. Both source AND destination dirs must exist afterward with identical contents.'
@@ -1410,9 +1411,9 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestSessionMove_CopyFlagPreservesOldDir -count=1 -race -v
     expected: pass
-- id: v1726-issue414-move-group-flag
+- id: v1728-issue414-move-group-flag
   added: '2026-04-18'
-  task: v1726-issue414-session-move
+  task: v1728-issue414-session-move
   file: cmd/agent-deck/session_move_test.go
   test_name: TestSessionMove_GroupFlag
   purpose: 'Issue #414 — --group flag moves the session to a new group path in the same atomic operation, eliminating the second `group move` step of the 4-step manual ritual.'
@@ -1421,13 +1422,13 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestSessionMove_GroupFlag -count=1 -race -v
     expected: pass
-- id: v1726-watcher-event-dedup-busy-retry
+- id: v1728-watcher-event-dedup-busy-retry
   added: '2026-04-18'
-  task: v1726-flake-fix
+  task: v1728-flake-fix
   file: internal/statedb/statedb_test.go
   test_name: TestWatcherEventDedup
   purpose: 'Pre-existing race flake on CI — SaveWatcherEvent now retries on SQLITE_BUSY with linear backoff. This pins the concurrent-insert dedup guarantee (exactly 1 row after 2 goroutines racing the same dedup key) while tolerating transient busy errors that previously failed release CI intermittently.'
-  source: v1.7.26-release-prep
+  source: v1.7.28-release-prep
   manual: false
   run:
     command: go test ./internal/statedb/ -run TestWatcherEventDedup -count=3 -race -v
