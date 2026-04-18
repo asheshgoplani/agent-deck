@@ -5,6 +5,15 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.28] - 2026-04-19
+
+### Added
+- **Auto-sync session title from Claude Code's `--name` / `/rename`** (issue [#572](https://github.com/asheshgoplani/agent-deck/issues/572)): when a user starts `claude --name my-feature-branch` inside an agent-deck session, or runs `/rename …` mid-session, the agent-deck title now syncs automatically on the next hook event (SessionStart, UserPromptSubmit, Stop — whichever fires first, typically within seconds). Implementation piggybacks on the existing `hook-handler` event-driven flow: after writing status, `applyClaudeTitleSync(instanceID, sessionID)` scans `~/.claude/sessions/*.json` for the matching `sessionId`, reads the `name` field, and updates the stored title if non-empty and different. Sessions started without `--name` keep their auto-generated adjective-noun title (no change from current behavior). No extra process spawn, no polling — every existing hook event already pays the filesystem cost for status writes. Tests: `TestFindClaudeSessionName_{MatchBySessionID,NoMatch,EmptyNameField,MissingSessionsDir}`, `TestApplyClaudeTitleSync_{UpdatesInstance,NoopWhenNameMissing,NoopWhenNameEqualsTitle}` in `cmd/agent-deck/hook_name_sync_test.go` (7 cases).
+- **`agent-deck session move <id> <new-path> [--group …] [--no-restart] [--copy]`** (issue [#414](https://github.com/asheshgoplani/agent-deck/issues/414)): new CLI verb that wraps what used to be a 4-step manual ritual (`session set path` + `group move` + `cp ~/.claude/projects/<old-slug>/` + `session restart`) into one atomic command. Migrates the Claude Code conversation history at `~/.claude/projects/<slug>/` to the new slugified path so `claude --resume` in the new location picks up prior turns. `--copy` preserves the old dir instead of renaming (useful when other sessions share history). `--group` moves to a target group in the same operation. `--no-restart` skips the default post-move restart. Shares `SlugifyClaudeProjectPath` with the costs sync path so both call sites encode `/` and `.` identically (was previously duplicated in `internal/costs/sync.go`). Tests: `TestSessionMove_{UpdatesPath,MigratesClaudeProjectDir,CopyFlagPreservesOldDir,GroupFlag,MissingArguments}` in `cmd/agent-deck/session_move_test.go` (5 cases).
+
+### Fixed
+- **`TestWatcherEventDedup` -race flake** (pre-existing): `SaveWatcherEvent` now retries up to 5 times on SQLITE_BUSY with linear backoff (10ms, 20ms, …). The op is `INSERT OR IGNORE`-idempotent so retries are safe. Was failing reliably on release CI under concurrent inserts from two goroutines sharing the same dedup key; retrying resolves the race without weakening the dedup invariant (still exactly 1 row after N racers).
+
 ## [1.7.27] - 2026-04-19
 
 ### Fixed
