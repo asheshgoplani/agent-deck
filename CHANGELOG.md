@@ -5,6 +5,14 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.27] - 2026-04-19
+
+### Fixed
+- **`sessionHasConversationData` false-negatives caused `--session-id` instead of `--resume` despite rich jsonl on disk** (issue [#662](https://github.com/asheshgoplani/agent-deck/issues/662)): when a conductor's Claude session was restarted while the SessionEnd hook was still flushing the jsonl (a ~100–150ms window), `buildClaudeResumeCommand` would observe the file as not-yet-written, fall through to `--session-id`, and hand the user a blank conversation even though the historic jsonl was on disk. Two layers of fix: (1) a bounded retry-once at the call site (`resumeCheckRetryDelay = 200ms`) that re-checks after the flush window closes, firing only when the first check is negative AND `ClaudeSessionID` is non-empty so the happy path is untouched; (2) a new `session_data_decision` structured log line carrying `config_dir`, `resolved_project_path`, `encoded_path`, `primary_path_tested`, `primary_path_stat_err`, `fallback_lookup_tried`, `fallback_path_found`, and `final_result` so production false-negatives can be diagnosed from logs alone without attaching a debugger. Tests: `TestIssue662_HiddenDirInPath_EncodesToDoubleDash`, `TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses`, `TestIssue662_DiagnosticLog_CapturesAllDecisionFields`, `TestIssue662_BuildClaudeResumeCommand_RetriesOnceOnSessionEndRace` in `internal/session/issue662_session_data_diag_test.go`.
+
+### Deferred
+- **Tmux control-client supervision** (issue [#659](https://github.com/asheshgoplani/agent-deck/issues/659)): deferred to its own design cycle. #659's own body notes that "Pipe-death is already recovered" by the v1.7.8 reviver and frames the control-client wrapping as a structural improvement rather than a bug fix, with four open design questions (per-instance vs shared service, TUI coordination, per-user vs global, CLI-without-TUI behaviour). Tracked under issue [#668](https://github.com/asheshgoplani/agent-deck/issues/668) as an RFC to pick the shape before any code lands.
+
 ## [1.7.26] - 2026-04-18
 
 ### Added

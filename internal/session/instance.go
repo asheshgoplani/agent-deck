@@ -2490,6 +2490,12 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 // instead of every 500ms tick, dramatically reducing subprocess spawns
 const errorRecheckInterval = 30 * time.Second
 
+// resumeCheckRetryDelay is the wait between the two sessionHasConversationData
+// checks in buildClaudeResumeCommand (Issue #662). SessionEnd writes are
+// observed to finish within ~100-150ms in practice; 200ms gives headroom
+// without noticeably slowing the restart path when there truly is no jsonl.
+var resumeCheckRetryDelay = 200 * time.Millisecond
+
 func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	if tool != "codex" {
 		return hookFastPathWindow
@@ -4502,9 +4508,28 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		opts = NewClaudeOptions(userConfig)
 	}
 
-	// Check if session has actual conversation data
-	// If not, use --session-id instead of --resume to avoid "No conversation found" error
+	// Check if session has actual conversation data.
+	// If not, use --session-id instead of --resume to avoid "No conversation found" error.
+	//
+	// Issue #662: a bounded retry-once at this call site covers the
+	// SessionEnd-flush race — the helper is called synchronously with
+	// restart, and Claude may still be flushing its jsonl for a few
+	// hundred milliseconds after the SessionEnd hook fires. Waiting 200ms
+	// and re-checking turns a shipped-fresh-session into a resume for the
+	// common flush-race case without slowing the happy path (retry only
+	// fires when the first check comes back negative AND we have a
+	// non-empty ClaudeSessionID).
 	useResume := sessionHasConversationData(i, i.ClaudeSessionID)
+	if !useResume && i.ClaudeSessionID != "" {
+		time.Sleep(resumeCheckRetryDelay)
+		useResume = sessionHasConversationData(i, i.ClaudeSessionID)
+		sessionLog.Debug(
+			"session_data_retry_after_wait",
+			slog.String("session_id", i.ClaudeSessionID),
+			slog.Duration("wait", resumeCheckRetryDelay),
+			slog.Bool("use_resume_after_retry", useResume),
+		)
+	}
 	sessionLog.Debug(
 		"session_data_build_resume",
 		slog.String("session_id", i.ClaudeSessionID),
@@ -5321,19 +5346,51 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 	}
 
 	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+
+	// Issue #662 diagnostic contract: emit a single structured "decision"
+	// log line per call with every field needed to reconstruct the false
+	// negatives in production logs (config_dir, resolved_project_path,
+	// encoded_path, primary_path_tested, primary_path_stat_err,
+	// fallback_lookup_tried, fallback_path_found, final_result).
+	primaryStatErr := ""
+	fallbackTried := false
+	fallbackPathFound := ""
+
+	emitDecision := func(result bool, reason string) {
+		sessionLog.Debug(
+			"session_data_decision",
+			slog.String("session_id", sessionID),
+			slog.String("config_dir", configDir),
+			slog.String("resolved_project_path", resolvedPath),
+			slog.String("encoded_path", encodedPath),
+			slog.String("primary_path_tested", sessionFile),
+			slog.String("primary_path_stat_err", primaryStatErr),
+			slog.Bool("fallback_lookup_tried", fallbackTried),
+			slog.String("fallback_path_found", fallbackPathFound),
+			slog.Bool("final_result", result),
+			slog.String("reason", reason),
+		)
+	}
+
 	sessionLog.Debug("session_data_checking_file", slog.String("file", sessionFile))
 
 	// Check if file exists
 	if _, err := os.Stat(sessionFile); os.IsNotExist(err) {
+		if err != nil {
+			primaryStatErr = err.Error()
+		}
 		// File doesn't exist at expected location - try cross-project search
 		// This handles path hash mismatches (e.g., session created from different directory)
+		fallbackTried = true
 		if fallbackPath := findSessionFileInAllProjects(inst, sessionID); fallbackPath != "" {
+			fallbackPathFound = fallbackPath
 			sessionLog.Debug("session_data_cross_project_found", slog.String("path", fallbackPath))
 			sessionFile = fallbackPath
 		} else {
 			// File doesn't exist anywhere - use --session-id to create fresh session
 			// (there's nothing to resume if the file doesn't exist)
 			sessionLog.Debug("session_data_file_not_found", slog.String("result", "use_session_id"))
+			emitDecision(false, "file_not_found")
 			return false
 		}
 	}
@@ -5349,6 +5406,7 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 			slog.String("error", err.Error()),
 			slog.String("fallback", "use_resume"),
 		)
+		emitDecision(true, "open_error_safe_fallback")
 		return true
 	}
 	defer file.Close()
@@ -5364,6 +5422,7 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		// Simple string search - faster than JSON parsing
 		if strings.Contains(line, `"sessionId"`) {
 			sessionLog.Debug("session_data_found_session_id", slog.String("result", "use_resume"))
+			emitDecision(true, "session_id_line_present")
 			return true // Found conversation data
 		}
 	}
@@ -5375,11 +5434,13 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 			slog.String("error", err.Error()),
 			slog.String("fallback", "use_resume"),
 		)
+		emitDecision(true, "scanner_error_safe_fallback")
 		return true
 	}
 
 	// No sessionId found - session was never interacted with
 	sessionLog.Debug("session_data_no_session_id", slog.String("result", "use_session_id"))
+	emitDecision(false, "no_session_id_line")
 	return false
 }
 

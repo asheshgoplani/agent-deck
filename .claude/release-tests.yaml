@@ -1334,3 +1334,47 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestDetectTool_Copilot -count=1 -race -v
     expected: pass
+- id: v1727-issue662-hidden-dir-encoding
+  added: '2026-04-19'
+  task: v1727-issue662-session-data-false-negative
+  file: internal/session/issue662_session_data_diag_test.go
+  test_name: TestIssue662_HiddenDirInPath_EncodesToDoubleDash
+  purpose: 'Issue #662 hypothesis (1) regression pin — paths with dot-prefix segments (/home/u/.agent-deck/conductor/*) must encode with a double-dash (the dot and the path separator both become dashes). Guards against silent encoder regressions that would make every .agent-deck/conductor session stop finding its jsonl.'
+  source: https://github.com/asheshgoplani/agent-deck/issues/662
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue662_HiddenDirInPath_EncodesToDoubleDash -count=1 -race -v
+    expected: pass
+- id: v1727-issue662-fallback-on-primary-miss
+  added: '2026-04-19'
+  task: v1727-issue662-session-data-false-negative
+  file: internal/session/issue662_session_data_diag_test.go
+  test_name: TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses
+  purpose: 'Issue #662 hypothesis (3) regression pin — when the primary encoded path has no matching jsonl but another project dir under the same configDir does, the fallback must surface it. Protects the findSessionFileInAllProjects safety net from regressions that would break path-hash drift recovery.'
+  source: https://github.com/asheshgoplani/agent-deck/issues/662
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue662_FindsFileViaFallback_WhenPrimaryPathMisses -count=1 -race -v
+    expected: pass
+- id: v1727-issue662-diagnostic-log-contract
+  added: '2026-04-19'
+  task: v1727-issue662-session-data-false-negative
+  file: internal/session/issue662_session_data_diag_test.go
+  test_name: TestIssue662_DiagnosticLog_CapturesAllDecisionFields
+  purpose: 'Issue #662 diagnostic contract — sessionHasConversationData must emit a structured session_data_decision log line carrying config_dir, resolved_project_path, encoded_path, primary_path_tested, fallback_lookup_tried, and final_result. Production diagnosis of the travel-conductor false-negative was blocked because these fields were missing; the test pins the full field set so future diagnosis can be done from logs alone.'
+  source: https://github.com/asheshgoplani/agent-deck/issues/662
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue662_DiagnosticLog_CapturesAllDecisionFields -count=1 -race -v
+    expected: pass
+- id: v1727-issue662-retry-on-session-end-race
+  added: '2026-04-19'
+  task: v1727-issue662-session-data-false-negative
+  file: internal/session/issue662_session_data_diag_test.go
+  test_name: TestIssue662_BuildClaudeResumeCommand_RetriesOnceOnSessionEndRace
+  purpose: 'Issue #662 hypothesis (2) fix — buildClaudeResumeCommand now retries sessionHasConversationData once after a 200ms wait when the first check returns false but ClaudeSessionID is non-empty. Covers the SessionEnd-flush race where Claude is still writing the jsonl when agent-deck picks the resume flag. Test seeds a delayed jsonl write at 50ms and asserts the emitted command contains --resume, not --session-id.'
+  source: https://github.com/asheshgoplani/agent-deck/issues/662
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue662_BuildClaudeResumeCommand_RetriesOnceOnSessionEndRace -count=1 -race -v
+    expected: pass
