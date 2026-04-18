@@ -49,6 +49,8 @@ func handleSession(profile string, args []string) {
 		handleSessionUnsetParent(profile, args[1:])
 	case "set":
 		handleSessionSet(profile, args[1:])
+	case "move", "mv":
+		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
 	case "output":
@@ -78,6 +80,7 @@ func printSessionHelp() {
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
+	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
