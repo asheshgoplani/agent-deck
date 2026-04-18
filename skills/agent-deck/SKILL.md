@@ -167,6 +167,39 @@ agent-deck remove "Consult Codex"
 agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 ```
 
+## Peer (Root) Sessions vs Sub-Agents
+
+**The default — sub-agent linkage:** `agent-deck launch` and `agent-deck add`, when invoked from *inside* an existing agent-deck session, automatically link the new session as a child of the calling session (sets `parent_session_id`, inherits the parent's group when `-g` is omitted, and grants `--add-dir` to the parent's project path). This is usually what you want for short-lived work sessions (plan / verify / release / consult).
+
+**When the default is wrong — root-level peer sessions:** if you are creating a session that should stand independently at the root — a peer conductor, a standalone project session, a session that should outlive the current one, or anything that semantically is NOT a child of the calling session — pass the `-no-parent` flag.
+
+| Use case | Parent linkage | Flag |
+|---|---|---|
+| Plan / impl / verify worker for the current task | ✅ child | (default) |
+| Consultation (codex / gemini / research) | ✅ child | (default) |
+| Another conductor (root-level peer) | ❌ child | `-no-parent` |
+| Project session unrelated to current work | ❌ child | `-no-parent` |
+| Session intended to outlive the caller | ❌ child | `-no-parent` |
+
+```bash
+# Root-level peer conductor, no parent linkage:
+agent-deck launch ~/projects/foo -t "conductor-foo" -g "conductor" -c claude -no-parent -m "..."
+
+# Verify after spawn:
+agent-deck list --json | jq '.[] | select(.title=="conductor-foo") | .parent_session_id'
+# Must print: null
+```
+
+**Symptoms you created a sub-agent when you wanted a peer:**
+- `parent_session_id` is non-null in `list --json` output
+- The new session's baked `pane_start_command` contains `--add-dir <caller's path>` even though you gave it a different project path
+- Transition events for the new session's children flow to the caller instead of the new peer
+- Event routing and heartbeat parent-linkage puts it under the caller's tree in the TUI
+
+**Fix for an already-created sub-agent:** stop + remove the session, re-launch with `-no-parent`. There is no in-place un-parent flag.
+
+**Note on the launch-subagent.sh script:** that script is specifically designed to create sub-agents (the name says so). It does NOT support `-no-parent`. For peer sessions, skip the script and invoke `agent-deck launch -no-parent` directly.
+
 ## TUI Keyboard Shortcuts
 
 ### Navigation
@@ -260,6 +293,36 @@ agent-deck worktree cleanup --force
 | **Feature isolation** | Keep main branch clean while agent experiments |
 | **Code review** | Agent reviews PR in worktree while main work continues |
 | **Hotfix work** | Quick branch off main without disrupting feature work |
+
+## Watchers
+
+Watchers listen for inbound events (webhooks, push notifications, GitHub events, Slack messages) and route them into conductor sessions. Use them when the user says **"set up a watcher"**, **"listen for webhooks"**, **"route GitHub events to my conductor"**, **"forward ntfy notifications"**, or similar.
+
+Four adapter types are supported:
+
+| Type | Required flag | Typical use |
+|------|---------------|-------------|
+| `webhook` | `--port` | Generic HTTP listener |
+| `github` | `--secret` | GitHub repo webhooks with HMAC verification |
+| `ntfy` | `--topic` | ntfy.sh push notifications |
+| `slack` | `--topic` | Slack (via Cloudflare Worker bridge) |
+
+```bash
+agent-deck watcher create <type> --name <name> <adapter-flags...>
+agent-deck watcher start <name>
+agent-deck watcher list                # health + events/hour
+agent-deck watcher test <name>         # synthetic event (verify routing)
+```
+
+Full conversational setup flow is available as a separate skill:
+
+```bash
+agent-deck watcher install-skill watcher-creator
+```
+
+After running the install command, read `~/.agent-deck/skills/pool/watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring `~/.agent-deck/watcher/<name>/clients.json` routing.
+
+See `agent-deck watcher --help` for the full command surface and per-adapter examples.
 
 ## Configuration
 
@@ -423,6 +486,38 @@ Telegram's Bot API `getUpdates` is single-consumer per bot token. If N Claude se
 **Enable per-session:** via `--channel` on the specific session that should receive messages. See "Channel subscription" above.
 
 **Debug:** `pgrep -af "bun.*telegram" | wc -l` should return 1. Anything higher means a race. Kill extras: `pkill -f "bun.*telegram"` then restart only the intended session.
+
+### Telegram conductor topology (v1.7.22+)
+
+**Supported topology — enforce this on every conductor host:**
+
+- Telegram is activated **per-session** via `--channels plugin:telegram@claude-plugins-official`. This is the only supported activation path for a conductor bot.
+- `TELEGRAM_STATE_DIR` is injected **exclusively** via `[conductors.<name>.claude].env_file` in `~/.agent-deck/config.toml`. The env file sources deterministically on both fresh-start and `--resume` spawns.
+- One bot token = one channel-owning session. Never share tokens between sessions.
+- `enabledPlugins."telegram@claude-plugins-official"` in the profile `settings.json` must be **absent or false**. Global enablement makes every claude subprocess (including child agents) load the plugin.
+
+**Codified anti-patterns — agent-deck v1.7.22 emits warnings for these:**
+
+| Anti-pattern | Code | Why it breaks |
+|---|---|---|
+| `enabledPlugins."telegram@claude-plugins-official" = true` in profile settings | `GLOBAL_ANTIPATTERN` | Every claude process loads the plugin, including every child agent the conductor spawns. Each one starts a `bun telegram` poller. |
+| Global enablement **AND** `--channels plugin:telegram@...` on the same session | `DOUBLE_LOAD` | The plugin loads twice in one claude process. Two bun pollers race on one bot token and Telegram rejects with 409 Conflict. |
+| `session set wrapper "TELEGRAM_STATE_DIR=... {command}"` | `WRAPPER_DEPRECATED` | Works on the resume path; silently fails on fresh-start due to `bash -c` argv splitting. The env var never reaches claude, so the plugin falls back to the default state dir and two conductors collide. Use `env_file` instead. |
+| Relying on `.mcp.json` telegram entries for inbound delivery | — | `.mcp.json` loads the plugin as an MCP server (tool-use only). Inbound message → conversation-turn delivery requires `--channels`. |
+| Using the same bot token for multiple concurrent sessions | — | `getUpdates` is single-consumer per token. |
+| Assuming an empty `TELEGRAM_STATE_DIR` is fine | — | The plugin falls back to `~/.claude/channels/telegram/`; any DM approval there leaks across unrelated conductors. |
+
+**Verifying steady state (conductor host):**
+
+```bash
+pgrep -af 'bun.*telegram' | grep -v grep | wc -l   # expect: exactly one per conductor bot
+for PID in $(pgrep -f 'bun.*telegram.*start'); do
+  echo "PID=$PID TSD=$(tr '\0' '\n' < /proc/$PID/environ | grep ^TELEGRAM_STATE_DIR= | cut -d= -f2-)"
+done
+# Each PID must show a distinct TELEGRAM_STATE_DIR; collisions indicate env_file is not being sourced.
+```
+
+**When agent-deck emits a `⚠  GLOBAL_ANTIPATTERN` / `DOUBLE_LOAD` / `WRAPPER_DEPRECATED` warning**, the problem is in your topology, not in agent-deck. Fix the profile settings or the conductor env_file; the warning is a leading indicator of the 409-Conflict symptom that follows minutes-to-hours later.
 
 ## References
 

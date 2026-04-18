@@ -136,6 +136,7 @@ func (h *HelpOverlay) View() string {
 	deleteKey := h.key(hotkeyDelete, "d")
 	closeKey := h.key(hotkeyCloseSession, "D")
 	restartKey := h.key(hotkeyRestart, "Shift+R")
+	restartFreshKey := h.key(hotkeyRestartFresh, "Shift+T")
 	renameKey := h.key(hotkeyRename, "r")
 	moveKey := h.key(hotkeyMoveToGroup, "M")
 	mcpKey := h.key(hotkeyMCPManager, "m")
@@ -149,6 +150,7 @@ func (h *HelpOverlay) View() string {
 	if cfg, _ := session.LoadUserConfig(); cfg != nil && !cfg.GetShowNotes() {
 		notesKey = ""
 	}
+	editPathsKey := h.key(hotkeyEditPaths, "p")
 	worktreeKey := h.key(hotkeyWorktreeFinish, "W")
 	watcherPanelKey := h.key(hotkeyWatcherPanel, "w")
 	groupKey := h.key(hotkeyCreateGroup, "g")
@@ -179,6 +181,7 @@ func (h *HelpOverlay) View() string {
 				{newKeys, "New / quick create"},
 				{renameKey, "Rename session"},
 				{restartKey, "Restart session"},
+				{restartFreshKey, "Restart with new session ID"},
 				{deleteKey, "Delete session"},
 				{closeKey, "Close session process"},
 				{undoKey, "Undo delete"},
@@ -193,6 +196,7 @@ func (h *HelpOverlay) View() string {
 				{copyKey, "Copy output to clipboard"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
+				{editPathsKey, "Edit multi-repo paths"},
 				{notesKey, "Edit notes"},
 			},
 		},

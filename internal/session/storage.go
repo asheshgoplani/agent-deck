@@ -87,6 +87,10 @@ type InstanceData struct {
 	// Plugin channels (persisted for --channels CLI flag on Claude restart)
 	Channels []string `json:"channels,omitempty"`
 
+	// User-supplied claude CLI tokens, appended to every start/resume/fork
+	// command. Persisted so restarts preserve custom flags like --agent/--model.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+
 	// Color is an optional per-session TUI row tint (issue #391). Empty = no tint.
 	Color string `json:"color,omitempty"`
 
@@ -306,6 +310,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			inst.MultiRepoEnabled, inst.AdditionalPaths,
 			inst.MultiRepoTempDir, mrWorktrees,
 			inst.Channels,
+			inst.ExtraArgs,
 			inst.Color, // issue #391
 		)
 
@@ -453,6 +458,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			mrEnabled2, addPaths2,
 			mrTempDir2, mrWorktrees2,
 			channels2,
+			extraArgs2,
 			color2 := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
@@ -497,6 +503,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir2,
 			MultiRepoWorktrees: mrWorktrees2,
 			Channels:           channels2,
+			ExtraArgs:          extraArgs2,
 			Color:              color2,
 		}
 	}
@@ -554,6 +561,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			mrEnabled, addPaths,
 			mrTempDir, mrWorktrees,
 			channels,
+			extraArgs,
 			color := statedb.UnmarshalToolData(r.ToolData)
 		sandboxCfg := decodeSandboxConfig(sandboxJSON)
 
@@ -598,6 +606,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			MultiRepoTempDir:   mrTempDir,
 			MultiRepoWorktrees: mrWorktrees,
 			Channels:           channels,
+			ExtraArgs:          extraArgs,
 			Color:              color,
 		}
 	}
@@ -745,6 +754,17 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 				instData.Command,
 				previousStatus,
 			)
+			// Issue #663: for multi-repo sessions ProjectPath is a symlink
+			// inside MultiRepoTempDir (see home.go:7255-7364), so the
+			// restart pane must cwd into the parent dir — not the symlink
+			// target (an individual source repo). Matches the creation-
+			// time assignment at home.go:7364. Without this, Claude's
+			// JSONL is written under a different encoded-path key and the
+			// next Start() silently mints a fresh session instead of
+			// resuming the prior conversation.
+			if instData.MultiRepoEnabled && instData.MultiRepoTempDir != "" {
+				tmuxSess.WorkDir = instData.MultiRepoTempDir
+			}
 			// Pass instance ID for activity hooks (enables real-time status updates)
 			tmuxSess.InstanceID = instData.ID
 			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
@@ -796,6 +816,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Notes:              instData.Notes,
 			LoadedMCPNames:     instData.LoadedMCPNames,
 			Channels:           instData.Channels,
+			ExtraArgs:          instData.ExtraArgs,
 			Color:              instData.Color,
 			Sandbox:            instData.Sandbox,
 			SandboxContainer:   instData.SandboxContainer,

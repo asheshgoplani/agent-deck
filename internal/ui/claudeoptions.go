@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +16,9 @@ type ClaudeOptionsPanel struct {
 	sessionMode int
 	// Resume session ID input (only for mode=resume)
 	resumeIDInput textinput.Model
+	// Extra claude CLI tokens (space-separated in input; persisted as []string).
+	// NewDialog only — fork inherits parent's ExtraArgs implicitly via builder.
+	extraArgsInput textinput.Model
 	// Checkbox states
 	skipPermissions      bool
 	allowSkipPermissions bool
@@ -45,21 +50,28 @@ func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
 	resumeInput.CharLimit = 64
 	resumeInput.Width = 30
 
+	extraArgsInput := textinput.New()
+	extraArgsInput.Placeholder = "--agent reviewer --model opus"
+	extraArgsInput.CharLimit = 512
+	extraArgsInput.Width = 44
+
 	return &ClaudeOptionsPanel{
-		sessionMode:   0, // new
-		resumeIDInput: resumeInput,
-		isForkMode:    false,
-		focusCount:    5, // Will adjust dynamically
+		sessionMode:    0, // new
+		resumeIDInput:  resumeInput,
+		extraArgsInput: extraArgsInput,
+		isForkMode:     false,
+		focusCount:     6, // session, skip, auto, chrome, teammate, extra-args
 	}
 }
 
 // NewClaudeOptionsPanelForFork creates a panel for ForkDialog (fewer options)
 func NewClaudeOptionsPanelForFork() *ClaudeOptionsPanel {
 	return &ClaudeOptionsPanel{
-		sessionMode:   0,
-		resumeIDInput: textinput.New(), // Not used in fork mode
-		isForkMode:    true,
-		focusCount:    3, // skip, chrome, teammate
+		sessionMode:    0,
+		resumeIDInput:  textinput.New(), // Not used in fork mode
+		extraArgsInput: textinput.New(), // Not used in fork mode
+		isForkMode:     true,
+		focusCount:     3, // skip, chrome, teammate
 	}
 }
 
@@ -105,6 +117,27 @@ func (p *ClaudeOptionsPanel) Focus() {
 func (p *ClaudeOptionsPanel) Blur() {
 	p.focusIndex = -1
 	p.resumeIDInput.Blur()
+	p.extraArgsInput.Blur()
+}
+
+// GetExtraArgs returns the parsed extra-args tokens (whitespace-split, empties dropped).
+// Callers assign the result to Instance.ExtraArgs. Tokens with embedded spaces
+// cannot be expressed through this input — use CLI `--extra-arg` for that.
+func (p *ClaudeOptionsPanel) GetExtraArgs() []string {
+	raw := strings.TrimSpace(p.extraArgsInput.Value())
+	if raw == "" {
+		return nil
+	}
+	tokens := strings.Fields(raw)
+	if len(tokens) == 0 {
+		return nil
+	}
+	return tokens
+}
+
+// SetExtraArgs pre-fills the input from a persisted slice.
+func (p *ClaudeOptionsPanel) SetExtraArgs(tokens []string) {
+	p.extraArgsInput.SetValue(strings.Join(tokens, " "))
 }
 
 // IsFocused returns true if any element in the panel has focus
@@ -173,7 +206,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 
 		case " ":
 			// Don't intercept space when focused on a text input
-			if p.isResumeInputFocused() {
+			if p.isResumeInputFocused() || p.isExtraArgsInputFocused() {
 				break // Let it fall through to text input handling
 			}
 			// Toggle checkbox or radio at current focus
@@ -200,6 +233,11 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 	if p.isResumeInputFocused() {
 		var cmd tea.Cmd
 		p.resumeIDInput, cmd = p.resumeIDInput.Update(msg)
+		return cmd
+	}
+	if p.isExtraArgsInputFocused() {
+		var cmd tea.Cmd
+		p.extraArgsInput, cmd = p.extraArgsInput.Update(msg)
 		return cmd
 	}
 
@@ -279,6 +317,10 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 		if idx == 4 {
 			return "teammateMode"
 		}
+		// 6: extra-args input
+		if idx == 5 {
+			return "extraArgsInput"
+		}
 	}
 	return ""
 }
@@ -289,7 +331,7 @@ func (p *ClaudeOptionsPanel) getFocusCount() int {
 		return 4 // skip, auto, chrome, teammate
 	}
 
-	count := 5 // session mode, skip, auto, chrome, teammate
+	count := 6 // session mode, skip, auto, chrome, teammate, extra-args
 	if p.sessionMode == 2 {
 		count++ // resume input
 	}
@@ -301,12 +343,30 @@ func (p *ClaudeOptionsPanel) isResumeInputFocused() bool {
 	return !p.isForkMode && p.sessionMode == 2 && p.focusIndex == 1
 }
 
+// isExtraArgsInputFocused returns true if extra-args input is focused.
+// Last focusable element in NewDialog mode — index shifts by +1 when
+// resume mode is active (resume ID input adds a row).
+func (p *ClaudeOptionsPanel) isExtraArgsInputFocused() bool {
+	if p.isForkMode {
+		return false
+	}
+	want := 5 // default: session(0) + skip(1) + auto(2) + chrome(3) + teammate(4) + extraArgs(5)
+	if p.sessionMode == 2 {
+		want = 6 // resume input inserts between session and skip
+	}
+	return p.focusIndex == want
+}
+
 // updateInputFocus updates which text input has focus
 func (p *ClaudeOptionsPanel) updateInputFocus() {
 	p.resumeIDInput.Blur()
+	p.extraArgsInput.Blur()
 
 	if p.isResumeInputFocused() {
 		p.resumeIDInput.Focus()
+	}
+	if p.isExtraArgsInputFocused() {
+		p.extraArgsInput.Focus()
 	}
 }
 
@@ -386,6 +446,14 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 
 	// Teammate mode checkbox
 	content += renderCheckboxLine("Teammate mode", p.useTeammateMode, p.focusIndex == focusIdx)
+	focusIdx++
+
+	// Extra args input (free-form space-separated claude CLI tokens).
+	if p.focusIndex == focusIdx {
+		content += activeStyle.Render("  ▶ Extra args: ") + p.extraArgsInput.View() + "\n"
+	} else {
+		content += "    Extra args: " + p.extraArgsInput.View() + "\n"
+	}
 
 	return content
 }

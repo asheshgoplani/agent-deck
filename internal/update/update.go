@@ -32,6 +32,9 @@ const (
 // checkInterval stores the configurable interval (set via SetCheckInterval)
 var checkInterval = DefaultCheckInterval
 
+// apiBaseURL is the base URL for GitHub API calls. Overridable in tests.
+var apiBaseURL = "https://api.github.com"
+
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
 	if hours > 0 {
@@ -125,7 +128,7 @@ func saveCache(cache *UpdateCache) error {
 
 // fetchLatestRelease fetches the latest release from GitHub
 func fetchLatestRelease() (*Release, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GitHubRepo)
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(url)
@@ -169,6 +172,48 @@ func GetAssetURLForPlatform(release *Release, goos, goarch string) string {
 // FetchLatestRelease fetches the latest release from GitHub (exported for remote update).
 func FetchLatestRelease() (*Release, error) {
 	return fetchLatestRelease()
+}
+
+// NormalizeReleaseTag ensures a version string is prefixed with "v" so it matches
+// GitHub release tags (e.g., "1.7.4" -> "v1.7.4", "v1.7.4" -> "v1.7.4").
+func NormalizeReleaseTag(version string) string {
+	trimmed := strings.TrimLeft(strings.TrimSpace(version), "vV")
+	if trimmed == "" {
+		return ""
+	}
+	return "v" + trimmed
+}
+
+// FetchReleaseByTag fetches a specific release from GitHub by its tag.
+// The tag may be supplied with or without the leading "v".
+func FetchReleaseByTag(tag string) (*Release, error) {
+	normalized := NormalizeReleaseTag(tag)
+	if normalized == "" {
+		return nil, fmt.Errorf("empty release tag")
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s", apiBaseURL, GitHubRepo, normalized)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch release %s: %w", normalized, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("release %s not found on GitHub", normalized)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d for release %s", resp.StatusCode, normalized)
+	}
+
+	var release Release
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to parse release %s: %w", normalized, err)
+	}
+
+	return &release, nil
 }
 
 // DownloadAndExtractBinary downloads a release tarball and returns the binary bytes.

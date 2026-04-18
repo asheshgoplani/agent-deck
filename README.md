@@ -316,6 +316,8 @@ Both Telegram and Slack can run simultaneously — the bridge daemon handles bot
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
+**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `~/.agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/SKILL.md#telegram-conductor-topology-v1722).
+
 **Permission prompts during automation**: if a conductor keeps pausing on permission requests, set `[claude].allow_dangerous_mode = true` (or `dangerous_mode = true`) in `~/.agent-deck/config.toml`, then run `agent-deck session restart conductor-<name>`. See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#conductor-keeps-asking-for-permissions).
 
 **Legacy external watcher scripts**: optional only. `~/.agent-deck/events/` is not required for notification routing.
@@ -335,6 +337,45 @@ agent-deck -p work launch . -c "codex --dangerously-bypass-approvals-and-sandbox
 
 When `--cmd` includes extra args, agent-deck auto-wraps the tool command so args are preserved reliably.
 Use `--no-parent` only when you explicitly want to disable parent routing/notifications.
+
+### Watchers
+
+Watchers listen for inbound events (webhooks, push notifications, GitHub events, Slack messages) and route them to conductor sessions so running agents can act on them automatically. Four adapter types ship today:
+
+| Type | Use case | Required flags |
+|------|----------|----------------|
+| `webhook` | Generic HTTP POST listener for any service that can fire a webhook | `--port` |
+| `github` | GitHub repository webhooks (issues, PRs, pushes) with HMAC-SHA256 verification | `--secret` |
+| `ntfy` | [ntfy.sh](https://ntfy.sh) push-notification topics (phone / browser → conductor) | `--topic` |
+| `slack` | Slack messages via a Cloudflare Worker bridge into an ntfy topic | `--topic` |
+
+```bash
+# Create, start, test — mirrors the four examples from `agent-deck watcher --help`
+agent-deck watcher create webhook  --name my-webhook  --port 9000
+agent-deck watcher create github   --name gh-alerts   --secret $GITHUB_WEBHOOK_SECRET
+agent-deck watcher create ntfy     --name phone       --topic my-private-topic
+agent-deck watcher create slack    --name team-slack  --topic my-slack-topic
+
+agent-deck watcher start  <name>
+agent-deck watcher list                # health + events/hour per watcher
+agent-deck watcher status <name>       # detail view including recent events
+agent-deck watcher test   <name>       # fire a synthetic event to verify routing
+```
+
+Routing rules live under `~/.agent-deck/watcher/<name>/clients.json` — edit to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
+
+**Conversational setup (recommended for first-time use):**
+
+```bash
+agent-deck watcher install-skill watcher-creator
+```
+
+Then, inside a Claude Code session started by agent-deck, ask: *"Use the watcher-creator skill to set up a GitHub watcher"*. The skill walks through adapter selection, required settings, and emits the exact `agent-deck watcher create` command to run.
+
+Safety notes:
+- The GitHub adapter enforces HMAC-SHA256 signature verification on every webhook — a missing/invalid signature drops the event.
+- Events are deduplicated in SQLite by `(watcher_name, event_id)`, so retries from the sender do not double-fire the conductor.
+- Watchers keep per-adapter health in `~/.agent-deck/watcher/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
 
 ### Multi-Tool Support
 

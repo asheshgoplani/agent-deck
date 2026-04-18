@@ -115,11 +115,15 @@ func currentTmuxThemeStyle() tmuxThemeStyle {
 }
 
 func (s *Session) themedStatusRight(themeStyle tmuxThemeStyle) string {
+	return fmt.Sprintf("#[fg=%s]ctrl+q detach#[default] │ 📁 %s | %s ", themeStyle.hintColor, s.DisplayName, s.projectDisplayName())
+}
+
+func (s *Session) projectDisplayName() string {
 	folderName := filepath.Base(s.WorkDir)
 	if folderName == "" || folderName == "." {
 		folderName = "~"
 	}
-	return fmt.Sprintf("#[fg=%s]ctrl+q detach#[default] │ 📁 %s | %s ", themeStyle.hintColor, s.DisplayName, folderName)
+	return folderName
 }
 
 // ErrCaptureTimeout is returned when CapturePane exceeds its timeout.
@@ -740,6 +744,15 @@ type Session struct {
 	// login session scope.
 	LaunchInUserScope bool
 
+	// LaunchAs overrides the spawn form (v1.7.21+). Valid values:
+	// "scope", "service", "direct", "auto", or "" (defer to
+	// LaunchInUserScope). "service" uses systemd-run --user --unit
+	// <NAME>.service with Type=forking + Restart=on-failure so tmux
+	// auto-restarts on OOM / SIGKILL / unexpected death. Unknown values
+	// fall through to LaunchInUserScope behavior — populated by callers
+	// from TmuxSettings.GetLaunchAs which already canonicalises.
+	LaunchAs string
+
 	// Custom patterns for generic tool support
 	customToolName       string
 	customBusyPatterns   []string
@@ -807,7 +820,7 @@ func sanitizeSystemdUnitComponent(raw string) string {
 	return out
 }
 
-// bashCWrap returns the given command wrapped in `bash -c '…'` with
+// bashCWrap returns the given command wrapped in `bash -c '...'` with
 // single quotes safely escaped using the POSIX shell quote-break pattern. The result
 // is a single shell word that can be passed to any `sh -c` invocation
 // (e.g. tmux's default shell-command delivery) and will always be
@@ -828,37 +841,195 @@ const (
 	bashCPrefix = "bash -c '"
 )
 
+// LaunchMode enumerates the resolved spawn form used by startCommandSpec.
+// The string values are stable and used in logs + fallback diagnostics.
+const (
+	launchModeDirect  = "direct"
+	launchModeScope   = "scope"
+	launchModeService = "service"
+)
+
+// resolveLaunchMode returns one of launchModeDirect / launchModeScope /
+// launchModeService based on LaunchAs (primary) and LaunchInUserScope
+// (legacy fallback for empty LaunchAs). Unknown LaunchAs values fall
+// through to the legacy LaunchInUserScope path — callers populate
+// LaunchAs from TmuxSettings.GetLaunchAs which already canonicalises.
+func (s *Session) resolveLaunchMode() string {
+	switch strings.ToLower(strings.TrimSpace(s.LaunchAs)) {
+	case "service":
+		return launchModeService
+	case "scope":
+		return launchModeScope
+	case "direct":
+		return launchModeDirect
+	case "auto":
+		// Prefer service when systemd-user-manager is available;
+		// otherwise fall through to direct. isSystemdUserScopeAvailable
+		// already probes `systemd-run --user --version` which is
+		// exactly the precondition for the service spawn too.
+		if isSystemdUserScopeAvailable() {
+			return launchModeService
+		}
+		return launchModeDirect
+	case "":
+		if s.LaunchInUserScope {
+			return launchModeScope
+		}
+		return launchModeDirect
+	default:
+		// Unknown value — log once, fall through to legacy. Valid
+		// values are enforced upstream in TmuxSettings.GetLaunchAs, so
+		// reaching this branch means a caller populated LaunchAs from
+		// somewhere other than GetLaunchAs (e.g. a test).
+		statusLog.Warn("tmux_launch_as_invalid",
+			slog.String("value", s.LaunchAs),
+			slog.String("resolved", "legacy"))
+		if s.LaunchInUserScope {
+			return launchModeScope
+		}
+		return launchModeDirect
+	}
+}
+
+// isSystemdUserScopeAvailable probes whether `systemd-run --user` is
+// operational. Defined in internal/session/userconfig.go — we avoid
+// import cycles by taking the probe result via a swappable seam. Tests
+// can override this via the systemdUserRunProbe variable below.
+var systemdUserRunProbe = func() bool {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return false
+	}
+	return exec.Command("systemd-run", "--user", "--version").Run() == nil
+}
+
+func isSystemdUserScopeAvailable() bool {
+	return systemdUserRunProbe()
+}
+
 func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
-	args := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
+	tmuxArgs := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
 	if startWithInitialProcess {
 		// Keep commands under bash for fish/zsh compatibility, but avoid
 		// double-wrapping payloads that are already `bash -c '…'`.
 		// wrapIgnoreSuspend() already returns that shape; re-wrapping it can
 		// corrupt quoting for nested payloads like docker exec bash -c ... .
 		if isBashCWrapped(command) {
-			args = append(args, command)
+			tmuxArgs = append(tmuxArgs, command)
 		} else {
-			args = append(args, bashCWrap(command))
+			tmuxArgs = append(tmuxArgs, bashCWrap(command))
 		}
 	}
 
-	if !s.LaunchInUserScope {
-		return "tmux", args
-	}
+	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
 
-	unitName := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(s.Name)
-	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitName, "tmux"}
-	scopeArgs = append(scopeArgs, args...)
-	return "systemd-run", scopeArgs
+	switch s.resolveLaunchMode() {
+	case launchModeService:
+		// Type=forking is the ONLY viable type for tmux: tmux new-session
+		// -d daemonizes, so Type=simple would see ExecStart exit 0 and
+		// mark the service inactive immediately, defeating Restart=.
+		// Empirically validated in the v1.7.21 pre-check
+		// (see .planning/v1721-scope-to-service/PLAN.md): Type=forking +
+		// kill -9 tmux → NRestarts=1 within 4s; Type=simple → NRestarts=0.
+		//
+		// We DO NOT use --collect here: --collect unloads the unit once
+		// inactive, which would race with Restart= semantics.
+		svcArgs := []string{
+			"--user", "--unit", unitBase + ".service", "--quiet",
+			"--property=Type=forking",
+			"--property=Restart=on-failure",
+			"--property=RestartSec=5s",
+			"--property=StartLimitBurst=10",
+			"--property=StartLimitIntervalSec=60",
+			"--property=KillMode=control-group",
+			"--property=TimeoutStopSec=15s",
+			"tmux",
+		}
+		svcArgs = append(svcArgs, tmuxArgs...)
+		return "systemd-run", svcArgs
+
+	case launchModeScope:
+		// Legacy PR #467 shape — unchanged so existing users opting out
+		// of service mode with launch_as="scope" get identical semantics.
+		scopeArgs := []string{
+			"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux",
+		}
+		scopeArgs = append(scopeArgs, tmuxArgs...)
+		return "systemd-run", scopeArgs
+
+	default:
+		return "tmux", tmuxArgs
+	}
 }
 
-// stripSystemdRunPrefix removes the leading systemd-run --user --scope wrap
-// from args produced by startCommandSpec when LaunchInUserScope is true,
-// returning the bare tmux args. Returns args unchanged if the shape doesn't
-// match — defensive against future startCommandSpec changes.
+// buildScopeArgsFromTmuxArgs reconstructs scope-mode systemd-run argv
+// from the bare tmux args. Used by the three-tier fallback in Start()
+// when service-mode spawn fails and we retry with scope mode before
+// falling all the way back to direct tmux.
+func buildScopeArgsFromTmuxArgs(sessionName string, tmuxArgs []string) []string {
+	unitBase := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(sessionName)
+	scopeArgs := []string{"--user", "--scope", "--quiet", "--collect", "--unit", unitBase, "tmux"}
+	return append(scopeArgs, tmuxArgs...)
+}
+
+// wasServiceModeArgs detects whether systemd-run args produced by
+// startCommandSpec are for service mode (contains --unit X.service).
+// Used by the fallback chain to pick human-readable diagnostic labels
+// and decide whether to attempt the scope-mode retry tier.
+func wasServiceModeArgs(args []string) bool {
+	for i, a := range args {
+		if a == "--unit" && i+1 < len(args) && strings.HasSuffix(args[i+1], ".service") {
+			return true
+		}
+	}
+	return false
+}
+
+// wasScopeModeArgs detects whether systemd-run args are for scope mode
+// (contains --scope). Symmetric helper used by the fallback chain.
+func wasScopeModeArgs(args []string) bool {
+	for _, a := range args {
+		if a == "--scope" {
+			return true
+		}
+	}
+	return false
+}
+
+// StopServiceUnit best-effort stops + resets-failed the transient
+// user-level service for the given session name. Called by
+// agent-deck remove on service-mode sessions to guarantee the unit
+// does not Restart=on-failure its way back into existence after
+// removal. Errors are returned but callers typically log-and-continue.
 //
-// Expected shape (matches startCommandSpec above):
+// Returns nil on non-systemd hosts (no-op), on already-stopped units,
+// and on hosts where systemctl is missing — removal must not block on
+// systemd availability.
+//
+// The unit name derivation mirrors startCommandSpec's service branch:
+// "agentdeck-tmux-" + sanitized(sessionName) + ".service".
+func StopServiceUnit(sessionName string) error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil // no systemctl → nothing to stop
+	}
+	unit := "agentdeck-tmux-" + sanitizeSystemdUnitComponent(sessionName) + ".service"
+	// `stop` returns non-zero if the unit was never started; that's a
+	// no-op for our purposes — swallow and continue to reset-failed.
+	_ = execCommand("systemctl", "--user", "stop", unit).Run()
+	_ = execCommand("systemctl", "--user", "reset-failed", unit).Run()
+	return nil
+}
+
+// stripSystemdRunPrefix removes the leading systemd-run flags from args
+// produced by startCommandSpec (either scope-mode or service-mode form)
+// and returns the bare tmux args. Scans for the first bare "tmux" token
+// which, in both shapes, is the command argument to systemd-run —
+// everything after it is tmux argv.
+//
+// Returns args unchanged if no "tmux" token is found (shape mismatch),
+// preserving the defensive-against-refactors behavior of the original.
+//
+// Scope-mode shape (PR #467):
 //
 //	[0]   "--user"
 //	[1]   "--scope"
@@ -868,9 +1039,24 @@ func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 //	[5]   "<unit name>"
 //	[6]   "tmux"
 //	[7..] tmux args
+//
+// Service-mode shape (v1.7.21+):
+//
+//	[0]   "--user"
+//	[1]   "--unit"
+//	[2]   "<unit name>.service"
+//	[3]   "--quiet"
+//	[4..10] "--property=..." (variable count)
+//	[11]  "tmux"
+//	[12..] tmux args
+//
+// A "--property=..." value never equals "tmux" as a whole arg (they are
+// single KEY=VALUE tokens), so the scan is unambiguous.
 func stripSystemdRunPrefix(args []string) []string {
-	if len(args) >= 7 && args[6] == "tmux" {
-		return args[7:]
+	for i, a := range args {
+		if a == "tmux" {
+			return args[i+1:]
+		}
 	}
 	return args
 }
@@ -1037,6 +1223,7 @@ func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 	// Configure existing sessions
 	if sess.Exists() {
 		sess.ConfigureStatusBar()
+		sess.ConfigureTerminalTitle()
 		sess.configured = true
 	}
 
@@ -1142,6 +1329,7 @@ func (s *Session) EnsureConfigured() {
 
 	// Run deferred configuration
 	s.ConfigureStatusBar()
+	s.ConfigureTerminalTitle()
 	_ = s.EnableMouseMode()
 
 	s.configured = true
@@ -1450,22 +1638,79 @@ func (s *Session) Start(command string) error {
 	if err != nil && launcher == "systemd-run" {
 		// systemd-run detection said yes but invocation failed (e.g. dbus
 		// down, lingering disabled, broken user manager). Log a structured
-		// warning and retry ONCE with the direct tmux launcher so session
-		// creation is never blocked. If the direct retry also fails, wrap
-		// both diagnostics in the returned error so operators can see why
-		// isolation was attempted and how the fallback broke.
+		// warning and retry with softer wrap forms so session creation is
+		// never blocked.
+		//
+		// Three-tier fallback chain (v1.7.21):
+		//  1. Originally requested form (service or scope) — already failed above
+		//  2. If originally service: try scope-mode systemd-run
+		//  3. Direct tmux (no systemd wrap)
+		//
+		// Each failed tier is logged and its error collected. If all three
+		// fail the returned error carries all three diagnostics so operators
+		// can triage via a single log grep.
 		statusLog.Warn("tmux_systemd_run_fallback",
 			slog.String("session", s.Name),
 			slog.String("error", err.Error()),
 			slog.String("output", string(output)))
-		directArgs := stripSystemdRunPrefix(args)
-		retryOutput, retryErr := execCommand("tmux", directArgs...).CombinedOutput()
-		if retryErr == nil {
-			output = retryOutput
-			err = nil
-		} else {
-			return fmt.Errorf("failed to create tmux session: systemd-run path: %w (output: %s); direct retry: %v (output: %s)",
-				err, string(output), retryErr, string(retryOutput))
+
+		initialErr := err
+		initialOutput := output
+		initialLabel := "systemd-run path"
+		if wasServiceModeArgs(args) {
+			initialLabel = "service path"
+		} else if wasScopeModeArgs(args) {
+			initialLabel = "scope path"
+		}
+
+		tmuxArgs := stripSystemdRunPrefix(args)
+
+		// Tier 2: if the first attempt was service-mode, try scope-mode
+		// as an intermediate step BEFORE falling all the way to direct.
+		// This matters when the user manager supports scopes but
+		// services fail (e.g. transient-unit restart-property constraints
+		// on very old systemd).
+		var scopeErr error
+		var scopeOutput []byte
+		triedScope := false
+		if wasServiceModeArgs(args) {
+			scopeRetryArgs := buildScopeArgsFromTmuxArgs(s.Name, tmuxArgs)
+			scopeOutput, scopeErr = execCommand("systemd-run", scopeRetryArgs...).CombinedOutput()
+			triedScope = true
+			if scopeErr == nil {
+				output = scopeOutput
+				err = nil
+			} else {
+				statusLog.Warn("tmux_systemd_run_scope_fallback_failed",
+					slog.String("session", s.Name),
+					slog.String("error", scopeErr.Error()),
+					slog.String("output", string(scopeOutput)))
+			}
+		}
+
+		// Tier 3: direct tmux. Only attempted if we're still in an error
+		// state after tier 2 (or if tier 2 was skipped because the
+		// initial attempt was scope-mode, in which case it's the next
+		// tier down).
+		if err != nil {
+			retryOutput, retryErr := execCommand("tmux", tmuxArgs...).CombinedOutput()
+			if retryErr == nil {
+				output = retryOutput
+				err = nil
+			} else {
+				// All tiers failed — compose a single error that lists
+				// every diagnostic.
+				if triedScope {
+					return fmt.Errorf(
+						"failed to create tmux session: %s: %w (output: %s); scope path: %v (output: %s); direct retry: %v (output: %s)",
+						initialLabel, initialErr, string(initialOutput),
+						scopeErr, string(scopeOutput),
+						retryErr, string(retryOutput))
+				}
+				return fmt.Errorf(
+					"failed to create tmux session: systemd-run path: %w (output: %s); direct retry: %v (output: %s)",
+					initialErr, string(initialOutput), retryErr, string(retryOutput))
+			}
 		}
 	}
 	if err != nil {
@@ -1537,6 +1782,7 @@ func (s *Session) Start(command string) error {
 	// Configure status bar with session info for easy identification
 	// Shows: session title on left, project folder on right
 	s.ConfigureStatusBar()
+	s.ConfigureTerminalTitle()
 
 	// Wait for the pane shell to be ready before sending the command via send-keys.
 	// On WSL/Linux non-interactive contexts, pane initialisation can take 100-500ms and
@@ -1661,6 +1907,46 @@ func (s *Session) buildStatusBarArgs() []string {
 		return nil
 	}
 	return args
+}
+
+// buildTerminalTitleArgs returns the tmux command args for configuring the outer
+// terminal title shown by clients such as iTerm2. Session metadata user options
+// are always refreshed so custom title formats can reuse them.
+func (s *Session) buildTerminalTitleArgs() []string {
+	type option struct {
+		key   string
+		value string
+	}
+
+	defaults := []option{
+		{"@agentdeck_project_name", s.projectDisplayName()},
+		{"@agentdeck_display_name", s.DisplayName},
+	}
+	if _, overridden := s.OptionOverrides["set-titles"]; !overridden {
+		defaults = append(defaults, option{key: "set-titles", value: "on"})
+	}
+	if _, overridden := s.OptionOverrides["set-titles-string"]; !overridden {
+		defaults = append(defaults, option{key: "set-titles-string", value: "[#{@agentdeck_project_name}] #{@agentdeck_display_name}"})
+	}
+
+	args := make([]string, 0, len(defaults)*6)
+	for i, opt := range defaults {
+		if i > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, "set-option", "-t", s.Name, opt.key, opt.value)
+	}
+	return args
+}
+
+// ConfigureTerminalTitle sets tmux options that drive the outer terminal tab or
+// window title for this session.
+func (s *Session) ConfigureTerminalTitle() {
+	args := s.buildTerminalTitleArgs()
+	if len(args) == 0 {
+		return
+	}
+	_ = exec.Command("tmux", args...).Run()
 }
 
 // ConfigureStatusBar sets up the tmux status bar with session info.

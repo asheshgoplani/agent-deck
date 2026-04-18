@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -162,6 +164,12 @@ type Instance struct {
 	// no inbound delivery) which silently drops Telegram/Discord/Slack
 	// messages on conductor restart.
 	Channels []string `json:"channels,omitempty"`
+
+	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
+	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
+	// Each token is shellescape-quoted on emission so values with spaces
+	// survive the bash -c wrapper.
+	ExtraArgs []string `json:"extra_args,omitempty"`
 
 	// ToolOptions stores tool-specific launch options (Claude, Codex, Gemini, etc.)
 	// JSON structure: {"tool": "claude", "options": {...}}
@@ -700,6 +708,14 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// on every Start/Restart/resume because every command-build flows here.
 	if len(i.Channels) > 0 {
 		flags = append(flags, fmt.Sprintf("--channels %s", strings.Join(i.Channels, ",")))
+	}
+
+	// User-supplied extra args: each token is shellescape-quoted before
+	// re-emission so values with spaces survive the `bash -c` wrapper
+	// without being re-tokenized. Appended last so user flags can override
+	// defaults claude accepts in last-wins ordering.
+	for _, tok := range i.ExtraArgs {
+		flags = append(flags, shellescape.Quote(tok))
 	}
 
 	if len(flags) == 0 {
@@ -2004,7 +2020,14 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	if i.ClaudeDetectedAt.IsZero() {
 		return
 	}
-	uuid, found := discoverLatestClaudeJSONL(i.ProjectPath)
+	// Issue #663: multi-repo sessions write their JSONL under
+	// ~/.claude/projects/<encoded MultiRepoTempDir>/. ProjectPath is a
+	// symlink inside MultiRepoTempDir, so EvalSymlinks would resolve it
+	// to the original source repo and miss the JSONL. Use
+	// EffectiveWorkingDir() so the encoded-path key matches what Claude
+	// actually wrote on the first boot.
+	lookupPath := i.EffectiveWorkingDir()
+	uuid, found := discoverLatestClaudeJSONL(lookupPath)
 	if !found {
 		return
 	}
@@ -2012,7 +2035,7 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery",
 		slog.String("instance_id", i.ID),
 		slog.String("claude_session_id", uuid),
-		slog.String("path", i.ProjectPath),
+		slog.String("path", lookupPath),
 		slog.String("reason", "jsonl_discovery"))
 }
 
@@ -2090,6 +2113,7 @@ func (i *Instance) Start() error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
+	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2242,6 +2266,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
+	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2849,37 +2874,41 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if sessionID == i.ClaudeSessionID {
 			return
 		}
-		// Quality gate: only accept if the hook session has conversation data,
-		// OR if the current session ID is empty (first detection).
-		if i.ClaudeSessionID == "" || sessionHasConversationData(i, sessionID) {
-			action := "bind"
-			if i.ClaudeSessionID != "" {
-				action = "rebind"
-			}
-			sessionLog.Debug("claude_session_update_from_hook",
-				slog.String("old_id", i.ClaudeSessionID),
-				slog.String("new_id", sessionID),
-				slog.String("event", status.Event),
-			)
-			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-				InstanceID: i.ID, Tool: i.Tool, Action: action,
-				Source: hookSource, OldID: i.ClaudeSessionID, NewID: sessionID,
-				HookEvent: status.Event,
-			})
-			i.ClaudeSessionID = sessionID
-			i.ClaudeDetectedAt = time.Now()
-			i.hookSessionID = sessionID
-
-			if i.tmuxSession != nil && i.tmuxSession.Exists() {
-				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
-			}
-		} else {
+		// Cold start — no session bound yet. Accept the first candidate
+		// unconditionally; there is nothing to protect.
+		if i.ClaudeSessionID == "" {
+			i.bindClaudeSessionFromHook(sessionID, hookSource, status.Event, "bind")
+			return
+		}
+		// v1.7.7 guard: candidate must have any conversation data at all.
+		if !sessionHasConversationData(i, sessionID) {
 			_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
 				InstanceID: i.ID, Tool: i.Tool, Action: "reject",
 				Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
 				HookEvent: status.Event, Reason: "candidate_has_no_conversation_data",
 			})
+			return
 		}
+		// v1.7.23 guard (issue #661): when BOTH current and candidate have
+		// data, the candidate must have strictly MORE content to win. This
+		// stops the UserPromptSubmit flap where a fresh 1-record jsonl
+		// overwrites a rich hundreds-of-KB historic jsonl on every restart.
+		// Byte size is a robust proxy for "how much history this session
+		// holds" — immune to record-count ties and faster than re-scanning
+		// the file.
+		if sessionHasConversationData(i, i.ClaudeSessionID) {
+			currentSize := sessionConversationByteSize(i, i.ClaudeSessionID)
+			candidateSize := sessionConversationByteSize(i, sessionID)
+			if candidateSize <= currentSize {
+				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+					InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+					Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+					HookEvent: status.Event, Reason: "candidate_has_less_conversation_data",
+				})
+				return
+			}
+		}
+		i.bindClaudeSessionFromHook(sessionID, hookSource, status.Event, "rebind")
 	case i.Tool == "codex":
 		if sessionID == i.CodexSessionID {
 			return
@@ -3271,6 +3300,59 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	// Sync CodexSessionID
 	if i.CodexSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
+	}
+}
+
+func (i *Instance) clearSessionBindingForFreshStart() {
+	if IsClaudeCompatible(i.Tool) {
+		i.ClaudeSessionID = ""
+		i.ClaudeDetectedAt = time.Time{}
+	}
+
+	if i.Tool == "gemini" {
+		i.GeminiSessionID = ""
+		i.GeminiDetectedAt = time.Time{}
+	}
+
+	if i.Tool == "opencode" {
+		i.OpenCodeSessionID = ""
+		i.OpenCodeDetectedAt = time.Time{}
+		i.OpenCodeStartedAt = 0
+		i.lastOpenCodeScanAt = time.Time{}
+	}
+
+	if i.Tool == "codex" {
+		i.CodexSessionID = ""
+		i.CodexDetectedAt = time.Time{}
+		i.CodexStartedAt = 0
+		i.lastCodexScanAt = time.Time{}
+		i.mu.Lock()
+		i.pendingCodexRestartWarning = ""
+		i.mu.Unlock()
+	}
+}
+
+func (i *Instance) recreateTmuxSession() {
+	// Issue #663: multi-repo sessions must cwd into MultiRepoTempDir, not
+	// ProjectPath (which is a symlink into that parent dir). Delegates to
+	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
+	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
+	i.tmuxSession.InstanceID = i.ID
+	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
+	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+}
+
+func (i *Instance) prepareRestartMCPConfig() {
+	// Clear flag immediately to prevent it staying set if restart fails.
+	skipRegen := i.SkipMCPRegenerate
+	i.SkipMCPRegenerate = false
+
+	if IsClaudeCompatible(i.Tool) && !skipRegen {
+		if err := i.regenerateMCPConfig(); err != nil {
+			mcpLog.Warn("mcp_config_regen_failed", slog.String("error", err.Error()))
+		}
+	} else if skipRegen {
+		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
 	}
 }
 
@@ -3943,6 +4025,21 @@ func parseGenericOutput(content, tool string) (*ResponseOutput, error) {
 	}, nil
 }
 
+// StopServiceUnit best-effort stops + resets-failed the transient
+// systemd-user service unit associated with this instance's tmux
+// server (if LaunchAs=service was used). Intended for the remove/delete
+// code path ONLY — NOT for restart, which needs the unit to persist so
+// it can re-spawn tmux.
+//
+// No-ops on non-systemd hosts. Returns nil when the unit doesn't exist
+// or was never started (best-effort semantics per v1.7.21 spec).
+func (i *Instance) StopServiceUnit() error {
+	if i.tmuxSession == nil {
+		return nil
+	}
+	return tmux.StopServiceUnit(i.tmuxSession.Name)
+}
+
 // Kill terminates the tmux session and cleans up sandbox container if present.
 func (i *Instance) Kill() error {
 	// Kill tmux session first, but always continue to container cleanup.
@@ -3995,20 +4092,9 @@ func (i *Instance) Restart() error {
 		slog.Bool("tmux_exists", i.tmuxSession != nil && i.tmuxSession.Exists()),
 	)
 
-	// Clear flag immediately to prevent it staying set if restart fails
-	skipRegen := i.SkipMCPRegenerate
-	i.SkipMCPRegenerate = false
-
-	// Regenerate .mcp.json before restart to use socket pool if available
-	// Skip if MCP dialog just wrote the config (avoids race condition)
-	if IsClaudeCompatible(i.Tool) && !skipRegen {
-		if err := i.regenerateMCPConfig(); err != nil {
-			mcpLog.Warn("mcp_config_regen_failed", slog.String("error", err.Error()))
-			// Continue with restart - Claude will use existing .mcp.json or defaults
-		}
-	} else if skipRegen {
-		mcpLog.Debug("mcp_regen_skipped", slog.String("reason", "flag_set_by_apply"))
-	}
+	// Regenerate .mcp.json before restart to use socket pool if available.
+	// Skip if MCP dialog just wrote the config (avoids race condition).
+	i.prepareRestartMCPConfig()
 
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
@@ -4235,10 +4321,7 @@ func (i *Instance) Restart() error {
 	}
 
 	// Fallback: recreate tmux session (for dead sessions or unknown ID)
-	i.tmuxSession = tmux.NewSession(i.Title, i.ProjectPath)
-	i.tmuxSession.InstanceID = i.ID // Pass instance ID for activity hooks
-	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
-	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+	i.recreateTmuxSession()
 
 	var command string
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" {
@@ -4289,6 +4372,7 @@ func (i *Instance) Restart() error {
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
 	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
+	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 
@@ -4341,6 +4425,30 @@ func (i *Instance) Restart() error {
 		i.Status = StatusWaiting
 	} else {
 		i.Status = StatusIdle
+	}
+
+	return nil
+}
+
+// RestartFresh restarts the current tool without resuming the existing tool session.
+// This recreates the tmux session and clears the stored tool session binding first,
+// so the next start gets a brand-new tool session ID.
+func (i *Instance) RestartFresh() error {
+	i.prepareRestartMCPConfig()
+
+	i.clearSessionBindingForFreshStart()
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		if killErr := i.tmuxSession.Kill(); killErr != nil {
+			mcpLog.Warn("restart_fresh_kill_old_session_failed", slog.String("error", killErr.Error()))
+		}
+	}
+
+	i.recreateTmuxSession()
+
+	if err := i.Start(); err != nil {
+		i.Status = StatusError
+		return fmt.Errorf("failed to restart session fresh: %w", err)
 	}
 
 	return nil
@@ -4492,6 +4600,24 @@ func (i *Instance) CanRestart() bool {
 
 	// Other sessions: only if dead or error
 	return i.Status == StatusError || i.tmuxSession == nil || !i.tmuxSession.Exists()
+}
+
+// CanRestartFresh returns true when the session has a known tool session binding
+// that can be intentionally discarded to start with a new session ID.
+func (i *Instance) CanRestartFresh() bool {
+	if IsClaudeCompatible(i.Tool) {
+		return i.ClaudeSessionID != ""
+	}
+	if i.Tool == "gemini" {
+		return i.GeminiSessionID != ""
+	}
+	if i.Tool == "opencode" {
+		return i.OpenCodeSessionID != ""
+	}
+	if i.Tool == "codex" {
+		return i.CodexSessionID != ""
+	}
+	return i.CanRestartGeneric()
 }
 
 // CanFork returns true if this session can be forked
@@ -4805,11 +4931,12 @@ func (i *Instance) SetAcknowledgedFromShared(ack bool) {
 	i.tmuxSession.Acknowledge()
 }
 
-// SyncTmuxDisplayName updates the tmux status bar to reflect the current title.
+// SyncTmuxDisplayName updates tmux-rendered UI that reflects the current title.
 func (i *Instance) SyncTmuxDisplayName() {
 	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 		tmuxSess.DisplayName = i.Title
 		tmuxSess.ConfigureStatusBar()
+		tmuxSess.ConfigureTerminalTitle()
 	}
 }
 
@@ -5050,6 +5177,82 @@ func geminiSessionHasConversationData(sessionID, projectPath string) bool {
 	return len(payload.Messages) > 0
 }
 
+// sessionConversationByteSize returns the size in bytes of the Claude
+// session's jsonl file (or 0 if it cannot be located). Used as a robust
+// "how much history does this session hold" proxy when choosing between
+// two non-empty candidates during hook rebind — a 974KB historic jsonl
+// should always win over a fresh 1-record jsonl, regardless of whether
+// both pass the binary `sessionHasConversationData` check.
+//
+// Uses the PER-INSTANCE Claude config dir (same lookup as
+// sessionHasConversationData) so conductors with config_dir overrides
+// resolve correctly. Errors return 0 — this is a tiebreaker, not the
+// primary gate, so a missing file degrades gracefully to "candidate
+// doesn't appear larger, reject" rather than false-accepting.
+func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
+	var configDir string
+	if inst != nil {
+		configDir = GetClaudeConfigDirForInstance(inst)
+	} else {
+		configDir = GetClaudeConfigDir()
+	}
+	if configDir == "" {
+		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+	// Issue #663: for multi-repo sessions ProjectPath is a symlink into
+	// MultiRepoTempDir; EvalSymlinks would resolve away from the parent
+	// dir Claude actually used as cwd. EffectiveWorkingDir() is the
+	// authoritative cwd for JSONL encoding.
+	projectPath := ""
+	if inst != nil {
+		projectPath = inst.EffectiveWorkingDir()
+	}
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encodedPath := ConvertToClaudeDirName(resolvedPath)
+	if encodedPath == "" {
+		encodedPath = "-"
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	if info, err := os.Stat(sessionFile); err == nil {
+		return info.Size()
+	}
+	if fallback := findSessionFileInAllProjects(inst, sessionID); fallback != "" {
+		if info, err := os.Stat(fallback); err == nil {
+			return info.Size()
+		}
+	}
+	return 0
+}
+
+// bindClaudeSessionFromHook performs the common bookkeeping when
+// UpdateHookStatus has decided a candidate session ID wins: log the
+// lifecycle event, update the in-memory instance fields, and propagate
+// the ID into the tmux environment so a future restart's
+// capture-resume pattern picks it up. `action` is "bind" (cold start)
+// or "rebind" (replacing an existing ID).
+func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, action string) {
+	sessionLog.Debug("claude_session_update_from_hook",
+		slog.String("old_id", i.ClaudeSessionID),
+		slog.String("new_id", sessionID),
+		slog.String("event", hookEvent),
+	)
+	_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+		InstanceID: i.ID, Tool: i.Tool, Action: action,
+		Source: hookSource, OldID: i.ClaudeSessionID, NewID: sessionID,
+		HookEvent: hookEvent,
+	})
+	i.ClaudeSessionID = sessionID
+	i.ClaudeDetectedAt = time.Now()
+	i.hookSessionID = sessionID
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
+	}
+}
+
 // sessionHasConversationData checks if a Claude session file contains actual
 // conversation data (has "sessionId" field in records).
 //
@@ -5083,9 +5286,12 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}
 
+	// Issue #663: see sessionConversationByteSize rationale above.
+	// Multi-repo sessions must encode EffectiveWorkingDir(), not the
+	// ProjectPath symlink.
 	projectPath := ""
 	if inst != nil {
-		projectPath = inst.ProjectPath
+		projectPath = inst.EffectiveWorkingDir()
 	}
 
 	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)

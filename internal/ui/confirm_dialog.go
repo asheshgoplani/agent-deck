@@ -50,6 +50,7 @@ type ConfirmDialog struct {
 	pendingSessionCommand    string
 	pendingSessionGroupPath  string
 	pendingToolOptionsJSON   json.RawMessage // Generic tool options (claude, codex, etc.)
+	pendingClaudeExtraArgs   []string        // User-supplied claude CLI tokens
 	pendingParentSessionID   string
 	pendingParentProjectPath string
 }
@@ -132,6 +133,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	command string,
 	groupPath string,
 	toolOptionsJSON json.RawMessage,
+	claudeExtraArgs []string,
 	parentSessionID string,
 	parentProjectPath string,
 ) {
@@ -144,6 +146,7 @@ func (c *ConfirmDialog) ShowCreateDirectory(
 	c.pendingSessionCommand = command
 	c.pendingSessionGroupPath = groupPath
 	c.pendingToolOptionsJSON = toolOptionsJSON
+	c.pendingClaudeExtraArgs = claudeExtraArgs
 	c.pendingParentSessionID = parentSessionID
 	c.pendingParentProjectPath = parentProjectPath
 	c.buttonCount = 2
@@ -161,8 +164,8 @@ func (c *ConfirmDialog) ShowInstallHooks() {
 }
 
 // GetPendingSession returns the pending session creation data
-func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, parentSessionID, parentProjectPath string) {
-	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingParentSessionID, c.pendingParentProjectPath
+func (c *ConfirmDialog) GetPendingSession() (name, path, command, groupPath string, toolOptionsJSON json.RawMessage, claudeExtraArgs []string, parentSessionID, parentProjectPath string) {
+	return c.pendingSessionName, c.pendingSessionPath, c.pendingSessionCommand, c.pendingSessionGroupPath, c.pendingToolOptionsJSON, c.pendingClaudeExtraArgs, c.pendingParentSessionID, c.pendingParentProjectPath
 }
 
 // Hide hides the dialog.

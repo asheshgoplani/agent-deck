@@ -380,11 +380,11 @@ func TestCSIuReaderModifyOtherKeysMixed(t *testing.T) {
 // tea.WithInput(NewCSIuReader(os.Stdin)) wiring.
 func TestCSIuReaderAllShiftHotkeys(t *testing.T) {
 	// Every uppercase hotkey defined in defaultHotkeyBindings:
-	//   N=quick_create, R=restart, D=close_session, M=move_to_group,
+	//   N=quick_create, R=restart, T=restart_fresh, D=close_session, M=move_to_group,
 	//   F=fork_with_options, E=exec_shell, W=worktree_finish, S=settings,
 	//   G=global_search, K=move_up, J=move_down, C=cost_dashboard
 	hotkeys := map[rune]int{
-		'N': 110, 'R': 114, 'D': 100, 'M': 109,
+		'N': 110, 'R': 114, 'T': 116, 'D': 100, 'M': 109,
 		'F': 102, 'E': 101, 'W': 119, 'S': 115,
 		'G': 103, 'K': 107, 'J': 106, 'C': 99,
 	}
@@ -654,5 +654,30 @@ func TestCSIuReader_Underscore(t *testing.T) {
 	}
 	if string(out) != "_" {
 		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "_")
+	}
+}
+
+// TestRestoreLegacyKeyboardCmd verifies that the helper returned by
+// RestoreLegacyKeyboardCmd writes the Kitty pop sequence to the supplied
+// writer and returns a no-op message. This is a regression guard for the
+// tmux re-enter fix from PR #613: if a future refactor drops the
+// DisableKittyKeyboard call from the Update handler, the integration test
+// below fails; if a refactor changes the escape sequence, this test fails.
+func TestRestoreLegacyKeyboardCmd(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := RestoreLegacyKeyboardCmd(&buf)
+	if cmd == nil {
+		t.Fatal("RestoreLegacyKeyboardCmd returned nil")
+	}
+
+	msg := cmd()
+	if msg != nil {
+		t.Errorf("cmd() returned non-nil msg: %v (want nil so the batch step is a side-effect-only no-op)", msg)
+	}
+
+	got := buf.String()
+	want := "\x1b[<u"
+	if got != want {
+		t.Errorf("cmd() wrote %q to writer, want %q (Kitty pop sequence)", got, want)
 	}
 }

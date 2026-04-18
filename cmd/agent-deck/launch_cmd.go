@@ -56,6 +56,16 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Extra claude CLI tokens - repeatable; mirrors handleAdd's --extra-arg.
+	// Each invocation contributes one already-tokenised arg; feeds
+	// Instance.ExtraArgs which buildClaudeExtraFlags shellescapes and appends.
+	// Persisted plaintext in state.db — do NOT pass secrets like API keys.
+	var extraArgFlags []string
+	fs.Func("extra-arg", "Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets", func(s string) error {
+		extraArgFlags = append(extraArgFlags, s)
+		return nil
+	})
+
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 
@@ -294,6 +304,15 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 		newInstance.Channels = channelFlags
+	}
+
+	// Apply --extra-arg flags (claude only; mirror of handleAdd).
+	if len(extraArgFlags) > 0 {
+		if newInstance.Tool != "claude" {
+			out.Error("--extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		newInstance.ExtraArgs = extraArgFlags
 	}
 
 	if sessionWrapperResolved != "" {

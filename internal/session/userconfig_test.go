@@ -1475,3 +1475,100 @@ func TestWatcherAlertsSettingsDefaults(t *testing.T) {
 		t.Errorf("empty config: cfg.Watcher.Alerts.GetDebounceMinutes() = %d, want 15", got)
 	}
 }
+
+// TestDetachKey_ConfigurableViaToml exercises issue #434: the PTY-attach
+// detach byte is configurable from config.toml via BOTH [hotkeys].detach
+// (the canonical source) and [tmux].detach_key (the alias requested in #434,
+// kept in lockstep so users who think of detach as a tmux concern find it).
+//
+// Precedence (documented in TmuxSettings.DetachKey): explicit [hotkeys].detach
+// always wins; [tmux].detach_key applies only when [hotkeys].detach is absent
+// (so adding the alias NEVER changes behavior for a user who already set the
+// hotkey). Empty config preserves the built-in Ctrl+Q default.
+func TestDetachKey_ConfigurableViaToml(t *testing.T) {
+	cases := []struct {
+		name       string
+		toml       string
+		wantDetach string // "" means the key must be absent from the overrides
+	}{
+		{
+			name:       "empty_config_no_override",
+			toml:       ``,
+			wantDetach: "",
+		},
+		{
+			name: "hotkeys_detach_alone",
+			toml: `[hotkeys]
+detach = "ctrl+d"
+`,
+			wantDetach: "ctrl+d",
+		},
+		{
+			name: "tmux_detach_key_alone_acts_as_alias",
+			toml: `[tmux]
+detach_key = "ctrl+d"
+`,
+			wantDetach: "ctrl+d",
+		},
+		{
+			name: "hotkeys_wins_over_tmux_when_both_set",
+			toml: `[hotkeys]
+detach = "ctrl+b"
+
+[tmux]
+detach_key = "ctrl+d"
+`,
+			wantDetach: "ctrl+b",
+		},
+		{
+			name: "tmux_detach_key_whitespace_trimmed",
+			toml: `[tmux]
+detach_key = "  ctrl+d  "
+`,
+			wantDetach: "ctrl+d",
+		},
+		{
+			name: "empty_tmux_detach_key_is_ignored",
+			toml: `[tmux]
+detach_key = ""
+`,
+			wantDetach: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			originalHome := os.Getenv("HOME")
+			os.Setenv("HOME", tempDir)
+			defer os.Setenv("HOME", originalHome)
+			ClearUserConfigCache()
+			defer ClearUserConfigCache()
+
+			agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+			if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			configPath := filepath.Join(agentDeckDir, "config.toml")
+			if err := os.WriteFile(configPath, []byte(tc.toml), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			overrides := GetHotkeyOverrides()
+			got, present := overrides["detach"]
+
+			if tc.wantDetach == "" {
+				if present && got != "" {
+					t.Fatalf("detach override: unexpected value %q present, wanted absent", got)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("detach override: missing in result, wanted %q", tc.wantDetach)
+			}
+			if got != tc.wantDetach {
+				t.Fatalf("detach override: got %q, want %q", got, tc.wantDetach)
+			}
+		})
+	}
+}

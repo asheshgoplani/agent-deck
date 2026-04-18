@@ -123,8 +123,8 @@ clean:
 
 # Development with auto-reload
 dev:
-	@which air > /dev/null || go install github.com/cosmtrek/air@latest
-	air
+	@which air > /dev/null || go install github.com/air-verse/air@latest
+	$(shell go env GOPATH)/bin/air
 
 # Run tests (with race detector)
 test:

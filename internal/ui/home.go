@@ -104,6 +104,11 @@ const (
 	// clearOnCompactCooldown - minimum time between /clear sends for the same session
 	// Prevents repeated /clear if context fills up again quickly
 	clearOnCompactCooldown = 60 * time.Second
+
+	// attach-return grace periods keep the main menu responsive right after tea.Exec returns.
+	attachReturnHotDuration  = 1200 * time.Millisecond
+	attachReturnRefreshDelay = 350 * time.Millisecond
+	attachReturnPreviewGrace = 1500 * time.Millisecond
 )
 
 // UI spacing constants (2-char grid system)
@@ -195,6 +200,7 @@ type Home struct {
 	confirmDialog        *ConfirmDialog        // For confirming destructive actions
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
+	editPathsDialog      *EditPathsDialog      // For editing multi-repo paths
 	skillDialog          *SkillDialog          // For managing project skills
 	setupWizard          *SetupWizard          // For first-run setup
 	settingsPanel        *SettingsPanel        // For editing settings
@@ -449,6 +455,13 @@ type uiState struct {
 	StatusFilter    string `json:"status_filter,omitempty"`
 }
 
+type selectedItemIdentity struct {
+	groupPath       string
+	sessionID       string
+	windowSessionID string
+	windowIndex     int
+}
+
 func (h *Home) reloadHotkeysFromConfig() {
 	h.setHotkeys(resolveHotkeys(session.GetHotkeyOverrides()))
 }
@@ -529,6 +542,8 @@ type statusUpdateMsg struct {
 	attachedSessionID string // Session that just returned from attach (if local attach)
 	attachedWorkDir   string // pane_current_path captured after attach returns
 } // Triggers immediate status update without reloading
+
+type attachReturnRefreshMsg struct{}
 
 // storageChangedMsg signals that state.db was modified externally
 type storageChangedMsg struct{}
@@ -700,6 +715,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		confirmDialog:        NewConfirmDialog(),
 		helpOverlay:          NewHelpOverlay(),
 		mcpDialog:            NewMCPDialog(),
+		editPathsDialog:      NewEditPathsDialog(),
 		skillDialog:          NewSkillDialog(),
 		setupWizard:          NewSetupWizard(),
 		settingsPanel:        NewSettingsPanel(),
@@ -1219,6 +1235,63 @@ func (h *Home) moveCursorToGroup(path string) {
 			return
 		}
 	}
+}
+
+func (h *Home) captureSelectedItemIdentity() selectedItemIdentity {
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return selectedItemIdentity{windowIndex: -1}
+	}
+
+	item := h.flatItems[h.cursor]
+	identity := selectedItemIdentity{windowIndex: -1}
+	switch item.Type {
+	case session.ItemTypeGroup:
+		identity.groupPath = item.Path
+	case session.ItemTypeSession:
+		if item.Session != nil {
+			identity.sessionID = item.Session.ID
+		}
+	case session.ItemTypeWindow:
+		identity.windowSessionID = item.WindowSessionID
+		identity.windowIndex = item.WindowIndex
+	}
+	return identity
+}
+
+func (h *Home) restoreSelectedItemIdentity(identity selectedItemIdentity) bool {
+	for i, item := range h.flatItems {
+		switch {
+		case identity.windowSessionID != "" && item.Type == session.ItemTypeWindow && item.WindowSessionID == identity.windowSessionID && item.WindowIndex == identity.windowIndex:
+			h.cursor = i
+			return true
+		case identity.sessionID != "" && item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == identity.sessionID:
+			h.cursor = i
+			return true
+		case identity.groupPath != "" && item.Type == session.ItemTypeGroup && item.Path == identity.groupPath:
+			h.cursor = i
+			return true
+		}
+	}
+
+	if identity.windowSessionID != "" {
+		for i, item := range h.flatItems {
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.ID == identity.windowSessionID {
+				h.cursor = i
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (h *Home) rebuildFlatItemsPreservingSelection(identity selectedItemIdentity) {
+	h.rebuildFlatItems()
+	if !h.restoreSelectedItemIdentity(identity) && len(h.flatItems) > 0 {
+		h.cursor = min(h.cursor, len(h.flatItems)-1)
+		h.cursor = max(h.cursor, 0)
+	}
+	h.syncViewport()
 }
 
 // rebuildFlatItems rebuilds the flattened view from group tree
@@ -2393,6 +2466,17 @@ func (h *Home) markNavigationActivity() {
 	h.lastNavigationTime = now
 	h.isNavigating = true
 	h.navigationHotUntil.Store(now.Add(900 * time.Millisecond).UnixNano())
+}
+
+func (h *Home) beginAttachReturnGrace(now time.Time) {
+	h.lastAttachReturn = now
+	h.lastNavigationTime = now
+	h.isNavigating = true
+	h.navigationHotUntil.Store(now.Add(attachReturnHotDuration).UnixNano())
+}
+
+func (h *Home) shouldSuppressPreviewRefresh(now time.Time) bool {
+	return !h.lastAttachReturn.IsZero() && now.Sub(h.lastAttachReturn) < attachReturnPreviewGrace
 }
 
 // getInstanceByID returns the instance with the given ID using O(1) map lookup
@@ -3687,7 +3771,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Restart failed - clear resuming animation immediately so user can retry.
 			delete(h.resumingSessions, msg.sessionID)
-			h.setError(fmt.Errorf("failed to restart session: %w", msg.err))
+			if msg.fresh {
+				h.setError(fmt.Errorf("failed to restart session fresh: %w", msg.err))
+			} else {
+				h.setError(fmt.Errorf("failed to restart session: %w", msg.err))
+			}
 		} else {
 			// Find the instance and refresh its MCP state (O(1) lookup)
 			if inst := h.getInstanceByID(msg.sessionID); inst != nil {
@@ -3892,17 +3980,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusUpdateMsg:
 		// Clear attach flag - we've returned from the attached session
 		h.isAttaching.Store(false) // Atomic store for thread safety
-		h.lastAttachReturn = time.Now()
+		now := time.Now()
+		h.beginAttachReturnGrace(now)
 
-		// Refresh window cache and rebuild flat items to reflect window changes
-		// (user may have opened/closed tmux windows while attached)
-		tmux.RefreshSessionCache()
-		h.rebuildFlatItems()
-
-		// Trigger status update on attach return to reflect current state
-		// Acknowledgment was already done on attach (if session was waiting),
-		// so this just refreshes the display with current busy indicator state.
-		h.triggerStatusUpdate()
+		selectedBefore := h.captureSelectedItemIdentity()
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
 
 		// Cursor sync: if user switched sessions via notification bar during attach,
 		// move cursor to the session they were last viewing
@@ -3955,22 +4037,22 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Combine with periodic save instead of saving on every attach/detach.
 		// We'll let the next tickMsg handle background save if needed.
 
-		// Re-enable mouse mode after returning from tea.Exec.
-		// tmux detach-client sends terminal reset sequences that disable mouse reporting,
-		// and Bubble Tea doesn't re-enable it automatically after exec returns.
-		//
-		// Also restore legacy keyboard mode. When the user attaches a tmux
-		// session that has `extended-keys on`, tmux activates modifyOtherKeys
-		// (and possibly the Kitty keyboard protocol) on the outer terminal.
-		// These settings persist after detach, so the outer terminal (e.g.
-		// Ghostty) keeps sending CSI u / modifyOtherKeys sequences that Bubble
-		// Tea v1.3.10 cannot parse, silently dropping shifted keys (capitals)
-		// on the dashboard. Re-call DisableKittyKeyboard to pop the Kitty
-		// stack and disable modifyOtherKeys, restoring legacy reporting.
-		return h, tea.Batch(tea.EnableMouseCellMotion, func() tea.Msg {
-			DisableKittyKeyboard(os.Stdout)
-			return nil
-		})
+		// Re-enable mouse mode after returning from tea.Exec (tmux detach-client
+		// resets mouse reporting), restore legacy keyboard reporting (tmux's
+		// extended-keys setting leaves Kitty/modifyOtherKeys on the outer terminal;
+		// see RestoreLegacyKeyboardCmd for the full rationale), and schedule a
+		// delayed refresh so the main menu reflects attach-return state changes.
+		return h, tea.Batch(
+			tea.EnableMouseCellMotion,
+			RestoreLegacyKeyboardCmd(os.Stdout),
+			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
+		)
+
+	case attachReturnRefreshMsg:
+		selectedBefore := h.captureSelectedItemIdentity()
+		tmux.RefreshSessionCache()
+		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		return h, nil
 
 	case previewDebounceMsg:
 		// PERFORMANCE: Debounce period elapsed - check if this fetch is still relevant
@@ -4383,7 +4465,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		const previewCacheTTL = 2 * time.Second
 		var previewCmd tea.Cmd
 		selectedInst, selectedKey, selectedWinIdx := h.selectedPreviewTarget()
-		if selectedInst != nil {
+		if selectedInst != nil && !h.shouldSuppressPreviewRefresh(time.Now()) {
 			h.previewCacheMu.Lock()
 			cachedTime, hasCached := h.previewCacheTime[selectedKey]
 			cacheExpired := !hasCached || time.Since(cachedTime) > previewCacheTTL
@@ -4512,6 +4594,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if h.mcpDialog.IsVisible() {
 			return h.handleMCPDialogKey(msg)
+		}
+		if h.editPathsDialog.IsVisible() {
+			return h.handleEditPathsDialogKey(msg)
 		}
 		if h.skillDialog.IsVisible() {
 			return h.handleSkillDialogKey(msg)
@@ -4792,8 +4877,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		// Build generic toolOptionsJSON from tool-specific options
 		var toolOptionsJSON json.RawMessage
+		var claudeExtraArgs []string
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
+			claudeExtraArgs = h.newDialog.GetClaudeExtraArgs()
 		} else if command == "codex" {
 			yolo := h.newDialog.GetCodexYoloMode()
 			codexOpts := &session.CodexOptions{YoloMode: &yolo}
@@ -4807,7 +4894,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -4858,6 +4945,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			geminiYoloMode,
 			sandboxMode,
 			toolOptionsJSON,
+			claudeExtraArgs,
 			multiRepoEnabled,
 			additionalPaths,
 			parentSessionID,
@@ -5022,7 +5110,7 @@ func (h *Home) hasModalVisible() bool {
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
-		h.worktreeFinishDialog.IsVisible()
+		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible()
 }
 
 // markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command
@@ -5494,6 +5582,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "p":
+		// Edit multi-repo paths
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsMultiRepo() {
+				h.editPathsDialog.SetSize(h.width, h.height)
+				h.editPathsDialog.Show(item.Session, h.newDialog.allPathSuggestions)
+			}
+		}
+		return h, nil
+
 	case "m":
 		// MCP Manager - for Claude and Gemini sessions
 		if h.cursor < len(h.flatItems) {
@@ -5710,14 +5809,6 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "n":
-		// Check if cursor is on a remote group/session — create on remote instead
-		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
-			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-				return h, h.createRemoteSession(item.RemoteName)
-			}
-		}
-
 		// Collect unique project paths sorted by most recently accessed
 		type pathInfo struct {
 			path           string
@@ -5958,6 +6049,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				return h, h.restartRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			}
+		}
+		return h, nil
+
+	case "T":
+		// Restart session fresh (discard current tool session binding first)
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				if h.hasActiveAnimation(item.Session.ID) {
+					h.setError(fmt.Errorf("session is starting, please wait..."))
+					return h, nil
+				}
+				if item.Session.CanRestartFresh() {
+					h.resumingSessions[item.Session.ID] = time.Now()
+					return h, h.restartSessionFresh(item.Session)
+				}
 			}
 		}
 		return h, nil
@@ -6265,7 +6373,7 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -6282,6 +6390,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		false,
 		false,
 		pendingToolOpts,
+		pendingExtraArgs,
 		false,
 		nil,
 		parentSessionID,
@@ -6593,6 +6702,96 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		h.mcpDialog.Update(msg)
 		return h, nil
+	}
+}
+
+// handleEditPathsDialogKey handles key events for the edit paths dialog.
+func (h *Home) handleEditPathsDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		if h.editPathsDialog.IsEditing() {
+			h.editPathsDialog.Update(msg)
+			return h, nil
+		}
+		// Confirm changes
+		if h.editPathsDialog.HasChanged() {
+			if errMsg := h.editPathsDialog.Validate(); errMsg != "" {
+				h.editPathsDialog.validationErr = errMsg
+				return h, nil
+			}
+			newPaths := h.editPathsDialog.GetPaths()
+			sessionID := h.editPathsDialog.GetSessionID()
+			h.editPathsDialog.Hide()
+			inst := h.getInstanceByID(sessionID)
+			if inst != nil {
+				return h, h.applyMultiRepoPathChanges(inst, newPaths)
+			}
+		}
+		h.editPathsDialog.Hide()
+		return h, nil
+	case "esc":
+		if h.editPathsDialog.IsEditing() {
+			h.editPathsDialog.Update(msg)
+			return h, nil
+		}
+		h.editPathsDialog.Hide()
+		return h, nil
+	default:
+		h.editPathsDialog.Update(msg)
+		return h, nil
+	}
+}
+
+// applyMultiRepoPathChanges updates the symlink directory and restarts the session.
+func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []string) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		h.instancesMu.RLock()
+		current := h.instanceByID[id]
+		h.instancesMu.RUnlock()
+		if current == nil {
+			return sessionRestartedMsg{sessionID: id, err: fmt.Errorf("session no longer exists")}
+		}
+
+		tempDir := current.MultiRepoTempDir
+		if tempDir == "" {
+			return sessionRestartedMsg{sessionID: id, err: fmt.Errorf("no multi-repo temp dir")}
+		}
+
+		// Remove all existing symlinks/entries in tempDir
+		entries, _ := os.ReadDir(tempDir)
+		for _, entry := range entries {
+			_ = os.RemoveAll(filepath.Join(tempDir, entry.Name()))
+		}
+
+		// Create new symlinks
+		dirnames := session.DeduplicateDirnames(newPaths)
+		var newProjectPath string
+		var newAdditionalPaths []string
+		for i, p := range newPaths {
+			linkPath := filepath.Join(tempDir, dirnames[i])
+			_ = os.Symlink(p, linkPath)
+			if i == 0 {
+				newProjectPath = linkPath
+			} else {
+				newAdditionalPaths = append(newAdditionalPaths, linkPath)
+			}
+		}
+
+		// Update instance fields under write lock to avoid races with
+		// the background status worker that reads via instanceByID.
+		h.instancesMu.Lock()
+		current.ProjectPath = newProjectPath
+		current.AdditionalPaths = newAdditionalPaths
+		if current.GetTmuxSession() != nil {
+			current.GetTmuxSession().WorkDir = tempDir
+		}
+		h.instancesMu.Unlock()
+
+		h.saveInstances()
+
+		err := current.Restart()
+		return sessionRestartedMsg{sessionID: id, err: err}
 	}
 }
 
@@ -7053,6 +7252,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	geminiYoloMode bool,
 	sandboxEnabled bool,
 	toolOptionsJSON json.RawMessage,
+	claudeExtraArgs []string,
 	multiRepoEnabled bool,
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
@@ -7128,6 +7328,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// Apply generic tool options (claude, codex, etc.)
 		if len(toolOptionsJSON) > 0 {
 			inst.ToolOptionsJSON = toolOptionsJSON
+		}
+
+		// Apply claude extra CLI tokens (claude-only, ignored for other tools).
+		if tool == "claude" && len(claudeExtraArgs) > 0 {
+			inst.ExtraArgs = claudeExtraArgs
 		}
 
 		// Apply sandbox config.
@@ -7384,6 +7589,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		name, projectPath, command, groupPath,
 		"", "", "", // no worktree
 		geminiYoloMode, false, toolOptionsJSON,
+		nil,        // no extra claude args (recent-session path)
 		false, nil, // no multi-repo
 		"", "", // no parent
 		"", // no placeholder
@@ -7665,6 +7871,7 @@ type sessionRestartedMsg struct {
 	sessionID string
 	err       error
 	warning   string
+	fresh     bool
 }
 
 // mcpRestartedMsg signals that an MCP-triggered restart completed and should auto-attach
@@ -7702,6 +7909,38 @@ func (h *Home) restartSession(inst *session.Instance) tea.Cmd {
 			sessionID: id,
 			err:       err,
 			warning:   current.ConsumeCodexRestartWarning(),
+		}
+	}
+}
+
+// restartSessionFresh restarts a session without resuming the previous tool session.
+func (h *Home) restartSessionFresh(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	mcpUILog.Debug(
+		"restart_session_fresh_called",
+		slog.String("id", inst.ID),
+		slog.String("title", inst.Title),
+		slog.String("tool", inst.Tool),
+	)
+	return func() tea.Msg {
+		mcpUILog.Debug("restart_session_fresh_executing", slog.String("id", id))
+
+		h.instancesMu.RLock()
+		current := h.instanceByID[id]
+		h.instancesMu.RUnlock()
+		if current == nil {
+			err := fmt.Errorf("session no longer exists")
+			mcpUILog.Debug("restart_session_fresh_result", slog.String("id", id), slog.Any("error", err))
+			return sessionRestartedMsg{sessionID: id, err: err, fresh: true}
+		}
+
+		err := current.RestartFresh()
+		mcpUILog.Debug("restart_session_fresh_result", slog.String("id", id), slog.Any("error", err))
+		return sessionRestartedMsg{
+			sessionID: id,
+			err:       err,
+			warning:   current.ConsumeCodexRestartWarning(),
+			fresh:     true,
 		}
 	}
 }
@@ -8325,6 +8564,9 @@ func (h *Home) View() string {
 	}
 	if h.mcpDialog.IsVisible() {
 		return h.mcpDialog.View()
+	}
+	if h.editPathsDialog.IsVisible() {
+		return h.editPathsDialog.View()
 	}
 	if h.skillDialog.IsVisible() {
 		return h.skillDialog.View()
@@ -9356,6 +9598,7 @@ func (h *Home) renderHelpBarMinimal() string {
 	importKey := h.actionKey(hotkeyImport)
 	groupKey := h.actionKey(hotkeyCreateGroup)
 	restartKey := h.actionKey(hotkeyRestart)
+	restartFreshKey := h.actionKey(hotkeyRestartFresh)
 	forkKey := h.actionKey(hotkeyQuickFork)
 	mcpKey := h.actionKey(hotkeyMCPManager)
 	skillsKey := h.actionKey(hotkeySkillsManager)
@@ -9377,6 +9620,12 @@ func (h *Home) renderHelpBarMinimal() string {
 			contextKeys = renderKeys("⏎", newKey, quickKey, groupKey)
 		} else {
 			contextKeys = renderKeys("⏎", newKey, quickKey, restartKey)
+			if item.Session != nil && item.Session.CanRestartFresh() {
+				freshRendered := renderKeys(restartFreshKey)
+				if freshRendered != "" {
+					contextKeys += " " + freshRendered
+				}
+			}
 			if item.Session != nil && item.Session.CanFork() {
 				forkRendered := renderKeys(forkKey)
 				if forkRendered != "" {
@@ -9449,6 +9698,7 @@ func (h *Home) renderHelpBarCompact() string {
 	sepStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 	sep := sepStyle.Render(" │ ")
 	newQuickKey := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+	restartFreshKey := h.actionKey(hotkeyRestartFresh)
 
 	// Abbreviated key+short desc
 	var contextHints []string
@@ -9473,6 +9723,9 @@ func (h *Home) renderHelpBarCompact() string {
 			}
 			if key := h.actionKey(hotkeyRestart); key != "" {
 				contextHints = append(contextHints, h.helpKeyShort(key, "Restart"))
+			}
+			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
+				contextHints = append(contextHints, h.helpKeyShort(restartFreshKey, "Fresh"))
 			}
 			if item.Session != nil && item.Session.CanFork() {
 				if key := h.actionKey(hotkeyQuickFork); key != "" {
@@ -9585,6 +9838,7 @@ func (h *Home) renderHelpBarFull() string {
 	newQuickKey := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
 	renameKey := h.actionKey(hotkeyRename)
 	restartKey := h.actionKey(hotkeyRestart)
+	restartFreshKey := h.actionKey(hotkeyRestartFresh)
 	deleteKey := h.actionKey(hotkeyDelete)
 	closeKey := h.actionKey(hotkeyCloseSession)
 	groupKey := h.actionKey(hotkeyCreateGroup)
@@ -9647,6 +9901,9 @@ func (h *Home) renderHelpBarFull() string {
 			if restartKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(restartKey, "Restart"))
 			}
+			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
+				primaryHints = append(primaryHints, h.helpKey(restartFreshKey, "Restart Fresh"))
+			}
 			// Only show fork hints if session has a valid Claude session ID
 			if item.Session != nil && item.Session.CanFork() {
 				if forkKeys != "" {
@@ -9670,6 +9927,11 @@ func (h *Home) renderHelpBarFull() string {
 			if item.Session != nil && item.Session.IsSandboxed() {
 				if execShellKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(execShellKey, "Exec"))
+				}
+			}
+			if item.Session != nil && item.Session.IsMultiRepo() {
+				if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+					primaryHints = append(primaryHints, h.helpKey(editPathsKey, "Paths"))
 				}
 			}
 			if copyKey != "" {
@@ -11174,6 +11436,13 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(mrValueStyle.Render(truncatePath(p, width-4-len(label))))
 			b.WriteString("\n")
 		}
+
+		editPathsKey := h.actionKey(hotkeyEditPaths)
+		if editPathsKey != "" {
+			hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
+			b.WriteString(hintStyle.Render(fmt.Sprintf("  %s: edit paths", editPathsKey)))
+			b.WriteString("\n")
+		}
 	}
 
 	// Claude-specific info (session ID and MCPs)
@@ -11521,6 +11790,16 @@ func (h *Home) renderPreviewPane(width, height int) string {
 					b.WriteString("\n")
 				}
 			}
+			if selected.CanRestartFresh() {
+				if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
+					hintStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+					keyStyle := lipgloss.NewStyle().Foreground(ColorAccent).Bold(true)
+					b.WriteString(hintStyle.Render("Fresh:   "))
+					b.WriteString(keyStyle.Render(restartFreshKey))
+					b.WriteString(hintStyle.Render(" restart with a new session ID"))
+					b.WriteString("\n")
+				}
+			}
 		}
 	}
 
@@ -11572,6 +11851,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(dimStyle.Render(" Resume  - restart with session resume"))
 			b.WriteString("\n")
 		}
+		if selected.CanRestartFresh() {
+			if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(restartFreshKey))
+				b.WriteString(dimStyle.Render(" Fresh   - restart with a new session ID"))
+				b.WriteString("\n")
+			}
+		}
 		if deleteKey := h.actionKey(hotkeyDelete); deleteKey != "" {
 			b.WriteString("  ")
 			b.WriteString(keyStyle.Render(deleteKey))
@@ -11582,6 +11869,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(keyStyle.Render("Enter"))
 		b.WriteString(dimStyle.Render(" - attach (will auto-start)"))
 		b.WriteString("\n")
+		if selected.IsMultiRepo() {
+			if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(editPathsKey))
+				b.WriteString(dimStyle.Render(" Paths   - edit multi-repo paths"))
+				b.WriteString("\n")
+			}
+		}
 
 		// Pad output to exact height to prevent layout shifts
 		content := b.String()
@@ -11629,6 +11924,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(dimStyle.Render(" Start   - create and start tmux session"))
 			b.WriteString("\n")
 		}
+		if selected.CanRestartFresh() {
+			if restartFreshKey := h.actionKey(hotkeyRestartFresh); restartFreshKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(restartFreshKey))
+				b.WriteString(dimStyle.Render(" Fresh   - start without resuming the prior session"))
+				b.WriteString("\n")
+			}
+		}
 		if deleteKey := h.actionKey(hotkeyDelete); deleteKey != "" {
 			b.WriteString("  ")
 			b.WriteString(keyStyle.Render(deleteKey))
@@ -11639,6 +11942,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(keyStyle.Render("Enter"))
 		b.WriteString(dimStyle.Render(" - attach (will auto-start)"))
 		b.WriteString("\n")
+		if selected.IsMultiRepo() {
+			if editPathsKey := h.actionKey(hotkeyEditPaths); editPathsKey != "" {
+				b.WriteString("  ")
+				b.WriteString(keyStyle.Render(editPathsKey))
+				b.WriteString(dimStyle.Render(" Paths   - edit multi-repo paths"))
+				b.WriteString("\n")
+			}
+		}
 
 		// Pad output to exact height to prevent layout shifts
 		content := b.String()

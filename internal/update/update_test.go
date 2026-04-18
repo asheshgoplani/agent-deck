@@ -1,6 +1,9 @@
 package update
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +190,76 @@ func TestUpdateBridgePy_UsesEmbeddedTemplateAndBacksUpExistingFile(t *testing.T)
 	require.NoError(t, err)
 	assert.True(t, strings.Contains(string(newContent), "Conductor Bridge: Telegram & Slack"),
 		"bridge.py should be refreshed from the embedded multi-platform template")
+}
+
+func TestNormalizeReleaseTag(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"whitespace", "  ", ""},
+		{"plain semver", "1.7.4", "v1.7.4"},
+		{"already prefixed", "v1.7.4", "v1.7.4"},
+		{"uppercase prefix", "V1.7.4", "v1.7.4"},
+		{"surrounding whitespace", "  1.7.4  ", "v1.7.4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, NormalizeReleaseTag(tt.input))
+		})
+	}
+}
+
+func TestFetchReleaseByTag(t *testing.T) {
+	rel := Release{
+		TagName: "v1.7.4",
+		Name:    "v1.7.4",
+		HTMLURL: "https://example/releases/v1.7.4",
+		Assets: []Asset{{
+			Name:               "agent-deck_1.7.4_darwin_arm64.tar.gz",
+			BrowserDownloadURL: "https://example/download/agent-deck_1.7.4_darwin_arm64.tar.gz",
+			Size:               123,
+		}},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/"+GitHubRepo+"/releases/tags/v1.7.4", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(rel)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	origURL := apiBaseURL
+	apiBaseURL = srv.URL
+	t.Cleanup(func() { apiBaseURL = origURL })
+
+	t.Run("accepts plain semver", func(t *testing.T) {
+		rel, err := FetchReleaseByTag("1.7.4")
+		require.NoError(t, err)
+		require.NotNil(t, rel)
+		assert.Equal(t, "v1.7.4", rel.TagName)
+		assert.Equal(t, "https://example/download/agent-deck_1.7.4_darwin_arm64.tar.gz",
+			GetAssetURLForPlatform(rel, "darwin", "arm64"))
+	})
+
+	t.Run("accepts prefixed tag", func(t *testing.T) {
+		rel, err := FetchReleaseByTag("v1.7.4")
+		require.NoError(t, err)
+		assert.Equal(t, "v1.7.4", rel.TagName)
+	})
+
+	t.Run("missing tag", func(t *testing.T) {
+		_, err := FetchReleaseByTag("99.0.0")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("empty tag", func(t *testing.T) {
+		_, err := FetchReleaseByTag("  ")
+		require.Error(t, err)
+	})
 }
 
 func TestHomebrewUpgradeHint(t *testing.T) {

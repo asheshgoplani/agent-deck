@@ -53,6 +53,7 @@ type jsonInstanceData struct {
 	ToolOptionsJSON  json.RawMessage `json:"tool_options,omitempty"`
 	LoadedMCPNames   []string        `json:"loaded_mcp_names,omitempty"`
 	Channels         []string        `json:"channels,omitempty"`
+	ExtraArgs        []string        `json:"extra_args,omitempty"`
 	Sandbox          json.RawMessage `json:"sandbox,omitempty"`
 	SandboxContainer string          `json:"sandbox_container,omitempty"`
 }
@@ -82,6 +83,7 @@ type toolDataBlob struct {
 	Notes              string          `json:"notes,omitempty"`
 	LoadedMCPNames     []string        `json:"loaded_mcp_names,omitempty"`
 	Channels           []string        `json:"channels,omitempty"`
+	ExtraArgs          []string        `json:"extra_args,omitempty"`
 	ToolOptions        json.RawMessage `json:"tool_options,omitempty"`
 	Sandbox            json.RawMessage `json:"sandbox,omitempty"`
 	SandboxContainer   string          `json:"sandbox_container,omitempty"`
@@ -221,6 +223,7 @@ func MarshalToolData(
 	multiRepoEnabled bool, additionalPaths []string,
 	multiRepoTempDir string, multiRepoWorktrees []MultiRepoWorktreeData,
 	channels []string,
+	extraArgs []string,
 	color string, // issue #391
 ) json.RawMessage {
 	td := toolDataBlob{
@@ -234,6 +237,7 @@ func MarshalToolData(
 		Notes:             notes,
 		LoadedMCPNames:    loadedMCPNames,
 		Channels:          channels,
+		ExtraArgs:         extraArgs,
 		ToolOptions:       toolOptionsJSON,
 		Sandbox:           sandboxJSON,
 		SandboxContainer:  sandboxContainer,
@@ -278,6 +282,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	multiRepoEnabled bool, additionalPaths []string,
 	multiRepoTempDir string, multiRepoWorktrees []MultiRepoWorktreeData,
 	channels []string,
+	extraArgs []string,
 	color string, // issue #391
 ) {
 	if len(data) == 0 {
@@ -310,6 +315,7 @@ func UnmarshalToolData(data json.RawMessage) (
 	notes = td.Notes
 	loadedMCPNames = td.LoadedMCPNames
 	channels = td.Channels
+	extraArgs = td.ExtraArgs
 	toolOptionsJSON = td.ToolOptions
 	sandboxJSON = td.Sandbox
 	sandboxContainer = td.SandboxContainer
