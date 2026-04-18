@@ -961,10 +961,25 @@ func (s *StateDB) LoadWatchers() ([]*WatcherRow, error) {
 // Returns true if the row was inserted (new event), false if it was a duplicate.
 // Prunes to maxEvents after successful insert.
 func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedTo, sessionID string, maxEvents int) (bool, error) {
-	result, err := s.db.Exec(`
-		INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, watcherID, dedupKey, sender, subject, routedTo, sessionID, time.Now().Unix())
+	// Retry on SQLITE_BUSY: concurrent INSERTs across connections can trip the
+	// write lock even with WAL + busy_timeout if the driver surfaces BUSY
+	// before the backoff completes. Retries are cheap because the operation
+	// is idempotent (INSERT OR IGNORE).
+	var result sql.Result
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		result, err = s.db.Exec(`
+			INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, watcherID, dedupKey, sender, subject, routedTo, sessionID, time.Now().Unix())
+		if err == nil {
+			break
+		}
+		if !isSQLiteBusy(err) {
+			return false, err
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -973,6 +988,16 @@ func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedT
 		_ = s.pruneWatcherEvents(watcherID, maxEvents)
 	}
 	return n > 0, nil
+}
+
+// isSQLiteBusy returns true when err is a SQLITE_BUSY / "database is locked"
+// transient condition that can be safely retried.
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked")
 }
 
 // LookupWatcherEventSessionByDedupKey queries the session_id for a specific event.
