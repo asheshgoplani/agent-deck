@@ -235,6 +235,26 @@ export function TerminalPanel() {
       })
     }
 
+    // WSL2+Chrome paste fix: xterm.js 6.0's default paste path can fail and
+    // destroy the system clipboard when focus is not on .xterm-helper-textarea.
+    // Capture the paste on the container first, read clipboardData directly,
+    // and forward through the same path as terminal.onData.
+    if (!mobile) {
+      container.addEventListener('paste', (event) => {
+        if (readOnlySignal.value) return
+        if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN || !ctx.terminalAttached) return
+        const cd = event.clipboardData
+        if (!cd) return
+        let text = cd.getData('text/plain')
+        if (!text) return
+        // Normalize CRLF/CR to LF; shells expect LF, bare CR re-runs input.
+        text = text.replace(/\r\n?/g, '\n')
+        event.preventDefault()
+        event.stopPropagation()
+        ctx.ws.send(JSON.stringify({ type: 'input', data: text }))
+      }, { capture: true, signal: controller.signal })
+    }
+
     // Prevent mobile soft keyboard by blocking touch-focus on the hidden textarea
     if (mobile) {
       container.addEventListener('touchstart', (e) => { e.preventDefault() }, {

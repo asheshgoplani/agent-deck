@@ -1059,6 +1059,39 @@ tests:
   run:
     command: go test ./internal/session/ -run TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID -count=1 -race -v
     expected: pass
+- id: v1724-multirepo-restore-reconnect-workdir
+  added: '2026-04-18'
+  task: v1724-multirepo-restore-663
+  file: internal/session/multirepo_restore_test.go
+  test_name: TestRestore_ReconnectSeedsWorkDirFromMultiRepoTempDir
+  purpose: 'Issue #663 site 1 — storage.go convertToInstances must seed tmux WorkDir from MultiRepoTempDir, not the ProjectPath symlink. Otherwise the restart pane launches in the wrong cwd and Claude''s JSONL encoded-path key never matches, silently dropping the prior conversation.'
+  source: .planning/investigate-multirepo-restart/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestRestore_ReconnectSeedsWorkDirFromMultiRepoTempDir -count=1 -race -v
+    expected: pass
+- id: v1724-multirepo-restore-recreate-workdir
+  added: '2026-04-18'
+  task: v1724-multirepo-restore-663
+  file: internal/session/multirepo_restore_test.go
+  test_name: TestRestore_RecreateTmuxSessionUsesEffectiveWorkingDir
+  purpose: 'Issue #663 site 2 — instance.go recreateTmuxSession must use EffectiveWorkingDir(), not ProjectPath, when the TUI restart path finds the prior tmux session dead. Without this, multi-repo TUI restarts spawn the replacement tmux session inside the symlinked source repo rather than the worktree parent dir.'
+  source: .planning/investigate-multirepo-restart/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestRestore_RecreateTmuxSessionUsesEffectiveWorkingDir -count=1 -race -v
+    expected: pass
+- id: v1724-multirepo-restore-jsonl-discovery
+  added: '2026-04-18'
+  task: v1724-multirepo-restore-663
+  file: internal/session/multirepo_restore_test.go
+  test_name: TestRestore_DiscoverJSONLUsesMultiRepoTempDir
+  purpose: 'Issue #663 site 3 — ensureClaudeSessionIDFromDisk must probe discoverLatestClaudeJSONL with EffectiveWorkingDir(). ProjectPath on a multi-repo session EvalSymlinks-resolves into the original source repo, so the encoded path never finds the JSONL that Claude wrote while cwd=MultiRepoTempDir. Without this, Start() silently enters the fresh-session branch and the prior conversation vanishes.'
+  source: .planning/investigate-multirepo-restart/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestRestore_DiscoverJSONLUsesMultiRepoTempDir -count=1 -race -v
+    expected: pass
 - id: issue-434-detach-key-tmux-alias
   added: '2026-04-17'
   task: feat-434-detach-key

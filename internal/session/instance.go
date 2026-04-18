@@ -2010,7 +2010,14 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	if i.ClaudeDetectedAt.IsZero() {
 		return
 	}
-	uuid, found := discoverLatestClaudeJSONL(i.ProjectPath)
+	// Issue #663: multi-repo sessions write their JSONL under
+	// ~/.claude/projects/<encoded MultiRepoTempDir>/. ProjectPath is a
+	// symlink inside MultiRepoTempDir, so EvalSymlinks would resolve it
+	// to the original source repo and miss the JSONL. Use
+	// EffectiveWorkingDir() so the encoded-path key matches what Claude
+	// actually wrote on the first boot.
+	lookupPath := i.EffectiveWorkingDir()
+	uuid, found := discoverLatestClaudeJSONL(lookupPath)
 	if !found {
 		return
 	}
@@ -2018,7 +2025,7 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery",
 		slog.String("instance_id", i.ID),
 		slog.String("claude_session_id", uuid),
-		slog.String("path", i.ProjectPath),
+		slog.String("path", lookupPath),
 		slog.String("reason", "jsonl_discovery"))
 }
 
@@ -3316,7 +3323,10 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 }
 
 func (i *Instance) recreateTmuxSession() {
-	i.tmuxSession = tmux.NewSession(i.Title, i.ProjectPath)
+	// Issue #663: multi-repo sessions must cwd into MultiRepoTempDir, not
+	// ProjectPath (which is a symlink into that parent dir). Delegates to
+	// EffectiveWorkingDir so single-repo sessions keep using ProjectPath.
+	i.tmuxSession = tmux.NewSession(i.Title, i.EffectiveWorkingDir())
 	i.tmuxSession.InstanceID = i.ID
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
@@ -5179,9 +5189,13 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 	if configDir == "" {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}
+	// Issue #663: for multi-repo sessions ProjectPath is a symlink into
+	// MultiRepoTempDir; EvalSymlinks would resolve away from the parent
+	// dir Claude actually used as cwd. EffectiveWorkingDir() is the
+	// authoritative cwd for JSONL encoding.
 	projectPath := ""
 	if inst != nil {
-		projectPath = inst.ProjectPath
+		projectPath = inst.EffectiveWorkingDir()
 	}
 	resolvedPath := projectPath
 	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
@@ -5262,9 +5276,12 @@ func sessionHasConversationData(inst *Instance, sessionID string) bool {
 		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
 	}
 
+	// Issue #663: see sessionConversationByteSize rationale above.
+	// Multi-repo sessions must encode EffectiveWorkingDir(), not the
+	// ProjectPath symlink.
 	projectPath := ""
 	if inst != nil {
-		projectPath = inst.ProjectPath
+		projectPath = inst.EffectiveWorkingDir()
 	}
 
 	// Resolve symlinks in project path (macOS: /tmp -> /private/tmp)
