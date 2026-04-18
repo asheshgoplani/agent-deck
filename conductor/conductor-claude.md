@@ -208,3 +208,20 @@ When you first start (or after a restart):
 - The bridge sends with `session send --wait -q` and waits in a single CLI call. Reply promptly.
 - Your own session can be restarted by the bridge if it detects you're in an error state.
 - Keep state.json small (no large output dumps). Store summaries, not full text.
+
+## Telegram Topology (v1.7.22+)
+
+Each conductor that owns a Telegram bot must follow this topology, or pollers leak and the bot stops responding with 409 Conflict after a few hours:
+
+- **Activate per-session only**: set `channels = ["plugin:telegram@claude-plugins-official"]` on this conductor's agent-deck record (via `agent-deck session set <conductor> channels ...`).
+- **Inject `TELEGRAM_STATE_DIR` via `env_file`**: in `~/.agent-deck/config.toml`, set `[conductors.{PROFILE}.claude].env_file = "~/.agent-deck/conductor/{PROFILE}/.envrc"` (and a matching `[groups.{PROFILE}.claude]` block). The `.envrc` file contains a single line: `export TELEGRAM_STATE_DIR=<profile-state-dir>`. Never use a session wrapper (`agent-deck session set <conductor> wrapper "TELEGRAM_STATE_DIR=... {command}"`) — it works on resume but silently fails on fresh-start.
+- **Keep global telegram disabled**: `enabledPlugins."telegram@claude-plugins-official"` must be absent or `false` in this profile's `settings.json`. If it is `true`, every claude child session loads the plugin, and the conductor loads it twice.
+- **Preflight checklist before expecting messages to flow**:
+  1. `channels` persisted on this session (check with `agent-deck -p {PROFILE} list --json | jq ...`).
+  2. `env_file` present and readable, containing `export TELEGRAM_STATE_DIR=...`.
+  3. Plugin enabled in this profile: `CLAUDE_CONFIG_DIR=<profile-dir> claude plugin list` shows `telegram@claude-plugins-official` as installed.
+  4. No stray pollers: `pgrep -af 'bun.*telegram' | wc -l` equals the number of conductor bots (one per token).
+- **Debug checklist when bot goes silent**:
+  1. `curl https://api.telegram.org/bot<TOKEN>/getMe` → `ok:true`.
+  2. `pgrep -af 'bun.*telegram.*start'` — one PID per conductor; verify each has a distinct `TELEGRAM_STATE_DIR` in `/proc/<pid>/environ`.
+  3. Look for `⚠  GLOBAL_ANTIPATTERN` / `DOUBLE_LOAD` / `WRAPPER_DEPRECATED` lines in recent agent-deck command output — these are the leading indicators.

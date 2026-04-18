@@ -32,7 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.20" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.24" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -758,10 +758,11 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"-c": true, "--cmd": true,
 		"-m": true, "--message": true,
 		"-p": true, "--parent": true,
-		"--mcp":     true,
-		"--channel": true,
-		"--wrapper": true,
-		"-w":        true, "--worktree": true,
+		"--mcp":       true,
+		"--channel":   true,
+		"--extra-arg": true,
+		"--wrapper":   true,
+		"-w":          true, "--worktree": true,
 		"--location":       true,
 		"--resume-session": true,
 		"--sandbox-image":  true,
@@ -949,6 +950,17 @@ func handleAdd(profile string, args []string) {
 	var channelFlags []string
 	fs.Func("channel", "Plugin channel id (can specify multiple times); requires -c claude", func(s string) error {
 		channelFlags = append(channelFlags, s)
+		return nil
+	})
+
+	// Extra claude CLI tokens - repeatable; each invocation is one already-
+	// tokenised arg (e.g. --extra-arg --agent --extra-arg reviewer).
+	// Persisted on Instance.ExtraArgs (plaintext — do NOT pass secrets) and
+	// appended verbatim to every claude Start/Restart/Fork command via
+	// buildClaudeExtraFlags.
+	var extraArgFlags []string
+	fs.Func("extra-arg", "Extra claude CLI token (can specify multiple times); requires -c claude; persisted plaintext — no secrets", func(s string) error {
+		extraArgFlags = append(extraArgFlags, s)
 		return nil
 	})
 
@@ -1277,6 +1289,16 @@ func handleAdd(profile string, args []string) {
 		newInstance.Channels = channelFlags
 	}
 
+	// Apply --extra-arg flags (claude only for now — these are passed to the
+	// claude binary via buildClaudeExtraFlags; other tools have their own builders).
+	if len(extraArgFlags) > 0 {
+		if newInstance.Tool != "claude" {
+			fmt.Println("Error: --extra-arg only supported for claude sessions (use -c claude); claude is the only tool whose builder appends user extra args")
+			os.Exit(1)
+		}
+		newInstance.ExtraArgs = extraArgFlags
+	}
+
 	// Set wrapper if provided
 	if sessionWrapperResolved != "" {
 		newInstance.Wrapper = sessionWrapperResolved
@@ -1522,6 +1544,7 @@ func handleList(profile string, args []string) {
 			SSHHost       string    `json:"ssh_host,omitempty"`
 			SSHRemotePath string    `json:"ssh_remote_path,omitempty"`
 			Channels      []string  `json:"channels,omitempty"`
+			ExtraArgs     []string  `json:"extra_args,omitempty"`
 		}
 		// Warm tmux pane-title cache + load hook statuses so the CLI
 		// reports the same Status the TUI and /api/menu do (issue #610).
@@ -1542,6 +1565,7 @@ func handleList(profile string, args []string) {
 				SSHHost:       inst.SSHHost,
 				SSHRemotePath: inst.SSHRemotePath,
 				Channels:      inst.Channels,
+				ExtraArgs:     inst.ExtraArgs,
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
@@ -1741,6 +1765,14 @@ func handleRemove(profile string, args []string) {
 			fmt.Println("Session removed from Agent Deck but may still be running in tmux")
 		}
 	}
+
+	// v1.7.21+: if this session was spawned via LaunchAs=service, the
+	// transient systemd-user service unit survives a plain `tmux
+	// kill-server` (Restart=on-failure would respawn it). Best-effort
+	// stop + reset-failed the unit here so `agent-deck remove` is truly
+	// terminal. No-op on non-service-mode sessions and on non-systemd
+	// hosts.
+	_ = inst.StopServiceUnit()
 
 	// Clean up worktree directory if this is a worktree session
 	if inst.IsWorktree() {
@@ -2239,6 +2271,7 @@ func handleProfileSetDefault(out *CLIOutput, name string) {
 func handleUpdate(args []string) {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	checkOnly := fs.Bool("check", false, "Only check for updates, don't install")
+	targetVersion := fs.String("version", "", "Install a specific released version (e.g. 1.7.3); may be a downgrade")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck update [options]")
@@ -2249,12 +2282,18 @@ func handleUpdate(args []string) {
 		fs.PrintDefaults()
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  agent-deck update           # Check and install if available")
-		fmt.Println("  agent-deck update --check   # Only check, don't install")
+		fmt.Println("  agent-deck update              # Check and install latest if available")
+		fmt.Println("  agent-deck update --check      # Only check, don't install")
+		fmt.Println("  agent-deck update --version 1.7.3  # Install a specific version (may downgrade)")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		os.Exit(1)
+	}
+
+	if strings.TrimSpace(*targetVersion) != "" {
+		handleUpdateToSpecificVersion(*targetVersion, *checkOnly)
+		return
 	}
 
 	fmt.Printf("Agent Deck v%s\n", Version)
@@ -2344,6 +2383,91 @@ func handleUpdate(args []string) {
 
 	// Offer to update remotes
 	updateRemotesAfterLocalUpdate(info.LatestVersion)
+}
+
+// handleUpdateToSpecificVersion installs a user-specified release version.
+// Unlike the default update flow, this bypasses the "is this newer?" check so
+// callers can reinstall or downgrade to a prior release on purpose.
+func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
+	fmt.Printf("Agent Deck v%s\n", Version)
+
+	normalized := update.NormalizeReleaseTag(requested)
+	if normalized == "" {
+		fmt.Println("Error: --version requires a non-empty version (e.g. 1.7.3)")
+		os.Exit(1)
+	}
+	targetVersion := strings.TrimPrefix(normalized, "v")
+
+	installPath, homebrewUpgradeCmd, homebrewManaged, hbErr := update.DetectHomebrewManagedInstall()
+	if hbErr != nil {
+		homebrewManaged = false
+	}
+	if homebrewManaged {
+		fmt.Printf("\nHomebrew-managed install detected at %s\n", installPath)
+		fmt.Printf("Pinning to a specific version is not supported via this command.\n")
+		fmt.Printf("Use Homebrew directly, or run `%s` for the latest.\n", homebrewUpgradeCmd)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Fetching release %s...\n", normalized)
+	release, err := update.FetchReleaseByTag(normalized)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	downloadURL := update.GetAssetURLForPlatform(release, runtime.GOOS, runtime.GOARCH)
+	if downloadURL == "" {
+		fmt.Printf("Error: release %s has no binary for %s/%s\n", normalized, runtime.GOOS, runtime.GOARCH)
+		os.Exit(1)
+	}
+
+	cmp := update.CompareVersions(Version, targetVersion)
+	switch {
+	case cmp == 0:
+		fmt.Printf("\n↻ Reinstalling v%s (current = requested)\n", targetVersion)
+	case cmp < 0:
+		fmt.Printf("\n⬆ Installing v%s → v%s\n", Version, targetVersion)
+	default:
+		fmt.Printf("\n⬇ Downgrading v%s → v%s\n", Version, targetVersion)
+	}
+	fmt.Printf("  Release: %s\n", release.HTMLURL)
+
+	if checkOnly {
+		fmt.Println("\nRun without --check to install.")
+		return
+	}
+
+	drainStdin()
+	defaultYes := cmp <= 0
+	prompt := fmt.Sprintf("\nInstall v%s now? [Y/n] ", targetVersion)
+	if !defaultYes {
+		prompt = fmt.Sprintf("\nDowngrade to v%s now? [y/N] ", targetVersion)
+	}
+	fmt.Print(prompt)
+	reader := bufio.NewReader(os.Stdin)
+	response, _ := reader.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+
+	confirmed := response == "y" || response == "yes" || (defaultYes && response == "")
+	if !confirmed {
+		fmt.Println("Update cancelled.")
+		return
+	}
+
+	fmt.Println()
+	if err := update.PerformUpdate(downloadURL); err != nil {
+		fmt.Printf("Error installing v%s: %v\n", targetVersion, err)
+		os.Exit(1)
+	}
+
+	if err := update.UpdateBridgePy(); err != nil {
+		fmt.Printf("Warning: Failed to update bridge.py: %v\n", err)
+		fmt.Println("  You can manually refresh it with: agent-deck conductor setup <name>")
+	}
+
+	fmt.Printf("\n✓ Installed v%s\n", targetVersion)
+	fmt.Println("  Restart agent-deck to use this version.")
 }
 
 func runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd string) error {

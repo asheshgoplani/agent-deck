@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1586,6 +1587,97 @@ func TestInstance_CanFork_OpenCode(t *testing.T) {
 	}
 }
 
+func TestInstance_CanRestartFresh(t *testing.T) {
+	tests := []struct {
+		name string
+		inst *Instance
+		want bool
+	}{
+		{
+			name: "claude with session ID",
+			inst: &Instance{Tool: "claude", ClaudeSessionID: "claude-session-1"},
+			want: true,
+		},
+		{
+			name: "claude without session ID",
+			inst: &Instance{Tool: "claude"},
+			want: false,
+		},
+		{
+			name: "gemini with session ID",
+			inst: &Instance{Tool: "gemini", GeminiSessionID: "gemini-session-1"},
+			want: true,
+		},
+		{
+			name: "opencode with session ID",
+			inst: &Instance{Tool: "opencode", OpenCodeSessionID: "ses_123"},
+			want: true,
+		},
+		{
+			name: "codex with session ID",
+			inst: &Instance{Tool: "codex", CodexSessionID: "codex-session-1"},
+			want: true,
+		},
+		{
+			name: "shell never offers fresh restart",
+			inst: &Instance{Tool: "shell"},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.inst.CanRestartFresh(); got != tt.want {
+				t.Fatalf("CanRestartFresh() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstance_ClearSessionBindingForFreshStart(t *testing.T) {
+	inst := &Instance{
+		Tool:               "opencode",
+		ClaudeSessionID:    "claude-session-1",
+		GeminiSessionID:    "gemini-session-1",
+		OpenCodeSessionID:  "ses_123",
+		CodexSessionID:     "codex-session-1",
+		OpenCodeStartedAt:  123,
+		CodexStartedAt:     456,
+		OpenCodeDetectedAt: time.Now(),
+		CodexDetectedAt:    time.Now(),
+	}
+
+	inst.clearSessionBindingForFreshStart()
+
+	if inst.OpenCodeSessionID != "" {
+		t.Fatalf("OpenCodeSessionID = %q, want empty", inst.OpenCodeSessionID)
+	}
+	if inst.OpenCodeStartedAt != 0 {
+		t.Fatalf("OpenCodeStartedAt = %d, want 0", inst.OpenCodeStartedAt)
+	}
+	if !inst.OpenCodeDetectedAt.IsZero() {
+		t.Fatal("OpenCodeDetectedAt should be cleared")
+	}
+	if inst.ClaudeSessionID != "claude-session-1" {
+		t.Fatalf("ClaudeSessionID should be untouched for opencode, got %q", inst.ClaudeSessionID)
+	}
+	if inst.GeminiSessionID != "gemini-session-1" {
+		t.Fatalf("GeminiSessionID should be untouched for opencode, got %q", inst.GeminiSessionID)
+	}
+	if inst.CodexSessionID != "codex-session-1" {
+		t.Fatalf("CodexSessionID should be untouched for opencode, got %q", inst.CodexSessionID)
+	}
+
+	claude := &Instance{Tool: "claude", ClaudeSessionID: "claude-session-2", ClaudeDetectedAt: time.Now()}
+	claude.clearSessionBindingForFreshStart()
+	if claude.ClaudeSessionID != "" {
+		t.Fatalf("ClaudeSessionID = %q, want empty", claude.ClaudeSessionID)
+	}
+	if !claude.ClaudeDetectedAt.IsZero() {
+		t.Fatal("ClaudeDetectedAt should be cleared")
+	}
+}
+
 func TestInstance_ForkOpenCode(t *testing.T) {
 	inst := NewInstanceWithTool("test", "/tmp/test", "opencode")
 
@@ -2931,6 +3023,337 @@ func TestInstance_UpdateHookStatus_GeminiAcceptsCandidateWithConversationData(t 
 
 	if inst.GeminiSessionID != candidateID {
 		t.Fatalf("GeminiSessionID = %q, want %q", inst.GeminiSessionID, candidateID)
+	}
+}
+
+// seedClaudeJSONL writes a jsonl file under the per-instance Claude config
+// dir's projects/<encoded>/<sessionID>.jsonl path. `records` is the number
+// of "sessionId" lines; `padBytes` inflates each record to model the
+// real-world byte-size spread between rich historic jsonls and fresh
+// 1-record jsonls in the issue-#661 flap.
+func seedClaudeJSONL(t *testing.T, inst *Instance, sessionID string, records int, padBytes int) string {
+	t.Helper()
+	configDir := GetClaudeConfigDirForInstance(inst)
+	projectsDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(inst.ProjectPath))
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("mkdir projects: %v", err)
+	}
+	path := filepath.Join(projectsDir, sessionID+".jsonl")
+	var buf strings.Builder
+	pad := strings.Repeat("x", padBytes)
+	for range records {
+		fmt.Fprintf(&buf, `{"type":"user","sessionId":%q,"text":%q}`+"\n", sessionID, pad)
+	}
+	if err := os.WriteFile(path, []byte(buf.String()), 0o600); err != nil {
+		t.Fatalf("write jsonl: %v", err)
+	}
+	return path
+}
+
+// readLifecycleEvents reads ~/.agent-deck/logs/session-id-lifecycle.jsonl.
+// HOME must already be scoped to a test tmpdir.
+func readLifecycleEvents(t *testing.T) []SessionIDLifecycleEvent {
+	t.Helper()
+	data, err := os.ReadFile(GetSessionIDLifecycleLogPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read lifecycle log: %v", err)
+	}
+	var events []SessionIDLifecycleEvent
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev SessionIDLifecycleEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("unmarshal lifecycle event: %v", err)
+		}
+		events = append(events, ev)
+	}
+	return events
+}
+
+func hasRejectReason(events []SessionIDLifecycleEvent, reason string) bool {
+	for _, ev := range events {
+		if ev.Action == "reject" && ev.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasMoreData pins
+// issue #661 manifestation 3. The UserPromptSubmit rebind path must refuse
+// to replace a rich current session with a sparser candidate, even when the
+// candidate's jsonl contains SOME data (so sessionHasConversationData
+// returns true). Before v1.7.23 the guard only required the candidate to
+// have any data — allowing a fresh 1-record jsonl to overwrite a rich
+// hundreds-of-KB history on every conductor restart.
+func TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasMoreData(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-rebind-more-data", projectPath, "claude")
+
+	richID := "dd17cb25-0000-0000-0000-000000000001"
+	freshID := "50fe72cc-0000-0000-0000-000000000002"
+
+	seedClaudeJSONL(t, inst, richID, 200, 1024) // ~200KB rich history
+	seedClaudeJSONL(t, inst, freshID, 1, 8)     // one-record fresh jsonl
+
+	inst.ClaudeSessionID = richID
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: freshID,
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != richID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (rebind to sparser candidate must be rejected)",
+			inst.ClaudeSessionID, richID)
+	}
+
+	events := readLifecycleEvents(t)
+	if !hasRejectReason(events, "candidate_has_less_conversation_data") {
+		t.Fatalf("expected reject event with reason=candidate_has_less_conversation_data; events: %+v", events)
+	}
+}
+
+// TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasDataCandidateEmpty
+// pins the weaker v1.7.7 reject path on the UserPromptSubmit route
+// (candidate jsonl has zero sessionId records). Kept alongside the new
+// stronger guard so both protections are permanent.
+func TestInstance_UpdateHookStatus_RejectsRebindWhenCurrentHasDataCandidateEmpty(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-rebind-empty-candidate", projectPath, "claude")
+
+	richID := "aaaaaaaa-0000-0000-0000-000000000001"
+	emptyID := "bbbbbbbb-0000-0000-0000-000000000002"
+
+	seedClaudeJSONL(t, inst, richID, 50, 256)
+	configDir := GetClaudeConfigDirForInstance(inst)
+	projectsDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
+	if err := os.WriteFile(filepath.Join(projectsDir, emptyID+".jsonl"),
+		[]byte(`{"type":"summary","leafUuid":"abc"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write empty jsonl: %v", err)
+	}
+
+	inst.ClaudeSessionID = richID
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: emptyID,
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != richID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (empty-candidate rebind must be rejected)",
+			inst.ClaudeSessionID, richID)
+	}
+	events := readLifecycleEvents(t)
+	if !hasRejectReason(events, "candidate_has_no_conversation_data") {
+		t.Fatalf("expected reject event reason=candidate_has_no_conversation_data; events: %+v", events)
+	}
+}
+
+// TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsEmpty preserves the
+// healthy happy-path: if the current session file has no sessionId records
+// yet (right after SessionStart) and the candidate has real data, rebind
+// proceeds.
+func TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsEmpty(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-rebind-current-empty", projectPath, "claude")
+
+	currentID := "cccccccc-0000-0000-0000-000000000001"
+	candidateID := "dddddddd-0000-0000-0000-000000000002"
+
+	configDir := GetClaudeConfigDirForInstance(inst)
+	projectsDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(projectPath))
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("mkdir projects: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectsDir, currentID+".jsonl"),
+		[]byte(`{"type":"summary","leafUuid":"abc"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write empty current jsonl: %v", err)
+	}
+	seedClaudeJSONL(t, inst, candidateID, 3, 16)
+
+	inst.ClaudeSessionID = currentID
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: candidateID,
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != candidateID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (rebind must proceed when current is empty)",
+			inst.ClaudeSessionID, candidateID)
+	}
+}
+
+// TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsUnset pins the
+// cold-start: i.ClaudeSessionID == "" → first binding is always accepted.
+func TestInstance_UpdateHookStatus_AllowsRebindWhenCurrentIsUnset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-rebind-cold-start", projectPath, "claude")
+
+	candidateID := "eeeeeeee-0000-0000-0000-000000000001"
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: candidateID,
+		Event:     "SessionStart",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != candidateID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (cold-start binding must be accepted)",
+			inst.ClaudeSessionID, candidateID)
+	}
+}
+
+// TestInstance_UpdateHookStatus_RejectsBidirectionalFlap replays the
+// travel-conductor lifecycle log pattern from issue #661: richID is bound
+// first, then three consecutive fresh UUIDs arrive as UserPromptSubmit
+// candidates across three simulated restart cycles. ClaudeSessionID must
+// stay on the rich ID throughout, guaranteeing history is preserved.
+func TestInstance_UpdateHookStatus_RejectsBidirectionalFlap(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-rebind-flap", projectPath, "claude")
+
+	richID := "11111111-1111-1111-1111-111111111111"
+	seedClaudeJSONL(t, inst, richID, 500, 1024) // ~500KB historic jsonl
+	inst.ClaudeSessionID = richID
+
+	freshIDs := []string{
+		"22222222-2222-2222-2222-222222222222",
+		"33333333-3333-3333-3333-333333333333",
+		"44444444-4444-4444-4444-444444444444",
+	}
+	for _, freshID := range freshIDs {
+		seedClaudeJSONL(t, inst, freshID, 1, 8)
+		inst.UpdateHookStatus(&HookStatus{
+			Status:    "running",
+			SessionID: freshID,
+			Event:     "UserPromptSubmit",
+			UpdatedAt: time.Now(),
+		})
+		if inst.ClaudeSessionID != richID {
+			t.Fatalf("flap cycle freshID=%s: ClaudeSessionID = %q, want %q",
+				freshID, inst.ClaudeSessionID, richID)
+		}
+	}
+
+	events := readLifecycleEvents(t)
+	rejects := 0
+	for _, ev := range events {
+		if ev.Action == "reject" && ev.Reason == "candidate_has_less_conversation_data" {
+			rejects++
+		}
+	}
+	if rejects != 3 {
+		t.Fatalf("expected 3 reject events with reason=candidate_has_less_conversation_data; got %d. events: %+v",
+			rejects, events)
+	}
+}
+
+// TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID is the
+// live-runtime-boundary pin for issue #661. It goes one hop further than
+// the unit-level UpdateHookStatus tests: after replaying the flap, the
+// instance's next restart command (as actually emitted into tmux
+// pane_start_command) must contain `--resume <rich-uuid>`, NOT the fresh
+// overwritten UUID. This is the exact boundary the travel conductor
+// regressed at — the symptom was "restart resumes near-empty session" not
+// "UpdateHookStatus bound wrong value", so the test must reach the command
+// layer to prove the user-visible fix.
+func TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("boundary-flap-resume", projectPath, "claude")
+
+	richID := "dd17cb25-efdc-42f4-aa32-03fd6577721d"  // from real log
+	freshID := "50fe72cc-1111-2222-3333-444455556666" // simulated post-restart
+	seedClaudeJSONL(t, inst, richID, 200, 1024)       // ~200KB
+	seedClaudeJSONL(t, inst, freshID, 1, 8)           // 1-record fresh
+	inst.ClaudeSessionID = richID
+
+	// Simulate the UserPromptSubmit flap that used to win pre-v1.7.23.
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: freshID,
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != richID {
+		t.Fatalf("post-flap ClaudeSessionID = %q, want %q", inst.ClaudeSessionID, richID)
+	}
+
+	cmd := inst.buildClaudeResumeCommand()
+	if !strings.Contains(cmd, "--resume "+richID) {
+		t.Fatalf("buildClaudeResumeCommand = %q, want substring %q — next restart would resume the wrong session",
+			cmd, "--resume "+richID)
+	}
+	if strings.Contains(cmd, freshID) {
+		t.Fatalf("buildClaudeResumeCommand = %q, must NOT reference freshID %q", cmd, freshID)
 	}
 }
 

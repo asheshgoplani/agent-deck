@@ -24,10 +24,11 @@ func TestMarshalUnmarshalToolData_MultiRepo(t *testing.T) {
 		true, []string{"/path/additional1", "/path/additional2"}, // multi-repo
 		"/tmp/agent-deck-sessions/abc", worktrees,
 		nil, // channels
+		nil, // extra_args
 	)
 
 	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
-		mrEnabled, addPaths, mrTempDir, mrWorktrees, _ := UnmarshalToolData(data)
+		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _ := UnmarshalToolData(data)
 
 	assert.True(t, mrEnabled)
 	assert.Equal(t, []string{"/path/additional1", "/path/additional2"}, addPaths)
@@ -50,10 +51,11 @@ func TestMarshalUnmarshalToolData_NoMultiRepo(t *testing.T) {
 		"", "",
 		false, nil, "", nil,
 		nil, // channels
+		nil, // extra_args
 	)
 
 	claudeSID, _, _, _, _, _, _, _, _, _, prompt, notes, mcps, _, _, _, _, _,
-		mrEnabled, addPaths, mrTempDir, mrWorktrees, _ := UnmarshalToolData(data)
+		mrEnabled, addPaths, mrTempDir, mrWorktrees, _, _ := UnmarshalToolData(data)
 
 	assert.Equal(t, "claude-123", claudeSID)
 	assert.Equal(t, "prompt", prompt)

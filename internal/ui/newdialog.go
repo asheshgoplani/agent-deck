@@ -755,6 +755,16 @@ func (d *NewDialog) GetClaudeOptions() *session.ClaudeOptions {
 	return d.claudeOptions.GetOptions()
 }
 
+// GetClaudeExtraArgs returns the user-supplied claude CLI tokens from the
+// options panel. Returns nil for non-claude tools. Tokens are whitespace-split;
+// for values with embedded spaces, use `ad-fork add --extra-arg`.
+func (d *NewDialog) GetClaudeExtraArgs() []string {
+	if !d.isClaudeSelected() {
+		return nil
+	}
+	return d.claudeOptions.GetExtraArgs()
+}
+
 // isClaudeSelected returns true if the selected command is Claude or a claude-compatible custom tool
 func (d *NewDialog) isClaudeSelected() bool {
 	if d.commandCursor < 0 || d.commandCursor >= len(d.presetCommands) {

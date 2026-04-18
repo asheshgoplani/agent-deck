@@ -239,6 +239,19 @@ func handleConductorSetup(profile string, args []string) {
 	slackConfigured := settings.Slack.BotToken != ""
 	discordConfigured := settings.Discord.BotToken != ""
 
+	// v1.7.22: warn on the "global telegram enabled in profile settings.json"
+	// anti-pattern that silently leaks pollers to every claude session under
+	// this profile. We detect but do not auto-mutate settings.json (#658).
+	cfgDir := config.GetProfileClaudeConfigDir(resolvedProfile)
+	if cfgDir == "" {
+		cfgDir = session.GetClaudeConfigDirForGroup("")
+	}
+	if globalTelegramEnabled, _ := readTelegramGloballyEnabled(cfgDir); globalTelegramEnabled {
+		emitTelegramWarnings(os.Stderr, session.TelegramValidatorInput{
+			GlobalEnabled: true,
+		})
+	}
+
 	// Step 2: If conductor system not enabled, run first-time setup
 	if !settings.Enabled {
 		fmt.Println("Conductor Setup")

@@ -1013,6 +1013,27 @@ type TmuxSettings struct {
 	// "field absent" from "explicit false".
 	LaunchInUserScope *bool `toml:"launch_in_user_scope"`
 
+	// LaunchAs selects the spawn form for new tmux servers (v1.7.21+).
+	// Valid values (case-insensitive, whitespace-trimmed):
+	//   "scope"   — systemd-run --user --scope (PR #467 legacy behavior)
+	//   "service" — systemd-run --user --unit <NAME>.service with
+	//               Type=forking + Restart=on-failure. Adds auto-restart
+	//               if the tmux daemon dies unexpectedly (OOM, SIGKILL,
+	//               kernel signal). Opt-in defense-in-depth.
+	//   "direct"  — plain `tmux new-session` (no systemd isolation).
+	//   "auto"    — service where systemd-user manager is available,
+	//               else direct.
+	//   ""        — unset (default): defer to LaunchInUserScope.
+	//
+	// LaunchAs, when non-empty and valid, takes precedence over
+	// LaunchInUserScope. Unknown values are ignored (fall through to
+	// LaunchInUserScope) so a config typo doesn't silently opt the user
+	// onto an unintended spawn path.
+	//
+	// This is additive — v1.7.20 users get zero behavior change until
+	// they explicitly set launch_as.
+	LaunchAs *string `toml:"launch_as"`
+
 	// WindowStyleOverride sets the tmux window-style (and window-active-style) for
 	// all sessions, overriding the theme default. Use "default" to let your terminal
 	// emulator's background show through instead of agent-deck's theme color.
@@ -1026,6 +1047,18 @@ type TmuxSettings struct {
 	// output is preserved in scrollback. When true, scrollback is wiped so
 	// the new session starts with a clean buffer.
 	ClearOnRestart bool `toml:"clear_on_restart"`
+
+	// DetachKey overrides the PTY-attach detach key (issue #434). Accepts
+	// the same lowercase "ctrl+<letter>" form as `[hotkeys].detach` (e.g.
+	// "ctrl+d"). When set to a non-empty string, it becomes an alias for
+	// `[hotkeys].detach`. Precedence: explicit `[hotkeys].detach` always
+	// wins; `[tmux].detach_key` is used only when `[hotkeys].detach` is
+	// absent. Empty string (default) preserves the built-in Ctrl+Q.
+	//
+	// Why the alias exists: #434 reporters asked for a `[tmux]` section
+	// entry because they think of the detach as a tmux-attach concern.
+	// Keeping `[hotkeys].detach` authoritative avoids two sources of truth.
+	DetachKey string `toml:"detach_key"`
 
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
@@ -1050,6 +1083,23 @@ func (t TmuxSettings) GetLaunchInUserScope() bool {
 		return *t.LaunchInUserScope
 	}
 	return isSystemdUserScopeAvailable()
+}
+
+// GetLaunchAs returns the canonicalised launch mode string parsed from
+// config.toml's [tmux].launch_as key. Returns "" if the field is unset
+// or contains an unknown value (in which case downstream callers fall
+// back to LaunchInUserScope). v1.7.21+.
+func (t TmuxSettings) GetLaunchAs() string {
+	if t.LaunchAs == nil {
+		return ""
+	}
+	v := strings.ToLower(strings.TrimSpace(*t.LaunchAs))
+	switch v {
+	case "scope", "service", "direct", "auto":
+		return v
+	default:
+		return ""
+	}
 }
 
 // systemdUserScopeAvailable caches the result of probing whether
@@ -1642,18 +1692,42 @@ func GetDefaultTool() string {
 }
 
 // GetHotkeyOverrides returns user-configured hotkey overrides from config.toml.
-// Returns nil when unset.
+//
+// Merge order (issue #434):
+//  1. Start from the `[hotkeys]` table.
+//  2. If `[tmux].detach_key` is set AND the caller has not already set
+//     `[hotkeys].detach`, layer tmux.detach_key into the hotkeys map as the
+//     "detach" action. Explicit `[hotkeys].detach` always wins so there is
+//     exactly one authoritative source of truth when both are present.
+//
+// Returns nil only when nothing is configured in either table.
 func GetHotkeyOverrides() map[string]string {
 	config, err := LoadUserConfig()
-	if err != nil || config == nil || len(config.Hotkeys) == 0 {
+	if err != nil || config == nil {
 		return nil
 	}
-	out := make(map[string]string, len(config.Hotkeys))
+
+	out := make(map[string]string, len(config.Hotkeys)+1)
 	for action, key := range config.Hotkeys {
 		out[action] = key
 	}
+
+	if tmuxKey := strings.TrimSpace(config.Tmux.DetachKey); tmuxKey != "" {
+		if _, alreadySet := out[hotkeyDetachAction]; !alreadySet {
+			out[hotkeyDetachAction] = tmuxKey
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
+
+// hotkeyDetachAction is the canonical action name used by [hotkeys].detach.
+// Duplicated from internal/ui/hotkeys.go::hotkeyDetach to avoid an import
+// cycle (session <- ui). If the UI constant ever changes, update here too.
+const hotkeyDetachAction = "detach"
 
 // GetTheme returns the current theme, defaulting to "dark"
 func GetTheme() string {
@@ -1986,6 +2060,8 @@ func CreateExampleConfig() error {
 # delete = "d"
 # close_session = "D"
 # restart = "R"
+# detach = "ctrl+d"   # PTY-attach detach key, default ctrl+q (issue #434).
+                      # Alias [tmux].detach_key exists; [hotkeys].detach wins.
 
 # Attach-return project path sync (optional)
 # [instances]
@@ -2104,6 +2180,12 @@ auto_cleanup = true
 # clear_on_restart clears the tmux scrollback buffer when a session is restarted.
 # When false (default), previous output is preserved. When true, scrollback is wiped.
 # clear_on_restart = true
+# detach_key overrides the PTY-attach detach key (default Ctrl+Q, issue #434).
+# Same format as [hotkeys].detach — lowercase "ctrl+<letter>". Useful when your
+# editor (e.g. Neovim) uses Ctrl+Q for another binding. [hotkeys].detach is the
+# canonical source; [tmux].detach_key is an alias applied only when hotkeys.detach
+# is absent. Both live options, documented so users find the one they look for.
+# detach_key = "ctrl+d"
 # Override tmux options applied to every session (applied after defaults).
 # agent-deck does NOT set history-limit by default, so your tmux.conf value is used.
 # Options matching agent-deck's managed keys (status, status-style,
