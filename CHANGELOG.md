@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.26] - 2026-04-18
+
+### Added
+- **GitHub Copilot CLI support** (issue [#556](https://github.com/asheshgoplani/agent-deck/issues/556)): Agent Deck now recognises the standalone `copilot` binary from `@github/copilot` (GA 2026-02-25) as a first-class tool identity alongside `claude`, `gemini`, `codex`, and `opencode`. `agent-deck add -c copilot .` lands on `Tool="copilot"` instead of the generic `shell` fallback, so sessions get the right status detection, the right icon (🐙), and the right per-tool config path. A new `[copilot]` TOML block (`env_file` for now) gives users a home for future knobs without schema churn. The `CopilotOptions` envelope mirrors the existing Claude/OpenCode shape (`SessionMode` + `ResumeSessionID`) and emits `--resume` (picker) or `--resume <id>` (direct). `IsClaudeCompatible("copilot")` is deliberately **false** — Copilot is not a Claude wrapper, so Claude-only surfaces (`--channels`, `--extra-arg`, skill injection, MCP hook paths) stay off. This ships the foundation; deeper hook-based session-id capture (analogous to `internal/session/gemini.go` analytics) will land as a follow-up once Copilot CLI's on-disk session format stabilises. Tests: `TestCopilotOptions_{ToolName,ToArgs,MarshalUnmarshalRoundtrip}`, `TestNewCopilotOptions_{Defaults,WithConfig}`, `TestUnmarshalCopilotOptions_WrongTool`, `TestIsClaudeCompatible_CopilotNotCompatible`, `TestGetToolIcon_Copilot`, `TestGetCustomToolNames_CopilotIsBuiltin`, `TestNewInstanceWithTool_Copilot` in `internal/session/copilot_test.go`; `TestDetectToolFromCommand_Copilot`, `TestDefaultRawPatterns_Copilot` in `internal/tmux/copilot_test.go`; `TestDetectTool_Copilot` in `cmd/agent-deck/copilot_detect_test.go`.
+
 ## [1.7.25] - 2026-04-18
 
 ### Added

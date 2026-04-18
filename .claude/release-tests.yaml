@@ -1257,3 +1257,80 @@ tests:
   run:
     command: go test ./internal/ui/ -run TestIssue666_GlobalSearchImport_EndToEnd_PreservesGroupAcrossReload -count=1 -race -v
     expected: pass
+- id: v1726-issue556-copilot-options-toargs
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/session/copilot_test.go
+  test_name: TestCopilotOptions_ToArgs
+  purpose: 'Issue #556 — CopilotOptions.ToArgs emits the right flag shape for each session mode (new → no args, resume → --resume, resume with ID → --resume <id>). This is the contract that buildCopilotCommand wiring will consume as the feature extends.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestCopilotOptions_ToArgs -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-marshal-roundtrip
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/session/copilot_test.go
+  test_name: TestCopilotOptions_MarshalUnmarshalRoundtrip
+  purpose: 'Issue #556 — CopilotOptions survives JSON roundtrip through the ToolOptionsWrapper envelope (tool="copilot"). Guards against persistence regression when the storage layer serialises tool options.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestCopilotOptions_MarshalUnmarshalRoundtrip -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-not-claude-compatible
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/session/copilot_test.go
+  test_name: TestIsClaudeCompatible_CopilotNotCompatible
+  purpose: 'Issue #556 — Copilot is its own tool, not a Claude wrapper. IsClaudeCompatible("copilot") must be false so Claude-only surfaces (--channels, --extra-arg, skill injection, MCP hooks) stay off. Critical negative guard preventing Claude-path accidents.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIsClaudeCompatible_CopilotNotCompatible -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-custom-names-excludes-builtin
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/session/copilot_test.go
+  test_name: TestGetCustomToolNames_CopilotIsBuiltin
+  purpose: 'Issue #556 — if a user defines [tools.copilot] in config.toml the built-in copilot handler must take precedence. GetCustomToolNames must exclude "copilot" from the custom list so the detection / icon / pattern path routes through the built-in branch.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestGetCustomToolNames_CopilotIsBuiltin -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-tmux-detect
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/tmux/copilot_test.go
+  test_name: TestDetectToolFromCommand_Copilot
+  purpose: 'Issue #556 — tmux-layer detection identifies "copilot" from bare binary, flagged invocations, npx @github/copilot form, and uppercase variants. Fires from pipemanager + title_detection so the TUI and status refresh agree on tool identity.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestDetectToolFromCommand_Copilot -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-patterns
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: internal/tmux/copilot_test.go
+  test_name: TestDefaultRawPatterns_Copilot
+  purpose: 'Issue #556 — DefaultRawPatterns("copilot") returns non-nil busy + prompt pattern sets, wiring copilot into the same status detection pipeline as claude/gemini/codex. Without this patch the session would have no busy/idle semantics in the TUI.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./internal/tmux/ -run TestDefaultRawPatterns_Copilot -count=1 -race -v
+    expected: pass
+- id: v1726-issue556-copilot-cli-detect
+  added: '2026-04-18'
+  task: v1726-issue556-copilot-cli
+  file: cmd/agent-deck/copilot_detect_test.go
+  test_name: TestDetectTool_Copilot
+  purpose: 'Issue #556 — `agent-deck add -c copilot .` must resolve to Tool="copilot" instead of the shell fallback. Covers bare / flagged / uppercase invocations routed through the CLI-layer detectTool helper in main.go.'
+  source: github-issue-556
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestDetectTool_Copilot -count=1 -race -v
+    expected: pass
