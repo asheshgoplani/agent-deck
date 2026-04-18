@@ -1114,3 +1114,124 @@ tests:
   run:
     command: go test ./cmd/agent-deck/ -run TestWatcherHelp_MentionsAdapterExamples -count=1 -v
     expected: pass
+- id: v1725-issue666-empty-grouppath-load-fallback
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/session/issue666_test.go
+  test_name: TestIssue666_LoadRowWithEmptyGroupPath_FallsBackToDefaultNotPathDerived
+  purpose: 'Issue #666 site 1 — storage.go convertToInstances fallback must route empty group_path rows to DefaultGroupPath, NOT re-derive via extractGroupPath(ProjectPath). The old fallback was the trigger for the "session disappeared from its group and surfaced under a path-derived name" symptom — silent re-parenting that the user could not see or recover from.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue666_LoadRowWithEmptyGroupPath_FallsBackToDefaultNotPathDerived -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-explicit-grouppath-preserved
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/session/issue666_test.go
+  test_name: TestIssue666_LoadRowWithExplicitGroupPath_IsPreserved
+  purpose: 'Issue #666 over-reach guard — the fallback rewrite must ONLY fire on empty group_path. Rows with an explicit group stay as-is.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue666_LoadRowWithExplicitGroupPath_IsPreserved -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-save-normalizes-empty-grouppath
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/session/issue666_test.go
+  test_name: TestIssue666_SaveWithGroups_NormalizesEmptyGroupPath
+  purpose: 'Issue #666 belt-and-braces — SaveWithGroups must refuse to persist empty group_path, normalizing to DefaultGroupPath at the save boundary. Prevents a future write-path regression from leaving the DB in the state that triggered the original bug.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue666_SaveWithGroups_NormalizesEmptyGroupPath -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-autodisable-telegram-global
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: cmd/agent-deck/conductor_cmd_telegram_autofix_test.go
+  test_name: TestDisableTelegramGlobally_FixesTrueToFalse
+  purpose: 'Issue #666 mechanism 1 — `agent-deck conductor setup` now auto-remediates enabledPlugins."telegram@claude-plugins-official" = true (not just warn). v1.7.22 warn-only path let the silent-crash anti-pattern persist across setups. The autofix preserves unknown keys in settings.json and only touches the telegram key.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestDisableTelegramGlobally_FixesTrueToFalse -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-autodisable-idempotent
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: cmd/agent-deck/conductor_cmd_telegram_autofix_test.go
+  test_name: TestDisableTelegramGlobally_NoOpWhenAlreadyFalse
+  purpose: 'Issue #666 — autofix is idempotent. Re-running setup must not rewrite settings.json when the flag is already false (mtime preserved to avoid spurious Claude Code watcher reloads).'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestDisableTelegramGlobally_NoOpWhenAlreadyFalse -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-autodisable-missing-file
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: cmd/agent-deck/conductor_cmd_telegram_autofix_test.go
+  test_name: TestDisableTelegramGlobally_NoOpWhenMissingFile
+  purpose: 'Issue #666 — autofix must not create settings.json when the file is absent. Missing file = safe baseline, nothing to remediate.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./cmd/agent-deck/ -run TestDisableTelegramGlobally_NoOpWhenMissingFile -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-respawn-sweep-claude
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/session/issue666_restart_sweep_test.go
+  test_name: TestIssue666_SweepDuplicateToolSessions_Claude
+  purpose: 'Issue #666 mechanism 3 — the primary respawn-pane restart branches now call sweepDuplicateToolSessions, matching the fallback branch that already did (issue #596 guard). Fixes the asymmetry where `session restart` on the common path could leave another agentdeck tmux session running the same `claude --resume`, stacking two telegram pollers on the same bot token.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue666_SweepDuplicateToolSessions_Claude -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-respawn-sweep-tool-coverage
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/session/issue666_restart_sweep_test.go
+  test_name: TestIssue666_SweepDuplicateToolSessions_Gemini
+  purpose: 'Issue #666 — sweep helper covers every tool that has a session-id env var (Gemini, OpenCode, Codex companion tests in same file) so restart hygiene is uniform across claude-compatible tools, not Claude-only.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/session/ -run TestIssue666_SweepDuplicateToolSessions_ -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-tui-resolver-fallback-default
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/ui/issue666_tui_test.go
+  test_name: TestIssue666_ResolveNewSessionGroup_CursorOnWindow_FallsBackToDefault
+  purpose: 'Issue #666 TUI root cause — createSessionFromGlobalSearch at home.go:4762 passed h.getCurrentGroupPath() directly into NewInstanceWithGroupAndTool. For cursor on non-group/non-session items (Window/RemoteGroup/placeholder) that returns "", which overrode the extractGroupPath default. The new resolveNewSessionGroup helper rescues empty → DefaultGroupPath for unscoped Home. This test pins the contract.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestIssue666_ResolveNewSessionGroup_CursorOnWindow_FallsBackToDefault -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-tui-resolver-scope-rescue
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/ui/issue666_tui_test.go
+  test_name: TestIssue666_ResolveNewSessionGroup_ScopedView_UsesScope
+  purpose: 'Issue #666 — when the TUI is running in scoped-group mode (agent-deck -g X) and the cursor is on a non-group/non-session item, the resolver must rescue via h.groupScope (not DefaultGroupPath). This preserves the user''s intent when importing a Claude session via global search while browsing a scoped conductor group.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestIssue666_ResolveNewSessionGroup_ScopedView_UsesScope -count=1 -race -v
+    expected: pass
+- id: v1725-issue666-tui-global-search-e2e
+  added: '2026-04-18'
+  task: v1725-issue666-group-disappearance
+  file: internal/ui/issue666_tui_test.go
+  test_name: TestIssue666_GlobalSearchImport_EndToEnd_PreservesGroupAcrossReload
+  purpose: 'Issue #666 end-to-end integration — mirrors the exact call chain at home.go:4762 (Window cursor → resolveNewSessionGroup → NewInstanceWithGroupAndTool) and persists + reloads through real SQLite storage. On v1.7.24 baseline (all fixes reverted) this fails with "GroupPath after reload = tmp, want agent-deck" — exact user-reported symptom. With only belt-and-braces it fails differently ("my-sessions, want agent-deck"). With both fixes it passes.'
+  source: .planning/investigate-issue-666/REPORT.md
+  manual: false
+  run:
+    command: go test ./internal/ui/ -run TestIssue666_GlobalSearchImport_EndToEnd_PreservesGroupAcrossReload -count=1 -race -v
+    expected: pass
