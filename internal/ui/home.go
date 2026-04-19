@@ -3996,7 +3996,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case feedbackSentMsg:
-		// Send completed (best-effort). Dialog auto-dismisses via feedbackDismissMsg timer.
+		// Route the result into the dialog so stepSent renders success or an explicit
+		// error line (v1.7.37, #679 TUI follow-up). Auto-dismiss still fires via timer.
+		if h.feedbackDialog != nil {
+			h.feedbackDialog.OnSent(msg)
+		}
 		return h, nil
 
 	case feedbackDismissMsg:
