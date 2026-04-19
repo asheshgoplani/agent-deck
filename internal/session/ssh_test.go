@@ -71,3 +71,23 @@ func TestParseRemoteSessionOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestSSHRunnerBuildRemoteCommand_QuotesRemoteSessionOutputID(t *testing.T) {
+	runner := &SSHRunner{AgentDeckPath: "/usr/local/bin/agent-deck"}
+
+	sessionIDs := []string{
+		"x; rm -rf /",
+		"$(whoami)",
+		`embedded'"quotes`,
+	}
+
+	for _, sessionID := range sessionIDs {
+		t.Run(sessionID, func(t *testing.T) {
+			got := runner.buildRemoteCommand("session", "output", sessionID, "--json")
+			want := "'/usr/local/bin/agent-deck' 'session' 'output' " + shellQuote(sessionID) + " '--json'"
+			if got != want {
+				t.Fatalf("buildRemoteCommand mismatch\nwant: %s\ngot:  %s", want, got)
+			}
+		})
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -2126,6 +2127,38 @@ func remotePreviewCacheKey(remoteName, sessionID string) string {
 	return fmt.Sprintf("remote:%s:%s", remoteName, sessionID)
 }
 
+const (
+	remotePreviewMaxLines = 200
+	remotePreviewMaxBytes = 16 * 1024
+)
+
+func truncateRemotePreviewContent(content string) string {
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) > remotePreviewMaxLines {
+		lines = lines[len(lines)-remotePreviewMaxLines:]
+		content = strings.Join(lines, "\n")
+	}
+
+	if len(content) <= remotePreviewMaxBytes {
+		return content
+	}
+
+	trimmed := []byte(content)
+	trimmed = trimmed[len(trimmed)-remotePreviewMaxBytes:]
+	for len(trimmed) > 0 && !utf8.Valid(trimmed) {
+		trimmed = trimmed[1:]
+	}
+	if idx := bytes.IndexByte(trimmed, '\n'); idx >= 0 && idx < len(trimmed)-1 {
+		trimmed = trimmed[idx+1:]
+	}
+
+	return string(trimmed)
+}
+
 // fetchPreview returns a command that asynchronously fetches preview content.
 // windowIndex < 0 captures the session's primary pane; >= 0 captures a specific window.
 func (h *Home) fetchPreview(inst *session.Instance, key string, windowIndex int) tea.Cmd {
@@ -2195,6 +2228,7 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 		defer cancel()
 
 		content, fetchErr := runner.FetchSessionOutput(ctx, sessionID)
+		content = truncateRemotePreviewContent(content)
 		return previewFetchedMsg{previewKey: key, content: content, err: fetchErr}
 	}
 }
@@ -10839,6 +10873,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 	b.WriteString(dimStyle.Render("Last response") + "\n")
 	b.WriteString(strings.Repeat("-", max(1, min(width-4, 40))))
 	b.WriteString("\n")
+	previewContent = truncateRemotePreviewContent(previewContent)
 	if hasPreview && strings.TrimSpace(previewContent) != "" {
 		b.WriteString(previewContent)
 		b.WriteString("\n\n")

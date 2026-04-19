@@ -1402,6 +1402,61 @@ func TestRenderRemotePreviewShowsEmptyStateAfterFetch(t *testing.T) {
 	}
 }
 
+func TestRenderRemotePreviewTruncatesCachedResponseLines(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:     "remote-123",
+		Title:  "remote-session",
+		Status: "running",
+		Path:   "/srv/project",
+	}
+	item := session.Item{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}
+
+	lines := make([]string, 250)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%03d", i)
+	}
+	home.previewCache[remotePreviewCacheKey("myserver", "remote-123")] = strings.Join(lines, "\n")
+
+	rendered := home.renderRemotePreview(item, 80, 20)
+	if strings.Contains(rendered, "line-049") {
+		t.Fatalf("rendered preview should drop lines outside the retained tail, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, "line-050") || !strings.Contains(rendered, "line-249") {
+		t.Fatalf("rendered preview should retain the last 200 lines, got: %q", rendered)
+	}
+}
+
+func TestRenderRemotePreviewTruncatesCachedResponseBytes(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:     "remote-123",
+		Title:  "remote-session",
+		Status: "running",
+		Path:   "/srv/project",
+	}
+	item := session.Item{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}
+
+	prefix := "TRUNCATE-ME"
+	tail := "KEEP-TAIL"
+	content := prefix + strings.Repeat("x", 20*1024) + tail
+	home.previewCache[remotePreviewCacheKey("myserver", "remote-123")] = content
+
+	rendered := home.renderRemotePreview(item, 80, 20)
+	if strings.Contains(rendered, prefix) {
+		t.Fatalf("rendered preview should drop content beyond the byte cap, got: %q", rendered)
+	}
+	if !strings.Contains(rendered, tail) {
+		t.Fatalf("rendered preview should keep the most recent content, got: %q", rendered)
+	}
+}
+
 func TestPreviewFetchedMsgUpdatesCacheTimeOnError(t *testing.T) {
 	home := NewHome()
 	key := remotePreviewCacheKey("myserver", "remote-123")
