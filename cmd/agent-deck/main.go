@@ -2702,6 +2702,8 @@ func detectTool(cmd string) string {
 		return "gemini"
 	case strings.Contains(cmd, "codex"):
 		return "codex"
+	case hasCommandToken(cmd, "pi"):
+		return "pi"
 	case strings.Contains(cmd, "copilot"):
 		return "copilot"
 	case strings.Contains(cmd, "cursor"):
@@ -2709,6 +2711,15 @@ func detectTool(cmd string) string {
 	default:
 		return "shell"
 	}
+}
+
+func hasCommandToken(cmd, want string) bool {
+	for _, token := range strings.Fields(strings.ToLower(cmd)) {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }
 
 // handleUninstall removes agent-deck from the system

@@ -82,6 +82,16 @@ func TestApplyCreateSessionToolOverrides_NonGeminiNoop(t *testing.T) {
 	}
 }
 
+func TestCreateSessionTool_Pi(t *testing.T) {
+	tool, command := createSessionTool("pi")
+	if tool != "pi" {
+		t.Fatalf("tool = %q, want %q", tool, "pi")
+	}
+	if command != "pi" {
+		t.Fatalf("command = %q, want %q", command, "pi")
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()
