@@ -43,6 +43,18 @@ func withSpyKiller(t *testing.T) (*[]spyCall, func()) {
 	return &calls, func() { killDuplicateSessionsFn = prev }
 }
 
+// findSweepCall returns the first spyCall with the given envKey, or nil.
+// Used so #666 assertions focus on the tool-specific sweep regardless
+// of ordering with the #678 instance-id sweep.
+func findSweepCall(calls []spyCall, envKey string) *spyCall {
+	for i := range calls {
+		if calls[i].envKey == envKey {
+			return &calls[i]
+		}
+	}
+	return nil
+}
+
 func TestIssue666_SweepDuplicateToolSessions_Claude(t *testing.T) {
 	calls, restore := withSpyKiller(t)
 	defer restore()
@@ -53,12 +65,9 @@ func TestIssue666_SweepDuplicateToolSessions_Claude(t *testing.T) {
 
 	inst.sweepDuplicateToolSessions()
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one sweep call, got %d", len(*calls))
-	}
-	got := (*calls)[0]
-	if got.envKey != "CLAUDE_SESSION_ID" {
-		t.Errorf("env key = %q, want CLAUDE_SESSION_ID", got.envKey)
+	got := findSweepCall(*calls, "CLAUDE_SESSION_ID")
+	if got == nil {
+		t.Fatalf("expected CLAUDE_SESSION_ID sweep, got calls: %+v", *calls)
 	}
 	if got.envValue != "abc123" {
 		t.Errorf("env value = %q, want abc123", got.envValue)
@@ -78,11 +87,8 @@ func TestIssue666_SweepDuplicateToolSessions_Gemini(t *testing.T) {
 
 	inst.sweepDuplicateToolSessions()
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected one sweep call, got %d", len(*calls))
-	}
-	if (*calls)[0].envKey != "GEMINI_SESSION_ID" {
-		t.Errorf("env key = %q, want GEMINI_SESSION_ID", (*calls)[0].envKey)
+	if findSweepCall(*calls, "GEMINI_SESSION_ID") == nil {
+		t.Fatalf("expected GEMINI_SESSION_ID sweep, got calls: %+v", *calls)
 	}
 }
 
@@ -96,11 +102,8 @@ func TestIssue666_SweepDuplicateToolSessions_OpenCode(t *testing.T) {
 
 	inst.sweepDuplicateToolSessions()
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected one sweep call, got %d", len(*calls))
-	}
-	if (*calls)[0].envKey != "OPENCODE_SESSION_ID" {
-		t.Errorf("env key = %q, want OPENCODE_SESSION_ID", (*calls)[0].envKey)
+	if findSweepCall(*calls, "OPENCODE_SESSION_ID") == nil {
+		t.Fatalf("expected OPENCODE_SESSION_ID sweep, got calls: %+v", *calls)
 	}
 }
 
@@ -114,16 +117,16 @@ func TestIssue666_SweepDuplicateToolSessions_Codex(t *testing.T) {
 
 	inst.sweepDuplicateToolSessions()
 
-	if len(*calls) != 1 {
-		t.Fatalf("expected one sweep call, got %d", len(*calls))
-	}
-	if (*calls)[0].envKey != "CODEX_SESSION_ID" {
-		t.Errorf("env key = %q, want CODEX_SESSION_ID", (*calls)[0].envKey)
+	if findSweepCall(*calls, "CODEX_SESSION_ID") == nil {
+		t.Fatalf("expected CODEX_SESSION_ID sweep, got calls: %+v", *calls)
 	}
 }
 
-// No session id → nothing to sweep (the sweep key is the session id).
-func TestIssue666_SweepDuplicateToolSessions_SkipsWhenNoSessionID(t *testing.T) {
+// No tool-level session id means the tool-specific sweep is skipped,
+// but since #678 we STILL sweep by AGENTDECK_INSTANCE_ID — see the
+// issue678 tests for the positive assertion. Here we just confirm the
+// tool-specific sweep doesn't run (it has nothing to key on).
+func TestIssue666_SweepDuplicateToolSessions_SkipsToolSweepWhenNoSessionID(t *testing.T) {
 	calls, restore := withSpyKiller(t)
 	defer restore()
 
@@ -133,8 +136,8 @@ func TestIssue666_SweepDuplicateToolSessions_SkipsWhenNoSessionID(t *testing.T) 
 
 	inst.sweepDuplicateToolSessions()
 
-	if len(*calls) != 0 {
-		t.Fatalf("no session id means no sweep; got %d calls", len(*calls))
+	if findSweepCall(*calls, "CLAUDE_SESSION_ID") != nil {
+		t.Fatalf("no ClaudeSessionID should skip CLAUDE_SESSION_ID sweep; got calls: %+v", *calls)
 	}
 }
 

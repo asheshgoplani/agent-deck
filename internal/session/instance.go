@@ -4421,11 +4421,12 @@ func (i *Instance) Restart() error {
 	// builders that no longer embed "tmux set-environment" in the shell string.
 	i.SyncSessionIDsToTmux()
 
-	// Kill any other agentdeck tmux session with the same Claude session ID
-	// to prevent duplicates running `claude --resume` with the same conversation (#596).
-	if i.ClaudeSessionID != "" {
-		tmux.KillSessionsWithEnvValue("CLAUDE_SESSION_ID", i.ClaudeSessionID, i.tmuxSession.Name)
-	}
+	// Kill any other agentdeck tmux session that duplicates this instance.
+	// Routed through sweepDuplicateToolSessions so the fallback restart path
+	// gets the same tool-session-id guard (#596) AND instance-id guard (#678)
+	// as the respawn-pane paths. The instance-id guard is what catches shell
+	// / placeholder sessions that have no tool-level session id.
+	i.sweepDuplicateToolSessions()
 
 	// Re-capture MCPs after restart
 	i.CaptureLoadedMCPs()

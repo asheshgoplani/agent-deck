@@ -26,9 +26,24 @@ import (
 var killDuplicateSessionsFn = tmux.KillSessionsWithEnvValue
 
 // sweepDuplicateToolSessions kills agentdeck tmux sessions (other than
-// this instance's) whose tool session environment variable matches this
-// instance's tool session id. Safe no-op when we have no tmux session to
-// exclude, no session id to match, or the tool has no known env var.
+// this instance's) that duplicate this instance. It runs up to two sweeps:
+//
+//  1. Tool-session-id sweep (issue #596/#666 guard). Kills sessions
+//     sharing the same CLAUDE_/GEMINI_/OPENCODE_/CODEX_SESSION_ID, so a
+//     fork-then-edit collision doesn't leave two `claude --resume`
+//     processes fighting over one conversation.
+//
+//  2. Instance-id sweep (issue #678 guard). Kills sessions sharing the
+//     same AGENTDECK_INSTANCE_ID. This covers shell / placeholder
+//     sessions that have no tool-level session id — the tool-sweep
+//     above is a no-op for them, and without the instance-id sweep
+//     every SSH respawn race on Linux+systemd accumulated a new
+//     duplicate tmux session (10 observed after a 2-week run with 30
+//     shell projects in @bautrey's v0.28.3 fork).
+//
+// Running both is safe: the second sweep is a no-op if the first
+// already killed the stale session. Both exclude our own tmux session
+// by name, so this instance is never the target.
 func (i *Instance) sweepDuplicateToolSessions() {
 	if i.tmuxSession == nil {
 		return
@@ -44,5 +59,9 @@ func (i *Instance) sweepDuplicateToolSessions() {
 		killDuplicateSessionsFn("OPENCODE_SESSION_ID", i.OpenCodeSessionID, keepName)
 	case i.Tool == "codex" && i.CodexSessionID != "":
 		killDuplicateSessionsFn("CODEX_SESSION_ID", i.CodexSessionID, keepName)
+	}
+
+	if i.ID != "" {
+		killDuplicateSessionsFn("AGENTDECK_INSTANCE_ID", i.ID, keepName)
 	}
 }
