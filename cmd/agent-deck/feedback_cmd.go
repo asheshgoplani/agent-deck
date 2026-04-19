@@ -5,11 +5,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 )
+
+// ghUserLogin returns the authenticated GitHub account login (e.g.
+// "octocat") as seen by the local gh CLI. Used by the feedback flow
+// (issue #679) to tell the user which account will carry the post
+// before they confirm. Empty string when gh is unauthenticated or
+// unavailable — callers render a generic fallback in that case.
+//
+// Overridable for tests.
+var ghUserLogin = func() string {
+	out, err := exec.Command("gh", "api", "user", "-q", ".login").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
 
 // handleFeedback is the public dispatch entry point for the "agent-deck feedback" subcommand.
 // It delegates to handleFeedbackWithSender with the real stdin and a real Sender.
