@@ -439,11 +439,13 @@ weekly_limit = 200.00
 
 Found a bug or have an idea? Send feedback without leaving your terminal. Press `Ctrl+E` in the TUI to open the FeedbackDialog, or run `agent-deck feedback` from the shell to submit a rating and a short note.
 
-Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.com/asheshgoplani/agent-deck/discussions/600) so other users can read along, comment, and upvote. The submit path uses `gh api graphql` when GitHub CLI is authenticated and falls back to clipboard + browser otherwise — no telemetry, no third-party services.
+Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.com/asheshgoplani/agent-deck/discussions/600) so other users can read along, comment, and upvote. The CLI submit path uses `gh api graphql` under your local GitHub authentication — no telemetry, no third-party services.
 
 - Press `Ctrl+E` from the main TUI to open the dialog
-- Or run `agent-deck feedback <rating> "<message>"` (rating 1-5) from the CLI
-- Headless hosts (no display, no `gh` auth) print a copy-pasteable comment instead of opening a browser
+- Or run `agent-deck feedback` from the CLI (rating 1-5)
+- **Nothing is sent until you explicitly type `y` at the confirmation prompt.** Before the prompt, the CLI shows (1) the public URL the comment will land on, (2) that it posts via the `gh` CLI using your account, (3) your GitHub username as it will appear, and (4) the exact body that will be posted. Default answer is **N** — pressing Enter declines.
+- If `gh` fails (auth required, not installed, network), the CLI prints an error and exits non-zero. No clipboard or browser fallback is triggered on the CLI path.
+- A private/anonymous feedback channel is being designed for a future release — track in [#679](https://github.com/asheshgoplani/agent-deck/issues/679).
 
 ## Installation
 
