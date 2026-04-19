@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.36] - 2026-04-19
+
+### Fixed
+- **`agent-deck feedback` prompts now print interactively to stdout instead of being buffered until the whole flow returns** (#679 follow-up, reported by @rgarlik after testing v1.7.35): the v1.7.35 fix for #679 added an explicit disclosure block and `Post this? [y/N]` confirm — but the disclosure was rendered into a `strings.Builder` that was only flushed to `os.Stdout` *after* `handleFeedbackWithSender` returned. Users typed `Rating`, `Comment`, and the confirm answer at a blank cursor, and the disclosure they were supposed to read before consenting was never visible while they were being asked to consent. The same buffering predated #679 (the `Sent! Thanks` path had it too) — #679 just made it impossible to ignore. Fix: `handleFeedbackWithSender` signature gains `in io.Reader` before the writer; `handleFeedback` now wires `os.Stdin`/`os.Stdout` directly, so every `fmt.Fprint(w, ...)` reaches the terminal immediately. Test gap closed by `TestFeedback_PromptPrintsBeforeStdinBlocks` in `cmd/agent-deck/feedback_cmd_test.go`: pairs `io.Pipe` for both stdin and stdout, spawns the handler in a goroutine, reads from the out pipe and asserts "Rating" arrives before sending anything to the in pipe, and times out at 2s if the function buffered. The legacy #679 tests continue to use `strings.Builder` for convenience — that type silently buffers, which is exactly the class of test gap that hid this regression; a follow-up issue tracks adding similar pipe-based smoke tests to every interactive subcommand.
+
 ## [1.7.35] - 2026-04-19
 
 This is a **consolidated batch release**. It ships three new fixes (#678, #680, #679) together with the two previously-unreleased `chore(release)` rebuilds that landed on `main` but were never tagged: the PR #655 custom-tool `compatible_with` work (previously slated for v1.7.33) and the PR #580 transition-notify toggle (previously slated for v1.7.34). There are no standalone v1.7.33 or v1.7.34 releases — everything is collapsed into v1.7.35 to avoid tag gaps and user confusion.
