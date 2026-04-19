@@ -20,6 +20,7 @@ const (
 	projectSkillsDirName     = ".agent-deck"
 	projectSkillsManifest    = "skills.toml"
 	projectClaudeSkillsDir   = ".claude/skills"
+	projectAgentsSkillsDir   = ".agents/skills"
 	defaultSkillSourcePool   = "pool"
 	defaultSkillSourceClaude = "claude-global"
 )
@@ -88,6 +89,12 @@ type ProjectSkillsManifest struct {
 	Skills []ProjectSkillAttachment `toml:"skills"`
 }
 
+// MaterializedProjectSkill is one on-disk skill entry under a managed project root.
+type MaterializedProjectSkill struct {
+	EntryName  string `json:"entry_name"`
+	TargetPath string `json:"target_path"`
+}
+
 func skillBoolPtr(v bool) *bool {
 	b := v
 	return &b
@@ -106,6 +113,62 @@ func skillIDForAttachment(a ProjectSkillAttachment) string {
 		return strings.TrimSpace(a.ID)
 	}
 	return buildSkillID(a.Source, a.Name)
+}
+
+func knownProjectSkillsDirs() []string {
+	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir}
+}
+
+// SupportsProjectSkills reports whether the runtime supports project skill materialization.
+func SupportsProjectSkills(tool string) bool {
+	_, ok := GetProjectSkillsDir(tool)
+	return ok
+}
+
+// ShouldRestartProjectSkills reports whether agent-deck should auto-restart the session
+// after project skill changes for this runtime.
+func ShouldRestartProjectSkills(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "codex"
+}
+
+// GetProjectSkillsDir returns the runtime-managed project skill directory.
+func GetProjectSkillsDir(tool string) (string, bool) {
+	switch {
+	case IsClaudeCompatible(tool):
+		return projectClaudeSkillsDir, true
+	case tool == "gemini" || tool == "codex" || tool == "pi":
+		return projectAgentsSkillsDir, true
+	default:
+		return "", false
+	}
+}
+
+// GetProjectSkillsPath returns the runtime-specific project skills path.
+func GetProjectSkillsPath(projectPath, tool string) string {
+	dir, ok := GetProjectSkillsDir(tool)
+	if !ok {
+		return ""
+	}
+	return filepath.Join(projectPath, filepath.FromSlash(dir))
+}
+
+func buildProjectSkillTargetPath(skillDir, entryName string) string {
+	return filepath.ToSlash(filepath.Join(filepath.FromSlash(skillDir), entryName))
+}
+
+func targetPathUsesSkillDir(targetPath, skillDir string) bool {
+	normalizedTarget := filepath.ToSlash(strings.TrimSpace(targetPath))
+	normalizedDir := filepath.ToSlash(strings.TrimSpace(skillDir))
+	return normalizedTarget == normalizedDir || strings.HasPrefix(normalizedTarget, normalizedDir+"/")
+}
+
+func managedProjectSkillsDirForTarget(targetPath string) (string, bool) {
+	for _, dir := range knownProjectSkillsDirs() {
+		if targetPathUsesSkillDir(targetPath, dir) {
+			return dir, true
+		}
+	}
+	return "", false
 }
 
 func expandSkillPath(path string) string {
@@ -580,11 +643,6 @@ func GetProjectSkillsManifestPath(projectPath string) string {
 	return filepath.Join(projectPath, projectSkillsDirName, projectSkillsManifest)
 }
 
-// GetProjectClaudeSkillsPath returns <project>/.claude/skills.
-func GetProjectClaudeSkillsPath(projectPath string) string {
-	return filepath.Join(projectPath, filepath.FromSlash(projectClaudeSkillsDir))
-}
-
 func normalizeAttachment(a ProjectSkillAttachment) ProjectSkillAttachment {
 	a.ID = strings.TrimSpace(a.ID)
 	if a.ID == "" {
@@ -687,23 +745,28 @@ func GetAttachedProjectSkills(projectPath string) ([]ProjectSkillAttachment, err
 	return result, nil
 }
 
-// ListMaterializedProjectSkills returns all entries currently present in .claude/skills.
-func ListMaterializedProjectSkills(projectPath string) ([]string, error) {
-	skillsDir := GetProjectClaudeSkillsPath(projectPath)
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+// ListMaterializedProjectSkills returns all entries currently present in known managed project roots.
+func ListMaterializedProjectSkills(projectPath string) ([]MaterializedProjectSkill, error) {
+	materialized := make([]MaterializedProjectSkill, 0)
+	for _, skillDir := range knownProjectSkillsDirs() {
+		entries, err := os.ReadDir(filepath.Join(projectPath, filepath.FromSlash(skillDir)))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		return nil, err
+		for _, e := range entries {
+			materialized = append(materialized, MaterializedProjectSkill{
+				EntryName:  e.Name(),
+				TargetPath: buildProjectSkillTargetPath(skillDir, e.Name()),
+			})
+		}
 	}
-
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	return names, nil
+	sort.Slice(materialized, func(i, j int) bool {
+		return materialized[i].TargetPath < materialized[j].TargetPath
+	})
+	return materialized, nil
 }
 
 func copyFile(src, dst string) error {
@@ -776,6 +839,30 @@ func copyDir(src, dst string) error {
 	return nil
 }
 
+func materializeSkillCopyOnly(sourcePath, targetPath string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.RemoveAll(targetPath); err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		if err := copyDir(sourcePath, targetPath); err != nil {
+			return "", err
+		}
+	} else {
+		if err := copyFile(sourcePath, targetPath); err != nil {
+			return "", err
+		}
+	}
+	return "copy", nil
+}
+
 func materializeSkill(sourcePath, targetPath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", err
@@ -810,20 +897,7 @@ func materializeSkill(sourcePath, targetPath string) (string, error) {
 		}
 	}
 
-	info, err := os.Stat(sourcePath)
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() {
-		if err := copyDir(sourcePath, targetPath); err != nil {
-			return "", err
-		}
-	} else {
-		if err := copyFile(sourcePath, targetPath); err != nil {
-			return "", err
-		}
-	}
-	return "copy", nil
+	return materializeSkillCopyOnly(sourcePath, targetPath)
 }
 
 func resolveTargetPath(projectPath, targetPath string) string {
@@ -835,7 +909,11 @@ func resolveTargetPath(projectPath, targetPath string) string {
 
 func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
 	targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
-	base := GetProjectClaudeSkillsPath(projectPath)
+	skillDir, ok := managedProjectSkillsDirForTarget(attachment.TargetPath)
+	if !ok {
+		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", targetPath)
+	}
+	base := filepath.Join(projectPath, filepath.FromSlash(skillDir))
 	if !isContainedIn(base, targetPath) {
 		return fmt.Errorf("refusing to remove path outside project skills dir: %s", targetPath)
 	}
@@ -845,8 +923,9 @@ func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachmen
 	return nil
 }
 
-func buildAttachment(projectPath string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
-	targetRel := filepath.ToSlash(filepath.Join(filepath.FromSlash(projectClaudeSkillsDir), candidate.EntryName))
+func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
+	skillDir, _ := GetProjectSkillsDir(tool)
+	targetRel := buildProjectSkillTargetPath(skillDir, candidate.EntryName)
 	return normalizeAttachment(ProjectSkillAttachment{
 		ID:         buildSkillID(candidate.Source, candidate.Name),
 		Name:       candidate.Name,
@@ -860,7 +939,7 @@ func buildAttachment(projectPath string, candidate SkillCandidate, mode string) 
 }
 
 func validateAttachableSkillCandidate(candidate SkillCandidate) error {
-	// Claude-compatible project skills must be directory skills with SKILL.md.
+	// Project-managed skills must be directory skills with SKILL.md.
 	if candidate.Kind != "dir" {
 		return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
@@ -884,9 +963,30 @@ func validateAttachableSkillCandidate(candidate SkillCandidate) error {
 	return nil
 }
 
-func attachSkillCandidate(projectPath string, candidate SkillCandidate) (*ProjectSkillAttachment, error) {
-	if err := validateAttachableSkillCandidate(candidate); err != nil {
-		return nil, err
+func resolveMaterializationSource(sourcePath, fallbackPath string) (string, error) {
+	if strings.TrimSpace(sourcePath) != "" {
+		if _, err := os.Stat(sourcePath); err == nil {
+			return sourcePath, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	if strings.TrimSpace(fallbackPath) != "" {
+		if _, err := os.Stat(fallbackPath); err == nil {
+			return fallbackPath, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*ProjectSkillAttachment, error) {
+	if !SupportsProjectSkills(tool) {
+		return nil, fmt.Errorf("project skills are not supported for %s sessions", tool)
+	}
+	if candidate.Kind != "dir" {
+		return nil, fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
 	}
 
 	manifest, err := LoadProjectSkillsManifest(projectPath)
@@ -895,36 +995,101 @@ func attachSkillCandidate(projectPath string, candidate SkillCandidate) (*Projec
 	}
 
 	candidateID := buildSkillID(candidate.Source, candidate.Name)
+	expectedDir, _ := GetProjectSkillsDir(tool)
+	expectedTargetRel := buildProjectSkillTargetPath(expectedDir, candidate.EntryName)
 	for i := range manifest.Skills {
 		existing := manifest.Skills[i]
-		if normalizeSkillToken(skillIDForAttachment(existing)) == normalizeSkillToken(candidateID) {
-			targetPath := resolveTargetPath(projectPath, existing.TargetPath)
-			if _, err := os.Stat(targetPath); err == nil {
-				return nil, fmt.Errorf("%w: %s", ErrSkillAlreadyAttached, candidate.Name)
+		if normalizeSkillToken(skillIDForAttachment(existing)) != normalizeSkillToken(candidateID) {
+			continue
+		}
+
+		desiredTargetRel := existing.TargetPath
+		if !targetPathUsesSkillDir(existing.TargetPath, expectedDir) {
+			desiredTargetRel = expectedTargetRel
+		}
+		desiredTargetPath := resolveTargetPath(projectPath, desiredTargetRel)
+		currentTargetPath := resolveTargetPath(projectPath, existing.TargetPath)
+
+		for _, other := range manifest.Skills {
+			if normalizeSkillToken(skillIDForAttachment(other)) == normalizeSkillToken(candidateID) {
+				continue
+			}
+			if normalizeSkillToken(other.TargetPath) == normalizeSkillToken(desiredTargetRel) {
+				return nil, fmt.Errorf("target already managed by %s", other.Name)
+			}
+		}
+		if currentTargetPath != desiredTargetPath {
+			if _, err := os.Lstat(desiredTargetPath); err == nil {
+				return nil, fmt.Errorf("target already exists and is not managed: %s", desiredTargetPath)
 			} else if !os.IsNotExist(err) {
 				return nil, err
 			}
 
-			mode, err := materializeSkill(candidate.SourcePath, targetPath)
+			sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, currentTargetPath)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil, fmt.Errorf("cannot migrate attached skill %s: source and current target are unavailable", existing.Name)
+				}
+				return nil, err
+			}
+			mode := ""
+			if sourceToUse == currentTargetPath {
+				mode, err = materializeSkillCopyOnly(sourceToUse, desiredTargetPath)
+			} else {
+				if err := validateAttachableSkillCandidate(candidate); err != nil {
+					return nil, err
+				}
+				mode, err = materializeSkill(sourceToUse, desiredTargetPath)
+			}
 			if err != nil {
 				return nil, err
 			}
-
-			existing.SourcePath = candidate.SourcePath
-			existing.EntryName = candidate.EntryName
-			existing.Mode = mode
-			existing.AttachedAt = time.Now().Format(time.RFC3339)
-			manifest.Skills[i] = normalizeAttachment(existing)
-
-			if err := SaveProjectSkillsManifest(projectPath, manifest); err != nil {
+			if err := os.RemoveAll(currentTargetPath); err != nil {
+				_ = os.RemoveAll(desiredTargetPath)
 				return nil, err
 			}
-			updated := manifest.Skills[i]
-			return &updated, nil
+			existing.TargetPath = desiredTargetRel
+			existing.Mode = mode
+			existing.AttachedAt = time.Now().Format(time.RFC3339)
+		} else {
+			if _, err := os.Stat(currentTargetPath); err == nil {
+				return nil, fmt.Errorf("%w: %s", ErrSkillAlreadyAttached, candidate.Name)
+			} else if !os.IsNotExist(err) {
+				return nil, err
+			}
+			sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil, fmt.Errorf("cannot rematerialize attached skill %s: source path is unavailable", existing.Name)
+				}
+				return nil, err
+			}
+			if err := validateAttachableSkillCandidate(candidate); err != nil {
+				return nil, err
+			}
+			mode, err := materializeSkill(sourceToUse, currentTargetPath)
+			if err != nil {
+				return nil, err
+			}
+			existing.Mode = mode
+			existing.AttachedAt = time.Now().Format(time.RFC3339)
 		}
+
+		existing.SourcePath = candidate.SourcePath
+		existing.EntryName = candidate.EntryName
+		manifest.Skills[i] = normalizeAttachment(existing)
+		if err := SaveProjectSkillsManifest(projectPath, manifest); err != nil {
+			return nil, err
+		}
+		updated := manifest.Skills[i]
+		return &updated, nil
 	}
 
-	attachment := buildAttachment(projectPath, candidate, "")
+	if err := validateAttachableSkillCandidate(candidate); err != nil {
+		return nil, err
+	}
+
+	attachment := buildAttachment(tool, candidate, "")
 	targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
 
 	for _, existing := range manifest.Skills {
@@ -955,13 +1120,13 @@ func attachSkillCandidate(projectPath string, candidate SkillCandidate) (*Projec
 	return &attachment, nil
 }
 
-// AttachSkillToProject resolves and attaches one skill into <project>/.claude/skills.
-func AttachSkillToProject(projectPath, skillRef, sourceName string) (*ProjectSkillAttachment, error) {
+// AttachSkillToProject resolves and attaches one skill into the runtime-specific project skills dir.
+func AttachSkillToProject(projectPath, tool, skillRef, sourceName string) (*ProjectSkillAttachment, error) {
 	candidate, err := ResolveSkillCandidate(skillRef, sourceName)
 	if err != nil {
 		return nil, err
 	}
-	return attachSkillCandidate(projectPath, *candidate)
+	return attachSkillCandidate(projectPath, tool, *candidate)
 }
 
 func matchesAttachmentReference(a ProjectSkillAttachment, skillRef, sourceName string) bool {
@@ -1027,7 +1192,11 @@ func DetachSkillFromProject(projectPath, skillRef, sourceName string) (*ProjectS
 
 // ApplyProjectSkills makes project attachments exactly match desired candidates.
 // This is useful for TUI apply flows where users move items between columns.
-func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
+func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) error {
+	if !SupportsProjectSkills(tool) {
+		return fmt.Errorf("project skills are not supported for %s sessions", tool)
+	}
+
 	manifest, err := LoadProjectSkillsManifest(projectPath)
 	if err != nil {
 		return err
@@ -1042,11 +1211,15 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 		managedTargetOwner[normalizeSkillToken(normalized.TargetPath)] = id
 	}
 
+	expectedDir, _ := GetProjectSkillsDir(tool)
 	desiredByID := make(map[string]SkillCandidate, len(desired))
 	desiredTargetByID := make(map[string]string, len(desired))
 	desiredTargetOwner := make(map[string]string, len(desired))
 	orderedIDs := make([]string, 0, len(desired))
 	for _, candidate := range desired {
+		if candidate.Kind != "dir" {
+			return fmt.Errorf("%w: %s", ErrSkillUnsupportedKind, candidate.Name)
+		}
 		id := normalizeSkillToken(buildSkillID(candidate.Source, candidate.Name))
 		if _, exists := desiredByID[id]; exists {
 			continue
@@ -1055,8 +1228,8 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 		desiredByID[id] = candidate
 		orderedIDs = append(orderedIDs, id)
 
-		targetRel := filepath.ToSlash(filepath.Join(filepath.FromSlash(projectClaudeSkillsDir), candidate.EntryName))
-		if current, exists := currentByID[id]; exists && strings.TrimSpace(current.TargetPath) != "" {
+		targetRel := buildProjectSkillTargetPath(expectedDir, candidate.EntryName)
+		if current, exists := currentByID[id]; exists && targetPathUsesSkillDir(current.TargetPath, expectedDir) {
 			targetRel = current.TargetPath
 		}
 		targetRel = filepath.ToSlash(strings.TrimSpace(targetRel))
@@ -1069,20 +1242,31 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 		desiredTargetOwner[targetKey] = id
 	}
 
-	// Preflight unmanaged target conflicts before removing/recreating anything.
 	for _, id := range orderedIDs {
-		if _, exists := currentByID[id]; exists {
-			continue
-		}
-
 		targetRel := desiredTargetByID[id]
 		targetKey := normalizeSkillToken(targetRel)
-		if _, managed := managedTargetOwner[targetKey]; managed {
-			continue
+		targetPath := resolveTargetPath(projectPath, targetRel)
+
+		currentTargetPath := ""
+		if current, exists := currentByID[id]; exists {
+			currentTargetPath = resolveTargetPath(projectPath, current.TargetPath)
 		}
 
-		targetPath := resolveTargetPath(projectPath, targetRel)
+		if existingOwner, exists := managedTargetOwner[targetKey]; exists && existingOwner != id {
+			if _, keep := desiredByID[existingOwner]; keep {
+				return fmt.Errorf("%w: %s and %s both map to %s", ErrSkillTargetConflict, existingOwner, id, targetRel)
+			}
+		}
+
 		if _, err := os.Lstat(targetPath); err == nil {
+			if currentTargetPath == targetPath {
+				continue
+			}
+			if existingOwner, exists := managedTargetOwner[targetKey]; exists && existingOwner != id {
+				if _, keep := desiredByID[existingOwner]; !keep {
+					continue
+				}
+			}
 			return fmt.Errorf("target already exists and is not managed: %s", targetPath)
 		} else if !os.IsNotExist(err) {
 			return err
@@ -1102,18 +1286,59 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 	newManifest := make([]ProjectSkillAttachment, 0, len(desiredByID))
 	for _, id := range orderedIDs {
 		candidate := desiredByID[id]
+		desiredTargetRel := desiredTargetByID[id]
 		if current, exists := currentByID[id]; exists {
-			targetPath := resolveTargetPath(projectPath, current.TargetPath)
-			if _, err := os.Stat(targetPath); err != nil {
+			currentTargetPath := resolveTargetPath(projectPath, current.TargetPath)
+			desiredTargetPath := resolveTargetPath(projectPath, desiredTargetRel)
+			if currentTargetPath != desiredTargetPath {
+				sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, currentTargetPath)
+				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						return fmt.Errorf("cannot migrate attached skill %s: source and current target are unavailable", current.Name)
+					}
+					return err
+				} else {
+					mode := ""
+					if sourceToUse == currentTargetPath {
+						mode, err = materializeSkillCopyOnly(sourceToUse, desiredTargetPath)
+					} else {
+						if err := validateAttachableSkillCandidate(candidate); err != nil {
+							return err
+						}
+						mode, err = materializeSkill(sourceToUse, desiredTargetPath)
+					}
+					if err != nil {
+						return err
+					}
+					if err := os.RemoveAll(currentTargetPath); err != nil {
+						_ = os.RemoveAll(desiredTargetPath)
+						return err
+					}
+					current.TargetPath = desiredTargetRel
+					current.Mode = mode
+					current.AttachedAt = time.Now().Format(time.RFC3339)
+				}
+			} else if _, err := os.Stat(desiredTargetPath); err != nil {
 				if !os.IsNotExist(err) {
 					return err
 				}
-				mode, err := materializeSkill(candidate.SourcePath, targetPath)
+				sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
 				if err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						return fmt.Errorf("cannot rematerialize attached skill %s: source path is unavailable", current.Name)
+					}
 					return err
+				} else {
+					if err := validateAttachableSkillCandidate(candidate); err != nil {
+						return err
+					}
+					mode, err := materializeSkill(sourceToUse, desiredTargetPath)
+					if err != nil {
+						return err
+					}
+					current.Mode = mode
+					current.AttachedAt = time.Now().Format(time.RFC3339)
 				}
-				current.Mode = mode
-				current.AttachedAt = time.Now().Format(time.RFC3339)
 			}
 			current.SourcePath = candidate.SourcePath
 			current.EntryName = candidate.EntryName
@@ -1121,9 +1346,16 @@ func ApplyProjectSkills(projectPath string, desired []SkillCandidate) error {
 			continue
 		}
 
-		attachment := buildAttachment(projectPath, candidate, "")
+		attachment := buildAttachment(tool, candidate, "")
 		targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
-		mode, err := materializeSkill(candidate.SourcePath, targetPath)
+		sourceToUse, err := resolveMaterializationSource(candidate.SourcePath, "")
+		if err != nil {
+			return err
+		}
+		if err := validateAttachableSkillCandidate(candidate); err != nil {
+			return err
+		}
+		mode, err := materializeSkill(sourceToUse, targetPath)
 		if err != nil {
 			return err
 		}

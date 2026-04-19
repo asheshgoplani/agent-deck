@@ -25,7 +25,7 @@ Complete reference for agent-deck Terminal UI features.
 | `K` / `J` | Move item up/down in order |
 | `M` | Move session to different group |
 | `m` | Open MCP Manager (Claude/Gemini) |
-| `s` | Open Skills Manager (Claude) |
+| `s` | Open Skills Manager |
 | `d` | Delete session or group |
 | `u` | Mark unread (idle -> waiting) |
 | `f` | Quick fork (Claude only) |
@@ -122,8 +122,14 @@ Complete reference for agent-deck Terminal UI features.
 
 **Persistence:**
 - Writes attachment state to `<project>/.agent-deck/skills.toml`
-- Materializes selected entries in `<project>/.claude/skills`
+- Claude-compatible sessions materialize selected entries in `<project>/.claude/skills`
+- Gemini, Codex, and Pi sessions materialize selected entries in `<project>/.agents/skills`
 - If no pool entries exist, dialog shows guidance for `~/.agent-deck/skills/pool`
+
+**Runtime notes:**
+- Skills Manager is available for Claude, Gemini, Codex, and Pi sessions
+- Pressing `Enter` reconciles managed attachments to the active runtime root even if the attached list did not change
+- Auto-restart after apply is supported for Claude, Gemini, and Codex; Pi requires manual reload/restart
 
 ### Fork Dialog (`F`)
 

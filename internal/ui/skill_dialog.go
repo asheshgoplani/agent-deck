@@ -29,14 +29,15 @@ type SkillDialogItem struct {
 	Candidate session.SkillCandidate
 }
 
-// SkillDialog manages project-scoped Claude skills.
+// SkillDialog manages project-scoped skills.
 type SkillDialog struct {
-	visible     bool
-	width       int
-	height      int
-	projectPath string
-	sessionID   string
-	tool        string
+	visible        bool
+	width          int
+	height         int
+	projectPath    string
+	sessionID      string
+	tool           string
+	needsReconcile bool
 
 	column SkillColumn
 
@@ -73,12 +74,13 @@ func (d *SkillDialog) Show(projectPath, sessionID, tool string) error {
 	d.emptyHelpText = ""
 	d.typeJumpBuf = ""
 	d.typeJumpUntil = time.Time{}
+	d.needsReconcile = false
 
-	if tool != "claude" {
+	if !session.SupportsProjectSkills(tool) {
 		d.visible = true
 		d.attached = nil
 		d.available = nil
-		d.emptyHelpText = "Skills manager is currently available for Claude sessions only."
+		d.emptyHelpText = "Skills manager is available for Claude, Gemini, Codex, and Pi sessions."
 		return nil
 	}
 
@@ -102,6 +104,7 @@ func (d *SkillDialog) Show(projectPath, sessionID, tool string) error {
 
 	d.attached = make([]SkillDialogItem, 0, len(attachedSkills))
 	attachedIDs := make(map[string]bool, len(attachedSkills))
+	expectedDir, _ := session.GetProjectSkillsDir(tool)
 	for _, attachment := range attachedSkills {
 		candidate, ok := discoveredByID[attachment.ID]
 		if !ok {
@@ -114,6 +117,9 @@ func (d *SkillDialog) Show(projectPath, sessionID, tool string) error {
 				Description: "(source unavailable)",
 				Kind:        "dir",
 			}
+		}
+		if !strings.HasPrefix(strings.TrimSpace(attachment.TargetPath), expectedDir+"/") && strings.TrimSpace(attachment.TargetPath) != expectedDir {
+			d.needsReconcile = true
 		}
 		d.attached = append(d.attached, SkillDialogItem{Candidate: candidate})
 		attachedIDs[candidate.ID] = true
@@ -147,6 +153,7 @@ func (d *SkillDialog) Hide() {
 	d.emptyHelpText = ""
 	d.typeJumpBuf = ""
 	d.typeJumpUntil = time.Time{}
+	d.needsReconcile = false
 }
 
 // IsVisible returns whether dialog is shown.
@@ -163,6 +170,11 @@ func (d *SkillDialog) SetSize(width, height int) {
 // HasChanged indicates whether user moved any item.
 func (d *SkillDialog) HasChanged() bool {
 	return d.hasChanges
+}
+
+// NeedsApply reports whether Apply should run due to user changes or runtime reconciliation.
+func (d *SkillDialog) NeedsApply() bool {
+	return d.hasChanges || d.needsReconcile
 }
 
 // GetSessionID returns the managed session ID.
@@ -349,7 +361,7 @@ func (d *SkillDialog) Move() {
 // Apply saves project skills according to attached column state.
 func (d *SkillDialog) Apply() error {
 	d.err = nil
-	if d.tool != "claude" {
+	if !session.SupportsProjectSkills(d.tool) {
 		return nil
 	}
 
@@ -358,10 +370,12 @@ func (d *SkillDialog) Apply() error {
 		desired = append(desired, item.Candidate)
 	}
 
-	if err := session.ApplyProjectSkills(d.projectPath, desired); err != nil {
+	if err := session.ApplyProjectSkills(d.projectPath, d.tool, desired); err != nil {
 		d.err = err
 		return err
 	}
+	d.hasChanges = false
+	d.needsReconcile = false
 	return nil
 }
 
@@ -484,11 +498,15 @@ func (d *SkillDialog) View() string {
 	}
 
 	title := "Skills Manager"
-	scopeDesc := DimStyle.Render("Writes to: .agent-deck/skills.toml + .claude/skills (project)")
+	scopeDesc := ""
+	if skillsDir, ok := session.GetProjectSkillsDir(d.tool); ok {
+		scopeDesc = DimStyle.Render("Writes to: .agent-deck/skills.toml + " + skillsDir + " (project)")
+	} else {
+		scopeDesc = lipgloss.NewStyle().Foreground(ColorYellow).Render(d.emptyHelpText)
+	}
 	sourceTab := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent).Render("[POOL]")
 	sourceLine := "──────────────── " + sourceTab + " ────────────────"
-	if d.tool != "claude" && d.emptyHelpText != "" {
-		scopeDesc = lipgloss.NewStyle().Foreground(ColorYellow).Render(d.emptyHelpText)
+	if d.emptyHelpText != "" {
 		sourceLine = ""
 	}
 

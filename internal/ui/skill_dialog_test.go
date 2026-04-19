@@ -66,9 +66,38 @@ func boolPtrDialog(v bool) *bool {
 	return &b
 }
 
-func TestSkillDialog_Show_NonClaudeSession(t *testing.T) {
+func TestSkillDialog_Show_UnsupportedSession(t *testing.T) {
 	cleanup := setupSkillDialogEnv(t)
 	defer cleanup()
+
+	dialog := NewSkillDialog()
+	if err := dialog.Show(t.TempDir(), "sess-1", "shell"); err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+
+	if !dialog.IsVisible() {
+		t.Fatal("dialog should be visible")
+	}
+	if dialog.emptyHelpText == "" {
+		t.Fatal("expected unsupported-runtime help text")
+	}
+	if len(dialog.attached) != 0 || len(dialog.available) != 0 {
+		t.Fatal("unsupported dialog should not populate skill lists")
+	}
+}
+
+func TestSkillDialog_Show_SupportedNonClaudeSession(t *testing.T) {
+	cleanup := setupSkillDialogEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeDialogSkillDir(t, sourcePath, "lint", "lint", "Linting best practices")
+
+	if err := session.SaveSkillSources(map[string]session.SkillSourceDef{
+		"pool": {Path: sourcePath, Enabled: boolPtrDialog(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
 
 	dialog := NewSkillDialog()
 	if err := dialog.Show(t.TempDir(), "sess-1", "gemini"); err != nil {
@@ -78,11 +107,11 @@ func TestSkillDialog_Show_NonClaudeSession(t *testing.T) {
 	if !dialog.IsVisible() {
 		t.Fatal("dialog should be visible")
 	}
-	if dialog.emptyHelpText == "" {
-		t.Fatal("expected non-claude help text")
+	if dialog.emptyHelpText != "" {
+		t.Fatalf("expected no unsupported-runtime help text, got %q", dialog.emptyHelpText)
 	}
-	if len(dialog.attached) != 0 || len(dialog.available) != 0 {
-		t.Fatal("non-claude dialog should not populate skill lists")
+	if len(dialog.available) != 1 {
+		t.Fatalf("expected gemini dialog to populate pool skills, got %d", len(dialog.available))
 	}
 }
 
@@ -131,6 +160,10 @@ func TestSkillDialog_MoveAndApply(t *testing.T) {
 		t.Fatalf("Apply failed: %v", err)
 	}
 
+	if dialog.HasChanged() {
+		t.Fatal("expected Apply to clear dialog change state")
+	}
+
 	attached, err := session.GetAttachedProjectSkills(projectPath)
 	if err != nil {
 		t.Fatalf("GetAttachedProjectSkills failed: %v", err)
@@ -145,6 +178,71 @@ func TestSkillDialog_MoveAndApply(t *testing.T) {
 	targetPath := filepath.Join(projectPath, ".claude", "skills", "lint")
 	if _, err := os.Lstat(targetPath); err != nil {
 		t.Fatalf("expected materialized skill at %s: %v", targetPath, err)
+	}
+}
+
+func TestSkillDialog_ApplyUsesAgentSkillsDirForGemini(t *testing.T) {
+	cleanup := setupSkillDialogEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeDialogSkillDir(t, sourcePath, "lint", "lint", "Linting best practices")
+
+	if err := session.SaveSkillSources(map[string]session.SkillSourceDef{
+		"pool": {Path: sourcePath, Enabled: boolPtrDialog(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+
+	dialog := NewSkillDialog()
+	if err := dialog.Show(projectPath, "sess-1", "gemini"); err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+
+	dialog.column = SkillColumnAvailable
+	dialog.availableIdx = 0
+	dialog.Move()
+
+	if err := dialog.Apply(); err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	targetPath := filepath.Join(projectPath, ".agents", "skills", "lint")
+	if _, err := os.Lstat(targetPath); err != nil {
+		t.Fatalf("expected materialized skill at %s: %v", targetPath, err)
+	}
+}
+
+func TestSkillDialog_ShowMarksReconcileNeededForRuntimeSwitch(t *testing.T) {
+	cleanup := setupSkillDialogEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeDialogSkillDir(t, sourcePath, "lint", "lint", "Linting best practices")
+
+	if err := session.SaveSkillSources(map[string]session.SkillSourceDef{
+		"pool": {Path: sourcePath, Enabled: boolPtrDialog(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	projectPath := t.TempDir()
+	if _, err := session.AttachSkillToProject(projectPath, "claude", "lint", "pool"); err != nil {
+		t.Fatalf("AttachSkillToProject failed: %v", err)
+	}
+
+	dialog := NewSkillDialog()
+	if err := dialog.Show(projectPath, "sess-1", "gemini"); err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+
+	if dialog.HasChanged() {
+		t.Fatal("showing existing attachments should not mark manual changes")
+	}
+	if !dialog.NeedsApply() {
+		t.Fatal("expected runtime switch to require reconcile/apply")
 	}
 }
 

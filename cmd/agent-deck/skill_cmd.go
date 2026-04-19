@@ -5,12 +5,36 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+func projectSkillsUnsupportedMessage() string {
+	return "project skills are supported for Claude, Gemini, Codex, and Pi sessions"
+}
+
+func restartProjectSkillsSession(inst *session.Instance, jsonOutput, quietMode bool) bool {
+	if inst == nil || !session.ShouldRestartProjectSkills(inst.Tool) {
+		return false
+	}
+	if err := inst.Restart(); err != nil {
+		if !jsonOutput && !quietMode {
+			fmt.Fprintf(os.Stderr, "Warning: failed to restart session: %v\n", err)
+		}
+		return false
+	}
+	if session.IsClaudeCompatible(inst.Tool) {
+		time.Sleep(2 * time.Second)
+		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+			_ = tmuxSess.SendKeysAndEnter("continue")
+		}
+	}
+	return true
+}
 
 // handleSkill handles all skill subcommands.
 func handleSkill(profile string, args []string) {
@@ -42,7 +66,7 @@ func handleSkill(profile string, args []string) {
 func printSkillHelp() {
 	fmt.Println("Usage: agent-deck skill <command> [options]")
 	fmt.Println()
-	fmt.Println("Manage Claude skills with project-level attach/detach and global source registry.")
+	fmt.Println("Manage project skills with project-level attach/detach and a global source registry.")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  list                  List discoverable skills from configured sources")
@@ -196,15 +220,21 @@ func handleSkillAttached(profile string, args []string) {
 
 	managedTargets := make(map[string]bool)
 	for _, a := range attached {
-		managedTargets[a.EntryName] = true
+		managedTargets[strings.ToLower(strings.TrimSpace(a.TargetPath))] = true
 	}
-	orphans := make([]string, 0)
-	for _, name := range materialized {
-		if !managedTargets[name] {
-			orphans = append(orphans, name)
+	orphansByRoot := make(map[string][]string)
+	orphans := make([]session.MaterializedProjectSkill, 0)
+	for _, item := range materialized {
+		if managedTargets[strings.ToLower(strings.TrimSpace(item.TargetPath))] {
+			continue
 		}
+		orphans = append(orphans, item)
+		root := filepath.ToSlash(filepath.Dir(item.TargetPath))
+		orphansByRoot[root] = append(orphansByRoot[root], item.EntryName)
 	}
-	sort.Strings(orphans)
+	for root := range orphansByRoot {
+		sort.Strings(orphansByRoot[root])
+	}
 
 	if *jsonOutput {
 		out.Print("", map[string]interface{}{
@@ -221,8 +251,8 @@ func handleSkillAttached(profile string, args []string) {
 		for _, a := range attached {
 			fmt.Println(a.Name)
 		}
-		for _, name := range orphans {
-			fmt.Println(name)
+		for _, item := range orphans {
+			fmt.Println(item.TargetPath)
 		}
 		return
 	}
@@ -248,9 +278,19 @@ func handleSkillAttached(profile string, args []string) {
 	}
 
 	if len(orphans) > 0 {
-		fmt.Printf("UNMANAGED (%s):\n", FormatPath(session.GetProjectClaudeSkillsPath(inst.ProjectPath)))
-		for _, name := range orphans {
-			fmt.Printf("  %s %s\n", bulletSymbol, name)
+		roots := make([]string, 0, len(orphansByRoot))
+		for root := range orphansByRoot {
+			roots = append(roots, root)
+		}
+		sort.Strings(roots)
+		for i, root := range roots {
+			fmt.Printf("UNMANAGED (%s):\n", FormatPath(filepath.Join(inst.ProjectPath, filepath.FromSlash(root))))
+			for _, name := range orphansByRoot[root] {
+				fmt.Printf("  %s %s\n", bulletSymbol, name)
+			}
+			if i < len(roots)-1 {
+				fmt.Println()
+			}
 		}
 	}
 }
@@ -266,7 +306,7 @@ func handleSkillAttach(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck skill attach <session-id> <skill> [options]")
 		fmt.Println()
-		fmt.Println("Attach a skill to the session project (.claude/skills).")
+		fmt.Println("Attach a skill to the session project skills directory for the active runtime.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -308,12 +348,12 @@ func handleSkillAttach(profile string, args []string) {
 		os.Exit(2)
 		return
 	}
-	if !session.IsClaudeCompatible(inst.Tool) {
-		out.Error("skills are currently supported for Claude sessions only", ErrCodeInvalidOperation)
+	if !session.SupportsProjectSkills(inst.Tool) {
+		out.Error(projectSkillsUnsupportedMessage(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
-	attachment, err := session.AttachSkillToProject(inst.ProjectPath, skillRef, *sourceName)
+	attachment, err := session.AttachSkillToProject(inst.ProjectPath, inst.Tool, skillRef, *sourceName)
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrSkillNotFound):
@@ -335,18 +375,8 @@ func handleSkillAttach(profile string, args []string) {
 	}
 
 	restarted := false
-	if *restart && session.IsClaudeCompatible(inst.Tool) {
-		if err := inst.Restart(); err != nil {
-			if !*jsonOutput && !quietMode {
-				fmt.Fprintf(os.Stderr, "Warning: failed to restart session: %v\n", err)
-			}
-		} else {
-			restarted = true
-			time.Sleep(2 * time.Second)
-			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-				_ = tmuxSess.SendKeysAndEnter("continue")
-			}
-		}
+	if *restart {
+		restarted = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {
@@ -420,11 +450,6 @@ func handleSkillDetach(profile string, args []string) {
 		os.Exit(2)
 		return
 	}
-	if !session.IsClaudeCompatible(inst.Tool) {
-		out.Error("skills are currently supported for Claude sessions only", ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-
 	removed, err := session.DetachSkillFromProject(inst.ProjectPath, skillRef, *sourceName)
 	if err != nil {
 		switch {
@@ -441,18 +466,8 @@ func handleSkillDetach(profile string, args []string) {
 	}
 
 	restarted := false
-	if *restart && session.IsClaudeCompatible(inst.Tool) {
-		if err := inst.Restart(); err != nil {
-			if !*jsonOutput && !quietMode {
-				fmt.Fprintf(os.Stderr, "Warning: failed to restart session: %v\n", err)
-			}
-		} else {
-			restarted = true
-			time.Sleep(2 * time.Second)
-			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-				_ = tmuxSess.SendKeysAndEnter("continue")
-			}
-		}
+	if *restart {
+		restarted = restartProjectSkillsSession(inst, *jsonOutput, quietMode)
 	}
 
 	if *jsonOutput {

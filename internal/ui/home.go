@@ -5806,11 +5806,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "s":
-		// Skills Manager - currently for Claude sessions
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil &&
-				session.IsClaudeCompatible(item.Session.Tool) {
+				session.SupportsProjectSkills(item.Session.Tool) {
 				h.skillDialog.SetSize(h.width, h.height)
 				if err := h.skillDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
 					h.setError(err)
@@ -6980,8 +6979,8 @@ func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []stri
 func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		hasChanged := h.skillDialog.HasChanged()
-		if hasChanged {
+		needsApply := h.skillDialog.NeedsApply()
+		if needsApply {
 			if err := h.skillDialog.Apply(); err != nil {
 				h.setError(err)
 				h.skillDialog.Hide()
@@ -6990,7 +6989,7 @@ func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			sessionID := h.skillDialog.GetSessionID()
 			targetInst := h.getInstanceByID(sessionID)
-			if targetInst != nil && session.IsClaudeCompatible(targetInst.Tool) {
+			if targetInst != nil && session.ShouldRestartProjectSkills(targetInst.Tool) {
 				h.skillDialog.Hide()
 				return h, h.restartSession(targetInst)
 			}
@@ -9829,7 +9828,7 @@ func (h *Home) renderHelpBarMinimal() string {
 					contextKeys += " " + mcpRendered
 				}
 			}
-			if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
+			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
 				skillsRendered := renderKeys(skillsKey)
 				if skillsRendered != "" {
 					contextKeys += " " + skillsRendered
@@ -9931,7 +9930,7 @@ func (h *Home) renderHelpBarCompact() string {
 					contextHints = append(contextHints, h.helpKeyShort(key, h.previewModeShort()))
 				}
 			}
-			if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
+			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
 				if key := h.actionKey(hotkeySkillsManager); key != "" {
 					contextHints = append(contextHints, h.helpKeyShort(key, "Skills"))
 				}
@@ -10110,7 +10109,7 @@ func (h *Home) renderHelpBarFull() string {
 					primaryHints = append(primaryHints, h.helpKey(previewKey, h.previewModeShort()))
 				}
 			}
-			if item.Session != nil && session.IsClaudeCompatible(item.Session.Tool) {
+			if item.Session != nil && session.SupportsProjectSkills(item.Session.Tool) {
 				if skillsKey != "" {
 					primaryHints = append(primaryHints, h.helpKey(skillsKey, "Skills"))
 				}

@@ -215,7 +215,7 @@ agent-deck list --json | jq '.[] | select(.title=="conductor-foo") | .parent_ses
 | `n` | New session |
 | `r/R` | Restart (reloads MCPs) |
 | `m` | MCP Manager |
-| `s` | Skills Manager (Claude) |
+| `s` | Skills Manager |
 | `f/F` | Fork Claude session |
 | `d` | Delete |
 | `M` | Move to group |

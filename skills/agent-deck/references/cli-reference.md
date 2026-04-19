@@ -274,7 +274,7 @@ agent-deck mcp detach <session> <mcp> [--global] [--restart]
 
 ## Skill Commands
 
-Skills are discovered from configured sources and attached per project (Claude only).
+Skills are discovered from configured sources and attached per project for supported runtimes.
 
 ### skill list
 
@@ -293,7 +293,7 @@ agent-deck skill attached [id|title] [--json] [-q]
 
 Shows:
 - Manifest-managed attachments from `<project>/.agent-deck/skills.toml`
-- Unmanaged entries currently present in `<project>/.claude/skills`
+- Unmanaged entries currently present in the managed project skill roots (`<project>/.claude/skills` and `<project>/.agents/skills`)
 
 ### skill attach
 
@@ -302,7 +302,11 @@ agent-deck skill attach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Force source when name is ambiguous
-- `--restart`: Restart session immediately after attach
+- `--restart`: Restart session immediately after attach for Claude, Gemini, and Codex sessions
+
+Attach target root is runtime-specific:
+- Claude-compatible sessions -> `<project>/.claude/skills`
+- Gemini, Codex, and Pi sessions -> `<project>/.agents/skills`
 
 ### skill detach
 
@@ -311,7 +315,7 @@ agent-deck skill detach <session> <skill> [--source <name>] [--restart] [--json]
 ```
 
 - `--source`: Filter by source when detaching
-- `--restart`: Restart session immediately after detach
+- `--restart`: Restart session immediately after detach for Claude, Gemini, and Codex sessions
 
 ### skill source list
 

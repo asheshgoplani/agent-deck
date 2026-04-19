@@ -357,7 +357,7 @@ func TestAttachDetachSkillProject(t *testing.T) {
 	}
 	defer os.RemoveAll(projectPath)
 
-	attached, err := AttachSkillToProject(projectPath, "lint", "local")
+	attached, err := AttachSkillToProject(projectPath, "claude", "lint", "local")
 	if err != nil {
 		t.Fatalf("AttachSkillToProject failed: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestAttachDetachSkillProject(t *testing.T) {
 		t.Fatalf("expected 1 manifest skill, got %d", len(manifest.Skills))
 	}
 
-	if _, err := AttachSkillToProject(projectPath, "lint", "local"); !errors.Is(err, ErrSkillAlreadyAttached) {
+	if _, err := AttachSkillToProject(projectPath, "claude", "lint", "local"); !errors.Is(err, ErrSkillAlreadyAttached) {
 		t.Fatalf("expected ErrSkillAlreadyAttached, got %v", err)
 	}
 
@@ -429,7 +429,41 @@ func TestAttachSkillToProject_RejectsLegacyFileSkill(t *testing.T) {
 	}
 	defer os.RemoveAll(projectPath)
 
-	_, err = AttachSkillToProject(projectPath, "legacy", "local")
+	_, err = AttachSkillToProject(projectPath, "claude", "legacy", "local")
+	if !errors.Is(err, ErrSkillUnsupportedKind) {
+		t.Fatalf("expected ErrSkillUnsupportedKind, got %v", err)
+	}
+}
+
+func TestApplyProjectSkills_RejectsLegacyFileSkill(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath, err := os.MkdirTemp("", "agentdeck-legacy-file-source-*")
+	if err != nil {
+		t.Fatalf("failed to create source path: %v", err)
+	}
+	defer os.RemoveAll(sourcePath)
+
+	legacyPath := filepath.Join(sourcePath, "legacy.skill")
+	if err := os.WriteFile(legacyPath, []byte("legacy"), 0o644); err != nil {
+		t.Fatalf("failed to write legacy .skill file: %v", err)
+	}
+
+	projectPath, err := os.MkdirTemp("", "agentdeck-legacy-project-*")
+	if err != nil {
+		t.Fatalf("failed to create project path: %v", err)
+	}
+	defer os.RemoveAll(projectPath)
+
+	err = ApplyProjectSkills(projectPath, "claude", []SkillCandidate{{
+		ID:         "local/legacy",
+		Name:       "legacy",
+		Source:     "local",
+		SourcePath: legacyPath,
+		EntryName:  "legacy",
+		Kind:       "file",
+	}})
 	if !errors.Is(err, ErrSkillUnsupportedKind) {
 		t.Fatalf("expected ErrSkillUnsupportedKind, got %v", err)
 	}
@@ -458,7 +492,7 @@ func TestAttachSkillToProject_RematerializesBrokenSymlink(t *testing.T) {
 	}
 	defer os.RemoveAll(projectPath)
 
-	if _, err := AttachSkillToProject(projectPath, "lint", "local"); err != nil {
+	if _, err := AttachSkillToProject(projectPath, "claude", "lint", "local"); err != nil {
 		t.Fatalf("initial attach failed: %v", err)
 	}
 
@@ -473,7 +507,7 @@ func TestAttachSkillToProject_RematerializesBrokenSymlink(t *testing.T) {
 		t.Fatalf("expected broken symlink, stat err=%v", err)
 	}
 
-	if _, err := AttachSkillToProject(projectPath, "lint", "local"); err != nil {
+	if _, err := AttachSkillToProject(projectPath, "claude", "lint", "local"); err != nil {
 		t.Fatalf("reattach should rematerialize broken link, got %v", err)
 	}
 
@@ -546,7 +580,7 @@ func TestApplyProjectSkills_SyncsAttachments(t *testing.T) {
 		t.Fatalf("ResolveSkillCandidate(two) failed: %v", err)
 	}
 
-	if err := ApplyProjectSkills(projectPath, []SkillCandidate{*one}); err != nil {
+	if err := ApplyProjectSkills(projectPath, "claude", []SkillCandidate{*one}); err != nil {
 		t.Fatalf("ApplyProjectSkills(one) failed: %v", err)
 	}
 
@@ -554,7 +588,7 @@ func TestApplyProjectSkills_SyncsAttachments(t *testing.T) {
 		t.Fatalf("expected skill one materialized: %v", err)
 	}
 
-	if err := ApplyProjectSkills(projectPath, []SkillCandidate{*two}); err != nil {
+	if err := ApplyProjectSkills(projectPath, "claude", []SkillCandidate{*two}); err != nil {
 		t.Fatalf("ApplyProjectSkills(two) failed: %v", err)
 	}
 

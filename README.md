@@ -522,7 +522,7 @@ agent-deck web --token my-secret
 | `n` | New session |
 | `f` / `F` | Fork (quick / dialog) |
 | `m` | MCP Manager |
-| `s` | Skills Manager (Claude) |
+| `s` | Skills Manager |
 | `$` | Cost Dashboard |
 | `M` | Move session to group |
 | `S` | Settings |

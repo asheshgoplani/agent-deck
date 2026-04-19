@@ -241,7 +241,8 @@ Skill source discovery and project attachment state are not stored in `~/.agent-
 
 **Project attachment state:**
 - `<project>/.agent-deck/skills.toml` (managed manifest)
-- `<project>/.claude/skills` (materialized links/copies used by Claude)
+- `<project>/.claude/skills` (materialized links/copies for Claude-compatible sessions)
+- `<project>/.agents/skills` (materialized links/copies for Gemini, Codex, and Pi sessions)
 
 **Manage via CLI:**
 ```bash

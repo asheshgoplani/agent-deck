@@ -1,8 +1,3 @@
-// STAB-01: No production code bugs discovered during Phase 2 testing.
-// Plans 01 and 02 executed cleanly. All deviations were test assertion
-// adjustments (test expectations not matching actual system behavior),
-// not production code defects. Full test suite passes: go test -race ./...
-
 package session
 
 import (
@@ -14,6 +9,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProjectSkillsDirMapping(t *testing.T) {
+	cases := []struct {
+		tool        string
+		wantDir     string
+		wantOK      bool
+		wantRestart bool
+	}{
+		{tool: "claude", wantDir: ".claude/skills", wantOK: true, wantRestart: true},
+		{tool: "gemini", wantDir: ".agents/skills", wantOK: true, wantRestart: true},
+		{tool: "codex", wantDir: ".agents/skills", wantOK: true, wantRestart: true},
+		{tool: "pi", wantDir: ".agents/skills", wantOK: true, wantRestart: false},
+		{tool: "shell", wantDir: "", wantOK: false, wantRestart: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			got, ok := GetProjectSkillsDir(tc.tool)
+			require.Equal(t, tc.wantOK, ok)
+			require.Equal(t, tc.wantDir, got)
+			require.Equal(t, tc.wantOK, SupportsProjectSkills(tc.tool))
+			require.Equal(t, tc.wantRestart, ShouldRestartProjectSkills(tc.tool))
+		})
+	}
+}
 
 // TestSkillRuntime_AttachedSkillIsReadable verifies that after AttachSkillToProject,
 // the materialized path contains a readable SKILL.md with the expected content.
@@ -30,11 +50,11 @@ func TestSkillRuntime_AttachedSkillIsReadable(t *testing.T) {
 
 	projectPath := t.TempDir()
 
-	attachment, err := AttachSkillToProject(projectPath, "my-skill", "local")
+	attachment, err := AttachSkillToProject(projectPath, "claude", "my-skill", "local")
 	require.NoError(t, err, "AttachSkillToProject should succeed")
 	require.NotNil(t, attachment)
+	require.Equal(t, ".claude/skills/my-skill", attachment.TargetPath)
 
-	// The materialized skill should be at <project>/.claude/skills/<entry>/SKILL.md
 	targetDir := resolveTargetPath(projectPath, attachment.TargetPath)
 	skillMDPath := filepath.Join(targetDir, "SKILL.md")
 
@@ -43,8 +63,29 @@ func TestSkillRuntime_AttachedSkillIsReadable(t *testing.T) {
 	assert.Contains(t, string(content), "my-skill", "SKILL.md should contain the skill name")
 }
 
+func TestSkillRuntime_AttachUsesAgentSkillsDirForGemini(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeSkillDir(t, sourcePath, "my-skill", "my-skill", "A test skill")
+
+	require.NoError(t, SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}))
+
+	projectPath := t.TempDir()
+
+	attachment, err := AttachSkillToProject(projectPath, "gemini", "my-skill", "local")
+	require.NoError(t, err)
+	require.Equal(t, ".agents/skills/my-skill", attachment.TargetPath)
+
+	_, err = os.Stat(filepath.Join(projectPath, ".agents", "skills", "my-skill", "SKILL.md"))
+	require.NoError(t, err)
+}
+
 // TestSkillRuntime_ApplyCreatesReadableSkills verifies that ApplyProjectSkills
-// creates a .claude/skills/ directory with readable SKILL.md for each skill.
+// creates a runtime-specific project skills directory with readable SKILL.md for each skill.
 func TestSkillRuntime_ApplyCreatesReadableSkills(t *testing.T) {
 	_, cleanup := setupSkillTestEnv(t)
 	defer cleanup()
@@ -64,21 +105,159 @@ func TestSkillRuntime_ApplyCreatesReadableSkills(t *testing.T) {
 
 	projectPath := t.TempDir()
 
-	err = ApplyProjectSkills(projectPath, []SkillCandidate{*alphaCandidate, *betaCandidate})
+	err = ApplyProjectSkills(projectPath, "gemini", []SkillCandidate{*alphaCandidate, *betaCandidate})
 	require.NoError(t, err, "ApplyProjectSkills should succeed")
 
-	skillsDir := GetProjectClaudeSkillsPath(projectPath)
+	skillsDir := GetProjectSkillsPath(projectPath, "gemini")
 	entries, err := os.ReadDir(skillsDir)
-	require.NoError(t, err, ".claude/skills/ directory should exist")
+	require.NoError(t, err, ".agents/skills directory should exist")
 	assert.Len(t, entries, 2, "should have 2 skill directories")
 
-	// Each skill should have a readable SKILL.md
 	for _, entry := range entries {
 		skillMDPath := filepath.Join(skillsDir, entry.Name(), "SKILL.md")
 		content, err := os.ReadFile(skillMDPath)
 		assert.NoError(t, err, "SKILL.md should be readable for %s", entry.Name())
 		assert.NotEmpty(t, content, "SKILL.md should have content for %s", entry.Name())
 	}
+}
+
+func TestSkillRuntime_ApplyMigratesBetweenManagedRoots(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeSkillDir(t, sourcePath, "alpha", "alpha", "Alpha skill")
+
+	require.NoError(t, SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}))
+
+	projectPath := t.TempDir()
+	_, err := AttachSkillToProject(projectPath, "claude", "alpha", "local")
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(projectPath, ".claude", "skills", "alpha", "SKILL.md"))
+	require.NoError(t, err)
+
+	alphaCandidate, err := ResolveSkillCandidate("alpha", "local")
+	require.NoError(t, err)
+
+	err = ApplyProjectSkills(projectPath, "gemini", []SkillCandidate{*alphaCandidate})
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(projectPath, ".agents", "skills", "alpha", "SKILL.md"))
+	require.NoError(t, err)
+	_, err = os.Lstat(filepath.Join(projectPath, ".claude", "skills", "alpha"))
+	require.True(t, os.IsNotExist(err), "old Claude-managed target should be removed")
+
+	attached, err := GetAttachedProjectSkills(projectPath)
+	require.NoError(t, err)
+	require.Len(t, attached, 1)
+	assert.Equal(t, ".agents/skills/alpha", attached[0].TargetPath)
+}
+
+func TestSkillRuntime_AttachMigratesFromExistingTargetWhenSourceUnavailable(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	skillSourcePath := writeSkillDir(t, sourcePath, "alpha", "alpha", "Alpha skill")
+
+	require.NoError(t, SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}))
+
+	projectPath := t.TempDir()
+	attachment, err := AttachSkillToProject(projectPath, "claude", "alpha", "local")
+	require.NoError(t, err)
+
+	currentTargetPath := resolveTargetPath(projectPath, attachment.TargetPath)
+	if attachment.Mode == "symlink" {
+		require.NoError(t, os.RemoveAll(currentTargetPath))
+		require.NoError(t, copyDir(skillSourcePath, currentTargetPath))
+	}
+
+	require.NoError(t, os.RemoveAll(skillSourcePath))
+
+	attachment, err = attachSkillCandidate(projectPath, "gemini", SkillCandidate{
+		ID:         "local/alpha",
+		Name:       "alpha",
+		Source:     "local",
+		SourcePath: skillSourcePath,
+		EntryName:  "alpha",
+		Kind:       "dir",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, ".agents/skills/alpha", attachment.TargetPath)
+
+	content, err := os.ReadFile(filepath.Join(projectPath, ".agents", "skills", "alpha", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Alpha skill")
+	_, err = os.Lstat(filepath.Join(projectPath, ".claude", "skills", "alpha"))
+	require.True(t, os.IsNotExist(err), "old Claude-managed target should be removed after migration")
+}
+
+func TestSkillRuntime_ApplyMigratesFromExistingTargetWhenSourceUnavailable(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	skillSourcePath := writeSkillDir(t, sourcePath, "alpha", "alpha", "Alpha skill")
+
+	require.NoError(t, SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}))
+
+	projectPath := t.TempDir()
+	attachment, err := AttachSkillToProject(projectPath, "claude", "alpha", "local")
+	require.NoError(t, err)
+
+	currentTargetPath := resolveTargetPath(projectPath, attachment.TargetPath)
+	if attachment.Mode == "symlink" {
+		require.NoError(t, os.RemoveAll(currentTargetPath))
+		require.NoError(t, copyDir(skillSourcePath, currentTargetPath))
+	}
+
+	require.NoError(t, os.RemoveAll(skillSourcePath))
+
+	err = ApplyProjectSkills(projectPath, "gemini", []SkillCandidate{{
+		ID:         "local/alpha",
+		Name:       "alpha",
+		Source:     "local",
+		SourcePath: skillSourcePath,
+		EntryName:  "alpha",
+		Kind:       "dir",
+	}})
+	require.NoError(t, err)
+
+	content, err := os.ReadFile(filepath.Join(projectPath, ".agents", "skills", "alpha", "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Alpha skill")
+	_, err = os.Lstat(filepath.Join(projectPath, ".claude", "skills", "alpha"))
+	require.True(t, os.IsNotExist(err), "old Claude-managed target should be removed after migration")
+}
+
+func TestSkillRuntime_DetachRemovesAgentSkillsTarget(t *testing.T) {
+	_, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+
+	sourcePath := t.TempDir()
+	writeSkillDir(t, sourcePath, "alpha", "alpha", "Alpha skill")
+
+	require.NoError(t, SaveSkillSources(map[string]SkillSourceDef{
+		"local": {Path: sourcePath, Enabled: boolPtr(true)},
+	}))
+
+	projectPath := t.TempDir()
+	_, err := AttachSkillToProject(projectPath, "pi", "alpha", "local")
+	require.NoError(t, err)
+
+	removed, err := DetachSkillFromProject(projectPath, "alpha", "local")
+	require.NoError(t, err)
+	assert.Equal(t, ".agents/skills/alpha", removed.TargetPath)
+
+	_, err = os.Lstat(filepath.Join(projectPath, ".agents", "skills", "alpha"))
+	require.True(t, os.IsNotExist(err), "detached target should be removed from .agents/skills")
 }
 
 // TestSkillRuntime_DiscoveryFindsRegisteredSkills verifies that ListAvailableSkills
@@ -145,13 +324,11 @@ func TestSkillRuntime_PoolSkillWithoutScripts(t *testing.T) {
 
 	sourcePath := t.TempDir()
 
-	// Create a minimal pool skill: just SKILL.md and a references/ dir (no scripts/)
 	poolSkillDir := filepath.Join(sourcePath, "gsd-conductor")
 	require.NoError(t, os.MkdirAll(poolSkillDir, 0o755))
 	skillContent := "---\nname: gsd-conductor\ndescription: GSD orchestration conductor\n---\n\n# GSD Conductor\n\nOrchestrates multi-agent workflows.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(poolSkillDir, "SKILL.md"), []byte(skillContent), 0o644))
 
-	// Add a references/ directory but no scripts/
 	refsDir := filepath.Join(poolSkillDir, "references")
 	require.NoError(t, os.MkdirAll(refsDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(refsDir, "checkpoints.md"), []byte("# Checkpoints\n"), 0o644))
@@ -162,17 +339,15 @@ func TestSkillRuntime_PoolSkillWithoutScripts(t *testing.T) {
 
 	projectPath := t.TempDir()
 
-	attachment, err := AttachSkillToProject(projectPath, "gsd-conductor", "pool")
+	attachment, err := AttachSkillToProject(projectPath, "claude", "gsd-conductor", "pool")
 	require.NoError(t, err, "pool skill without scripts/ should attach successfully")
 	require.NotNil(t, attachment)
 
-	// Verify SKILL.md is readable at the materialized location
 	targetDir := resolveTargetPath(projectPath, attachment.TargetPath)
 	content, err := os.ReadFile(filepath.Join(targetDir, "SKILL.md"))
 	require.NoError(t, err, "SKILL.md should be readable from materialized pool skill")
 	assert.Contains(t, string(content), "gsd-conductor")
 
-	// Verify references/ was also materialized
 	refContent, err := os.ReadFile(filepath.Join(targetDir, "references", "checkpoints.md"))
 	require.NoError(t, err, "references/ should be materialized alongside SKILL.md")
 	assert.Contains(t, string(refContent), "Checkpoints")
@@ -193,7 +368,7 @@ func TestSkillRuntime_ResolveSkillContent(t *testing.T) {
 
 	projectPath := t.TempDir()
 
-	attachment, err := AttachSkillToProject(projectPath, "code-review", "local")
+	attachment, err := AttachSkillToProject(projectPath, "claude", "code-review", "local")
 	require.NoError(t, err)
 
 	targetDir := resolveTargetPath(projectPath, attachment.TargetPath)
@@ -202,7 +377,6 @@ func TestSkillRuntime_ResolveSkillContent(t *testing.T) {
 
 	text := string(content)
 
-	// Parse YAML frontmatter between --- delimiters
 	require.True(t, strings.HasPrefix(text, "---\n"), "SKILL.md should start with YAML frontmatter")
 	rest := text[4:]
 	endIdx := strings.Index(rest, "\n---")

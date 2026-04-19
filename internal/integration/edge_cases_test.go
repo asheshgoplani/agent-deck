@@ -87,7 +87,7 @@ func TestEdge_SkillsDiscoverAttach(t *testing.T) {
 
 	// Attach the skill to a fresh project directory.
 	projectPath := t.TempDir()
-	attachment, err := session.AttachSkillToProject(projectPath, "my-inttest-skill", "inttest-source")
+	attachment, err := session.AttachSkillToProject(projectPath, "claude", "my-inttest-skill", "inttest-source")
 	require.NoError(t, err, "AttachSkillToProject should succeed")
 	require.NotNil(t, attachment, "attachment should not be nil")
 

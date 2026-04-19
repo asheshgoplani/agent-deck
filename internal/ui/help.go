@@ -188,7 +188,7 @@ func (h *HelpOverlay) View() string {
 				{undoKey, "Undo delete"},
 				{moveKey, "Move to group"},
 				{mcpKey, "MCP Manager (Claude/Gemini)"},
-				{skillsKey, "Skills Manager (Claude)"},
+				{skillsKey, "Skills Manager"},
 				{"$", "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
 				{unreadKey, "Mark unread"},
