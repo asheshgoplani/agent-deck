@@ -3,10 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 )
@@ -79,6 +81,73 @@ func withFeedbackLogin(t *testing.T, login string) func() {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// #679 follow-up: prompts must print to out BEFORE stdin blocks, so
+// an interactive user actually sees the question at the cursor. The
+// legacy tests above use a strings.Builder writer — that type buffers
+// silently, hiding any output-ordering bug. This test pairs io.Pipes
+// for BOTH stdin and stdout so the ordering is observable: we read
+// from out first (which blocks until the function writes "Rating"),
+// THEN send "q" to stdin to let the goroutine exit cleanly. If the
+// function buffered its output (the v1.7.35 bug), outR.Read would
+// never return and the test would time out.
+// ──────────────────────────────────────────────────────────────────
+func TestFeedback_PromptPrintsBeforeStdinBlocks(t *testing.T) {
+	defer withFeedbackLogin(t, "octocat")()
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+
+	m := newFeedbackMocks()
+	done := make(chan error, 1)
+	go func() {
+		err := handleFeedbackWithSender([]string{}, "1.7.36", m.sender, inR, outW)
+		_ = outW.Close()
+		done <- err
+	}()
+
+	// Read from out — must return with "Rating" text before we write
+	// anything to inW. If production code buffers output, this Read
+	// blocks until the function returns, which is after stdin reads.
+	buf := make([]byte, 256)
+	readDone := make(chan struct{})
+	var n int
+	var readErr error
+	go func() {
+		n, readErr = outR.Read(buf)
+		close(readDone)
+	}()
+
+	select {
+	case <-readDone:
+		// fall through
+	case <-time.After(2 * time.Second):
+		t.Fatal("Rating prompt did not reach out pipe within 2s — output is buffered")
+	}
+	if readErr != nil {
+		t.Fatalf("read from out pipe: %v", readErr)
+	}
+	if !strings.Contains(string(buf[:n]), "Rating") {
+		t.Errorf("first out-pipe read must contain 'Rating' prompt; got %q", string(buf[:n]))
+	}
+
+	// Drain any further output so the writer-goroutine can make progress.
+	go func() { _, _ = io.Copy(io.Discard, outR) }()
+
+	// Release stdin with "q" so the function returns.
+	_, _ = inW.Write([]byte("q\n"))
+	_ = inW.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("handleFeedbackWithSender returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleFeedbackWithSender did not return within 2s after stdin close")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────
 // #679 test matrix (a) — rating + comment + 'n' on confirm prompt.
 // GhCmd NOT called, state IS saved, stdout contains 'Not posted.'
 // ──────────────────────────────────────────────────────────────────
@@ -89,7 +158,7 @@ func TestIssue679_ConfirmN_DoesNotPost(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if m.ghCalled {
@@ -119,7 +188,7 @@ func TestIssue679_ConfirmY_GhSuccess_Posts(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if !m.ghCalled {
@@ -161,7 +230,7 @@ func TestIssue679_ConfirmY_GhFailure_NoFallback(t *testing.T) {
 	m.ghFailErr = errors.New("gh: authentication required")
 	var stdout strings.Builder
 
-	err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout)
+	err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout)
 	if err == nil {
 		t.Fatal("handleFeedbackWithSender must return an error when gh fails (non-zero exit)")
 	}
@@ -193,7 +262,7 @@ func TestIssue679_EmptyConfirm_DefaultNo(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if m.ghCalled {
@@ -214,7 +283,7 @@ func TestIssue679_Confirm_UppercaseY(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if !m.ghCalled {
@@ -232,7 +301,7 @@ func TestIssue679_Confirm_WhitespaceY(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if !m.ghCalled {
@@ -253,7 +322,7 @@ func TestIssue679_Disclosure_PreviewMatchesFormatComment(t *testing.T) {
 	m := newFeedbackMocks()
 	var stdout strings.Builder
 
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	body := feedback.FormatComment("1.7.35", 2, runtime.GOOS, runtime.GOARCH, comment)
@@ -275,7 +344,7 @@ func TestIssue679_Disclosure_ShowsLogin(t *testing.T) {
 
 	m := newFeedbackMocks()
 	var stdout strings.Builder
-	_ = handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout)
+	_ = handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout)
 
 	out := stdout.String()
 	if !strings.Contains(out, "@octocat") {
@@ -301,7 +370,7 @@ func TestIssue679_Disclosure_LoginFallback(t *testing.T) {
 
 	m := newFeedbackMocks()
 	var stdout strings.Builder
-	_ = handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout)
+	_ = handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout)
 
 	out := stdout.String()
 	if !strings.Contains(out, "your GitHub account") {
@@ -321,7 +390,7 @@ func TestIssue679_OptOut_Unchanged(t *testing.T) {
 
 	m := newFeedbackMocks()
 	var stdout strings.Builder
-	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, &stdout); err != nil {
+	if err := handleFeedbackWithSender([]string{}, "1.7.35", m.sender, os.Stdin, &stdout); err != nil {
 		t.Fatalf("handleFeedbackWithSender returned error: %v", err)
 	}
 	if m.ghCalled {
