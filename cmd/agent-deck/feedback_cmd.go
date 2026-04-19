@@ -28,22 +28,21 @@ var ghUserLogin = func() string {
 }
 
 // handleFeedback is the public dispatch entry point for the "agent-deck feedback" subcommand.
-// It delegates to handleFeedbackWithSender with the real stdin and a real Sender.
+// It delegates to handleFeedbackWithSender wired to real stdin/stdout so prompts print
+// interactively as they are emitted (see #679 follow-up: a previous strings.Builder wrapper
+// hid every prompt until after the function returned, leaving users typing at a blank cursor).
 func handleFeedback(args []string) {
-	var stdout strings.Builder
-	if err := handleFeedbackWithSender(args, Version, feedback.NewSender(), &stdout); err != nil {
+	if err := handleFeedbackWithSender(args, Version, feedback.NewSender(), os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// Print buffered output to real stdout
-	fmt.Print(stdout.String())
 }
 
 // handleFeedbackWithSender is the testable core: it reads a rating and optional comment
-// from os.Stdin, records the state, and calls sender.Send().
+// from in, records the state, and calls sender.Send(). Prompts are written to w as they
+// are emitted (no buffering — see #679 follow-up).
 // The sender parameter is injected so tests can provide a mock.
-// Output is written to w (use &strings.Builder for tests, os.Stdout for production).
-func handleFeedbackWithSender(args []string, version string, sender *feedback.Sender, w io.Writer) error {
+func handleFeedbackWithSender(args []string, version string, sender *feedback.Sender, in io.Reader, w io.Writer) error {
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
 			printFeedbackHelp(w)
@@ -51,7 +50,7 @@ func handleFeedbackWithSender(args []string, version string, sender *feedback.Se
 		}
 	}
 
-	reader := bufio.NewReader(os.Stdin)
+	reader := bufio.NewReader(in)
 
 	fmt.Fprint(w, "Rating (1-5, n=never-again, q=quit): ")
 
