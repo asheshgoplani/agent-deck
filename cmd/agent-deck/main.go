@@ -24,6 +24,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -33,7 +34,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.40" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.41" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -496,6 +497,17 @@ func main() {
 	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
 	var groupScope string
 	groupScope, _ = extractGroupFlag(args)
+
+	// v1.7.41: record TUI launch for feedback-prompt pacing. Seeds
+	// FirstSeenAt on the very first launch and bumps LaunchCount on every
+	// subsequent launch, so feedback.ShouldShow can enforce the min-days +
+	// min-launches threshold for new users. Non-TUI subcommands (add, list,
+	// feedback, etc.) deliberately skip this so scripted usage doesn't
+	// inflate the counter.
+	if fbSt, _ := feedback.LoadState(); fbSt != nil {
+		feedback.RecordLaunch(fbSt, time.Now())
+		_ = feedback.SaveState(fbSt)
+	}
 
 	// Start TUI with the specified profile
 	homeModel := ui.NewHomeWithProfileAndMode(profile)

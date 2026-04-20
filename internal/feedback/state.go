@@ -5,16 +5,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 )
 
 // State holds the persisted feedback preferences for a user.
 // File: ~/.agent-deck/feedback-state.json. Always serializes all fields (D-05).
+//
+// v1.7.41 added LaunchCount, FirstSeenAt, LastPromptedAt to pace the first
+// prompt for new users. Serialized via RFC3339 through time.Time's MarshalJSON.
 type State struct {
-	LastRatedVersion string `json:"last_rated_version"`
-	FeedbackEnabled  bool   `json:"feedback_enabled"`
-	ShownCount       int    `json:"shown_count"`
-	MaxShows         int    `json:"max_shows"`
+	LastRatedVersion string    `json:"last_rated_version"`
+	FeedbackEnabled  bool      `json:"feedback_enabled"`
+	ShownCount       int       `json:"shown_count"`
+	MaxShows         int       `json:"max_shows"`
+	LaunchCount      int       `json:"launch_count,omitempty"`
+	FirstSeenAt      time.Time `json:"first_seen_at,omitempty"`
+	LastPromptedAt   time.Time `json:"last_prompted_at,omitempty"`
 }
+
+// v1.7.41 pacing defaults. First prompt appears only once the user has used
+// agent-deck for MinDaysBeforeFirstPrompt days AND across MinLaunchesBeforeFirstPrompt
+// process starts; subsequent prompts are throttled by PromptCooldownDays.
+const (
+	defaultMinDaysBeforeFirstPrompt     = 3
+	defaultMinLaunchesBeforeFirstPrompt = 7
+	defaultPromptCooldownDays           = 14
+)
+
+// Env vars let tests override the pacing constants. They're intentionally
+// undocumented in README — they exist for the test harness, not users.
+const (
+	envMinDays      = "AGENTDECK_FEEDBACK_MIN_DAYS"
+	envMinLaunches  = "AGENTDECK_FEEDBACK_MIN_LAUNCHES"
+	envCooldownDays = "AGENTDECK_FEEDBACK_COOLDOWN_DAYS"
+)
 
 // defaultState returns an initialized State with safe defaults.
 func defaultState() *State {
@@ -97,23 +122,100 @@ func SaveState(s *State) error {
 	return nil
 }
 
-// ShouldShow returns true only when all three conditions are met:
-// 1. feedback_enabled is true
-// 2. last_rated_version does not match currentVersion
-// 3. shown_count < max_shows
-func ShouldShow(s *State, currentVersion string) bool {
-	return s.FeedbackEnabled &&
-		s.LastRatedVersion != currentVersion &&
-		s.ShownCount < s.MaxShows
+// envInt reads an integer env var, returning fallback on empty or invalid.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
 }
 
-// RecordShown increments shown_count by 1. Does NOT save — caller must call SaveState.
-func RecordShown(s *State) {
-	s.ShownCount++
+// MinDaysBeforeFirstPrompt returns the configured floor (default 3).
+func MinDaysBeforeFirstPrompt() int {
+	return envInt(envMinDays, defaultMinDaysBeforeFirstPrompt)
 }
 
-// RecordRating sets last_rated_version to currentVersion and resets shown_count to 0.
+// MinLaunchesBeforeFirstPrompt returns the configured floor (default 7).
+func MinLaunchesBeforeFirstPrompt() int {
+	return envInt(envMinLaunches, defaultMinLaunchesBeforeFirstPrompt)
+}
+
+// PromptCooldownDays returns the configured cooldown (default 14).
+func PromptCooldownDays() int {
+	return envInt(envCooldownDays, defaultPromptCooldownDays)
+}
+
+// ShouldShow returns true only when every gate is clear:
+//  1. feedback_enabled is true
+//  2. last_rated_version does not match currentVersion
+//  3. shown_count < max_shows
+//  4. user has been around for at least MinDaysBeforeFirstPrompt days
+//     AND has launched agent-deck at least MinLaunchesBeforeFirstPrompt times
+//  5. no prompt was shown within the last PromptCooldownDays days
+//
+// Pure: never mutates state. Callers that want to track first-seen should
+// call RecordLaunch at process start.
+func ShouldShow(s *State, currentVersion string, now time.Time) bool {
+	if !s.FeedbackEnabled {
+		return false
+	}
+	if s.LastRatedVersion == currentVersion {
+		return false
+	}
+	if s.ShownCount >= s.MaxShows {
+		return false
+	}
+
+	// If no FirstSeenAt yet (RecordLaunch hasn't run this process), block.
+	// The TUI's RecordLaunch call at startup seeds this on the very first
+	// launch, so thereafter this branch only fires for broken callers.
+	if s.FirstSeenAt.IsZero() {
+		return false
+	}
+	minDays := MinDaysBeforeFirstPrompt()
+	if now.Sub(s.FirstSeenAt) < time.Duration(minDays)*24*time.Hour {
+		return false
+	}
+	if s.LaunchCount < MinLaunchesBeforeFirstPrompt() {
+		return false
+	}
+	if !s.LastPromptedAt.IsZero() {
+		cooldown := time.Duration(PromptCooldownDays()) * 24 * time.Hour
+		if now.Sub(s.LastPromptedAt) < cooldown {
+			return false
+		}
+	}
+	return true
+}
+
+// RecordLaunch increments LaunchCount by 1 and seeds FirstSeenAt with now
+// on the very first call. Subsequent calls never overwrite FirstSeenAt so
+// pacing persists across version upgrades and state reloads.
 // Does NOT save — caller must call SaveState.
+func RecordLaunch(s *State, now time.Time) {
+	s.LaunchCount++
+	if s.FirstSeenAt.IsZero() {
+		s.FirstSeenAt = now
+	}
+}
+
+// RecordShown increments shown_count by 1 and stamps LastPromptedAt with now
+// so the cooldown engages for subsequent calls. Does NOT save — caller
+// must call SaveState.
+func RecordShown(s *State, now time.Time) {
+	s.ShownCount++
+	s.LastPromptedAt = now
+}
+
+// RecordRating sets last_rated_version to currentVersion and resets shown_count
+// to 0. Deliberately does NOT touch FirstSeenAt, LastPromptedAt, or LaunchCount —
+// pacing signals survive a rating so the next version still paces against the
+// user's real history. Does NOT save — caller must call SaveState.
 func RecordRating(s *State, currentVersion string, rating int) {
 	s.LastRatedVersion = currentVersion
 	s.ShownCount = 0

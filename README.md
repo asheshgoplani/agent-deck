@@ -447,6 +447,8 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 - If `gh` fails (auth required, not installed, network), the CLI prints an error and exits non-zero. No clipboard or browser fallback is triggered on the CLI path.
 - A private/anonymous feedback channel is being designed for a future release — track in [#679](https://github.com/asheshgoplani/agent-deck/issues/679).
 
+**Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
+
 ## Installation
 
 **Works on:** macOS, Linux, Windows (WSL)

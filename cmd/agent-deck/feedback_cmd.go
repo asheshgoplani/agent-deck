@@ -265,4 +265,11 @@ func printFeedbackHelp(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "A private/anonymous feedback channel is being designed for a future")
 	fmt.Fprintln(w, "release — track in https://github.com/asheshgoplani/agent-deck/issues/679.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Prompt frequency (v1.7.41+):")
+	fmt.Fprintln(w, "  The TUI auto-prompt appears after 7 launches or 3 days of use,")
+	fmt.Fprintln(w, "  whichever comes later. If you dismiss it, we wait 14 days before")
+	fmt.Fprintln(w, "  asking again. Maximum 3 prompts per version. Pressing `n` at any")
+	fmt.Fprintln(w, "  step is a permanent opt-out. `agent-deck feedback` always works")
+	fmt.Fprintln(w, "  on demand regardless of pacing.")
 }

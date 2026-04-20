@@ -3376,8 +3376,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fbState, _ := feedback.LoadState()
 			cfg, _ := session.LoadUserConfig()
 			configDisabled := cfg != nil && cfg.Feedback.Disabled
-			if !configDisabled && feedback.ShouldShow(fbState, Version) {
-				feedback.RecordShown(fbState)
+			if !configDisabled && feedback.ShouldShow(fbState, Version, time.Now()) {
+				feedback.RecordShown(fbState, time.Now())
 				_ = feedback.SaveState(fbState)
 				h.feedbackState = fbState
 				h.feedbackDialog.Show(Version, fbState, h.feedbackSender)

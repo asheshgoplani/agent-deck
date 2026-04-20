@@ -3,27 +3,37 @@ package feedback_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/stretchr/testify/require"
 )
+
+// oldShouldShowBypass returns a state pre-seeded so it passes v1.7.41 pacing
+// gates. Keeps the pre-v1.7.41 tests focused on their original assertions
+// (enabled / not-rated / under-max) without having to pace every fixture.
+func oldShouldShowBypass(s *feedback.State) *feedback.State {
+	s.FirstSeenAt = time.Now().Add(-365 * 24 * time.Hour)
+	s.LaunchCount = 10_000
+	return s
+}
 
 // TEST-01: ShouldShow returns true when this is a new version
 func TestShouldShow_NewVersion(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	st := &feedback.State{
+	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
 		FeedbackEnabled:  true,
 		ShownCount:       0,
 		MaxShows:         3,
-	}
+	})
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
 	require.NoError(t, err)
-	require.True(t, feedback.ShouldShow(loaded, "1.5.1"))
+	require.True(t, feedback.ShouldShow(loaded, "1.5.1", time.Now()))
 }
 
 // TEST-02: ShouldShow returns false when already rated this version
@@ -31,17 +41,17 @@ func TestShouldShow_AlreadyRated(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	st := &feedback.State{
+	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.5.1",
 		FeedbackEnabled:  true,
 		ShownCount:       0,
 		MaxShows:         3,
-	}
+	})
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
 	require.NoError(t, err)
-	require.False(t, feedback.ShouldShow(loaded, "1.5.1"))
+	require.False(t, feedback.ShouldShow(loaded, "1.5.1", time.Now()))
 }
 
 // TEST-03: ShouldShow returns false when user opted out
@@ -49,17 +59,17 @@ func TestShouldShow_OptedOut(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	st := &feedback.State{
+	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
 		FeedbackEnabled:  false,
 		ShownCount:       0,
 		MaxShows:         3,
-	}
+	})
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
 	require.NoError(t, err)
-	require.False(t, feedback.ShouldShow(loaded, "1.5.1"))
+	require.False(t, feedback.ShouldShow(loaded, "1.5.1", time.Now()))
 }
 
 // TEST-04: ShouldShow returns false when shown_count >= max_shows
@@ -67,17 +77,17 @@ func TestShouldShow_MaxShows(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	st := &feedback.State{
+	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
 		FeedbackEnabled:  true,
 		ShownCount:       3,
 		MaxShows:         3,
-	}
+	})
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
 	require.NoError(t, err)
-	require.False(t, feedback.ShouldShow(loaded, "1.5.1"))
+	require.False(t, feedback.ShouldShow(loaded, "1.5.1", time.Now()))
 }
 
 // TEST-05: RecordRating sets last_rated_version and resets shown_count
@@ -130,7 +140,7 @@ func TestRecordShown(t *testing.T) {
 		ShownCount:       0,
 		MaxShows:         3,
 	}
-	feedback.RecordShown(st)
+	feedback.RecordShown(st, time.Now())
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
