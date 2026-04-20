@@ -99,6 +99,14 @@ type Instance struct {
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
 
+	// LastStartedAt is the wall-clock time of the most recent successful
+	// Start() / StartWithMessage() / Restart() call. Persisted so short-lived
+	// CLI invocations can see it across processes (issue #30): a restart
+	// queued seconds after a start must detect the session is already fresh
+	// and skip the teardown. Zero value means "unknown" (old record or
+	// never started) and callers MUST NOT treat zero as "just now".
+	LastStartedAt time.Time `json:"last_started_at,omitempty"`
+
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -2177,6 +2185,7 @@ func (i *Instance) Start() error {
 
 	// Record start time for grace period (prevents error flash during tmux startup)
 	i.lastStartTime = time.Now()
+	i.markStarted() // persisted stamp (issue #30 — cross-process freshness guard)
 
 	// New sessions start as STARTING - shows they're initializing
 	// After 5s grace period, status will be properly detected from tmux
@@ -2322,6 +2331,7 @@ func (i *Instance) StartWithMessage(message string) error {
 
 	// Record start time for grace period (prevents error flash during tmux startup)
 	i.lastStartTime = time.Now()
+	i.markStarted() // persisted stamp (issue #30 — cross-process freshness guard)
 
 	// New sessions start as STARTING
 	i.Status = StatusStarting
