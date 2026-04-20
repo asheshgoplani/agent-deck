@@ -210,6 +210,7 @@ type Home struct {
 	sessionPickerDialog  *SessionPickerDialog  // For sending output to another session
 	worktreeFinishDialog *WorktreeFinishDialog // For finishing worktree sessions (merge + cleanup)
 	feedbackDialog       *FeedbackDialog       // For in-app feedback popup (Phase 2)
+	zoxidePicker         *ZoxidePicker         // Quick-open picker backed by the zoxide DB
 	feedbackState        *feedback.State       // Loaded at first show, avoids repeated disk I/O
 	feedbackSender       *feedback.Sender      // Sender constructed once in NewHome (Phase 3, per D-05)
 	watcherPanel         *WatcherPanel         // For showing watcher status and events
@@ -726,6 +727,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
 		feedbackDialog:       NewFeedbackDialog(),
+		zoxidePicker:         NewZoxidePicker(),
 		feedbackSender:       feedback.NewSender(),
 		watcherPanel:         NewWatcherPanel(),
 		cursor:               0,
@@ -4754,6 +4756,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.feedbackDialog = d
 			return h, cmd
 		}
+		if h.zoxidePicker.IsVisible() {
+			return h.handleZoxidePickerKey(msg)
+		}
 
 		if h.showCostDashboard {
 			keyStr := msg.String()
@@ -5280,7 +5285,8 @@ func (h *Home) hasModalVisible() bool {
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
-		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible()
+		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
+		h.zoxidePicker.IsVisible()
 }
 
 // markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command
@@ -6081,6 +6087,11 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Quick create: auto-generated name, smart defaults from group context
 		return h, h.quickCreateSession()
+
+	case "z":
+		h.zoxidePicker.SetSize(h.width, h.height)
+		h.zoxidePicker.Show()
+		return h, nil
 
 	case "d":
 		// Show confirmation dialog before deletion (prevents accidental deletion)
@@ -7802,6 +7813,83 @@ func (h *Home) quickCreateSession() tea.Cmd {
 	)
 }
 
+// deriveSessionNameFromPath returns the trailing directory of projectPath as a
+// session title. Falls back to a generated name for paths that have no
+// meaningful basename (empty, root, or relative `.`).
+func deriveSessionNameFromPath(projectPath string) string {
+	base := filepath.Base(strings.TrimSpace(projectPath))
+	if base == "" || base == "." || base == "/" {
+		return session.GenerateSessionName()
+	}
+	return base
+}
+
+// ensureUniqueSessionTitle appends a numeric suffix if the preferred title
+// collides with an existing instance. Dedup is global rather than per-group
+// so the zoxide flow doesn't depend on post-hoc group derivation.
+func ensureUniqueSessionTitle(preferred string, instances []*session.Instance) string {
+	used := make(map[string]bool, len(instances))
+	for _, inst := range instances {
+		used[inst.Title] = true
+	}
+	if !used[preferred] {
+		return preferred
+	}
+	for i := 2; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+	return fmt.Sprintf("%s-%d", preferred, time.Now().Unix())
+}
+
+func (h *Home) handleZoxidePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		h.zoxidePicker.Hide()
+		return h, nil
+	case "enter":
+		selected := h.zoxidePicker.Selected()
+		h.zoxidePicker.Hide()
+		if selected == "" {
+			return h, nil
+		}
+		return h, h.quickCreateSessionAt(selected)
+	default:
+		h.zoxidePicker, _ = h.zoxidePicker.Update(msg)
+		return h, nil
+	}
+}
+
+// quickCreateSessionAt creates a session rooted at the given path with an
+// auto-generated name and the user's configured default tool, bypassing
+// cursor-context tool inheritance so the zoxide flow always lands on the
+// user's chosen default (Claude, unless overridden in config.toml).
+func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
+	tool := session.GetDefaultTool()
+	if tool == "" {
+		tool = "claude"
+	}
+	command := tool
+
+	preferred := deriveSessionNameFromPath(projectPath)
+	h.instancesMu.RLock()
+	name := ensureUniqueSessionTitle(preferred, h.instances)
+	h.instancesMu.RUnlock()
+
+	return h.createSessionInGroupWithWorktreeAndOptions(
+		name, projectPath, command,
+		"",         // empty group → creator derives from path via extractGroupPath
+		"", "", "", // no worktree
+		false, false, nil,
+		nil, // no extra claude args
+		false, nil,
+		"", "",
+		"",
+	)
+}
+
 // suggestConductorParent returns the ID of the most contextually relevant conductor
 // based on the current cursor position: the cursor session itself if it's a conductor,
 // or the conductor pointed to by its ParentSessionID.
@@ -8788,6 +8876,9 @@ func (h *Home) View() string {
 	}
 	if h.feedbackDialog.IsVisible() {
 		return h.feedbackDialog.View()
+	}
+	if h.zoxidePicker.IsVisible() {
+		return h.zoxidePicker.View()
 	}
 	if h.showCostDashboard {
 		return h.costDashboard.View()

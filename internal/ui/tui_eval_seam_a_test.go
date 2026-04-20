@@ -107,6 +107,7 @@ func newSeamATestHome() *Home {
 		sessionPickerDialog:  NewSessionPickerDialog(),
 		worktreeFinishDialog: NewWorktreeFinishDialog(),
 		feedbackDialog:       NewFeedbackDialog(),
+		zoxidePicker:         NewZoxidePicker(),
 		globalSearch:         NewGlobalSearch(),
 		watcherPanel:         NewWatcherPanel(),
 		notesEditor:          newNotesEditor(),
