@@ -545,6 +545,17 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		opts = NewClaudeOptions(userConfig)
 	}
 
+	// S8 (v1.7.40) defense-in-depth: non-channel-owning claude spawns
+	// wrap the final exec in `env -u TELEGRAM_STATE_DIR` so the child
+	// process is guaranteed to start without TSD even if the shell
+	// unset in buildEnvSourceCommand is somehow bypassed. Empty string
+	// for conductors, explicit telegram channel owners, and non-claude
+	// tools (see telegramStateDirStripExpr for the predicate).
+	execEnvPrefix := ""
+	if telegramStateDirStripExpr(i) != "" {
+		execEnvPrefix = "env -u TELEGRAM_STATE_DIR "
+	}
+
 	// If baseCommand is just "claude", build the appropriate command
 	if baseCommand == "claude" {
 		// Build extra flags string from options (includes --add-dir if ParentProjectPath set)
@@ -554,7 +565,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		switch opts.SessionMode {
 		case "continue":
 			// Simple -c mode: continue last session
-			return fmt.Sprintf(`%s%s -c%s`, configDirPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%s%s%s -c%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
 
 		case "resume":
 			// Resume specific session by ID
@@ -562,18 +573,18 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				// Check if session has actual conversation data
 				if sessionHasConversationData(i, opts.ResumeSessionID) {
 					// Session has conversation history - use normal --resume
-					return fmt.Sprintf(`%s%s --resume %s%s`,
-						configDirPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+					return fmt.Sprintf(`%s%s%s --resume %s%s`,
+						configDirPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 				}
 				// Session was never interacted with - use --session-id with same UUID.
 				// CLAUDE_SESSION_ID is propagated via host-side SyncSessionIDsToTmux after start.
 				bashExportPrefix := i.buildBashExportPrefix()
 				return fmt.Sprintf(
-					`%s%s --session-id "%s"%s`,
-					bashExportPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
+					`%s%s%s --session-id "%s"%s`,
+					bashExportPrefix, execEnvPrefix, claudeCmd, opts.ResumeSessionID, extraFlags)
 			}
 			// No session ID provided - use -r flag for interactive picker
-			return fmt.Sprintf(`%s%s -r%s`, configDirPrefix, claudeCmd, extraFlags)
+			return fmt.Sprintf(`%s%s%s -r%s`, configDirPrefix, execEnvPrefix, claudeCmd, extraFlags)
 		}
 
 		// Default: new session with capture-resume pattern
@@ -599,8 +610,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Use pre-generated literal UUID with --session-id flag.
 		// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		baseCmd = fmt.Sprintf(
-			`%sexec %s --session-id "%s"%s`,
-			bashExportPrefix, claudeCmd, sessionUUID, extraFlags)
+			`%sexec %s%s --session-id "%s"%s`,
+			bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags)
 
 		// If message provided, append wait-and-send logic in background.
 		if message != "" {
@@ -613,9 +624,9 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				`(sleep 2; SESSION_NAME=$(tmux display-message -p '#S'); `+
 					`while ! tmux capture-pane -p -t "$SESSION_NAME" | tail -5 | grep -qE "^>"; do sleep 0.2; done; `+
 					`tmux send-keys -l -t "$SESSION_NAME" -- '%s' \; send-keys -t "$SESSION_NAME" Enter) & `+
-					`%sexec %s --session-id "%s"%s`,
+					`%sexec %s%s --session-id "%s"%s`,
 				escapedMsg,
-				bashExportPrefix, claudeCmd, sessionUUID, extraFlags)
+				bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags)
 		}
 
 		return baseCmd
