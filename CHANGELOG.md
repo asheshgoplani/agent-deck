@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.39] - 2026-04-20
+
+### Fixed
+- **`agent-deck session restart` no longer destroys a just-created tmux scope** ([#30](https://github.com/asheshgoplani/agent-deck/issues/30)): a watchdog double-fire pattern — stop → manual `session start` → watchdog-queued `session restart` on the now-alive session — previously caused `Restart()` to tear down the fresh tmux/systemd scope regardless of current session state. Reproduced 2026-04-20 at 08:13:05 during the phase-5 resilience test against the v1.7.38 watchdog. Fix: a freshness guard in the CLI handler skips `inst.Restart()` (no-op) when the session is already healthy (`running`/`waiting`/`idle`/`starting`) AND was started within the last 60 seconds. A new persisted `Instance.LastStartedAt` JSON field carries the start stamp across CLI invocations so the guard works for the short-lived `agent-deck` process. A new `--force` flag bypasses the guard for users who genuinely want to recycle a healthy session. Scope is deliberately narrow: the check lives only in `handleSessionRestart` — `Instance.Restart()`, `Instance.RestartFresh()`, TUI restart paths, and the watchdog Python helper are unchanged. Tests: `TestShouldSkipRestart_FreshHealthy`, `TestShouldSkipRestart_StaleHealthy`, `TestShouldSkipRestart_ErrorStatus`, `TestShouldSkipRestart_StoppedStatus`, `TestShouldSkipRestart_Force`, `TestShouldSkipRestart_UnknownStartTime`, `TestShouldSkipRestart_ExactBoundary`, `TestStart_RecordsLastStartedAt` in `internal/session/restart_guard_test.go`.
+
 ## [1.7.38] - 2026-04-19
 
 ### Added

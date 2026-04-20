@@ -316,11 +316,17 @@ func handleSessionRestart(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	force := fs.Bool("force", false, "Restart even if the session is already healthy and fresh (bypasses issue #30 guard)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart <id|title> [options]")
 		fmt.Println()
 		fmt.Println("Restart a session. For Claude sessions, this reloads MCPs.")
+		fmt.Println()
+		fmt.Println("By default, a restart is skipped (no-op) when the session is already")
+		fmt.Println("healthy (running/waiting/idle/starting) and was started within the last")
+		fmt.Println("60 seconds. This prevents watchdog double-fires from destroying a")
+		fmt.Println("just-created tmux scope (issue #30). Use --force to restart anyway.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -352,11 +358,30 @@ func handleSessionRestart(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// Issue #30: freshness guard. Skip the restart (keep the current tmux
+	// scope intact) when the session is healthy and was started very
+	// recently. A watchdog racing `start` → `restart` on the same session
+	// must not tear down the fresh scope.
+	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force); skip {
+		data := map[string]interface{}{
+			"success": true,
+			"skipped": true,
+			"reason":  reason,
+			"id":      inst.ID,
+			"title":   inst.Title,
+		}
+		out.Success(fmt.Sprintf("Skipped restart of %s: %s", inst.Title, reason), data)
+		return
+	}
+
 	// Restart the session
 	if err := inst.Restart(); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	// Stamp the persisted freshness marker so subsequent watchdog ticks see
+	// this session as "just started" and skip (issue #30).
+	inst.LastStartedAt = time.Now()
 	warning := inst.ConsumeCodexRestartWarning()
 	if warning != "" && !*jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
