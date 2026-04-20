@@ -66,20 +66,6 @@ func (i *Instance) buildEnvSourceCommand() string {
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
-
-		// Issue #680: strip conductor-only env vars that leak from a
-		// [groups.<name>.claude].env_file into child sessions. When a
-		// group is paired with a [conductors.<name>] block (the
-		// documented pattern: both point at the same envrc for
-		// CLAUDE_CONFIG_DIR + TELEGRAM_STATE_DIR), every child joining
-		// that group would otherwise inherit TELEGRAM_STATE_DIR and
-		// auto-start a competing `bun telegram` poller on the same bot
-		// token. The stripped set is intentionally narrow today —
-		// TELEGRAM_STATE_DIR is a known single-consumer env var — so
-		// unrelated configs are never silently mutated.
-		if stripExpr := conductorOnlyEnvStripExpr(i, config); stripExpr != "" {
-			sources = append(sources, stripExpr)
-		}
 	}
 
 	// 5. Inline env vars from [tools.X].env
@@ -90,6 +76,16 @@ func (i *Instance) buildEnvSourceCommand() string {
 	// 6. Conductor-specific env (highest priority, overrides tool env)
 	if conductorEnv := i.getConductorEnv(ignoreMissing); conductorEnv != "" {
 		sources = append(sources, conductorEnv)
+	}
+
+	// 7. S8 (v1.7.40) — strip TELEGRAM_STATE_DIR on every non-channel-owning
+	// claude spawn. Fires AFTER all sources and inline env so it wins
+	// over any env_file / inline export that set the variable, and
+	// runs even when no env_file is in play (covers `agent-deck
+	// launch` children outside the conductor's group triangle).
+	// Subsumes the narrower issue #680 predicate.
+	if stripExpr := telegramStateDirStripExpr(i); stripExpr != "" {
+		sources = append(sources, stripExpr)
 	}
 
 	if len(sources) == 0 {
@@ -344,32 +340,40 @@ func isValidEnvKey(key string) bool {
 	return true
 }
 
-// conductorOnlyEnvStripExpr returns an `unset …` shell expression to
-// strip env vars that should never leak from a conductor's group
-// env_file into child sessions in the same group (issue #680).
+// telegramStateDirStripExpr returns `unset TELEGRAM_STATE_DIR` for any
+// claude spawn that is NOT a channel-owning telegram session. S8
+// (v1.7.40) broadens issue #680's narrow conductor-pairing predicate:
+// every `agent-deck launch` child that doesn't own the telegram bot
+// must lose TELEGRAM_STATE_DIR, otherwise it inherits the conductor's
+// TSD via the parent shell env, the telegram plugin (enabled globally
+// per the v3 topology) reads the conductor's .env, and a duplicate
+// bun poller races the conductor on the same bot token → Telegram
+// returns 409 Conflict and messages drop for everyone.
 //
-// Fires only when:
-//  1. The session is NOT a conductor (title does not start with
-//     "conductor-"). Conductors legitimately want these variables.
-//  2. The session's group has a paired [conductors.<group>] block.
-//     That block is the signal the user set up the conductor pattern;
-//     otherwise the group env_file is for unrelated purposes and we
-//     must not mutate it.
+// Fires when ALL hold:
+//  1. Tool is "claude" — TELEGRAM_STATE_DIR is a Claude Code plugin env
+//     var; don't mutate codex / gemini spawns.
+//  2. Title does NOT start with "conductor-". Conductors are the
+//     legitimate bot owners even before `Channels` is set.
+//  3. No entry in `Channels` carries the `plugin:telegram@` prefix.
+//     Explicit per-session telegram opt-in keeps the variable.
 //
 // Returned string is empty when no strip is needed, so callers can
 // append it unconditionally to the sources slice.
-func conductorOnlyEnvStripExpr(inst *Instance, cfg *UserConfig) string {
-	if inst == nil || cfg == nil {
+func telegramStateDirStripExpr(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	if inst.Tool != "claude" {
 		return ""
 	}
 	if conductorNameFromInstance(inst) != "" {
-		return "" // conductor session, keep the vars
+		return "" // conductor session — owns the bot token
 	}
-	if inst.GroupPath == "" || cfg.Conductors == nil {
-		return ""
-	}
-	if _, ok := cfg.Conductors[inst.GroupPath]; !ok {
-		return ""
+	for _, ch := range inst.Channels {
+		if strings.HasPrefix(ch, telegramChannelPrefix) {
+			return "" // explicit telegram channel owner
+		}
 	}
 	return "unset TELEGRAM_STATE_DIR"
 }

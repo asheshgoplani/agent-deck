@@ -120,11 +120,14 @@ func TestIssue680_ConductorSession_KeepsTelegramStateDir(t *testing.T) {
 	}
 }
 
-// Child session whose group has NO paired [conductors.<group>] block
-// is not part of the conductor pattern and MUST NOT get the unset —
-// it would silently break a user who intentionally exports
-// TELEGRAM_STATE_DIR via a group env_file for some other reason.
-func TestIssue680_ChildSession_NoConductorBlock_NoUnset(t *testing.T) {
+// S8 (v1.7.40) broadened the strip: TELEGRAM_STATE_DIR is a
+// telegram-plugin-only env var, so any non-channel-owning claude
+// session should lose it regardless of whether the group has a paired
+// conductors block. The old narrow predicate here was a
+// conservative-safety compromise that left `agent-deck launch`
+// children leaking pollers. This test now asserts the new (broader)
+// behavior: child in a plain group with env_file STILL strips TSD.
+func TestIssue680_ChildSession_NoConductorBlock_StripsUnderS8(t *testing.T) {
 	cfg := &UserConfig{
 		MCPs:       make(map[string]MCPDef),
 		Conductors: map[string]ConductorOverrides{}, // no matching conductor
@@ -147,15 +150,18 @@ func TestIssue680_ChildSession_NoConductorBlock_NoUnset(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
-		t.Errorf("child in non-conductor group must NOT unset\nbuildEnvSourceCommand() = %q", got)
+	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+		t.Errorf("S8 broadening: non-channel-owning child must strip TELEGRAM_STATE_DIR even in a non-conductor group\nbuildEnvSourceCommand() = %q", got)
 	}
 }
 
-// Child session in a conductor's group but with NO group env_file set
-// has nothing to source → no unset either. Guards against emitting a
-// stray `unset` when there was no source command.
-func TestIssue680_ChildSession_NoGroupEnvFile_NoUnset(t *testing.T) {
+// S8 (v1.7.40): under the broadened predicate the strip fires even
+// when there is no env_file to source. The strip is appended after
+// the sources slice and stands on its own as a final unconditional
+// unset for non-channel-owning claude sessions. The original issue
+// #680 concern (guarding a "stray unset" when nothing is sourced) is
+// obsolete: the strip is now load-bearing in exactly that case.
+func TestIssue680_ChildSession_NoGroupEnvFile_StripsUnderS8(t *testing.T) {
 	cfg := &UserConfig{
 		MCPs: make(map[string]MCPDef),
 		Conductors: map[string]ConductorOverrides{
@@ -176,7 +182,7 @@ func TestIssue680_ChildSession_NoGroupEnvFile_NoUnset(t *testing.T) {
 
 	got := child.buildEnvSourceCommand()
 
-	if strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
-		t.Errorf("no group env_file means no unset\nbuildEnvSourceCommand() = %q", got)
+	if !strings.Contains(got, "unset TELEGRAM_STATE_DIR") {
+		t.Errorf("S8 broadening: child must strip TSD even without env_file\nbuildEnvSourceCommand() = %q", got)
 	}
 }
