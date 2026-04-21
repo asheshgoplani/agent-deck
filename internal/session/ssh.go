@@ -20,7 +20,10 @@ import (
 	"golang.org/x/term"
 )
 
-const sshAttachReplyQuarantine = 2 * time.Second
+// sshAttachReplyQuarantine matches attachReplyQuarantine in internal/tmux/pty.go.
+// Keep these in sync — they cover the same class of terminal-reply bursts on
+// their respective attach paths (local tmux vs SSH remote).
+const sshAttachReplyQuarantine = 500 * time.Millisecond
 
 // sshControlDir is the directory for SSH ControlMaster sockets.
 const sshControlDir = "/tmp/agent-deck-ssh"

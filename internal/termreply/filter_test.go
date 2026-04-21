@@ -38,7 +38,7 @@ func TestFilterPreservesKeyboardCSIAndSS3Input(t *testing.T) {
 
 // TestFilterPreservesMouseCSIInput verifies that mouse CSI sequences
 // ending in 'M' or 'm' pass through unchanged when armed. Without this,
-// mouse events are silently dropped during the 2s quarantine window,
+// mouse events are silently dropped during the attach quarantine window,
 // making the main-menu TUI feel frozen after detach.
 func TestFilterPreservesMouseCSIInput(t *testing.T) {
 	t.Run("legacy_mouse_press", func(t *testing.T) {
