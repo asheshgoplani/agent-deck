@@ -29,6 +29,11 @@ func handleNotifyDaemon(args []string) {
 	daemon := session.NewTransitionDaemon()
 	if *once {
 		daemon.SyncOnce(context.Background())
+		// Ensure async dispatches started during SyncOnce land on disk
+		// before the process exits; otherwise logs/queue state written by
+		// the watcher/sender goroutines would race with the CLI shutdown
+		// and leave the operator staring at an empty log.
+		daemon.Flush()
 		return
 	}
 
