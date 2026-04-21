@@ -87,9 +87,14 @@ func TestAsyncDispatch_SlowTargetDoesNotBlockFastTarget(t *testing.T) {
 	n := newAsyncTestNotifier(t)
 
 	fastDone := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	// releaseSlow gates the slow sender so the test can end deterministically
+	// instead of leaving a time.Sleep goroutine alive past t.TempDir cleanup;
+	// CI hit "directory not empty" when the leaked sender wrote logs into a
+	// directory that the framework was mid-delete of.
 	n.sender = func(profile, targetID, message string) error {
 		if targetID == "slow" {
-			time.Sleep(10 * time.Second)
+			<-releaseSlow
 			return nil
 		}
 		close(fastDone)
@@ -121,8 +126,14 @@ func TestAsyncDispatch_SlowTargetDoesNotBlockFastTarget(t *testing.T) {
 	case <-fastDone:
 		// success: fast target fired while slow target is still blocked
 	case <-time.After(500 * time.Millisecond):
+		close(releaseSlow)
+		n.Flush()
 		t.Fatalf("fast target did not run within 500ms; slow target head-of-line blocking regressed")
 	}
+
+	// Let the slow sender finish and wait for it so t.TempDir cleanup is safe.
+	close(releaseSlow)
+	n.Flush()
 }
 
 // TestAsyncDispatch_SendTimeoutWritesMissedLog covers the 30s timeout knob
@@ -133,8 +144,13 @@ func TestAsyncDispatch_SlowTargetDoesNotBlockFastTarget(t *testing.T) {
 func TestAsyncDispatch_SendTimeoutWritesMissedLog(t *testing.T) {
 	n := newAsyncTestNotifier(t)
 
+	release := make(chan struct{})
+	// Sender parks on a channel so (1) it definitely outlives the 200ms
+	// sendTimeout, triggering the watcher's timeout branch, and (2) we can
+	// drain it before t.TempDir cleanup to avoid leaking a goroutine that
+	// would race the directory removal.
 	n.sender = func(profile, targetID, message string) error {
-		time.Sleep(2 * time.Second)
+		<-release
 		return nil
 	}
 
@@ -151,6 +167,10 @@ func TestAsyncDispatch_SendTimeoutWritesMissedLog(t *testing.T) {
 
 	n.dispatchAsync("hang-target", "msg", event)
 	n.waitWatchers()
+	defer func() {
+		close(release)
+		n.Flush()
+	}()
 
 	entries := readMissedLines(t, n.missedPath)
 	if len(entries) != 1 {
