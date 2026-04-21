@@ -21,7 +21,14 @@ import (
 )
 
 const attachOutputDrainTimeout = 250 * time.Millisecond
-const attachReplyQuarantine = 2 * time.Second
+
+// attachReplyQuarantine is how long after attach/detach we filter
+// terminal-generated control replies from stdin. Terminal capability
+// reply bursts (DA1/DA2, OSC color queries, etc.) empirically complete
+// within tens of milliseconds. 500ms gives comfortable margin while
+// being short enough that the TUI does not feel frozen on return from
+// an attached session.
+const attachReplyQuarantine = 500 * time.Millisecond
 
 // IndexDetachKey returns the index of a control-key sequence in data, or -1 if
 // not found. detachByte is the raw ASCII byte (e.g. 0x11 for Ctrl+Q).
