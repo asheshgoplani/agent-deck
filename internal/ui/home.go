@@ -4043,6 +4043,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.dark {
 			theme = "dark"
 		}
+		// Update COLORFGBG in our process environment so that all downstream
+		// code (ResolveTheme, ThemeColorFGBG, themeEnvExport, currentTmuxThemeStyle)
+		// sees the correct theme. Without this, the stale COLORFGBG inherited
+		// from the parent terminal at launch time takes precedence over the OS
+		// dark mode change, causing sessions to stay in the wrong color scheme.
+		if msg.dark {
+			os.Setenv("COLORFGBG", "15;0")
+		} else {
+			os.Setenv("COLORFGBG", "0;15")
+		}
 		InitTheme(theme)
 		h.propagateThemeToSessions()
 		// IMPORTANT: Re-issue listener to keep watching for theme changes.
