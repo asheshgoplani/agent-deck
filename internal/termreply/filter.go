@@ -15,15 +15,17 @@ const (
 
 	stringTerminatorByte = '\\'
 
-	csiFinalArrowUpByte    = 'A'
-	csiFinalArrowDownByte  = 'B'
-	csiFinalArrowRightByte = 'C'
-	csiFinalArrowLeftByte  = 'D'
-	csiFinalEndByte        = 'F'
-	csiFinalHomeByte       = 'H'
-	csiFinalBacktabByte    = 'Z'
-	csiFinalTildeByte      = '~'
-	csiFinalKittyKeyByte   = 'u'
+	csiFinalArrowUpByte       = 'A'
+	csiFinalArrowDownByte     = 'B'
+	csiFinalArrowRightByte    = 'C'
+	csiFinalArrowLeftByte     = 'D'
+	csiFinalEndByte           = 'F'
+	csiFinalHomeByte          = 'H'
+	csiFinalBacktabByte       = 'Z'
+	csiFinalTildeByte         = '~'
+	csiFinalKittyKeyByte      = 'u'
+	csiFinalMouseLegacyByte   = 'M' // X10/legacy mouse report + SGR mouse press
+	csiFinalMouseSGRFinalByte = 'm' // SGR mouse release
 )
 
 type filterMode uint8
@@ -67,6 +69,9 @@ func isSequenceFinalByte(b byte) bool {
 	return b >= 0x40 && b <= 0x7e
 }
 
+// isKeyboardCSIFinalByte returns true for CSI final bytes that represent
+// user input (keyboard or mouse) rather than terminal replies. These are
+// preserved even when the filter is armed during the quarantine window.
 func isKeyboardCSIFinalByte(b byte) bool {
 	switch b {
 	case csiFinalArrowUpByte,
@@ -77,7 +82,9 @@ func isKeyboardCSIFinalByte(b byte) bool {
 		csiFinalHomeByte,
 		csiFinalBacktabByte,
 		csiFinalTildeByte,
-		csiFinalKittyKeyByte:
+		csiFinalKittyKeyByte,
+		csiFinalMouseLegacyByte,
+		csiFinalMouseSGRFinalByte:
 		return true
 	default:
 		return false
@@ -106,7 +113,8 @@ func (f *Filter) resetSequenceState() {
 // Terminal replies covered here:
 //   - escape-string families: OSC, DCS, APC, PM, SOS
 //   - CSI replies during the quarantine window, except for a small whitelist of
-//     keyboard-related CSI finals (arrows/home/end/backtab/~ keys/kitty CSI u)
+//     user-input CSI finals (arrows/home/end/backtab/~ keys/kitty CSI u,
+//     mouse M/m)
 //
 // If final is true, any incomplete pending escape/CSI/SS3 sequence is flushed as
 // literal input, while an incomplete discarded escape-string reply is dropped.

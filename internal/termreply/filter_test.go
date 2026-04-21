@@ -35,3 +35,30 @@ func TestFilterPreservesKeyboardCSIAndSS3Input(t *testing.T) {
 	require.Equal(t, []byte("\x1bOA"), f.Consume([]byte("\x1bOA"), true, false))
 	require.False(t, f.Active())
 }
+
+// TestFilterPreservesMouseCSIInput verifies that mouse CSI sequences
+// ending in 'M' or 'm' pass through unchanged when armed. Without this,
+// mouse events are silently dropped during the 2s quarantine window,
+// making the main-menu TUI feel frozen after detach.
+func TestFilterPreservesMouseCSIInput(t *testing.T) {
+	t.Run("legacy_mouse_press", func(t *testing.T) {
+		var f Filter
+		// ESC [ M <button> <x> <y>  (X10/legacy format, 3 bytes after 'M')
+		input := []byte{0x1b, '[', 'M', ' ', '!', '"'}
+		require.Equal(t, input, f.Consume(input, true, false))
+	})
+
+	t.Run("sgr_mouse_press", func(t *testing.T) {
+		var f Filter
+		// ESC [ < 0 ; 10 ; 20 M
+		input := []byte("\x1b[<0;10;20M")
+		require.Equal(t, input, f.Consume(input, true, false))
+	})
+
+	t.Run("sgr_mouse_release", func(t *testing.T) {
+		var f Filter
+		// ESC [ < 0 ; 10 ; 20 m
+		input := []byte("\x1b[<0;10;20m")
+		require.Equal(t, input, f.Consume(input, true, false))
+	})
+}
