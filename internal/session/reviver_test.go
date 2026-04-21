@@ -18,7 +18,7 @@ func TestReviver_ErroredSessionWithAliveServer_Respawns(t *testing.T) {
 
 	spyCalls := 0
 	r := &Reviver{
-		TmuxExists:   func(name string) bool { return true },
+		TmuxExists:   func(name, _ string) bool { return true },
 		PipeAlive:    func(name string) bool { return false },
 		ReviveAction: func(i *Instance) error { spyCalls++; return nil },
 		Stagger:      0,
@@ -48,7 +48,7 @@ func TestReviver_DeadServer_NotRevived(t *testing.T) {
 
 	spyCalls := 0
 	r := &Reviver{
-		TmuxExists:   func(name string) bool { return false },
+		TmuxExists:   func(name, _ string) bool { return false },
 		PipeAlive:    func(name string) bool { return false },
 		ReviveAction: func(i *Instance) error { spyCalls++; return nil },
 		Stagger:      0,
@@ -72,7 +72,7 @@ func TestReviver_AliveSession_NotRevived(t *testing.T) {
 
 	spyCalls := 0
 	r := &Reviver{
-		TmuxExists:   func(name string) bool { return true },
+		TmuxExists:   func(name, _ string) bool { return true },
 		PipeAlive:    func(name string) bool { return true },
 		ReviveAction: func(i *Instance) error { spyCalls++; return nil },
 		Stagger:      0,
@@ -94,7 +94,7 @@ func TestReviver_DeletedInstance_NotRevived(t *testing.T) {
 	// no revive calls — we never resurrect user-deleted work.
 	spyCalls := 0
 	r := &Reviver{
-		TmuxExists:   func(name string) bool { return true },
+		TmuxExists:   func(name, _ string) bool { return true },
 		PipeAlive:    func(name string) bool { return false },
 		ReviveAction: func(i *Instance) error { spyCalls++; return nil },
 		Stagger:      0,
@@ -128,7 +128,7 @@ func TestReviver_Stagger500ms_AcrossManyInstances(t *testing.T) {
 	erroredSet := map[string]bool{"e1": true, "e2": true, "e3": true, "e4": true}
 
 	r := &Reviver{
-		TmuxExists: func(name string) bool { return true },
+		TmuxExists: func(name, _ string) bool { return true },
 		PipeAlive: func(name string) bool {
 			// erroredSet members have dead pipes; alive has a live pipe
 			return !erroredSet[name]
@@ -183,7 +183,7 @@ func TestReviver_DefaultAction_NoopOnNilPipeManager(t *testing.T) {
 
 	r := NewReviver()
 	// Force the classifier to see "errored + alive server" deterministically:
-	r.TmuxExists = func(name string) bool { return true }
+	r.TmuxExists = func(name, _ string) bool { return true }
 	r.PipeAlive = func(name string) bool { return false }
 
 	// Run action directly — must not panic, must return nil gracefully.
@@ -197,7 +197,7 @@ func TestReviver_ActionError_PropagatedInOutcome(t *testing.T) {
 	inst := newReviverTestInstance("err-prop-1", StatusError)
 
 	r := &Reviver{
-		TmuxExists:   func(name string) bool { return true },
+		TmuxExists:   func(name, _ string) bool { return true },
 		PipeAlive:    func(name string) bool { return false },
 		ReviveAction: func(i *Instance) error { return fmt.Errorf("boom") },
 		Stagger:      0,

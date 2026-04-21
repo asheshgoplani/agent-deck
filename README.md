@@ -435,6 +435,53 @@ weekly_limit = 200.00
 "custom-model" = { input_per_mtok = 1.0, output_per_mtok = 5.0 }
 ```
 
+### Socket Isolation (v1.7.50+)
+
+Run agent-deck on its own tmux server so it never touches your interactive tmux's config, bindings, or sessions. Opt-in via a single config line:
+
+```toml
+# ~/.agent-deck/config.toml
+[tmux]
+socket_name = "agent-deck"
+```
+
+With this set, every agent-deck session is spawned as `tmux -L agent-deck …` — a fully isolated tmux server whose socket lives at `$TMUX_TMPDIR/tmux-<uid>/agent-deck` (or `/tmp/tmux-<uid>/agent-deck` when `TMUX_TMPDIR` is unset, the standard tmux fallback). Your regular tmux server at `default` is never touched.
+
+**What this buys you:**
+- `[tmux].inject_status_line`, bind-key, and global `set-option` mutations stay on the agent-deck server. Your personal status bar, plugins, and theme are untouched.
+- A stray `tmux kill-server` in your shell cannot take agent-deck's managed sessions down with it.
+- `tmux -L agent-deck ls` from the shell shows exactly agent-deck's sessions — no mixing with your own work sessions.
+- Fixes [#276](https://github.com/asheshgoplani/agent-deck/issues/276) and [#687](https://github.com/asheshgoplani/agent-deck/issues/687) at the root, not via per-option sentinels.
+
+**Default behavior unchanged.** Leave `socket_name` unset (the default) and agent-deck behaves exactly like v1.7.46: it uses your default tmux server. This is a pure opt-in.
+
+**Per-session override.** The `agent-deck add` and `agent-deck launch` commands both accept `--tmux-socket <name>` to override the installation-wide default for one session:
+
+```bash
+# One-off isolated session even though config says otherwise
+agent-deck add --tmux-socket experiment -c claude .
+agent-deck launch --tmux-socket experiment -c claude -m "Try the risky thing"
+```
+
+Precedence at session creation: `--tmux-socket` flag > `[tmux].socket_name` > empty.
+
+**Immutable after creation.** Each session captures its socket name in SQLite at creation time. Changing `socket_name` in config later does **not** migrate existing sessions — they stay on the socket they were created on, so restart/revive cycles keep reaching the right tmux server. This is deliberate: mixing sockets mid-life would strand sessions on an unreachable server.
+
+**Migrating existing sessions.** There's no `migrate-socket` subcommand in this release. To move an existing session onto an isolated socket:
+
+1. Set `[tmux].socket_name = "agent-deck"` in your config.
+2. Stop the session (`agent-deck session stop <name>`) — this kills the tmux pane on the old server.
+3. Restart it (`agent-deck session start <name>`) — agent-deck will see TmuxSocketName=`""` on the stored Instance, spawn a fresh pane on the old server, and keep it there. To force it onto the new socket, edit `~/.agent-deck/<profile>/state.db`:
+   ```sql
+   UPDATE instances SET tmux_socket_name = 'agent-deck' WHERE id = '<session-id>';
+   ```
+   then restart agent-deck. Subsequent starts will spawn on `tmux -L agent-deck`.
+4. Easier: delete the old session with `agent-deck rm <name>` and re-create it with `agent-deck add` — the new row picks up the config-wide default.
+
+A proper `session migrate-socket` subcommand is tracked for phase 2.
+
+**`TMUX_TMPDIR` is honored.** Socket path resolution follows tmux's standard rules: if you set `TMUX_TMPDIR=/custom/dir`, agent-deck's socket lives at `/custom/dir/tmux-<uid>/agent-deck`. No extra config needed.
+
 ### Feedback
 
 Found a bug or have an idea? Send feedback without leaving your terminal. Press `Ctrl+E` in the TUI to open the FeedbackDialog, or run `agent-deck feedback` from the shell to submit a rating and a short note.

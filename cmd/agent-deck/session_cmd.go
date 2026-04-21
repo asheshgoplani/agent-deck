@@ -1065,7 +1065,7 @@ func handleSessionSet(profile string, args []string) {
 		inst.ClaudeDetectedAt = time.Now()
 		// Also update tmux environment if session is running
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = exec.Command("tmux", "set-environment", "-t", tmuxSess.Name, "CLAUDE_SESSION_ID", value).Run()
+			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "CLAUDE_SESSION_ID", value).Run()
 		}
 	case "gemini-session-id":
 		oldValue = inst.GeminiSessionID
@@ -1073,7 +1073,7 @@ func handleSessionSet(profile string, args []string) {
 		inst.GeminiDetectedAt = time.Now()
 		// Also update tmux environment if session is running
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = exec.Command("tmux", "set-environment", "-t", tmuxSess.Name, "GEMINI_SESSION_ID", value).Run()
+			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "GEMINI_SESSION_ID", value).Run()
 		}
 	}
 

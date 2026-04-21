@@ -60,8 +60,12 @@ type MenuSession struct {
 	ParentSessionID string         `json:"parentSessionId,omitempty"`
 	Order           int            `json:"order"`
 	TmuxSession     string         `json:"tmuxSession,omitempty"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	LastAccessedAt  time.Time      `json:"lastAccessedAt,omitempty"`
+	// TmuxSocketName is the tmux -L selector captured at session creation
+	// (Instance.TmuxSocketName). Surfaced so the web PTY bridge can reach
+	// sessions running on an isolated socket (issue #687, v1.7.50).
+	TmuxSocketName string    `json:"tmuxSocketName,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	LastAccessedAt time.Time `json:"lastAccessedAt,omitempty"`
 }
 
 type storageLoader interface {
@@ -145,6 +149,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		ParentSessionID: inst.ParentSessionID,
 		Order:           inst.Order,
 		TmuxSession:     tmuxName,
+		TmuxSocketName:  inst.TmuxSocketName,
 		CreatedAt:       inst.CreatedAt,
 		LastAccessedAt:  inst.LastAccessedAt,
 	}

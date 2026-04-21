@@ -33,7 +33,7 @@ func createTestSession(t *testing.T, suffix string) string {
 func TestControlPipe_ConnectAndClose(t *testing.T) {
 	name := createTestSession(t, "connect")
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	defer pipe.Close()
 
@@ -52,7 +52,7 @@ func TestControlPipe_CapturePaneVia(t *testing.T) {
 	_ = exec.Command("tmux", "send-keys", "-t", name, "echo hello-from-pipe-test", "Enter").Run()
 	time.Sleep(300 * time.Millisecond)
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	defer pipe.Close()
 
@@ -64,7 +64,7 @@ func TestControlPipe_CapturePaneVia(t *testing.T) {
 func TestControlPipe_OutputEvents(t *testing.T) {
 	name := createTestSession(t, "output")
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	defer pipe.Close()
 
@@ -92,7 +92,7 @@ func TestControlPipe_OutputEvents(t *testing.T) {
 func TestControlPipe_SendCommand(t *testing.T) {
 	name := createTestSession(t, "sendcmd")
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	defer pipe.Close()
 
@@ -106,7 +106,7 @@ func TestControlPipe_DeadSession(t *testing.T) {
 	skipIfNoTmuxServer(t)
 
 	// Try connecting to a non-existent session
-	_, err := NewControlPipe("agentdeck_nonexistent_session_12345")
+	_, err := NewControlPipe("agentdeck_nonexistent_session_12345", "")
 	// Should either fail to connect or die quickly
 	if err == nil {
 		// Wait a moment for pipe to realize session doesn't exist
@@ -118,7 +118,7 @@ func TestControlPipe_DeadSession(t *testing.T) {
 func TestControlPipe_CloseIdempotent(t *testing.T) {
 	name := createTestSession(t, "closeidempotent")
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 
 	// Close multiple times should not panic
@@ -138,7 +138,7 @@ func TestPipeManager_ConnectDisconnect(t *testing.T) {
 	pm := NewPipeManager(ctx, nil)
 	defer pm.Close()
 
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
 	assert.True(t, pm.IsConnected(name))
 	assert.Equal(t, 1, pm.ConnectedCount())
 
@@ -159,7 +159,7 @@ func TestPipeManager_CapturePane(t *testing.T) {
 	pm := NewPipeManager(ctx, nil)
 	defer pm.Close()
 
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
 
 	content, err := pm.CapturePane(name)
 	require.NoError(t, err)
@@ -196,7 +196,7 @@ func TestPipeManager_OutputCallback(t *testing.T) {
 	})
 	defer pm.Close()
 
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
 	time.Sleep(200 * time.Millisecond)
 
 	// Drain initial events
@@ -234,7 +234,7 @@ func TestPipeManager_RefreshAllActivities(t *testing.T) {
 	pm := NewPipeManager(ctx, nil)
 	defer pm.Close()
 
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
 
 	activities, windows, err := pm.RefreshAllActivities()
 	require.NoError(t, err)
@@ -256,8 +256,8 @@ func TestPipeManager_ConnectIdempotent(t *testing.T) {
 	defer pm.Close()
 
 	// Connect twice should not error and should maintain one connection
-	require.NoError(t, pm.Connect(name))
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
+	require.NoError(t, pm.Connect(name, ""))
 	assert.Equal(t, 1, pm.ConnectedCount())
 }
 
@@ -283,7 +283,7 @@ func TestKillStaleControlClients(t *testing.T) {
 
 	// Use NewControlPipe to create a proper control-mode client that we know works,
 	// then simulate it being "stale" by tracking its PID before killing it via our function.
-	stalePipe, err := NewControlPipe(name)
+	stalePipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	stalePID := stalePipe.cmd.Process.Pid
 	t.Cleanup(func() { stalePipe.Close() })
@@ -295,7 +295,7 @@ func TestKillStaleControlClients(t *testing.T) {
 	}, 3*time.Second, 100*time.Millisecond, "control client should register")
 
 	// Kill stale clients — this should kill the pipe's process
-	killStaleControlClients(name)
+	killStaleControlClients(name, "")
 
 	// Verify the control client is no longer listed by tmux
 	require.Eventually(t, func() bool {
@@ -308,7 +308,7 @@ func TestPipeManager_ConnectCleansStaleClients(t *testing.T) {
 	name := createTestSession(t, "pm-stale")
 
 	// Create a stale control pipe (simulates orphan from previous TUI)
-	stalePipe, err := NewControlPipe(name)
+	stalePipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	stalePID := stalePipe.cmd.Process.Pid
 	t.Cleanup(func() { stalePipe.Close() })
@@ -325,7 +325,7 @@ func TestPipeManager_ConnectCleansStaleClients(t *testing.T) {
 	pm := NewPipeManager(ctx, nil)
 	defer pm.Close()
 
-	require.NoError(t, pm.Connect(name))
+	require.NoError(t, pm.Connect(name, ""))
 	assert.True(t, pm.IsConnected(name))
 
 	// Stale client should be gone
@@ -338,7 +338,7 @@ func TestKillStaleControlClients_PreservesOwnProcess(t *testing.T) {
 
 	// killStaleControlClients should not kill our own PID
 	// (this is mostly a safety check — our PID is never a tmux control client)
-	killStaleControlClients(name) // should not panic or kill us
+	killStaleControlClients(name, "") // should not panic or kill us
 }
 
 // --- Helpers ---

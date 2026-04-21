@@ -106,7 +106,7 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 
 	var bridge *tmuxPTYBridge
 	if menuSession.TmuxSession != "" {
-		bridge, err = newTmuxPTYBridge(menuSession.TmuxSession, sessionID, writer)
+		bridge, err = newTmuxPTYBridge(menuSession.TmuxSession, menuSession.TmuxSocketName, sessionID, writer)
 		if err != nil {
 			logging.ForComponent(logging.CompWeb).Error("terminal_attach_failed",
 				slog.String("session_id", sessionID),

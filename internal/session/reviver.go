@@ -55,7 +55,11 @@ type ReviveOutcome struct {
 // spawning real processes. Production code should use NewReviver() to get
 // sensible defaults.
 type Reviver struct {
-	TmuxExists   func(name string) bool
+	// TmuxExists receives the session's stored socket name so the probe
+	// targets the right tmux server. Sessions created under an isolated
+	// socket (Instance.TmuxSocketName != "") would otherwise appear "dead"
+	// on the default server and the reviver would wrongly mark them gone.
+	TmuxExists   func(name, socketName string) bool
 	PipeAlive    func(name string) bool
 	ReviveAction func(*Instance) error
 	Stagger      time.Duration
@@ -78,7 +82,7 @@ func NewReviver() *Reviver {
 // Classify decides which bucket an instance falls into at scan time.
 func (r *Reviver) Classify(inst *Instance) RevivalClass {
 	name := instanceTmuxName(inst)
-	if !r.TmuxExists(name) {
+	if !r.TmuxExists(name, inst.TmuxSocketName) {
 		return ClassDead
 	}
 	if inst.Status == StatusError || !r.PipeAlive(name) {
@@ -159,8 +163,8 @@ func instanceTmuxName(inst *Instance) string {
 // defaultTmuxExists queries the tmux server for session presence. Returns
 // false for any failure (tmux not installed, server not running, session
 // doesn't exist).
-func defaultTmuxExists(name string) bool {
-	return tmux.HasSession(name)
+func defaultTmuxExists(name, socketName string) bool {
+	return tmux.HasSessionOnSocket(socketName, name)
 }
 
 // defaultPipeAlive consults the global PipeManager. Returns false if the
@@ -184,7 +188,7 @@ func defaultReviveAction(inst *Instance) error {
 	name := instanceTmuxName(inst)
 
 	if pm != nil {
-		if err := pm.Connect(name); err != nil {
+		if err := pm.Connect(name, inst.TmuxSocketName); err != nil {
 			return err
 		}
 	}

@@ -42,9 +42,10 @@ func (w *wsConnWriter) WriteBinary(data []byte) error {
 }
 
 type tmuxPTYBridge struct {
-	tmuxSession string
-	sessionID   string
-	writer      *wsConnWriter
+	tmuxSession    string
+	tmuxSocketName string // tmux -L selector captured from Instance (issue #687)
+	sessionID      string
+	writer         *wsConnWriter
 
 	cmd *exec.Cmd
 
@@ -60,14 +61,14 @@ type tmuxPTYBridge struct {
 	done      chan struct{}
 }
 
-func newTmuxPTYBridge(tmuxSession, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
+func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsConnWriter) (*tmuxPTYBridge, error) {
 	if tmuxSession == "" {
 		return nil, fmt.Errorf("tmux session name is required")
 	}
 	if writer == nil {
 		return nil, fmt.Errorf("writer is required")
 	}
-	exists, err := tmuxSessionExists(tmuxSession)
+	exists, err := tmuxSessionExists(tmuxSession, tmuxSocketName)
 	if err != nil {
 		return nil, fmt.Errorf("check tmux session %q: %w", tmuxSession, err)
 	}
@@ -75,7 +76,7 @@ func newTmuxPTYBridge(tmuxSession, sessionID string, writer *wsConnWriter) (*tmu
 		return nil, fmt.Errorf("%w: %s", ErrTmuxSessionNotFound, tmuxSession)
 	}
 
-	cmd := tmuxAttachCommand(tmuxSession)
+	cmd := tmuxAttachCommand(tmuxSession, tmuxSocketName)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
@@ -83,12 +84,13 @@ func newTmuxPTYBridge(tmuxSession, sessionID string, writer *wsConnWriter) (*tmu
 	}
 
 	b := &tmuxPTYBridge{
-		tmuxSession: tmuxSession,
-		sessionID:   sessionID,
-		writer:      writer,
-		cmd:         cmd,
-		ptmx:        ptmx,
-		done:        make(chan struct{}),
+		tmuxSession:    tmuxSession,
+		tmuxSocketName: tmuxSocketName,
+		sessionID:      sessionID,
+		writer:         writer,
+		cmd:            cmd,
+		ptmx:           ptmx,
+		done:           make(chan struct{}),
 	}
 
 	go b.streamOutput()
@@ -172,7 +174,7 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		"-x", strconv.Itoa(cols),
 		"-y", strconv.Itoa(rows),
 	}
-	if output, err := tmuxCommand(args...).CombinedOutput(); err != nil && firstErr == nil {
+	if output, err := tmuxCommand(b.tmuxSocketName, args...).CombinedOutput(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("tmux resize-window: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
@@ -204,8 +206,8 @@ func (b *tmuxPTYBridge) Close() {
 	})
 }
 
-func tmuxSessionExists(name string) (bool, error) {
-	cmd := tmuxCommand("has-session", "-t", name)
+func tmuxSessionExists(name, socketName string) (bool, error) {
+	cmd := tmuxCommand(socketName, "has-session", "-t", name)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return true, nil
@@ -223,7 +225,25 @@ func tmuxSessionExists(name string) (bool, error) {
 	return false, fmt.Errorf("tmux has-session failed: %s", msg)
 }
 
-func tmuxCommand(args ...string) *exec.Cmd {
+// tmuxCommand assembles an `exec.Cmd` for tmux, selecting the server in the
+// following precedence order: (1) explicit socketName from the caller — the
+// session's stored TmuxSocketName captured at creation time, passed through
+// as tmux `-L <name>`; (2) TMUX env var's socket path (legacy web-in-tmux
+// behavior), passed through as `-S <path>`; (3) tmux's default server. The
+// legacy env-based fallback is preserved so running `agent-deck web` inside
+// an existing tmux pane keeps working for users who haven't opted into the
+// new per-session socket config (issue #687 phase 1).
+func tmuxCommand(socketName string, args ...string) *exec.Cmd {
+	// Explicit per-session socket name wins — this is the v1.7.50 path.
+	if trimmed := strings.TrimSpace(socketName); trimmed != "" {
+		finalArgs := append([]string{"-L", trimmed}, args...)
+		cmd := exec.Command("tmux", finalArgs...)
+		// Unset TMUX so tmux-in-tmux guards don't trip: we are explicitly
+		// directing this to a different server than the one we're in.
+		cmd.Env = environWithoutTMUX(os.Environ())
+		return cmd
+	}
+
 	socketPath, hasSocket := tmuxSocketFromEnv()
 
 	finalArgs := args
@@ -238,9 +258,9 @@ func tmuxCommand(args ...string) *exec.Cmd {
 	return cmd
 }
 
-func tmuxAttachCommand(sessionName string) *exec.Cmd {
+func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
 	// Keep this web client from influencing other attached client sizes (for example, the local TUI).
-	return tmuxCommand("attach-session", "-f", "ignore-size", "-t", sessionName)
+	return tmuxCommand(socketName, "attach-session", "-f", "ignore-size", "-t", sessionName)
 }
 
 func tmuxSocketFromEnv() (string, bool) {

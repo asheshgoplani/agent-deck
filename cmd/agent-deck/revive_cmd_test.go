@@ -27,7 +27,7 @@ func TestRevive_CLI_AllFlag_TriggersReviver(t *testing.T) {
 
 	reviveCalls := 0
 	rev := &session.Reviver{
-		TmuxExists:   func(name string) bool { return name != deadTmux },
+		TmuxExists:   func(name, _ string) bool { return name != deadTmux },
 		PipeAlive:    func(name string) bool { return name == aliveTmux },
 		ReviveAction: func(i *session.Instance) error { reviveCalls++; return nil },
 		Stagger:      0,
@@ -63,7 +63,7 @@ func TestRevive_CLI_AllFlag_TriggersReviver(t *testing.T) {
 func TestRevive_CLI_EmptyStorage_NoCalls(t *testing.T) {
 	reviveCalls := 0
 	rev := &session.Reviver{
-		TmuxExists:   func(name string) bool { return false },
+		TmuxExists:   func(name, _ string) bool { return false },
 		PipeAlive:    func(name string) bool { return false },
 		ReviveAction: func(i *session.Instance) error { reviveCalls++; return nil },
 		Stagger:      0,

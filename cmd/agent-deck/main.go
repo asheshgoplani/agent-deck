@@ -29,12 +29,13 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.49" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.50" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -193,6 +194,15 @@ func main() {
 		// resolve consistently across all command paths in this process.
 		_ = os.Setenv("AGENTDECK_PROFILE", profile)
 	}
+
+	// Seed the tmux socket-isolation default from `[tmux].socket_name` once
+	// per process (v1.7.50+, issue #687). Package-level tmux probes
+	// (KillSessionsWithEnvValue, ListAllSessions, version check, stale-
+	// socket recovery) read this value to decide which tmux server to
+	// target. Empty string preserves pre-v1.7.50 behavior. Per-Instance
+	// calls use Instance.TmuxSocketName directly — this default is only
+	// the installation-wide fallback for callers without a session handle.
+	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
 
 	var webEnabled bool
 	var webArgs []string
@@ -991,6 +1001,12 @@ func handleAdd(profile string, args []string) {
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 
+	// Socket isolation (v1.7.50+, issue #687). Overrides the installation-
+	// wide `[tmux].socket_name` for this one session. Empty = fall back to
+	// config. Captured once at creation and persisted on the Instance —
+	// subsequent start/restart/revive always target the same socket.
+	tmuxSocket := fs.String("tmux-socket", "", "tmux -L socket name for this session (overrides [tmux].socket_name)")
+
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
 		fmt.Println()
@@ -1281,6 +1297,18 @@ func handleAdd(profile string, args []string) {
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+	}
+
+	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50). The
+	// `--tmux-socket` flag beats `[tmux].socket_name`. Whitespace-only
+	// values fall back to the config default via the GetSocketName trim
+	// logic already applied during NewInstance, so we only override when
+	// the user typed something non-empty.
+	if flagSocket := strings.TrimSpace(*tmuxSocket); flagSocket != "" {
+		newInstance.TmuxSocketName = flagSocket
+		if ts := newInstance.GetTmuxSession(); ts != nil {
+			ts.SocketName = flagSocket
+		}
 	}
 
 	// Set parent if specified (includes parent's project path for --add-dir access)

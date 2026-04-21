@@ -1111,6 +1111,30 @@ type TmuxSettings struct {
 	// Options is a map of tmux option names to values.
 	// These are passed to `tmux set-option -t <session>` after defaults.
 	Options map[string]string `toml:"options"`
+
+	// SocketName is the tmux `-L <name>` socket selector for every
+	// agent-deck tmux spawn (v1.7.50+, issue #687). Empty string — the
+	// default — keeps pre-v1.7.50 behavior byte-for-byte: agent-deck shares
+	// the user's default tmux server at $TMUX_TMPDIR/tmux-<uid>/default.
+	//
+	// Set this to isolate agent-deck onto its own tmux server so:
+	//   - `[tmux].inject_status_line`, bind-key, and global set-option
+	//     mutations stay on the agent-deck server and never touch the
+	//     user's interactive tmux config (the original #276 complaint);
+	//   - a `tmux kill-server` in the user's shell can't take agent-deck's
+	//     managed sessions down with it;
+	//   - `tmux -L <name> ls` from the shell shows exactly agent-deck's
+	//     sessions — no mixing with the user's own work sessions.
+	//
+	// Each Instance captures this value at creation time into
+	// Instance.TmuxSocketName; changing socket_name later does NOT migrate
+	// existing sessions (they remain reachable on their original socket
+	// until explicitly re-created). See docs/SOCKET_ISOLATION.md for the
+	// migration procedure.
+	//
+	// Precedence at Instance creation: CLI flag `--tmux-socket <name>`
+	// wins, else this config value, else empty.
+	SocketName string `toml:"socket_name"`
 }
 
 // GetInjectStatusLine returns whether to inject status line, defaulting to true.
@@ -1119,6 +1143,14 @@ func (t TmuxSettings) GetInjectStatusLine() bool {
 		return true
 	}
 	return *t.InjectStatusLine
+}
+
+// GetSocketName returns the trimmed `[tmux].socket_name` value, or "" when
+// unset, whitespace-only, or absent. Centralising the trim here means
+// every caller — tmux.SetDefaultSocketName at startup, CLI flag merging,
+// Instance creation — sees the same sanitised value.
+func (t TmuxSettings) GetSocketName() string {
+	return strings.TrimSpace(t.SocketName)
 }
 
 // GetLaunchInUserScope returns whether new tmux servers should be launched

@@ -155,7 +155,7 @@ func IsServerAlive() bool {
 	// Quick probe: 1-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-sessions", "-F", "#{session_name}").CombinedOutput()
+	out, err := tmuxExecContext(ctx, DefaultSocketName(), "list-sessions", "-F", "#{session_name}").CombinedOutput()
 	alive := err == nil || (!strings.Contains(string(out), "server exited") &&
 		!strings.Contains(string(out), "lost server") &&
 		ctx.Err() != context.DeadlineExceeded)
@@ -219,7 +219,7 @@ func RefreshSessionCache() {
 	// Subprocess fallback: list-windows -a (3s timeout to prevent freeze when server is dead)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
+	cmd := tmuxExecContext(ctx, DefaultSocketName(), "list-windows", "-a", "-F", "#{session_name}\t#{window_activity}\t#{window_index}\t#{window_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		sessionCacheMu.Lock()
@@ -286,14 +286,26 @@ func RefreshExistingSessions() {
 	RefreshSessionCache()
 }
 
-// HasSession is a lightweight public probe for session presence.
-// Exported so packages outside internal/tmux (e.g., the reviver) can answer
-// "does this tmux session exist right now?" without reaching into unexported
-// helpers. Runs a direct `tmux has-session -t <name>` — skips the cache on
-// purpose because the reviver's purpose is to detect a mismatch between our
-// cached view and ground truth.
+// HasSession is a lightweight public probe for session presence on the
+// user's default tmux server. Exported so packages outside internal/tmux
+// (e.g., the reviver) can answer "does this tmux session exist right now?"
+// without reaching into unexported helpers. Runs a direct
+// `tmux has-session -t <name>` — skips the cache on purpose because the
+// reviver's purpose is to detect a mismatch between our cached view and
+// ground truth.
+//
+// Use HasSessionOnSocket when the caller knows the session's stored
+// TmuxSocketName — critical for the reviver, which must not ask the default
+// server about sessions that live on an isolated socket.
 func HasSession(name string) bool {
-	return tmuxSessionExists(name)
+	return HasSessionOnSocket(DefaultSocketName(), name)
+}
+
+// HasSessionOnSocket probes for a session on an explicit tmux server. Pass
+// Instance.TmuxSocketName (or Session.SocketName) verbatim; empty means the
+// user's default server.
+func HasSessionOnSocket(socketName, name string) bool {
+	return tmuxSessionExistsOnSocket(socketName, name)
 }
 
 // sessionExistsFromCache checks if a session exists using the cached data
@@ -709,6 +721,22 @@ type Session struct {
 	InstanceID  string // Agent-deck instance ID for hook callbacks
 	startupAt   time.Time
 
+	// SocketName is the tmux `-L <name>` socket selector for this session.
+	// When empty (pre-v1.7.50 default), every tmux call targets the user's
+	// default server at $TMUX_TMPDIR/tmux-<uid>/default, preserving the
+	// historical behavior exactly. When non-empty, every tmux subprocess
+	// spawned by methods on this Session carries `-L <SocketName>` so the
+	// agent-deck tmux server is fully isolated from the user's interactive
+	// tmux.
+	//
+	// SocketName is populated at session-creation time from (in precedence
+	// order) the CLI flag `--tmux-socket`, then `[tmux].socket_name` in
+	// config.toml, then empty. It is persisted per-instance in SQLite so
+	// subsequent restarts/revives reach the correct server even if the
+	// installation-wide config later changes. See RFC socket-isolation
+	// phase 1 and Instance.TmuxSocketName. Never mutate after Start().
+	SocketName string
+
 	// mu protects all mutable fields below from concurrent access
 	mu sync.Mutex
 
@@ -919,7 +947,14 @@ func isSystemdUserScopeAvailable() bool {
 
 func (s *Session) startCommandSpec(workDir, command string) (string, []string) {
 	startWithInitialProcess := command != "" && s.RunCommandAsInitialProcess
-	tmuxArgs := []string{"new-session", "-d", "-s", s.Name, "-c", workDir}
+	// Socket isolation (issue #687, v1.7.50): prepend `-L <name>` to the
+	// bare tmux args so the new-session spawn and every subsequent lookup
+	// target the same isolated server. Without this, the session would be
+	// minted on the default server while later Session.tmuxCmd calls —
+	// which DO carry -L — would probe the isolated server and find
+	// nothing. Empty SocketName preserves pre-v1.7.50 behavior exactly
+	// (buildInnerTmuxArgs returns the args unchanged).
+	tmuxArgs := buildInnerTmuxArgs(s.SocketName, "new-session", "-d", "-s", s.Name, "-c", workDir)
 	if startWithInitialProcess {
 		// Keep commands under bash for fish/zsh compatibility, but avoid
 		// double-wrapping payloads that are already `bash -c '…'`.
@@ -1364,7 +1399,8 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		return
 	}
 
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	socket := DefaultSocketName()
+	out, err := tmuxExec(socket, "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return
 	}
@@ -1376,7 +1412,7 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 		if !strings.HasPrefix(name, SessionPrefix) {
 			continue
 		}
-		val, err := exec.Command("tmux", "show-environment", "-t", name, envKey).Output()
+		val, err := tmuxExec(socket, "show-environment", "-t", name, envKey).Output()
 		if err != nil {
 			continue
 		}
@@ -1389,7 +1425,7 @@ func KillSessionsWithEnvValue(envKey, envValue, excludeName string) {
 					slog.String("env_key", envKey),
 					slog.String("env_value", envValue),
 					slog.String("kept", excludeName))
-				_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+				_ = tmuxExec(socket, "kill-session", "-t", name).Run()
 			}
 		}
 	}
@@ -1409,7 +1445,7 @@ func generateShortID() string {
 func (s *Session) SetEnvironment(key, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "set-environment", "-t", s.Name, key, value)
+	cmd := s.tmuxCmdContext(ctx, "set-environment", "-t", s.Name, key, value)
 	err := cmd.Run()
 	if err == nil {
 		// Invalidate cache entry so next GetEnvironment sees the new value
@@ -1437,7 +1473,7 @@ func (s *Session) ApplyThemeOptions() error {
 			";", "set-option", "-t", s.Name, "status-right", s.themedStatusRight(themeStyle),
 		)
 	}
-	return exec.Command("tmux", args...).Run()
+	return s.tmuxCmd(args...).Run()
 }
 
 // GetEnvironment gets an environment variable from this tmux session.
@@ -1456,7 +1492,7 @@ func (s *Session) GetEnvironment(key string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "show-environment", "-t", s.Name, key)
+	cmd := s.tmuxCmdContext(ctx, "show-environment", "-t", s.Name, key)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("variable not found or session doesn't exist: %s", key)
@@ -1507,7 +1543,7 @@ func recoverFromStaleDefaultSocketIfNeeded(startErrOutput string) (bool, error) 
 	}
 
 	// If tmux can already answer list-sessions, don't touch any socket file.
-	if err := exec.Command("tmux", "list-sessions").Run(); err == nil {
+	if err := tmuxExec(DefaultSocketName(), "list-sessions").Run(); err == nil {
 		return false, nil
 	}
 
@@ -1766,12 +1802,12 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
-	_ = exec.Command("tmux", startArgs...).Run()
+	_ = s.tmuxCmd(startArgs...).Run()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
 	// XON/XOFF flow control intercepts the key before it reaches the PTY stdin
 	// reader (e.g. iTerm2 on macOS). Only binds on agentdeck-managed sessions.
-	_ = exec.Command("tmux", "bind-key", "-n", "-T", "root", "C-q",
+	_ = s.tmuxCmd("bind-key", "-n", "-T", "root", "C-q",
 		"if-shell", fmt.Sprintf("[ \"#{session_name}\" = \"%s\" ]", s.Name),
 		"detach-client", "").Run()
 
@@ -1787,7 +1823,7 @@ func (s *Session) Start(command string) error {
 			args = append(args, "set-option", "-t", s.Name, "-q", key, value)
 			first = false
 		}
-		_ = exec.Command("tmux", args...).Run()
+		_ = s.tmuxCmd(args...).Run()
 	}
 
 	// Configure status bar with session info for easy identification
@@ -1825,7 +1861,7 @@ func (s *Session) Start(command string) error {
 
 	// Connect control mode pipe for event-driven status detection
 	if pm := GetPipeManager(); pm != nil {
-		if err := pm.Connect(s.Name); err != nil {
+		if err := pm.Connect(s.Name, s.SocketName); err != nil {
 			statusLog.Debug(
 				"control_pipe_connect_failed",
 				slog.String("session", s.Name),
@@ -1860,7 +1896,7 @@ func (s *Session) Exists() bool {
 	}
 
 	// Cache is stale and no live pipe: fall back to direct tmux check.
-	cmd := exec.Command("tmux", "has-session", "-t", s.Name)
+	cmd := s.tmuxCmd("has-session", "-t", s.Name)
 	return cmd.Run() == nil
 }
 
@@ -1873,7 +1909,7 @@ func (s *Session) IsPaneDead() bool {
 		return info.Dead
 	}
 	// Cache miss: direct tmux check targeting the primary pane.
-	out, err := exec.Command("tmux", "list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
+	out, err := s.tmuxCmd("list-panes", "-t", s.Name+":0.0", "-F", "#{pane_dead}").Output()
 	if err != nil {
 		return false
 	}
@@ -1957,7 +1993,7 @@ func (s *Session) ConfigureTerminalTitle() {
 	if len(args) == 0 {
 		return
 	}
-	_ = exec.Command("tmux", args...).Run()
+	_ = s.tmuxCmd(args...).Run()
 }
 
 // ConfigureStatusBar sets up the tmux status bar with session info.
@@ -1969,7 +2005,7 @@ func (s *Session) ConfigureStatusBar() {
 	if args == nil {
 		return
 	}
-	_ = exec.Command("tmux", args...).Run()
+	_ = s.tmuxCmd(args...).Run()
 }
 
 // EnableMouseMode enables mouse scrolling, clipboard integration, and optimal settings
@@ -1991,7 +2027,7 @@ func (s *Session) ConfigureStatusBar() {
 func (s *Session) EnableMouseMode() error {
 	// CRITICAL: Mouse mode must succeed - keep as separate call for error handling
 	// This is the only essential feature; all others are enhancements
-	mouseCmd := exec.Command("tmux", "set-option", "-t", s.Name, "mouse", "on")
+	mouseCmd := s.tmuxCmd("set-option", "-t", s.Name, "mouse", "on")
 	if err := mouseCmd.Run(); err != nil {
 		return err
 	}
@@ -2009,7 +2045,7 @@ func (s *Session) EnableMouseMode() error {
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
 	// Uses -q flag where supported to silently ignore on older tmux versions
-	enhanceCmd := exec.Command("tmux",
+	enhanceCmd := s.tmuxCmd(
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
@@ -2043,7 +2079,7 @@ func (s *Session) Kill() error {
 	}
 
 	// Kill the tmux session
-	cmd := exec.Command("tmux", "kill-session", "-t", s.Name)
+	cmd := s.tmuxCmd("kill-session", "-t", s.Name)
 	err := cmd.Run()
 
 	// Verify old processes are dead; escalate to SIGKILL if needed
@@ -2058,7 +2094,7 @@ func (s *Session) Kill() error {
 // Used before respawn to track processes that must die.
 func (s *Session) getPaneProcessTree() (panePID int, allPIDs []int) {
 	target := s.Name + ":"
-	out, err := exec.Command("tmux", "list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	out, err := s.tmuxCmd("list-panes", "-t", target, "-F", "#{pane_pid}").Output()
 	if err != nil {
 		return 0, nil
 	}
@@ -2209,7 +2245,7 @@ func (s *Session) RespawnPane(command string) error {
 	// Enable with [tmux] clear_on_restart = true in config.toml.
 	if s.clearOnRestart {
 		clearTarget := s.Name + ":"
-		clearCmd := exec.Command("tmux", "clear-history", "-t", clearTarget)
+		clearCmd := s.tmuxCmd("clear-history", "-t", clearTarget)
 		if clearOut, clearErr := clearCmd.CombinedOutput(); clearErr != nil {
 			respawnLog.Debug(
 				"clear_history_failed",
@@ -2236,7 +2272,7 @@ func (s *Session) RespawnPane(command string) error {
 	}
 
 	mcpLog.Debug("respawn_pane_executing", slog.Any("args", args))
-	cmd := exec.Command("tmux", args...)
+	cmd := s.tmuxCmd(args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		mcpLog.Debug("respawn_pane_error", slog.String("error", err.Error()), slog.String("output", string(output)))
@@ -2256,7 +2292,7 @@ func (s *Session) RespawnPane(command string) error {
 	// Reconnect control mode pipe (respawn changes the pane process)
 	if pm := GetPipeManager(); pm != nil {
 		pm.Disconnect(s.Name)
-		if err := pm.Connect(s.Name); err != nil {
+		if err := pm.Connect(s.Name, s.SocketName); err != nil {
 			statusLog.Debug(
 				"control_pipe_reconnect_failed",
 				slog.String("session", s.Name),
@@ -2310,7 +2346,7 @@ func (s *Session) GetWindowActivity() (int64, error) {
 	// No PipeManager: fall back to direct check (spawns subprocess)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", s.Name, "-p", "#{window_activity}")
+	cmd := s.tmuxCmdContext(ctx, "display-message", "-t", s.Name, "-p", "#{window_activity}")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get window activity: %w", err)
@@ -2381,7 +2417,7 @@ func (s *Session) CapturePane() (string, error) {
 			slog.String("session", s.Name))
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", s.Name, "-p", "-e")
+		cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
 		output, err := cmd.Output()
 		finish()
 		if err != nil {
@@ -2415,7 +2451,7 @@ func (s *Session) CapturePaneFresh() (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "capture-pane", "-t", s.Name, "-p", "-e")
+	cmd := s.tmuxCmdContext(ctx, "capture-pane", "-t", s.Name, "-p", "-e")
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -2437,7 +2473,7 @@ func (s *Session) CapturePaneFresh() (string, error) {
 func (s *Session) CaptureFullHistory() (string, error) {
 	// Limit to last 2000 lines to balance content availability with memory usage
 	// AI agent conversations can be long - 2000 lines captures ~40-80 screens of content
-	cmd := exec.Command("tmux", "capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
+	cmd := s.tmuxCmd("capture-pane", "-t", s.Name, "-p", "-e", "-S", "-2000")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture history: %w", err)
@@ -2448,7 +2484,7 @@ func (s *Session) CaptureFullHistory() (string, error) {
 // CaptureWindowFullHistory captures the scrollback history of a specific window (last 2000 lines).
 func (s *Session) CaptureWindowFullHistory(windowIndex int) (string, error) {
 	target := fmt.Sprintf("%s:%d", s.Name, windowIndex)
-	cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
+	cmd := s.tmuxCmd("capture-pane", "-t", target, "-p", "-e", "-S", "-2000")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture window %d history: %w", windowIndex, err)
@@ -3740,14 +3776,14 @@ func (s *Session) SendKeys(keys string) error {
 	// The -l flag makes tmux treat the string as literal text, not key names
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
-	cmd := exec.Command("tmux", "send-keys", "-l", "-t", s.Name, "--", keys)
+	cmd := s.tmuxCmd("send-keys", "-l", "-t", s.Name, "--", keys)
 	return cmd.Run()
 }
 
 // SendEnter sends an Enter key to the tmux session
 func (s *Session) SendEnter() error {
 	s.invalidateCache()
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "Enter")
+	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "Enter")
 	return cmd.Run()
 }
 
@@ -3831,14 +3867,14 @@ func splitIntoChunks(content string, maxSize int) []string {
 // SendCtrlC sends Ctrl+C (interrupt signal) to the tmux session
 func (s *Session) SendCtrlC() error {
 	s.invalidateCache()
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "C-c")
+	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "C-c")
 	return cmd.Run()
 }
 
 // SendCtrlU sends Ctrl+U (clear line) to the tmux session
 func (s *Session) SendCtrlU() error {
 	s.invalidateCache()
-	cmd := exec.Command("tmux", "send-keys", "-t", s.Name, "C-u")
+	cmd := s.tmuxCmd("send-keys", "-t", s.Name, "C-u")
 	return cmd.Run()
 }
 
@@ -4025,7 +4061,7 @@ func (s *Session) GetWorkDir() string {
 		return ""
 	}
 
-	cmd := exec.Command("tmux", "display-message", "-t", s.Name, "-p", "#{pane_current_path}")
+	cmd := s.tmuxCmd("display-message", "-t", s.Name, "-p", "#{pane_current_path}")
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -4035,7 +4071,8 @@ func (s *Session) GetWorkDir() string {
 
 // ListAllSessions returns all Agent Deck tmux sessions
 func ListAllSessions() ([]*Session, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	socket := DefaultSocketName()
+	cmd := tmuxExec(socket, "list-sessions", "-F", "#{session_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		// No sessions exist
@@ -4052,13 +4089,17 @@ func ListAllSessions() ([]*Session, error) {
 	for _, line := range lines {
 		if strings.HasPrefix(line, SessionPrefix) {
 			displayName := strings.TrimPrefix(line, SessionPrefix)
-			// Get session info
+			// Get session info. Sessions discovered by ListAllSessions live on
+			// the installation-wide default socket by construction — a non-default
+			// socket is reached only via Instance.TmuxSocketName, which the caller
+			// plugs in after loading the Instance record.
 			sess := &Session{
 				Name:        line,
 				DisplayName: displayName,
+				SocketName:  socket,
 			}
 			// Try to get working directory
-			workDirCmd := exec.Command("tmux", "display-message", "-t", line, "-p", "#{pane_current_path}")
+			workDirCmd := tmuxExec(socket, "display-message", "-t", line, "-p", "#{pane_current_path}")
 			if workDirOutput, err := workDirCmd.Output(); err == nil {
 				sess.WorkDir = strings.TrimSpace(string(workDirOutput))
 			}
@@ -4255,7 +4296,7 @@ func RunLogMaintenance(maxSizeMB int, maxLines int, removeOrphans bool) {
 // those in the current profile. This ensures consistent notification bars
 // when users switch between sessions.
 func ListAgentDeckSessions() ([]string, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}")
+	cmd := tmuxExec(DefaultSocketName(), "list-sessions", "-F", "#{session_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		// No sessions exist
@@ -4283,7 +4324,7 @@ func ListAgentDeckSessions() ([]string, error) {
 func SetStatusLeft(sessionName, text string) error {
 	// Escape single quotes for tmux by replacing ' with '\''
 	escaped := strings.ReplaceAll(text, "'", "'\\''")
-	cmd := exec.Command("tmux", "set-option", "-t", sessionName, "status-left", escaped)
+	cmd := tmuxExec(DefaultSocketName(), "set-option", "-t", sessionName, "status-left", escaped)
 	return cmd.Run()
 }
 
@@ -4291,7 +4332,7 @@ func SetStatusLeft(sessionName, text string) error {
 // Called when notifications are cleared or acknowledged.
 func ClearStatusLeft(sessionName string) error {
 	// -u flag unsets the option, reverting to tmux default
-	cmd := exec.Command("tmux", "set-option", "-t", sessionName, "-u", "status-left")
+	cmd := tmuxExec(DefaultSocketName(), "set-option", "-t", sessionName, "-u", "status-left")
 	return cmd.Run()
 }
 
@@ -4307,7 +4348,7 @@ var savedStatusLeft struct {
 // captureOriginalStatusLeft reads and stores the current global status-left value.
 // Called once on first SetStatusLeftGlobal to preserve the user's existing value.
 func captureOriginalStatusLeft() {
-	out, err := exec.Command("tmux", "show-option", "-gv", "status-left").Output()
+	out, err := tmuxExec(DefaultSocketName(), "show-option", "-gv", "status-left").Output()
 	if err == nil {
 		savedStatusLeft.value = strings.TrimRight(string(out), "\n")
 		savedStatusLeft.captured = true
@@ -4321,7 +4362,7 @@ func captureOriginalStatusLeft() {
 func SetStatusLeftGlobal(text string) error {
 	savedStatusLeft.Do(captureOriginalStatusLeft)
 	escaped := strings.ReplaceAll(text, "'", "'\\''")
-	cmd := exec.Command("tmux", "set-option", "-g", "status-left", escaped)
+	cmd := tmuxExec(DefaultSocketName(), "set-option", "-g", "status-left", escaped)
 	return cmd.Run()
 }
 
@@ -4330,12 +4371,13 @@ func SetStatusLeftGlobal(text string) error {
 // (e.g., tmux-oasis) is preserved. Falls back to unsetting the option only if
 // no original value was captured.
 func ClearStatusLeftGlobal() error {
+	socket := DefaultSocketName()
 	if savedStatusLeft.captured {
 		escaped := strings.ReplaceAll(savedStatusLeft.value, "'", "'\\''")
-		return exec.Command("tmux", "set-option", "-g", "status-left", escaped).Run()
+		return tmuxExec(socket, "set-option", "-g", "status-left", escaped).Run()
 	}
 	// No saved value — fall back to unset (original behavior)
-	return exec.Command("tmux", "set-option", "-gu", "status-left").Run()
+	return tmuxExec(socket, "set-option", "-gu", "status-left").Run()
 }
 
 // InitializeStatusBarOptions sets optimal status bar options for agent-deck.
@@ -4344,7 +4386,7 @@ func ClearStatusLeftGlobal() error {
 func InitializeStatusBarOptions() error {
 	// Set adequate status-left-length globally (default is only 10 chars!)
 	// This ensures the notification bar content is not truncated
-	return exec.Command("tmux", "set-option", "-g", "status-left-length", "120").Run()
+	return tmuxExec(DefaultSocketName(), "set-option", "-g", "status-left-length", "120").Run()
 }
 
 // RefreshStatusBarImmediate forces an immediate status bar redraw for ALL connected clients.
@@ -4352,8 +4394,9 @@ func InitializeStatusBarOptions() error {
 // Uses -S flag which only refreshes the status line (lightweight operation ~1-2ms per client).
 // Filters out control mode clients (from PipeManager) which don't have a visible status bar.
 func RefreshStatusBarImmediate() error {
+	socket := DefaultSocketName()
 	// Get all connected clients, filtering out control mode clients
-	cmd := exec.Command("tmux", "list-clients", "-F", "#{client_name}\t#{client_control_mode}")
+	cmd := tmuxExec(socket, "list-clients", "-F", "#{client_name}\t#{client_control_mode}")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -4368,7 +4411,7 @@ func RefreshStatusBarImmediate() error {
 		if parts[1] == "1" {
 			continue
 		}
-		_ = exec.Command("tmux", "refresh-client", "-S", "-t", parts[0]).Run()
+		_ = tmuxExec(socket, "refresh-client", "-S", "-t", parts[0]).Run()
 	}
 	return nil
 }
@@ -4377,7 +4420,7 @@ func RefreshStatusBarImmediate() error {
 // Used to detect which session the user is currently viewing.
 // Filters out control mode clients (from PipeManager) which are not real user sessions.
 func GetAttachedSessions() ([]string, error) {
-	cmd := exec.Command("tmux", "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
+	cmd := tmuxExec(DefaultSocketName(), "list-clients", "-F", "#{session_name}\t#{client_control_mode}")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -4403,7 +4446,7 @@ func GetAttachedSessions() ([]string, error) {
 // The key should be a single character like "1", "2", etc.
 // Deprecated: Use BindSwitchKeyWithAck for notification bar integration.
 func BindSwitchKey(key, targetSession string) error {
-	cmd := exec.Command("tmux", "bind-key", key, "switch-client", "-t", targetSession)
+	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "switch-client", "-t", targetSession)
 	return cmd.Run()
 }
 
@@ -4421,9 +4464,13 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 	// Create a compound command that:
 	// 1. Writes the session ID to a signal file (for agent-deck to acknowledge)
 	// 2. Switches to the target session
+	//
+	// The inner `tmux switch-client` runs inside the tmux server that fired
+	// the run-shell hook, so it targets the correct socket automatically —
+	// no need to thread -L through the shell string.
 	script := fmt.Sprintf("echo '%s' > '%s' && tmux switch-client -t '%s'",
 		sessionID, signalFile, targetSession)
-	cmd := exec.Command("tmux", "bind-key", key, "run-shell", script)
+	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "run-shell", script)
 	return cmd.Run()
 }
 
@@ -4460,12 +4507,13 @@ func ReadAndClearAckSignal() string {
 // select windows. The restore is best-effort since it may fail in environments
 // without windows (e.g., CI) and agent-deck rebinds keys every 2s anyway.
 func UnbindKey(key string) error {
+	socket := DefaultSocketName()
 	// First unbind our custom binding
-	_ = exec.Command("tmux", "unbind-key", key).Run()
+	_ = tmuxExec(socket, "unbind-key", key).Run()
 
 	// Best-effort restore default: number keys select windows
 	// bind-key 1 select-window -t :1
-	_ = exec.Command("tmux", "bind-key", key, "select-window", "-t", ":"+key).Run()
+	_ = tmuxExec(socket, "bind-key", key, "select-window", "-t", ":"+key).Run()
 	return nil
 }
 
@@ -4473,19 +4521,22 @@ func UnbindKey(key string) error {
 // Only fires inside agentdeck sessions (guards against detaching the user's outer tmux).
 func BindMouseStatusRightDetach() error {
 	// Guard: only detach if current session is an agentdeck-managed session
+	// The inner `tmux display-message` / `tmux detach-client` invocations run
+	// inside the tmux server that fired run-shell, so they stay on the right
+	// socket automatically.
 	script := `S=$(tmux display-message -p '#{session_name}'); case "$S" in agentdeck_*) tmux detach-client ;; esac`
-	return exec.Command("tmux", "bind", "-n", "MouseDown1StatusRight", "run-shell", script).Run()
+	return tmuxExec(DefaultSocketName(), "bind", "-n", "MouseDown1StatusRight", "run-shell", script).Run()
 }
 
 // UnbindMouseStatusClicks removes mouse click bindings from the status bar.
 func UnbindMouseStatusClicks() {
-	_ = exec.Command("tmux", "unbind", "-n", "MouseDown1StatusRight").Run()
+	_ = tmuxExec(DefaultSocketName(), "unbind", "-n", "MouseDown1StatusRight").Run()
 }
 
 // GetActiveSession returns the session name the user is currently attached to.
 // Returns empty string and error if not attached to any session.
 func GetActiveSession() (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-p", "#{client_session}")
+	cmd := tmuxExec(DefaultSocketName(), "display-message", "-p", "#{client_session}")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -4497,7 +4548,7 @@ func GetActiveSession() (string, error) {
 
 // DiscoverAllTmuxSessions returns all tmux sessions (including non-Agent Deck ones)
 func DiscoverAllTmuxSessions() ([]*Session, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
+	cmd := tmuxExec(DefaultSocketName(), "list-sessions", "-F", "#{session_name}:#{pane_current_path}")
 	output, err := cmd.Output()
 	if err != nil {
 		// No sessions exist

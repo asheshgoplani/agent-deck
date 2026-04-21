@@ -28,6 +28,7 @@ const (
 // zero-subprocess command execution through the stdin/stdout pipe.
 type ControlPipe struct {
 	sessionName string
+	socketName  string // tmux -L value; "" means user's default server
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
 	stdout      io.ReadCloser
@@ -68,14 +69,17 @@ type commandResponse struct {
 	err    error
 }
 
-// NewControlPipe starts a tmux control mode pipe attached to the given session.
-// Blocks until the initial handshake completes (or a short timeout), so the pipe
-// is ready for SendCommand immediately after return. Retries a few times to
-// smooth over transient tmux/control-mode startup failures.
-func NewControlPipe(sessionName string) (*ControlPipe, error) {
+// NewControlPipe starts a tmux control mode pipe attached to the given session
+// on the given socket. socketName is the tmux `-L <name>` selector captured at
+// session-creation time (Instance.TmuxSocketName / Session.SocketName); pass ""
+// to target the user's default tmux server. Blocks until the initial handshake
+// completes (or a short timeout), so the pipe is ready for SendCommand
+// immediately after return. Retries a few times to smooth over transient
+// tmux/control-mode startup failures.
+func NewControlPipe(sessionName, socketName string) (*ControlPipe, error) {
 	var lastErr error
 	for attempt := 1; attempt <= controlPipeConnectAttempts; attempt++ {
-		cp, err := newControlPipeOnce(sessionName)
+		cp, err := newControlPipeOnce(sessionName, socketName)
 		if err == nil {
 			return cp, nil
 		}
@@ -86,6 +90,7 @@ func NewControlPipe(sessionName string) (*ControlPipe, error) {
 		pipeLog.Debug(
 			"pipe_connect_retry",
 			slog.String("session", sessionName),
+			slog.String("socket", socketName),
 			slog.Int("attempt", attempt),
 			slog.String("error", err.Error()),
 		)
@@ -94,8 +99,8 @@ func NewControlPipe(sessionName string) (*ControlPipe, error) {
 	return nil, lastErr
 }
 
-func newControlPipeOnce(sessionName string) (*ControlPipe, error) {
-	cmd := exec.Command("tmux", "-C", "attach-session", "-t", sessionName)
+func newControlPipeOnce(sessionName, socketName string) (*ControlPipe, error) {
+	cmd := tmuxExec(socketName, "-C", "attach-session", "-t", sessionName)
 	// Put in own process group so we can kill the entire group on shutdown
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -116,6 +121,7 @@ func newControlPipeOnce(sessionName string) (*ControlPipe, error) {
 
 	cp := &ControlPipe{
 		sessionName:  sessionName,
+		socketName:   socketName,
 		cmd:          cmd,
 		stdin:        stdin,
 		stdout:       stdout,

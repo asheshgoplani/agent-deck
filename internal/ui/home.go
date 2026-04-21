@@ -862,7 +862,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 		for _, inst := range instances {
 			if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
-				if err := pm.Connect(ts.Name); err != nil {
+				if err := pm.Connect(ts.Name, inst.TmuxSocketName); err != nil {
 					pipeUILog.Debug("startup_pipe_connect_failed",
 						slog.String("session", ts.Name),
 						slog.String("error", err.Error()))
@@ -4540,9 +4540,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for _, inst := range h.instances {
 					if ts := inst.GetTmuxSession(); ts != nil && ts.Exists() {
 						if !pm.IsConnected(ts.Name) {
-							go func(name string) {
-								_ = pm.Connect(name)
-							}(ts.Name)
+							go func(name, socket string) {
+								_ = pm.Connect(name, socket)
+							}(ts.Name, inst.TmuxSocketName)
 						}
 					}
 				}
@@ -6830,8 +6830,9 @@ func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 			ts := inst.GetTmuxSession()
 			if ts != nil && ts.Name != "" {
 				tmuxName := ts.Name
+				socket := inst.TmuxSocketName
 				go func() {
-					_ = exec.Command("tmux", "send-keys", "-t", tmuxName, alertMsg, "Enter").Run()
+					_ = tmux.Exec(socket, "send-keys", "-t", tmuxName, alertMsg, "Enter").Run()
 				}()
 			}
 			break

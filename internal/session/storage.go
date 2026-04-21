@@ -51,6 +51,10 @@ type InstanceData struct {
 	CreatedAt          time.Time `json:"created_at"`
 	LastAccessedAt     time.Time `json:"last_accessed_at,omitempty"`
 	TmuxSession        string    `json:"tmux_session"`
+	// TmuxSocketName is the tmux -L selector captured at Instance creation
+	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
+	// the default server after upgrade.
+	TmuxSocketName string `json:"tmux_socket_name,omitempty"`
 
 	// Worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`
@@ -341,6 +345,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			Tool:               inst.Tool,
 			Status:             string(inst.Status),
 			TmuxSession:        tmuxName,
+			TmuxSocketName:     inst.TmuxSocketName,
 			CreatedAt:          inst.CreatedAt,
 			LastAccessed:       inst.LastAccessedAt,
 			ParentSessionID:    inst.ParentSessionID,
@@ -495,6 +500,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,
 			TmuxSession:        r.TmuxSession,
+			TmuxSocketName:     r.TmuxSocketName,
 			WorktreePath:       r.WorktreePath,
 			WorktreeRepoRoot:   r.WorktreeRepo,
 			WorktreeBranch:     r.WorktreeBranch,
@@ -599,6 +605,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			CreatedAt:          r.CreatedAt,
 			LastAccessedAt:     r.LastAccessed,
 			TmuxSession:        r.TmuxSession,
+			TmuxSocketName:     r.TmuxSocketName,
 			WorktreePath:       r.WorktreePath,
 			WorktreeRepoRoot:   r.WorktreeRepo,
 			WorktreeBranch:     r.WorktreeBranch,
@@ -773,6 +780,13 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 				instData.Command,
 				previousStatus,
 			)
+			// Seed the stored socket so every method call on this Session
+			// (Exists, SendKeys, Kill, CapturePane, ConfigureStatusBar, etc.)
+			// targets the same tmux server the session was originally created
+			// on. Without this the reviver / TUI would probe the default
+			// server for a session that lives on an isolated socket and
+			// report it as dead (issue #687, v1.7.50).
+			tmuxSess.SocketName = instData.TmuxSocketName
 			// Issue #663: for multi-repo sessions ProjectPath is a symlink
 			// inside MultiRepoTempDir (see home.go:7255-7364), so the
 			// restart pane must cwd into the parent dir — not the symlink
@@ -835,6 +849,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			WorktreePath:       instData.WorktreePath,
 			WorktreeRepoRoot:   instData.WorktreeRepoRoot,
 			WorktreeBranch:     instData.WorktreeBranch,
+			TmuxSocketName:     instData.TmuxSocketName,
 			ClaudeSessionID:    instData.ClaudeSessionID,
 			ClaudeDetectedAt:   instData.ClaudeDetectedAt,
 			GeminiSessionID:    instData.GeminiSessionID,

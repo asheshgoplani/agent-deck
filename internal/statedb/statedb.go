@@ -18,7 +18,7 @@ import (
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -45,10 +45,14 @@ type InstanceRow struct {
 	ParentSessionID    string
 	IsConductor        bool
 	NoTransitionNotify bool
-	WorktreePath       string
-	WorktreeRepo       string
-	WorktreeBranch     string
-	ToolData           json.RawMessage // JSON blob for tool-specific data
+	// TmuxSocketName mirrors Instance.TmuxSocketName (v1.7.50+, issue #687).
+	// Empty for pre-v1.7.50 rows — those keep targeting the default server
+	// after upgrade.
+	TmuxSocketName string
+	WorktreePath   string
+	WorktreeRepo   string
+	WorktreeBranch string
+	ToolData       json.RawMessage // JSON blob for tool-specific data
 }
 
 // WatcherRow represents a watcher row in the database.
@@ -201,7 +205,8 @@ func (s *StateDB) Migrate() error {
 			wrapper         TEXT NOT NULL DEFAULT '',
 			tool            TEXT NOT NULL DEFAULT 'shell',
 			status          TEXT NOT NULL DEFAULT 'error',
-			tmux_session    TEXT NOT NULL DEFAULT '',
+			tmux_session     TEXT NOT NULL DEFAULT '',
+			tmux_socket_name TEXT NOT NULL DEFAULT '',
 			created_at      INTEGER NOT NULL,
 			last_accessed   INTEGER NOT NULL DEFAULT 0,
 			parent_session_id TEXT NOT NULL DEFAULT '',
@@ -334,6 +339,9 @@ func (s *StateDB) Migrate() error {
 	alterMigrations := []string{
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE watcher_events ADD COLUMN triage_session_id TEXT NOT NULL DEFAULT ''",
+		// v7 (issue #687, v1.7.50): per-session tmux socket isolation.
+		// Default '' keeps the pre-v1.7.50 behavior for existing rows.
+		"ALTER TABLE instances ADD COLUMN tmux_socket_name TEXT NOT NULL DEFAULT ''",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -420,15 +428,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session,
+			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
 			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
-		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
+		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
@@ -468,12 +476,12 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 	stmt, err := tx.Prepare(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session,
+			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
 			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -495,7 +503,7 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 		}
 		if _, err := stmt.Exec(
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
-			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession,
+			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
@@ -512,7 +520,7 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 	rows, err := s.db.Query(`
 		SELECT id, title, project_path, group_path, sort_order,
-			command, wrapper, tool, status, tmux_session,
+			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
@@ -532,7 +540,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		var isConductorInt, noTransitionNotifyInt int
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
-			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession,
+			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,

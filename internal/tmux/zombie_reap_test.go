@@ -105,7 +105,7 @@ func makeZombieTestSession(t *testing.T, suffix string) string {
 func TestControlPipe_NoZombie_WhenProcessExits(t *testing.T) {
 	name := makeZombieTestSession(t, "nozombie-exit")
 
-	pipe, err := NewControlPipe(name)
+	pipe, err := NewControlPipe(name, "")
 	require.NoError(t, err)
 	// Intentionally do NOT defer pipe.Close() — the point of this test is
 	// that reader() reaps on its own when the subprocess dies externally.
@@ -148,7 +148,7 @@ func TestControlPipe_NoZombie_ManyCycles(t *testing.T) {
 
 	for i := 0; i < cycles; i++ {
 		name := makeZombieTestSession(t, fmt.Sprintf("cycle-%d", i))
-		pipe, err := NewControlPipe(name)
+		pipe, err := NewControlPipe(name, "")
 		require.NoError(t, err)
 
 		// Kill session externally (simulates tmux-server restart / manual kill).

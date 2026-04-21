@@ -70,6 +70,11 @@ func handleLaunch(profile string, args []string) {
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
 
+	// Socket isolation (v1.7.50+, issue #687). Same semantics as
+	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
+	// this one session, captured once and persisted on the Instance.
+	tmuxSocket := fs.String("tmux-socket", "", "tmux -L socket name for this session (overrides [tmux].socket_name)")
+
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck launch [path] [options]")
 		fmt.Println()
@@ -287,6 +292,16 @@ func handleLaunch(profile string, args []string) {
 		newInstance = session.NewInstanceWithGroup(sessionTitle, path, sessionGroup)
 	} else {
 		newInstance = session.NewInstance(sessionTitle, path)
+	}
+
+	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50).
+	// Matches `agent-deck add --tmux-socket`. Whitespace-only flag falls
+	// back to the config default already seeded by NewInstance.
+	if flagSocket := strings.TrimSpace(*tmuxSocket); flagSocket != "" {
+		newInstance.TmuxSocketName = flagSocket
+		if ts := newInstance.GetTmuxSession(); ts != nil {
+			ts.SocketName = flagSocket
+		}
 	}
 
 	if parentInstance != nil {
