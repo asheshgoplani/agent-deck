@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -1543,7 +1544,11 @@ func handleSessionSend(profile string, args []string) {
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
+	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for completion (used with --wait)")
+	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
+	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
+	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session send <id|title> <message> [options]")
@@ -1557,6 +1562,7 @@ func handleSessionSend(profile string, args []string) {
 		fmt.Println("  agent-deck session send my-project \"Summarize recent changes\"")
 		fmt.Println("  agent-deck session send my-project \"run tests\" --wait")
 		fmt.Println("  agent-deck session send my-project \"quick ping\" --no-wait")
+		fmt.Println("  agent-deck session send my-project \"trace progress\" --stream")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -1569,6 +1575,11 @@ func handleSessionSend(profile string, args []string) {
 	if len(remaining) < 2 {
 		fs.Usage()
 		out.Error("session and message are required", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	if *stream && *wait {
+		out.Error("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -1591,6 +1602,15 @@ func handleSessionSend(profile string, args []string) {
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly
+	// with a stable message so the CLI contract stays legible.
+	if *stream {
+		if msg := streamPreconditionError(inst.Tool); msg != "" {
+			out.Error(msg, ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	// Check if session is running
@@ -1636,12 +1656,29 @@ func handleSessionSend(profile string, args []string) {
 		}
 	}
 
-	out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), map[string]interface{}{
-		"success":       true,
-		"session_id":    inst.ID,
-		"session_title": inst.Title,
-		"message":       message,
-	})
+	if !*stream {
+		out.Success(fmt.Sprintf("Sent message to '%s'", inst.Title), map[string]interface{}{
+			"success":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"message":       message,
+		})
+	}
+
+	// --stream: tail the Claude transcript and pipe JSONL events to
+	// stdout until end_turn, idle timeout, or error. Issue #689.
+	if *stream {
+		if err := streamSessionSend(inst, sessionRef, profile, sentAt, streamOptions{
+			idle:       *streamIdle,
+			charBudget: *streamCharBudget,
+			toolBudget: *streamToolBudget,
+			timeout:    *timeout,
+		}); err != nil {
+			// Error already serialized as a stream event; exit 1.
+			os.Exit(1)
+		}
+		return
+	}
 
 	// If --wait, block until the agent finishes processing, then print output
 	if *wait {
@@ -2104,6 +2141,82 @@ func waitForFreshOutput(inst *session.Instance, sentAt time.Time) (*session.Resp
 		return lastResp, nil
 	}
 	return nil, lastErr
+}
+
+// streamPreconditionError returns a non-empty error message when the given
+// tool is not supported by --stream. Phase 1 is Claude-only (issue #689);
+// non-Claude tools error cleanly here rather than silently producing empty
+// output.
+func streamPreconditionError(tool string) string {
+	if session.IsClaudeCompatible(tool) {
+		return ""
+	}
+	return fmt.Sprintf("--stream is not supported for tool %q (Phase 1 supports Claude-compatible tools only)", tool)
+}
+
+// streamOptions carries caller-tunable knobs for --stream.
+type streamOptions struct {
+	idle       time.Duration
+	charBudget int
+	toolBudget int
+	timeout    time.Duration
+}
+
+// streamSessionSend tails the Claude session JSONL for a freshly sent
+// message and writes structured stream events as JSONL to stdout until
+// the assistant reaches end_turn, idle-times out, or ctx is cancelled.
+//
+// Overall budget: streamOptions.timeout bounds the entire stream (not just
+// idle gaps), matching the semantics of --wait's --timeout.
+func streamSessionSend(inst *session.Instance, sessionRef, profile string, sentAt time.Time, opts streamOptions) error {
+	// Resolve JSONL path. Claude writes the file after the first
+	// assistant chunk, so we poll briefly for its existence.
+	resolvedInst := inst
+	if session.IsClaudeCompatible(inst.Tool) {
+		if fresh := inst.GetSessionIDFromTmux(); fresh != "" {
+			inst.ClaudeSessionID = fresh
+			inst.ClaudeDetectedAt = time.Now()
+		}
+	}
+
+	var jsonlPath string
+	deadline := time.Now().Add(opts.timeout)
+	for time.Now().Before(deadline) {
+		jsonlPath = resolvedInst.GetJSONLPath()
+		if jsonlPath != "" {
+			break
+		}
+		// Refresh from DB in case the session was just created.
+		if _, freshInstances, _, loadErr := loadSessionData(profile); loadErr == nil {
+			if fi, _, _ := ResolveSession(sessionRef, freshInstances); fi != nil {
+				resolvedInst = fi
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if jsonlPath == "" {
+		// Emit a single error event to stdout so --stream consumers
+		// always get a parseable response. Matches the schema so they
+		// don't need a separate error channel.
+		errEv := map[string]interface{}{
+			"type":    "error",
+			"message": fmt.Sprintf("session transcript not found within %s (session id=%s)", opts.timeout, resolvedInst.ClaudeSessionID),
+			"ts":      time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		b, _ := json.Marshal(errEv)
+		fmt.Println(string(b))
+		return fmt.Errorf("no transcript")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
+	defer cancel()
+
+	return session.StreamTranscript(ctx, jsonlPath, resolvedInst.ClaudeSessionID, sentAt, os.Stdout, session.StreamConfig{
+		IdleTimeout: opts.idle,
+		CharBudget:  opts.charBudget,
+		ToolBudget:  opts.toolBudget,
+	})
 }
 
 // handleSessionOutput gets the last response from a session
