@@ -39,6 +39,17 @@ jobs:
       - name: Run tests
         run: go test -race ./...
 
+      # Evaluator harness full tier. Blocking — a release that fails eval
+      # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).
+      # Until `eval_full` cases exist, this runs the eval_smoke suite with
+      # a longer timeout so smoke coverage is enforced at the release gate
+      # too, not just on PRs.
+      - name: Run eval harness (full tier)
+        env:
+          GOTOOLCHAIN: go1.24.0
+        run: |
+          go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/... ./internal/ui/...
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

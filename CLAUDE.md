@@ -78,6 +78,35 @@ Any commit modifying `internal/watcher/layout.go` or `internal/session/watcher_m
 bash scripts/verify-watcher-framework.sh
 ```
 
+## Behavioral evaluator harness: mandatory for user-observable changes
+
+The evaluator harness at `tests/eval/` catches the class of bugs where a Go
+unit test passes but the user sees the wrong thing (v1.7.35 CLI disclosure
+buffered behind stdin, v1.7.37 TUI missing disclosure, #687 inject_status_line
+unit-test green + real tmux broken). RFC: `docs/rfc/EVALUATOR_HARNESS.md`.
+
+Any PR that adds or changes an interactive prompt, a tmux state mutation,
+a disclosure step, or any user-facing behavior that pure Go tests cannot
+structurally express MUST add an eval case. The `eval_smoke` suite runs on
+every such PR (`.github/workflows/eval-smoke.yml`); a full tier runs at the
+release gate (`.github/workflows/release.yml`).
+
+### Eval paths under the mandate
+
+- `tests/eval/**` (harness, cases, testdata)
+- `cmd/agent-deck/feedback_cmd.go`, `internal/ui/feedback_dialog*.go` (feedback surfaces)
+- `internal/tmux/tmux.go` (status bar injection, session start)
+- `.github/workflows/eval-smoke.yml`, `.github/workflows/release.yml`
+
+### Running locally
+
+```bash
+GOTOOLCHAIN=go1.24.0 go test -tags eval_smoke \
+  ./tests/eval/... ./internal/ui/...
+```
+
+See `tests/eval/README.md` for how to add a case.
+
 ## --no-verify mandate
 
 **`git commit --no-verify` is FORBIDDEN on source-modifying commits.** Metadata-only commits (`.planning/**`, `docs/**`, non-source `*.md`) MAY use `--no-verify` when hooks would no-op.

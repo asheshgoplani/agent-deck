@@ -1,0 +1,56 @@
+# Evaluator harness — smoke tier (per-PR).
+#
+# Runs the `//go:build eval_smoke` suite across the whole module. Budget:
+# 30-60s wall time, blocking. See docs/rfc/EVALUATOR_HARNESS.md (issue #37).
+#
+# The full tier runs in release.yml before a tag is cut; that one can take
+# 3-5 minutes. Keep this file lean.
+
+name: Eval smoke
+
+on:
+  pull_request:
+    paths:
+      - 'tests/eval/**'
+      - 'cmd/agent-deck/feedback_cmd.go'
+      - 'cmd/agent-deck/main.go'
+      - 'internal/ui/feedback_dialog*.go'
+      - 'internal/tmux/**'
+      - 'internal/session/instance.go'
+      - 'internal/feedback/**'
+      - 'internal/session/userconfig.go'
+      - '.github/workflows/eval-smoke.yml'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: eval_smoke suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # tmux ships in every ubuntu-latest image, but pin a sanity check so
+      # a missing binary fails loudly here instead of at Skip() in a test.
+      - name: Verify tmux available
+        run: |
+          which tmux
+          tmux -V
+
+      - name: Run eval_smoke suite
+        env:
+          GOTOOLCHAIN: go1.24.0
+        run: |
+          go test -tags eval_smoke -race -count=1 -timeout 3m \
+            ./tests/eval/... ./internal/ui/...
