@@ -70,7 +70,6 @@ export function TerminalPanel() {
   const containerRef = useRef(null)
   const ctxRef = useRef(null)  // { terminal, fitAddon, ws, resizeObserver, controller, decoder, reconnectTimer, reconnectAttempt, wsReconnectEnabled, terminalAttached }
   const sessionId = selectedIdSignal.value
-  const isMobile = isMobileDevice()
 
   // Signal vanilla app.js to suppress its terminal path while TerminalPanel is mounted
   useEffect(() => {
@@ -80,8 +79,8 @@ export function TerminalPanel() {
 
   // Cleanup function: dispose terminal, close WS, remove observers.
   // PERF-E: a single controller.abort() detaches every event listener
-  // registered inside the main useEffect (9 total: 4 touch, 1 window
-  // resize, 1 anonymous mobile touchstart, 4 ws).
+  // registered inside the main useEffect (8 total: 4 touch, 1 window
+  // resize, 4 ws).
   const cleanup = useCallback(() => {
     const ctx = ctxRef.current
     if (!ctx) return
@@ -112,7 +111,7 @@ export function TerminalPanel() {
     const terminal = new Terminal({
       convertEol: false,
       cursorBlink: !mobile,
-      disableStdin: mobile,
+      disableStdin: false,
       fontFamily: 'IBM Plex Mono, Menlo, Consolas, monospace',
       fontSize: 13,
       scrollback: 10000,
@@ -151,7 +150,7 @@ export function TerminalPanel() {
     fitAddon.fit()
 
     // PERF-E: single AbortController for every listener registered in this
-    // effect. Calling controller.abort() in the cleanup detaches all 9
+    // effect. Calling controller.abort() in the cleanup detaches all 8
     // listeners in one call -- replaces the previously incomplete manual
     // cleanup that only removed touchstart.
     const controller = new AbortController()
@@ -226,14 +225,11 @@ export function TerminalPanel() {
     // AbortController (PERF-E). No local dispose handle is needed.
     installTouchScroll(container, terminal.element, controller)
 
-    // Keyboard input forwarding (desktop only)
-    let inputDisposable = null
-    if (!mobile) {
-      inputDisposable = terminal.onData((data) => {
-        if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN || !ctx.terminalAttached || readOnlySignal.value) return
-        ctx.ws.send(JSON.stringify({ type: 'input', data }))
-      })
-    }
+    // Keyboard input forwarding (desktop + mobile; server gates on ReadOnly).
+    const inputDisposable = terminal.onData((data) => {
+      if (!ctx.ws || ctx.ws.readyState !== WebSocket.OPEN || !ctx.terminalAttached || readOnlySignal.value) return
+      ctx.ws.send(JSON.stringify({ type: 'input', data }))
+    })
 
     // WSL2+Chrome paste fix: xterm.js 6.0's default paste path can fail and
     // destroy the system clipboard when focus is not on .xterm-helper-textarea.
@@ -253,14 +249,6 @@ export function TerminalPanel() {
         event.stopPropagation()
         ctx.ws.send(JSON.stringify({ type: 'input', data: text }))
       }, { capture: true, signal: controller.signal })
-    }
-
-    // Prevent mobile soft keyboard by blocking touch-focus on the hidden textarea
-    if (mobile) {
-      container.addEventListener('touchstart', (e) => { e.preventDefault() }, {
-        passive: false,
-        signal: controller.signal,
-      })
     }
 
     terminal.writeln('Connecting to terminal...')
@@ -312,7 +300,7 @@ export function TerminalPanel() {
             if (payload.type === 'status') {
               if (payload.event === 'connected') {
                 readOnlySignal.value = !!payload.readOnly
-                if (terminal) terminal.options.disableStdin = !!payload.readOnly || mobile
+                if (terminal) terminal.options.disableStdin = !!payload.readOnly
                 wsStateSignal.value = 'connected'
               } else if (payload.event === 'terminal_attached') {
                 ctx.terminalAttached = true
@@ -360,7 +348,7 @@ export function TerminalPanel() {
 
     // Cleanup on unmount or sessionId change
     return () => {
-      if (inputDisposable) inputDisposable.dispose()
+      inputDisposable.dispose()
       clearTimeout(resizeTimer)
       cleanup()
     }
@@ -372,14 +360,6 @@ export function TerminalPanel() {
 
   return html`
     <div class="flex flex-col h-full">
-      ${isMobile && html`
-        <div class="px-3 py-1.5 text-xs font-medium text-center
-                     dark:bg-tn-yellow/20 dark:text-tn-yellow
-                     bg-yellow-100 text-yellow-800
-                     border-b dark:border-tn-muted/20 border-yellow-200">
-          READ-ONLY: terminal input is disabled on mobile
-        </div>
-      `}
       <div class="flex-1 min-h-0 min-w-0 p-sp-16 overflow-hidden">
         <div ref=${containerRef} class="h-full w-full overflow-hidden" />
       </div>
