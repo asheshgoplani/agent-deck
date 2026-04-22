@@ -243,6 +243,8 @@ type Home struct {
 	isAttaching         atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
 	statusFilter        session.Status // Filter sessions by status ("" = all, or specific status)
 	groupScope          string         // Limit TUI to a specific group path ("" = all groups)
+	initialSelect       string         // Session ID or title to preselect on first load (#709). Does NOT scope groups.
+	initialSelectDone   bool           // Guard so preselection only fires once
 	previewMode         PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
@@ -1013,6 +1015,42 @@ func (h *Home) SetCostBudget(budget *costs.BudgetChecker) {
 // The path is normalized: lowercased and spaces replaced with hyphens.
 func (h *Home) SetGroupScope(path string) {
 	h.groupScope = strings.ToLower(strings.ReplaceAll(path, " ", "-"))
+}
+
+// SetInitialSelection queues a session to preselect on first render (#709).
+// The value may be a session ID or a title. Preselection runs AFTER
+// rebuildFlatItems so it respects any active group scope: if the session is
+// outside the scope, applyInitialSelection returns false and the caller may
+// warn. Crucially, SetInitialSelection does NOT hide any groups — every group
+// configured by the user stays visible in the sidebar.
+func (h *Home) SetInitialSelection(idOrTitle string) {
+	h.initialSelect = strings.TrimSpace(idOrTitle)
+	h.initialSelectDone = false
+}
+
+// applyInitialSelection positions the cursor on the session matching
+// h.initialSelect, if any. Returns true if a match was found and the cursor
+// was moved, false otherwise. Idempotent — after one successful apply, further
+// calls are no-ops so normal cursor navigation is not overridden.
+func (h *Home) applyInitialSelection() bool {
+	if h.initialSelectDone || h.initialSelect == "" {
+		return false
+	}
+	wanted := strings.ToLower(strings.TrimSpace(h.initialSelect))
+	for i, fi := range h.flatItems {
+		if fi.Type != session.ItemTypeSession || fi.Session == nil {
+			continue
+		}
+		if fi.Session.ID == h.initialSelect ||
+			strings.EqualFold(fi.Session.Title, h.initialSelect) ||
+			strings.ToLower(fi.Session.Title) == wanted {
+			h.cursor = i
+			h.initialSelectDone = true
+			h.syncViewport()
+			return true
+		}
+	}
+	return false
 }
 
 // isInGroupScope returns true if the given path is within the active group scope.
@@ -3505,6 +3543,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.syncViewport()
 			} else {
 				h.rebuildFlatItems()
+				// #709: --select takes precedence over the persisted cursor for
+				// the very first load so users land on the session they asked for.
+				if h.applyInitialSelection() {
+					h.pendingCursorRestore = nil
+				}
 				// Restore cursor from persisted UI state (initial load only)
 				if h.pendingCursorRestore != nil {
 					restored := false

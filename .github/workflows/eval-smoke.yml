@@ -15,6 +15,7 @@ on:
       - 'cmd/agent-deck/feedback_cmd.go'
       - 'cmd/agent-deck/main.go'
       - 'internal/ui/feedback_dialog*.go'
+      - 'internal/ui/home.go'
       - 'internal/tmux/**'
       - 'internal/session/instance.go'
       - 'internal/feedback/**'

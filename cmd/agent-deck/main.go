@@ -506,7 +506,10 @@ func main() {
 
 	// Extract --group / -g flag here (TUI-only path; subcommands consume their own -g)
 	var groupScope string
-	groupScope, _ = extractGroupFlag(args)
+	groupScope, args = extractGroupFlag(args)
+	// Extract --select flag (#709): preselect a session without scoping groups.
+	var initialSelect string
+	initialSelect, _ = extractSelectFlag(args)
 
 	// v1.7.41: record TUI launch for feedback-prompt pacing. Seeds
 	// FirstSeenAt on the very first launch and bumps LaunchCount on every
@@ -539,6 +542,38 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Warning: could not verify group '%s' (storage error)\n", groupScope)
 		}
 		homeModel.SetGroupScope(normalizedGroup)
+	}
+	// Apply preselection if specified via --select (#709).
+	// When both -g and --select are given, the preselect runs AFTER the group
+	// scope is applied: Home.applyInitialSelection will fail silently if the
+	// session is outside the scope; we pre-warn here so the user sees both
+	// outputs without digging through logs.
+	if initialSelect != "" {
+		homeModel.SetInitialSelection(initialSelect)
+		if groupScope != "" {
+			if storage, err := session.NewStorageWithProfile(profile); err == nil {
+				if instances, _, err := storage.LoadWithGroups(); err == nil {
+					normalizedGroup := normalizeGroupPath(groupScope)
+					found := false
+					for _, inst := range instances {
+						if inst == nil {
+							continue
+						}
+						if inst.ID != initialSelect && !strings.EqualFold(inst.Title, initialSelect) {
+							continue
+						}
+						gp := inst.GroupPath
+						if gp == normalizedGroup || strings.HasPrefix(gp, normalizedGroup+"/") {
+							found = true
+						}
+						break
+					}
+					if !found {
+						fmt.Fprintf(os.Stderr, "Warning: --select %q is not in group %q; cursor will not be repositioned\n", initialSelect, groupScope)
+					}
+				}
+			}
+		}
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -761,6 +796,34 @@ func extractGroupFlag(args []string) (string, []string) {
 	}
 
 	return group, remaining
+}
+
+// extractSelectFlag extracts --select <session-id-or-title> from args (#709).
+// Unlike -g / --group, --select does NOT scope the TUI to one group — it only
+// positions the cursor on a matching session while keeping every group visible.
+func extractSelectFlag(args []string) (string, []string) {
+	var selectVal string
+	var remaining []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		if strings.HasPrefix(arg, "--select=") {
+			selectVal = strings.TrimPrefix(arg, "--select=")
+			continue
+		}
+		if arg == "--select" {
+			if i+1 < len(args) {
+				selectVal = args[i+1]
+				i++
+				continue
+			}
+		}
+
+		remaining = append(remaining, arg)
+	}
+
+	return selectVal, remaining
 }
 
 // reorderArgsForFlagParsing moves the path argument to the end of args
@@ -2603,11 +2666,12 @@ func printHelp() {
 	fmt.Printf("Agent Deck v%s\n", Version)
 	fmt.Println("Terminal session manager for AI coding agents")
 	fmt.Println()
-	fmt.Println("Usage: agent-deck [-p profile] [-g group] [command]")
+	fmt.Println("Usage: agent-deck [-p profile] [-g group] [--select id|title] [command]")
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile (default: 'default')")
 	fmt.Println("  -g, --group <name>     Launch TUI scoped to a specific group")
+	fmt.Println("  --select <id|title>    Launch TUI with cursor on a specific session (all groups stay visible)")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  (none)           Start the TUI")
