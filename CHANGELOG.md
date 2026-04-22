@@ -5,6 +5,15 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.54] - 2026-04-22
+
+### Added
+- **Title-lock re-ship** ([#697](https://github.com/asheshgoplani/agent-deck/issues/697), reported by [@evgenii-at-dev](https://github.com/evgenii-at-dev)). The title-lock feature itself landed in main via PR [#714](https://github.com/asheshgoplani/agent-deck/pull/714) under the v1.7.52 CHANGELOG heading, but its release workflow and the follow-up v1.7.53 release both hit a pre-existing CI gap (`ubuntu-latest` ships without zoxide; the #693 quick-open picker tests short-circuit on `ZoxideAvailable()` and false-fail `go test ./...`). PR [#716](https://github.com/asheshgoplani/agent-deck/pull/716) added `apt-get install -y zoxide` to both `eval-smoke.yml` and `release.yml`. This release re-ships the v1.7.52 and v1.7.53 features as v1.7.54 so the title-lock fix (and the #709 `--select` flag that briefly tagged as v1.7.53 without artifacts) actually reach binary releases. **No source-code changes for the title-lock feature between v1.7.52 and v1.7.54** — the PR [#714](https://github.com/asheshgoplani/agent-deck/pull/714) commit is unchanged on main; only the release infrastructure around it was fixed. See the "[1.7.52]" entry below for the full feature description and the TDD evidence.
+- **No-op for the #709 `--select` behaviour** — see the "[1.7.53]" entry below; re-shipped identically.
+
+### Fixed
+- **Release workflow infrastructure gap unblocked** ([#716](https://github.com/asheshgoplani/agent-deck/pull/716)): `release.yml` and `eval-smoke.yml` now install zoxide before running `go test ./...`. Without this every release tag between v1.7.52 and v1.7.54 failed its goreleaser step, leaving orphan tags with no binaries. Future releases on `ubuntu-latest` are unblocked.
+
 ## [1.7.53] - 2026-04-22
 
 ### Added
