@@ -59,7 +59,7 @@ echo "copying done"
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, repoDir, worktreeDir, &stdout, &stderr)
+	err := RunWorktreeSetupScript(scriptPath, repoDir, worktreeDir, &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stderr: %s)", err, stderr.String())
 	}
@@ -92,7 +92,7 @@ exit 1
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr)
+	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 0)
 	if err == nil {
 		t.Fatal("expected error from failing script")
 	}
@@ -104,11 +104,6 @@ exit 1
 func TestRunWorktreeSetupScript_Timeout(t *testing.T) {
 	worktreeDir := t.TempDir()
 
-	// Override timeout to 1s for test speed
-	orig := worktreeSetupTimeout
-	worktreeSetupTimeout = 1 * time.Second
-	t.Cleanup(func() { worktreeSetupTimeout = orig })
-
 	script := `#!/bin/sh
 sleep 300
 `
@@ -118,7 +113,7 @@ sleep 300
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr)
+	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 1*time.Second)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -164,7 +159,7 @@ func TestCreateWorktreeWithSetup_NoScript(t *testing.T) {
 	worktreePath := filepath.Join(dir, ".worktrees", "test-branch")
 
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "test-branch", &stdout, &stderr)
+	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "test-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -205,7 +200,7 @@ echo "setup done"
 
 	worktreePath := filepath.Join(dir, ".worktrees", "setup-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "setup-branch", &stdout, &stderr)
+	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "setup-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -245,7 +240,7 @@ exit 1
 
 	worktreePath := filepath.Join(dir, ".worktrees", "fail-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "fail-branch", &stdout, &stderr)
+	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "fail-branch", &stdout, &stderr, 0)
 
 	// Worktree creation should succeed
 	if err != nil {

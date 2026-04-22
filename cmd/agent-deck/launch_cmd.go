@@ -227,7 +227,7 @@ func handleLaunch(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr)
+			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)

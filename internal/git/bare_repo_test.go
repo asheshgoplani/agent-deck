@@ -254,7 +254,7 @@ echo "bare-setup done"
 
 	newWorktreePath := filepath.Join(projectRoot, "worktree-feat")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(projectRoot, newWorktreePath, "feature-bare-e2e", &stdout, &stderr)
+	setupErr, err := CreateWorktreeWithSetup(projectRoot, newWorktreePath, "feature-bare-e2e", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("CreateWorktreeWithSetup failed: %v (stderr: %s)", err, stderr.String())
 	}

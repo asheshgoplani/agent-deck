@@ -36,7 +36,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.62" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.65" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -1328,7 +1328,7 @@ func handleAdd(profile string, args []string) {
 
 			// Create worktree atomically (git handles existence checks).
 			// This avoids a TOCTOU race from separate check-then-create steps.
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr)
+			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				if isWorktreeAlreadyExistsError(err) {
 					fmt.Fprintf(os.Stderr, "Error: worktree already exists at %s\n", worktreePath)

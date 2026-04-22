@@ -825,6 +825,27 @@ type WorktreeSettings struct {
 	// Set to "" to disable auto-prefixing (just the session name).
 	// Default: "feature/" when not set.
 	BranchPrefix *string `toml:"branch_prefix"`
+
+	// SetupTimeoutSeconds caps how long .agent-deck/worktree-setup.sh may run.
+	// Raised via config.toml when the default is too tight for real setups
+	// (installing deps, seeding DBs, etc.) — see GH #724.
+	// Default: 60 when unset or non-positive.
+	SetupTimeoutSeconds int `toml:"setup_timeout_seconds"`
+}
+
+// DefaultWorktreeSetupTimeout is the fallback used when no explicit value is
+// configured. Kept small and visible so the git package can share it.
+const DefaultWorktreeSetupTimeout = 60 * time.Second
+
+// SetupTimeout returns the configured worktree-setup-script timeout as a
+// time.Duration, falling back to DefaultWorktreeSetupTimeout when the value
+// is unset or non-positive. Preserves backward compatibility for every
+// install that never sets [worktree].setup_timeout_seconds.
+func (w WorktreeSettings) SetupTimeout() time.Duration {
+	if w.SetupTimeoutSeconds <= 0 {
+		return DefaultWorktreeSetupTimeout
+	}
+	return time.Duration(w.SetupTimeoutSeconds) * time.Second
 }
 
 // Template returns the path template if set, or empty string if nil.

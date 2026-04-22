@@ -5,6 +5,15 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.65] - 2026-04-22
+
+### Added
+- **Configurable worktree-setup-hook timeout via `[worktree].setup_timeout_seconds`** ([#724](https://github.com/asheshgoplani/agent-deck/issues/724), reporter: @Clindbergh). The worktree setup script `.agent-deck/worktree-setup.sh` was previously capped at a hardcoded 60s, which is too tight for real-world setups that install dependencies and seed local databases — users were seeing timeouts on otherwise-healthy scripts. Fix introduces a new integer config knob `[worktree].setup_timeout_seconds` (default `60`, preserving prior behaviour for every existing install) that is loaded via the standard `LoadUserConfig` path and threaded through `git.RunWorktreeSetupScript` / `git.CreateWorktreeWithSetup` as an explicit `time.Duration` parameter. A non-positive value falls back to `git.DefaultWorktreeSetupTimeout` (60s), so a missing section, a missing field, a `0`, or a negative integer all behave identically to pre-v1.7.65 and cannot accidentally disable the guard. `WorktreeSettings.SetupTimeout()` is a value-receiver helper on the existing `session.WorktreeSettings` struct that returns the resolved `time.Duration`; it's what all five `CreateWorktreeWithSetup` call sites now pass (two in `internal/ui/home.go` for new-session and fork flows, one each in `cmd/agent-deck/launch_cmd.go`, `cmd/agent-deck/session_cmd.go`, `cmd/agent-deck/main.go`). The package-level `worktreeSetupTimeout` var in `internal/git/setup.go` is gone; all timeout control now flows through the function parameter, keeping the `git` package free of a `session` import. Effective wall-clock for a timed-out script is still `setup_timeout_seconds + cmd.WaitDelay` (5s) before SIGKILL — matches pre-v1.7.65 semantics. Tests: `TestWorktreeSettings_SetupTimeoutSeconds_ParsesFromTOML` (config round-trip), `TestWorktreeSettings_SetupTimeout_DefaultSixtySeconds` (zero-value backward compat), `TestWorktreeSettings_SetupTimeout_HonoursConfiguredValue` (positive value honoured) in `internal/session/worktree_setup_timeout_test.go`; `TestRunWorktreeSetupScript_HonoursCallerTimeout` in `internal/git/setup_timeout_arg_test.go` (a 1s caller timeout on a `sleep 300` script must fail in well under the legacy 60s default — proves the parameter is actually threaded, not just declared). Existing `TestRunWorktreeSetupScript_Timeout` rewritten to pass `1*time.Second` directly rather than mutating the now-deleted package var. Example config:
+  ```toml
+  [worktree]
+  setup_timeout_seconds = 300   # bump to 5 minutes for heavier setups
+  ```
+
 ## [1.7.62] - 2026-04-22
 
 ### Added

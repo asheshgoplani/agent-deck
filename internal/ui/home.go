@@ -7661,7 +7661,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
 				var setupBuf bytes.Buffer
-				setupErr, err := git.CreateWorktreeWithSetup(worktreeRepoRoot, worktreePath, worktreeBranch, &setupBuf, &setupBuf)
+				setupErr, err := git.CreateWorktreeWithSetup(worktreeRepoRoot, worktreePath, worktreeBranch, &setupBuf, &setupBuf, session.GetWorktreeSettings().SetupTimeout())
 				if err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
@@ -8188,7 +8188,7 @@ func (h *Home) forkSessionCmdWithOptions(
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
 				var setupBuf bytes.Buffer
-				setupErr, err := git.CreateWorktreeWithSetup(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch, &setupBuf, &setupBuf)
+				setupErr, err := git.CreateWorktreeWithSetup(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch, &setupBuf, &setupBuf, session.GetWorktreeSettings().SetupTimeout())
 				if err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}
