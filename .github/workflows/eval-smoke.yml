@@ -48,6 +48,17 @@ jobs:
           which tmux
           tmux -V
 
+      # zoxide is required by the quick-open picker tests introduced in
+      # #693 (v1.7.54). It's not on ubuntu-latest by default, so install
+      # it here — tests short-circuit on ZoxideAvailable() and otherwise
+      # return empty results, masking any real regression with a false
+      # FAIL across every PR that triggers eval-smoke.
+      - name: Install zoxide
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zoxide
+          zoxide --version
+
       - name: Run eval_smoke suite
         env:
           GOTOOLCHAIN: go1.24.0
