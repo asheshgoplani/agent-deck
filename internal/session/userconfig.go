@@ -1070,6 +1070,15 @@ type TmuxSettings struct {
 	// Default: true (nil = use default true)
 	InjectStatusLine *bool `toml:"inject_status_line"`
 
+	// Mouse controls whether agent-deck enables tmux mouse mode on new
+	// sessions. When false, tmux `mouse on` is never set, so the terminal
+	// emulator keeps raw control of mouse events — required by the VS Code
+	// Linux integrated terminal to let users click-drag to select text
+	// (issue #730). Affects both the inline set-option during session
+	// creation and the separate EnableMouseMode() path used on reconnect.
+	// Default: true (nil = use default true, preserves pre-#730 behavior)
+	Mouse *bool `toml:"mouse"`
+
 	// LaunchInUserScope starts new tmux servers via `systemd-run --user --scope`
 	// so the tmux server lives under the user's systemd manager instead of the
 	// current login session scope. This keeps tmux alive when an SSH session
@@ -1172,6 +1181,16 @@ func (t TmuxSettings) GetInjectStatusLine() bool {
 // Instance creation — sees the same sanitised value.
 func (t TmuxSettings) GetSocketName() string {
 	return strings.TrimSpace(t.SocketName)
+}
+
+// GetMouse returns whether tmux mouse mode should be enabled, defaulting to
+// true. Issue #730: users on VS Code's Linux integrated terminal need mouse
+// OFF so the terminal can handle click-drag selection natively.
+func (t TmuxSettings) GetMouse() bool {
+	if t.Mouse == nil {
+		return true
+	}
+	return *t.Mouse
 }
 
 // GetLaunchInUserScope returns whether new tmux servers should be launched
@@ -2318,6 +2337,12 @@ auto_cleanup = true
 # agent-deck stops mutating the global tmux notification bar / number key bindings
 # Default: true (agent-deck injects its own status bar with session info)
 # inject_status_line = false
+# mouse controls whether agent-deck enables tmux mouse mode.
+# Set this to false if your terminal (e.g. VS Code's Linux integrated terminal)
+# interprets mouse events at the terminal layer and you want click-drag text
+# selection to bypass tmux entirely. Issue #730.
+# Default: true (tmux mouse mode is enabled — scrolling, pane resize, selection in tmux)
+# mouse = false
 # launch_in_user_scope starts new tmux servers with systemd-run --user --scope
 # so they survive when the current login session is torn down (e.g. SSH logout).
 # Default: true on Linux+systemd hosts where 'systemd-run --user --version'

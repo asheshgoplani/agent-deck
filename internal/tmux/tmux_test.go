@@ -2390,10 +2390,10 @@ func TestSession_MouseMode_DefaultIsOn_Integration(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Kill() }()
 
-	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-v", "mouse").Output()
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "on", strings.TrimSpace(string(out)),
-		"default mouse mode should be 'on' (preserves pre-#730 behavior)")
+		"default mouse mode should resolve to 'on' (preserves pre-#730 behavior)")
 }
 
 // TestSession_MouseMode_Disabled_Integration verifies that when SetMouse(false)
@@ -2414,10 +2414,13 @@ func TestSession_MouseMode_Disabled_Integration(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Kill() }()
 
-	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-v", "mouse").Output()
+	// -A resolves inheritance and returns the effective value. Without -A,
+	// an unset-at-session option returns empty string even if the default
+	// (or a global override) would resolve to "off".
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "off", strings.TrimSpace(string(out)),
-		"mouse option must stay 'off' when SetMouse(false) was called before Start (issue #730)")
+		"mouse option must resolve to 'off' when SetMouse(false) was called before Start (issue #730)")
 }
 
 // TestSession_MouseMode_EnableMouseMode_Disabled_Integration verifies that
@@ -2440,7 +2443,7 @@ func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
 	// Should be a no-op when mouse is disabled.
 	_ = s.EnableMouseMode()
 
-	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-v", "mouse").Output()
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
 	require.NoError(t, err)
 	assert.Equal(t, "off", strings.TrimSpace(string(out)),
 		"EnableMouseMode must respect SetMouse(false) and not re-enable mouse")
