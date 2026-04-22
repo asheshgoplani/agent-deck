@@ -34,9 +34,18 @@ type PTYSession struct {
 // Spawn starts the agent-deck binary with args attached to a PTY. The caller
 // is responsible for calling Close() — tests typically `defer p.Close()`.
 func (s *Sandbox) Spawn(args ...string) *PTYSession {
+	return s.SpawnWithEnv(nil, args...)
+}
+
+// SpawnWithEnv is like Spawn but overlays extraEnv on top of Sandbox.Env().
+// Each entry in extraEnv is a "KEY=VALUE" string; it replaces any earlier
+// entry with the same key, matching the convention of exec.Cmd.Env. Use
+// this when a test needs real terminal capabilities (TERM=xterm-256color)
+// — the default Env sets TERM=dumb to keep termenv probes quiet.
+func (s *Sandbox) SpawnWithEnv(extraEnv []string, args ...string) *PTYSession {
 	s.t.Helper()
 	cmd := exec.Command(s.BinPath, args...)
-	cmd.Env = s.Env()
+	cmd.Env = mergeEnv(s.Env(), extraEnv)
 	cmd.Dir = s.Home
 
 	f, err := pty.Start(cmd)
@@ -48,6 +57,30 @@ func (s *Sandbox) Spawn(args ...string) *PTYSession {
 	p.wg.Add(1)
 	go p.drain()
 	return p
+}
+
+func mergeEnv(base, overlay []string) []string {
+	if len(overlay) == 0 {
+		return base
+	}
+	keyOf := func(s string) string {
+		if i := strings.IndexByte(s, '='); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+	out := make([]string, 0, len(base)+len(overlay))
+	overridden := make(map[string]bool, len(overlay))
+	for _, e := range overlay {
+		overridden[keyOf(e)] = true
+	}
+	for _, e := range base {
+		if !overridden[keyOf(e)] {
+			out = append(out, e)
+		}
+	}
+	out = append(out, overlay...)
+	return out
 }
 
 func (p *PTYSession) drain() {

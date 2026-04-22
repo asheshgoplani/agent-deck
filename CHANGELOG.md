@@ -5,6 +5,31 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.56] - 2026-04-22
+
+### Fixed
+- **Socket isolation is now honoured on `session attach`, `session restart`, and every pty.go subprocess ([#687](https://github.com/asheshgoplani/agent-deck/issues/687) follow-up, reported by [@jcordasco](https://github.com/jcordasco) during the v1.7.50 audit).** v1.7.50 shipped `[tmux].socket_name` + `--tmux-socket` + per-session SQLite persistence and routed `session start` / `session stop` / pane probes through the `tmuxArgs` / `Session.tmuxCmd` factory — but `internal/tmux/pty.go` still assembled tmux argv by hand for six call sites, so every one of them connected to the user's **default** tmux server regardless of the session's configured socket. The classes of user-visible failure:
+  1. **`session attach` silently fails** (`can't find session`) when socket isolation is enabled and the session lives on `-L <name>`. The attach argv was `exec.CommandContext(ctx, "tmux", "attach-session", "-t", s.Name)` — no `-L`, so tmux looked on the default server where the session does not exist.
+  2. **`session attach-readonly` (used by the web terminal inspect flow) has the same hole** — same argv shape, same failure mode.
+  3. **`(*Session).Resize(cols, rows)` retargets the default server**, so resize events for an isolated session either no-op or, if there's a same-named session on the default server, resize the wrong pane.
+  4. **`AttachWindow`'s pre-attach `select-window` step runs on the default server**, so `session attach-window` selecting window 2 either fails or selects window 2 on an unrelated same-named default-server session before then correctly attaching to the isolated one (via fixed #1 above).
+  5. **`StreamOutput`'s `pipe-pane -o cat` and its cancellation-path `pipe-pane` stop both run on the default server**, so streaming output from an isolated session receives zero bytes and the stop is a silent no-op.
+  6. **Package-level `RefreshPaneInfoCache` fallback in `title_detection.go`** ran a `list-panes -a` on the default server, so the TUI status cache for isolation-enabled installs showed stale or empty pane titles/tool-detection on the fallback path.
+
+  The fix routes every one of these through the existing v1.7.50 factory. Six new per-Session command-builder seams live at the bottom of `internal/tmux/pty.go` — `(*Session).attachCmd`, `attachReadOnlyCmd`, `resizeCmd`, `selectWindowCmd`, `pipePaneStartCmd`, `pipePaneStopCmd` — each delegating to `s.tmuxCmd` / `s.tmuxCmdContext` so `-L <SocketName>` lands before the subcommand when isolation is configured, and the argv stays byte-identical when it is not. Named methods (rather than inlining the factory calls) give the new regression-lint a stable target to assert argv shape against without spawning PTYs.
+
+  The `title_detection.go` fallback now uses `tmuxExecContext(ctx, DefaultSocketName(), …)`, matching the "package-level probes read process-wide DefaultSocketName()" pattern already in use elsewhere.
+
+  Four layers of regression coverage, all TDD red-then-green before the fix landed:
+  - **Unit (`internal/tmux/pty_socket_test.go`, 7 cases)**: asserts each of the six command-builders emits the exact argv shape `["tmux", "-L", "<socket>", "<subcommand>", …]` when `Session.SocketName` is set, and `["tmux", "<subcommand>", …]` when empty (pre-v1.7.50 byte-compat).
+  - **Static lint (`internal/tmux/tmux_exec_lint_test.go`, 1 case)**: AST-walks every `.go` file in the module, finds every `exec.Command("tmux", …)` and `exec.CommandContext(ctx, "tmux", …)` with a literal `"tmux"` as argv[0], and fails the build if any appears outside the allowlist. The allowlist covers the factory itself (`internal/tmux/socket.go`), the self-contained socket-aware wrapper in `internal/web/terminal_bridge.go`, the test harness's explicit `-S <path>` sandbox (`tests/eval/harness/sandbox.go`), and three specific legitimate argv shapes: `tmux -V` (binary existence check, no server connection), and the three inside-tmux `display-message` CLI helpers in `cmd/agent-deck/{cli_utils,session_cmd}.go` that read `$TMUX` env for auto-detection (adding `-L` there would over-restrict users running `agent-deck session current` from a non-agent-deck tmux pane). Adding a new source-level tmux exec site now requires either routing through the factory or editing the allowlist with justification — no more silent bypasses.
+  - **Eval (`tests/eval/session/attach_socket_isolation_test.go`, 1 case, `eval_smoke` tag)**: drives the real `agent-deck` binary through the full interactive lifecycle against a real tmux server on a randomly-named isolated socket. `add` → `session start` → PTY-spawned `session attach` → verify client appears on `tmux -L <socket> list-clients` AND does NOT appear on the default server → send Ctrl+Q → clean detach with exit 0 → `session restart` → verify exactly one session on the isolated socket → `session stop` → verify zero sessions. The "PTY output dumped on failure" diagnostic makes the diagnosis actionable when a future regression fires this case.
+  - **Harness (`tests/eval/harness/pty.go`)**: new `Sandbox.SpawnWithEnv(extraEnv, args…)` overlays extra env on top of the sandbox base, enabling tests (like this one) to run agent-deck under `TERM=xterm-256color` when real terminal capabilities are required — the sandbox default is `TERM=dumb` to keep termenv probes quiet, which is correct for most evals but causes tmux attach to refuse to register a client.
+
+  All mandatory test gates pass unchanged: `TestPersistence_*`, Feedback + Sender_, Watcher framework, full `internal/tmux/...` race-detected suite.
+
+  Thanks to [@jcordasco](https://github.com/jcordasco) for the detailed v1.7.50 audit that caught this — socket isolation at start + stop without isolation at attach would have been worse than no isolation at all, because users would have believed they were protected.
+
 ## [1.7.52] - 2026-04-22
 
 ### Added

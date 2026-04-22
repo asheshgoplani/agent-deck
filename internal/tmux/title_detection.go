@@ -3,7 +3,6 @@ package tmux
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -120,10 +119,15 @@ func RefreshPaneInfoCache() {
 		statusLog.Debug("pane_cache_subprocess_fallback")
 	}
 
-	// Subprocess fallback: list-panes -a (3s timeout to prevent freeze when server is dead)
+	// Subprocess fallback: list-panes -a (3s timeout to prevent freeze when server is dead).
+	// Package-level probe: routes through tmuxExecContext + DefaultSocketName()
+	// so installations with [tmux].socket_name set see their isolated server
+	// (#687 follow-up, v1.7.55).
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}")
+	cmd := tmuxExecContext(ctx, DefaultSocketName(),
+		"list-panes", "-a", "-F",
+		"#{session_name}\t#{pane_title}\t#{pane_current_command}\t#{pane_dead}\t#{window_index}\t#{pane_index}")
 	output, err := cmd.Output()
 	if err != nil {
 		paneCacheMu.Lock()

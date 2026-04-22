@@ -502,11 +502,11 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 
 	if out.jsonMode {
 		out.Success("", map[string]interface{}{
-			"success":  failed == 0,
-			"total":    len(active),
+			"success":   failed == 0,
+			"total":     len(active),
 			"restarted": len(active) - failed,
-			"failed":   failed,
-			"sessions": results,
+			"failed":    failed,
+			"sessions":  results,
 		})
 	} else if !out.quietMode {
 		fmt.Printf("Restarted %d/%d sessions", len(active)-failed, len(active))
