@@ -86,6 +86,17 @@ func handleSessionRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Always kill the tmux scope + its process tree before deleting the
+	// registry row (issue #59, v1.7.68). Previously Kill() was only
+	// called inside pruneSessionWorktree, so `session remove --force`
+	// on a running session left the claude child running as an orphan
+	// — observed on the maintainer's host as a 33-hour orphan claude
+	// process with a since-deleted AGENTDECK_INSTANCE_ID.
+	//
+	// KillAndWait runs the SIGTERM→SIGKILL escalation synchronously so
+	// the kill completes before this short-lived CLI exits.
+	_ = inst.KillAndWait()
+
 	if *pruneWorktree {
 		pruneSessionWorktree(inst)
 	}
@@ -126,6 +137,12 @@ func removeAllErrored(
 	remaining := instances[:0]
 	for _, inst := range instances {
 		if inst.Status == session.StatusError {
+			// Synchronously kill the tmux scope + pane processes before
+			// deleting the registry row (issue #59, v1.7.68). Errored
+			// sessions commonly still own a live claude child that
+			// silently consumes CPU — leaking them out of this bulk
+			// cleanup is exactly how the 33-hour orphan was created.
+			_ = inst.KillAndWait()
 			if pruneWorktree {
 				pruneSessionWorktree(inst)
 			}
@@ -151,8 +168,11 @@ func removeAllErrored(
 
 // pruneSessionWorktree kills the session and removes its git worktree (if any).
 // Errors are logged to stderr but never block the remove.
+//
+// Uses KillAndWait so the SIGTERM→SIGKILL escalation completes before
+// this short-lived CLI exits (issue #59, v1.7.68).
 func pruneSessionWorktree(inst *session.Instance) {
-	_ = inst.Kill()
+	_ = inst.KillAndWait()
 	if inst.IsWorktree() {
 		if err := git.RemoveWorktree(inst.WorktreeRepoRoot, inst.WorktreePath, true); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: worktree remove failed for %s: %v\n", inst.ID, err)
