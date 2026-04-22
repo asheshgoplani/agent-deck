@@ -200,6 +200,51 @@ The script receives two environment variables:
 
 The script runs via `sh -e` with a 60-second timeout. If it fails, the worktree is still created — you'll see a warning but the session proceeds normally.
 
+#### Bare repositories and worktrees
+
+Agent-deck supports the [bare-repo layout](https://git-scm.com/docs/git-worktree) where the git metadata sits in `.bare/` and every worktree is a peer (no "main" checkout). A typical tree:
+
+```
+project/
+├── .bare/                         # bare git repo (holds refs, objects, HEAD)
+├── .agent-deck/
+│   └── worktree-setup.sh          # shared setup script (optional)
+├── worktree-a/                    # linked worktree on branch-a
+│   └── .git                       # file: gitdir: ../.bare/worktrees/worktree-a
+└── worktree-b/                    # linked worktree on branch-b
+    └── .git
+```
+
+How agent-deck resolves this layout (v1.7.58+):
+
+- **All three paths work.** `agent-deck add project/`, `agent-deck add project/.bare`, and `agent-deck add project/worktree-a` all resolve to the same "project root" — `project/`, the directory that hosts `.bare/`. Every linked worktree is treated as equal; there is no default or main.
+- **The project root is where shared config lives.** Place `.agent-deck/worktree-setup.sh` at `project/.agent-deck/worktree-setup.sh`, next to `.bare/`. Agent-deck looks for it at exactly that path once it has resolved the project root — it does not search individual worktrees.
+- **`AGENT_DECK_REPO_ROOT` inside the setup script points to `project/`.** So `cp "$AGENT_DECK_REPO_ROOT/.env" "$AGENT_DECK_WORKTREE_PATH/.env"` copies the shared `.env` you keep alongside `.bare/` into each new worktree.
+- **New worktree location follows your `[worktree]` setting.** With `default_location = "subdirectory"` (or `--location subdirectory`) new worktrees land inside the project root at `project/.worktrees/<branch-name>`.
+
+Example — create a new worktree against a bare repo from anywhere:
+
+```sh
+# From the project root
+agent-deck add project/ -c claude --worktree feature/c --new-branch
+
+# Or point directly at the bare dir
+agent-deck add project/.bare -c claude --worktree feature/c --new-branch
+
+# Or from any existing linked worktree
+agent-deck add project/worktree-a -c claude --worktree feature/c --new-branch
+```
+
+All three commands create `project/.worktrees/feature-c/` (with `subdirectory` location) and run `project/.agent-deck/worktree-setup.sh` with `AGENT_DECK_REPO_ROOT=project`.
+
+`agent-deck worktree list` and `agent-deck worktree finish` also work from any of those three locations.
+
+Common gotchas:
+
+- **`.agent-deck/` must live at the project root**, next to `.bare/`. If you commit `.agent-deck/` into a specific branch's worktree instead, agent-deck will not find it — the lookup resolves to the project root, not the current worktree.
+- **The bare repo must be a direct child of the project root.** The auto-discovery scans `<projectRoot>/.bare` first, then direct children as a fallback. A bare repo named something other than `.bare` (e.g. `.git-bare/`) still works; one nested several levels deep does not, so point `agent-deck add` at its parent directly in that case.
+- **If you also keep a `.git` file at the project root** pointing to `.bare/` (a variant some tutorials recommend), point `agent-deck add` at `.bare/` or at a linked worktree rather than at the project root — the `.git` file shadows the bare-repo detection path.
+
 ### Docker Sandbox
 
 Run sessions inside isolated Docker containers. The project directory is bind-mounted read-write, so agents work on your code while the rest of the system stays protected.
