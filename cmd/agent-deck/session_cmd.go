@@ -50,6 +50,8 @@ func handleSession(profile string, args []string) {
 		handleSessionUnsetParent(profile, args[1:])
 	case "set-transition-notify":
 		handleSessionSetTransitionNotify(profile, args[1:])
+	case "set-title-lock":
+		handleSessionSetTitleLock(profile, args[1:])
 	case "set":
 		handleSessionSet(profile, args[1:])
 	case "move", "mv":
@@ -92,6 +94,7 @@ func printSessionHelp() {
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
 	fmt.Println("  set-transition-notify <id> <on|off>  Enable/disable transition notifications")
+	fmt.Println("  set-title-lock <id> <on|off>         Lock/unlock title from Claude session-name sync (#697)")
 	fmt.Println()
 	fmt.Println("Global Options:")
 	fmt.Println("  -p, --profile <name>   Use specific profile")
@@ -110,6 +113,8 @@ func printSessionHelp() {
 	fmt.Println("  agent-deck session unset-parent sub-task             # Remove sub-session link")
 	fmt.Println("  agent-deck session set-transition-notify worker off    # Suppress notifications")
 	fmt.Println("  agent-deck session set-transition-notify worker on     # Re-enable notifications")
+	fmt.Println("  agent-deck session set-title-lock SCRUM-351 on         # Prevent Claude from renaming it")
+	fmt.Println("  agent-deck session set-title-lock SCRUM-351 off        # Re-enable title sync")
 	fmt.Println("  agent-deck session output my-project                 # Get last response from session")
 	fmt.Println("  agent-deck session output my-project --json          # Get response as JSON")
 	fmt.Println()
@@ -770,6 +775,7 @@ func handleSessionShow(profile string, args []string) {
 		"parent_session_id":    inst.ParentSessionID,
 		"parent_project_path":  inst.ParentProjectPath,
 		"no_transition_notify": inst.NoTransitionNotify,
+		"title_locked":         inst.TitleLocked,
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
@@ -1532,6 +1538,90 @@ func handleSessionSetTransitionNotify(profile string, args []string) {
 		"session_id":           inst.ID,
 		"session_title":        inst.Title,
 		"no_transition_notify": suppress,
+	})
+}
+
+// handleSessionSetTitleLock toggles Instance.TitleLocked (#697). When on, the
+// claude-hook name-sync path (applyClaudeTitleSync) is a no-op for this
+// session, preserving the conductor-assigned title across Claude renames.
+func handleSessionSetTitleLock(profile string, args []string) {
+	fs := flag.NewFlagSet("session set-title-lock", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck session set-title-lock <session> <on|off|true|false>")
+		fmt.Println()
+		fmt.Println("Lock or unlock a session's title from Claude session-name sync (#697).")
+		fmt.Println("When locked, Claude's --name / /rename will not overwrite the")
+		fmt.Println("agent-deck title. Conductors rely on this so semantic titles like")
+		fmt.Println("'SCRUM-351' survive Claude's auto-generated summaries.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+		fmt.Println()
+		fmt.Println("Examples:")
+		fmt.Println("  agent-deck session set-title-lock SCRUM-351 on")
+		fmt.Println("  agent-deck session set-title-lock SCRUM-351 off")
+		fmt.Println("  agent-deck session set-title-lock worker true")
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	if fs.NArg() < 2 {
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	sessionID := fs.Arg(0)
+	value := strings.ToLower(strings.TrimSpace(fs.Arg(1)))
+	quietMode := *quiet || *quietShort
+	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	var locked bool
+	switch value {
+	case "on", "true", "1", "yes":
+		locked = true
+	case "off", "false", "0", "no":
+		locked = false
+	default:
+		out.Error(fmt.Sprintf("invalid value %q: must be 'on' or 'off' (also true/false/1/0)", value), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	storage, instances, groupsData, err := loadSessionData(profile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+
+	inst, errMsg, errCode := ResolveSession(sessionID, instances)
+	if inst == nil {
+		out.Error(errMsg, errCode)
+		os.Exit(2)
+		return
+	}
+
+	inst.TitleLocked = locked
+
+	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
+	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
+	stateStr := "off"
+	if locked {
+		stateStr = "on"
+	}
+	out.Success(fmt.Sprintf("Title lock for '%s': %s", inst.Title, stateStr), map[string]interface{}{
+		"success":       true,
+		"session_id":    inst.ID,
+		"session_title": inst.Title,
+		"title_locked":  locked,
 	})
 }
 

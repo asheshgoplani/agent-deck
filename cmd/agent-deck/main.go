@@ -35,7 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.51" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.52" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -948,6 +948,11 @@ func handleAdd(profile string, args []string) {
 	parentShort := fs.String("p", "", "Parent session (short)")
 	noParent := fs.Bool("no-parent", false, "Disable automatic parent linking (use 'session set-parent' later to link manually)")
 	noTransitionNotify := fs.Bool("no-transition-notify", false, "Suppress transition event notifications to parent session")
+	// #697: conductor-friendly title lock. When set, Claude's session name
+	// (--name / /rename) never overwrites the agent-deck title. --no-title-sync
+	// is an alias for discoverability.
+	titleLock := fs.Bool("title-lock", false, "Lock session title so Claude's session name never overrides it (#697)")
+	noTitleSync := fs.Bool("no-title-sync", false, "Alias for --title-lock")
 	quickCreate := fs.Bool("quick", false, "Auto-generate session name (adjective-noun)")
 	quickCreateShort := fs.Bool("Q", false, "Auto-generate session name (short)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -1319,6 +1324,11 @@ func handleAdd(profile string, args []string) {
 	// Suppress transition notifications if requested
 	if *noTransitionNotify {
 		newInstance.NoTransitionNotify = true
+	}
+
+	// #697: title-lock blocks Claude's session-name sync. Either flag triggers it.
+	if *titleLock || *noTitleSync {
+		newInstance.TitleLocked = true
 	}
 
 	// Set command if provided

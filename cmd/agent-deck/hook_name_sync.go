@@ -105,6 +105,13 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 			_ = storage.Close()
 			continue
 		}
+		// #697: TitleLocked blocks Claude's session name from overwriting the
+		// agent-deck title. Conductors rely on semantic titles (e.g.
+		// "SCRUM-351") surviving Claude's own /rename.
+		if target.TitleLocked {
+			_ = storage.Close()
+			return
+		}
 		if target.Title == name {
 			_ = storage.Close()
 			return

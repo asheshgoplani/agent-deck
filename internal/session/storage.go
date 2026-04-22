@@ -44,6 +44,7 @@ type InstanceData struct {
 	ParentSessionID    string    `json:"parent_session_id,omitempty"`    // Links to parent session (sub-session support)
 	IsConductor        bool      `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
 	NoTransitionNotify bool      `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch
+	TitleLocked        bool      `json:"title_locked,omitempty"`         // #697: block Claude session-name sync into Title
 	Command            string    `json:"command"`
 	Wrapper            string    `json:"wrapper,omitempty"`
 	Tool               string    `json:"tool"`
@@ -351,6 +352,7 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 			ParentSessionID:    inst.ParentSessionID,
 			IsConductor:        inst.IsConductor,
 			NoTransitionNotify: inst.NoTransitionNotify,
+			TitleLocked:        inst.TitleLocked,
 			WorktreePath:       inst.WorktreePath,
 			WorktreeRepo:       inst.WorktreeRepoRoot,
 			WorktreeBranch:     inst.WorktreeBranch,
@@ -493,6 +495,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			ParentSessionID:    r.ParentSessionID,
 			IsConductor:        r.IsConductor,
 			NoTransitionNotify: r.NoTransitionNotify,
+			TitleLocked:        r.TitleLocked,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
@@ -598,6 +601,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			ParentSessionID:    r.ParentSessionID,
 			IsConductor:        r.IsConductor,
 			NoTransitionNotify: r.NoTransitionNotify,
+			TitleLocked:        r.TitleLocked,
 			Command:            r.Command,
 			Wrapper:            r.Wrapper,
 			Tool:               r.Tool,
@@ -840,6 +844,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			ParentSessionID:    instData.ParentSessionID,
 			IsConductor:        instData.IsConductor,
 			NoTransitionNotify: instData.NoTransitionNotify,
+			TitleLocked:        instData.TitleLocked,
 			Command:            instData.Command,
 			Wrapper:            instData.Wrapper,
 			Tool:               instData.Tool,

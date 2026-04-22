@@ -248,3 +248,67 @@ func TestApplyClaudeTitleSync_NoopWhenNameEqualsTitle(t *testing.T) {
 		t.Errorf("DB last-modified advanced when title already equaled Claude name: before=%v after=%v (redundant write)", beforeTS, afterTS)
 	}
 }
+
+// TestApplyClaudeTitleSync_NoopWhenTitleLocked (#697): when the user has set
+// TitleLocked=true on an instance, Claude renaming the session (e.g. from
+// "SCRUM-351" to "auto-refresh-task-lists") must not overwrite the
+// agent-deck title. Conductors depend on semantic titles surviving Claude's
+// /rename of its own session.
+func TestApplyClaudeTitleSync_NoopWhenTitleLocked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_PROFILE", "sync_test_697_lock")
+
+	claudeDir := filepath.Join(home, ".claude")
+	sid := "sid-697"
+	writeClaudeSessionFile(t, claudeDir, 697, map[string]any{
+		"pid":       697,
+		"sessionId": sid,
+		"name":      "auto-refresh-task-lists",
+	})
+
+	storage, err := session.NewStorageWithProfile("sync_test_697_lock")
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+
+	projectDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{
+		ID:          "inst-697",
+		Title:       "SCRUM-351",
+		TitleLocked: true,
+		Tool:        "claude",
+		ProjectPath: projectDir,
+		Command:     "claude",
+	}
+	if err := storage.Save([]*session.Instance{inst}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	applyClaudeTitleSync("inst-697", sid)
+
+	loaded, err := storage.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	var found *session.Instance
+	for _, i := range loaded {
+		if i.ID == "inst-697" {
+			found = i
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("instance disappeared")
+	}
+	if found.Title != "SCRUM-351" {
+		t.Errorf("post-sync Title = %q, want %q (#697 TitleLocked must block sync)", found.Title, "SCRUM-351")
+	}
+	if !found.TitleLocked {
+		t.Errorf("TitleLocked lost across storage round-trip: got false, want true")
+	}
+}

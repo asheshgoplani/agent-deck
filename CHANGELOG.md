@@ -5,6 +5,22 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.52] - 2026-04-22
+
+### Added
+- **`--title-lock` flag + `session set-title-lock` subcommand prevent Claude's session name from overriding the agent-deck title ([#697](https://github.com/asheshgoplani/agent-deck/issues/697), reported by [@evgenii-at-dev](https://github.com/evgenii-at-dev)).** Conductor workflow: launch `agent-deck launch -t SCRUM-351 -c claude --title-lock` on a worker, then Claude's own `/rename` of its session (or the auto-generated first-message summary like `auto-refresh-task-lists`) is prevented from syncing back into the agent-deck title. Without this, the conductor loses the semantic identity it assigned to the child session on the first hook tick — making it impossible to tell which worker is working on which ticket once Claude has spoken. Three call sites:
+  1. **`Instance.TitleLocked bool`** (new field, persisted in `instances.title_locked` SQLite column via schema bump v7 → v8, additive ALTER TABLE with `DEFAULT 0` so every pre-v1.7.52 row reads as unlocked and the existing `applyClaudeTitleSync` path stays default-on for them). JSON tag `title_locked,omitempty` keeps the wire format backwards-compatible with any third-party tooling that reads the state-db JSON dumps.
+  2. **`applyClaudeTitleSync` gate** (`cmd/agent-deck/hook_name_sync.go`): after resolving the target Instance, an early-return `if target.TitleLocked` skips the Title mutation and the SaveWithGroups write — keeping the #572 default behaviour (Claude `--name`/`/rename` syncs into agent-deck) untouched for the 99% case while giving conductors an opt-in off switch.
+  3. **CLI surface**: `agent-deck add` and `agent-deck launch` gain `--title-lock` (with `--no-title-sync` as an alias for discoverability); `agent-deck session set-title-lock <id> <on|off>` toggles an already-created session (accepts `true`/`false`/`1`/`0`/`yes`/`no` too for script friendliness). `session show --json` now emits `title_locked: true|false` so conductors can query state without reading the SQLite directly.
+
+  Tests (TDD — RED captured on baseline before the implementation landed):
+  - `TestApplyClaudeTitleSync_NoopWhenTitleLocked` in `cmd/agent-deck/hook_name_sync_test.go` — seeds an Instance with `TitleLocked: true` and a matching Claude session metadata file, invokes `applyClaudeTitleSync`, asserts the Title did NOT change and that `TitleLocked` survived the round-trip (guards against silent persistence regressions).
+  - `TestStorageSaveWithGroups_PersistsTitleLocked` in `internal/session/storage_test.go` — round-trips two instances (one locked, one unlocked) through `SaveWithGroups`, then reloads via BOTH `LoadWithGroups` (full hydration, TUI path) and `LoadLite` (fast CLI path), asserting the bool survives each path and that the default (false) doesn't leak across rows.
+  - The three existing `TestApplyClaudeTitleSync_*` cases (UpdatesInstance / NoopWhenNameMissing / NoopWhenNameEqualsTitle) continue to pass unchanged, proving the #572 default behaviour is preserved.
+  - End-to-end eval harness at `tests/eval/title-lock.eval.sh` drives the real binary through three real-world scenarios in a disposable `HOME`: (A) add with `--title-lock` blocks Claude's rename; (B) `session set-title-lock off` re-enables sync on the next hook tick; (C) `set-title-lock on` re-freezes the title against a subsequent rename. Smoke-tier — designed to run on every PR that touches session lifecycle.
+
+  Thanks to [@evgenii-at-dev](https://github.com/evgenii-at-dev) for the detailed conductor-workflow bug report that caught this.
+
 ## [1.7.51] - 2026-04-22
 
 ### Fixed

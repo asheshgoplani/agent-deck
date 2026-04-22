@@ -316,6 +316,75 @@ func TestStorageSaveWithGroups_PersistsSandboxConfig(t *testing.T) {
 	}
 }
 
+// TestStorageSaveWithGroups_PersistsTitleLocked (#697) verifies that
+// Instance.TitleLocked round-trips through SQLite so the sync blocker
+// survives agent-deck restarts. Without persistence, a conductor-set lock
+// would silently evaporate on the first TUI restart and Claude could
+// rename the session on the next hook event.
+func TestStorageSaveWithGroups_PersistsTitleLocked(t *testing.T) {
+	s := newTestStorage(t)
+
+	instances := []*Instance{
+		{
+			ID:          "locked-1",
+			Title:       "SCRUM-351",
+			ProjectPath: "/tmp/locked",
+			GroupPath:   "grp",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   time.Now(),
+			TitleLocked: true,
+		},
+		{
+			ID:          "unlocked-1",
+			Title:       "quiet-river",
+			ProjectPath: "/tmp/unlocked",
+			GroupPath:   "grp",
+			Command:     "claude",
+			Tool:        "claude",
+			Status:      StatusIdle,
+			CreatedAt:   time.Now(),
+		},
+	}
+
+	if err := s.SaveWithGroups(instances, nil); err != nil {
+		t.Fatalf("SaveWithGroups failed: %v", err)
+	}
+
+	loaded, _, err := s.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups failed: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 loaded instances, got %d", len(loaded))
+	}
+
+	byID := map[string]*Instance{}
+	for _, inst := range loaded {
+		byID[inst.ID] = inst
+	}
+	if !byID["locked-1"].TitleLocked {
+		t.Errorf("locked-1.TitleLocked = false after round-trip, want true (#697)")
+	}
+	if byID["unlocked-1"].TitleLocked {
+		t.Errorf("unlocked-1.TitleLocked = true after round-trip, want false (default must not leak)")
+	}
+
+	// Also verify LoadLite preserves it (fast-path used by CLI commands)
+	lite, _, err := s.LoadLite()
+	if err != nil {
+		t.Fatalf("LoadLite failed: %v", err)
+	}
+	liteByID := map[string]*InstanceData{}
+	for _, d := range lite {
+		liteByID[d.ID] = d
+	}
+	if !liteByID["locked-1"].TitleLocked {
+		t.Errorf("LoadLite locked-1.TitleLocked = false, want true")
+	}
+}
+
 // TestSaveSessionData_PreservesGroupSortOrder verifies that saving session data
 // with stored groups preserves the sort_order, matching the fix in #465.
 func TestSaveSessionData_PreservesGroupSortOrder(t *testing.T) {

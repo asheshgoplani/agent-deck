@@ -49,6 +49,8 @@ type InstanceRow struct {
 	// Empty for pre-v1.7.50 rows — those keep targeting the default server
 	// after upgrade.
 	TmuxSocketName string
+	// TitleLocked blocks Claude session-name sync into Title (v1.7.52+, issue #697).
+	TitleLocked    bool
 	WorktreePath   string
 	WorktreeRepo   string
 	WorktreeBranch string
@@ -212,6 +214,7 @@ func (s *StateDB) Migrate() error {
 			parent_session_id TEXT NOT NULL DEFAULT '',
 			is_conductor            INTEGER NOT NULL DEFAULT 0,
 			no_transition_notify    INTEGER NOT NULL DEFAULT 0,
+			title_locked            INTEGER NOT NULL DEFAULT 0,
 			worktree_path     TEXT NOT NULL DEFAULT '',
 			worktree_repo     TEXT NOT NULL DEFAULT '',
 			worktree_branch   TEXT NOT NULL DEFAULT '',
@@ -342,6 +345,9 @@ func (s *StateDB) Migrate() error {
 		// v7 (issue #687, v1.7.50): per-session tmux socket isolation.
 		// Default '' keeps the pre-v1.7.50 behavior for existing rows.
 		"ALTER TABLE instances ADD COLUMN tmux_socket_name TEXT NOT NULL DEFAULT ''",
+		// v8 (issue #697, v1.7.52): title lock blocks Claude session-name sync.
+		// Default 0 keeps the pre-v1.7.52 behavior (#572 sync default-on) for existing rows.
+		"ALTER TABLE instances ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -388,6 +394,13 @@ func (s *StateDB) Migrate() error {
 				}
 			}
 		}
+		if oldVer < 8 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v8 title_locked: %w", err)
+				}
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -425,6 +438,10 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if inst.NoTransitionNotify {
 		noTransitionNotifyInt = 1
 	}
+	titleLockedInt := 0
+	if inst.TitleLocked {
+		titleLockedInt = 1
+	}
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO instances (
 			id, title, project_path, group_path, sort_order,
@@ -432,15 +449,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
-			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
-		string(toolData),
+		string(toolData), titleLockedInt,
 	)
 	return err
 }
@@ -480,8 +497,8 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
-			tool_data
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -501,13 +518,17 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 		if inst.NoTransitionNotify {
 			noTransitionNotifyInt = 1
 		}
+		titleLockedInt := 0
+		if inst.TitleLocked {
+			titleLockedInt = 1
+		}
 		if _, err := stmt.Exec(
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
-			string(toolData),
+			string(toolData), titleLockedInt,
 		); err != nil {
 			return err
 		}
@@ -524,7 +545,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch,
-			tool_data
+			tool_data, title_locked
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -537,14 +558,14 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		r := &InstanceRow{}
 		var createdUnix, accessedUnix int64
 		var toolDataStr string
-		var isConductorInt, noTransitionNotifyInt int
+		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
 			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
-			&toolDataStr,
+			&toolDataStr, &titleLockedInt,
 		); err != nil {
 			return nil, err
 		}
@@ -554,6 +575,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 		}
 		r.IsConductor = isConductorInt != 0
 		r.NoTransitionNotify = noTransitionNotifyInt != 0
+		r.TitleLocked = titleLockedInt != 0
 		r.ToolData = json.RawMessage(toolDataStr)
 		result = append(result, r)
 	}
