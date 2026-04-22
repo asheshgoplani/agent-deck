@@ -20,23 +20,24 @@ func FindWorktreeSetupScript(repoDir string) string {
 	return ""
 }
 
-// DefaultWorktreeSetupTimeout is the fallback used when callers pass a
-// non-positive timeout. Kept in sync with session.DefaultWorktreeSetupTimeout
-// — duplicated here to avoid a session → git import cycle.
-const DefaultWorktreeSetupTimeout = 60 * time.Second
-
 // RunWorktreeSetupScript executes the setup script with AGENT_DECK_REPO_ROOT
 // and AGENT_DECK_WORKTREE_PATH environment variables set. Working directory
-// is set to worktreePath. Output is streamed to the provided writers. A
-// non-positive timeout falls back to DefaultWorktreeSetupTimeout so the
-// legacy 60s behaviour holds for any caller that has not adopted the new
-// [worktree].setup_timeout_seconds config knob (GH #724).
+// is set to worktreePath. Output is streamed to the provided writers.
+//
+// Timeout semantics (post-#727 follow-up):
+//   - timeout > 0  → bounded by context.WithTimeout
+//   - timeout <= 0 → unlimited (context.Background, no deadline)
+//
+// The session layer resolves the legacy 60s default before calling here;
+// callers that want bounded runs must pass a positive duration explicitly.
 func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = DefaultWorktreeSetupTimeout
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-e", scriptPath)
@@ -63,7 +64,7 @@ func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, st
 // CreateWorktreeWithSetup creates a worktree and runs the setup script if present.
 // Setup script failure is non-fatal: the worktree is still valid.
 // Output is streamed to the provided writers. A non-positive setupTimeout
-// falls back to DefaultWorktreeSetupTimeout.
+// means "no deadline" — see RunWorktreeSetupScript for the full semantic.
 func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
