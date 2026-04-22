@@ -62,3 +62,35 @@ func TestFilterPreservesMouseCSIInput(t *testing.T) {
 		require.Equal(t, input, f.Consume(input, true, false))
 	})
 }
+
+// Regression for #731: iTerm2 XTVERSION DCS replies can arrive on stdin long
+// after the 2-second attach quarantine elapses (e.g. on window focus/resize).
+// Escape-string replies (DCS/OSC/APC/PM/SOS) have no keyboard overlap and must
+// be stripped regardless of the armed flag.
+func TestFilterDiscardsXTVERSIONReplyWhenNotArmed(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte("\x1bP>|iTerm2 3.6.10n\x1b\\j"), false, false)
+	require.Equal(t, []byte("j"), got)
+	require.False(t, f.Active())
+}
+
+func TestFilterDiscardsOSCReplyWhenNotArmed(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte("\x1b]11;rgb:d3d3/f5f5/f5f5\x07k"), false, false)
+	require.Equal(t, []byte("k"), got)
+	require.False(t, f.Active())
+}
+
+func TestFilterDiscardsSplitDCSReplyWhenNotArmed(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte("\x1bP>|iTerm2 "), false, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte("3.6.10n\x1b\\rest"), false, false)
+	require.Equal(t, []byte("rest"), got)
+	require.False(t, f.Active())
+}

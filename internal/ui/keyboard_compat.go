@@ -328,12 +328,15 @@ func (c *csiuReader) Read(p []byte) (int, error) {
 		n, err := c.src.Read(tmp)
 		if n > 0 {
 			chunk := tmp[:n]
-			if termreply.Active() || c.replyFilter.Active() {
-				chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
-			}
+			// Always run the reply filter. Escape-string families (DCS/OSC/
+			// APC/PM/SOS) are never keyboard input and can arrive outside
+			// any explicit quarantine window (e.g. iTerm2 XTVERSION reply on
+			// focus/resize — #731). `armed` stays tied to termreply.Active()
+			// so generic CSI pass-through works for keyboard input.
+			chunk = c.replyFilter.Consume(chunk, termreply.Active(), false)
 			c.inBuf = append(c.inBuf, chunk...)
 		}
-		if err == io.EOF && (termreply.Active() || c.replyFilter.Active()) {
+		if err == io.EOF {
 			c.inBuf = append(c.inBuf, c.replyFilter.Consume(nil, termreply.Active(), true)...)
 		}
 

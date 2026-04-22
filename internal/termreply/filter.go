@@ -106,12 +106,19 @@ func (f *Filter) resetSequenceState() {
 	f.escapeSeenInDiscard = false
 }
 
-// Consume filters a chunk of bytes. When armed is true, terminal-generated
-// control replies are discarded. If a reply started in a previous chunk, it
-// continues to be discarded until it terminates even if armed is now false.
+// Consume filters a chunk of bytes. Escape-string replies (OSC/DCS/APC/PM/SOS)
+// are discarded unconditionally — they have no keyboard overlap, so a human
+// cannot produce them, and leaking them to the inner PTY has real-world
+// failure modes (see #731: iTerm2 XTVERSION DCS leaking as `TERM2 3.6.10n`
+// input into the wrapped agent). When armed is true, generic CSI replies are
+// ALSO discarded except for a small whitelist of keyboard-related CSI finals
+// (arrows/home/end/backtab/~ keys/kitty CSI u); when armed is false, CSI is
+// preserved so keyboard input is not corrupted outside the quarantine window.
+// If a reply started in a previous chunk, it continues to be discarded until
+// it terminates even if armed is now false.
 //
 // Terminal replies covered here:
-//   - escape-string families: OSC, DCS, APC, PM, SOS
+//   - escape-string families: OSC, DCS, APC, PM, SOS (always discarded)
 //   - CSI replies during the quarantine window, except for a small whitelist of
 //     user-input CSI finals (arrows/home/end/backtab/~ keys/kitty CSI u,
 //     mouse M/m)
@@ -174,7 +181,10 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 		if f.pendingEsc {
 			f.pendingEsc = false
 			switch {
-			case armed && isEscapeStringIntroducer(b):
+			case isEscapeStringIntroducer(b):
+				// Escape-string replies (DCS/OSC/APC/PM/SOS) are never
+				// legitimate keyboard input — strip regardless of armed
+				// state to prevent terminal-response leaks like #731.
 				f.mode = filterModeDiscardEscapeString
 				continue
 			case b == controlSequenceIntroducerByte:
