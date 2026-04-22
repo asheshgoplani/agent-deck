@@ -6244,6 +6244,39 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "X":
+		// Status-gated registry-only remove. For stopped/errored sessions only;
+		// use 'd' for destructive delete (kills process + removes worktree).
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				status := item.Session.Status
+				if status == session.StatusStopped || status == session.StatusError {
+					h.confirmDialog.ShowRemoveSession(item.Session.ID, item.Session.Title)
+				} else {
+					h.setError(fmt.Errorf("session must be stopped or errored to remove; use 'd' to destructively delete a %s session", status))
+				}
+			}
+		}
+		return h, nil
+
+	case "ctrl+x":
+		// Bulk remove all errored sessions from the registry.
+		count := 0
+		h.instancesMu.RLock()
+		for _, inst := range h.instances {
+			if inst.Status == session.StatusError {
+				count++
+			}
+		}
+		h.instancesMu.RUnlock()
+		if count == 0 {
+			h.setError(fmt.Errorf("no errored sessions to remove"))
+			return h, nil
+		}
+		h.confirmDialog.ShowBulkRemoveErrored(count)
+		return h, nil
+
 	case "i":
 		return h, h.importSessions
 
@@ -6696,6 +6729,15 @@ func (h *Home) confirmAction() tea.Cmd {
 		title := h.confirmDialog.targetName
 		h.confirmDialog.Hide()
 		return h.closeRemoteSession(remoteName, sessionID, title)
+	case ConfirmRemoveSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.removeSession(inst)
+		}
+	case ConfirmBulkRemoveErrored:
+		h.confirmDialog.Hide()
+		return h.bulkRemoveErrored()
 	}
 	h.confirmDialog.Hide()
 	return nil
@@ -8282,6 +8324,38 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
 	}
+}
+
+// removeSession removes a session from the registry without killing the
+// process or cleaning its worktree. The key handler already enforced the
+// stopped/error gate. Emits sessionDeletedMsg so the existing delete
+// handler in Update persists the change.
+func (h *Home) removeSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		return sessionDeletedMsg{deletedID: id}
+	}
+}
+
+// bulkRemoveErrored removes every session currently in the 'error' state.
+// Emits one sessionDeletedMsg per removed session; Update is idempotent
+// on repeated deletedIDs.
+func (h *Home) bulkRemoveErrored() tea.Cmd {
+	h.instancesMu.RLock()
+	ids := make([]string, 0, len(h.instances))
+	for _, inst := range h.instances {
+		if inst.Status == session.StatusError {
+			ids = append(ids, inst.ID)
+		}
+	}
+	h.instancesMu.RUnlock()
+
+	cmds := make([]tea.Cmd, 0, len(ids))
+	for _, id := range ids {
+		id := id
+		cmds = append(cmds, func() tea.Msg { return sessionDeletedMsg{deletedID: id} })
+	}
+	return tea.Batch(cmds...)
 }
 
 // sessionRestartedMsg signals that a session was restarted.
