@@ -55,13 +55,12 @@ type Item struct {
 
 // Group represents a group of sessions
 type Group struct {
-	Name             string
-	Path             string // Full path like "projects" or "projects/devops"
-	Expanded         bool
-	Sessions         []*Instance
-	Order            int
-	DefaultPath      string // Explicit default path for new sessions in this group
-	WorktreeLocation string // Per-group worktree location override (e.g. "subdirectory", "sibling", or custom path)
+	Name        string
+	Path        string // Full path like "projects" or "projects/devops"
+	Expanded    bool
+	Sessions    []*Instance
+	Order       int
+	DefaultPath string // Explicit default path for new sessions in this group
 }
 
 // GroupTree manages hierarchical session organization
@@ -139,8 +138,7 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 			Expanded:    gd.Expanded,
 			Sessions:    []*Instance{},
 			Order:       gd.Order,
-			DefaultPath:      gd.DefaultPath,
-			WorktreeLocation: gd.WorktreeLocation,
+			DefaultPath: gd.DefaultPath,
 		}
 		tree.Groups[gd.Path] = group
 		tree.Expanded[gd.Path] = gd.Expanded
@@ -1124,8 +1122,8 @@ func (t *GroupTree) ShallowCopyForSave() *GroupTree {
 			Path:        g.Path,
 			Expanded:    g.Expanded,
 			Order:       g.Order,
-			DefaultPath:      g.DefaultPath,
-			WorktreeLocation: g.WorktreeLocation,
+			DefaultPath: g.DefaultPath,
+			// Don't copy Sessions - not needed for save, only metadata is saved
 		}
 	}
 
@@ -1228,25 +1226,6 @@ func (t *GroupTree) SetDefaultPathForGroup(groupPath, defaultPath string) bool {
 	}
 
 	group.DefaultPath = resolveGroupDefaultPath(defaultPath)
-	return true
-}
-
-// WorktreeLocationForGroup returns the per-group worktree location override, or empty string if not set.
-func (t *GroupTree) WorktreeLocationForGroup(groupPath string) string {
-	group, exists := t.Groups[groupPath]
-	if !exists {
-		return ""
-	}
-	return group.WorktreeLocation
-}
-
-// SetWorktreeLocationForGroup sets (or clears) a per-group worktree location override.
-func (t *GroupTree) SetWorktreeLocationForGroup(groupPath, location string) bool {
-	group, exists := t.Groups[groupPath]
-	if !exists {
-		return false
-	}
-	group.WorktreeLocation = location
 	return true
 }
 

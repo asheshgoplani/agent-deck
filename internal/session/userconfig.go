@@ -47,9 +47,11 @@ type UserConfig struct {
 	// Valid values: "local" (default), "global", "user"
 	MCPDefaultScope string `toml:"mcp_default_scope"`
 
-	// ManageMCPJson controls whether agent-deck writes to .mcp.json in project directories.
-	// Set to false to prevent agent-deck from touching any .mcp.json files, which is useful
-	// when you manage that file manually or via another tool.
+	// ManageMCPJson controls whether agent-deck writes to any auto-managed
+	// agent MCP config file. Originally added for Claude's project-scoped
+	// .mcp.json (#197) and now also gates Copilot's ~/.copilot/mcp-config.json.
+	// Set to false to prevent agent-deck from touching these files, which is
+	// useful when you manage them manually or via another tool.
 	// Default: true (nil = true)
 	ManageMCPJson *bool `toml:"manage_mcp_json"`
 
@@ -222,6 +224,9 @@ func (rc RemoteConfig) GetProfile() string {
 type ProfileSettings struct {
 	// Claude defines Claude Code overrides for a specific profile.
 	Claude ProfileClaudeSettings `toml:"claude"`
+
+	// Copilot defines GitHub Copilot CLI overrides for a specific profile.
+	Copilot ProfileCopilotSettings `toml:"copilot"`
 }
 
 // ProfileClaudeSettings defines profile-specific Claude overrides.
@@ -230,10 +235,19 @@ type ProfileClaudeSettings struct {
 	ConfigDir string `toml:"config_dir"`
 }
 
+// ProfileCopilotSettings defines profile-specific Copilot overrides.
+type ProfileCopilotSettings struct {
+	// ConfigDir overrides [copilot].config_dir for this profile only.
+	ConfigDir string `toml:"config_dir"`
+}
+
 // GroupSettings defines per-group configuration overrides.
 type GroupSettings struct {
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude"`
+
+	// Copilot defines GitHub Copilot CLI overrides for a specific group.
+	Copilot GroupCopilotSettings `toml:"copilot"`
 }
 
 // GroupClaudeSettings defines group-specific Claude overrides.
@@ -243,6 +257,12 @@ type GroupClaudeSettings struct {
 
 	// EnvFile overrides [claude].env_file for sessions in this group.
 	EnvFile string `toml:"env_file"`
+}
+
+// GroupCopilotSettings defines group-specific Copilot overrides.
+type GroupCopilotSettings struct {
+	// ConfigDir overrides [copilot].config_dir for sessions in this group.
+	ConfigDir string `toml:"config_dir"`
 }
 
 // ConductorOverrides defines per-conductor configuration overrides.
@@ -698,6 +718,32 @@ func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 		return ""
 	}
 	return groupCfg.Claude.EnvFile
+}
+
+// GetProfileCopilotConfigDir returns the profile-specific Copilot config directory, if configured.
+// Mirrors GetProfileClaudeConfigDir at L668; keep in sync.
+func (c *UserConfig) GetProfileCopilotConfigDir(profile string) string {
+	if c == nil || profile == "" || c.Profiles == nil {
+		return ""
+	}
+	profileCfg, ok := c.Profiles[profile]
+	if !ok || profileCfg.Copilot.ConfigDir == "" {
+		return ""
+	}
+	return ExpandPath(profileCfg.Copilot.ConfigDir)
+}
+
+// GetGroupCopilotConfigDir returns the group-specific Copilot config directory, if configured.
+// Mirrors GetGroupClaudeConfigDir at L680; keep in sync.
+func (c *UserConfig) GetGroupCopilotConfigDir(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	groupCfg, ok := c.Groups[groupPath]
+	if !ok || groupCfg.Copilot.ConfigDir == "" {
+		return ""
+	}
+	return ExpandPath(groupCfg.Copilot.ConfigDir)
 }
 
 // GetConductorClaudeConfigDir returns the conductor-specific Claude config
@@ -2332,9 +2378,12 @@ auto_cleanup = true
 # "user" writes to ~/.claude.json (all profiles)
 # mcp_default_scope = "local"
 
-# Disable ALL .mcp.json management (default: true)
-# Set to false if you manage .mcp.json manually or via another tool and don't
-# want agent-deck to touch it. LOCAL-scope MCP changes will be silently skipped.
+# Disable ALL agent-deck-managed MCP config writes (default: true)
+# Set to false if you manage these files manually or via another tool and don't
+# want agent-deck to touch them. Affects:
+#   - Claude project-scoped .mcp.json
+#   - Copilot ~/.copilot/mcp-config.json
+# LOCAL-scope MCP changes will be silently skipped.
 # manage_mcp_json = false
 
 # Tmux session settings
@@ -2486,8 +2535,15 @@ auto_cleanup = true
 # autopilot_mode = false          # --autopilot (autonomous mode)
 # effort = ""                     # Reasoning effort: "low", "medium", "high", "xhigh"
 # default_model = "gpt-5.2"      # --model
-# config_dir = "~/.copilot"      # --config-dir
+# config_dir = "~/.copilot"      # Default; exported as COPILOT_HOME to spawned sessions.
+#                                # COPILOT_HOME env var takes priority over this setting.
 # env_file = "~/.env.copilot"
+# Optional per-profile override (takes precedence over [copilot] when profile matches)
+# [profiles.work.copilot]
+# config_dir = "~/.copilot-work"
+# Optional per-group override (takes precedence over profile + global)
+# [groups."client-x".copilot]
+# config_dir = "~/.copilot-client-x"
 
 # Example: Custom tool with inline env vars (appears in command picker)
 # [tools.glm]

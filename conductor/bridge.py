@@ -3,7 +3,7 @@
 Conductor Bridge: Telegram & Slack <-> Agent-Deck conductor sessions (multi-conductor).
 
 A thin bridge that:
-  A) Forwards Telegram/Slack messages -> conductor session (via agent-deck CLI or ACP)
+  A) Forwards Telegram/Slack messages -> conductor session (via agent-deck CLI)
   B) Forwards conductor responses -> Telegram/Slack
   C) Runs a periodic heartbeat to trigger conductor status checks
 
@@ -608,6 +608,58 @@ async def _drain_queue_supervised() -> None:
             await asyncio.sleep(5)
 
 
+async def _drain_one_acp(
+    items: deque,
+    session: str,
+    conductor_name: str,
+    conductor_meta: dict,
+    message: str,
+    reply_callback,
+) -> None:
+    """Deliver a single queued message via ACP for copilot-backed conductors.
+
+    Mirrors the CLI drain semantics: skip while busy, drop on error, fire callback
+    with response or failure text. Always pops from items on a terminal outcome.
+    """
+    status = get_acp_conductor_status(conductor_name)
+    if status in ("running", "active", "starting", "unknown"):
+        return
+    loop = asyncio.get_running_loop()
+    if status == "error":
+        log.error(
+            "ACP conductor %s in error state, dropping %d queued message(s)",
+            session, len(items),
+        )
+        dropped = _message_queue.pop(session, deque())
+        for _msg, _prof, cb in dropped:
+            if cb is not None:
+                loop.create_task(_fire_callback(
+                    cb,
+                    "[Queued message could not be delivered — conductor is in error state.]",
+                ))
+        return
+
+    ok, response_text = await send_to_acp_conductor(conductor_name, message, conductor_meta)
+    items.popleft()
+    if not items:
+        _message_queue.pop(session, None)
+    if ok:
+        log.info(
+            "ACP conductor %s delivered queued message (%d remaining)",
+            session, len(items),
+        )
+        if reply_callback is not None:
+            text = response_text.strip() if response_text else "[No output from conductor.]"
+            loop.create_task(_fire_callback(reply_callback, text))
+    else:
+        log.error("Failed to deliver queued message to ACP conductor %s — dropping", session)
+        if reply_callback is not None:
+            loop.create_task(_fire_callback(
+                reply_callback,
+                "[Queued message could not be delivered — ACP send failed.]",
+            ))
+
+
 async def _drain_queue() -> None:
     """Background loop that delivers queued messages once conductors are ready.
 
@@ -629,19 +681,20 @@ async def _drain_queue() -> None:
 
             message, profile, reply_callback = items[0]
 
-            # Determine if this is an ACP conductor session
+            # ACP fast path: copilot-backed conductors bypass the CLI
             conductor_name = _conductor_name_from_session(session)
             conductor_meta = _get_acp_conductor_meta(conductor_name) if conductor_name else None
-            is_acp = conductor_meta is not None
-
-            if is_acp:
-                status = get_acp_conductor_status(conductor_name)
-            else:
-                loop = asyncio.get_running_loop()
-                status = await loop.run_in_executor(
-                    None,
-                    functools.partial(get_session_status, session, profile=profile),
+            if conductor_meta is not None:
+                await _drain_one_acp(
+                    items, session, conductor_name, conductor_meta, message, reply_callback,
                 )
+                continue
+
+            loop = asyncio.get_running_loop()
+            status = await loop.run_in_executor(
+                None,
+                functools.partial(get_session_status, session, profile=profile),
+            )
 
             # Still busy or transient CLI failure — retry next cycle
             if status in ("running", "active", "starting", "unknown"):
@@ -662,79 +715,48 @@ async def _drain_queue() -> None:
                 continue
 
             # Conductor is ready — deliver the message and wait for the response
-            if is_acp:
-                ok, response_text = await send_to_acp_conductor(conductor_name, message, conductor_meta)
-                if ok:
-                    items.popleft()
-                    remaining = len(items)
-                    if not remaining:
-                        _message_queue.pop(session, None)
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    run_cli,
+                    "session", "send", session, message,
+                    "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
+                    profile=profile,
+                    timeout=max(RESPONSE_TIMEOUT + 30, 60),
+                ),
+            )
+            if result.returncode == 0:
+                items.popleft()
+                remaining = len(items)
+                if not remaining:
+                    _message_queue.pop(session, None)
+                log.info(
+                    "Conductor %s delivered queued message (%d remaining)",
+                    session, remaining,
+                )
+                if reply_callback is not None:
+                    text = result.stdout.strip() or "[No output from conductor.]"
+                    loop.create_task(_fire_callback(reply_callback, text))
+            else:
+                stderr = result.stderr.strip()
+                if "timeout" in stderr.lower() or "not ready" in stderr.lower():
                     log.info(
-                        "ACP conductor %s delivered queued message (%d remaining)",
-                        session, remaining,
+                        "Conductor %s busy again during drain, will retry",
+                        session,
                     )
-                    if reply_callback is not None:
-                        text = response_text.strip() if response_text else "[No output from conductor.]"
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(_fire_callback(reply_callback, text))
                 else:
                     log.error(
-                        "Failed to deliver queued message to ACP conductor %s — dropping",
-                        session,
+                        "Failed to deliver queued message to %s: %s — dropping",
+                        session, stderr,
                     )
                     items.popleft()
                     if not items:
                         _message_queue.pop(session, None)
                     if reply_callback is not None:
-                        loop = asyncio.get_running_loop()
                         loop.create_task(_fire_callback(
                             reply_callback,
-                            "[Queued message could not be delivered — ACP send failed.]",
+                            f"[Queued message could not be delivered — send failed: {stderr[:100]}]",
                         ))
-            else:
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        run_cli,
-                        "session", "send", session, message,
-                        "--wait", "--timeout", f"{RESPONSE_TIMEOUT}s", "-q",
-                        profile=profile,
-                        timeout=max(RESPONSE_TIMEOUT + 30, 60),
-                    ),
-                )
-                if result.returncode == 0:
-                    items.popleft()
-                    remaining = len(items)
-                    if not remaining:
-                        _message_queue.pop(session, None)
-                    log.info(
-                        "Conductor %s delivered queued message (%d remaining)",
-                        session, remaining,
-                    )
-                    if reply_callback is not None:
-                        text = result.stdout.strip() or "[No output from conductor.]"
-                        loop.create_task(_fire_callback(reply_callback, text))
-                else:
-                    stderr = result.stderr.strip()
-                    if "timeout" in stderr.lower() or "not ready" in stderr.lower():
-                        log.info(
-                            "Conductor %s busy again during drain, will retry",
-                            session,
-                        )
-                    else:
-                        log.error(
-                            "Failed to deliver queued message to %s: %s — dropping",
-                            session, stderr,
-                        )
-                        items.popleft()
-                        if not items:
-                            _message_queue.pop(session, None)
-                        if reply_callback is not None:
-                            loop.create_task(_fire_callback(
-                                reply_callback,
-                                f"[Queued message could not be delivered — send failed: {stderr[:100]}]",
-                            ))
 
         # Exit check AFTER the session loop — avoids missing items enqueued during drain
         if not _message_queue:

@@ -315,7 +315,6 @@ func handleGroupCreate(profile string, args []string) {
 	fs := flag.NewFlagSet("group create", flag.ExitOnError)
 	parent := fs.String("parent", "", "Create as subgroup under this parent")
 	defaultPath := fs.String("default-path", "", "Default working directory for new sessions in this group")
-	worktreeLocation := fs.String("worktree-location", "", "Worktree location for this group (\"subdirectory\", \"sibling\", or custom path)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -389,9 +388,7 @@ func handleGroupCreate(profile string, args []string) {
 		groupTree.SetDefaultPathForGroup(fullPath, *defaultPath)
 	}
 
-	if *worktreeLocation != "" {
-		groupTree.SetWorktreeLocationForGroup(fullPath, *worktreeLocation)
-	}
+	// Check if group already existed
 	existingGroup := false
 	for _, g := range groups {
 		if g.Path == fullPath {
@@ -429,8 +426,6 @@ func handleGroupUpdate(profile string, args []string) {
 	fs := flag.NewFlagSet("group update", flag.ExitOnError)
 	defaultPath := fs.String("default-path", "", "Default working directory for new sessions in this group")
 	clearDefaultPath := fs.Bool("clear-default-path", false, "Clear group default working directory")
-	worktreeLocation := fs.String("worktree-location", "", "Worktree location for this group (\"subdirectory\", \"sibling\", or custom path)")
-	clearWorktreeLocation := fs.Bool("clear-worktree-location", false, "Clear group worktree location (use global default)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -446,9 +441,6 @@ func handleGroupUpdate(profile string, args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck group update mobile --default-path /path/to/repo")
 		fmt.Println("  agent-deck group update mobile --clear-default-path")
-		fmt.Println("  agent-deck group update mobile --worktree-location ~/worktrees")
-		fmt.Println("  agent-deck group update mobile --worktree-location subdirectory")
-		fmt.Println("  agent-deck group update mobile --clear-worktree-location")
 	}
 
 	args = reorderGroupArgs(args)
@@ -466,19 +458,8 @@ func handleGroupUpdate(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	hasDefaultPathOp := *defaultPath != "" || *clearDefaultPath
-	hasWorktreeOp := *worktreeLocation != "" || *clearWorktreeLocation
-
-	if !hasDefaultPathOp && !hasWorktreeOp {
-		out.Error("specify at least one of --default-path, --clear-default-path, --worktree-location, or --clear-worktree-location", ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	if *defaultPath != "" && *clearDefaultPath {
-		out.Error("cannot specify both --default-path and --clear-default-path", ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
-	if *worktreeLocation != "" && *clearWorktreeLocation {
-		out.Error("cannot specify both --worktree-location and --clear-worktree-location", ErrCodeInvalidOperation)
+	if (*defaultPath == "" && !*clearDefaultPath) || (*defaultPath != "" && *clearDefaultPath) {
+		out.Error("specify exactly one of --default-path or --clear-default-path", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -514,14 +495,8 @@ func handleGroupUpdate(profile string, args []string) {
 
 	if *clearDefaultPath {
 		groupTree.SetDefaultPathForGroup(groupPath, "")
-	} else if *defaultPath != "" {
+	} else {
 		groupTree.SetDefaultPathForGroup(groupPath, *defaultPath)
-	}
-
-	if *clearWorktreeLocation {
-		groupTree.SetWorktreeLocationForGroup(groupPath, "")
-	} else if *worktreeLocation != "" {
-		groupTree.SetWorktreeLocationForGroup(groupPath, *worktreeLocation)
 	}
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
@@ -530,9 +505,7 @@ func handleGroupUpdate(profile string, args []string) {
 	}
 
 	currentDefaultPath := groupTree.DefaultPathForGroup(groupPath)
-	currentWorktreeLocation := groupTree.WorktreeLocationForGroup(groupPath)
-
-	if *clearDefaultPath && !hasWorktreeOp {
+	if *clearDefaultPath {
 		out.Success(fmt.Sprintf("Cleared default path for group: %s", groupPath), map[string]interface{}{
 			"success":      true,
 			"path":         groupPath,
@@ -541,38 +514,12 @@ func handleGroupUpdate(profile string, args []string) {
 		})
 		return
 	}
-	if *clearWorktreeLocation && !hasDefaultPathOp {
-		out.Success(fmt.Sprintf("Cleared worktree location for group: %s", groupPath), map[string]interface{}{
-			"success":            true,
-			"path":               groupPath,
-			"worktree_location":  currentWorktreeLocation,
-			"cleared":            true,
-		})
-		return
-	}
 
-	result := map[string]interface{}{
-		"success": true,
-		"path":    groupPath,
-	}
-	messages := []string{}
-	if hasDefaultPathOp {
-		result["default_path"] = currentDefaultPath
-		if *clearDefaultPath {
-			messages = append(messages, "Cleared default path")
-		} else {
-			messages = append(messages, fmt.Sprintf("Updated default path for group: %s", groupPath))
-		}
-	}
-	if hasWorktreeOp {
-		result["worktree_location"] = currentWorktreeLocation
-		if *clearWorktreeLocation {
-			messages = append(messages, "Cleared worktree location")
-		} else {
-			messages = append(messages, fmt.Sprintf("Updated worktree location for group: %s", groupPath))
-		}
-	}
-	out.Success(strings.Join(messages, "; "), result)
+	out.Success(fmt.Sprintf("Updated default path for group: %s", groupPath), map[string]interface{}{
+		"success":      true,
+		"path":         groupPath,
+		"default_path": currentDefaultPath,
+	})
 }
 
 // handleGroupDelete deletes a group
@@ -1057,11 +1004,10 @@ func reorderGroupArgs(args []string) []string {
 
 	// Known flags that take a value
 	valueFlags := map[string]bool{
-		"--parent":             true,
-		"--default-path":       true,
-		"--worktree-location":  true,
-		"--position":           true,
-		"-p":                   true,
+		"--parent":       true,
+		"--default-path": true,
+		"--position":     true,
+		"-p":             true,
 	}
 
 	var flags []string

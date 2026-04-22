@@ -1014,14 +1014,20 @@ func (i *Instance) resolveCopilotModelFlag() string {
 	return ""
 }
 
-// resolveCopilotConfigDirPrefix returns "COPILOT_CONFIG_DIR=<dir> " if explicitly configured, or "".
+// resolveCopilotConfigDirPrefix returns "COPILOT_HOME=<dir> " if the
+// resolved Copilot config directory comes from an explicit override
+// (env var, group, profile, or global config), or "" if it's the default
+// ~/.copilot.
+//
+// COPILOT_HOME is the official Copilot CLI env var (see `copilot help
+// environment`) — exporting it ensures the spawned Copilot process reads
+// MCP/state from the same directory agent-deck writes to.
 func (i *Instance) resolveCopilotConfigDirPrefix() string {
-	if config, err := LoadUserConfig(); err == nil && config != nil {
-		if config.Copilot.ConfigDir != "" {
-			return fmt.Sprintf("COPILOT_CONFIG_DIR=%s ", ExpandPath(config.Copilot.ConfigDir))
-		}
+	dir, source := GetCopilotConfigDirSourceForGroup(i.GroupPath)
+	if source == "default" || dir == "" {
+		return ""
 	}
-	return ""
+	return fmt.Sprintf("COPILOT_HOME=%s ", dir)
 }
 
 // resolveCopilotEffortFlag returns " --effort <level>" if configured, or "".
@@ -1085,18 +1091,6 @@ func (i *Instance) buildCopilotExtraFlags() string {
 	return " " + strings.Join(flags, " ")
 }
 
-// resolveCopilotMCPFlag is reserved for future use with --additional-mcp-config.
-// Currently copilot reads MCPs from ~/.copilot/mcp-config.json natively;
-// agent-deck writes to that file via the MCP dialog — matching the pattern
-// used for Claude (.mcp.json) and Gemini (settings.json).
-//
-// TODO: Switch to ephemeral injection via --additional-mcp-config @<tmpfile>
-// (copilot) and --mcp-config (claude) to avoid persistent side effects.
-// See pr/ephemeral-mcp branch for cross-agent implementation.
-func (i *Instance) resolveCopilotMCPFlag() string {
-	return ""
-}
-
 // getCopilotCommand returns the base copilot command.
 // Reads from config [copilot].command, defaults to "gh copilot --".
 func getCopilotCommand() string {
@@ -1128,18 +1122,17 @@ func (i *Instance) buildCopilotCommand(baseCommand string) string {
 	effortFlag := i.resolveCopilotEffortFlag()
 	autopilotFlag := i.resolveCopilotAutopilotFlag()
 	extraFlags := i.buildCopilotExtraFlags()
-	mcpFlag := i.resolveCopilotMCPFlag()
 
 	// If baseCommand matches the copilot command, handle specially
 	if baseCommand == copilotCmd || baseCommand == "copilot" {
 		// If we already have a session ID, use resume.
 		if i.CopilotSessionID != "" {
-			return envPrefix + fmt.Sprintf("%s --resume=%s%s%s%s%s%s%s",
-				copilotCmd, i.CopilotSessionID, yoloFlag, modelFlag, effortFlag, autopilotFlag, extraFlags, mcpFlag)
+			return envPrefix + fmt.Sprintf("%s --resume=%s%s%s%s%s%s",
+				copilotCmd, i.CopilotSessionID, yoloFlag, modelFlag, effortFlag, autopilotFlag, extraFlags)
 		}
 
 		// Start Copilot fresh - session ID will be captured async after startup
-		return envPrefix + copilotCmd + yoloFlag + modelFlag + effortFlag + autopilotFlag + extraFlags + mcpFlag
+		return envPrefix + copilotCmd + yoloFlag + modelFlag + effortFlag + autopilotFlag + extraFlags
 	}
 
 	// For custom commands (e.g., resume commands), preserve env propagation.
@@ -1183,17 +1176,12 @@ func (i *Instance) detectCopilotSessionAsync() {
 	sessionLog.Warn("copilot_detection_failed", slog.Int("attempts", len(delays)))
 }
 
-// queryCopilotSession scans ~/.copilot/session-state/ for the most recent session
+// queryCopilotSession scans <copilot config dir>/session-state/ for the most recent session
 // that was created after this instance started.
 func (i *Instance) queryCopilotSession() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	configDir := getCopilotConfigDirForGroup(i.GroupPath)
+	if configDir == "" {
 		return ""
-	}
-
-	configDir := filepath.Join(homeDir, ".copilot")
-	if cfg, cfgErr := LoadUserConfig(); cfgErr == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
-		configDir = ExpandPath(cfg.Copilot.ConfigDir)
 	}
 
 	sessionStateDir := filepath.Join(configDir, "session-state")
@@ -1246,6 +1234,7 @@ func (i *Instance) queryCopilotSession() string {
 func (i *Instance) DetectCopilotSession() {
 	i.detectCopilotSessionAsync()
 }
+
 // OpenCode generates session IDs internally (format: ses_XXXXX)
 // We query "opencode session list --format json" and match by project directory,
 // picking the most recently updated session (since OpenCode auto-resumes the last session)
@@ -5446,15 +5435,13 @@ func (i *Instance) Exists() bool {
 	return i.tmuxSession.Exists()
 }
 
-// getCopilotSessionStateDir returns the path to copilot's session-state directory.
-func getCopilotSessionStateDir() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+// getCopilotSessionStateDir returns the path to copilot's session-state
+// directory for the given group. Honors COPILOT_HOME and the full
+// group/profile/global priority chain via getCopilotConfigDirForGroup.
+func getCopilotSessionStateDir(groupPath string) string {
+	configDir := getCopilotConfigDirForGroup(groupPath)
+	if configDir == "" {
 		return ""
-	}
-	configDir := filepath.Join(homeDir, ".copilot")
-	if cfg, cfgErr := LoadUserConfig(); cfgErr == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
-		configDir = ExpandPath(cfg.Copilot.ConfigDir)
 	}
 	return filepath.Join(configDir, "session-state")
 }
@@ -5466,7 +5453,7 @@ func (i *Instance) ForkCopilotWithOptions(newTitle, newGroupPath string, opts *C
 		return "", fmt.Errorf("cannot fork: no active Copilot session")
 	}
 
-	stateDir := getCopilotSessionStateDir()
+	stateDir := getCopilotSessionStateDir(i.GroupPath)
 	if stateDir == "" {
 		return "", fmt.Errorf("cannot fork: unable to resolve copilot session-state directory")
 	}
@@ -5503,11 +5490,10 @@ func (i *Instance) ForkCopilotWithOptions(newTitle, newGroupPath string, opts *C
 	modelFlag := i.resolveCopilotModelFlag()
 	effortFlag := i.resolveCopilotEffortFlag()
 	autopilotFlag := i.resolveCopilotAutopilotFlag()
-	mcpFlag := i.resolveCopilotMCPFlag()
 
-	cmd := fmt.Sprintf(`cd '%s' && %s%s --resume=%s%s%s%s%s%s`,
+	cmd := fmt.Sprintf(`cd '%s' && %s%s --resume=%s%s%s%s%s`,
 		workDir, envPrefix, copilotCmd, newUUID,
-		yoloFlag, modelFlag, effortFlag, autopilotFlag, mcpFlag)
+		yoloFlag, modelFlag, effortFlag, autopilotFlag)
 
 	return cmd, nil
 }

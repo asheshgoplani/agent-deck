@@ -558,7 +558,6 @@ func (m *MCPDialog) Apply() error {
 	if m.tool == "copilot" {
 		// Copilot: Single scope, write to ~/.copilot/mcp-config.json
 		// Matches Claude (.mcp.json) and Gemini (settings.json) file-write pattern.
-		// TODO: migrate to --additional-mcp-config for ephemeral injection
 		if m.globalChanged {
 			enabledNames := make([]string, len(m.globalAttached))
 			for i, item := range m.globalAttached {

@@ -606,16 +606,89 @@ func GetUserMCPNames() []string {
 	return names
 }
 
-// getCopilotConfigDir returns the path to copilot's config directory (~/.copilot or override).
+// getCopilotConfigDir returns the Copilot config directory for the active
+// profile (no group context). Delegates to getCopilotConfigDirForGroup.
 func getCopilotConfigDir() string {
-	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && cfg.Copilot.ConfigDir != "" {
-		return ExpandPath(cfg.Copilot.ConfigDir)
+	return getCopilotConfigDirForGroup("")
+}
+
+// getCopilotConfigDirForGroup returns the Copilot config directory honoring
+// the same precedence chain agent-deck uses for Claude.
+//
+// Priority (most-specific → least-specific):
+//
+//  1. COPILOT_HOME env var — official Copilot CLI env var (see
+//     `copilot help environment`); the spawned Copilot process honors this
+//     same variable, so reads and writes stay in sync.
+//  2. [groups."<group>".copilot].config_dir
+//  3. [profiles.<profile>.copilot].config_dir
+//  4. [copilot].config_dir
+//  5. ~/.copilot (Copilot CLI default)
+//
+// Mirrors GetClaudeConfigDirForGroup in claude.go:246. Keep the two
+// functions in sync if the chain ever changes.
+func getCopilotConfigDirForGroup(groupPath string) string {
+	if envDir := os.Getenv("COPILOT_HOME"); envDir != "" {
+		return ExpandPath(envDir)
 	}
+
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil {
+		if groupDir := userConfig.GetGroupCopilotConfigDir(groupPath); groupDir != "" {
+			return groupDir
+		}
+		profile := GetEffectiveProfile("")
+		if profileDir := userConfig.GetProfileCopilotConfigDir(profile); profileDir != "" {
+			return profileDir
+		}
+		if userConfig.Copilot.ConfigDir != "" {
+			return ExpandPath(userConfig.Copilot.ConfigDir)
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	return filepath.Join(home, ".copilot")
+}
+
+// GetCopilotConfigDirSourceForGroup returns the resolved Copilot config dir
+// and the priority level that set it. Source is one of:
+//
+//	"env"     — COPILOT_HOME env var
+//	"group"   — [groups."<groupPath>".copilot].config_dir
+//	"profile" — [profiles.<profile>.copilot].config_dir
+//	"global"  — top-level [copilot].config_dir
+//	"default" — ~/.copilot
+//
+// The priority chain matches getCopilotConfigDirForGroup exactly; keep the
+// two functions in sync if the chain ever changes. Mirrors
+// GetClaudeConfigDirSourceForGroup in claude.go:305.
+func GetCopilotConfigDirSourceForGroup(groupPath string) (path, source string) {
+	if envDir := os.Getenv("COPILOT_HOME"); envDir != "" {
+		return ExpandPath(envDir), "env"
+	}
+
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil {
+		if groupDir := userConfig.GetGroupCopilotConfigDir(groupPath); groupDir != "" {
+			return groupDir, "group"
+		}
+		profile := GetEffectiveProfile("")
+		if profileDir := userConfig.GetProfileCopilotConfigDir(profile); profileDir != "" {
+			return profileDir, "profile"
+		}
+		if userConfig.Copilot.ConfigDir != "" {
+			return ExpandPath(userConfig.Copilot.ConfigDir), "global"
+		}
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "default"
+	}
+	return filepath.Join(home, ".copilot"), "default"
 }
 
 // GetCopilotMCPNames returns the names of MCPs configured in ~/.copilot/mcp-config.json.
@@ -645,9 +718,20 @@ func GetCopilotMCPNames() []string {
 	return names
 }
 
-// WriteCopilotMCP writes enabled MCPs from config.toml to ~/.copilot/mcp-config.json.
+// WriteCopilotMCP writes enabled MCPs from config.toml to <copilot config dir>/mcp-config.json.
 // Uses the same MCPServerConfig format but with copilot's "local" type for stdio.
+//
+// Honors GetManageMCPJson() — when the user has set manage_mcp_json = false,
+// agent-deck does not touch this file (matches WriteMCPJsonFromConfig).
+//
+// The target directory honors COPILOT_HOME, group/profile/global config_dir
+// overrides, and ~/.copilot default — see getCopilotConfigDirForGroup.
 func WriteCopilotMCP(enabledNames []string) error {
+	if !GetManageMCPJson() {
+		mcpCatLog.Debug("mcp_json_management_disabled", slog.String("scope", "copilot"))
+		return nil
+	}
+
 	configDir := getCopilotConfigDir()
 	if configDir == "" {
 		return fmt.Errorf("cannot determine copilot config directory")

@@ -5,6 +5,13 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **GitHub Copilot CLI as a first-class built-in tool** ([#694](https://github.com/asheshgoplani/agent-deck/pull/694), reporter: @Clean-Cole). Adds `copilot` to the same tool-routing path used by Claude/Gemini/Codex with `CopilotOptions` (session mode, resume, yolo, autopilot, model), `buildCopilotCommand` honouring `[copilot]` settings, session detection and forking, new-session dialog preset, MCP Manager support writing `<copilot_home>/mcp-config.json`, and a pink tool badge. Spawn env uses the official `COPILOT_HOME`; `manage_mcp_json = false` short-circuits the Copilot MCP write path.
+- **Copilot ACP conductor integration** (`conductor/acp.py`, `conductor/bridge.py`). New `ACPConnection` (asyncio NDJSON JSON-RPC 2.0 over Agent Client Protocol, generic for any `--acp --stdio` agent). `bridge.py` routes ACP-tagged messages through the persistent connection; CLI-tagged messages continue down the original `copilot -p` path.
+- **Per-group / per-profile Copilot config dir overrides** mirroring the Claude pattern. New `[groups."<g>".copilot].config_dir` and `[profiles.<p>.copilot].config_dir` TOML keys; resolution chain is `COPILOT_HOME` env → group → profile → global `[copilot].config_dir` → `~/.copilot`.
+
 ## [1.7.67] - 2026-04-22
 
 ### Added
