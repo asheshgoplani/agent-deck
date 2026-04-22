@@ -1818,3 +1818,157 @@ tests:
   run:
     command: go test -tags eval_smoke ./tests/eval/session/ -run TestEval_VersionFlag_ShowsUpdateAnnotationFromCache -count=1 -race -v
     expected: pass
+- id: v1763-watchdog-poller-running-no-restart
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_poller_running_no_restart
+  purpose: 'v1.7.63 capability A — when a conductor''s bun-telegram poller is alive (TELEGRAM_STATE_DIR present in running process environ), watchdog must NOT issue a session restart. Catches a false-positive regression in check_poller_existence that would thrash healthy sessions.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_poller_running_no_restart -v
+    expected: pass
+- id: v1763-watchdog-poller-missing-triggers-restart
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_poller_missing_triggers_restart
+  purpose: 'v1.7.63 capability A — when a conductor declares the telegram channel but no matching bun-telegram process is running, watchdog MUST fire agent-deck session restart. Pins the core positive case.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_poller_missing_triggers_restart -v
+    expected: pass
+- id: v1763-watchdog-poller-dedup-1h
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_dedup_within_one_hour
+  purpose: 'v1.7.63 capability A — POLLER_RESTART_DEDUP_S (3600s) ceiling: two ticks 30 min apart with the poller still missing must produce only one restart, not two. Guards against restart-thrash on a persistently broken poller.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_dedup_within_one_hour -v
+    expected: pass
+- id: v1763-watchdog-poller-dedup-expires
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_dedup_window_expires_after_one_hour
+  purpose: 'v1.7.63 capability A — after POLLER_RESTART_DEDUP_S elapses, a still-missing poller is eligible for another restart. Guards the complementary case of dedup-1h (prevents dedup from becoming permanent block).'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_dedup_window_expires_after_one_hour -v
+    expected: pass
+- id: v1763-watchdog-poller-no-telegram-channel-ignored
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_session_without_telegram_channel_ignored
+  purpose: 'v1.7.63 capability A — sessions without plugin:telegram@claude-plugins-official in channels are NOT subject to poller check. Prevents unnecessary restarts on non-telegram sessions.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_session_without_telegram_channel_ignored -v
+    expected: pass
+- id: v1763-watchdog-poller-multi-conductor-partial-miss
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_multi_conductor_only_missing_ones_restart
+  purpose: 'v1.7.63 capability A — with three conductors configured for telegram and only one poller running, watchdog restarts the other two (and only those two). Pins per-session correctness under mixed state.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestPollerExistence.test_multi_conductor_only_missing_ones_restart -v
+    expected: pass
+- id: v1763-watchdog-bun-state-dirs-proc-environ
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_extracts_from_proc_environ
+  purpose: 'v1.7.63 — bun_telegram_state_dirs() correctly parses /proc/<pid>/environ NUL-separated entries and extracts TELEGRAM_STATE_DIR. Pins the low-level /proc reading contract that capability A depends on.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestBunTelegramStateDirs.test_extracts_from_proc_environ -v
+    expected: pass
+- id: v1763-watchdog-waiting-first-observation-no-nudge
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_first_observation_does_not_nudge
+  purpose: 'v1.7.63 capability B — first time we see a child session in waiting state, tracker is seeded but no nudge is sent. Prevents premature firing on transient waiting states.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_first_observation_does_not_nudge -v
+    expected: pass
+- id: v1763-watchdog-waiting-over-10min-nudges
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_waiting_over_10min_unchanged_nudges
+  purpose: 'v1.7.63 capability B — child session waiting > WAITING_PATROL_THRESHOLD_S (600s) with unchanged pane hash triggers a "report status?" nudge. Pins the core positive case.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_waiting_over_10min_unchanged_nudges -v
+    expected: pass
+- id: v1763-watchdog-waiting-pane-change-resets
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_pane_changed_resets_timer
+  purpose: 'v1.7.63 capability B — ANY pane-output change resets the waiting timer. Without this a session doing real work but staying in waiting state would get false nudges.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_pane_changed_resets_timer -v
+    expected: pass
+- id: v1763-watchdog-waiting-dedup-1h
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_dedup_1h_per_session
+  purpose: 'v1.7.63 capability B — WAITING_PATROL_NUDGE_DEDUP_S (3600s) throttles repeat nudges on the same session. Guards against nudge-thrash on a truly stuck child.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_dedup_1h_per_session -v
+    expected: pass
+- id: v1763-watchdog-waiting-non-child-ignored
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_no_nudge_for_non_child
+  purpose: 'v1.7.63 capability B — standalone sessions (parent_session_id empty) are NEVER nudged. Patrol is strictly for child / sub-agent sessions.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_no_nudge_for_non_child -v
+    expected: pass
+- id: v1763-watchdog-waiting-tracker-cleared
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_tracker_cleared_when_session_leaves_waiting
+  purpose: 'v1.7.63 capability B — when a session transitions out of waiting, its waiting_tracker entry is evicted. Prevents stale tracker data from firing nudges after the session has moved on.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_tracker_cleared_when_session_leaves_waiting -v
+    expected: pass
+- id: v1763-watchdog-waiting-live-send
+  added: '2026-04-22'
+  task: fix-53-56-watchdog-poller-patrol
+  file: scripts/watchdog/test_watchdog.py
+  test_name: test_live_mode_invokes_session_send
+  purpose: 'v1.7.63 capability B — in non-dry-run mode, an over-threshold unchanged-pane child triggers an actual agent-deck session send --no-wait call carrying the exact WAITING_PATROL_NUDGE_TEXT. Pins the real-side-effect contract.'
+  source: conductor-internal-53-56
+  manual: false
+  run:
+    command: cd scripts/watchdog && python3 -m unittest test_watchdog.TestWaitingTooLong.test_live_mode_invokes_session_send -v
+    expected: pass

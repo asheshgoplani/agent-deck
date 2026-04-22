@@ -23,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [worktree]
   setup_timeout_seconds = 300   # bump to 5 minutes for heavier setups
   ```
-
 ## [1.7.62] - 2026-04-22
 
 ### Added

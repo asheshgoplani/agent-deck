@@ -58,3 +58,10 @@ agent-deck-test
 # Tailwind brute-force diff gate scratch file (make css temp artifact)
 internal/web/static/.brute-tw.src.css
 /dist
+
+# Python bytecode (scripts/watchdog/ + conductor/tests/)
+__pycache__/
+*.pyc
+
+# Claude harness lock (per-session, never committed)
+.claude/scheduled_tasks.lock
