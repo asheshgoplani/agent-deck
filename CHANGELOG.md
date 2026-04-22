@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.66] - 2026-04-22
+
+### Fixed
+- **`agent-deck launch -m "<prompt>" --no-wait` now verifies claude actually consumed the initial prompt** (internal task `54-launch-verify-prompt`). On cold starts, claude's welcome screen occasionally ate the first `Enter`, leaving the `-m` prompt typed-but-not-submitted in the composer. The session sat in `status=waiting` forever with the message visible at `❯` but no assistant response ever started. Root cause: the launch path's post-start verification budget was **1.2s** (`sendRetryOptions{maxRetries: 8, checkDelay: 150ms}` in `cmd/agent-deck/launch_cmd.go`), far too short to observe and recover from the welcome-screen race on a fresh claude+MCPs cold start. Fix: after the existing `sendWithRetryTarget` pass, a new `verifyPromptConsumedAfterLaunch` helper polls the pane for up to **10s** (`250ms` interval). "Consumed" = composer rendered AND the `-m` message is no longer visible in the input line (`send.HasCurrentComposerPrompt && !send.HasUnsentComposerPrompt`). If still unconsumed after the first window, it retries `send-keys` exactly once; if the second window also shows the prompt unconsumed, it writes a warning to `os.Stderr` and returns without failing the launch (best-effort, preserving `--no-wait` spirit). Five unit tests in `cmd/agent-deck/launch_verify_prompt_test.go` cover: consumed-first-poll path (no retry, no warning), unsent-then-consumed-after-retry path (exactly 1 retry, no warning), unsent-both-windows path (1 retry + warning), welcome-screen-no-composer path (no false "consumed" when the composer hasn't rendered yet), and wall-time budget enforcement. All five use synthetic pane strings only, per the sanitization rule. The existing `sendWithRetryTarget` call is unchanged — the new helper is a second verification layer, not a replacement. **Numbering note:** originally drafted as v1.7.64; renumbered forward through the v1.7.63/64/65 queue shift (fix-53-56 + #724 worktree-timeout landed ahead).
+
 ## [1.7.65] - 2026-04-22
 
 ### Added

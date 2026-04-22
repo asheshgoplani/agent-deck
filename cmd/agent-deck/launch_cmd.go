@@ -422,8 +422,13 @@ func handleLaunch(profile string, args []string) {
 
 	// Send message only for --no-wait mode.
 	// Non --no-wait mode already sent via StartWithMessage above.
-	// Even in no-wait mode, run a short send-verification loop so Enter-loss
+	// Even in no-wait mode, run a send-verification loop so Enter-loss
 	// races don't silently drop the initial prompt.
+	//
+	// v1.7.64 (internal task "54-launch-verify-prompt"): after the initial
+	// sendWithRetryTarget pass, run verifyPromptConsumedAfterLaunch to catch
+	// the welcome-screen race where claude eats the first Enter. 10s budget
+	// per window + single retry + stderr warning on persistent no-op.
 	if initialMessage != "" && *noWait {
 		tmuxSess := newInstance.GetTmuxSession()
 		if tmuxSess != nil {
@@ -434,6 +439,11 @@ func handleLaunch(profile string, args []string) {
 				out.Error(fmt.Sprintf("failed to send initial message: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
+			verifyPromptConsumedAfterLaunch(
+				tmuxSess, initialMessage,
+				10*time.Second, 250*time.Millisecond,
+				os.Stderr,
+			)
 		}
 	}
 
