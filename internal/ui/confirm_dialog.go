@@ -21,6 +21,8 @@ const (
 	ConfirmInstallHooks
 	ConfirmDeleteRemoteSession
 	ConfirmCloseRemoteSession
+	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
+	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 )
 
 // ConfirmDialog handles confirmation for destructive actions
