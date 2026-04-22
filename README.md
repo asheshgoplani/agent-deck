@@ -616,6 +616,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
 agent-deck session fork my-proj   # Fork a Claude session
+agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
 agent-deck web                    # Start web UI on http://127.0.0.1:8420

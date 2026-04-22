@@ -5,6 +5,22 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.61] - 2026-04-22
+
+### Added
+- **`agent-deck session remove <id|title>` CLI subcommand** — removes a session from the registry. Only sessions in `stopped` or `error` state are removable by default; `--force` bypasses the gate (destructive). `--all-errored` bulk-removes every session currently in the `error` state and respects status filtering (stopped, idle, running sessions are untouched). `--prune-worktree` is an opt-in destructive variant that additionally kills the tmux process and removes any git worktree associated with the session.
+- **TUI `X` keybind (Home view)** — status-gated registry remove with confirmation dialog. Rejects non-stopped/non-errored sessions with a message steering the user to `d` for destructive delete. The existing `d` → `deleteSession` path (full kill + worktree cleanup) is unchanged and remains the power-user option.
+- **TUI `Ctrl+X` keybind** — bulk remove of all errored sessions with a confirmation dialog that shows the count. When there are no errored sessions the dialog is suppressed and an info message is shown instead.
+- New `ConfirmRemoveSession` and `ConfirmBulkRemoveErrored` confirm-dialog types wired through `confirmAction` with yellow (non-red) border color to distinguish from the destructive `d` delete dialog.
+
+### Preserved (hard invariant)
+- Claude transcripts under `~/.claude/projects/<slug>/` are **never** touched by `remove` or the `X`/`Ctrl+X` TUI keybinds. `TestSessionRemove_PreservesTranscripts` enforces this at CI time.
+
+### Tests
+- `cmd/agent-deck/session_remove_cmd_test.go` — 6 subprocess tests: stopped-succeeds, running-without-force-rejected, running-with-force-succeeds, all-errored-respects-filter, transcripts-preserved, not-found-exit-2.
+- `internal/ui/session_remove_tui_test.go` — 5 Seam A (model-level) tests covering `X` on stopped/error/running and `Ctrl+X` with N>0 / N=0 errored sessions.
+- Full `cmd/agent-deck` suite passes under `-race` in 57.8s. Full `internal/ui` suite passes under `-race` in 29.2s. `TestPersistence_*` mandate suite passes.
+
 ## [1.7.60] - 2026-04-22
 
 ### Added
