@@ -19,6 +19,11 @@ type ClaudeOptionsPanel struct {
 	// Extra claude CLI tokens (space-separated in input; persisted as []string).
 	// NewDialog only — fork inherits parent's ExtraArgs implicitly via builder.
 	extraArgsInput textinput.Model
+	// Start query (#725, v1.7.67): claude-code's positional startup query.
+	// Held as one string (NEVER split on spaces). NewDialog only — per-session,
+	// not persisted to SQLite. Fork inherits nothing here (fork resumes an
+	// existing session; the query has already been consumed).
+	startQueryInput textinput.Model
 	// Checkbox states
 	skipPermissions      bool
 	allowSkipPermissions bool
@@ -55,23 +60,30 @@ func NewClaudeOptionsPanel() *ClaudeOptionsPanel {
 	extraArgsInput.CharLimit = 512
 	extraArgsInput.Width = 44
 
+	startQueryInput := textinput.New()
+	startQueryInput.Placeholder = "initial prompt (not split on spaces)"
+	startQueryInput.CharLimit = 1024
+	startQueryInput.Width = 44
+
 	return &ClaudeOptionsPanel{
-		sessionMode:    0, // new
-		resumeIDInput:  resumeInput,
-		extraArgsInput: extraArgsInput,
-		isForkMode:     false,
-		focusCount:     6, // session, skip, auto, chrome, teammate, extra-args
+		sessionMode:     0, // new
+		resumeIDInput:   resumeInput,
+		extraArgsInput:  extraArgsInput,
+		startQueryInput: startQueryInput,
+		isForkMode:      false,
+		focusCount:      7, // session, skip, auto, chrome, teammate, extra-args, start-query
 	}
 }
 
 // NewClaudeOptionsPanelForFork creates a panel for ForkDialog (fewer options)
 func NewClaudeOptionsPanelForFork() *ClaudeOptionsPanel {
 	return &ClaudeOptionsPanel{
-		sessionMode:    0,
-		resumeIDInput:  textinput.New(), // Not used in fork mode
-		extraArgsInput: textinput.New(), // Not used in fork mode
-		isForkMode:     true,
-		focusCount:     3, // skip, chrome, teammate
+		sessionMode:     0,
+		resumeIDInput:   textinput.New(), // Not used in fork mode
+		extraArgsInput:  textinput.New(), // Not used in fork mode
+		startQueryInput: textinput.New(), // Not used in fork mode
+		isForkMode:      true,
+		focusCount:      3, // skip, chrome, teammate
 	}
 }
 
@@ -118,6 +130,7 @@ func (p *ClaudeOptionsPanel) Blur() {
 	p.focusIndex = -1
 	p.resumeIDInput.Blur()
 	p.extraArgsInput.Blur()
+	p.startQueryInput.Blur()
 }
 
 // GetExtraArgs returns the parsed extra-args tokens (whitespace-split, empties dropped).
@@ -138,6 +151,20 @@ func (p *ClaudeOptionsPanel) GetExtraArgs() []string {
 // SetExtraArgs pre-fills the input from a persisted slice.
 func (p *ClaudeOptionsPanel) SetExtraArgs(tokens []string) {
 	p.extraArgsInput.SetValue(strings.Join(tokens, " "))
+}
+
+// GetStartQuery returns the trimmed raw input, un-split. Callers assign
+// the result to Instance.StartupQuery which emits it as a single
+// shell-quoted positional arg on the claude command line. This is the
+// core v1.7.67 contract — never split on spaces here (#725).
+func (p *ClaudeOptionsPanel) GetStartQuery() string {
+	return strings.TrimSpace(p.startQueryInput.Value())
+}
+
+// SetStartQuery pre-fills the input (used by tests; the field is not
+// persisted, so there is no production "restore" path).
+func (p *ClaudeOptionsPanel) SetStartQuery(query string) {
+	p.startQueryInput.SetValue(query)
 }
 
 // IsFocused returns true if any element in the panel has focus
@@ -206,7 +233,7 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 
 		case " ":
 			// Don't intercept space when focused on a text input
-			if p.isResumeInputFocused() || p.isExtraArgsInputFocused() {
+			if p.isResumeInputFocused() || p.isExtraArgsInputFocused() || p.isStartQueryInputFocused() {
 				break // Let it fall through to text input handling
 			}
 			// Toggle checkbox or radio at current focus
@@ -238,6 +265,11 @@ func (p *ClaudeOptionsPanel) Update(msg tea.Msg) tea.Cmd {
 	if p.isExtraArgsInputFocused() {
 		var cmd tea.Cmd
 		p.extraArgsInput, cmd = p.extraArgsInput.Update(msg)
+		return cmd
+	}
+	if p.isStartQueryInputFocused() {
+		var cmd tea.Cmd
+		p.startQueryInput, cmd = p.startQueryInput.Update(msg)
 		return cmd
 	}
 
@@ -321,6 +353,10 @@ func (p *ClaudeOptionsPanel) getFocusType() string {
 		if idx == 5 {
 			return "extraArgsInput"
 		}
+		// 7: start-query input (v1.7.67)
+		if idx == 6 {
+			return "startQueryInput"
+		}
 	}
 	return ""
 }
@@ -331,7 +367,7 @@ func (p *ClaudeOptionsPanel) getFocusCount() int {
 		return 4 // skip, auto, chrome, teammate
 	}
 
-	count := 6 // session mode, skip, auto, chrome, teammate, extra-args
+	count := 7 // session mode, skip, auto, chrome, teammate, extra-args, start-query
 	if p.sessionMode == 2 {
 		count++ // resume input
 	}
@@ -344,8 +380,7 @@ func (p *ClaudeOptionsPanel) isResumeInputFocused() bool {
 }
 
 // isExtraArgsInputFocused returns true if extra-args input is focused.
-// Last focusable element in NewDialog mode — index shifts by +1 when
-// resume mode is active (resume ID input adds a row).
+// Index shifts by +1 when resume mode is active (resume ID input adds a row).
 func (p *ClaudeOptionsPanel) isExtraArgsInputFocused() bool {
 	if p.isForkMode {
 		return false
@@ -357,16 +392,34 @@ func (p *ClaudeOptionsPanel) isExtraArgsInputFocused() bool {
 	return p.focusIndex == want
 }
 
+// isStartQueryInputFocused returns true if start-query input is focused.
+// Last focusable element in NewDialog mode (v1.7.67). Index shifts by +1
+// when resume mode is active.
+func (p *ClaudeOptionsPanel) isStartQueryInputFocused() bool {
+	if p.isForkMode {
+		return false
+	}
+	want := 6 // default: after extraArgs(5)
+	if p.sessionMode == 2 {
+		want = 7 // resume input adds one
+	}
+	return p.focusIndex == want
+}
+
 // updateInputFocus updates which text input has focus
 func (p *ClaudeOptionsPanel) updateInputFocus() {
 	p.resumeIDInput.Blur()
 	p.extraArgsInput.Blur()
+	p.startQueryInput.Blur()
 
 	if p.isResumeInputFocused() {
 		p.resumeIDInput.Focus()
 	}
 	if p.isExtraArgsInputFocused() {
 		p.extraArgsInput.Focus()
+	}
+	if p.isStartQueryInputFocused() {
+		p.startQueryInput.Focus()
 	}
 }
 
@@ -453,6 +506,15 @@ func (p *ClaudeOptionsPanel) viewNewMode(labelStyle, activeStyle, dimStyle, head
 		content += activeStyle.Render("  ▶ Extra args: ") + p.extraArgsInput.View() + "\n"
 	} else {
 		content += "    Extra args: " + p.extraArgsInput.View() + "\n"
+	}
+	focusIdx++
+
+	// Start query input (v1.7.67, #725): single positional arg for claude.
+	// Not split on spaces; not persisted (per-session only).
+	if p.focusIndex == focusIdx {
+		content += activeStyle.Render("  ▶ Start query: ") + p.startQueryInput.View() + "\n"
+	} else {
+		content += "    Start query: " + p.startQueryInput.View() + "\n"
 	}
 
 	return content

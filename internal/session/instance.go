@@ -201,6 +201,17 @@ type Instance struct {
 	// survive the bash -c wrapper.
 	ExtraArgs []string `json:"extra_args,omitempty"`
 
+	// StartupQuery is the claude-code positional "startup query" (#725,
+	// v1.7.67). Set from the new-session dialog's "Start query" field and
+	// emitted as a single shell-quoted positional arg on the claude
+	// new-session command line only.
+	//
+	// Per-session, NEVER persisted — the `json:"-"` tag is load-bearing.
+	// On Restart/Resume the field is empty, so the query does NOT replay.
+	// This is the whole point of having a dedicated field instead of
+	// overloading ExtraArgs (which persists and space-splits).
+	StartupQuery string `json:"-"`
+
 	// ToolOptions stores tool-specific launch options (Claude, Codex, Gemini, etc.)
 	// JSON structure: {"tool": "claude", "options": {...}}
 	ToolOptionsJSON json.RawMessage `json:"tool_options,omitempty"`
@@ -644,12 +655,21 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		sessionUUID := generateUUID()
 		i.ClaudeSessionID = sessionUUID
 
+		// Startup query (#725, v1.7.67): appended as one shell-quoted
+		// positional arg so multi-word queries survive bash -c. Empty
+		// string means no suffix — do NOT emit empty quotes (claude would
+		// treat them as an empty prompt and block).
+		startupQuerySuffix := ""
+		if i.StartupQuery != "" {
+			startupQuerySuffix = " " + shellescape.Quote(i.StartupQuery)
+		}
+
 		var baseCmd string
 		// Use pre-generated literal UUID with --session-id flag.
 		// CLAUDE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		baseCmd = fmt.Sprintf(
-			`%sexec %s%s --session-id "%s"%s`,
-			bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags)
+			`%sexec %s%s --session-id "%s"%s%s`,
+			bashExportPrefix, execEnvPrefix, claudeCmd, sessionUUID, extraFlags, startupQuerySuffix)
 
 		// If message provided, append wait-and-send logic in background.
 		if message != "" {

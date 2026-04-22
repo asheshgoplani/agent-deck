@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1498,5 +1499,77 @@ func TestNewDialog_PathInput_AcceptsUnderscore(t *testing.T) {
 
 	if !strings.Contains(updated.pathInput.Value(), "_") {
 		t.Errorf("pathInput.Value() = %q after typing '_', want value to contain '_'", updated.pathInput.Value())
+	}
+}
+
+// TestNewDialog_View_ShowsStartQueryField_WhenClaudeSelected asserts the
+// v1.7.67 "Start query" input renders in the claude-options panel when
+// the claude preset is selected. The field is the dedicated entry point
+// for claude-code's positional startup-query argument, replacing the
+// extra-args misuse documented in @Clindbergh's GH #725 report.
+func TestNewDialog_View_ShowsStartQueryField_WhenClaudeSelected(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.SetSize(100, 50)
+	dialog.Show()
+	// commandCursor = 1 selects "claude" (see buildPresetCommands order).
+	dialog.commandCursor = 1
+	dialog.updateToolOptions()
+
+	view := dialog.View()
+
+	if !strings.Contains(view, "Start query") {
+		t.Errorf(
+			"View should contain 'Start query' label when claude is "+
+				"selected; without this label the user has no discoverable "+
+				"way to pass a per-session startup query. got:\n%s",
+			view,
+		)
+	}
+}
+
+// TestNewDialog_GetClaudeStartQuery_ReturnsInputValue asserts the
+// accessor returns the raw input string (multi-word, un-split). This is
+// the value the launch code path assigns to Instance.StartupQuery; if it
+// split on spaces here (as extra-args does via strings.Fields), the
+// bug @Clindbergh reported would reappear.
+func TestNewDialog_GetClaudeStartQuery_ReturnsInputValue(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.commandCursor = 1 // claude
+	dialog.updateToolOptions()
+
+	// Use reflection to drive the test even before GetClaudeStartQuery exists.
+	dv := reflect.ValueOf(dialog)
+	method := dv.MethodByName("GetClaudeStartQuery")
+	if !method.IsValid() {
+		t.Fatalf(
+			"NewDialog.GetClaudeStartQuery() does not exist; add it in " +
+				"internal/ui/newdialog.go next to GetClaudeExtraArgs. It " +
+				"must return string (NOT []string — the query is a single " +
+				"positional arg, never split on spaces).",
+		)
+	}
+
+	// Drive the underlying input through ClaudeOptionsPanel.SetStartQuery
+	// or direct field access; use reflection to stay compile-safe.
+	panelMethod := reflect.ValueOf(dialog.claudeOptions).MethodByName("SetStartQuery")
+	if !panelMethod.IsValid() {
+		t.Fatalf(
+			"ClaudeOptionsPanel.SetStartQuery(string) does not exist; " +
+				"add it next to SetExtraArgs in internal/ui/claudeoptions.go.",
+		)
+	}
+	panelMethod.Call([]reflect.Value{reflect.ValueOf("explain the codebase")})
+
+	out := method.Call(nil)
+	if len(out) != 1 || out[0].Kind() != reflect.String {
+		t.Fatalf("GetClaudeStartQuery must return (string); got %v", out)
+	}
+	got := out[0].String()
+	if got != "explain the codebase" {
+		t.Errorf(
+			"GetClaudeStartQuery() = %q, want %q (exact string, no space-split)",
+			got, "explain the codebase",
+		)
 	}
 }

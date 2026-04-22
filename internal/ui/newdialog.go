@@ -765,6 +765,18 @@ func (d *NewDialog) GetClaudeExtraArgs() []string {
 	return d.claudeOptions.GetExtraArgs()
 }
 
+// GetClaudeStartQuery returns the user-supplied claude startup query from
+// the options panel (v1.7.67, #725). Returns "" for non-claude tools. The
+// value is a single string — NEVER split on spaces — and is assigned by
+// the caller to Instance.StartupQuery for single-shot emission on the
+// new-session command line.
+func (d *NewDialog) GetClaudeStartQuery() string {
+	if !d.isClaudeSelected() {
+		return ""
+	}
+	return d.claudeOptions.GetStartQuery()
+}
+
 // isClaudeSelected returns true if the selected command is Claude or a claude-compatible custom tool
 func (d *NewDialog) isClaudeSelected() bool {
 	if d.commandCursor < 0 || d.commandCursor >= len(d.presetCommands) {
