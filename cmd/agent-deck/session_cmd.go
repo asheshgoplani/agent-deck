@@ -32,6 +32,8 @@ func handleSession(profile string, args []string) {
 		handleSessionStart(profile, args[1:])
 	case "stop":
 		handleSessionStop(profile, args[1:])
+	case "remove":
+		handleSessionRemove(profile, args[1:])
 	case "restart":
 		handleSessionRestart(profile, args[1:])
 	case "revive":
@@ -80,6 +82,7 @@ func printSessionHelp() {
 	fmt.Println("Commands:")
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
+	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude session with context")
