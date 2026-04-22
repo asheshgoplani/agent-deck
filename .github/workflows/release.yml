@@ -36,6 +36,15 @@ jobs:
           fi
           echo "Version: $CODE"
 
+      # zoxide backs the quick-open picker tests (#693, v1.7.54). Not on
+      # ubuntu-latest by default; install here so `go test ./...` doesn't
+      # false-fail on the non-title-lock zoxide_picker_test suite.
+      - name: Install zoxide
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zoxide
+          zoxide --version
+
       - name: Run tests
         run: go test -race ./...
 
