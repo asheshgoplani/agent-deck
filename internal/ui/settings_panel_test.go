@@ -936,6 +936,40 @@ func TestSettingsPanel_Worktree_GetConfigPreservesHiddenFields(t *testing.T) {
 	}
 }
 
+// TestSettingsPanel_Tmux_GetConfigPreservesHiddenFields guards #710.
+// The Settings TUI does not expose [tmux] fields, so GetConfig() must copy
+// them through from originalConfig — same as MCPs/Tools/Worktree. Before the
+// fix, saving from the TUI silently dropped the entire [tmux] table, which
+// also explained the original #687 inject_status_line report we couldn't
+// reproduce by editing config.toml directly.
+func TestSettingsPanel_Tmux_GetConfigPreservesHiddenFields(t *testing.T) {
+	panel := NewSettingsPanel()
+
+	injectFalse := false
+	launchScopeTrue := true
+	original := &session.UserConfig{
+		Tmux: session.TmuxSettings{
+			InjectStatusLine:  &injectFalse,
+			LaunchInUserScope: &launchScopeTrue,
+			DetachKey:         "C-q",
+		},
+	}
+	panel.LoadConfig(original)
+	panel.originalConfig = original
+
+	config := panel.GetConfig()
+
+	if config.Tmux.InjectStatusLine == nil || *config.Tmux.InjectStatusLine != false {
+		t.Fatalf("Tmux.InjectStatusLine should be preserved as false, got %v", config.Tmux.InjectStatusLine)
+	}
+	if config.Tmux.LaunchInUserScope == nil || *config.Tmux.LaunchInUserScope != true {
+		t.Fatalf("Tmux.LaunchInUserScope should be preserved as true, got %v", config.Tmux.LaunchInUserScope)
+	}
+	if config.Tmux.DetachKey != "C-q" {
+		t.Fatalf("Tmux.DetachKey = %q, want %q", config.Tmux.DetachKey, "C-q")
+	}
+}
+
 func TestSettingsPanel_PreviewSettings_ViewContains(t *testing.T) {
 	panel := NewSettingsPanel()
 	panel.SetSize(80, 50)

@@ -442,6 +442,11 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		config.Preview.Analytics = s.originalConfig.Preview.Analytics
 		config.Profiles = s.originalConfig.Profiles
 		config.Worktree = s.originalConfig.Worktree
+		// Tmux settings (#710): preserve [tmux] table — Settings TUI does not
+		// expose these fields, so without this copy the entire [tmux] block
+		// (inject_status_line, launch_in_user_scope, detach_key, options …)
+		// vanishes on save. Same class of bug as #584 (Worktree).
+		config.Tmux = s.originalConfig.Tmux
 		// Keep global Claude config when editing profile-specific override.
 		if s.claudeConfigIsScope {
 			config.Claude.ConfigDir = s.originalConfig.Claude.ConfigDir
