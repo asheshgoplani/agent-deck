@@ -5,6 +5,11 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.51] - 2026-04-22
+
+### Fixed
+- **Settings TUI no longer drops the `[tmux]` config block on save** ([#710](https://github.com/asheshgoplani/agent-deck/issues/710), reported on v1.7.50). Pressing `S` in the TUI, toggling any setting, and saving was silently zeroing the entire `[tmux]` table on disk — `inject_status_line`, `launch_in_user_scope`, `detach_key`, `socket_name` (v1.7.50), and `options` were all gone after the next reload. Root cause: `SettingsPanel.GetConfig` reconstructs the to-be-saved `UserConfig` from the panel's visible widget state and pass-through-copies every section it doesn't render (MCPs, Tools, Profiles, Worktree, …) from `originalConfig`, but `Tmux` had been omitted from that copy block. Same class of bug as [#584](https://github.com/asheshgoplani/agent-deck/pull/584) (Worktree) and the structural reason we couldn't reproduce the original [#687](https://github.com/asheshgoplani/agent-deck/issues/687) `inject_status_line` report by editing `config.toml` directly — the reporter was hitting the Settings TUI save path, not the loader. Fix is one line: `config.Tmux = s.originalConfig.Tmux` added to the preservation block in `internal/ui/settings_panel.go`. Coverage gap closed by two new tests: `TestSettingsPanel_Tmux_GetConfigPreservesHiddenFields` (unit, mirrors the existing Worktree guard) asserts `GetConfig()` round-trips `InjectStatusLine`, `LaunchInUserScope`, and `DetachKey` from `originalConfig`; `TestEval_SettingsTUI_SavePreservesTmux` (eval_smoke tier in `internal/ui/settings_panel_eval_test.go`) drives the full `LoadUserConfig → SettingsPanel.LoadConfig → GetConfig → SaveUserConfig → re-read TOML` round-trip against a scratch `$HOME` to prove `[tmux]` survives a real save with a non-tmux setting changed (theme dark → light). Both tests were verified RED on the unfixed code and GREEN after the one-line fix. Thanks to @jcordasco for the exact diagnosis and suggested fix in #710.
+
 ## [1.7.50] - 2026-04-21
 
 ### Added
