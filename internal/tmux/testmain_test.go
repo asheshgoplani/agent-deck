@@ -58,6 +58,15 @@ func skipIfNoTmuxServer(t *testing.T) {
 // accidental modification of production data.
 // CRITICAL: This was missing and caused test data to overwrite production sessions!
 func TestMain(m *testing.M) {
+	// Child-helper mode for softkill_test.go (#737). When SOFTKILL_TEST_HELPER
+	// is set the test binary re-executes as a small SIGTERM-handling program
+	// instead of running tests. Must come first — before any tmux setup — so
+	// the helper child stays lightweight.
+	if role := os.Getenv("SOFTKILL_TEST_HELPER"); role != "" {
+		runSoftkillHelper(role)
+		return
+	}
+
 	// Isolate the tmux socket. Without this, `tmux new-session` / `list-sessions` /
 	// `kill-session` calls in test setup & cleanup hit the user's default
 	// /tmp/tmux-<uid>/default socket — destabilizing their live sessions.

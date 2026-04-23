@@ -28,15 +28,19 @@ setup_timeout_seconds = 120
 		t.Fatalf("decode: %v", err)
 	}
 
-	if got, want := cfg.Worktree.SetupTimeoutSeconds, 120; got != want {
-		t.Errorf("Worktree.SetupTimeoutSeconds = %d, want %d", got, want)
+	if cfg.Worktree.SetupTimeoutSeconds == nil {
+		t.Fatalf("Worktree.SetupTimeoutSeconds = nil, want *120 (pointer disambiguates unset from explicit zero — see #727 follow-up)")
+	}
+	if got, want := *cfg.Worktree.SetupTimeoutSeconds, 120; got != want {
+		t.Errorf("*Worktree.SetupTimeoutSeconds = %d, want %d", got, want)
 	}
 }
 
-// T3: Default (zero-value) WorktreeSettings.SetupTimeout() returns 60s for
-// backward compatibility with every install that never set the new field.
+// T3: Zero-value WorktreeSettings (pointer nil = field unset) resolves to 60s
+// for backward compatibility. This is the path every install hit before #727
+// and every install that does not adopt [worktree].setup_timeout_seconds.
 func TestWorktreeSettings_SetupTimeout_DefaultSixtySeconds(t *testing.T) {
-	var w WorktreeSettings // zero value: SetupTimeoutSeconds == 0
+	var w WorktreeSettings // zero value: SetupTimeoutSeconds == nil
 
 	if got, want := w.SetupTimeout(), 60*time.Second; got != want {
 		t.Errorf("SetupTimeout() = %v, want %v (backward-compat default)", got, want)
@@ -45,7 +49,8 @@ func TestWorktreeSettings_SetupTimeout_DefaultSixtySeconds(t *testing.T) {
 
 // T3b: A positive SetupTimeoutSeconds is honoured.
 func TestWorktreeSettings_SetupTimeout_HonoursConfiguredValue(t *testing.T) {
-	w := WorktreeSettings{SetupTimeoutSeconds: 300}
+	v := 300
+	w := WorktreeSettings{SetupTimeoutSeconds: &v}
 
 	if got, want := w.SetupTimeout(), 300*time.Second; got != want {
 		t.Errorf("SetupTimeout() = %v, want %v", got, want)

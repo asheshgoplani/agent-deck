@@ -1309,6 +1309,83 @@ inject_status_line = true
 	}
 }
 
+func TestGetTmuxSettings_Mouse_Default(t *testing.T) {
+	// Default (no config) should return true — preserves pre-#730 behavior
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if !settings.GetMouse() {
+		t.Error("GetMouse should default to true when not set")
+	}
+}
+
+func TestGetTmuxSettings_Mouse_False(t *testing.T) {
+	// Explicit false disables tmux mouse capture so VS Code Linux terminal
+	// can select text natively (issue #730).
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[tmux]
+mouse = false
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if settings.GetMouse() {
+		t.Error("GetMouse should be false when set to false")
+	}
+}
+
+func TestGetTmuxSettings_Mouse_True(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[tmux]
+mouse = true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTmuxSettings()
+	if !settings.GetMouse() {
+		t.Error("GetMouse should be true when set to true")
+	}
+}
+
 func TestGetTmuxSettings_LaunchInUserScope_Default(t *testing.T) {
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")

@@ -200,6 +200,15 @@ type Instance struct {
 	// messages on conductor restart.
 	Channels []string `json:"channels,omitempty"`
 
+	// WorkerScratchConfigDir is the ephemeral CLAUDE_CONFIG_DIR prepared
+	// for a non-conductor claude worker (issue #59, v1.7.68). The
+	// scratch dir copies the ambient profile's settings.json with the
+	// telegram plugin explicitly disabled, symlinks the rest of the
+	// profile, and is cleaned up on session stop/remove. Empty for
+	// conductor sessions, explicit telegram channel owners, and
+	// non-claude tools — they use the ambient profile as-is.
+	WorkerScratchConfigDir string `json:"worker_scratch_config_dir,omitempty"`
+
 	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
 	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
 	// Each token is shellescape-quoted on emission so values with spaces
@@ -475,6 +484,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SocketName = socket
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
+	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 
 	return &Instance{
@@ -505,6 +515,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.SocketName = socket
 	tmuxSess.InstanceID = id // Pass instance ID for activity hooks
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
+	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 
 	inst := &Instance{
@@ -583,6 +594,15 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
 		configDir := GetClaudeConfigDirForInstance(i)
+		// Worker scratch dir override: if a per-instance scratch
+		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
+		// route the claude binary through it so it loads the mutated
+		// settings.json with the telegram plugin pinned off. Conductors
+		// and explicit channel owners leave WorkerScratchConfigDir
+		// empty and use the ambient profile — see worker_scratch.go.
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
+		}
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
@@ -707,7 +727,16 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 func (i *Instance) buildBashExportPrefix() string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
 	if IsClaudeConfigDirExplicitForInstance(i) {
-		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", GetClaudeConfigDirForInstance(i))
+		configDir := GetClaudeConfigDirForInstance(i)
+		// Worker scratch dir override (issue #59, v1.7.68). Mirrors the
+		// same override in the inline CLAUDE_CONFIG_DIR= prefix path
+		// above — both must route workers through the scratch dir so
+		// the telegram plugin is pinned off regardless of which
+		// command-build branch runs.
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
+		}
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
 	}
 	return prefix
 }
@@ -2372,6 +2401,12 @@ func (i *Instance) Start() error {
 		return fmt.Errorf("tmux session not initialized")
 	}
 
+	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
+	// (issue #59, v1.7.68). Runs before command-building so the
+	// CLAUDE_CONFIG_DIR= prefix picks up the scratch path. No-op for
+	// conductors, explicit telegram channel owners, and non-claude tools.
+	i.prepareWorkerScratchConfigDirForSpawn()
+
 	// Build command based on tool type
 	// Priority: claude-compatible (built-in + custom wrapping claude) → built-in tools → custom tools → raw command
 	var command string
@@ -2536,6 +2571,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
+
+	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
+	// (issue #59, v1.7.68). Same call as in Start() — both spawn paths
+	// must pin the telegram plugin off for workers.
+	i.prepareWorkerScratchConfigDirForSpawn()
 
 	// Start session normally (no embedded message logic)
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
@@ -3753,6 +3793,7 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.SocketName = i.TmuxSocketName
 	i.tmuxSession.InstanceID = i.ID
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
+	i.tmuxSession.SetMouse(GetTmuxSettings().GetMouse())
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 }
 
@@ -4463,10 +4504,29 @@ func (i *Instance) StopServiceUnit() error {
 
 // Kill terminates the tmux session and cleans up sandbox container if present.
 func (i *Instance) Kill() error {
+	return i.killInternal(false)
+}
+
+// KillAndWait is the synchronous companion to Kill. It performs the
+// same teardown AND blocks until the pane process tree has been
+// verified dead (SIGTERM → SIGKILL escalation inline, not in a
+// background goroutine). Callers in short-lived CLI processes
+// (`agent-deck remove`, `agent-deck session remove`) MUST use this
+// variant — see issue #59 (v1.7.68). The TUI and web callers can
+// keep using Kill for the non-blocking path.
+func (i *Instance) KillAndWait() error {
+	return i.killInternal(true)
+}
+
+func (i *Instance) killInternal(sync bool) error {
 	// Kill tmux session first, but always continue to container cleanup.
 	var tmuxErr error
 	if i.tmuxSession != nil {
-		tmuxErr = i.tmuxSession.Kill()
+		if sync {
+			tmuxErr = i.tmuxSession.KillAndWait()
+		} else {
+			tmuxErr = i.tmuxSession.Kill()
+		}
 	}
 
 	// Clean up sandbox container (only if name matches our prefix convention).
@@ -4492,6 +4552,11 @@ func (i *Instance) Kill() error {
 			docker.CleanupKeychainCredentials(homeDir)
 		}
 	}
+
+	// Remove the scratch CLAUDE_CONFIG_DIR prepared at spawn time for
+	// this worker (issue #59, v1.7.68). Best-effort — leaking a scratch
+	// dir on an unclean shutdown is harmless, just wasteful.
+	i.CleanupWorkerScratchConfigDir()
 
 	i.Status = StatusStopped
 
@@ -4803,6 +4868,10 @@ func (i *Instance) Restart() error {
 	// Fallback: recreate tmux session (for dead sessions or unknown ID)
 	i.recreateTmuxSession()
 
+	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
+	// on the restart path too (issue #59, v1.7.68).
+	i.prepareWorkerScratchConfigDirForSpawn()
+
 	var command string
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" {
 		command = i.buildClaudeResumeCommand()
@@ -4966,6 +5035,15 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
 		configDir := GetClaudeConfigDirForInstance(i)
+		// Worker scratch dir override: if a per-instance scratch
+		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
+		// route the claude binary through it so it loads the mutated
+		// settings.json with the telegram plugin pinned off. Conductors
+		// and explicit channel owners leave WorkerScratchConfigDir
+		// empty and use the ambient profile — see worker_scratch.go.
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
+		}
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 

@@ -98,7 +98,7 @@ None. The plan executed exactly as written. Insertion point was the one the plan
 
 ## Self-Check: PASSED
 
-- Test function exists at line 958 of `/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/internal/session/session_persistence_test.go` — verified by grep.
+- Test function exists at line 958 of `<repo-root>/.worktrees/session-persistence/internal/session/session_persistence_test.go` — verified by grep.
 - Commit `be20eff` exists on branch `fix/session-persistence` — verified by `git log --oneline -1`.
 - Build passes, target test runs with the documented failure, full suite unchanged — all verified.
 

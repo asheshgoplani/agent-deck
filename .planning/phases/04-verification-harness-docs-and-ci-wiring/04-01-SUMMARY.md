@@ -119,7 +119,7 @@ Classified as a plan-intent-preserving fix, not a Rule-N auto-fix: the plan expl
 
 ## Issues Encountered
 
-- The Write tool initially placed files in a different worktree path (`/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/...`) because the prompt's `files_to_read` block used that path. Resolved by removing the stray directory via `trash` and writing to the correct worktree (`/home/ashesh-goplani/agent-deck/.claude/worktrees/agent-ab2e9834/...`). No files from the wrong worktree were committed.
+- The Write tool initially placed files in a different worktree path (`<repo-root>/.worktrees/session-persistence/...`) because the prompt's `files_to_read` block used that path. Resolved by removing the stray directory via `trash` and writing to the correct worktree (`<repo-root>/.claude/worktrees/agent-ab2e9834/...`). No files from the wrong worktree were committed.
 
 ## Threat Surface
 

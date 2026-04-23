@@ -255,11 +255,15 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 			}
 
 			chunk := buf[:n]
-			if time.Since(startTime) < attachReplyQuarantine || replyFilter.Active() {
-				chunk = replyFilter.Consume(chunk, time.Since(startTime) < attachReplyQuarantine, false)
-				if len(chunk) == 0 {
-					continue
-				}
+			// Always run the reply filter: escape-string replies (DCS/OSC/etc.)
+			// can arrive long after the initial quarantine (e.g. iTerm2
+			// XTVERSION reply on window focus/resize — #731). `armed` stays
+			// gated to the quarantine window so generic CSI pass-through
+			// works for keyboard input outside it.
+			armed := time.Since(startTime) < attachReplyQuarantine
+			chunk = replyFilter.Consume(chunk, armed, false)
+			if len(chunk) == 0 {
+				continue
 			}
 
 			// Check for the detach key anywhere in the input chunk.

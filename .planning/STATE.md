@@ -19,8 +19,8 @@ progress:
 ## Project Reference
 
 **Project:** Agent Deck
-**Repository:** /home/ashesh-goplani/agent-deck
-**Worktree:** /home/ashesh-goplani/agent-deck/.worktrees/watcher-completion
+**Repository:** <repo-root>
+**Worktree:** <repo-root>/.worktrees/watcher-completion
 **Branch:** feat/watcher-completion (off main after v1.5.4 merges locally)
 **Current version:** v1.5.4 (local hotfix series, unpushed)
 **Target version:** v1.6.0

@@ -815,6 +815,13 @@ type Session struct {
 	// Default: true (set via SetInjectStatusLine from user config)
 	injectStatusLine bool
 
+	// mouse controls whether tmux `mouse on` is set during session creation
+	// and by EnableMouseMode. When false, tmux never captures mouse events so
+	// the terminal emulator keeps them — fixes VS Code Linux integrated
+	// terminal click-drag selection (issue #730).
+	// Default: true (set via SetMouse from user config)
+	mouse bool
+
 	// clearOnRestart controls whether RespawnPane clears the scrollback buffer.
 	// When false (default), previous session output is preserved.
 	// Set via SetClearOnRestart from user config.
@@ -1199,6 +1206,25 @@ func (s *Session) SetInjectStatusLine(inject bool) {
 	s.injectStatusLine = inject
 }
 
+// SetMouse controls whether tmux mouse mode is enabled for this session.
+// When false, the inline `mouse on` set-option during Start is skipped AND
+// EnableMouseMode becomes a no-op — required for VS Code Linux integrated
+// terminal click-drag selection (issue #730).
+func (s *Session) SetMouse(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mouse = enabled
+}
+
+// GetMouse reports whether tmux mouse mode is currently enabled for this
+// session. Used by tests and by the Start / EnableMouseMode code paths to
+// decide whether to set `mouse on`.
+func (s *Session) GetMouse() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.mouse
+}
+
 // SetClearOnRestart controls whether RespawnPane clears the scrollback buffer.
 // When false (default), previous output is preserved on restart.
 func (s *Session) SetClearOnRestart(clear bool) {
@@ -1241,6 +1267,7 @@ func NewSession(name, workDir string) *Session {
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second, // Re-detect tool every 30 seconds
 		injectStatusLine: true,             // Default: inject status bar
+		mouse:            true,             // Default: mouse on (#730 opt-out)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 }
@@ -1262,6 +1289,7 @@ func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second,
 		injectStatusLine: true,  // Default: inject status bar
+		mouse:            true,  // Default: mouse on (#730 opt-out)
 		configured:       false, // Will be set to true after configuration
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
@@ -1330,6 +1358,7 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 		lastStableStatus: "waiting",
 		toolDetectExpiry: 30 * time.Second,
 		injectStatusLine: true,  // Default: inject status bar
+		mouse:            true,  // Default: mouse on (#730 opt-out)
 		configured:       false, // Explicitly mark as not configured
 	}
 
@@ -1795,8 +1824,13 @@ func (s *Session) Start(command string) error {
 	if _, ok := s.OptionOverrides["window-active-style"]; !ok {
 		startArgs = append(startArgs, "set-option", "-t", s.Name, "window-active-style", themeStyle.windowActiveStyle, ";")
 	}
+	// #730: users opt out of mouse capture via [tmux].mouse = false so
+	// terminals like VS Code Linux can do native click-drag selection.
+	if s.mouse {
+		startArgs = append(startArgs,
+			"set-option", "-t", s.Name, "mouse", "on", ";")
+	}
 	startArgs = append(startArgs,
-		"set-option", "-t", s.Name, "mouse", "on", ";",
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
@@ -2025,11 +2059,16 @@ func (s *Session) ConfigureStatusBar() {
 // Note: With mouse mode on, hold Shift while selecting to use native terminal selection
 // instead of tmux's selection (useful for copying to system clipboard in some terminals)
 func (s *Session) EnableMouseMode() error {
-	// CRITICAL: Mouse mode must succeed - keep as separate call for error handling
-	// This is the only essential feature; all others are enhancements
-	mouseCmd := s.tmuxCmd("set-option", "-t", s.Name, "mouse", "on")
-	if err := mouseCmd.Run(); err != nil {
-		return err
+	// #730: when the user opted out via [tmux].mouse = false, skip the mouse
+	// set-option entirely so terminals like VS Code Linux keep click-drag
+	// selection. Enhancements below are unaffected.
+	if s.mouse {
+		// CRITICAL: Mouse mode must succeed - keep as separate call for error handling
+		// This is the only essential feature; all others are enhancements
+		mouseCmd := s.tmuxCmd("set-option", "-t", s.Name, "mouse", "on")
+		if err := mouseCmd.Run(); err != nil {
+			return err
+		}
 	}
 
 	// PERFORMANCE: Batch all non-fatal enhancements into single subprocess call

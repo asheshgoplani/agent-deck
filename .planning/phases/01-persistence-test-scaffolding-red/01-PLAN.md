@@ -46,8 +46,8 @@ Output: A compilable Go test file with helpers + 2 tests. Subsequent plans will 
 </objective>
 
 <execution_context>
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
 </execution_context>
 
 <context>

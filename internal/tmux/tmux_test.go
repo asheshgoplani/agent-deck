@@ -99,6 +99,33 @@ func TestSession_InjectStatusLine_ReconnectSession(t *testing.T) {
 	sess.ConfigureStatusBar() // Should be no-op, no error
 }
 
+func TestSession_Mouse_Default(t *testing.T) {
+	// NewSession should default mouse to true (preserves pre-#730 behavior).
+	sess := NewSession("test-mouse-default", "/tmp")
+	if !sess.GetMouse() {
+		t.Error("NewSession should default mouse to true")
+	}
+}
+
+func TestSession_SetMouse(t *testing.T) {
+	sess := NewSession("test-mouse-setter", "/tmp")
+	sess.SetMouse(false)
+	if sess.GetMouse() {
+		t.Error("SetMouse(false) should disable mouse")
+	}
+	sess.SetMouse(true)
+	if !sess.GetMouse() {
+		t.Error("SetMouse(true) should re-enable mouse")
+	}
+}
+
+func TestSession_Mouse_ReconnectLazy_DefaultTrue(t *testing.T) {
+	sess := ReconnectSessionLazy("test_sess_mouse", "Test", "/tmp", "echo hi", "waiting")
+	if !sess.GetMouse() {
+		t.Error("ReconnectSessionLazy should default mouse to true")
+	}
+}
+
 func TestSessionPrefix(t *testing.T) {
 	if SessionPrefix != "agentdeck_" {
 		t.Errorf("SessionPrefix = %s, want agentdeck_", SessionPrefix)
@@ -2343,6 +2370,83 @@ func TestSession_SendCommand(t *testing.T) {
 	if !strings.Contains(content, "hello") {
 		t.Errorf("Expected 'hello' in output, got: %s", content)
 	}
+}
+
+// =============================================================================
+// Mouse Mode Config Gate Integration Tests (#730)
+// =============================================================================
+
+// TestSession_MouseMode_DefaultIsOn_Integration verifies pre-#730 behavior:
+// when no config is set, a new session has tmux `mouse` option = "on".
+func TestSession_MouseMode_DefaultIsOn_Integration(t *testing.T) {
+	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
+		t.Skip("Skipping tmux integration test - no test profile")
+	}
+
+	s := NewSession("test-mouse-default-on", t.TempDir())
+	s.InstanceID = "test-instance-mouse-on"
+
+	err := s.Start("sleep 3600")
+	require.NoError(t, err)
+	defer func() { _ = s.Kill() }()
+
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "on", strings.TrimSpace(string(out)),
+		"default mouse mode should resolve to 'on' (preserves pre-#730 behavior)")
+}
+
+// TestSession_MouseMode_Disabled_Integration verifies that when SetMouse(false)
+// is called before Start, the inline mouse-on set-option at tmux.go:~1762 is
+// skipped, and the resulting tmux session leaves `mouse` at the tmux default
+// ("off"). Regression guard for issue #730 — VS Code Linux integrated terminal
+// relies on tmux NOT capturing mouse events so the terminal can select text.
+func TestSession_MouseMode_Disabled_Integration(t *testing.T) {
+	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
+		t.Skip("Skipping tmux integration test - no test profile")
+	}
+
+	s := NewSession("test-mouse-disabled", t.TempDir())
+	s.InstanceID = "test-instance-mouse-off"
+	s.SetMouse(false)
+
+	err := s.Start("sleep 3600")
+	require.NoError(t, err)
+	defer func() { _ = s.Kill() }()
+
+	// -A resolves inheritance and returns the effective value. Without -A,
+	// an unset-at-session option returns empty string even if the default
+	// (or a global override) would resolve to "off".
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "off", strings.TrimSpace(string(out)),
+		"mouse option must resolve to 'off' when SetMouse(false) was called before Start (issue #730)")
+}
+
+// TestSession_MouseMode_EnableMouseMode_Disabled_Integration verifies that
+// EnableMouseMode (called from EnsureConfigured on reconnect) is ALSO gated.
+// This is the second call site that #730 fix must close.
+func TestSession_MouseMode_EnableMouseMode_Disabled_Integration(t *testing.T) {
+	if os.Getenv("AGENTDECK_TEST_PROFILE") == "" {
+		t.Skip("Skipping tmux integration test - no test profile")
+	}
+
+	s := NewSession("test-mouse-enable-off", t.TempDir())
+	s.InstanceID = "test-instance-mouse-enable-off"
+	s.SetMouse(false)
+
+	err := s.Start("sleep 3600")
+	require.NoError(t, err)
+	defer func() { _ = s.Kill() }()
+
+	// Simulate the EnsureConfigured path by calling EnableMouseMode directly.
+	// Should be a no-op when mouse is disabled.
+	_ = s.EnableMouseMode()
+
+	out, err := exec.Command("tmux", "show-options", "-t", s.Name, "-A", "-v", "mouse").Output()
+	require.NoError(t, err)
+	assert.Equal(t, "off", strings.TrimSpace(string(out)),
+		"EnableMouseMode must respect SetMouse(false) and not re-enable mouse")
 }
 
 // =============================================================================

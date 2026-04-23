@@ -59,6 +59,12 @@ agent-deck-test
 internal/web/static/.brute-tw.src.css
 /dist
 
-# Python
-**/__pycache__/
+# Python bytecode (scripts/watchdog/ + conductor/tests/)
+__pycache__/
 *.pyc
+
+# Claude harness lock (per-session, never committed)
+.claude/scheduled_tasks.lock
+
+# Internal planning / scratch (design docs, phase plans) — private to maintainer host
+.planning/

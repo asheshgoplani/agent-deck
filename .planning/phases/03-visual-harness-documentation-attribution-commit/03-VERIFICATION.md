@@ -7,7 +7,7 @@ overrides_applied: 1
 overrides:
   - must_have: "Harness uses `agent-deck session send` AND `agent-deck session output` call sites"
     reason: "Script uses /proc/<pane_pid>/environ (Linux kernel env snapshot) instead of session-send/output round-trip. Approved at Task 2 checkpoint by Ashesh Goplani with rationale: /proc reads the exact tmux-spawn environment directly — strictly tighter assertion than a session-send round-trip that goes through the agent-ready gate (80s timeout). Deviation recorded in 03-01-SUMMARY.md key-decisions."
-    accepted_by: "ashesh-goplani"
+    accepted_by: "<user>"
     accepted_at: "2026-04-15T20:18:10Z"
 human_verification:
   - test: "Review --no-verify usage on planning doc commit 911c0e7"
@@ -63,7 +63,7 @@ None. All requirements in scope for this phase are fully implemented.
 
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
-| `scripts/verify-per-group-claude-config.sh` | `agent-deck session send/output` | bash subprocess | PASSED (override) | Script uses `/proc/<pane_pid>/environ` instead — approved deviation. session start/stop/show/remove ARE present; the assertion method is different but tighter. Override: accepted by ashesh-goplani on 2026-04-15T20:18:10Z |
+| `scripts/verify-per-group-claude-config.sh` | `agent-deck session send/output` | bash subprocess | PASSED (override) | Script uses `/proc/<pane_pid>/environ` instead — approved deviation. session start/stop/show/remove ARE present; the assertion method is different but tighter. Override: accepted by <user> on 2026-04-15T20:18:10Z |
 | `scripts/verify-per-group-claude-config.sh` | `~/.agent-deck/config.toml` | backup-restore via trap EXIT INT TERM | VERIFIED | `trap cleanup EXIT INT TERM` at line 107; `cp "$BACKUP_FILE" "$CONFIG_FILE"` in cleanup function; `trash "$BACKUP_FILE"` for temp files |
 | `README.md` | `scripts/verify-per-group-claude-config.sh` | markdown reference in subsection body | VERIFIED | `grep -q 'scripts/verify-per-group-claude-config.sh' README.md` exits 0 |
 | `CLAUDE.md` | `internal/session/pergroupconfig_test.go` | one-line reference to TestPerGroupConfig_* suite | VERIFIED | `grep -c "TestPerGroupConfig_" CLAUDE.md` = 1; backtick-wrapped suite name at line 50 |

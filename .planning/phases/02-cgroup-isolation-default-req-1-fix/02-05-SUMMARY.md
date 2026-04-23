@@ -244,10 +244,10 @@ No `agentdeck-tmux-*.scope` units are currently active on this host. Rationale c
 
 ```
 $ ls -la ~/.agent-deck/logs/
-drwxr-xr-x  3 ashesh-goplani ashesh-goplani   4096 Apr  6 06:36 .
-drwxr-xr-x 17 ashesh-goplani ashesh-goplani   4096 Apr 14 11:37 ..
-drwxr-xr-x  2 ashesh-goplani ashesh-goplani   4096 Apr  6 09:46 mcppool
--rw-r--r--  1 ashesh-goplani ashesh-goplani 274087 Apr 14 13:38 session-id-lifecycle.jsonl
+drwxr-xr-x  3 <user> <user>   4096 Apr  6 06:36 .
+drwxr-xr-x 17 <user> <user>   4096 Apr 14 11:37 ..
+drwxr-xr-x  2 <user> <user>   4096 Apr  6 09:46 mcppool
+-rw-r--r--  1 <user> <user> 274087 Apr 14 13:38 session-id-lifecycle.jsonl
 
 $ grep 'tmux cgroup isolation' ~/.agent-deck/logs/*.log
 (no *.log file present yet — will be created on next CLI invocation that emits via logging.ForComponent)

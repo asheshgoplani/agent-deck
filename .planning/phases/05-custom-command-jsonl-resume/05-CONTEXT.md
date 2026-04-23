@@ -104,7 +104,7 @@ Phase 5 closes spec REQ-7 and REQUIREMENTS entries PERSIST-11, PERSIST-12, PERSI
 
 - Test fixture for TEST-09: create two temp JSONLs with `os.Chtimes` setting mtimes 10s apart, assert newer wins. Use `t.TempDir()` for isolation; clean up is automatic.
 - JSONL content minimum: the file need not contain valid JSON for discovery — the helper only reads the filename. (`sessionHasConversationData` checks content; `discoverLatestClaudeJSONL` does not.)
-- Conductor reproduction path: `ProjectPath` on the conductor instance is `/home/ashesh-goplani/.agent-deck/conductor/agent-deck`; `ConvertToClaudeDirName` produces `-home-ashesh-goplani--agent-deck-conductor-agent-deck` which matches the on-disk directory the user confirmed has ~10 JSONLs.
+- Conductor reproduction path: `ProjectPath` on the conductor instance is `~/.agent-deck/conductor/agent-deck`; `ConvertToClaudeDirName` produces `-home-<user>--agent-deck-conductor-agent-deck` which matches the on-disk directory the user confirmed has ~10 JSONLs.
 - Persistence test: after calling `Start()` (or the helper that it uses), reload the instance from storage (JSON file under `~/.agent-deck/<profile>/instances/<id>.json` or whatever the storage manager uses) and assert `ClaudeSessionID` is populated. This is what PERSIST-12 requires and is the most likely Dimension-8 failure if the planner forgets to call save.
 
 </specifics>

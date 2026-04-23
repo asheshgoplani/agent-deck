@@ -92,12 +92,18 @@ func TestManifestIsValidYAML(t *testing.T) {
 	}
 }
 
-// funcDeclRE matches `func <name>(` at a line start (ignoring leading
-// whitespace). Accepts receivers so a test with a receiver (rare in Go
-// but possible) isn't falsely missed.
+// funcDeclRE matches a test-function declaration at a line start (ignoring
+// leading whitespace). Supports both Go (`func <name>(`) with an optional
+// receiver, and Python (`def <name>(`) — the latter indented inside a
+// TestCase class. The Python branch is needed because v1.7.63 added the
+// first repo-gated Python tests under scripts/watchdog/ and those entries
+// would otherwise fail the drift check with spurious "missing func" errors.
 func funcDeclForName(name string) *regexp.Regexp {
 	quoted := regexp.QuoteMeta(name)
-	return regexp.MustCompile(`(?m)^func(?:\s+\([^)]*\))?\s+` + quoted + `\s*\(`)
+	return regexp.MustCompile(
+		`(?m)^func(?:\s+\([^)]*\))?\s+` + quoted + `\s*\(` +
+			`|(?m)^\s*def\s+` + quoted + `\s*\(`,
+	)
 }
 
 // TestManifestReferencesExistInSource asserts that for every non-manual

@@ -2,7 +2,7 @@
 
 # Phase 04 — verification run
 
-**Date:** 2026-04-15 (conductor host `ashesh-goplani-CELSIUS-M7010power`)
+**Date:** 2026-04-15 (conductor host `<user>-CELSIUS-M7010power`)
 **Script:** scripts/verify-session-persistence.sh @ `a680197` (commit `a680197ea2747984c6ee1def247b06b90f92cd22`)
 **Binary:** `./bin/agent-deck` built from HEAD `a680197` immediately prior to the run and placed on `$PATH` via `export PATH="$PWD/bin:$PATH"`
 **Exit code:** 0
@@ -21,17 +21,17 @@ On this host, Scenario 1 SKIPs because the live tmux daemon (PID 1752166) predat
 ## Host
 
 ```
-Linux ashesh-goplani-CELSIUS-M7010power 6.17.0-19-generic #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar  6 23:08:46 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+Linux <user>-CELSIUS-M7010power 6.17.0-19-generic #19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar  6 23:08:46 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
 ```
 
 ```
 systemctl --user show-environment (first 10 lines):
-HOME=/home/ashesh-goplani
+HOME=~
 LANG=en_US.UTF-8
-LOGNAME=ashesh-goplani
+LOGNAME=<user>
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin
 SHELL=/bin/bash
-USER=ashesh-goplani
+USER=<user>
 XDG_RUNTIME_DIR=/run/user/1000
 GTK_MODULES=gail:atk-bridge
 QT_ACCESSIBILITY=1
@@ -39,9 +39,9 @@ XDG_DATA_DIRS=/usr/share/ubuntu:/usr/share/gnome:/usr/local/share/:/usr/share/:/
 ```
 
 ```
-loginctl show-user ashesh-goplani:
+loginctl show-user <user>:
 UID=1000
-Name=ashesh-goplani
+Name=<user>
 State=active
 Linger=yes
 ```
@@ -49,7 +49,7 @@ Linger=yes
 ```
 PATH ordering (agent-deck is the freshly-built local binary):
 $ command -v agent-deck
-/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/bin/agent-deck
+<repo-root>/.worktrees/session-persistence/bin/agent-deck
 
 $ command -v tmux
 /usr/bin/tmux
@@ -61,7 +61,7 @@ $ command -v systemd-run
 ## Script output (full stdout+stderr, ANSI-stripped)
 
 ```
-    claude: /home/ashesh-goplani/.nvm/versions/node/v22.20.0/bin/claude (real)
+    claude: ~/.nvm/versions/node/v22.20.0/bin/claude (real)
 ==========================================================
 verify-session-persistence.sh — v1.5.2 persistence harness
 ==========================================================
@@ -87,10 +87,10 @@ Each scenario ends with one [PASS], [FAIL], or [SKIP] line.
 [PASS] [2] tmux pid 1752166 survived login-session teardown (cgroup isolation works)
     creating session: verify-persist-4142851-s3
     restarting session: agent-deck session start verify-persist-4142851-s3
-    captured claude argv: "bash -c 'export COLORFGBG='\\''15;0'\\'' && AGENTDECK_INSTANCE_ID=2ee9d76f-1776233540 CLAUDE_CONFIG_DIR=/home/ashesh-goplani/.claude claude --session-id 4d228b20-a927-483c-ba19-8c9ed0d877b3 --dangerously-skip-permissions'"
+    captured claude argv: "bash -c 'export COLORFGBG='\\''15;0'\\'' && AGENTDECK_INSTANCE_ID=2ee9d76f-1776233540 CLAUDE_CONFIG_DIR=~/.claude claude --session-id 4d228b20-a927-483c-ba19-8c9ed0d877b3 --dangerously-skip-permissions'"
 [PASS] [3] restart spawned claude with --resume or --session-id
     creating fresh session: verify-persist-4142851-s4
-    captured claude argv: "bash -c 'export COLORFGBG='\\''15;0'\\'' && export AGENTDECK_INSTANCE_ID=341ec3a0-1776233546; export CLAUDE_CONFIG_DIR=/home/ashesh-goplani/.claude; exec claude --session-id \"6f5fe9dc-b27a-486f-9df7-b168d58589ca\" --dangerously-skip-permissions'"
+    captured claude argv: "bash -c 'export COLORFGBG='\\''15;0'\\'' && export AGENTDECK_INSTANCE_ID=341ec3a0-1776233546; export CLAUDE_CONFIG_DIR=~/.claude; exec claude --session-id \"6f5fe9dc-b27a-486f-9df7-b168d58589ca\" --dangerously-skip-permissions'"
 [PASS] [4] fresh session uses --session-id without --resume
 OVERALL: PASS
 ```

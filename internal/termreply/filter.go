@@ -26,6 +26,15 @@ const (
 	csiFinalKittyKeyByte      = 'u'
 	csiFinalMouseLegacyByte   = 'M' // X10/legacy mouse report + SGR mouse press
 	csiFinalMouseSGRFinalByte = 'm' // SGR mouse release
+
+	// CSI reply finals that tmux needs to see to negotiate terminal
+	// capabilities (modifyOtherKeys, extended-keys). Dropping these is what
+	// caused #738 (Shift+Enter collapsing to bare CR in iTerm2 default
+	// profile): without DA1/DA2 replies, tmux cannot engage the CSI u /
+	// modifyOtherKeys protocol with the host terminal.
+	csiFinalDeviceAttributesByte = 'c' // DA1 / DA2 reply
+	csiFinalDeviceStatusByte     = 'n' // DSR reply
+	csiFinalCursorPositionByte   = 'R' // DSR cursor position reply
 )
 
 type filterMode uint8
@@ -91,6 +100,25 @@ func isKeyboardCSIFinalByte(b byte) bool {
 	}
 }
 
+// isTmuxCapabilityReplyCSIFinalByte returns true for CSI final bytes that
+// carry DA/DSR replies tmux needs to negotiate terminal capabilities with the
+// host terminal. Per @Clean-Cole's root-cause analysis in #738, swallowing
+// these breaks modifyOtherKeys negotiation and collapses Shift+Enter to bare
+// CR in iTerm2 default profile. They must pass through to the wrapped tmux
+// client regardless of the armed flag. Unlike DCS/OSC/APC/PM/SOS (which are
+// purely outer-TUI capability responses and are unconditionally stripped),
+// these CSI replies are consumed by tmux itself.
+func isTmuxCapabilityReplyCSIFinalByte(b byte) bool {
+	switch b {
+	case csiFinalDeviceAttributesByte,
+		csiFinalDeviceStatusByte,
+		csiFinalCursorPositionByte:
+		return true
+	default:
+		return false
+	}
+}
+
 func flushSequence(out []byte, seq []byte) []byte {
 	return append(out, seq...)
 }
@@ -106,15 +134,25 @@ func (f *Filter) resetSequenceState() {
 	f.escapeSeenInDiscard = false
 }
 
-// Consume filters a chunk of bytes. When armed is true, terminal-generated
-// control replies are discarded. If a reply started in a previous chunk, it
-// continues to be discarded until it terminates even if armed is now false.
+// Consume filters a chunk of bytes. Escape-string replies (OSC/DCS/APC/PM/SOS)
+// are discarded unconditionally — they have no keyboard overlap, so a human
+// cannot produce them, and leaking them to the inner PTY has real-world
+// failure modes (see #731: iTerm2 XTVERSION DCS leaking as `TERM2 3.6.10n`
+// input into the wrapped agent).
 //
-// Terminal replies covered here:
-//   - escape-string families: OSC, DCS, APC, PM, SOS
-//   - CSI replies during the quarantine window, except for a small whitelist of
-//     user-input CSI finals (arrows/home/end/backtab/~ keys/kitty CSI u,
-//     mouse M/m)
+// CSI sequences are handled by final-byte whitelist:
+//
+//   - Keyboard/mouse CSIs (arrows, Home/End, backtab, ~ keys, kitty CSI u,
+//     mouse M/m) always pass through so user input is never corrupted.
+//   - DA/DSR replies (final bytes c/n/R) always pass through so tmux can
+//     negotiate modifyOtherKeys with the host terminal (see #738: @Clean-Cole
+//     identified that swallowing DA1 collapsed Shift+Enter to bare CR in
+//     iTerm2 default profile).
+//   - Anything else is gated by armed: discarded during the quarantine
+//     window, preserved outside it.
+//
+// If a reply started in a previous chunk, it continues to be discarded until
+// it terminates even if armed is now false.
 //
 // If final is true, any incomplete pending escape/CSI/SS3 sequence is flushed as
 // literal input, while an incomplete discarded escape-string reply is dropped.
@@ -151,7 +189,12 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 				continue
 			}
 
-			if armed && !isKeyboardCSIFinalByte(b) {
+			// DA/DSR replies (final bytes c/n/R) must always pass through so
+			// tmux can negotiate modifyOtherKeys with the host terminal (see
+			// #738 regression from @Clean-Cole). Keyboard CSIs pass through
+			// unconditionally too. Only non-whitelisted CSIs are gated by
+			// armed.
+			if armed && !isKeyboardCSIFinalByte(b) && !isTmuxCapabilityReplyCSIFinalByte(b) {
 				f.resetSequenceState()
 				continue
 			}
@@ -174,7 +217,10 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 		if f.pendingEsc {
 			f.pendingEsc = false
 			switch {
-			case armed && isEscapeStringIntroducer(b):
+			case isEscapeStringIntroducer(b):
+				// Escape-string replies (DCS/OSC/APC/PM/SOS) are never
+				// legitimate keyboard input — strip regardless of armed
+				// state to prevent terminal-response leaks like #731.
 				f.mode = filterModeDiscardEscapeString
 				continue
 			case b == controlSequenceIntroducerByte:

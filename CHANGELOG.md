@@ -12,6 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Copilot ACP conductor integration** (`conductor/acp.py`, `conductor/bridge.py`). New `ACPConnection` (asyncio NDJSON JSON-RPC 2.0 over Agent Client Protocol, generic for any `--acp --stdio` agent). `bridge.py` routes ACP-tagged messages through the persistent connection; CLI-tagged messages continue down the original `copilot -p` path.
 - **Per-group / per-profile Copilot config dir overrides** mirroring the Claude pattern. New `[groups."<g>".copilot].config_dir` and `[profiles.<p>.copilot].config_dir` TOML keys; resolution chain is `COPILOT_HOME` env → group → profile → global `[copilot].config_dir` → `~/.copilot`.
 
+## [1.7.68] - 2026-04-22
+
+### Changed
+- **`[worktree].setup_timeout_seconds = 0` now means "unlimited" instead of "use default"** (follow-up to [#727](https://github.com/asheshgoplani/agent-deck/pull/727), PR review comment from @Clindbergh). v1.7.65 treated a non-positive value as a signal to fall back to the 60s default. Flipped within 2 days of v1.7.65 shipping, before real adoption. New semantic: `0` = unlimited (no deadline), unset/negative = 60s default, positive N = N seconds. Implementation swaps `WorktreeSettings.SetupTimeoutSeconds` from `int` to `*int` so TOML parsing distinguishes "field unset" (nil) from "explicit zero" (`*0`); `git.RunWorktreeSetupScript` routes unlimited through `context.WithCancel(context.Background())`. Tests in `internal/session/worktree_setup_timeout_zero_unlimited_test.go` and `internal/git/setup_unlimited_test.go`.
+
+### Fixed
+- **Rogue telegram pollers no longer spawn when a conductor launches non-conductor claude children on the same host** ([#59](https://github.com/asheshgoplani/agent-deck/issues/59); poller-storm observed 2026-04-22, 6–8 duplicate `bun telegram` processes running concurrently against the conductor's bot token, producing a Bot API 409 Conflict storm and silently dropping inbound messages). v1.7.40 tried to solve this by stripping `TELEGRAM_STATE_DIR` from every non-conductor spawn, but the Claude Code telegram plugin is enabled globally per the v3 topology, so removing `TELEGRAM_STATE_DIR` just makes the plugin fall back to the default state dir — which on a conductor host is the real bot-token directory. v1.7.68 adds a categorically different layer: every non-conductor claude worker now spawns under an ephemeral scratch `CLAUDE_CONFIG_DIR` that shallow-mirrors the ambient profile except for `settings.json`, which is rewritten with `enabledPlugins["telegram@claude-plugins-official"] = false`. The plugin never loads, so no opportunity to discover the default state dir. Wired through `Instance.WorkerScratchConfigDir`, `EnsureWorkerScratchConfigDir`, `prepareWorkerScratchConfigDirForSpawn` at all three spawn paths, and cleaned up on `Kill`/`KillAndWait`. 6 new tests in `internal/session/worker_scratch_test.go`.
+
+- **Orphan claude processes no longer survive `agent-deck session remove`** (same incident 2026-04-22: `PID 321456`, 33-hour orphan). Two distinct bugs: (1) `handleSessionRemove` only called `inst.Kill()` when `--prune-worktree` was passed — plain `session remove --force` deleted the registry row and left the tmux scope + claude child alive forever; (2) `Session.Kill` runs its SIGTERM→SIGKILL escalation in a background goroutine that is aborted when the short-lived CLI exits, so even callers that did invoke `Kill` could race the CLI exit and leave SIGHUP-immune claude 2.1.27+ children alive. Fixes: new `internal/tmux/ensure_pids_dead.go` exports `EnsurePIDsDead` (synchronous SIGTERM→SIGKILL primitive) and `Session.KillAndWait()`; `Instance.KillAndWait()` factors shared teardown through `killInternal(sync bool)`; `handleSessionRemove`, `removeAllErrored`, `pruneSessionWorktree`, and legacy `handleRemove` all now call `KillAndWait` **unconditionally** before `storage.DeleteInstance`. 3 new tests including structural guards that parse the command source and assert unconditional-call invariants.
+
+- **iTerm2 XTVERSION response leak + Shift+Enter regression** ([#731](https://github.com/asheshgoplani/agent-deck/issues/731) @marekaf, [#738](https://github.com/asheshgoplani/agent-deck/issues/738) @Clean-Cole — same filter, two failure modes). `internal/termreply.Filter` now whitelists DA/DSR CSI replies (final bytes `c`, `n`, `R`) so tmux can negotiate modifyOtherKeys with the host terminal, while DCS/OSC escape-string replies (XTVERSION, OSC 10/11) are stripped unconditionally since they'd corrupt the inner pane. Previously the filter either swallowed everything during the 2s quarantine (breaking modifyOtherKeys → Shift+Enter collapsed to bare CR in iTerm2 default profile) or let DCS through after the window (leaking `TERM2 3.6.10n` as input on focus/resize). One surgical whitelist fixes both.
+
+- **macOS tmux server SIGSEGV triggered by `killStaleControlClients`** ([#737](https://github.com/asheshgoplani/agent-deck/issues/737) @tarekrached). Soft kill via SIGTERM + 500ms grace → SIGKILL fallback replaces the prior immediate SIGKILL. Shrinks the race window against an unfixed tmux NULL-deref in the control-mode notify path (tmux/tmux#4916, #4980, #5004 — fixed on master, not in any release tag yet). Stuck clients still reaped within ~500ms, preserving the "stale control clients cannot linger" guarantee.
+
+### Added
+- **`[tmux].mouse` config option** ([#730](https://github.com/asheshgoplani/agent-deck/issues/730) @sghiassy) — default `true` (preserves current behaviour). With `mouse = false`, agent-deck skips `set-option mouse on` at both session-create and the reconnect/attach `EnableMouseMode` paths. Restores native click-drag text selection in VS Code's Linux integrated terminal.
+- **`scripts/watchdog/` promoted to repo-wide** (internal #53/#56). Includes telegram-poller liveness check (auto-restart conductor on missing bun poller) + waiting-too-long patrol (auto-nudge idle children). 24 new Python tests.
+
 ## [1.7.67] - 2026-04-22
 
 ### Added
@@ -30,7 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [worktree]
   setup_timeout_seconds = 300   # bump to 5 minutes for heavier setups
   ```
-
 ## [1.7.62] - 2026-04-22
 
 ### Added

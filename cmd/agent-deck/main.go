@@ -36,7 +36,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.7.67" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.7.68" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -1907,8 +1907,11 @@ func handleRemove(profile string, args []string) {
 
 	// Always attempt to kill the tmux session, even if Exists() returns false.
 	// The saved status may be stale (e.g., "error" in DB but tmux session still alive).
-	// Kill() is safe to call on non-existent sessions (returns error which we handle).
-	if err := inst.Kill(); err != nil {
+	// KillAndWait is safe to call on non-existent sessions (returns error which we handle).
+	// Uses the synchronous variant so the SIGTERM→SIGKILL escalation finishes
+	// before this short-lived CLI exits — otherwise SIGHUP-immune claude
+	// processes survive as orphans (issue #59, v1.7.68).
+	if err := inst.KillAndWait(); err != nil {
 		// Only warn if the session actually existed (ignore "not found" errors)
 		if inst.Exists() && !*jsonOutput {
 			fmt.Printf("Warning: failed to kill tmux session: %v\n", err)
