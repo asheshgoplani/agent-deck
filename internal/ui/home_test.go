@@ -2837,3 +2837,54 @@ func TestHandleMainKeyQuickApproveSkipsNonClaudeTool(t *testing.T) {
 		t.Fatal("handleMainKey should return *Home")
 	}
 }
+
+// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog guards #743.
+// v1.7.68 shipped d9a5de8 which removed the remote early-return from the `n`
+// key handler, so pressing `n` on a remote session opened the local
+// newDialog and created a LOCAL session instead of a remote one. Restoring
+// the pre-d9a5de8 behavior: `n` on a remote-session cursor issues the remote
+// quick-create command and does NOT open the local new-session dialog.
+func TestRegression743_NOnRemoteSession_QuickCreatesNoDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd == nil {
+		t.Fatal("pressing n on a remote session must issue the remote quick-create command (was local dialog)")
+	}
+	if h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote session must NOT open the local new-session dialog")
+	}
+}
+
+// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog — same contract for
+// cursor on a remote group header row.
+func TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd == nil {
+		t.Fatal("pressing n on a remote group must issue the remote quick-create command")
+	}
+	if h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote group must NOT open the local new-session dialog")
+	}
+}
