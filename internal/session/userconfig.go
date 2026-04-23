@@ -827,25 +827,45 @@ type WorktreeSettings struct {
 	BranchPrefix *string `toml:"branch_prefix"`
 
 	// SetupTimeoutSeconds caps how long .agent-deck/worktree-setup.sh may run.
-	// Raised via config.toml when the default is too tight for real setups
-	// (installing deps, seeding DBs, etc.) — see GH #724.
-	// Default: 60 when unset or non-positive.
-	SetupTimeoutSeconds int `toml:"setup_timeout_seconds"`
+	// Pointer (not plain int) so the loader can distinguish three cases:
+	//   nil         → field unset → 60s default (backward compat, GH #724)
+	//   *0          → explicit unlimited (no deadline) — #727 follow-up
+	//   *N (N > 0)  → N seconds
+	//   *N (N < 0)  → treated as unset (60s default)
+	// The `*0 = unlimited` convention matches standard CLI tooling (curl,
+	// systemd, docker). Reporter @Clindbergh flagged the v1.7.65 behaviour
+	// (`0 = default`) as counter-convention in the PR review for #727.
+	SetupTimeoutSeconds *int `toml:"setup_timeout_seconds"`
 }
 
 // DefaultWorktreeSetupTimeout is the fallback used when no explicit value is
 // configured. Kept small and visible so the git package can share it.
 const DefaultWorktreeSetupTimeout = 60 * time.Second
 
-// SetupTimeout returns the configured worktree-setup-script timeout as a
-// time.Duration, falling back to DefaultWorktreeSetupTimeout when the value
-// is unset or non-positive. Preserves backward compatibility for every
-// install that never sets [worktree].setup_timeout_seconds.
+// UnlimitedWorktreeSetupTimeout is the sentinel returned by SetupTimeout()
+// when the user has configured `setup_timeout_seconds = 0`. The git layer
+// interprets this as "no deadline" (context.Background() instead of
+// context.WithTimeout). Value chosen as 0 so the config value flows straight
+// through to the git layer unchanged.
+const UnlimitedWorktreeSetupTimeout time.Duration = 0
+
+// SetupTimeout returns the configured worktree-setup-script timeout.
+// Semantics (post-#727 follow-up):
+//   - field unset (nil) or negative → DefaultWorktreeSetupTimeout (60s)
+//   - explicit 0                    → UnlimitedWorktreeSetupTimeout (no deadline)
+//   - positive N                    → N seconds
 func (w WorktreeSettings) SetupTimeout() time.Duration {
-	if w.SetupTimeoutSeconds <= 0 {
+	if w.SetupTimeoutSeconds == nil {
 		return DefaultWorktreeSetupTimeout
 	}
-	return time.Duration(w.SetupTimeoutSeconds) * time.Second
+	v := *w.SetupTimeoutSeconds
+	if v < 0 {
+		return DefaultWorktreeSetupTimeout
+	}
+	if v == 0 {
+		return UnlimitedWorktreeSetupTimeout
+	}
+	return time.Duration(v) * time.Second
 }
 
 // Template returns the path template if set, or empty string if nil.
