@@ -81,7 +81,7 @@ Ship the human-watchable verification harness that proves per-group `CLAUDE_CONF
 
 ### CFG-06 — repo-root CLAUDE.md one-liner (P0, locked) {#claude_md_handling}
 
-- **File:** `CLAUDE.md` at the worktree root (`/home/ashesh-goplani/agent-deck/.worktrees/per-group-claude-config/CLAUDE.md`).
+- **File:** `CLAUDE.md` at the worktree root (`<repo-root>/.worktrees/per-group-claude-config/CLAUDE.md`).
 - **Tracking status:** `CLAUDE.md` was removed from tracking in commit `5013940 chore: remove CLAUDE.md from tracking (keep local)`. It is NOT in the Git index on `main` or on this branch. The worktree currently has no CLAUDE.md file. It is also not in `.gitignore` — it is simply untracked.
 - **Planner decision:** Choose ONE of the following three paths and commit it explicitly:
   - **Path A (resurrect):** `git show <last-tracked-commit>:CLAUDE.md > CLAUDE.md`, then add the one-line entry under the session-persistence mandate block, then commit with `git add -f CLAUDE.md` (since it may still be path-ignored — verify first).
@@ -173,7 +173,7 @@ Every commit message trailer: `Committed by Ashesh Goplani`. No Claude attributi
 - `cmd/agent-deck/group_cmd.go` — `group create|delete` commands for the harness's group setup/teardown.
 
 ### Repo-root rules
-- `/home/ashesh-goplani/agent-deck/CLAUDE.md` (NOT in this worktree; lives in the main-branch checkout) — reference copy if Path A (resurrect) is chosen. Do NOT rely on it being present inside this worktree's checkout.
+- `<repo-root>/CLAUDE.md` (NOT in this worktree; lives in the main-branch checkout) — reference copy if Path A (resurrect) is chosen. Do NOT rely on it being present inside this worktree's checkout.
 - Global `~/.claude/CLAUDE.md` / `~/.claude-work/CLAUDE.md` — user-level mandates (no `rm`, no Claude attribution). Enforced by the planner/executor agents directly; already honored in Phase 1 + 2.
 
 ### Phase 1 + 2 commits (attribution precedent)

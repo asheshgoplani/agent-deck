@@ -46,8 +46,8 @@ Output: Same test file, now containing 4 of the 8 tests. `go vet` still passes. 
 </objective>
 
 <execution_context>
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
 </execution_context>
 
 <context>

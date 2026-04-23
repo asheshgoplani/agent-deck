@@ -12,7 +12,7 @@ This is the FINAL phase of v1.5.2. It does NOT change session-persistence behavi
 Three deliverables, in priority order:
 
 1. **`scripts/verify-session-persistence.sh`** — a human-watchable end-to-end verification script that exercises real systemd login-session teardown on Linux (not mocked) and exits non-zero if any scenario fails.
-2. **CLAUDE.md mandate verification + DOC-05** — the "Session persistence: mandatory test coverage" section at `/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/CLAUDE.md:5` already exists (drafted at commit a262c6d). Verify it covers DOC-01..04 verbatim, patch any gaps. Then add the one-line v1.5.2 mention to `CHANGELOG.md` (DOC-05).
+2. **CLAUDE.md mandate verification + DOC-05** — the "Session persistence: mandatory test coverage" section at `<repo-root>/.worktrees/session-persistence/CLAUDE.md:5` already exists (drafted at commit a262c6d). Verify it covers DOC-01..04 verbatim, patch any gaps. Then add the one-line v1.5.2 mention to `CHANGELOG.md` (DOC-05).
 3. **CI wiring** — add a GitHub Actions workflow (or extend an existing one) that runs `go test -run TestPersistence_ ./internal/session/... -race -count=1` AND `bash scripts/verify-session-persistence.sh` on every PR touching the mandated paths. Red of either blocks the PR (SCRIPT-07).
 
 OUT OF SCOPE: changing `launch_in_user_scope` semantics, touching `internal/tmux/**` or `internal/session/instance.go` behavior, any new tests beyond what the script drives (the eight `TestPersistence_*` tests already exist). OBS sanity (mentioned in user brief) is a **read-only** log check inside the script, not new log emission work — OBS-01/02/03 are Phase 2/3 deliverables.
