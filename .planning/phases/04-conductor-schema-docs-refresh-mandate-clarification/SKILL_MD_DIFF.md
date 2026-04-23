@@ -6,7 +6,7 @@ repo-visible audit trail required for CFG-09 closure.
 
 ## Canonical plugin-cache SKILL.md
 
-**Path resolved:** `/home/ashesh-goplani/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md`
+**Path resolved:** `~/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md`
 
 **Status:** applied
 
@@ -14,7 +14,7 @@ repo-visible audit trail required for CFG-09 closure.
 
 ```diff
 --- /tmp/skill.canonical.before.md	2026-04-16 00:11:24.911461994 +0200
-+++ /home/ashesh-goplani/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md	2026-04-16 00:12:14.455170358 +0200
++++ ~/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md	2026-04-16 00:12:14.455170358 +0200
 @@ -281,6 +281,22 @@
 
  See [config-reference.md](references/config-reference.md) for all options.
@@ -44,7 +44,7 @@ repo-visible audit trail required for CFG-09 closure.
 
 ```
 $ grep -n "\[conductors\..*\.claude\]\|Per-conductor\|issues/602" \
-    /home/ashesh-goplani/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md
+    ~/.claude/plugins/cache/agent-deck/agent-deck/12c0a65dfb13/skills/agent-deck/SKILL.md
 ```
 
 All three substrings (`[conductors.<name>.claude]`, `Per-conductor Claude config`, `issues/602`) are present.

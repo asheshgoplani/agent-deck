@@ -84,7 +84,7 @@ Each test MUST be independently runnable (`go test -run TestPersistence_<name> .
 
 ### REQ-4: Documentation as enforcement (P0)
 
-**Rule:** The repo's `CLAUDE.md` (at `/home/ashesh-goplani/agent-deck/CLAUDE.md`) contains a section titled "Session persistence: mandatory test coverage" that:
+**Rule:** The repo's `CLAUDE.md` (at `<repo-root>/CLAUDE.md`) contains a section titled "Session persistence: mandatory test coverage" that:
 
 - Lists the eight tests above by name.
 - Declares that any PR modifying files in `internal/tmux/`, `internal/session/instance.go`, `internal/session/userconfig.go`, or the `session start`/`session restart` command handlers MUST have passing runs of the full `TestPersistence_*` suite, and the PR description MUST include the test output or a CI run link.

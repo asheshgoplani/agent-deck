@@ -110,7 +110,7 @@ Otherwise the plan executed exactly as written. Insertion point was the one the 
 
 ## Self-Check: PASSED
 
-- Test function exists at line ~1003 of `/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/internal/session/session_persistence_test.go` — verified by grep (`func TestPersistence_SessionIDFallbackWhenJSONLMissing` → 1 match).
+- Test function exists at line ~1003 of `<repo-root>/.worktrees/session-persistence/internal/session/session_persistence_test.go` — verified by grep (`func TestPersistence_SessionIDFallbackWhenJSONLMissing` → 1 match).
 - Commit `dc7388f` exists on branch `fix/session-persistence` — verified by `git log --oneline -2`.
 - Build passes, target test runs with the documented RED failure mode, full suite otherwise unchanged — all verified.
 

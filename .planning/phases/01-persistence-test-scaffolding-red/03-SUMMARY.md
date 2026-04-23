@@ -118,7 +118,7 @@ Plan metadata commit: pending (orchestrator will make the final doc commit with 
 
 **2. [Rule 3 — Blocking] CLAUDE_CONFIG_DIR env-var poisons sessionHasConversationData**
 - **Found during:** Task 2 after fix 1 (TEST-06/07 captured argv correctly; TEST-05 showed `--session-id` instead of expected `--resume`)
-- **Issue:** After capturing argv, TEST-05 showed Restart() correctly routed through `buildClaudeResumeCommand()` but the function emitted `--session-id` — meaning `sessionHasConversationData()` returned false. Debug trace revealed `GetClaudeConfigDir()` returned `/home/ashesh-goplani/.claude` (the executor user's real home) instead of the isolated HOME's `.claude/`. Root cause: `CLAUDE_CONFIG_DIR=/home/ashesh-goplani/.claude` is pre-set in the executor's environment, and `GetClaudeConfigDir()` at claude.go:234 short-circuits to that env var.
+- **Issue:** After capturing argv, TEST-05 showed Restart() correctly routed through `buildClaudeResumeCommand()` but the function emitted `--session-id` — meaning `sessionHasConversationData()` returned false. Debug trace revealed `GetClaudeConfigDir()` returned `~/.claude` (the executor user's real home) instead of the isolated HOME's `.claude/`. Root cause: `CLAUDE_CONFIG_DIR=~/.claude` is pre-set in the executor's environment, and `GetClaudeConfigDir()` at claude.go:234 short-circuits to that env var.
 - **Fix:** `t.Setenv("CLAUDE_CONFIG_DIR", "")` inside `setupStubClaudeOnPATH`. `GetClaudeConfigDir()` checks `envDir != ""` so empty-string-set is equivalent to unset; falls through to `filepath.Join(os.UserHomeDir(), ".claude")` under the isolated HOME.
 - **Files modified:** same file (same commit)
 - **Commit:** `e1c9333`

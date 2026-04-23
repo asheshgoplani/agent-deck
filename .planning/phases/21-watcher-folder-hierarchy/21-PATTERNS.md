@@ -649,7 +649,7 @@ All files have in-repo analogs. The weakest match is `event_log.go` (no direct O
 - CLI `list --json` extension reuses `HealthTracker.Check()` (`internal/watcher/health.go:148`) for the `health_status` field — no parallel classifier.
 
 ### File Created
-`/home/ashesh-goplani/agent-deck/.worktrees/watcher-completion/.planning/phases/21-watcher-folder-hierarchy/21-PATTERNS.md`
+`<repo-root>/.worktrees/watcher-completion/.planning/phases/21-watcher-folder-hierarchy/21-PATTERNS.md`
 
 ### Ready for Planning
 Pattern mapping complete. Planner can reference analog file:line ranges + verbatim excerpts when writing PLAN.md task actions.

@@ -53,8 +53,8 @@ Output: The test file contains all 8 `TestPersistence_*` tests. Full suite run o
 </objective>
 
 <execution_context>
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
-@/home/ashesh-goplani/agent-deck/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/workflows/execute-plan.md
+@<repo-root>/.worktrees/session-persistence/.claude/get-shit-done/templates/summary.md
 </execution_context>
 
 <context>
