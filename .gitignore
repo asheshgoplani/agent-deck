@@ -65,3 +65,6 @@ __pycache__/
 
 # Claude harness lock (per-session, never committed)
 .claude/scheduled_tasks.lock
+
+# Internal planning / scratch (design docs, phase plans) — private to maintainer host
+.planning/

@@ -679,6 +679,7 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 | [Conductor](docs/CONDUCTOR.md) | What a conductor is, quickstart, channel pairing, state files, multi-conductor setups |
 | [Skills](docs/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](docs/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
+| [Watchers](docs/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |
 
 **References** — drill into specifics:
 
