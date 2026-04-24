@@ -167,6 +167,13 @@ func (p *ClaudeOptionsPanel) SetStartQuery(query string) {
 	p.startQueryInput.SetValue(query)
 }
 
+// ResetStartQuery clears the start-query input. Called by NewDialog on each
+// open so the per-session StartupQuery (Instance.StartupQuery, json:"-") does
+// not leak across dialog invocations (#741).
+func (p *ClaudeOptionsPanel) ResetStartQuery() {
+	p.startQueryInput.SetValue("")
+}
+
 // IsFocused returns true if any element in the panel has focus
 func (p *ClaudeOptionsPanel) IsFocused() bool {
 	return p.focusIndex >= 0

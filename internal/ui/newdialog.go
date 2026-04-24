@@ -336,6 +336,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	}
 	d.pathInput.Blur()
 	d.claudeOptions.Blur()
+	d.claudeOptions.ResetStartQuery() // #741: per-session query must not leak across openings
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
 	if d.branchPicker != nil {
