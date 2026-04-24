@@ -5096,8 +5096,12 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			// Validate path is a git repo
-			if !git.IsGitRepo(path) {
+			// Validate path is a git repo OR a bare-repo project root (#742 /
+			// #715): IsGitRepoOrBareProjectRoot accepts a directory that
+			// contains a nested .bare/ even though the directory itself has
+			// no .git. Downstream GetWorktreeBaseRoot + CreateWorktreeWithSetup
+			// handle both layouts transparently.
+			if !git.IsGitRepoOrBareProjectRoot(path) {
 				h.newDialog.SetError("Path is not a git repository")
 				return h, nil
 			}
@@ -7376,7 +7380,9 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				// Resolve worktree target if enabled; actual creation runs in async command.
 				if worktreeEnabled && branchName != "" {
-					if !git.IsGitRepo(source.ProjectPath) {
+					// Bare-repo project roots must pass — same contract as
+					// the new-session path (#742).
+					if !git.IsGitRepoOrBareProjectRoot(source.ProjectPath) {
 						h.forkDialog.SetError("Path is not a git repository")
 						return h, nil
 					}
@@ -7759,7 +7765,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				var newAdditionalPaths []string
 				for i, p := range allPaths {
 					wtPath := filepath.Join(parentDir, dirnames[i])
-					if git.IsGitRepo(p) {
+					// Accept bare-repo project roots in the multi-repo
+					// path too (#742). Without this, a .bare layout
+					// silently fell through to os.Symlink below,
+					// skipping worktree creation AND the setup hook.
+					if git.IsGitRepoOrBareProjectRoot(p) {
 						repoRoot, rootErr := git.GetWorktreeBaseRoot(p)
 						if rootErr != nil {
 							uiLog.Warn("multi_repo_worktree_skip", slog.String("path", p), slog.String("error", rootErr.Error()))
