@@ -1573,3 +1573,38 @@ func TestNewDialog_GetClaudeStartQuery_ReturnsInputValue(t *testing.T) {
 		)
 	}
 }
+
+// TestNewDialog_StartQuery_ClearsBetweenOpenings is the RED regression for
+// #741 (@Clindbergh). Filed against v1.7.67 after #725 shipped the dedicated
+// "Start query" field: opening the new-session dialog a second time showed
+// the previous invocation's query instead of an empty field. The backend is
+// correct (Instance.StartupQuery is `json:"-"` so SQLite doesn't persist it);
+// the leak is purely at the TUI layer — ShowInGroup clears nameInput,
+// pathInput, branchInput, etc. but never resets claudeOptions.startQueryInput.
+// This test opens the dialog, sets a query, closes, re-opens, and asserts
+// the field is empty.
+func TestNewDialog_StartQuery_ClearsBetweenOpenings(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.commandCursor = 1 // claude
+	dialog.updateToolOptions()
+
+	dialog.claudeOptions.SetStartQuery("explain this repo")
+	if got := dialog.GetClaudeStartQuery(); got != "explain this repo" {
+		t.Fatalf("precondition: GetClaudeStartQuery() = %q, want %q", got, "explain this repo")
+	}
+
+	dialog.Hide()
+	dialog.Show()
+	dialog.commandCursor = 1
+	dialog.updateToolOptions()
+
+	if got := dialog.GetClaudeStartQuery(); got != "" {
+		t.Errorf(
+			"Start query must be empty on re-open; got %q. Per-session "+
+				"startup queries are ephemeral (Instance.StartupQuery is "+
+				"json:\"-\") and must not leak between dialog invocations.",
+			got,
+		)
+	}
+}
