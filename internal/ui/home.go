@@ -3559,6 +3559,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Restore state if provided (from auto-reload)
 			if msg.restoreState != nil {
 				h.restoreState(*msg.restoreState)
+				// #746: re-run --select after auto-reload. The very first
+				// loadSessionsMsg may fire before the storage watcher has
+				// observed a session that `launch --json` just persisted,
+				// so applyInitialSelection returns false and the cursor
+				// lands on whatever pendingCursorRestore resolves to (an
+				// adjacent row). When the watcher catches up the new
+				// session, loadSessionsMsg fires again with restoreState
+				// populated — this is our retry window. The helper is
+				// idempotent: it no-ops after the first successful match,
+				// so normal navigation is not overridden.
+				h.applyInitialSelection()
 				h.syncViewport()
 			} else {
 				h.rebuildFlatItems()

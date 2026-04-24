@@ -109,17 +109,29 @@ func TestRegression746_LoadSessionsHandlerRetriesInBothBranches(t *testing.T) {
 		caseBody = caseBody[:next[0]]
 	}
 
-	// Find the restoreState dispatch: `if msg.restoreState != nil`.
-	ifRestoreRe := regexp.MustCompile(`if\s+msg\.restoreState\s*!=\s*nil\s*\{`)
-	restoreIdx := ifRestoreRe.FindStringIndex(caseBody)
+	// Find the POST-rebuild restoreState dispatch. There are two
+	// `if msg.restoreState != nil {` sites in the loadSessionsMsg case:
+	// one pre-rebuild (mutates msg.restoreState.cursorSessionID from the
+	// current flatItems) and one post-rebuild (calls
+	// h.restoreState(*msg.restoreState)). We want the latter — it's the
+	// dispatch that must be paired with applyInitialSelection.
+	postRe := regexp.MustCompile(`(?s)if\s+msg\.restoreState\s*!=\s*nil\s*\{\s*h\.restoreState\(`)
+	restoreIdx := postRe.FindStringIndex(caseBody)
 	if restoreIdx == nil {
-		t.Fatal("could not locate `if msg.restoreState != nil` inside the loadSessionsMsg case — handler shape changed")
+		t.Fatal("could not locate post-rebuild `if msg.restoreState != nil { h.restoreState(...)` inside the loadSessionsMsg case — handler shape changed")
 	}
 
 	// Split into restoreState branch and the rest (else branch +
 	// post-dispatch code). Brace-walk from the `{` after the if to find
-	// the matching closing `}`.
-	braceStart := restoreIdx[1] - 1 // points at the `{`
+	// the matching closing `}`. The matched substring ends just after
+	// the `h.restoreState(` call, so the opening `{` lives somewhere
+	// inside the match — locate the first `{` within the match window.
+	braceOffsetRe := regexp.MustCompile(`\{`)
+	rel := braceOffsetRe.FindStringIndex(caseBody[restoreIdx[0]:restoreIdx[1]])
+	if rel == nil {
+		t.Fatal("could not locate opening { for post-rebuild restoreState block")
+	}
+	braceStart := restoreIdx[0] + rel[0]
 	depth := 0
 	var restoreEnd int
 	for j := braceStart; j < len(caseBody); j++ {
