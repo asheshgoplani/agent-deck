@@ -145,3 +145,50 @@ func TestFilterDiscardsNonWhitelistedCSIWhenArmed(t *testing.T) {
 	require.Empty(t, got)
 	require.False(t, f.Active())
 }
+
+// TestRegression744_FilterPassesShiftLetterCSIUWhileArmed guards #744.
+// @javierciccarelli reported that Shift+letter produced a lowercase letter
+// in a remote tmux-split pane on Ghostty/SSH after the v1.7.68 termreply
+// changes. Ghostty (and the kitty keyboard protocol more broadly) encodes
+// Shift+A as a CSI u sequence: `\x1b[<code>;<mod>u`. Common encodings
+// observed on Ghostty:
+//
+//   - `\x1b[65;2u`  — xterm-style: code=65 ('A'), modifier=2 (Shift)
+//   - `\x1b[97;2u`  — kitty-style: code=97 ('a' unshifted), modifier=2 (Shift)
+//
+// Both MUST pass through Filter.Consume unchanged when the filter is armed,
+// because final byte 'u' is whitelisted in isKeyboardCSIFinalByte as a
+// keyboard CSI (not a terminal reply). If the filter eats either
+// encoding, the PTY sees only the lowercase base byte — which is
+// exactly the "Shift makes lowercase" symptom from the bug.
+//
+// The test also covers the split-across-chunks case: real stdin coalesces
+// unpredictably, so the same CSI u split between two Consume calls must
+// still round-trip byte-for-byte.
+func TestRegression744_FilterPassesShiftLetterCSIUWhileArmed(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  []byte
+	}{
+		{"xterm-style Shift+A (\\x1b[65;2u)", []byte("\x1b[65;2u")},
+		{"kitty-style Shift+A (\\x1b[97;2u)", []byte("\x1b[97;2u")},
+		{"xterm-style Shift+Z (\\x1b[90;2u)", []byte("\x1b[90;2u")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/single-chunk", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, true, false)
+			require.Equal(t, tc.seq, got, "armed filter must pass Shift+letter CSI u unchanged")
+			require.False(t, f.Active(), "filter must not carry parser state after a complete sequence")
+		})
+		t.Run(tc.name+"/split-across-chunks", func(t *testing.T) {
+			var f Filter
+			split := len(tc.seq) / 2
+			first := f.Consume(tc.seq[:split], true, false)
+			require.Empty(t, first, "mid-sequence bytes must not emit")
+			require.True(t, f.Active(), "filter must keep parser state mid-sequence")
+			rest := f.Consume(tc.seq[split:], true, false)
+			require.Equal(t, tc.seq, append(first, rest...), "split CSI u must round-trip byte-for-byte")
+		})
+	}
+}
