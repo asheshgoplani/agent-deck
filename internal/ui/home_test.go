@@ -1271,27 +1271,10 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
-func TestRemoteSelectionNOpensNewDialog(t *testing.T) {
-	home := NewHome()
-	home.width = 100
-	home.height = 30
-
-	remote := session.RemoteSessionInfo{ID: "remote-123", Title: "remote-session", RemoteName: "myserver"}
-	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
-	home.cursor = 0
-
-	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	h, ok := model.(*Home)
-	if !ok {
-		t.Fatal("handleMainKey should return *Home")
-	}
-	if cmd != nil {
-		t.Fatal("pressing n on remote selection should not execute remote attach command")
-	}
-	if !h.newDialog.IsVisible() {
-		t.Fatal("pressing n on remote selection should open new session dialog")
-	}
-}
+// TestRemoteSelectionNOpensNewDialog was removed with the #743 fix: it
+// codified d9a5de8's broken contract (n on a remote session opens the local
+// dialog). The regression guard now lives in
+// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog.
 
 func TestSelectedRemotePreviewTarget(t *testing.T) {
 	home := NewHome()
@@ -1365,26 +1348,9 @@ func TestRenderRemotePreviewIncludesCachedResponse(t *testing.T) {
 	}
 }
 
-func TestRemoteGroupSelectionNOpensNewDialog(t *testing.T) {
-	home := NewHome()
-	home.width = 100
-	home.height = 30
-
-	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteGroup, RemoteName: "myserver", Path: "remotes/myserver"}}
-	home.cursor = 0
-
-	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
-	h, ok := model.(*Home)
-	if !ok {
-		t.Fatal("handleMainKey should return *Home")
-	}
-	if cmd != nil {
-		t.Fatal("pressing n on remote group should not execute remote attach command")
-	}
-	if !h.newDialog.IsVisible() {
-		t.Fatal("pressing n on remote group should open new session dialog")
-	}
-}
+// TestRemoteGroupSelectionNOpensNewDialog was removed with the #743 fix —
+// see the note on TestRemoteSelectionNOpensNewDialog above. Guard lives in
+// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog.
 
 func TestRenderRemotePreviewShowsEmptyStateAfterFetch(t *testing.T) {
 	home := NewHome()

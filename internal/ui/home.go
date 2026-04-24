@@ -6122,6 +6122,19 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "n":
+		// If the cursor is on a remote group/session, quick-create on the
+		// remote instead of opening the local new-session dialog (#743).
+		// Pre-v1.7.68 behaviour that d9a5de8 accidentally removed: the local
+		// dialog has no remote awareness, so falling through to it created
+		// the session on localhost even though the user was clearly operating
+		// in the Remotes section.
+		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+				return h, h.createRemoteSession(item.RemoteName)
+			}
+		}
+
 		// Collect unique project paths sorted by most recently accessed
 		type pathInfo struct {
 			path           string
