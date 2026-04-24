@@ -62,6 +62,11 @@ func TestNoRawTmuxExec_OutsideAllowlist(t *testing.T) {
 		"internal/tmux/tmux.go": {
 			{"tmux", "-V"},
 		},
+		// `tmux -V` again: the startup vulnerable-version warning
+		// (S14 / issue #737) reads the binary's version. No server contact.
+		"internal/tmux/version_warning.go": {
+			{"tmux", "-V"},
+		},
 
 		// The CLI "who am I" helpers read $TMUX env to identify the
 		// current tmux session. tmux auto-routes via TMUX env when no -L

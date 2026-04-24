@@ -217,6 +217,11 @@ func main() {
 	// the installation-wide fallback for callers without a session handle.
 	tmux.SetDefaultSocketName(session.GetTmuxSettings().GetSocketName())
 
+	// Nudge macOS users whose tmux predates the upstream fix for the
+	// control-mode NULL-deref (tmux #4980, issue #737). Once per process,
+	// no-op on non-macOS, suppressible via AGENTDECK_SUPPRESS_TMUX_WARNING.
+	tmux.WarnIfVulnerableTmux()
+
 	var webEnabled bool
 	var webArgs []string
 
