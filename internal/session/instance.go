@@ -204,6 +204,20 @@ type Instance struct {
 	// non-claude tools — they use the ambient profile as-is.
 	WorkerScratchConfigDir string `json:"worker_scratch_config_dir,omitempty"`
 
+	// IsForkAwaitingStart signals that this instance was produced by
+	// CreateForkedInstanceWithOptions and holds a pre-built fork command
+	// in Command that must be run verbatim on the first Start() (#745).
+	// Without this flag, Start()'s claude-compatible dispatch sees the
+	// pre-populated ClaudeSessionID (the new fork UUID), routes to
+	// buildClaudeResumeCommand, which fails to find a JSONL for a
+	// brand-new UUID and falls back to a plain --session-id fresh
+	// command — stripping --resume <parent-id> / --fork-session and
+	// dropping all conversation history from the parent. Transient
+	// (json:"-"): persisting this would cause a restart of the forked
+	// session to re-emit --fork-session and double-count the parent
+	// transcript.
+	IsForkAwaitingStart bool `json:"-"`
+
 	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
 	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
 	// Each token is shellescape-quoted on emission so values with spaces
@@ -2154,6 +2168,23 @@ func (i *Instance) Start() error {
 	var command string
 	switch {
 	case IsClaudeCompatible(i.Tool):
+		// #745 fork guard: a fork target arrives here with i.Command
+		// already populated with the exact `claude --session-id <new>
+		// --resume <parent> --fork-session` command built by
+		// buildClaudeForkCommandForTarget. It also carries a pre-assigned
+		// ClaudeSessionID (the new fork UUID), which would otherwise send
+		// us into buildClaudeResumeCommand and silently drop --resume /
+		// --fork-session. Run the fork command verbatim and clear the
+		// sentinel so a subsequent Restart() takes the normal resume path.
+		if i.IsForkAwaitingStart {
+			command = i.Command
+			i.IsForkAwaitingStart = false
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		// REQ-2 dispatch: if a Claude session id is already bound to this
 		// instance, resume it rather than minting a fresh UUID via
 		// buildClaudeCommand (instance.go:566-567). Mirrors Restart()'s
@@ -2315,6 +2346,19 @@ func (i *Instance) StartWithMessage(message string) error {
 	var command string
 	switch {
 	case IsClaudeCompatible(i.Tool):
+		// #745 fork guard: mirrors the Start() branch above. A fork target
+		// that arrives through StartWithMessage must also bypass the
+		// resume/fresh dispatch and run i.Command verbatim, or the
+		// --resume <parent>/--fork-session flags are silently dropped.
+		if i.IsForkAwaitingStart {
+			command = i.Command
+			i.IsForkAwaitingStart = false
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		// REQ-2 dispatch: resume over mint when a session id is bound. The
 		// initial message passed into StartWithMessage is delivered via the
 		// existing post-start PTY send path later in this function (see
@@ -4954,6 +4998,11 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 		return nil, "", err
 	}
 	forked.Command = cmd
+	// #745: flag Start() to run cmd verbatim. Without this, Start() rebuilds
+	// the command through buildClaudeResumeCommand and silently drops
+	// --resume <parent-id> / --fork-session because the brand-new fork UUID
+	// has no JSONL on disk yet.
+	forked.IsForkAwaitingStart = true
 
 	// Store options in the new instance for persistence
 	if opts != nil {
