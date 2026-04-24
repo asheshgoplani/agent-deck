@@ -12,6 +12,7 @@ Complete reference for all agent-deck CLI commands.
 - [Skill Commands](#skill-commands)
 - [Group Commands](#group-commands)
 - [Profile Commands](#profile-commands)
+- [Remote Commands](#remote-commands)
 - [Conductor Commands](#conductor-commands)
 
 ## Global Options
@@ -392,6 +393,88 @@ agent-deck conductor list [--profile <name>]
 - Heartbeat sends use non-blocking `session send --no-wait -q` to avoid timeout churn when sessions are busy.
 - Bridge daemon is installed only when Telegram and/or Slack is configured in `[conductor]`.
 - Transition notifier daemon (`agent-deck notify-daemon`) is installed by setup and sends event nudges on `running -> waiting|error|idle` transitions (parent first, then conductor fallback).
+
+## Remote Commands
+
+Manage agent-deck instances running on remote SSH servers. Remote sessions appear alongside local sessions in the TUI and CLI.
+
+Remote configuration is stored in `~/.agent-deck/config.toml` under the `[remotes]` map.
+
+### remote add
+
+```bash
+agent-deck remote add <name> <user@host> [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--agent-deck-path <path>` | Path to the agent-deck binary on the remote (default: `agent-deck`) |
+| `--profile <name>` | Remote profile to use (default: `default`) |
+
+Registers a remote instance. If agent-deck is not found on the remote, it is installed automatically. Remote names must be alphanumeric and may contain underscores or hyphens (no spaces, slashes, dots, or colons).
+
+### remote remove / rm
+
+```bash
+agent-deck remote remove <name>
+agent-deck remote rm <name>
+```
+
+Removes a remote from configuration.
+
+### remote list / ls
+
+```bash
+agent-deck remote list [--json]
+agent-deck remote ls [--json]
+```
+
+Lists all configured remotes. Use `--json` for scripting.
+
+### remote sessions
+
+```bash
+agent-deck remote sessions [name] [--json]
+```
+
+Fetches active sessions from all remotes, or from a specific remote if `name` is provided. Displays title, tool, status, and session ID. Use `--json` for scripting.
+
+### remote attach
+
+```bash
+agent-deck remote attach <remote-name> <session-title-or-id>
+```
+
+Attaches interactively to a session running on a remote instance. Accepts either a full session title or an ID prefix.
+
+### remote rename
+
+```bash
+agent-deck remote rename <remote-name> <session-title-or-id> <new-title>
+```
+
+Renames a session on a remote instance.
+
+### remote update
+
+```bash
+agent-deck remote update [name]
+```
+
+Downloads and installs the correct agent-deck binary (detected platform/arch) on all remotes, or on a specific remote if `name` is provided. Prompts for confirmation before updating.
+
+### Examples
+
+```bash
+agent-deck remote add dev user@dev-box
+agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck
+agent-deck remote list
+agent-deck remote sessions dev
+agent-deck remote attach dev my-session
+agent-deck remote rename dev my-session new-name
+agent-deck remote update          # update all remotes
+agent-deck remote update dev      # update specific remote
+```
 
 ## Session Resolution
 

@@ -561,6 +561,34 @@ Feedback posts to a public GitHub Discussion at [Feedback Hub](https://github.co
 
 **Feedback prompt frequency** (v1.7.41+): the TUI's auto-prompt is paced so brand-new users aren't asked on their first few launches. The first prompt appears only after **7 launches or 3 days** of use, whichever comes later. If you dismiss it, agent-deck waits **14 days** before asking again. You'll see at most **3 prompts per version**, and pressing `n` at any step opts you out permanently — use `agent-deck feedback` or `Ctrl+E` to re-enable on demand. Opt-out always wins over every pacing gate.
 
+### Remote Instances
+
+Manage agent-deck instances running on remote SSH servers from your local terminal. Remote sessions appear alongside local sessions in the TUI and all CLI commands.
+
+```bash
+# Register a remote
+agent-deck remote add dev user@dev-box
+
+# agent-deck is installed automatically if missing on the remote
+agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck
+
+# List configured remotes
+agent-deck remote list
+
+# Browse sessions across all remotes (or one specific remote)
+agent-deck remote sessions
+agent-deck remote sessions dev
+
+# Attach to a remote session
+agent-deck remote attach dev my-session
+
+# Keep remote binaries up to date
+agent-deck remote update          # all remotes
+agent-deck remote update dev      # specific remote
+```
+
+Remote configuration is stored under `[remotes]` in `~/.agent-deck/config.toml`. All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
+
 ## Installation
 
 **Works on:** macOS, Linux, Windows (WSL)
