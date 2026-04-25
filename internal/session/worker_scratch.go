@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // telegramPluginID is the Claude Code plugin id we force-disable in
@@ -44,13 +45,42 @@ import (
 // `telegramChannelPrefix` consumers in env.go / telegram_validator.go.
 const telegramPluginID = "telegram@claude-plugins-official"
 
+// hostHasTelegramConductor returns true when the user has actually
+// configured a Telegram conductor (a bot token is present in the
+// active user config). Issue #759: the worker-scratch indirection
+// (#732) is only load-bearing on hosts where a real Telegram bot
+// poller exists for a worker to race. On every other host the
+// indirection is pure collateral damage — it breaks per-group
+// config_dir account isolation because macOS Claude Code keys
+// OAuth credentials by the literal CLAUDE_CONFIG_DIR path, and the
+// scratch path is opaque (not the path Claude logged in under).
+//
+// Exposed as a package var so tests can override it without faking
+// the entire user-config cache.
+var hostHasTelegramConductor = func() bool {
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return false
+	}
+	return strings.TrimSpace(cfg.Conductor.Telegram.Token) != ""
+}
+
 // NeedsWorkerScratchConfigDir returns true when a scratch CLAUDE_CONFIG_DIR
 // should be prepared for this instance at spawn time. The predicate
 // mirrors `telegramStateDirStripExpr` so both the env strip (TSD) and
 // the plugin disable (this scratch dir) fire for exactly the same
 // sessions — layered defense against the conductor-poller storm.
+//
+// Additionally gated on `hostHasTelegramConductor` per issue #759: the
+// scratch indirection only fires when a Telegram conductor is actually
+// configured on the host. Without that gate, every per-group
+// config_dir worker on every host gets its CLAUDE_CONFIG_DIR rewritten
+// to an opaque scratch path, breaking macOS account isolation.
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
-	return telegramStateDirStripExpr(i) != ""
+	if telegramStateDirStripExpr(i) == "" {
+		return false
+	}
+	return hostHasTelegramConductor()
 }
 
 // WorkerScratchDirRoot returns the path that holds every worker's

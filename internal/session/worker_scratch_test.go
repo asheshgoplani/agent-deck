@@ -29,6 +29,19 @@ import (
 	"testing"
 )
 
+// withTelegramConductorPresent forces the host-conductor gate to
+// return true for the duration of the test. Issue #759 narrowed
+// `NeedsWorkerScratchConfigDir` to additionally require an active
+// Telegram conductor; the existing scratch-dir invariants below
+// pre-date that gate and exercise the dir's content/path properties
+// in isolation, so they short-circuit the gate via this seam.
+func withTelegramConductorPresent(t *testing.T) {
+	t.Helper()
+	orig := hostHasTelegramConductor
+	hostHasTelegramConductor = func() bool { return true }
+	t.Cleanup(func() { hostHasTelegramConductor = orig })
+}
+
 // A non-conductor claude session (title does not start with "conductor-",
 // no telegram channel) MUST receive a scratch CLAUDE_CONFIG_DIR that:
 //   - is a distinct directory from the source profile
@@ -37,6 +50,7 @@ import (
 //   - preserves other enabled plugins
 //   - makes the rest of the profile reachable (via symlink)
 func TestEnsureWorkerScratchConfigDir_DisablesTelegramPlugin(t *testing.T) {
+	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	srcSettings := `{"enabledPlugins":{"telegram@claude-plugins-official":true,"superpowers@claude-plugins-official":true}}`
 	if err := os.WriteFile(filepath.Join(source, "settings.json"), []byte(srcSettings), 0o644); err != nil {
@@ -107,6 +121,7 @@ func TestEnsureWorkerScratchConfigDir_DisablesTelegramPlugin(t *testing.T) {
 // scratch dir — the conductor is the legitimate telegram poller owner.
 // Returning "" signals the caller to use the ambient profile.
 func TestEnsureWorkerScratchConfigDir_ConductorKeepsAmbientProfile(t *testing.T) {
+	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"telegram@claude-plugins-official":true}}`), 0o644)
 
@@ -125,6 +140,7 @@ func TestEnsureWorkerScratchConfigDir_ConductorKeepsAmbientProfile(t *testing.T)
 // explicit, opted-in telegram bot owner and MUST keep the ambient
 // profile — isolating it would break its own bot.
 func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing.T) {
+	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"telegram@claude-plugins-official":true}}`), 0o644)
 
@@ -148,6 +164,7 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing
 // scratch dir — TELEGRAM_STATE_DIR is a Claude Code plugin concept
 // and other tools have no interaction with it.
 func TestEnsureWorkerScratchConfigDir_NonClaudeToolSkipped(t *testing.T) {
+	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"telegram@claude-plugins-official":true}}`), 0o644)
 
@@ -166,6 +183,7 @@ func TestEnsureWorkerScratchConfigDir_NonClaudeToolSkipped(t *testing.T) {
 // have telegram flipped on behind its back by a concurrent conductor
 // setup. The scratch settings.json always pins it false.
 func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing.T) {
+	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"superpowers@claude-plugins-official":true}}`), 0o644)
 
@@ -191,6 +209,7 @@ func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing
 // load-bearing wire: without it, the plugin still loads the ambient
 // profile's settings.json and reads the conductor's bot token.
 func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
+	withTelegramConductorPresent(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	profile := filepath.Join(home, ".claude")
