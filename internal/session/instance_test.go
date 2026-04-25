@@ -1425,9 +1425,145 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	}
 
 	inst.CodexSessionID = "019d1af6-c425-7791-8fd1-38c0fc43062c"
+	// Issue #756: buildCodexCommand now gates `resume` on rollout existence.
+	// Plant a rollout file under HOME/.codex so the resume branch is exercised.
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), inst.CodexSessionID)
 	cmd = inst.buildCodexCommand(inst.Command)
 	if !strings.Contains(cmd, "codex-wrapper resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
 		t.Fatalf("buildCodexCommand should resume through the custom wrapper, got %q", cmd)
+	}
+}
+
+// writeFakeCodexRollout creates an empty rollout JSONL under
+// codexHome/sessions/YYYY/MM/DD/ matching the layout buildCodexCommand
+// globs against (Issue #756).
+func writeFakeCodexRollout(t *testing.T, codexHome, sessionID string) string {
+	t.Helper()
+	dir := filepath.Join(codexHome, "sessions", "2026", "04", "24")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, "rollout-2026-04-24T17-00-00-"+sessionID+".jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+	return path
+}
+
+// TestBuildCodexCommand_DropsResumeWhenRolloutMissing verifies that a stale
+// CodexSessionID with no on-disk rollout (the death-loop signature from
+// Issue #756) gets dropped: the emitted command starts a fresh codex run
+// instead of `codex resume <stale-uuid>`, and the in-memory + .sid state
+// is cleared so the next save persists the cleanup.
+func TestBuildCodexCommand_DropsResumeWhenRolloutMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".agent-deck", "hooks"), 0o700); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+
+	inst := NewInstanceWithTool("stale", "/tmp/stale", "codex")
+	staleID := "deadbeef-1111-2222-3333-444455556666"
+	inst.CodexSessionID = staleID
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, staleID)
+
+	// Sessions dir exists but no rollout matches staleID — the death-loop signature.
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".codex", "sessions", "2026", "04", "24"), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if strings.Contains(cmd, "resume "+staleID) {
+		t.Fatalf("expected resume to be dropped for stale sid, got %q", cmd)
+	}
+	if strings.Contains(cmd, " resume ") {
+		t.Fatalf("expected no resume token at all, got %q", cmd)
+	}
+	if inst.CodexSessionID != "" {
+		t.Fatalf("CodexSessionID should be cleared after stale-sid drop, got %q", inst.CodexSessionID)
+	}
+	if !inst.CodexDetectedAt.IsZero() {
+		t.Fatalf("CodexDetectedAt should be zeroed after stale-sid drop, got %v", inst.CodexDetectedAt)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != "" {
+		t.Fatalf(".sid anchor should be cleared after stale-sid drop, got %q", got)
+	}
+}
+
+// TestBuildCodexCommand_KeepsResumeWhenRolloutExists is the happy-path
+// regression guard for Issue #756: a CodexSessionID with a real on-disk
+// rollout must still emit `codex resume <uuid>`.
+func TestBuildCodexCommand_KeepsResumeWhenRolloutExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("live", "/tmp/live", "codex")
+	liveID := "01234567-89ab-cdef-0123-456789abcdef"
+	inst.CodexSessionID = liveID
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), liveID)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+liveID) {
+		t.Fatalf("expected resume %s in command, got %q", liveID, cmd)
+	}
+	if inst.CodexSessionID != liveID {
+		t.Fatalf("CodexSessionID should be preserved when rollout exists, got %q", inst.CodexSessionID)
+	}
+}
+
+// TestBuildCodexCommand_RespectsCodexHomeForRolloutCheck verifies the
+// rollout glob honors $CODEX_HOME (Issue #756). Primary execs run with
+// CODEX_HOME=~/.codex-acct1; the gate must look there, not at ~/.codex.
+func TestBuildCodexCommand_RespectsCodexHomeForRolloutCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	codexHome := filepath.Join(tmpDir, ".codex-acct1")
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexHome)
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("acct1", "/tmp/acct1", "codex")
+	id := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	inst.CodexSessionID = id
+
+	// Plant the rollout under ~/.codex-acct1, NOT ~/.codex. With the gate
+	// reading CODEX_HOME via getCodexHomeDir(), this must resume.
+	writeFakeCodexRollout(t, codexHome, id)
+
+	cmd := inst.buildCodexCommand(inst.Command)
+	if !strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("expected resume under CODEX_HOME=%s, got %q", codexHome, cmd)
 	}
 }
 

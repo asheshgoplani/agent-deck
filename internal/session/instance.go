@@ -1011,12 +1011,50 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 		command = "codex"
 	}
 
+	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
+	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
+	// in the SessionStart→first-flush window), the captured session_id is
+	// permanently unresumable. Without this check the bridge appends
+	// `resume <stale-uuid>` on every restart and Codex exits immediately,
+	// flipping the session back to error in an infinite loop. Drop the
+	// stale ID, clear the .sid sidecar so the next hook tick rebinds
+	// cleanly, and spawn fresh.
+	if i.CodexSessionID != "" && !codexRolloutExists(i.CodexSessionID) {
+		sessionLog.Warn("codex_resume_stale_sid_dropped",
+			slog.String("instance_id", i.ID),
+			slog.String("title", i.Title),
+			slog.String("sid", i.CodexSessionID),
+			slog.String("codex_home", getCodexHomeDir()))
+		i.CodexSessionID = ""
+		i.CodexDetectedAt = time.Time{}
+		ClearHookSessionAnchor(i.ID)
+	}
+
 	if i.CodexSessionID != "" {
 		return envPrefix + fmt.Sprintf("%s%s resume %s",
 			command, yoloFlag, i.CodexSessionID)
 	}
 
 	return envPrefix + command + yoloFlag
+}
+
+// codexRolloutExists reports whether Codex has flushed a rollout JSONL for
+// the given session ID under $CODEX_HOME/sessions. Used by buildCodexCommand
+// to gate `codex resume <sid>` on a real on-disk rollout file (Issue #756).
+//
+// Codex layout: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
+func codexRolloutExists(sessionID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	pattern := filepath.Join(getCodexHomeDir(), "sessions", "*", "*", "*",
+		"rollout-*-"+sessionID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return false
+	}
+	return len(matches) > 0
 }
 
 // detectOpenCodeSessionAsync detects the OpenCode session ID after startup
