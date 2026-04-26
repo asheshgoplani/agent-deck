@@ -1917,9 +1917,14 @@ func (s *Session) Start(command string) error {
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
 func (s *Session) Exists() bool {
-	// Try cache first (O(1) map lookup, no subprocess)
-	if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
-		return exists
+	// The session cache is populated by RefreshSessionCache against
+	// DefaultSocketName() only — entries describe the default tmux server
+	// alone. Sessions on isolated sockets must skip the cache, otherwise
+	// UpdateStatus would stamp StatusError on every poll for them (#755).
+	if strings.TrimSpace(s.SocketName) == DefaultSocketName() {
+		if exists, cacheValid := sessionExistsFromCache(s.Name); cacheValid {
+			return exists
+		}
 	}
 
 	// If PipeManager has a live control connection, the session definitely exists.
@@ -1929,7 +1934,8 @@ func (s *Session) Exists() bool {
 		}
 	}
 
-	// Cache is stale and no live pipe: fall back to direct tmux check.
+	// Cache is stale (or skipped for an isolated socket): fall back to a
+	// direct tmux check on the session's own socket.
 	cmd := s.tmuxCmd("has-session", "-t", s.Name)
 	return cmd.Run() == nil
 }
