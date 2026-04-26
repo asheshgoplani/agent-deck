@@ -14,16 +14,18 @@ import (
 // Track A (Benchmark*) — advisory ns/op trending, runs without -race via
 // `make bench`.
 //
-// Budgets are 5–10× the local median observed on a 2026-era developer
-// laptop. CI sets PERF_BUDGET_MULTIPLIER=2.0 to absorb shared-runner
-// variance. See CLAUDE.md "Performance regression: mandatory test coverage".
+// Budgets are 5x the last observed local median (Linux, -race,
+// multiplier=1.0). CI sets PERF_BUDGET_MULTIPLIER=2.0, so the effective
+// CI gate is 10x local. See CLAUDE.md "Performance regression: mandatory
+// test coverage".
 
 // TestPerf_GroupCreate_100Flat creates 100 root-level groups and asserts the
 // median walltime stays under budget. Catches accidental O(n²) regressions in
 // rebuildGroupList (groups.go:670).
 func TestPerf_GroupCreate_100Flat(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, 50*time.Millisecond)
+	// Last local median: 8.13ms.
+	budget := testutil.Budget(t, 40*time.Millisecond)
 
 	got := testutil.MedianOf(5, func() {
 		tree := NewGroupTree(nil)
@@ -42,7 +44,8 @@ func TestPerf_GroupCreate_100Flat(t *testing.T) {
 // Catches regressions in the parent-walk + sibling-count logic at groups.go:700.
 func TestPerf_GroupCreate_NestedDeep(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, 75*time.Millisecond)
+	// Last local median: 6.91ms (run-to-run variance observed: 1.9–6.9ms).
+	budget := testutil.Budget(t, 34*time.Millisecond)
 
 	got := testutil.MedianOf(5, func() {
 		tree := NewGroupTree(nil)
@@ -71,7 +74,8 @@ func TestPerf_GroupCreate_NestedDeep(t *testing.T) {
 // groups.go:884.
 func TestPerf_GroupDelete_100Flat_With5Each(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, 100*time.Millisecond)
+	// Last local median: 6.40ms.
+	budget := testutil.Budget(t, 32*time.Millisecond)
 
 	var tree *GroupTree
 	var paths []string
@@ -110,7 +114,8 @@ func TestPerf_GroupDelete_100Flat_With5Each(t *testing.T) {
 // O(n²) walks added to either traversal helper.
 func TestPerf_GroupTree_TraverseLargeTree(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, 20*time.Millisecond)
+	// Last local median: 104µs.
+	budget := testutil.Budget(t, 500*time.Microsecond)
 
 	var tree *GroupTree
 	got := testutil.MedianTimedOp(5,

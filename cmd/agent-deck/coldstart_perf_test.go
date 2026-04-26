@@ -26,8 +26,14 @@ import (
 // require no real tmux server.
 
 const (
-	coldStartHelpBudget    = 750 * time.Millisecond
-	coldStartVersionBudget = 500 * time.Millisecond
+	// Budgets are 5x the last observed local median (Linux, -race,
+	// multiplier=1.0). CI sets PERF_BUDGET_MULTIPLIER=2.0, so the
+	// effective CI gate is 10x local — meaningful regression detection
+	// without false positives from runner variance.
+	//
+	// Last local medians: --help 7.48ms, --version 7.19ms.
+	coldStartHelpBudget    = 35 * time.Millisecond
+	coldStartVersionBudget = 35 * time.Millisecond
 )
 
 // TestPerf_ColdStart_Help measures `agent-deck --help` end-to-end walltime.

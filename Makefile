@@ -134,7 +134,7 @@ test:
 # (default 1.0 locally; CI sets 2.0). See CLAUDE.md "Performance regression: mandatory test coverage".
 test-perf:
 	PERF_BUDGET_MULTIPLIER=$${PERF_BUDGET_MULTIPLIER:-1.0} \
-		go test -run '^TestPerf_' -race -count=1 -timeout 60s \
+		go test -run '^TestPerf_' -race -v -count=1 -timeout 60s \
 		./cmd/agent-deck/... ./internal/session/...
 
 # Run advisory benchmarks (Track A). No -race — race overhead distorts ns/op.
