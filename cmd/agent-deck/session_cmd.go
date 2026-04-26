@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1049,31 +1050,6 @@ func handleSessionSet(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	// Validate field name
-	validFields := map[string]bool{
-		"title":             true,
-		"path":              true,
-		"command":           true,
-		"tool":              true,
-		"wrapper":           true,
-		"channels":          true,
-		"extra-args":        true,
-		"color":             true,
-		"claude-session-id": true,
-		"gemini-session-id": true,
-	}
-
-	if !validFields[field] {
-		out.Error(
-			fmt.Sprintf(
-				"invalid field: %s\nValid fields: title, path, command, tool, wrapper, channels, extra-args, color, claude-session-id, gemini-session-id",
-				field,
-			),
-			ErrCodeInvalidOperation,
-		)
-		os.Exit(1)
-	}
-
 	// Load sessions
 	storage, instances, groupsData, err := loadSessionData(profile)
 	if err != nil {
@@ -1092,103 +1068,19 @@ func handleSessionSet(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Store old value for output
-	var oldValue string
-
-	// Apply the update
-	switch field {
-	case "title":
-		oldValue = inst.Title
-		inst.Title = value
-		inst.SyncTmuxDisplayName()
-	case "path":
-		oldValue = inst.ProjectPath
-		inst.ProjectPath = value
-	case "command":
-		oldValue = inst.Command
-		inst.Command = value
-	case "tool":
-		oldValue = inst.Tool
-		inst.Tool = value
-	case "wrapper":
-		oldValue = inst.Wrapper
-		inst.Wrapper = value
-	case "channels":
-		// channels is a Claude Code CLI flag; only meaningful for claude sessions.
-		if inst.Tool != "claude" {
-			out.Error(
-				fmt.Sprintf("channels only supported for claude sessions (this session's tool is %q); requires --channels on the claude binary", inst.Tool),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		oldValue = strings.Join(inst.Channels, ",")
-		// Parse CSV value: trim whitespace, drop empties.
-		parsed := []string{}
-		for _, raw := range strings.Split(value, ",") {
-			if s := strings.TrimSpace(raw); s != "" {
-				parsed = append(parsed, s)
-			}
-		}
-		inst.Channels = parsed
-	case "color":
-		// Per-session color tint (issue #391). Opt-in; empty clears.
-		oldValue = inst.Color
-		trimmed := strings.TrimSpace(value)
-		if !isValidSessionColor(trimmed) {
-			out.Error(
-				fmt.Sprintf("invalid color %q — expected '#RRGGBB', ANSI '0'..'255', or '' to clear", trimmed),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		inst.Color = trimmed
-	case "extra-args":
-		// extra-args are passed to the claude binary by buildClaudeExtraFlags;
-		// only meaningful for claude sessions. Every positional arg after the
-		// field name is treated as one already-tokenised extra arg. Use `--`
-		// so Go's flag package leaves tokens starting with `-` alone:
-		//   agent-deck session set <id> extra-args -- --model opus
-		// Empty string clears all extra args. Empty tokens mixed with real
-		// ones are dropped (avoid emitting literal `''` to claude).
-		//
-		// Note: extra-args persist in state.db as plaintext. Do NOT pass
-		// secrets like API keys via --extra-arg.
-		if inst.Tool != "claude" {
-			out.Error(
-				fmt.Sprintf("extra-args only supported for claude sessions (this session's tool is %q); claude is the only tool whose builder appends user extra args", inst.Tool),
-				ErrCodeInvalidOperation,
-			)
-			os.Exit(1)
-		}
-		oldValue = strings.Join(inst.ExtraArgs, " ")
-		cleaned := make([]string, 0, len(extraArgTokens))
-		for _, tok := range extraArgTokens {
-			if tok != "" {
-				cleaned = append(cleaned, tok)
-			}
-		}
-		if len(cleaned) == 0 {
-			inst.ExtraArgs = nil
-		} else {
-			inst.ExtraArgs = cleaned
-		}
-	case "claude-session-id":
-		oldValue = inst.ClaudeSessionID
-		inst.ClaudeSessionID = value
-		inst.ClaudeDetectedAt = time.Now()
-		// Also update tmux environment if session is running
-		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "CLAUDE_SESSION_ID", value).Run()
-		}
-	case "gemini-session-id":
-		oldValue = inst.GeminiSessionID
-		inst.GeminiSessionID = value
-		inst.GeminiDetectedAt = time.Now()
-		// Also update tmux environment if session is running
-		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
-			_ = tmux.Exec(inst.TmuxSocketName, "set-environment", "-t", tmuxSess.Name, "GEMINI_SESSION_ID", value).Run()
-		}
+	// Delegate to session.SetField so CLI and TUI share validation. The
+	// extraArgTokens slice carries pre-tokenized argv for extra-args (CLI
+	// preserves values with spaces); SetField ignores it for other fields.
+	oldValue, postCommit, setErr := session.SetField(inst, field, value, extraArgTokens)
+	if setErr != nil {
+		out.Error(setErr.Error(), ErrCodeInvalidOperation)
+		os.Exit(1)
+		return // unreachable, satisfies staticcheck SA5011
+	}
+	// CLI holds no lock — run tmux side effects inline. TUI defers them
+	// until after instancesMu.Unlock.
+	if postCommit != nil {
+		postCommit()
 	}
 
 	// Save
@@ -1208,18 +1100,23 @@ func handleSessionSet(profile string, args []string) {
 		"new_value": value,
 	})
 
-	// v1.7.22: emit telegram topology warnings whenever the signals the
-	// validator cares about change (wrapper or channels). The silent-path
-	// case writes nothing — see ValidateTelegramTopology (#658).
-	if field == "wrapper" || field == "channels" {
-		cfgDir := session.GetClaudeConfigDirForGroup(inst.GroupPath)
-		globalTelegramEnabled, _ := readTelegramGloballyEnabled(cfgDir)
-		emitTelegramWarnings(os.Stderr, session.TelegramValidatorInput{
-			GlobalEnabled:   globalTelegramEnabled,
-			SessionChannels: inst.Channels,
-			SessionWrapper:  inst.Wrapper,
-		})
+	maybeEmitSessionSetTelegramWarnings(os.Stderr, session.GetClaudeConfigDirForGroup(inst.GroupPath), inst, field)
+}
+
+// maybeEmitSessionSetTelegramWarnings is the post-mutation telegram-topology
+// hook for `agent-deck session set` (v1.7.22 / #658). Gated to wrapper and
+// channels — other fields are silent. claudeCfgDir lets tests inject a temp
+// dir without touching the real ~/.claude lookup.
+func maybeEmitSessionSetTelegramWarnings(out io.Writer, claudeCfgDir string, inst *session.Instance, field string) {
+	if field != "wrapper" && field != "channels" {
+		return
 	}
+	globalTelegramEnabled, _ := readTelegramGloballyEnabled(claudeCfgDir)
+	emitTelegramWarnings(out, session.TelegramValidatorInput{
+		GlobalEnabled:   globalTelegramEnabled,
+		SessionChannels: inst.Channels,
+		SessionWrapper:  inst.Wrapper,
+	})
 }
 
 // loadSessionData loads storage and session data for a profile
@@ -2702,44 +2599,13 @@ func matchInstanceDataByTmuxName(instances []*session.InstanceData, tmuxSessionN
 	return nil
 }
 
-// isValidSessionColor validates a per-session color tint (issue #391).
-// Accepts:
-//   - "" (empty / opt-out)
-//   - "#RRGGBB" or "#rrggbb" (24-bit truecolor hex, exactly 6 hex digits)
-//   - "0".."255" (ANSI 256-palette index, decimal)
-//
-// Rejects everything else so typos like "red" or "#12" don't quietly persist
-// into the TUI render layer where they'd fall through to lipgloss defaults
-// with surprising results. Kept as a pure function so the test table stays
-// CLI-free (see TestIsValidSessionColor).
+// isValidSessionColor is a thin delegator to session.IsValidSessionColor
+// (issue #391). The validator now lives in the session package so the TUI
+// EditSessionDialog and CLI session_set share one source of truth; this
+// wrapper stays so cmd-package callers and the existing
+// TestIsValidSessionColor table in session_color_test.go keep working.
 func isValidSessionColor(v string) bool {
-	if v == "" {
-		return true
-	}
-	// Truecolor hex: '#' + 6 hex digits exactly.
-	if len(v) == 7 && v[0] == '#' {
-		for i := 1; i < 7; i++ {
-			c := v[i]
-			ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-			if !ok {
-				return false
-			}
-		}
-		return true
-	}
-	// ANSI 256-palette index: 0..255 as decimal.
-	n := 0
-	if len(v) == 0 || len(v) > 3 {
-		return false
-	}
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		if c < '0' || c > '9' {
-			return false
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n >= 0 && n <= 255
+	return session.IsValidSessionColor(v)
 }
 
 // handleSessionSearch implements issue #483 — search across Claude session

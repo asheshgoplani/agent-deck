@@ -202,6 +202,7 @@ type Home struct {
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
 	editPathsDialog      *EditPathsDialog      // For editing multi-repo paths
+	editSessionDialog    *EditSessionDialog    // For editing session settings (title/color/notes/command/...)
 	skillDialog          *SkillDialog          // For managing project skills
 	setupWizard          *SetupWizard          // For first-run setup
 	settingsPanel        *SettingsPanel        // For editing settings
@@ -729,6 +730,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		helpOverlay:          NewHelpOverlay(),
 		mcpDialog:            NewMCPDialog(),
 		editPathsDialog:      NewEditPathsDialog(),
+		editSessionDialog:    NewEditSessionDialog(),
 		skillDialog:          NewSkillDialog(),
 		setupWizard:          NewSetupWizard(),
 		settingsPanel:        NewSettingsPanel(),
@@ -4820,6 +4822,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.editPathsDialog.IsVisible() {
 			return h.handleEditPathsDialogKey(msg)
 		}
+		if h.editSessionDialog.IsVisible() {
+			return h.handleEditSessionDialogKey(msg)
+		}
 		if h.skillDialog.IsVisible() {
 			return h.handleSkillDialogKey(msg)
 		}
@@ -5376,6 +5381,7 @@ func (h *Home) hasModalVisible() bool {
 		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
+		h.editSessionDialog.IsVisible() ||
 		h.zoxidePicker.IsVisible()
 }
 
@@ -5918,6 +5924,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsMultiRepo() {
 				h.editPathsDialog.SetSize(h.width, h.height)
 				h.editPathsDialog.Show(item.Session, h.newDialog.allPathSuggestions)
+			}
+		}
+		return h, nil
+
+	case "P", "shift+p":
+		// Edit session settings — local sessions only (remote mutators live
+		// on the remote host, not in our Storage).
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				h.editSessionDialog.SetSize(h.width, h.height)
+				h.editSessionDialog.Show(item.Session)
 			}
 		}
 		return h, nil
@@ -7156,6 +7174,123 @@ func (h *Home) handleEditPathsDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		h.editPathsDialog.Update(msg)
 		return h, nil
+	}
+}
+
+func (h *Home) handleEditSessionDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		if errMsg := h.editSessionDialog.Validate(); errMsg != "" {
+			h.editSessionDialog.SetError(errMsg)
+			return h, nil
+		}
+
+		sessionID := h.editSessionDialog.SessionID()
+		inst := h.getInstanceByID(sessionID)
+		if inst == nil {
+			h.editSessionDialog.Hide()
+			return h, nil
+		}
+
+		changes := h.editSessionDialog.GetChanges(inst)
+		fields := make([]string, len(changes))
+		for i, c := range changes {
+			fields[i] = c.Field
+		}
+		uiLog.Debug("edit_session_commit",
+			slog.String("session_id", sessionID),
+			slog.Any("fields", fields))
+		if len(changes) == 0 {
+			h.editSessionDialog.Hide()
+			return h, nil
+		}
+
+		// Apply Tool last so claude-only validation (Skip/Auto/ExtraArgs)
+		// sees the pre-edit Tool — otherwise Tool=claude→shell with a
+		// Skip toggle in the same submit fails IsClaudeCompatible on
+		// the toggle.
+		orderedChanges := make([]Change, 0, len(changes))
+		for _, c := range changes {
+			if c.Field != session.FieldTool {
+				orderedChanges = append(orderedChanges, c)
+			}
+		}
+		for _, c := range changes {
+			if c.Field == session.FieldTool {
+				orderedChanges = append(orderedChanges, c)
+			}
+		}
+
+		titleChanged := false
+		hadRestartRequired := false
+		var postCommits []func()
+		h.instancesMu.Lock()
+		for _, c := range orderedChanges {
+			_, postCommit, err := session.SetField(inst, c.Field, c.Value, nil)
+			if err != nil {
+				h.instancesMu.Unlock()
+				h.editSessionDialog.SetError(err.Error())
+				return h, nil
+			}
+			if postCommit != nil {
+				postCommits = append(postCommits, postCommit)
+			}
+			if c.Field == session.FieldTitle {
+				titleChanged = true
+			}
+			if !c.IsLive {
+				hadRestartRequired = true
+			}
+		}
+		h.instancesMu.Unlock()
+		// postCommits run AFTER unlocking so slow tmux subprocesses don't
+		// stall the status worker / preview cache / reconciler.
+		for _, fn := range postCommits {
+			fn()
+		}
+
+		// Mirror the rename-path #697 race fix: queue title so a watcher
+		// reload can re-apply it after the load swap.
+		if titleChanged {
+			h.pendingTitleChanges[sessionID] = inst.Title
+			h.invalidatePreviewCache(sessionID)
+		}
+		h.rebuildFlatItems()
+		// forceSaveInstances bypasses the isReloading no-op in
+		// saveInstances. Title-only loss is caught by pendingTitleChanges
+		// re-application; non-Title fields have no such net.
+		h.forceSaveInstances()
+
+		h.editSessionDialog.Hide()
+		// Auto-restart on restart-required edits — Tool/Skip/Auto/ExtraArgs
+		// only take effect on next launch, so deferring would just leave
+		// the user staring at old behavior. Mirrors the manual `R` path,
+		// skipping when an animation is in flight or CanRestart says no.
+		if hadRestartRequired {
+			if h.hasActiveAnimation(sessionID) {
+				uiLog.Debug("edit_session_skip_restart_active_anim", slog.String("session_id", sessionID))
+				h.setError(fmt.Errorf("saved — restart skipped, session is starting; press R when ready"))
+				return h, nil
+			}
+			if !inst.CanRestart() {
+				uiLog.Debug("edit_session_skip_restart_cannot", slog.String("session_id", sessionID))
+				h.setError(fmt.Errorf("saved — start the session to apply tool/extra-args/permission changes"))
+				return h, nil
+			}
+			uiLog.Debug("edit_session_auto_restart", slog.String("session_id", sessionID))
+			h.resumingSessions[sessionID] = time.Now()
+			return h, h.restartSession(inst)
+		}
+		return h, nil
+
+	case "esc":
+		h.editSessionDialog.Hide()
+		return h, nil
+
+	default:
+		var cmd tea.Cmd
+		h.editSessionDialog, cmd = h.editSessionDialog.Update(msg)
+		return h, cmd
 	}
 }
 
@@ -9116,6 +9251,9 @@ func (h *Home) View() string {
 	}
 	if h.mcpDialog.IsVisible() {
 		return h.mcpDialog.View()
+	}
+	if h.editSessionDialog.IsVisible() {
+		return h.editSessionDialog.View()
 	}
 	if h.editPathsDialog.IsVisible() {
 		return h.editPathsDialog.View()

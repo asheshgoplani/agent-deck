@@ -31,6 +31,7 @@ const (
 	hotkeyExecShell       = "exec_shell"
 	hotkeyEditNotes       = "edit_notes"
 	hotkeyEditPaths       = "edit_paths"
+	hotkeyEditSession     = "edit_session"
 	hotkeyWorktreeFinish  = "worktree_finish"
 	hotkeyCreateGroup     = "create_group"
 	hotkeySearch          = "search"
@@ -66,6 +67,7 @@ var hotkeyActionOrder = []string{
 	hotkeyExecShell,
 	hotkeyEditNotes,
 	hotkeyEditPaths,
+	hotkeyEditSession,
 	hotkeyWorktreeFinish,
 	hotkeyCreateGroup,
 	hotkeySearch,
@@ -101,6 +103,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyExecShell:       "E",
 	hotkeyEditNotes:       "e",
 	hotkeyEditPaths:       "p",
+	hotkeyEditSession:     "P",
 	hotkeyWorktreeFinish:  "W",
 	hotkeyCreateGroup:     "g",
 	hotkeySearch:          "/",
@@ -117,6 +120,7 @@ var hotkeyActionDefaultTriggers = map[string][]string{
 	hotkeyForkWithOptions: {"F", "shift+f"},
 	hotkeyMoveToGroup:     {"M", "shift+m"},
 	hotkeyWorktreeFinish:  {"W", "shift+w"},
+	hotkeyEditSession:     {"P", "shift+p"},
 }
 
 // renamedHotkeys maps old action names to new names for backward compatibility.
