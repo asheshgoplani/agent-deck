@@ -10,6 +10,14 @@
 #      v1.7.42 audit pattern where absolute thresholds went stale and the gate
 #      was disabled rather than recalibrated.
 #
+# Maintainer override: a delta-gate failure is overridable by applying the
+# `lighthouse-regression-acknowledged` label to the PR. The workflow re-runs
+# on `labeled` / `unlabeled` events, the override step sees the label, and
+# the check turns green with the override logged in the workflow output. The
+# absolute lhci assert step does NOT participate in the override — a hard
+# absolute breach still blocks merge unconditionally. Removing the label
+# re-fails the check on the next workflow trigger.
+#
 # Bootstrap note: the PR that first introduces this workflow is also the PR
 # that adds `--no-tui` to `agent-deck web`. The base ref does not have the
 # flag yet, so the base lhci collect is `continue-on-error: true` and
@@ -20,6 +28,7 @@ name: Lighthouse CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - 'internal/web/**'
       - '.lighthouserc.json'
@@ -29,10 +38,14 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 concurrency:
   group: lighthouse-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
+
+env:
+  ACK_LABEL: lighthouse-regression-acknowledged
 
 jobs:
   lighthouse:
@@ -55,6 +68,17 @@ jobs:
           ref: ${{ github.base_ref }}
           path: base
           fetch-depth: 1
+
+      - name: Ensure ack label exists in repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh label list --repo "$GITHUB_REPOSITORY" --limit 200 --json name | jq -e --arg n "$ACK_LABEL" '.[] | select(.name == $n)' > /dev/null; then
+            gh label create "$ACK_LABEL" \
+              --repo "$GITHUB_REPOSITORY" \
+              --color "fbca04" \
+              --description "Maintainer ack: lighthouse-ci delta gate regression is intentional. Removing the label re-fails the check."
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -116,7 +140,34 @@ jobs:
         run: lhci assert --config=.lighthouserc.json
 
       - name: Compare PR vs base bundle deltas
+        id: delta_gate
+        continue-on-error: true
         run: node pr/tests/lighthouse/compare-deltas.mjs lhci-results/base lhci-results/pr
+
+      - name: Apply ack-label override to delta gate
+        if: steps.delta_gate.outcome == 'failure'
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if echo ",${PR_LABELS}," | grep -q ",${ACK_LABEL},"; then
+            echo "::notice title=Lighthouse delta override::Regression acknowledged via '${ACK_LABEL}' label by ${{ github.event.pull_request.user.login }} or a maintainer. Check is intentionally green."
+            echo ""
+            echo "Override active. The bundle delta exceeded MAX_*_DELTA_PCT but the maintainer"
+            echo "applied the '${ACK_LABEL}' label to acknowledge this is intentional."
+            echo "Removing the label will re-fail the check on the next workflow trigger."
+            exit 0
+          fi
+          echo "::error title=Lighthouse delta gate failed::PR exceeded the bundle-delta threshold (see previous step). To override, apply the '${ACK_LABEL}' label to the PR; the workflow will re-run on the labeled event."
+          echo ""
+          echo "Bundle delta exceeded threshold and no override label is present."
+          echo ""
+          echo "If the regression is intentional, apply the '${ACK_LABEL}' label to the PR"
+          echo "(Labels sidebar on the right → click the label). The workflow will re-run"
+          echo "on the labeled event and this check will turn green."
+          echo ""
+          echo "If the regression is NOT intentional, recalibrate or split the change."
+          echo "Local debugging: ./tests/lighthouse/budget-check.sh + diff against main."
+          exit 1
 
       - name: Upload Lighthouse results
         if: always()

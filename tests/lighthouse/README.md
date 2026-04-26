@@ -19,6 +19,15 @@ on every PR that touches `internal/web/**`, `.lighthouserc.json`,
    disabled rather than recalibrated. Slow growth is fine; a single PR that
    doubles the bundle is not.
 
+   **Maintainer override.** A delta-gate failure is overridable: apply the
+   `lighthouse-regression-acknowledged` label to the PR (Labels sidebar →
+   click the label). The workflow re-runs on the `labeled` event, the
+   override step sees the label, and the check turns green with the override
+   logged in the workflow output. Removing the label re-fails the check on
+   the next workflow trigger. The absolute lhci assert (layer 1) does NOT
+   participate in the override — a hard absolute breach still blocks
+   unconditionally.
+
    The delta gate skips with a logged warning when no base data is available
    (e.g. the base ref predates the workflow). Run-of-the-mill PRs after the
    workflow lands on `main` exercise the full gate.
