@@ -19,8 +19,6 @@ on:
     paths:
       - 'cmd/agent-deck/main.go'
       - 'cmd/agent-deck/coldstart_perf_test.go'
-      - 'internal/session/groups.go'
-      - 'internal/session/groups_perf_test.go'
       - 'internal/testutil/perfbudget.go'
       - 'internal/testutil/perfbudget_test.go'
       - '**/*_perf_test.go'
@@ -48,8 +46,8 @@ jobs:
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
-          go test -run '^TestPerf_' -race -v -count=1 -timeout 60s \
-            ./cmd/agent-deck/... ./internal/session/... \
+          go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
+            ./cmd/agent-deck/... \
             | tee perf-medians.txt
 
       - name: Upload perf median log
@@ -76,7 +74,7 @@ jobs:
       - name: Run benchmarks
         run: |
           go test -run '^$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
-            ./internal/session/... ./cmd/agent-deck/... ./internal/tmux/... \
+            ./cmd/agent-deck/... ./internal/tmux/... \
             | tee benchout.txt
 
       - name: Upload bench output

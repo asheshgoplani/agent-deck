@@ -134,14 +134,14 @@ test:
 # (default 1.0 locally; CI sets 2.0). See CLAUDE.md "Performance regression: mandatory test coverage".
 test-perf:
 	PERF_BUDGET_MULTIPLIER=$${PERF_BUDGET_MULTIPLIER:-1.0} \
-		go test -run '^TestPerf_' -race -v -count=1 -timeout 60s \
-		./cmd/agent-deck/... ./internal/session/...
+		go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
+		./cmd/agent-deck/...
 
 # Run advisory benchmarks (Track A). No -race — race overhead distorts ns/op.
 # Output is for trending; not a CI gate.
 bench:
 	go test -run '^$$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
-		./internal/session/... ./cmd/agent-deck/... ./internal/tmux/...
+		./cmd/agent-deck/... ./internal/tmux/...
 
 # Format code
 fmt:

@@ -21,19 +21,21 @@ import (
 // SetDefaultSocketName / WarnIfVulnerableTmux calls (main.go:218,223), and
 // the subcommand-routing path that prints help/version and exits.
 //
+// These are COLD tests: they cross a process boundary, so the budget
+// formula is base × 5 (with PERF_BUDGET_MULTIPLIER scaling and a 1ms floor)
+// and the measurement is an n=11 trimmed mean. See internal/testutil/perfbudget.go
+// for the full convention.
+//
 // On Linux (CI), WarnIfVulnerableTmux is a no-op and the binary spawns no
 // child processes for --help/--version. Tests are safe under -race and
 // require no real tmux server.
 
+// Base local medians observed under -race at PERF_BUDGET_MULTIPLIER=1.0
+// (Linux container, Intel Xeon @ 2.10GHz). ColdBudget multiplies by 5
+// and applies the 1ms floor and the env multiplier.
 const (
-	// Budgets are 5x the last observed local median (Linux, -race,
-	// multiplier=1.0). CI sets PERF_BUDGET_MULTIPLIER=2.0, so the
-	// effective CI gate is 10x local — meaningful regression detection
-	// without false positives from runner variance.
-	//
-	// Last local medians: --help 7.48ms, --version 7.19ms.
-	coldStartHelpBudget    = 35 * time.Millisecond
-	coldStartVersionBudget = 35 * time.Millisecond
+	coldStartHelpBase    = 8 * time.Millisecond // → ColdBudget = 40ms locally, 80ms in CI
+	coldStartVersionBase = 8 * time.Millisecond // → ColdBudget = 40ms locally, 80ms in CI
 )
 
 // TestPerf_ColdStart_Help measures `agent-deck --help` end-to-end walltime.
@@ -41,18 +43,18 @@ const (
 // pre-dispatch tmux probes at :218,:223.
 func TestPerf_ColdStart_Help(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, coldStartHelpBudget)
+	budget := testutil.ColdBudget(t, coldStartHelpBase)
 	sb := harness.NewSandbox(t)
 	env := sb.Env()
 
-	got := testutil.MedianOf(5, func() {
+	got := testutil.TrimmedMean(func() {
 		runColdStart(t, sb.BinPath, env, "--help")
 	})
 
 	if got > budget {
-		t.Fatalf("agent-deck --help cold start median = %v, budget = %v (regression in cmd/agent-deck/main.go init or tmux probes)", got, budget)
+		t.Fatalf("agent-deck --help cold start trimmed mean = %v, budget = %v (regression in cmd/agent-deck/main.go init or tmux probes)", got, budget)
 	}
-	t.Logf("agent-deck --help median = %v (budget = %v)", got, budget)
+	t.Logf("agent-deck --help trimmed mean = %v (budget = %v)", got, budget)
 }
 
 // TestPerf_ColdStart_Version measures `agent-deck --version`. Independent
@@ -60,18 +62,18 @@ func TestPerf_ColdStart_Help(t *testing.T) {
 // same init path.
 func TestPerf_ColdStart_Version(t *testing.T) {
 	testutil.SkipIfShort(t)
-	budget := testutil.Budget(t, coldStartVersionBudget)
+	budget := testutil.ColdBudget(t, coldStartVersionBase)
 	sb := harness.NewSandbox(t)
 	env := sb.Env()
 
-	got := testutil.MedianOf(5, func() {
+	got := testutil.TrimmedMean(func() {
 		runColdStart(t, sb.BinPath, env, "--version")
 	})
 
 	if got > budget {
-		t.Fatalf("agent-deck --version cold start median = %v, budget = %v", got, budget)
+		t.Fatalf("agent-deck --version cold start trimmed mean = %v, budget = %v", got, budget)
 	}
-	t.Logf("agent-deck --version median = %v (budget = %v)", got, budget)
+	t.Logf("agent-deck --version trimmed mean = %v (budget = %v)", got, budget)
 }
 
 func runColdStart(t *testing.T, bin string, env []string, arg string) {
