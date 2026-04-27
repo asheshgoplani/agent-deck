@@ -79,15 +79,14 @@ func formatITermBadgeOSC(title string) string {
 // passthrough envelope so the OSC reaches the outer terminal even when
 // emitted from inside a tmux pane (e.g. a Claude rename hook subprocess).
 //
-// Tmux DCS form: `ESC P tmux ; <inner with each ESC doubled> ESC \`. The
-// inner OSC carries one ESC (its own opener), which we double to ESC ESC
-// per tmux passthrough rules. Works regardless of whether the pane has
-// `allow-passthrough` on — the DCS envelope is the older, universally-
-// supported mechanism.
+// Tmux DCS form: `ESC P tmux ; <inner with each ESC doubled> ESC \`. We
+// take the inner OSC straight from formatITermBadgeOSC (single source of
+// truth — the constants only live there) and ESC-double it. Works
+// regardless of whether the pane has `allow-passthrough` on — the DCS
+// envelope is the older, universally-supported mechanism.
 func formatITermBadgeOSCViaTmux(title string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(title))
-	// ESC P tmux ; ESC ESC ]1337;SetBadgeFormat=<b64> BEL ESC \
-	return "\x1bPtmux;\x1b\x1b]1337;SetBadgeFormat=" + encoded + "\x07\x1b\\"
+	inner := strings.ReplaceAll(formatITermBadgeOSC(title), "\x1b", "\x1b\x1b")
+	return "\x1bPtmux;" + inner + "\x1b\\"
 }
 
 // emitITermBadge writes the iTerm2 SetBadgeFormat OSC directly to w. Used
