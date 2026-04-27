@@ -287,16 +287,19 @@ func TestNewDialog_TabAppliesSuggestionWhenNavigated(t *testing.T) {
 	d.focusIndex = 2
 	d.updateFocus()
 
-	// User types something, then navigates to suggestion with Ctrl+N
+	// User types something, then navigates to suggestion with Ctrl+N.
+	// Cursor convention: 0 = "Type custom path…" (synthetic), 1 = first
+	// real suggestion, 2 = second. Two presses lands on the second.
 	d.pathInput.SetValue("/some/partial")
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
 
-	// Now Tab should apply the suggestion
+	// Now Tab should apply the selected suggestion
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 
 	_, path, _ := d.GetValues()
 
-	// Should be the second suggestion (Ctrl+N moved from 0 to 1)
+	// Should be the second suggestion (cursor 0 → 1 → 2 = suggestions[1])
 	if path != "/Users/test/project-2" {
 		t.Errorf(
 			"Tab should apply suggestion after Ctrl+N navigation\nGot: %q\nWant: %q",

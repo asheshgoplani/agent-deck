@@ -5089,6 +5089,28 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, cmd
 	}
 
+	// When the path suggestions dropdown is in active arrow-key mode, the
+	// dialog must consume navigation keys before the outer handlers run.
+	// Enter is special: apply the highlighted entry, dismiss the dropdown,
+	// then fall through to the form-submit handler below — unless "Type
+	// custom" is highlighted, in which case we just close the dropdown
+	// (the user wants to type a path, not submit).
+	if h.newDialog.IsSuggestionsActive() {
+		if msg.String() == "enter" {
+			if h.newDialog.IsTypeCustomHighlighted() {
+				h.newDialog.ApplyHighlightedSuggestion()
+				return h, nil
+			}
+			h.newDialog.ApplyHighlightedSuggestion()
+			h.newDialog.DismissSuggestions() // hide dropdown until user types
+			// fall through to the "enter" case below to validate + create.
+		} else {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "enter":
 		// When multi-repo path list is focused, let the dialog handle enter (edit/save path).
