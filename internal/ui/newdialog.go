@@ -1618,10 +1618,18 @@ func (d *NewDialog) View() string {
 		content.WriteString("\n")
 		content.WriteString("  ")
 		if cur == focusPath && d.pathSoftSelected && d.pathInput.Value() != "" {
-			selectedStyle := lipgloss.NewStyle().
+			// Soft-select highlight: render the textinput's own View() (which
+			// includes Bubble Tea's blinking cursor) with TextStyle set to
+			// reverse colors. The previous static-string render dropped the
+			// cursor entirely, leaving users editing blind (#765). Saving and
+			// restoring the prior TextStyle keeps this branch's mutation local
+			// to the soft-select case.
+			savedTextStyle := d.pathInput.TextStyle
+			d.pathInput.TextStyle = lipgloss.NewStyle().
 				Background(ColorAccent).
 				Foreground(ColorBg)
-			content.WriteString(selectedStyle.Render(d.pathInput.Value()))
+			content.WriteString(d.pathInput.View())
+			d.pathInput.TextStyle = savedTextStyle
 		} else {
 			content.WriteString(d.pathInput.View())
 		}
