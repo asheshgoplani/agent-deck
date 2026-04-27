@@ -134,6 +134,15 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// and breaks mouse-wheel / copy-mode navigation (#531).
 	emitScrollbackClear(os.Stdout)
 
+	// Set the iTerm2 badge to the session's display title for the duration
+	// of the attach. Agent-deck owns the outer iTerm2 tty here (no tmux
+	// between us and the terminal), so a direct OSC write reaches iTerm2.
+	// Replaces the external pgrep/ppid/tty-walk in iterm-badge-sync.sh.
+	// Opt-in: no-op outside iTerm2, when [terminal].iterm_badge=false in
+	// user config (the default), or when AGENTDECK_ITERM_BADGE=0 forces
+	// it off at runtime. AGENTDECK_ITERM_BADGE=1 ad-hoc enables.
+	emitITermBadge(os.Stdout, s.DisplayName, s.terminalChromeIsEnabled())
+
 	// Create context with cancel for detach
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -332,6 +341,10 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 		// (#419, #618). emitScrollbackClear emits CSI 3 J + iTerm2-specific OSC 1337
 		// ClearScrollback — both boundaries route through one helper so they cannot drift.
 		emitScrollbackClear(os.Stdout)
+		// Clear the iTerm2 badge so the home view doesn't keep showing the
+		// detached session's title. Symmetric with the on-entry emit above —
+		// both boundaries route through emitITermBadge so they cannot drift.
+		emitITermBadge(os.Stdout, "", s.terminalChromeIsEnabled())
 		// Reset OSC-8 hyperlink state + SGR attributes before Bubble Tea redraws.
 		_, _ = os.Stdout.WriteString(terminalStyleReset)
 	}

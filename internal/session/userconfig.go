@@ -161,6 +161,11 @@ type UserConfig struct {
 	// Mirrors the opt-out in ~/.agent-deck/feedback-state.json so it is visible
 	// to the user and editable without running `agent-deck feedback`.
 	Feedback FeedbackSettings `toml:"feedback"`
+
+	// Terminal defines outer-terminal chrome settings — sequences agent-deck
+	// writes directly to the host terminal (iTerm2 badge, etc), distinct
+	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
+	Terminal TerminalSettings `toml:"terminal"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -2160,6 +2165,55 @@ func GetTmuxSettings() TmuxSettings {
 	return config.Tmux
 }
 
+// TerminalSettings controls outer-terminal chrome agent-deck writes directly
+// to the host terminal (bypassing tmux). These settings affect what the
+// terminal emulator displays — currently only iTerm2's badge.
+//
+// Example config.toml:
+//
+//	[terminal]
+//	iterm_badge = true
+type TerminalSettings struct {
+	// ITermBadge controls whether agent-deck sets the iTerm2 badge to the
+	// attached session's title for the duration of the attach, and refreshes
+	// it when Claude renames the session mid-attach. No-op outside iTerm2.
+	//
+	// AGENTDECK_ITERM_BADGE env var overrides this in either direction
+	// (=1/true/yes/on force on, =0/false/no/off force off; unset defers to
+	// this config). Caveat: env reliably reaches the attach/detach path
+	// (agent-deck reads its own env directly) but the rename-while-attached
+	// path runs in a hook subprocess spawned through agent-deck → tmux →
+	// Claude → hook, and Claude may filter custom env vars. For consistent
+	// behavior on both paths, prefer this config setting — every process
+	// re-reads it from disk, so propagation is independent of the spawn
+	// chain.
+	//
+	// Default: false (opt-in). Most users have their own iTerm2 badge scheme
+	// (e.g. host/cwd via shell PROMPT_COMMAND), so silently overwriting it on
+	// every attach is too presumptuous a default. Users who want the
+	// per-session badge set this to true explicitly.
+	ITermBadge *bool `toml:"iterm_badge"`
+}
+
+// GetITermBadge returns whether the iTerm2 badge integration is enabled,
+// defaulting to false (opt-in). Mirrors the GetInjectStatusLine pattern but
+// with the inverse default — see ITermBadge field doc for rationale.
+func (t TerminalSettings) GetITermBadge() bool {
+	if t.ITermBadge == nil {
+		return false
+	}
+	return *t.ITermBadge
+}
+
+// GetTerminalSettings returns terminal-chrome settings from config.
+func GetTerminalSettings() TerminalSettings {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return TerminalSettings{}
+	}
+	return config.Terminal
+}
+
 // GetInstanceSettings returns instance behavior settings
 func GetInstanceSettings() InstanceSettings {
 	config, err := LoadUserConfig()
@@ -2389,6 +2443,21 @@ auto_cleanup = true
 # options = { "allow-passthrough" = "all", "history-limit" = "50000" }
 # Example: keep agent-deck notifications but use a 2-line status bar
 # options = { "status" = "2" }
+
+# Outer-terminal chrome (sequences agent-deck writes to the host terminal,
+# bypassing tmux). Currently controls the iTerm2 badge; future window-title
+# integrations will live in the same section.
+# [terminal]
+# iterm_badge sets the iTerm2 badge to the attached session's title for the
+# duration of the attach (cleared on detach), and refreshes it when Claude
+# renames the session mid-attach. Opt-in because most users already drive
+# the badge from their shell prompt. No-op outside iTerm2.
+# Override at runtime: AGENTDECK_ITERM_BADGE=1 forces on, =0 forces off.
+# Caveat: the env var reliably reaches the attach/detach path but is
+# unreliable for rename-while-attached (Claude may filter env vars when
+# spawning hook subprocesses). Prefer this config setting for both paths.
+# Default: false
+# iterm_badge = true
 
 # ============================================================================
 # MCP Server Definitions

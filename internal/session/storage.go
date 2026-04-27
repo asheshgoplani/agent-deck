@@ -807,6 +807,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 			tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 			tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+			tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 			// Note: EnableMouseMode and ConfigureStatusBar are deferred to EnsureConfigured()
 			// Called automatically when user attaches to session
 		}

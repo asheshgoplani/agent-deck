@@ -1309,6 +1309,83 @@ inject_status_line = true
 	}
 }
 
+func TestGetTerminalSettings_ITermBadge_Default(t *testing.T) {
+	// Default (no config) should return false — opt-in. Most users drive
+	// the iTerm2 badge from their shell prompt, so silently overwriting it
+	// every attach is too presumptuous a default.
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if settings.GetITermBadge() {
+		t.Error("GetITermBadge should default to false (opt-in) when not set")
+	}
+}
+
+func TestGetTerminalSettings_ITermBadge_False(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[terminal]
+iterm_badge = false
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if settings.GetITermBadge() {
+		t.Error("GetITermBadge should be false when set to false")
+	}
+}
+
+func TestGetTerminalSettings_ITermBadge_True(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	configContent := `
+[terminal]
+iterm_badge = true
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	settings := GetTerminalSettings()
+	if !settings.GetITermBadge() {
+		t.Error("GetITermBadge should be true when set to true")
+	}
+}
+
 func TestGetTmuxSettings_Mouse_Default(t *testing.T) {
 	// Default (no config) should return true — preserves pre-#730 behavior
 	tempDir := t.TempDir()

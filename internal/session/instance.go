@@ -495,6 +495,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	return &Instance{
 		ID:             id,
@@ -526,6 +527,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	tmuxSess.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	tmuxSess.SetMouse(GetTmuxSettings().GetMouse())
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
 	inst := &Instance{
 		ID:             id,
@@ -3549,6 +3551,7 @@ func (i *Instance) recreateTmuxSession() {
 	i.tmuxSession.SetInjectStatusLine(GetTmuxSettings().GetInjectStatusLine())
 	i.tmuxSession.SetMouse(GetTmuxSettings().GetMouse())
 	i.tmuxSession.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
+	i.tmuxSession.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 }
 
 func (i *Instance) prepareRestartMCPConfig() {

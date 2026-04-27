@@ -826,6 +826,13 @@ type Session struct {
 	// When false (default), previous session output is preserved.
 	// Set via SetClearOnRestart from user config.
 	clearOnRestart bool
+
+	// terminalChromeEnabled controls whether Attach emits outer-terminal
+	// chrome sequences (currently the iTerm2 badge) on attach/detach.
+	// Default: false (opt-in via [terminal].iterm_badge in user config; set
+	// here through SetTerminalChromeEnabled). AGENTDECK_ITERM_BADGE=0|1
+	// overrides this at runtime in either direction; see chrome.go.
+	terminalChromeEnabled bool
 }
 
 type envCacheEntry struct {
@@ -1206,6 +1213,26 @@ func (s *Session) SetInjectStatusLine(inject bool) {
 	s.injectStatusLine = inject
 }
 
+// SetTerminalChromeEnabled controls whether Attach emits outer-terminal
+// chrome (currently the iTerm2 badge) on attach/detach. Mirrors the
+// SetInjectStatusLine plumbing pattern: callers in internal/session read
+// `[terminal].iterm_badge` from user config and forward it here.
+// AGENTDECK_ITERM_BADGE overrides this at runtime; see chrome.go.
+func (s *Session) SetTerminalChromeEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.terminalChromeEnabled = enabled
+}
+
+// terminalChromeIsEnabled is the read-side accessor used by Attach. Locked
+// read so a concurrent Set call cannot publish a torn bool — same shape as
+// the other Session getters.
+func (s *Session) terminalChromeIsEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminalChromeEnabled
+}
+
 // SetMouse controls whether tmux mouse mode is enabled for this session.
 // When false, the inline `mouse on` set-option during Start is skipped AND
 // EnableMouseMode becomes a no-op — required for VS Code Linux integrated
@@ -1265,9 +1292,10 @@ func NewSession(name, workDir string) *Session {
 		Created:          time.Now(),
 		startupAt:        time.Now(),
 		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second, // Re-detect tool every 30 seconds
-		injectStatusLine: true,             // Default: inject status bar
-		mouse:            true,             // Default: mouse on (#730 opt-out)
+		toolDetectExpiry:      30 * time.Second, // Re-detect tool every 30 seconds
+		injectStatusLine:      true,             // Default: inject status bar
+		mouse:                 true,             // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 }
@@ -1287,10 +1315,11 @@ func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 		Created:          time.Now(), // Approximate - we don't persist this
 		startupAt:        time.Time{},
 		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second,
-		injectStatusLine: true,  // Default: inject status bar
-		mouse:            true,  // Default: mouse on (#730 opt-out)
-		configured:       false, // Will be set to true after configuration
+		toolDetectExpiry:      30 * time.Second,
+		injectStatusLine:      true,  // Default: inject status bar
+		mouse:                 true,  // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
+		configured:            false, // Will be set to true after configuration
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 
@@ -1356,10 +1385,11 @@ func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previo
 		Created:          time.Now(), // Approximate - we don't persist this
 		startupAt:        time.Time{},
 		lastStableStatus: "waiting",
-		toolDetectExpiry: 30 * time.Second,
-		injectStatusLine: true,  // Default: inject status bar
-		mouse:            true,  // Default: mouse on (#730 opt-out)
-		configured:       false, // Explicitly mark as not configured
+		toolDetectExpiry:      30 * time.Second,
+		injectStatusLine:      true,  // Default: inject status bar
+		mouse:                 true,  // Default: mouse on (#730 opt-out)
+		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
+		configured:            false, // Explicitly mark as not configured
 	}
 
 	// Restore state tracker based on previous status (without running tmux commands)

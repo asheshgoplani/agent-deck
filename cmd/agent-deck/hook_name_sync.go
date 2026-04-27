@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // claudeSessionMetaFile is the subset of ~/.claude/sessions/<PID>.json that
@@ -121,6 +122,13 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		groupTree := session.NewGroupTreeWithGroups(instances, groups)
 		_ = storage.SaveWithGroups(instances, groupTree)
 		_ = storage.Close()
+
+		// If the user is attached to this session in iTerm2, push the
+		// badge through tmux DCS passthrough — agent-deck's own attach
+		// emits only fire on attach/detach, not on mid-attach renames.
+		// Silent no-op outside iTerm2, when the feature is disabled,
+		// or when this hook subprocess has no controlling tty.
+		tmux.EmitITermBadgeViaTty(name, session.GetTerminalSettings().GetITermBadge())
 		return
 	}
 }
