@@ -61,6 +61,16 @@ func handleLaunch(profile string, args []string) {
 		return nil
 	})
 
+	// Plugin enablement flag — repeatable, catalog-only, claude-only.
+	// Mirrors handleAdd's --plugin; resolved at spawn through
+	// [plugins.<name>] in ~/.agent-deck/config.toml (RFC docs/rfc/PLUGIN_ATTACH.md).
+	var pluginFlags []string
+	fs.Func("plugin", "Catalog plugin to enable for this session (can specify multiple times); requires -c claude", func(s string) error {
+		pluginFlags = append(pluginFlags, s)
+		return nil
+	})
+	noChannelLink := fs.Bool("no-channel-link", false, "Disable auto-link between --plugin entries with emits_channel=true and --channel")
+
 	// Extra claude CLI tokens - repeatable; mirrors handleAdd's --extra-arg.
 	// Each invocation contributes one already-tokenised arg; feeds
 	// Instance.ExtraArgs which buildClaudeExtraFlags shellescapes and appends.
@@ -333,6 +343,23 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 		newInstance.Channels = channelFlags
+	}
+
+	// Apply --plugin flags (catalog-only, claude-only, RFC docs/rfc/PLUGIN_ATTACH.md).
+	if len(pluginFlags) > 0 {
+		if newInstance.Tool != "claude" {
+			out.Error("--plugin only supported for claude sessions (use -c claude); plugins enable Claude Code plugin features per-session via enabledPlugins", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if err := validatePluginFlags(pluginFlags); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		newInstance.Plugins = pluginFlags
+		newInstance.PluginChannelLinkDisabled = *noChannelLink
+		applyPluginChannelAutolink(newInstance)
+	} else if *noChannelLink {
+		newInstance.PluginChannelLinkDisabled = true
 	}
 
 	// Apply --extra-arg flags (claude only; mirror of handleAdd).

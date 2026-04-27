@@ -8,6 +8,8 @@ package ui
 // `-tags eval_smoke`. See tests/eval/README.md.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -154,5 +156,95 @@ func TestEval_EditSessionDialog_RestartHintSurfacesForRestartFields(t *testing.T
 	}
 	if extraChange.Value != "--model haiku" {
 		t.Errorf("ExtraArgs change value = %q, want %q", extraChange.Value, "--model haiku")
+	}
+}
+
+// TestEval_PluginToggleSurfacesAsRestartHint locks the RFC PLUGIN_ATTACH.md
+// §4.8 invariant: editing the Plugins field in the EditSessionDialog must
+// surface as a restart-required change so home.go's auto-restart pipeline
+// fires (claude reads enabledPlugins only at process start).
+//
+// CLAUDE.md:82-108 mandate eval coverage for any interactive prompt that
+// pure Go tests cannot structurally express — the live read of
+// HasRestartRequiredChanges + GetChanges is the contract that home.go
+// relies on, and a refactor that broke it would not be caught by the
+// pure-unit tests in edit_session_dialog_test.go (which exercise the
+// dialog state machinery in isolation).
+func TestEval_PluginToggleSurfacesAsRestartHint(t *testing.T) {
+	// Set up a HOME with a non-empty plugin catalog so the dialog renders
+	// the Plugins field. The dialog reads via session.GetAvailablePluginNames.
+	temp := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", temp)
+	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
+
+	configDir := filepath.Join(temp, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("mkdir agent-deck: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`
+[plugins.octopus]
+name = "octopus"
+source = "nyldn/claude-octopus"
+`), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	d := NewEditSessionDialog()
+	d.SetSize(100, 40)
+	inst := &session.Instance{
+		ID:    "sess-eval-plugin",
+		Title: "plugin-test",
+		Tool:  "claude",
+	}
+	d.Show(inst)
+
+	// Find the Plugins field — must be present for claude with non-empty
+	// catalog. Absence here is itself a regression worth catching.
+	idx := -1
+	for i, f := range d.fields {
+		if f.key == session.FieldPlugins {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("Plugins field not registered in dialog despite catalog containing octopus and tool=claude")
+	}
+
+	// Type the catalog name into the field. The dialog stores it as a CSV
+	// string; the mutator parses on save.
+	d.focusIndex = idx
+	d.updateFocus()
+	for _, r := range "octopus" {
+		d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	if !d.HasRestartRequiredChanges(inst) {
+		t.Error("editing Plugins must flag HasRestartRequiredChanges=true; home.go relies on this for auto-restart")
+	}
+	changes := d.GetChanges(inst)
+	var pluginChange *Change
+	for i := range changes {
+		if changes[i].Field == session.FieldPlugins {
+			pluginChange = &changes[i]
+			break
+		}
+	}
+	if pluginChange == nil {
+		t.Fatalf("GetChanges did not include Plugins edit; got %+v", changes)
+	}
+	if pluginChange.IsLive {
+		t.Error("Plugins change must carry IsLive=false (restart-required); claude reads enabledPlugins only at process start")
+	}
+	if pluginChange.Value != "octopus" {
+		t.Errorf("Plugins change value = %q, want %q", pluginChange.Value, "octopus")
+	}
+
+	// View() must render the typed value so a user screenshot looks right.
+	if !strings.Contains(d.View(), "octopus") {
+		t.Errorf("View() after typing must contain 'octopus'; rendered:\n%s", d.View())
 	}
 }

@@ -201,6 +201,7 @@ type Home struct {
 	confirmDialog        *ConfirmDialog        // For confirming destructive actions
 	helpOverlay          *HelpOverlay          // For showing keyboard shortcuts
 	mcpDialog            *MCPDialog            // For managing MCPs
+	pluginDialog         *PluginDialog         // For managing per-session Claude Code plugins (RFC PLUGIN_ATTACH.md)
 	editPathsDialog      *EditPathsDialog      // For editing multi-repo paths
 	editSessionDialog    *EditSessionDialog    // For editing session settings (title/color/notes/command/...)
 	skillDialog          *SkillDialog          // For managing project skills
@@ -729,6 +730,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		confirmDialog:        NewConfirmDialog(),
 		helpOverlay:          NewHelpOverlay(),
 		mcpDialog:            NewMCPDialog(),
+		pluginDialog:         NewPluginDialog(),
 		editPathsDialog:      NewEditPathsDialog(),
 		editSessionDialog:    NewEditSessionDialog(),
 		skillDialog:          NewSkillDialog(),
@@ -4819,6 +4821,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.mcpDialog.IsVisible() {
 			return h.handleMCPDialogKey(msg)
 		}
+		if h.pluginDialog.IsVisible() {
+			return h.handlePluginDialogKey(msg)
+		}
 		if h.editPathsDialog.IsVisible() {
 			return h.handleEditPathsDialogKey(msg)
 		}
@@ -5378,7 +5383,7 @@ func (h *Home) hasModalVisible() bool {
 		h.watcherPanel.IsVisible() || // hotkeyWatcherPanel overlay
 		h.helpOverlay.IsVisible() || h.search.IsVisible() || h.globalSearch.IsVisible() ||
 		h.newDialog.IsVisible() || h.groupDialog.IsVisible() || h.forkDialog.IsVisible() ||
-		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.skillDialog.IsVisible() ||
+		h.confirmDialog.IsVisible() || h.mcpDialog.IsVisible() || h.pluginDialog.IsVisible() || h.skillDialog.IsVisible() ||
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
@@ -5948,6 +5953,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				(session.IsClaudeCompatible(item.Session.Tool) || item.Session.Tool == "gemini") {
 				h.mcpDialog.SetSize(h.width, h.height)
 				if err := h.mcpDialog.Show(item.Session.ProjectPath, item.Session.ID, item.Session.Tool); err != nil {
+					h.setError(err)
+				}
+			}
+		}
+		return h, nil
+
+	case "L":
+		// Plugin Manager — claude-only (RFC docs/rfc/PLUGIN_ATTACH.md).
+		// Mirrors the MCP-manager UX (`m`): toggleable list of catalog
+		// plugins from ~/.agent-deck/config.toml. Apply persists via
+		// session.SetField(FieldPlugins,...) and triggers restart.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil &&
+				session.IsClaudeCompatible(item.Session.Tool) {
+				h.pluginDialog.SetSize(h.width, h.height)
+				if err := h.pluginDialog.Show(item.Session); err != nil {
 					h.setError(err)
 				}
 			}
@@ -7136,6 +7158,59 @@ func (h *Home) handleMCPDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default:
 		h.mcpDialog.Update(msg)
+		return h, nil
+	}
+}
+
+// handlePluginDialogKey routes key events to the plugin manager dialog.
+// Apply path: persist via session.SetField(FieldPlugins,...) and restart
+// the session to reload claude's enabledPlugins from the per-session
+// scratch settings.json. RFC: docs/rfc/PLUGIN_ATTACH.md.
+func (h *Home) handlePluginDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		// Persist if anything changed; otherwise just close.
+		if !h.pluginDialog.HasChanged() {
+			h.pluginDialog.Hide()
+			return h, nil
+		}
+		sessionID := h.pluginDialog.GetSessionID()
+		newNames := h.pluginDialog.SelectedPluginNames()
+
+		var targetInst *session.Instance
+		h.instancesMu.RLock()
+		for _, inst := range h.instances {
+			if inst.ID == sessionID {
+				targetInst = inst
+				break
+			}
+		}
+		h.instancesMu.RUnlock()
+		if targetInst == nil {
+			h.pluginDialog.Hide()
+			return h, nil
+		}
+
+		oldValue, _, mutErr := session.SetField(targetInst, session.FieldPlugins, strings.Join(newNames, ","), nil)
+		if mutErr != nil {
+			h.setError(mutErr)
+			return h, nil
+		}
+		_ = oldValue
+		h.forceSaveInstances()
+		h.pluginDialog.Hide()
+
+		if targetInst.CanRestart() && !h.hasActiveAnimation(targetInst.ID) {
+			return h, h.restartSession(targetInst)
+		}
+		return h, nil
+
+	case "esc":
+		h.pluginDialog.Hide()
+		return h, nil
+
+	default:
+		h.pluginDialog.Update(msg)
 		return h, nil
 	}
 }
@@ -9251,6 +9326,9 @@ func (h *Home) View() string {
 	}
 	if h.mcpDialog.IsVisible() {
 		return h.mcpDialog.View()
+	}
+	if h.pluginDialog.IsVisible() {
+		return h.pluginDialog.View()
 	}
 	if h.editSessionDialog.IsVisible() {
 		return h.editSessionDialog.View()

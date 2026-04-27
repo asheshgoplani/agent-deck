@@ -140,6 +140,7 @@ func (h *HelpOverlay) View() string {
 	renameKey := h.key(hotkeyRename, "r")
 	moveKey := h.key(hotkeyMoveToGroup, "M")
 	mcpKey := h.key(hotkeyMCPManager, "m")
+	pluginKey := h.key(hotkeyPluginManager, "L")
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
@@ -198,6 +199,7 @@ func (h *HelpOverlay) View() string {
 				{undoKey, "Undo delete"},
 				{moveKey, "Move to group"},
 				{mcpKey, "MCP Manager (Claude/Gemini)"},
+				{pluginKey, "Plugin Manager (Claude — RFC PLUGIN_ATTACH.md)"},
 				{skillsKey, "Skills Manager"},
 				{"$", "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
