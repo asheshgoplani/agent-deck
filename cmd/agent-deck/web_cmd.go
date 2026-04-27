@@ -76,6 +76,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
 		ReadOnly:            *readOnly,
+		WebMutations:        !*readOnly,
 		Token:               *token,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
