@@ -62,6 +62,25 @@ func spawnHelper(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
 	return cmd
 }
 
+// spawnHelperInOwnGroup is like spawnHelper but puts the child in its own
+// process group via Setpgid. Required for softKillProcessGroup tests:
+// without isolation, syscall.Kill(-pgid, ...) on the inherited pgid would
+// also signal the test runner itself.
+func spawnHelperInOwnGroup(t *testing.T, role string, extraEnv ...string) *exec.Cmd {
+	t.Helper()
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.Command(exe, "-test.run=^$") // run no tests in child
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	env = append(env, extraEnv...)
+	cmd.Env = env
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	return cmd
+}
+
 // waitForPidAlive polls until syscall.Kill(pid, 0) returns nil (process
 // exists) or the deadline passes. Used to ensure the helper has installed
 // its signal handler before the parent sends SIGTERM.
@@ -195,4 +214,114 @@ func TestSoftKillProcess_AlreadyDeadIsNoop(t *testing.T) {
 	// freshly-reaped pid within the same goroutine this is stable.
 	usedSIGKILL := softKillProcess(pid, 100*time.Millisecond)
 	assert.False(t, usedSIGKILL, "already-dead pid should not trigger SIGKILL")
+}
+
+// TestControlPipeClose_TerminatesCleanlyOnSIGTERM is the process-group
+// analogue of TestKillStaleControlClients_TerminatesCleanlyOnSIGTERM.
+// It exercises softKillProcessGroup, the helper now invoked by
+// ControlPipe.Close() to tear down the agent-deck-owned `tmux -C` child.
+//
+// Regression guard for the gap left by #739: that PR softened
+// killStaleControlClients but missed ControlPipe.Close(), which still
+// SIGKILL'd the active control pipe and continued to crash tmux 3.6a
+// via the unfixed NULL-deref in tmux/tmux#4980.
+func TestControlPipeClose_TerminatesCleanlyOnSIGTERM(t *testing.T) {
+	tmpDir := t.TempDir()
+	marker := filepath.Join(tmpDir, "term-handled")
+
+	cmd := spawnHelperInOwnGroup(t, "clean", "MARKER="+marker)
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
+	require.NoError(t, err)
+	// Sanity: child must be group leader of its own group, not sharing
+	// the test runner's pgid. Without this, kill(-pgid) would also
+	// signal the test binary.
+	require.Equal(t, pid, pgid, "child must be its own pgroup leader")
+
+	waitDone := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waitDone
+	})
+
+	waitForPidAlive(pid, 1*time.Second)
+
+	_ = softKillProcessGroup(pgid, 500*time.Millisecond)
+
+	select {
+	case <-waitDone:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Marker existence proves the SIGTERM handler ran — SIGKILL cannot
+	// be trapped, so a missing marker means softKillProcessGroup
+	// skipped SIGTERM and went straight to SIGKILL.
+	_, err = os.Stat(marker)
+	assert.NoError(t, err, "child's SIGTERM handler must have run (marker file must exist)")
+
+	err = syscall.Kill(pid, 0)
+	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be fully reaped; got err=%v", err)
+}
+
+// TestControlPipeClose_FallsBackToSIGKILL is the pgroup analogue of
+// TestKillStaleControlClients_FallsBackToSIGKILL. When the control
+// client ignores SIGTERM, softKillProcessGroup must still reap it via
+// SIGKILL within roughly the grace window — preserving the original
+// "stuck clients cannot linger" guarantee that the unsoftened SIGKILL
+// in Close() previously enforced.
+func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
+	cmd := spawnHelperInOwnGroup(t, "ignore")
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
+	require.NoError(t, err)
+	require.Equal(t, pid, pgid, "child must be its own pgroup leader")
+
+	waitDone := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(waitDone)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waitDone
+	})
+
+	waitForPidAlive(pid, 1*time.Second)
+
+	start := time.Now()
+	usedSIGKILL := softKillProcessGroup(pgid, 500*time.Millisecond)
+	elapsed := time.Since(start)
+
+	select {
+	case <-waitDone:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	assert.True(t, usedSIGKILL, "softKillProcessGroup must escalate to SIGKILL when TERM is ignored")
+	assert.Less(t, elapsed, 1500*time.Millisecond, "softKillProcessGroup should return promptly after grace")
+
+	err = syscall.Kill(pid, 0)
+	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be dead after SIGKILL; got err=%v", err)
+}
+
+// TestSoftKillProcessGroup_AlreadyDeadIsNoop asserts that calling
+// softKillProcessGroup on a pgid whose group is already empty returns
+// false (no SIGKILL escalation) and does not panic — mirrors
+// TestSoftKillProcess_AlreadyDeadIsNoop.
+func TestSoftKillProcessGroup_AlreadyDeadIsNoop(t *testing.T) {
+	// Spawn a single-process group, reap it, then soft-kill the empty pgid.
+	cmd := exec.Command("sh", "-c", "exit 0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
+	require.NoError(t, err)
+	_, _ = cmd.Process.Wait() // fully reap; group is now empty
+
+	usedSIGKILL := softKillProcessGroup(pgid, 100*time.Millisecond)
+	assert.False(t, usedSIGKILL, "already-empty pgroup should not trigger SIGKILL")
 }

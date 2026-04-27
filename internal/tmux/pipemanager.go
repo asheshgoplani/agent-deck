@@ -521,6 +521,46 @@ func softKillProcess(pid int, grace time.Duration) bool {
 	return true
 }
 
+// softKillProcessGroup is the process-group analogue of softKillProcess.
+// It sends SIGTERM to the entire group (-pgid), polls every 5ms up to grace
+// for the group to drain, and escalates to SIGKILL if any process in the
+// group is still alive at the deadline. Returns true iff SIGKILL was
+// ultimately used. An empty group (ESRCH on initial SIGTERM) is treated as
+// already-dead and returns false without escalation.
+//
+// Used by ControlPipe.Close() to tear down the agent-deck-owned
+// `tmux -C attach-session` child without racing tmux's control-mode
+// notify path. The original Close() implementation SIGKILL'd the group
+// immediately, which on macOS Homebrew tmux 3.6a races the unfixed
+// NULL-deref in tmux's notify path (tmux/tmux#4980) and crashes the
+// server — wiping every agent-deck session. The mitigation in #739
+// only covered killStaleControlClients (the post-restart cleanup path);
+// the active-pipe close path still SIGKILL'd. This helper closes that gap.
+func softKillProcessGroup(pgid int, grace time.Duration) bool {
+	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return false
+		}
+		// Permission or other error — fall back to SIGKILL on the group.
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		return true
+	}
+
+	const pollInterval = 5 * time.Millisecond
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		// kill(-pgid, 0) returns ESRCH only when no process in the group
+		// remains; until then it returns nil (some member alive or zombie).
+		if err := syscall.Kill(-pgid, 0); err != nil && errors.Is(err, syscall.ESRCH) {
+			return false
+		}
+	}
+
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	return true
+}
+
 // tmuxSessionExistsOnSocket targets an explicit tmux server. socketName is the
 // tmux `-L <name>` selector (Session.SocketName / Instance.TmuxSocketName);
 // pass "" for the default server. All callers (watchPipe reconnect loop,

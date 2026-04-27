@@ -350,6 +350,14 @@ func (cp *ControlPipe) Done() <-chan struct{} {
 }
 
 // Close shuts down the control mode pipe and kills the process.
+//
+// Teardown is staged: (1) close stdin so tmux's `tmux -C attach-session`
+// child sees EOF and can shut down on its own; (2) SIGTERM with a 500ms
+// grace via softKillProcessGroup so a healthy client tears down its
+// control-mode state cleanly before exit; (3) SIGKILL fallback for stuck
+// clients. SIGKILL'ing a live control client races tmux's notify path
+// and on macOS Homebrew tmux 3.6a (tmux/tmux#4980) crashes the entire
+// server — wiping every agent-deck session. The grace closes that race.
 func (cp *ControlPipe) Close() {
 	cp.closeOnce.Do(func() {
 		cp.mu.Lock()
@@ -359,13 +367,17 @@ func (cp *ControlPipe) Close() {
 		// Close stdin first (tells tmux to disconnect)
 		cp.stdin.Close()
 
-		// Kill the process group to clean up reliably
+		// Reap the process group with SIGTERM+grace→SIGKILL escalation.
+		// Process-group kill (negative pgid) is preserved from the
+		// original Close() so any helpers tmux spawned are reaped too.
 		if cp.cmd.Process != nil {
 			pgid, err := syscall.Getpgid(cp.cmd.Process.Pid)
 			if err == nil {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				_ = softKillProcessGroup(pgid, controlClientKillGrace)
 			} else {
-				_ = cp.cmd.Process.Kill()
+				// Pgid lookup failed (process already exited) — fall
+				// back to single-pid soft-kill.
+				_ = softKillProcess(cp.cmd.Process.Pid, controlClientKillGrace)
 			}
 		}
 
