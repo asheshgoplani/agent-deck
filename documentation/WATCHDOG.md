@@ -1,5 +1,7 @@
 # Watchdog: auto-restart critical sessions and nudge stuck children
 
+![Watchdog auto-restart pattern](assets/watchdog-restart.png)
+
 The watchdog is an optional Python daemon that sits alongside agent-deck and keeps critical sessions alive. You do not need it to use agent-deck. You will want it the first time a conductor flips to `error` while you are asleep, or the first time a child session sits frozen on an unseen prompt for an hour.
 
 It is not a replacement for the in-tree session reviver (`internal/session/reviver.go`). The reviver handles dead control pipes for sessions whose tmux is still alive. The watchdog handles three classes of failure the reviver intentionally does not:
