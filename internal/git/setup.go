@@ -83,6 +83,13 @@ func buildSetupCmd(ctx context.Context, scriptPath string) *exec.Cmd {
 // Setup script failure is non-fatal: the worktree is still valid.
 // Output is streamed to the provided writers. A non-positive setupTimeout
 // means "no deadline" — see RunWorktreeSetupScript for the full semantic.
+//
+// User-visible progress (#768): the start preamble, an explicit completion
+// line on success, and an explicit failure line on error are written to
+// stderr so callers (CLI streaming directly, TUI capturing into a buffer
+// for later display) can show the user what happened. Without these,
+// users couldn't tell whether the script had run, finished, or finished
+// cleanly before claude started.
 func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
@@ -94,6 +101,13 @@ func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, s
 	}
 
 	fmt.Fprintln(stderr, "Running worktree setup script...")
+	start := time.Now()
 	setupErr = RunWorktreeSetupScript(scriptPath, repoDir, worktreePath, stdout, stderr, setupTimeout)
+	elapsed := time.Since(start).Round(100 * time.Millisecond)
+	if setupErr != nil {
+		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
+	} else {
+		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
+	}
 	return setupErr, nil
 }
