@@ -327,8 +327,8 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.pathSuggestionCursor = 0    // reset cursor too
 	d.suggestionsActive = false
 	d.suggestionsHidden = false
-	d.pathCycler.Reset()          // clear stale autocomplete matches from previous show
-	d.showRecentPicker = false    // reset recent picker
+	d.pathCycler.Reset()       // clear stale autocomplete matches from previous show
+	d.showRecentPicker = false // reset recent picker
 	d.recentSessionCursor = 0
 	d.conductorSessions = conductors
 	d.conductorCursor = 0

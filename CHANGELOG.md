@@ -5,6 +5,26 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.72] - 2026-04-28
+
+Bundle of fixes and contributor PRs, hours after v1.7.71. Two external contributors merged this cycle: @tarekrached (twice), @oryaacov.
+
+### Fixed
+
+- **Worktree-setup script honors shebang** ([#773](https://github.com/asheshgoplani/agent-deck/issues/773), thanks @Clindbergh for the report). Setup script with executable bit + shebang line (e.g. `#!/usr/bin/env zsh`) now runs under the declared interpreter. Legacy 0644 files fall back to `sh -e` for backward compatibility.
+
+- **Setup script visible completion + failure status** ([#768](https://github.com/asheshgoplani/agent-deck/issues/768)). Adds visible "completed in <elapsed>" / "failed after <elapsed>" lines around the existing setup-script preamble so users know if their hook ran successfully before claude takes over.
+
+- **`ControlPipe.Close()` softened to SIGTERM+grace** ([#739](https://github.com/asheshgoplani/agent-deck/issues/739) gap, thanks @tarekrached for PR #778). Mirrors the v1.7.68 `softKillProcess` pattern for the active-pipe close path. Prevents the same kill-cascade class for users whose terminals trigger control-pipe lifecycle quickly.
+
+### Added
+
+- **Copy preview pane info via `C` / `Shift+C`** ([#791](https://github.com/asheshgoplani/agent-deck/issues/791)). Yank Repo / Path / Branch from the right-pane preview using the existing clipboard fallback chain (native + OSC 52 for SSH'd terminals).
+
+- **Native iTerm2 badge sync on attach + rename** (thanks @tarekrached for PR #777). Three-gate no-op design correctly contains escape sequences; default opt-in; thorough tests. Gracefully no-ops on non-iTerm2 terminals.
+
+- **Arrow-key navigation for path suggestions in new-session dialog** (thanks @oryaacov for PR #772). Adds keyboard-only path picker with custom-path entry alongside the existing typed input.
+
 ## [1.7.71] - 2026-04-28
 
 Single-issue hotfix-class release. One day after v1.7.70.

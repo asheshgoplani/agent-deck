@@ -1286,16 +1286,16 @@ func NewSession(name, workDir string) *Session {
 	// Add unique suffix to prevent name collisions
 	uniqueSuffix := generateShortID()
 	return &Session{
-		Name:             SessionPrefix + sanitized + "_" + uniqueSuffix,
-		DisplayName:      name,
-		WorkDir:          workDir,
-		Created:          time.Now(),
-		startupAt:        time.Now(),
-		lastStableStatus: "waiting",
+		Name:                  SessionPrefix + sanitized + "_" + uniqueSuffix,
+		DisplayName:           name,
+		WorkDir:               workDir,
+		Created:               time.Now(),
+		startupAt:             time.Now(),
+		lastStableStatus:      "waiting",
 		toolDetectExpiry:      30 * time.Second, // Re-detect tool every 30 seconds
 		injectStatusLine:      true,             // Default: inject status bar
 		mouse:                 true,             // Default: mouse on (#730 opt-out)
-		terminalChromeEnabled: false, // Default: opt-in (set true via [terminal].iterm_badge)
+		terminalChromeEnabled: false,            // Default: opt-in (set true via [terminal].iterm_badge)
 		// stateTracker and promptDetector will be created lazily on first status check
 	}
 }
@@ -1308,13 +1308,13 @@ func NewSession(name, workDir string) *Session {
 // For lazy loading during TUI startup, use ReconnectSessionLazy instead.
 func ReconnectSession(tmuxName, displayName, workDir, command string) *Session {
 	sess := &Session{
-		Name:             tmuxName,
-		DisplayName:      displayName,
-		WorkDir:          workDir,
-		Command:          command,
-		Created:          time.Now(), // Approximate - we don't persist this
-		startupAt:        time.Time{},
-		lastStableStatus: "waiting",
+		Name:                  tmuxName,
+		DisplayName:           displayName,
+		WorkDir:               workDir,
+		Command:               command,
+		Created:               time.Now(), // Approximate - we don't persist this
+		startupAt:             time.Time{},
+		lastStableStatus:      "waiting",
 		toolDetectExpiry:      30 * time.Second,
 		injectStatusLine:      true,  // Default: inject status bar
 		mouse:                 true,  // Default: mouse on (#730 opt-out)
@@ -1378,13 +1378,13 @@ func ReconnectSessionWithStatus(tmuxName, displayName, workDir, command string, 
 // For sessions that need immediate configuration, use ReconnectSession or ReconnectSessionWithStatus.
 func ReconnectSessionLazy(tmuxName, displayName, workDir, command string, previousStatus string) *Session {
 	sess := &Session{
-		Name:             tmuxName,
-		DisplayName:      displayName,
-		WorkDir:          workDir,
-		Command:          command,
-		Created:          time.Now(), // Approximate - we don't persist this
-		startupAt:        time.Time{},
-		lastStableStatus: "waiting",
+		Name:                  tmuxName,
+		DisplayName:           displayName,
+		WorkDir:               workDir,
+		Command:               command,
+		Created:               time.Now(), // Approximate - we don't persist this
+		startupAt:             time.Time{},
+		lastStableStatus:      "waiting",
 		toolDetectExpiry:      30 * time.Second,
 		injectStatusLine:      true,  // Default: inject status bar
 		mouse:                 true,  // Default: mouse on (#730 opt-out)
