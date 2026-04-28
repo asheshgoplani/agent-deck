@@ -166,6 +166,16 @@ type UserConfig struct {
 	// writes directly to the host terminal (iTerm2 badge, etc), distinct
 	// from anything tmux draws. Empty/absent uses defaults; see TerminalSettings.
 	Terminal TerminalSettings `toml:"terminal"`
+
+	// Web defines `agent-deck web` HTTP server settings.
+	Web WebSettings `toml:"web"`
+}
+
+// WebSettings configures the `agent-deck web` HTTP server.
+type WebSettings struct {
+	// MutationsEnabled controls whether POST/PATCH/DELETE endpoints accept
+	// requests. nil (omitted) defaults to true. Forced off by --read-only.
+	MutationsEnabled *bool `toml:"mutations_enabled"`
 }
 
 // FeedbackSettings controls the in-product feedback prompts.
@@ -1883,6 +1893,17 @@ func GetDefaultTool() string {
 		return ""
 	}
 	return config.DefaultTool
+}
+
+// GetWebMutationsEnabled returns whether `agent-deck web` should accept
+// mutating HTTP requests (POST/PATCH/DELETE). Defaults to true when the
+// `[web].mutations_enabled` key is omitted from config.toml.
+func GetWebMutationsEnabled() bool {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil || config.Web.MutationsEnabled == nil {
+		return true
+	}
+	return *config.Web.MutationsEnabled
 }
 
 // GetHotkeyOverrides returns user-configured hotkey overrides from config.toml.

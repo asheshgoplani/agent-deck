@@ -12,7 +12,12 @@ import (
 
 // buildWebServer parses web-specific flags and returns a ready-to-start server.
 // The caller is responsible for calling server.Start() and server.Shutdown().
-func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) (*web.Server, error) {
+//
+// mutator is wired via Server.SetMutator. Pass nil only in tests that don't
+// exercise mutation handlers — production callers MUST pass a real mutator
+// or every POST/PATCH/DELETE will 503 with NOT_IMPLEMENTED. See
+// TestBuildWebServer_WiresMutator for the regression guard on this contract.
+func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, mutator web.SessionMutator) (*web.Server, error) {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
@@ -76,6 +81,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		ListenAddr:          *listenAddr,
 		Profile:             effectiveProfile,
 		ReadOnly:            *readOnly,
+		WebMutations:        resolveMutationsEnabled(*readOnly),
 		Token:               *token,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,
@@ -84,5 +90,19 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader) 
 		PushTestInterval:    *pushTestEvery,
 	})
 
+	if mutator != nil {
+		server.SetMutator(mutator)
+	}
+
 	return server, nil
+}
+
+// resolveMutationsEnabled applies precedence: --read-only forces mutations off;
+// otherwise the value comes from config.toml `[web].mutations_enabled`, which
+// defaults to true when unset.
+func resolveMutationsEnabled(readOnly bool) bool {
+	if readOnly {
+		return false
+	}
+	return session.GetWebMutationsEnabled()
 }

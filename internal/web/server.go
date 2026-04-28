@@ -272,6 +272,14 @@ func (s *Server) SetMutator(m SessionMutator) {
 	s.mutator = m
 }
 
+// HasMutator reports whether a SessionMutator has been wired. Mutating
+// endpoints (POST/PATCH/DELETE) return 503 NOT_IMPLEMENTED when this is
+// false, even if WebMutations is true. Exposed for regression tests on the
+// `agent-deck web` bootstrap path.
+func (s *Server) HasMutator() bool {
+	return s.mutator != nil
+}
+
 func (s *Server) notifyMenuChanged() {
 	s.menuSubscribersMu.Lock()
 	for ch := range s.menuSubscribers {
