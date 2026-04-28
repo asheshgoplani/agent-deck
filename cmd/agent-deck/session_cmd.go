@@ -1291,12 +1291,17 @@ func handleSessionSetParent(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	// #786: post-hoc set-parent must not silently rewrite the child's
+	// group. Inheritance is opt-in via this flag.
+	inheritGroup := fs.Bool("inherit-group", false,
+		"Also rewrite child's group to match parent's (off by default; #786)")
 
 	fs.Usage = func() {
-		fmt.Println("Usage: agent-deck session set-parent <session> <parent>")
+		fmt.Println("Usage: agent-deck session set-parent <session> <parent> [--inherit-group]")
 		fmt.Println()
 		fmt.Println("Link a session as a sub-session of another session.")
-		fmt.Println("The session will inherit the parent's group.")
+		fmt.Println("The session's group is preserved by default; pass --inherit-group")
+		fmt.Println("to also adopt the parent's group.")
 		fmt.Println("This works for any session, including those created with --no-parent.")
 		fmt.Println()
 		fmt.Println("Options:")
@@ -1363,9 +1368,12 @@ func handleSessionSetParent(profile string, args []string) {
 		}
 	}
 
-	// Set parent (with project path for --add-dir access) and inherit group
+	// Set parent (with project path for --add-dir access). Group is only
+	// rewritten on explicit --inherit-group opt-in; see #786.
 	inst.SetParentWithPath(parentInst.ID, parentInst.ProjectPath)
-	inst.GroupPath = parentInst.GroupPath
+	if *inheritGroup {
+		inst.GroupPath = parentInst.GroupPath
+	}
 
 	// Save
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
@@ -1380,7 +1388,8 @@ func handleSessionSetParent(profile string, args []string) {
 		"session_title":   inst.Title,
 		"parent_id":       parentInst.ID,
 		"parent_title":    parentInst.Title,
-		"inherited_group": inst.GroupPath,
+		"group":           inst.GroupPath,
+		"group_inherited": *inheritGroup,
 	})
 }
 

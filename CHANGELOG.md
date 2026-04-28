@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`session set-parent` no longer silently moves the child's group** ([#786](https://github.com/asheshgoplani/agent-deck/issues/786)). Until now, post-hoc linking a session under a parent rewrote the child's `group` field to match the parent's, while `unset-parent` only cleared `parent_session_id` — an asymmetric footgun for the retroactive-relink workflow (re-attaching orphan sessions to a conductor for event routing) which silently scrambled the TUI tree and lost the original group with no audit trail. `set-parent` is now strictly parent-only by default. Use `--inherit-group` to opt back in to the prior behavior. Implicit group inheritance for *newly launched* sessions via `add` / `launch` is unchanged. Locked in by five regression tests in `cmd/agent-deck/setparent_group_test.go` (no-inherit default, opt-in works, unset leaves group alone, full round-trip preserves group, --help mentions the flag).
+
 ## [1.7.70] - 2026-04-27
 
 Bundle of community-contributed fixes plus a P1 macOS regression repair, four days after v1.7.69. Three external contributors merged this cycle: @lucassaldanha, @vedantdshetty, @amkopyt. Plus @petitcl's remote-docs PR.
