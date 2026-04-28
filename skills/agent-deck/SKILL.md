@@ -200,6 +200,49 @@ agent-deck list --json | jq '.[] | select(.title=="conductor-foo") | .parent_ses
 
 **Note on the launch-subagent.sh script:** that script is specifically designed to create sub-agents (the name says so). It does NOT support `-no-parent`. For peer sessions, skip the script and invoke `agent-deck launch -no-parent` directly.
 
+## Conductors
+
+A conductor is a persistent agent-deck session that orchestrates other sessions. It watches the rest of your sessions, auto-responds when confident, escalates to you when ambiguous, and optionally pairs with a remote channel (Telegram or Slack) so you can talk to it from your phone.
+
+Use this section when the user says **"conductor"**, **"set up a conductor"**, **"monitor sessions"**, **"telegram bot for agent-deck"**, **"slack bot for agent-deck"**, or **"remote control my sessions"**.
+
+```bash
+# Create a conductor in the default profile
+agent-deck conductor setup ops --description "Ops monitor"
+
+# Create on a specific profile (work/personal/etc.)
+agent-deck -p work conductor setup infra --description "Infra watcher"
+
+# Use a non-Claude agent for the conductor itself
+agent-deck conductor setup review --agent codex --description "Codex reviewer"
+
+# Provide custom env (e.g., third-party Anthropic-compatible endpoint)
+agent-deck conductor setup glm-bot \
+  -env ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic \
+  -env ANTHROPIC_AUTH_TOKEN=<token>
+
+# Status across all conductors
+agent-deck conductor status
+
+# List configured conductors
+agent-deck conductor list
+```
+
+Each conductor lives at `~/.agent-deck/conductor/<name>/` with its own `CLAUDE.md` (or `AGENTS.md` for Codex), `meta.json`, `state.json`, and `task-log.md`. Multiple conductors per profile are supported and each can pair with its own bot.
+
+### Channels (Telegram / Slack)
+
+Channels are how a conductor talks to you remotely. Each conductor pairs **one-to-one** with its own bot — bots are not shared. `agent-deck conductor setup` interactively walks you through Telegram or Slack pairing during creation.
+
+Key constraints:
+
+- The Telegram plugin must be installed under the conductor's Claude profile, but **never globally enabled** in `settings.json`. Per-session activation happens via the `channels` field on the conductor's session record.
+- Bot tokens live at `<channel-state-dir>/.env` (chmod 600). Never committed to git.
+- Exactly one bot, one conductor, one chat — the routing is deterministic.
+- Watch for the "many competing telegram pollers" gotcha (see Known Gotchas section below) — child sessions inherit `TELEGRAM_STATE_DIR` and can leak duplicate pollers on the same bot token, causing 409 conflicts.
+
+**See:** [docs/CONDUCTOR.md](https://github.com/asheshgoplani/agent-deck/blob/main/docs/CONDUCTOR.md) for the full ten-minute quickstart, telegram bot creation flow, multi-conductor setups, and lifecycle commands.
+
 ## TUI Keyboard Shortcuts
 
 ### Navigation
@@ -520,6 +563,15 @@ done
 **When agent-deck emits a `⚠  GLOBAL_ANTIPATTERN` / `DOUBLE_LOAD` / `WRAPPER_DEPRECATED` warning**, the problem is in your topology, not in agent-deck. Fix the profile settings or the conductor env_file; the warning is a leading indicator of the 409-Conflict symptom that follows minutes-to-hours later.
 
 ## References
+
+**User guides (full how-to, in the repo):**
+
+- [docs/CONDUCTOR.md](https://github.com/asheshgoplani/agent-deck/blob/main/docs/CONDUCTOR.md) - Conductor quickstart, channel pairing, state files, multi-conductor setups
+- [docs/WATCHERS.md](https://github.com/asheshgoplani/agent-deck/blob/main/docs/WATCHERS.md) - Event-forwarding framework: doorbell model, built-in adapters, custom watchers
+- [docs/SKILLS.md](https://github.com/asheshgoplani/agent-deck/blob/main/docs/SKILLS.md) - User-level vs pool skills, attach/detach, when to use which tier
+- [docs/WATCHDOG.md](https://github.com/asheshgoplani/agent-deck/blob/main/docs/WATCHDOG.md) - Optional Python daemon that auto-restarts critical sessions
+
+**Reference (shipped with this skill):**
 
 - [cli-reference.md](references/cli-reference.md) - Complete CLI command reference
 - [config-reference.md](references/config-reference.md) - All config.toml options
