@@ -421,6 +421,23 @@ agent-deck -p work launch . -c "codex --dangerously-bypass-approvals-and-sandbox
 When `--cmd` includes extra args, agent-deck auto-wraps the tool command so args are preserved reliably.
 Use `--no-parent` only when you explicitly want to disable parent routing/notifications.
 
+#### Channels (Telegram / Slack)
+
+Channels are how a conductor talks to you remotely. Each conductor pairs **one-to-one** with its own bot — bots are not shared between conductors. `agent-deck conductor setup` walks you through the pairing during creation.
+
+Key constraints:
+
+- **One bot per conductor.** The Telegram Bot API delivers updates via long-poll; a second consumer on the same token causes 409 conflicts and dropped messages.
+- **Plugin must be installed under the conductor's Claude profile but never globally enabled.** Per-session activation happens via the `channels = ["plugin:telegram@claude-plugins-official"]` field on the conductor's session record. A globally-enabled plugin leaks pollers into every Claude session under that profile.
+- **Bot tokens** live in the per-conductor channel state directory at `<state-dir>/.env` (chmod 600). Never committed to git.
+
+Slack pairing follows the same one-bot-per-conductor pattern. See [documentation/CONDUCTOR.md](documentation/CONDUCTOR.md) for the full ten-minute quickstart, including @BotFather steps, profile config, and verification commands.
+
+#### See also
+
+- [documentation/CONDUCTOR.md](documentation/CONDUCTOR.md) — full conductor guide with channel pairing walkthrough
+- [documentation/WATCHDOG.md](documentation/WATCHDOG.md) — optional auto-restart daemon that complements conductors
+
 ### Watchers
 
 Watchers listen for inbound events (webhooks, push notifications, GitHub events, Slack messages) and route them to conductor sessions so running agents can act on them automatically. Four adapter types ship today:
@@ -459,6 +476,12 @@ Safety notes:
 - The GitHub adapter enforces HMAC-SHA256 signature verification on every webhook — a missing/invalid signature drops the event.
 - Events are deduplicated in SQLite by `(watcher_name, event_id)`, so retries from the sender do not double-fire the conductor.
 - Watchers keep per-adapter health in `~/.agent-deck/watcher/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
+
+**Doorbell rule:** watchers are triggers, not launchers. They forward a short event string to the conductor and let the conductor decide what to do. A watcher should never call `agent-deck launch` or `agent-deck add` directly — those calls run outside any conductor's process and have no `$AGENTDECK_INSTANCE_ID`, so the spawned session becomes an orphan whose status events never route back. Use `agent-deck session send <conductor> "[event] hint"` from the watcher and let the conductor fan out from there.
+
+#### See also
+
+- [documentation/WATCHERS.md](documentation/WATCHERS.md) — full watcher guide with adapter recipes, custom external watchers, security guarantees, and gotchas
 
 ### Multi-Tool Support
 
@@ -706,10 +729,10 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 
 | Guide | What's Inside |
 |-------|---------------|
-| [Conductor](docs/CONDUCTOR.md) | What a conductor is, quickstart, channel pairing, state files, multi-conductor setups |
-| [Skills](docs/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
-| [Watchdog](docs/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
-| [Watchers](docs/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |
+| [Conductor](documentation/CONDUCTOR.md) | What a conductor is, quickstart, channel pairing, state files, multi-conductor setups |
+| [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
+| [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
+| [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |
 
 **References** — drill into specifics:
 
