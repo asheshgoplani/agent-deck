@@ -209,6 +209,12 @@ Practical upshot: you can let your conductor spawn children liberally; the polle
 
 **Profile mismatch on setup.** If you run `conductor setup` under the wrong profile (`CLAUDE_CONFIG_DIR` pointing somewhere unintended), the conductor's config_dir resolution may later fail, and the session flips to `error` on resume. `agent-deck conductor teardown <name> --remove` is the clean-slate reset; you can run it and set up fresh without losing anything outside the conductor dir.
 
+**Children silently orphaned.** When a conductor launches a child session, the parent linkage is what carries status events back. The CLI auto-fills `parent_session_id` from `$AGENTDECK_INSTANCE_ID` when that env var is in scope, but worktree-setup hooks, sandboxed shells, and watchdog-spawned shells routinely drop it. Pass `-parent "$AGENTDECK_INSTANCE_ID"` explicitly on every `agent-deck launch` / `add` to make it belt-plus-suspenders. Existing orphans can be relinked retroactively with `agent-deck session set-parent <child> "$AGENTDECK_INSTANCE_ID"`. Watchers that run *outside* the conductor process must NOT call `launch` or `add` directly — see [WATCHERS.md](WATCHERS.md) for the doorbell pattern.
+
+**Children land in the wrong group.** When a conductor launches a child, the child inherits the conductor's group at creation time — for a conductor in the `conductor` group, that means children pile into the conductor row in the TUI tree. The `conductor` group is reserved for the conductor sessions themselves; children belong in a project group named after the conductor (e.g. an `ops` conductor's children go in the `ops` group, an `infra` conductor's children in `infra`). Either pass `-g <my-project-group>` on the launch command, or run `agent-deck group move <child> <my-project-group>` immediately after creation.
+
+**Resume-from-summary picker stalls long-running conductors.** Once a conductor's claude session crosses ~250k tokens, `claude --resume` shows an interactive picker ("Resume from summary / Resume full / Don't ask again"). The conductor has no human at the terminal to answer, so it sits on the picker indefinitely and looks stuck on `waiting`. Workaround: `agent-deck session send <conductor> ""` to inject Enter and accept the default (Resume from summary). A structural fix is on the agent-deck roadmap.
+
 ## Lifecycle commands
 
 ```bash
