@@ -6496,6 +6496,17 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "C", "shift+c":
+		// Copy preview pane info (Repo / Path / Branch) to system clipboard (#791).
+		// Pairs with `c` (copy session output): same fallback chain, different payload.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.copySessionInfo(item.Session)
+			}
+		}
+		return h, nil
+
 	case "x":
 		// Send session output to another session
 		if h.cursor < len(h.flatItems) {

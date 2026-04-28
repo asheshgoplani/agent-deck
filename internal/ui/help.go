@@ -206,6 +206,7 @@ func (h *HelpOverlay) View() string {
 				{reorderKeys, "Reorder up/down"},
 				{forkKeys, "Fork session (Claude only)"},
 				{copyKey, "Copy output to clipboard"},
+				{"C", "Copy preview info (Repo / Path / Branch)"},
 				{sendKey, "Send output to session"},
 				{execShellKey, "Exec shell in sandbox container"},
 				{editPathsKey, "Edit multi-repo paths"},
