@@ -1860,3 +1860,113 @@ transition_events = false
 		t.Error("GetTransitionEventsEnabled() should return false when explicitly false")
 	}
 }
+
+func TestValidatePortForward_Valid(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{"L", "R", "D"} {
+		if err := ValidatePortForward(PortForward{Direction: dir, Spec: "8444:localhost:8444"}); err != nil {
+			t.Errorf("expected direction %q to be valid, got: %v", dir, err)
+		}
+	}
+}
+
+func TestValidatePortForward_InvalidDirection(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{"X", "", "l", "local", "Z"} {
+		if err := ValidatePortForward(PortForward{Direction: dir, Spec: "8444:localhost:8444"}); err == nil {
+			t.Errorf("expected direction %q to be invalid", dir)
+		}
+	}
+}
+
+func TestValidatePortForward_EmptySpec(t *testing.T) {
+	t.Parallel()
+	if err := ValidatePortForward(PortForward{Direction: "L", Spec: ""}); err == nil {
+		t.Error("expected empty spec to be invalid")
+	}
+}
+
+func TestParsePortForwardFlag_Valid(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		dir   string
+		spec  string
+	}{
+		{"L:8444:localhost:8444", "L", "8444:localhost:8444"},
+		{"R:3000:localhost:3000", "R", "3000:localhost:3000"},
+		{"D:1080", "D", "1080"},
+		{"l:8080:localhost:8080", "L", "8080:localhost:8080"},
+		{"r:9090:0.0.0.0:9090", "R", "9090:0.0.0.0:9090"},
+		{"d:1080", "D", "1080"},
+	}
+	for _, tc := range tests {
+		pf, err := ParsePortForwardFlag(tc.input)
+		if err != nil {
+			t.Errorf("ParsePortForwardFlag(%q) unexpected error: %v", tc.input, err)
+			continue
+		}
+		if pf.Direction != tc.dir {
+			t.Errorf("ParsePortForwardFlag(%q).Direction = %q, want %q", tc.input, pf.Direction, tc.dir)
+		}
+		if pf.Spec != tc.spec {
+			t.Errorf("ParsePortForwardFlag(%q).Spec = %q, want %q", tc.input, pf.Spec, tc.spec)
+		}
+	}
+}
+
+func TestParsePortForwardFlag_Invalid(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{"", "8444:localhost:8444", "X:1234", "LL:8080:localhost:8080", ":"} {
+		if _, err := ParsePortForwardFlag(input); err == nil {
+			t.Errorf("ParsePortForwardFlag(%q) expected error", input)
+		}
+	}
+}
+
+func TestRemoteConfig_PortForwards_TOML_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	input := `
+[remotes.dev]
+host = "user@dev-box"
+agent_deck_path = "agent-deck"
+profile = "default"
+
+[[remotes.dev.port_forwards]]
+direction = "L"
+spec = "8444:localhost:8444"
+
+[[remotes.dev.port_forwards]]
+direction = "R"
+spec = "3000:localhost:3000"
+
+[[remotes.dev.port_forwards]]
+direction = "D"
+spec = "1080"
+`
+
+	var config UserConfig
+	if _, err := toml.Decode(input, &config); err != nil {
+		t.Fatalf("Failed to decode TOML: %v", err)
+	}
+
+	rc, ok := config.Remotes["dev"]
+	if !ok {
+		t.Fatal("expected 'dev' remote in config")
+	}
+	if len(rc.PortForwards) != 3 {
+		t.Fatalf("expected 3 port forwards, got %d", len(rc.PortForwards))
+	}
+
+	expected := []PortForward{
+		{Direction: "L", Spec: "8444:localhost:8444"},
+		{Direction: "R", Spec: "3000:localhost:3000"},
+		{Direction: "D", Spec: "1080"},
+	}
+	for i, pf := range rc.PortForwards {
+		if pf.Direction != expected[i].Direction || pf.Spec != expected[i].Spec {
+			t.Errorf("port_forwards[%d] = %+v, want %+v", i, pf, expected[i])
+		}
+	}
+}

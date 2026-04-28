@@ -72,6 +72,75 @@ func TestParseRemoteSessionOutput(t *testing.T) {
 	}
 }
 
+func TestPortForwardArgs_Empty(t *testing.T) {
+	runner := &SSHRunner{}
+	got := runner.portForwardArgs()
+	if got != nil {
+		t.Fatalf("expected nil for empty PortForwards, got %v", got)
+	}
+}
+
+func TestPortForwardArgs_AllDirections(t *testing.T) {
+	runner := &SSHRunner{
+		PortForwards: []PortForward{
+			{Direction: "L", Spec: "8444:localhost:8444"},
+			{Direction: "R", Spec: "3000:localhost:3000"},
+			{Direction: "D", Spec: "1080"},
+		},
+	}
+	got := runner.portForwardArgs()
+	want := []string{"-L", "8444:localhost:8444", "-R", "3000:localhost:3000", "-D", "1080"}
+	if len(got) != len(want) {
+		t.Fatalf("portForwardArgs() = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("portForwardArgs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPortForwardArgs_Ordering(t *testing.T) {
+	runner := &SSHRunner{
+		PortForwards: []PortForward{
+			{Direction: "L", Spec: "1111:localhost:1111"},
+			{Direction: "L", Spec: "2222:localhost:2222"},
+			{Direction: "L", Spec: "3333:localhost:3333"},
+		},
+	}
+	got := runner.portForwardArgs()
+	want := []string{"-L", "1111:localhost:1111", "-L", "2222:localhost:2222", "-L", "3333:localhost:3333"}
+	if len(got) != len(want) {
+		t.Fatalf("portForwardArgs() = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("portForwardArgs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestNewSSHRunner_CopiesPortForwards(t *testing.T) {
+	rc := RemoteConfig{
+		Host:    "user@host",
+		Profile: "dev",
+		PortForwards: []PortForward{
+			{Direction: "L", Spec: "8080:localhost:8080"},
+			{Direction: "D", Spec: "1080"},
+		},
+	}
+	runner := NewSSHRunner("test", rc)
+	if len(runner.PortForwards) != 2 {
+		t.Fatalf("expected 2 port forwards, got %d", len(runner.PortForwards))
+	}
+	if runner.PortForwards[0].Direction != "L" || runner.PortForwards[0].Spec != "8080:localhost:8080" {
+		t.Errorf("PortForwards[0] = %+v, want L:8080:localhost:8080", runner.PortForwards[0])
+	}
+	if runner.PortForwards[1].Direction != "D" || runner.PortForwards[1].Spec != "1080" {
+		t.Errorf("PortForwards[1] = %+v, want D:1080", runner.PortForwards[1])
+	}
+}
+
 func TestSSHRunnerBuildRemoteCommand_QuotesRemoteSessionOutputID(t *testing.T) {
 	runner := &SSHRunner{AgentDeckPath: "/usr/local/bin/agent-deck"}
 

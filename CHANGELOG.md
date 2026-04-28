@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **SSH port forwarding for remote sessions** ([#792](https://github.com/asheshgoplani/agent-deck/issues/792)). Configure `-L`/`-R`/`-D` forwards per remote via `--forward` flag on `remote add` or the new `remote forward add/remove/list` subcommands. Forwards apply to all SSH connections (attach, command execution, session fetch).
+
 ## [1.7.72] - 2026-04-28
 
 Bundle of fixes and contributor PRs, hours after v1.7.71. Two external contributors merged this cycle: @tarekrached (twice), @oryaacov.

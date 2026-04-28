@@ -410,8 +410,56 @@ agent-deck remote add <name> <user@host> [options]
 |------|-------------|
 | `--agent-deck-path <path>` | Path to the agent-deck binary on the remote (default: `agent-deck`) |
 | `--profile <name>` | Remote profile to use (default: `default`) |
+| `--forward <spec>` | Port forward rule (e.g., `L:8444:localhost:8444`). Can be repeated. |
 
 Registers a remote instance. If agent-deck is not found on the remote, it is installed automatically. Remote names must be alphanumeric and may contain underscores or hyphens (no spaces, slashes, dots, or colons).
+
+### remote forward
+
+Manage SSH port forwarding rules for a remote. Forwards are applied to all SSH connections (attach, command execution, session fetch). Changes take effect on the next SSH connection.
+
+#### remote forward list
+
+```bash
+agent-deck remote forward list <remote-name> [--json]
+```
+
+Lists configured port forwards for a remote.
+
+#### remote forward add
+
+```bash
+agent-deck remote forward add <remote-name> <spec>...
+```
+
+Adds one or more port forwards. Duplicates are skipped automatically.
+
+#### remote forward remove
+
+```bash
+agent-deck remote forward remove <remote-name> <spec>...
+```
+
+Removes matching port forwards from the remote configuration.
+
+#### Port forward spec format
+
+The spec format is `D:spec` where `D` is the direction:
+
+| Direction | SSH Flag | Description |
+|-----------|----------|-------------|
+| `L` | `-L` | Local forwarding — access a remote service on a local port |
+| `R` | `-R` | Remote forwarding — expose a local service to the remote host |
+| `D` | `-D` | Dynamic (SOCKS) forwarding |
+
+Examples:
+
+```bash
+agent-deck remote forward add dev L:8444:localhost:8444
+agent-deck remote forward add dev R:3000:localhost:3000 D:1080
+agent-deck remote forward remove dev L:8444:localhost:8444
+agent-deck remote forward list dev --json
+```
 
 ### remote remove / rm
 
@@ -474,6 +522,12 @@ agent-deck remote attach dev my-session
 agent-deck remote rename dev my-session new-name
 agent-deck remote update          # update all remotes
 agent-deck remote update dev      # update specific remote
+
+# Port forwarding
+agent-deck remote add dev user@dev-box --forward L:8444:localhost:8444
+agent-deck remote forward add dev L:3000:localhost:3000
+agent-deck remote forward list dev
+agent-deck remote forward remove dev L:8444:localhost:8444
 ```
 
 ## Session Resolution

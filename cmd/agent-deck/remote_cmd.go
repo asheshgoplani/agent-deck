@@ -36,6 +36,8 @@ func handleRemote(profile string, args []string) {
 		handleRemoteRename(args[1:])
 	case "update":
 		handleRemoteUpdate(args[1:])
+	case "forward", "fwd":
+		handleRemoteForward(args[1:])
 	default:
 		fmt.Printf("Unknown remote command: %s\n", args[0])
 		printRemoteUsage()
@@ -56,10 +58,12 @@ func printRemoteUsage() {
 	fmt.Println("  attach <name> <session>   Attach to a remote session")
 	fmt.Println("  rename <name> <session> <new-title>  Rename a remote session")
 	fmt.Println("  update [name]             Install/update agent-deck on remote(s)")
+	fmt.Println("  forward <sub> <name> ...  Manage port forwarding (add/remove/list)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck remote add dev user@dev-box")
 	fmt.Println("  agent-deck remote add prod user@prod-server --agent-deck-path /usr/local/bin/agent-deck")
+	fmt.Println("  agent-deck remote add dev user@dev-box --forward L:8444:localhost:8444")
 	fmt.Println("  agent-deck remote list")
 	fmt.Println("  agent-deck remote sessions dev")
 	fmt.Println("  agent-deck remote attach dev my-session")
@@ -72,10 +76,21 @@ func isValidRemoteName(name string) bool {
 	return name != "" && !strings.ContainsAny(name, " /\\.:")
 }
 
+// portForwardFlags implements flag.Value for repeatable --forward flags.
+type portForwardFlags []string
+
+func (p *portForwardFlags) String() string { return strings.Join(*p, ",") }
+func (p *portForwardFlags) Set(val string) error {
+	*p = append(*p, val)
+	return nil
+}
+
 func handleRemoteAdd(args []string) {
 	fs := flag.NewFlagSet("remote add", flag.ExitOnError)
 	agentDeckPath := fs.String("agent-deck-path", "", "Path to agent-deck on the remote (default: agent-deck)")
 	remoteProfile := fs.String("profile", "", "Remote profile to use (default: default)")
+	var forwards portForwardFlags
+	fs.Var(&forwards, "forward", "Port forward rule (e.g., L:8444:localhost:8444). Can be repeated.")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck remote add <name> <user@host> [options]")
@@ -107,6 +122,17 @@ func handleRemoteAdd(args []string) {
 		os.Exit(1)
 	}
 
+	// Parse port forward flags
+	var portForwards []session.PortForward
+	for _, f := range forwards {
+		pf, err := session.ParsePortForwardFlag(f)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		portForwards = append(portForwards, pf)
+	}
+
 	// Load existing config
 	config, err := session.LoadUserConfig()
 	if err != nil {
@@ -123,7 +149,8 @@ func handleRemoteAdd(args []string) {
 	}
 
 	rc := session.RemoteConfig{
-		Host: host,
+		Host:         host,
+		PortForwards: portForwards,
 	}
 	if *agentDeckPath != "" {
 		rc.AgentDeckPath = *agentDeckPath
@@ -220,10 +247,11 @@ func handleRemoteList(args []string) {
 
 	if *jsonOutput {
 		type remoteJSON struct {
-			Name          string `json:"name"`
-			Host          string `json:"host"`
-			AgentDeckPath string `json:"agent_deck_path"`
-			Profile       string `json:"profile"`
+			Name          string                `json:"name"`
+			Host          string                `json:"host"`
+			AgentDeckPath string                `json:"agent_deck_path"`
+			Profile       string                `json:"profile"`
+			PortForwards  []session.PortForward `json:"port_forwards,omitempty"`
 		}
 
 		var remotes []remoteJSON
@@ -233,6 +261,7 @@ func handleRemoteList(args []string) {
 				Host:          rc.Host,
 				AgentDeckPath: rc.GetAgentDeckPath(),
 				Profile:       rc.GetProfile(),
+				PortForwards:  rc.PortForwards,
 			})
 		}
 
@@ -245,10 +274,11 @@ func handleRemoteList(args []string) {
 		return
 	}
 
-	fmt.Printf("%-15s %-30s %-20s %s\n", "NAME", "HOST", "PATH", "PROFILE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-15s %-30s %-20s %-10s %s\n", "NAME", "HOST", "PATH", "FORWARDS", "PROFILE")
+	fmt.Println(strings.Repeat("-", 80))
 	for name, rc := range config.Remotes {
-		fmt.Printf("%-15s %-30s %-20s %s\n", name, rc.Host, rc.GetAgentDeckPath(), rc.GetProfile())
+		fwdSummary := formatForwardSummary(rc.PortForwards)
+		fmt.Printf("%-15s %-30s %-20s %-10s %s\n", name, rc.Host, rc.GetAgentDeckPath(), fwdSummary, rc.GetProfile())
 	}
 	fmt.Printf("\nTotal: %d remotes\n", len(config.Remotes))
 }
@@ -602,6 +632,226 @@ func installOnRemote(runner *session.SSHRunner, ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// formatForwardSummary returns a compact summary like "2L 1R" for port forwards.
+func formatForwardSummary(forwards []session.PortForward) string {
+	if len(forwards) == 0 {
+		return "-"
+	}
+	counts := map[string]int{}
+	for _, pf := range forwards {
+		counts[pf.Direction]++
+	}
+	var parts []string
+	for _, dir := range []string{"L", "R", "D"} {
+		if c := counts[dir]; c > 0 {
+			parts = append(parts, fmt.Sprintf("%d%s", c, dir))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func handleRemoteForward(args []string) {
+	if len(args) == 0 {
+		printRemoteForwardUsage()
+		return
+	}
+
+	switch args[0] {
+	case "list", "ls":
+		handleRemoteForwardList(args[1:])
+	case "add":
+		handleRemoteForwardAdd(args[1:])
+	case "remove", "rm":
+		handleRemoteForwardRemove(args[1:])
+	default:
+		fmt.Printf("Unknown forward command: %s\n", args[0])
+		printRemoteForwardUsage()
+		os.Exit(1)
+	}
+}
+
+func printRemoteForwardUsage() {
+	fmt.Println("Usage: agent-deck remote forward <command> <remote-name> [options]")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  list <name>                List configured port forwards")
+	fmt.Println("  add <name> <spec>...       Add port forward(s)")
+	fmt.Println("  remove <name> <spec>...    Remove port forward(s)")
+	fmt.Println()
+	fmt.Println("Spec format: D:spec where D is L (local), R (remote), or D (dynamic)")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  agent-deck remote forward list dev")
+	fmt.Println("  agent-deck remote forward add dev L:8444:localhost:8444")
+	fmt.Println("  agent-deck remote forward add dev L:3000:localhost:3000 R:9090:localhost:9090")
+	fmt.Println("  agent-deck remote forward remove dev L:8444:localhost:8444")
+}
+
+func handleRemoteForwardList(args []string) {
+	fs := flag.NewFlagSet("remote forward list", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	_ = fs.Parse(args)
+
+	remaining := fs.Args()
+	if len(remaining) < 1 {
+		fmt.Println("Usage: agent-deck remote forward list <remote-name> [--json]")
+		os.Exit(1)
+	}
+	name := remaining[0]
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		fmt.Printf("Error: failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	rc, exists := config.Remotes[name]
+	if !exists {
+		fmt.Printf("Error: remote '%s' not found\n", name)
+		os.Exit(1)
+	}
+
+	if *jsonOutput {
+		output, err := json.MarshalIndent(rc.PortForwards, "", "  ")
+		if err != nil {
+			fmt.Printf("Error: failed to format JSON: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(output))
+		return
+	}
+
+	if len(rc.PortForwards) == 0 {
+		fmt.Printf("No port forwards configured for remote '%s'.\n", name)
+		return
+	}
+
+	fmt.Printf("Port forwards for remote '%s':\n\n", name)
+	fmt.Printf("  %-12s %s\n", "DIRECTION", "SPEC")
+	fmt.Printf("  %s\n", strings.Repeat("-", 40))
+	for _, pf := range rc.PortForwards {
+		var dirLabel string
+		switch pf.Direction {
+		case "L":
+			dirLabel = "local (-L)"
+		case "R":
+			dirLabel = "remote (-R)"
+		case "D":
+			dirLabel = "dynamic (-D)"
+		}
+		fmt.Printf("  %-12s %s\n", dirLabel, pf.Spec)
+	}
+	fmt.Printf("\nTotal: %d forward(s)\n", len(rc.PortForwards))
+}
+
+func handleRemoteForwardAdd(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: agent-deck remote forward add <remote-name> <spec>...")
+		fmt.Println("Example: agent-deck remote forward add dev L:8444:localhost:8444")
+		os.Exit(1)
+	}
+
+	name := args[0]
+	specs := args[1:]
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		fmt.Printf("Error: failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	rc, exists := config.Remotes[name]
+	if !exists {
+		fmt.Printf("Error: remote '%s' not found\n", name)
+		os.Exit(1)
+	}
+
+	// Build set of existing forwards for dedup
+	existing := make(map[string]bool)
+	for _, pf := range rc.PortForwards {
+		existing[pf.Direction+":"+pf.Spec] = true
+	}
+
+	var added int
+	for _, s := range specs {
+		pf, err := session.ParsePortForwardFlag(s)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		key := pf.Direction + ":" + pf.Spec
+		if existing[key] {
+			fmt.Printf("  Skipped (duplicate): %s\n", s)
+			continue
+		}
+		rc.PortForwards = append(rc.PortForwards, pf)
+		existing[key] = true
+		added++
+	}
+
+	config.Remotes[name] = rc
+	if err := session.SaveUserConfig(config); err != nil {
+		fmt.Printf("Error: failed to save config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Added %d forward(s) to remote '%s' (%d total)\n", added, name, len(rc.PortForwards))
+}
+
+func handleRemoteForwardRemove(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: agent-deck remote forward remove <remote-name> <spec>...")
+		fmt.Println("Example: agent-deck remote forward remove dev L:8444:localhost:8444")
+		os.Exit(1)
+	}
+
+	name := args[0]
+	specs := args[1:]
+
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		fmt.Printf("Error: failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	rc, exists := config.Remotes[name]
+	if !exists {
+		fmt.Printf("Error: remote '%s' not found\n", name)
+		os.Exit(1)
+	}
+
+	// Build set of specs to remove
+	toRemove := make(map[string]bool)
+	for _, s := range specs {
+		pf, err := session.ParsePortForwardFlag(s)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		toRemove[pf.Direction+":"+pf.Spec] = true
+	}
+
+	var kept []session.PortForward
+	var removed int
+	for _, pf := range rc.PortForwards {
+		key := pf.Direction + ":" + pf.Spec
+		if toRemove[key] {
+			removed++
+		} else {
+			kept = append(kept, pf)
+		}
+	}
+
+	rc.PortForwards = kept
+	config.Remotes[name] = rc
+	if err := session.SaveUserConfig(config); err != nil {
+		fmt.Printf("Error: failed to save config: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Removed %d forward(s) from remote '%s' (%d remaining)\n", removed, name, len(rc.PortForwards))
 }
 
 // reorderRemoteArgs moves flags before positional args for Go's flag package.

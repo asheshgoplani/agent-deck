@@ -195,6 +195,45 @@ type OpenClawSettings struct {
 	GroupName string `toml:"group_name"`
 }
 
+// PortForward describes a single SSH port-forwarding rule.
+type PortForward struct {
+	// Direction is "L" (local), "R" (remote), or "D" (dynamic/SOCKS).
+	Direction string `toml:"direction"`
+
+	// Spec is the forwarding specification passed to ssh -L/-R/-D.
+	// For L/R: "[bind_address:]port:host:hostport"
+	// For D:   "[bind_address:]port"
+	Spec string `toml:"spec"`
+}
+
+// ValidatePortForward checks that a PortForward has a valid direction and non-empty spec.
+func ValidatePortForward(pf PortForward) error {
+	switch pf.Direction {
+	case "L", "R", "D":
+	default:
+		return fmt.Errorf("invalid direction %q: must be L, R, or D", pf.Direction)
+	}
+	if pf.Spec == "" {
+		return fmt.Errorf("empty spec for %s forward", pf.Direction)
+	}
+	return nil
+}
+
+// ParsePortForwardFlag parses a CLI flag like "L:8444:localhost:8444" into a PortForward.
+// Accepts lowercase direction letters which are uppercased automatically.
+func ParsePortForwardFlag(s string) (PortForward, error) {
+	if len(s) < 3 || s[1] != ':' {
+		return PortForward{}, fmt.Errorf("invalid port forward %q: expected format D:spec (e.g., L:8444:localhost:8444)", s)
+	}
+	direction := strings.ToUpper(s[:1])
+	spec := s[2:]
+	pf := PortForward{Direction: direction, Spec: spec}
+	if err := ValidatePortForward(pf); err != nil {
+		return PortForward{}, err
+	}
+	return pf, nil
+}
+
 // RemoteConfig defines a remote agent-deck instance accessible via SSH.
 type RemoteConfig struct {
 	// Host is the SSH destination (e.g., "user@host" or "user@host:port")
@@ -205,6 +244,9 @@ type RemoteConfig struct {
 
 	// Profile is the remote profile to use (default: "default")
 	Profile string `toml:"profile"`
+
+	// PortForwards configures SSH port forwarding rules applied to all connections.
+	PortForwards []PortForward `toml:"port_forwards"`
 }
 
 // GetAgentDeckPath returns the agent-deck binary path, defaulting to "agent-deck".

@@ -153,6 +153,30 @@ volume_ignores = []            # Directories to exclude from project mount
 | `environment` | array | `[]` | Host environment variable names to forward into containers. |
 | `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
 
+## [remotes] Section
+
+Named SSH remote agent-deck instances. Each remote is a sub-table keyed by name.
+
+```toml
+[remotes.dev]
+host = "user@dev-box"            # SSH destination (required)
+agent_deck_path = ""             # Path to agent-deck on remote (default: "agent-deck")
+profile = ""                     # Remote profile to use (default: "default")
+
+[[remotes.dev.port_forwards]]    # SSH port forwarding rules (optional, repeatable)
+direction = "L"                  # L (local), R (remote), or D (dynamic/SOCKS)
+spec = "8444:localhost:8444"     # Forwarding spec passed to ssh -L/-R/-D
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `host` | string | (required) | SSH destination (e.g. `"user@host"` or `"user@host:port"`). |
+| `agent_deck_path` | string | `"agent-deck"` | Path to the agent-deck binary on the remote. |
+| `profile` | string | `"default"` | Remote profile name. |
+| `port_forwards` | array of tables | `[]` | SSH port forwarding rules applied to all connections. |
+| `port_forwards.direction` | string | (required) | `"L"` (local `-L`), `"R"` (remote `-R`), or `"D"` (dynamic `-D`). |
+| `port_forwards.spec` | string | (required) | Forwarding spec (e.g. `"8444:localhost:8444"` or `"1080"`). |
+
 ## [logs] Section
 
 Session log file management.

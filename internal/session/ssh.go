@@ -30,9 +30,10 @@ const sshControlDir = "/tmp/agent-deck-ssh"
 
 // SSHRunner executes commands on a remote host via SSH.
 type SSHRunner struct {
-	Host          string // SSH destination (e.g., "user@host")
-	AgentDeckPath string // Remote agent-deck binary path
-	Profile       string // Remote profile name
+	Host          string        // SSH destination (e.g., "user@host")
+	AgentDeckPath string        // Remote agent-deck binary path
+	Profile       string        // Remote profile name
+	PortForwards  []PortForward // SSH port forwarding rules
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -41,7 +42,27 @@ func NewSSHRunner(name string, rc RemoteConfig) *SSHRunner {
 		Host:          rc.Host,
 		AgentDeckPath: rc.GetAgentDeckPath(),
 		Profile:       rc.GetProfile(),
+		PortForwards:  rc.PortForwards,
 	}
+}
+
+// portForwardArgs returns the SSH flags for all configured port forwards.
+func (r *SSHRunner) portForwardArgs() []string {
+	if len(r.PortForwards) == 0 {
+		return nil
+	}
+	var args []string
+	for _, pf := range r.PortForwards {
+		switch pf.Direction {
+		case "L":
+			args = append(args, "-L", pf.Spec)
+		case "R":
+			args = append(args, "-R", pf.Spec)
+		case "D":
+			args = append(args, "-D", pf.Spec)
+		}
+	}
+	return args
 }
 
 // Run executes an agent-deck command on the remote host and returns stdout.
@@ -63,9 +84,9 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
 	}
+	sshArgs = append(sshArgs, r.portForwardArgs()...)
+	sshArgs = append(sshArgs, r.Host, remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	var stdout, stderr bytes.Buffer
@@ -94,9 +115,9 @@ func (r *SSHRunner) Attach(sessionID string) error {
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
 		"-o", "ControlPersist=600",
-		r.Host,
-		remoteCmd,
 	}
+	sshArgs = append(sshArgs, r.portForwardArgs()...)
+	sshArgs = append(sshArgs, r.Host, remoteCmd)
 
 	cmd := exec.Command("ssh", sshArgs...)
 
@@ -424,15 +445,16 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte) error {
 
 // sshBaseArgs returns common SSH args for running a raw command on the remote.
 func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
-	return []string{
+	args := []string{
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
 	}
+	args = append(args, r.portForwardArgs()...)
+	args = append(args, r.Host, remoteCmd)
+	return args
 }
 
 // CreateSession creates and starts a new session on the remote, returning its ID.

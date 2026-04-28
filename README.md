@@ -585,6 +585,14 @@ agent-deck remote attach dev my-session
 # Keep remote binaries up to date
 agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
+
+# Port forwarding — access remote services locally
+agent-deck remote add dev user@dev-box --forward L:8444:localhost:8444
+
+# Manage port forwards on an existing remote
+agent-deck remote forward add dev L:3000:localhost:3000
+agent-deck remote forward list dev
+agent-deck remote forward remove dev L:8444:localhost:8444
 ```
 
 Remote configuration is stored under `[remotes]` in `~/.agent-deck/config.toml`. All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.

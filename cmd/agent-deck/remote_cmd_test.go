@@ -31,6 +31,40 @@ func TestIsValidRemoteName(t *testing.T) {
 	}
 }
 
+func TestPortForwardFlags_Set(t *testing.T) {
+	t.Parallel()
+	var flags portForwardFlags
+	if err := flags.Set("L:8444:localhost:8444"); err != nil {
+		t.Fatalf("Set() error: %v", err)
+	}
+	if err := flags.Set("R:3000:localhost:3000"); err != nil {
+		t.Fatalf("Set() error: %v", err)
+	}
+	if len(flags) != 2 {
+		t.Fatalf("expected 2 flags, got %d", len(flags))
+	}
+	if flags[0] != "L:8444:localhost:8444" {
+		t.Errorf("flags[0] = %q, want %q", flags[0], "L:8444:localhost:8444")
+	}
+	if flags[1] != "R:3000:localhost:3000" {
+		t.Errorf("flags[1] = %q, want %q", flags[1], "R:3000:localhost:3000")
+	}
+}
+
+func TestPortForwardFlags_String(t *testing.T) {
+	t.Parallel()
+	flags := portForwardFlags{"L:8080:localhost:8080", "D:1080"}
+	got := flags.String()
+	if got != "L:8080:localhost:8080,D:1080" {
+		t.Errorf("String() = %q, want %q", got, "L:8080:localhost:8080,D:1080")
+	}
+
+	var empty portForwardFlags
+	if s := empty.String(); s != "" {
+		t.Errorf("empty String() = %q, want %q", s, "")
+	}
+}
+
 func TestShouldProceedWithRemoteUpdate(t *testing.T) {
 	t.Parallel()
 
