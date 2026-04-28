@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/samp"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -742,6 +743,25 @@ func main() {
 	session.StartMaintenanceWorker(maintenanceCtx, func(result session.MaintenanceResult) {
 		p.Send(ui.MaintenanceCompleteMsg{Result: result})
 	})
+
+	// SAMP unread badge poller: surfaces unread message counts on session
+	// rows. Read-only against $AGENT_MESSAGE_DIR — never writes the
+	// agent's .seen-<alias> watermark. No-ops cleanly when the SAMP
+	// directory is absent.
+	if sampDir, err := samp.DefaultDir(); err == nil {
+		sampPoller := &samp.Poller{
+			Dir: sampDir,
+			Sessions: func() []samp.SessionAlias {
+				return homeModel.SAMPSessionAliases()
+			},
+			OnUpdate: func(counts map[string]int) {
+				p.Send(ui.SAMPUnreadMsg{Counts: counts})
+			},
+		}
+		sampPoller.Start()
+		defer sampPoller.Stop()
+		homeModel.SetSAMPPoller(sampPoller)
+	}
 
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)

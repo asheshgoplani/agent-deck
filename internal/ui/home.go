@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/samp"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
@@ -371,6 +372,12 @@ type Home struct {
 	// Snapshot of status/tool used by render path to avoid per-row lock contention.
 	sessionRenderSnapshot atomic.Value // map[string]sessionRenderState
 
+	// SAMP unread badge counts per session. Populated by an external
+	// samp.Poller via SetSAMPUnread; render path reads atomically.
+	// Sessions with zero unread are absent from the map.
+	sampUnread atomic.Value // map[string]int — sessionID → unread count
+	sampPoller *samp.Poller // optional; lifecycle owned by main
+
 	// Jump mode (vimium-style hint navigation)
 	jumpMode   bool   // True when jump mode is active
 	jumpBuffer string // Characters typed so far in jump mode
@@ -605,6 +612,13 @@ type analyticsFetchedMsg struct {
 // MaintenanceCompleteMsg is the exported type for sending from main.go via p.Send()
 type MaintenanceCompleteMsg struct {
 	Result session.MaintenanceResult
+}
+
+// SAMPUnreadMsg carries SAMP unread counts from a samp.Poller goroutine
+// into the Bubble Tea Update loop. Counts is sessionID → unread count;
+// sessions absent from the map (or with zero) render no badge.
+type SAMPUnreadMsg struct {
+	Counts map[string]int
 }
 
 // maintenanceCompleteMsg is the internal message handled in Update()
@@ -2614,6 +2628,61 @@ func (h *Home) getSessionRenderState(inst *session.Instance) sessionRenderState 
 	}
 }
 
+// SetSAMPUnread atomically replaces the per-session SAMP unread counts.
+// Sessions absent from the map (or with zero count) render no badge.
+// Called from a samp.Poller goroutine — render path reads via Load.
+func (h *Home) SetSAMPUnread(counts map[string]int) {
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	h.sampUnread.Store(counts)
+}
+
+// getSAMPUnread returns the unread count for sessionID. Returns 0 when
+// no map has been published yet or the session has no unread SAMP messages.
+func (h *Home) getSAMPUnread(sessionID string) int {
+	v := h.sampUnread.Load()
+	if v == nil {
+		return 0
+	}
+	m, ok := v.(map[string]int)
+	if !ok {
+		return 0
+	}
+	return m[sessionID]
+}
+
+// SetSAMPPoller hands the Home a reference to the active poller so it
+// can be stopped during shutdown. May be nil if SAMP integration is
+// disabled.
+func (h *Home) SetSAMPPoller(p *samp.Poller) {
+	h.sampPoller = p
+}
+
+// SAMPSessionAliases enumerates (sessionID, alias) pairs for every
+// active session under this Home, mirroring the SAMP reference
+// implementation's me() resolution so badge counts line up with what
+// the agent itself sends as.
+//
+// Sessions whose working directory yields no usable alias are skipped.
+// Read-locks instances slice for thread safety.
+func (h *Home) SAMPSessionAliases() []samp.SessionAlias {
+	h.instancesMu.RLock()
+	defer h.instancesMu.RUnlock()
+	out := make([]samp.SessionAlias, 0, len(h.instances))
+	for _, inst := range h.instances {
+		if inst == nil {
+			continue
+		}
+		alias := samp.ResolveAlias(inst.EffectiveWorkingDir())
+		if alias == "" {
+			continue
+		}
+		out = append(out, samp.SessionAlias{SessionID: inst.ID, Alias: alias})
+	}
+	return out
+}
+
 // markNavigationActivity records a short "hot" window where background workers
 // should avoid heavy refresh work to keep key navigation responsive.
 func (h *Home) markNavigationActivity() {
@@ -4035,6 +4104,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, func() tea.Msg {
 			return maintenanceCompleteMsg{result: msg.Result}
 		}
+
+	case SAMPUnreadMsg:
+		h.SetSAMPUnread(msg.Counts)
+		return h, nil
 
 	case maintenanceCompleteMsg:
 		r := msg.result
@@ -11360,6 +11433,25 @@ func (h *Home) renderSessionItem(
 		multiRepoBadge = mrStyle.Render(fmt.Sprintf(" [multi-repo: %d]", pathCount))
 	}
 
+	// SAMP unread badge — surfaces inbox count from the union of
+	// per-sender log-*.jsonl files filtered to messages addressed to
+	// this session's alias. Read-only against $DIR; agent itself owns
+	// the watermark via /message-inbox.
+	sampBadge := ""
+	if cnt := h.getSAMPUnread(inst.ID); cnt > 0 {
+		mbStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+		if selected {
+			mbStyle = SessionStatusSelStyle
+		}
+		display := cnt
+		suffix := ""
+		if cnt > 99 {
+			display = 99
+			suffix = "+"
+		}
+		sampBadge = mbStyle.Render(fmt.Sprintf(" (%d%s)", display, suffix))
+	}
+
 	// SSH badge for remote sessions.
 	sshBadge := ""
 	if inst.IsSSH() {
@@ -11390,7 +11482,7 @@ func (h *Home) renderSessionItem(
 
 	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s",
+		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -11398,6 +11490,7 @@ func (h *Home) renderSessionItem(
 		status,
 		title,
 		tool,
+		sampBadge,
 		yoloBadge,
 		worktreeBadge,
 		sandboxBadge,
