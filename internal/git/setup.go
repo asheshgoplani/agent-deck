@@ -24,6 +24,14 @@ func FindWorktreeSetupScript(repoDir string) string {
 // and AGENT_DECK_WORKTREE_PATH environment variables set. Working directory
 // is set to worktreePath. Output is streamed to the provided writers.
 //
+// Dispatch (#773):
+//   - If scriptPath has the user-executable bit set, the script is invoked
+//     directly so the kernel honors its shebang line (e.g. #!/usr/bin/env bash,
+//     #!/usr/bin/env python3). This lets users write the setup script in any
+//     language they like.
+//   - Otherwise (legacy 0644 setups predating #773), fall back to `sh -e
+//     <path>` so existing repos keep working without a chmod.
+//
 // Timeout semantics (post-#727 follow-up):
 //   - timeout > 0  → bounded by context.WithTimeout
 //   - timeout <= 0 → unlimited (context.Background, no deadline)
@@ -40,7 +48,7 @@ func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, st
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-e", scriptPath)
+	cmd := buildSetupCmd(ctx, scriptPath)
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(),
 		"AGENT_DECK_REPO_ROOT="+repoDir,
@@ -59,6 +67,16 @@ func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, st
 		return fmt.Errorf("worktree setup script failed: %w", err)
 	}
 	return nil
+}
+
+// buildSetupCmd picks how to invoke the setup script (#773). Executable
+// scripts run directly so the kernel honors their shebang line; legacy
+// non-executable scripts run via `sh -e <path>` for backwards compatibility.
+func buildSetupCmd(ctx context.Context, scriptPath string) *exec.Cmd {
+	if info, err := os.Stat(scriptPath); err == nil && info.Mode()&0o111 != 0 {
+		return exec.CommandContext(ctx, scriptPath)
+	}
+	return exec.CommandContext(ctx, "sh", "-e", scriptPath)
 }
 
 // CreateWorktreeWithSetup creates a worktree and runs the setup script if present.
