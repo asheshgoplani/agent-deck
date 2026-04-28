@@ -590,6 +590,17 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		return baseCommand
 	}
 
+	// Default empty baseCommand to "claude" so the Claude-build branch below
+	// runs. An Instance row with tool=claude and an empty Command field
+	// (e.g. a session whose tool_data lost its ClaudeSessionID and was
+	// never assigned an explicit Command) otherwise falls all the way
+	// through to the custom-command branch and returns just the env
+	// prefix — pane runs `export ...;` and exits, status loops to error.
+	// See feature/sessions-dispear-on-restart, Smithy repro 2026-04-27.
+	if baseCommand == "" {
+		baseCommand = "claude"
+	}
+
 	// Get the configured Claude command (e.g., "claude", "cdw", "cdp")
 	// If a custom command is set, we skip CLAUDE_CONFIG_DIR prefix since the alias handles it
 	claudeCmd := GetClaudeCommand()
