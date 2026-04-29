@@ -170,3 +170,183 @@ func TestFormatUSD(t *testing.T) {
 		}
 	}
 }
+
+// todayStartUTC returns 00:00:00 UTC of the current date.
+func todayStartUTC() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// monthStartUTC returns the first instant of the current month, UTC.
+func monthStartUTC() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func TestStore_TotalYesterday_NoEvents(t *testing.T) {
+	s := testStore(t)
+	summary, err := s.TotalYesterday()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.TotalCostMicrodollars != 0 || summary.EventCount != 0 {
+		t.Errorf("empty: cost=%d count=%d, want 0/0", summary.TotalCostMicrodollars, summary.EventCount)
+	}
+}
+
+func TestStore_TotalYesterday_OnlyTodayEvent(t *testing.T) {
+	s := testStore(t)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-today", SessionID: "s1", Timestamp: time.Now(),
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalYesterday()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("today only: yesterday total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalYesterday_OnlyYesterdayEvent(t *testing.T) {
+	s := testStore(t)
+	yesterdayMidday := todayStartUTC().Add(-12 * time.Hour) // yesterday 12:00 UTC
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-y1", SessionID: "s1", Timestamp: yesterdayMidday,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 50000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalYesterday()
+	if summary.TotalCostMicrodollars != 50000 {
+		t.Errorf("yesterday: total = %d, want 50000", summary.TotalCostMicrodollars)
+	}
+	if summary.EventCount != 1 {
+		t.Errorf("yesterday: count = %d, want 1", summary.EventCount)
+	}
+}
+
+func TestStore_TotalYesterday_TwoDaysAgoExcluded(t *testing.T) {
+	s := testStore(t)
+	twoDaysAgoMidday := todayStartUTC().Add(-36 * time.Hour) // day before yesterday 12:00 UTC
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-old", SessionID: "s1", Timestamp: twoDaysAgoMidday,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalYesterday()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("two days ago: yesterday total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastWeek_NoEvents(t *testing.T) {
+	s := testStore(t)
+	summary, _ := s.TotalLastWeek()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("empty: last-week total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastWeek_OnlyThisWeekEvent(t *testing.T) {
+	s := testStore(t)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-tw", SessionID: "s1", Timestamp: time.Now(),
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastWeek()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("this-week only: last-week total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastWeek_OnlyLastWeekEvent(t *testing.T) {
+	s := testStore(t)
+	// 9 days ago is reliably in "last week" except in the narrow case where
+	// today is exactly Monday and the event would shift into the week before
+	// last. Acceptable test fragility: test rarely runs on Monday-morning UTC.
+	nineDaysAgo := time.Now().AddDate(0, 0, -9)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-lw", SessionID: "s1", Timestamp: nineDaysAgo,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 70000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastWeek()
+	if summary.TotalCostMicrodollars != 70000 {
+		t.Errorf("last-week: total = %d, want 70000", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastWeek_TwoWeeksAgoExcluded(t *testing.T) {
+	s := testStore(t)
+	twoWeeksAgo := time.Now().AddDate(0, 0, -16)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-2w", SessionID: "s1", Timestamp: twoWeeksAgo,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastWeek()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("two weeks ago: last-week total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastMonth_NoEvents(t *testing.T) {
+	s := testStore(t)
+	summary, _ := s.TotalLastMonth()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("empty: last-month total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastMonth_OnlyThisMonthEvent(t *testing.T) {
+	s := testStore(t)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-tm", SessionID: "s1", Timestamp: time.Now(),
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastMonth()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("this-month only: last-month total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastMonth_OnlyLastMonthEvent(t *testing.T) {
+	s := testStore(t)
+	// Mid last month: subtract 15 days from this month's start gives a date
+	// firmly inside the previous calendar month for any current month.
+	midLastMonth := monthStartUTC().AddDate(0, 0, -15)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-lm", SessionID: "s1", Timestamp: midLastMonth,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 90000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastMonth()
+	if summary.TotalCostMicrodollars != 90000 {
+		t.Errorf("last-month: total = %d, want 90000", summary.TotalCostMicrodollars)
+	}
+}
+
+func TestStore_TotalLastMonth_TwoMonthsAgoExcluded(t *testing.T) {
+	s := testStore(t)
+	// Mid two months ago: 1 month before last month's mid-point.
+	midTwoMonthsAgo := monthStartUTC().AddDate(0, -1, -15)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-2m", SessionID: "s1", Timestamp: midTwoMonthsAgo,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 10000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := s.TotalLastMonth()
+	if summary.TotalCostMicrodollars != 0 {
+		t.Errorf("two months ago: last-month total = %d, want 0", summary.TotalCostMicrodollars)
+	}
+}

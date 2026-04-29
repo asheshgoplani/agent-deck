@@ -68,6 +68,26 @@ func (s *Store) TotalThisMonth() (CostSummary, error) {
 	return s.querySum(`WHERE timestamp >= date('now', 'start of month')`)
 }
 
+// TotalYesterday returns the prior day's total costs (00:00:00 UTC of
+// yesterday inclusive to 00:00:00 UTC of today exclusive).
+func (s *Store) TotalYesterday() (CostSummary, error) {
+	return s.querySum(`WHERE timestamp >= date('now', 'start of day', '-1 day')
+		AND timestamp < date('now', 'start of day')`)
+}
+
+// TotalLastWeek returns the prior ISO-week's total costs (Monday start),
+// mirroring the boundary semantics of TotalThisWeek.
+func (s *Store) TotalLastWeek() (CostSummary, error) {
+	return s.querySum(`WHERE timestamp >= date('now', 'weekday 1', '-14 days')
+		AND timestamp < date('now', 'weekday 1', '-7 days')`)
+}
+
+// TotalLastMonth returns the prior calendar month's total costs.
+func (s *Store) TotalLastMonth() (CostSummary, error) {
+	return s.querySum(`WHERE timestamp >= date('now', 'start of month', '-1 month')
+		AND timestamp < date('now', 'start of month')`)
+}
+
 // TopSessionsByCost returns the top N sessions by total cost.
 // Joins with instances table to get session titles and groups.
 func (s *Store) TopSessionsByCost(limit int) ([]SessionCost, error) {
