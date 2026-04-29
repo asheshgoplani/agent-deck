@@ -438,14 +438,21 @@ type Home struct {
 	remotesFetchActive bool      // Prevents overlapping fetches
 
 	// Cost tracking
-	costStore         *costs.Store
-	costPricer        *costs.Pricer
-	costBudget        *costs.BudgetChecker
-	costToday         atomic.Int64 // microdollars
-	costWeek          atomic.Int64 // microdollars
-	costRefreshTime   time.Time
-	showCostDashboard bool
-	costDashboard     costDashboard
+	costStore            *costs.Store
+	costPricer           *costs.Pricer
+	costBudget           *costs.BudgetChecker
+	costToday            atomic.Int64 // microdollars
+	costYesterday        atomic.Int64 // microdollars
+	costWeek             atomic.Int64 // microdollars
+	costLastWeek         atomic.Int64 // microdollars
+	costThisMonth        atomic.Int64 // microdollars
+	costLastMonth        atomic.Int64 // microdollars
+	costProjected        atomic.Int64 // microdollars
+	costRefreshTime      time.Time
+	costLineTemplate     string // resolved at construction; see session.ResolveCostLineTemplate
+	costLineHideWhenZero bool
+	showCostDashboard    bool
+	costDashboard        costDashboard
 
 	// System stats collector (CPU, RAM, disk, etc.)
 	sysStatsCollector *sysinfo.Collector
@@ -783,14 +790,18 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 
 	h.reloadHotkeysFromConfig()
 
-	// Cache display settings (config.toml [display])
+	// Cache display settings (config.toml [display]) and resolve the
+	// status-bar cost-line template once. The template + hide flag are
+	// reused on every render; see (*Home).renderStats.
 	if cfg, _ := session.LoadUserConfig(); cfg != nil {
 		h.fullRepaint = cfg.Display.GetFullRepaint()
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.sysStatsConfig = cfg.SystemStats
+		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
+		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 	}
 
 	// Initialize system stats collector if enabled
@@ -1122,9 +1133,19 @@ func (h *Home) refreshCostTotals() {
 	}
 	h.costRefreshTime = time.Now()
 	today, _ := h.costStore.TotalToday()
+	yesterday, _ := h.costStore.TotalYesterday()
 	week, _ := h.costStore.TotalThisWeek()
+	lastWeek, _ := h.costStore.TotalLastWeek()
+	thisMonth, _ := h.costStore.TotalThisMonth()
+	lastMonth, _ := h.costStore.TotalLastMonth()
+	projected, _ := h.costStore.ProjectedMonthly()
 	h.costToday.Store(today.TotalCostMicrodollars)
+	h.costYesterday.Store(yesterday.TotalCostMicrodollars)
 	h.costWeek.Store(week.TotalCostMicrodollars)
+	h.costLastWeek.Store(lastWeek.TotalCostMicrodollars)
+	h.costThisMonth.Store(thisMonth.TotalCostMicrodollars)
+	h.costLastMonth.Store(lastMonth.TotalCostMicrodollars)
+	h.costProjected.Store(projected)
 }
 
 func (h *Home) publishWebMenuSnapshot() {
@@ -9383,15 +9404,23 @@ func (h *Home) View() string {
 		stats = lipgloss.NewStyle().Foreground(ColorText).Render("no sessions")
 	}
 
-	// Cost tracking segment
-	todayMicro := h.costToday.Load()
-	weekMicro := h.costWeek.Load()
-	if todayMicro > 0 || weekMicro > 0 {
-		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
-		costText := costStyle.Render(costs.FormatUSD(todayMicro) + " today")
-		stats += statsSep + costText
+	// Cost tracking segment, rendered through the resolved template.
+	// See session.ResolveCostLineTemplate for the [costs] / per-profile
+	// override chain. RenderCostLine returns "" when hide_when_zero is on
+	// and every recognized variable rendered to $0.00.
+	costVars := map[string]int64{
+		"cost_today":      h.costToday.Load(),
+		"cost_yesterday":  h.costYesterday.Load(),
+		"cost_this_week":  h.costWeek.Load(),
+		"cost_last_week":  h.costLastWeek.Load(),
+		"cost_this_month": h.costThisMonth.Load(),
+		"cost_last_month": h.costLastMonth.Load(),
+		"cost_projected":  h.costProjected.Load(),
 	}
-	_ = weekMicro // reserved for future weekly display
+	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
+		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)
+		stats += statsSep + costStyle.Render(rendered)
+	}
 
 	// System stats segment (CPU, RAM, etc.)
 	if h.sysStatsCollector != nil {
