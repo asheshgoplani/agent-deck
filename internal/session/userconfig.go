@@ -667,6 +667,13 @@ type ClaudeSettings struct {
 	// for instant, deterministic status updates instead of polling tmux content.
 	// Default: true (nil = use default true, set false to disable)
 	HooksEnabled *bool `toml:"hooks_enabled"`
+
+	// AutoResumeSummary auto-presses Enter on Claude's "Resume from summary"
+	// picker that appears after `claude --resume` on long-running sessions
+	// (>~250k tokens). Critical for unattended conductors which would
+	// otherwise sit frozen on the picker forever (closes #67).
+	// Default: true (nil = use default true, set false to disable).
+	AutoResumeSummary *bool `toml:"auto_resume_summary"`
 }
 
 // GetProfileClaudeConfigDir returns the profile-specific Claude config directory, if configured.
@@ -751,6 +758,18 @@ func (c *ClaudeSettings) GetHooksEnabled() bool {
 		return true
 	}
 	return *c.HooksEnabled
+}
+
+// GetAutoResumeSummary returns whether the "Resume from summary" picker is
+// auto-confirmed on session restart, defaulting to true. Conductors and any
+// other unattended session runner depend on this — without it, a single
+// claude --resume on a >250k-token session leaves the session frozen on the
+// picker screen forever.
+func (c *ClaudeSettings) GetAutoResumeSummary() bool {
+	if c.AutoResumeSummary == nil {
+		return true
+	}
+	return *c.AutoResumeSummary
 }
 
 // GeminiSettings defines Gemini CLI configuration

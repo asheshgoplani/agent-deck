@@ -3419,10 +3419,31 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		i.WaitForClaudeSession(maxWait)
+		i.autoConfirmClaudeResumePicker()
 	case i.Tool == "gemini":
 		i.UpdateGeminiSession(nil)
 	}
 	// OpenCode/Codex: async detection already started by Start(), skip here
+}
+
+// autoConfirmClaudeResumePicker handles the "Resume from summary" picker that
+// claude --resume shows on long-running sessions (>~250k tokens). Without
+// this, an unattended conductor sits frozen on the picker indefinitely.
+// See issue #67. Disable via [claude].auto_resume_summary = false.
+func (i *Instance) autoConfirmClaudeResumePicker() {
+	if i.tmuxSession == nil {
+		return
+	}
+	cfg, _ := LoadUserConfig()
+	if cfg != nil && !cfg.Claude.GetAutoResumeSummary() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, _ = autoResolveClaudeResumePicker(ctx, i.tmuxSession, i.tmuxSession, autoResumeOptions{
+		PollInterval: 250 * time.Millisecond,
+		Timeout:      3 * time.Second,
+	})
 }
 
 // Preview returns the last 3 lines of terminal output
