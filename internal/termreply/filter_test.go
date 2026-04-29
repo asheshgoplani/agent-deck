@@ -192,3 +192,174 @@ func TestRegression744_FilterPassesShiftLetterCSIUWhileArmed(t *testing.T) {
 		})
 	}
 }
+
+// A lone ESC keypress (and ESC-ESC for jump-to-prev-message) must reach the
+// inner agent outside the quarantine. Previously pendingEsc held ESC forever
+// waiting for a follow-up byte that never comes for keyboard ESC.
+func TestFilterFlushesLoneEscWhenNotArmed(t *testing.T) {
+	t.Run("single_esc_passes_through", func(t *testing.T) {
+		var f Filter
+		got := f.Consume([]byte{0x1b}, false, false)
+		require.Equal(t, []byte{0x1b}, got)
+		require.False(t, f.Active())
+	})
+
+	t.Run("double_esc_passes_through", func(t *testing.T) {
+		var f Filter
+		got := f.Consume([]byte{0x1b, 0x1b}, false, false)
+		require.Equal(t, []byte{0x1b, 0x1b}, got)
+		require.False(t, f.Active())
+	})
+
+	t.Run("triple_esc_passes_through", func(t *testing.T) {
+		var f Filter
+		got := f.Consume([]byte{0x1b, 0x1b, 0x1b}, false, false)
+		require.Equal(t, []byte{0x1b, 0x1b, 0x1b}, got)
+		require.False(t, f.Active())
+	})
+
+	// Without the flush, a held ESC concatenates with the next read's
+	// arrow into ESC ESC[A — interpreted as Alt/Meta+Up by most TUI
+	// parsers ("up arrow resets the dialog" symptom).
+	t.Run("lone_esc_then_arrow_in_next_chunk", func(t *testing.T) {
+		var f Filter
+		first := f.Consume([]byte{0x1b}, false, false)
+		require.Equal(t, []byte{0x1b}, first)
+		require.False(t, f.Active())
+
+		next := f.Consume([]byte("\x1b[A"), false, false)
+		require.Equal(t, []byte("\x1b[A"), next)
+		require.False(t, f.Active())
+	})
+}
+
+// Pins the quarantine carve-out: while armed, trailing ESC is still buffered
+// across chunks so DCS/OSC reply parsing keeps working.
+func TestFilterStillBuffersTrailingEscWhenArmed(t *testing.T) {
+	var f Filter
+	got := f.Consume([]byte{0x1b}, true, false)
+	require.Empty(t, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte("]11;rgb:d3d3/f5f5/f5f5\x07j"), true, false)
+	require.Equal(t, []byte("j"), got)
+	require.False(t, f.Active())
+}
+
+// Alt+letter (iTerm2 "Esc+" Option, vim Meta bindings) hits the default
+// pendingEsc branch which emits ESC+byte unchanged.
+func TestFilterPassesAltLetterThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  []byte
+	}{
+		{"alt_a", []byte{0x1b, 'a'}},
+		{"alt_z", []byte{0x1b, 'z'}},
+		{"alt_period", []byte{0x1b, '.'}},
+		{"alt_digit", []byte{0x1b, '7'}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/not_armed", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, false, false)
+			require.Equal(t, tc.seq, got)
+			require.False(t, f.Active())
+		})
+		t.Run(tc.name+"/armed", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, true, false)
+			require.Equal(t, tc.seq, got)
+			require.False(t, f.Active())
+		})
+	}
+}
+
+// F1-F4 use SS3 (ESC O P/Q/R/S); F5-F12 use CSI ~ (ESC [ 15 ~ etc.). SS3 has
+// no final-byte gating; tilde is in isKeyboardCSIFinalByte. Both pass armed.
+func TestFilterPassesFunctionKeysThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  []byte
+	}{
+		{"f1_ss3", []byte("\x1bOP")},
+		{"f2_ss3", []byte("\x1bOQ")},
+		{"f3_ss3", []byte("\x1bOR")},
+		{"f4_ss3", []byte("\x1bOS")},
+		{"f5_csi_tilde", []byte("\x1b[15~")},
+		{"f6_csi_tilde", []byte("\x1b[17~")},
+		{"f10_csi_tilde", []byte("\x1b[21~")},
+		{"f12_csi_tilde", []byte("\x1b[24~")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/not_armed", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, false, false)
+			require.Equal(t, tc.seq, got)
+			require.False(t, f.Active())
+		})
+		t.Run(tc.name+"/armed", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, true, false)
+			require.Equal(t, tc.seq, got)
+			require.False(t, f.Active())
+		})
+	}
+}
+
+// Focus-in (CSI I) and focus-out (CSI O) are non-keyboard, non-DA/DSR CSI:
+// dropped while armed, passed through unarmed. Pins both branches so a
+// future change to the gate doesn't silently swap them.
+func TestFilterFocusEventBehavior(t *testing.T) {
+	cases := []struct {
+		name string
+		seq  []byte
+	}{
+		{"focus_in", []byte("\x1b[I")},
+		{"focus_out", []byte("\x1b[O")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/not_armed_passes", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, false, false)
+			require.Equal(t, tc.seq, got)
+			require.False(t, f.Active())
+		})
+		t.Run(tc.name+"/armed_dropped", func(t *testing.T) {
+			var f Filter
+			got := f.Consume(tc.seq, true, false)
+			require.Empty(t, got)
+			require.False(t, f.Active())
+		})
+	}
+}
+
+// Known tradeoff: when armed=false and an OSC/DCS reply fragments exactly
+// between ESC and its introducer, the eager flush emits ESC and the body
+// arrives next read as literal text. Vanishingly rare on a local tty fd
+// (terminals write replies atomically); theoretically possible over SSH.
+// Pre-fix behavior buffered every keyboard ESC indefinitely — strictly
+// worse for the >99% case. A future timeout-based Flush() would close
+// this window; update this test to assert suppression then.
+func TestFilterCrossChunkSplitAfterEscWhenNotArmed_KnownLimitation(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte{'x', 0x1b}, false, false)
+	require.Equal(t, []byte{'x', 0x1b}, got)
+	require.False(t, f.Active())
+
+	got = f.Consume([]byte("]11;rgb:d3d3/f5f5/f5f5\x07after"), false, false)
+	require.Equal(t, []byte("]11;rgb:d3d3/f5f5/f5f5\x07after"), got)
+}
+
+// Symmetric: the same split while armed stays fully suppressed end-to-end.
+func TestFilterCrossChunkSplitAfterEscWhenArmed_StillSuppressed(t *testing.T) {
+	var f Filter
+
+	got := f.Consume([]byte{'x', 0x1b}, true, false)
+	require.Equal(t, []byte{'x'}, got)
+	require.True(t, f.Active())
+
+	got = f.Consume([]byte("]11;rgb:d3d3/f5f5/f5f5\x07after"), true, false)
+	require.Equal(t, []byte("after"), got)
+	require.False(t, f.Active())
+}

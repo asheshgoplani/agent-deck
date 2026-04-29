@@ -259,6 +259,18 @@ func (f *Filter) Consume(src []byte, armed bool, final bool) []byte {
 		}
 		f.pendingEsc = false
 		f.resetSequenceState()
+		return out
+	}
+
+	// Outside the post-attach quarantine, a trailing ESC is almost always a
+	// lone keyboard press: terminals write reply sequences atomically, so a
+	// chunk-split exactly between ESC and its introducer is vanishingly rare
+	// on a tty fd. Flushing eagerly preserves bare-ESC and ESC-ESC bindings
+	// that would otherwise sit forever in pendingEsc waiting for a follow-up
+	// byte that never comes. Armed = keep buffering for cross-chunk replies.
+	if f.pendingEsc && !armed {
+		out = append(out, escapeByte)
+		f.pendingEsc = false
 	}
 
 	return out
