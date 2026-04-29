@@ -430,6 +430,14 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 		toolData = json.RawMessage("{}")
 	}
 
+	// Preserve any tool_data keys not modeled by the typed schema (e.g.,
+	// manually-set clear_on_compact). Without this merge, every
+	// INSERT OR REPLACE silently drops user-managed extras.
+	var existingToolData []byte
+	if err := s.db.QueryRow("SELECT tool_data FROM instances WHERE id = ?", inst.ID).Scan(&existingToolData); err == nil {
+		toolData = MergeToolDataExtras(json.RawMessage(existingToolData), toolData)
+	}
+
 	isConductorInt := 0
 	if inst.IsConductor {
 		isConductorInt = 1
@@ -466,6 +474,43 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // It also removes any rows from the database that are not in the provided list,
 // ensuring deleted sessions don't reappear on reload.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
+	// Pre-fetch existing tool_data per instance ID so we can preserve any
+	// keys not modeled by the typed schema (e.g., manually-set
+	// clear_on_compact). Without this merge, every INSERT OR REPLACE
+	// silently drops user-managed extras. One batch SELECT instead of N
+	// individual reads.
+	//
+	// IMPORTANT: this read runs OUTSIDE the write transaction below.
+	// In SQLite WAL mode, beginning a transaction with a read and then
+	// trying to upgrade to a write fails with SQLITE_BUSY (rather than
+	// waiting on busy_timeout) when another connection is currently
+	// writing. Pre-reading on the raw DB handle avoids the upgrade path.
+	// There is a tiny race window where a concurrent writer could modify
+	// extras between this read and our commit; we accept it because
+	// extras keys are rarely-mutated user-managed flags and the worst-case
+	// outcome is one stale-overlay save, recoverable on next save.
+	existingToolData := make(map[string]json.RawMessage, len(insts))
+	if len(insts) > 0 {
+		placeholders := make([]string, len(insts))
+		args := make([]any, len(insts))
+		for i, inst := range insts {
+			placeholders[i] = "?"
+			args[i] = inst.ID
+		}
+		query := "SELECT id, tool_data FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		rows, queryErr := s.db.Query(query, args...)
+		if queryErr == nil {
+			for rows.Next() {
+				var id string
+				var td []byte
+				if scanErr := rows.Scan(&id, &td); scanErr == nil {
+					existingToolData[id] = json.RawMessage(td)
+				}
+			}
+			_ = rows.Close()
+		}
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -509,6 +554,9 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 		toolData := inst.ToolData
 		if len(toolData) == 0 {
 			toolData = json.RawMessage("{}")
+		}
+		if existing, ok := existingToolData[inst.ID]; ok {
+			toolData = MergeToolDataExtras(existing, toolData)
 		}
 		isConductorInt := 0
 		if inst.IsConductor {
