@@ -2719,6 +2719,56 @@ type ProfileCosts struct {
 	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero"`
 }
 
+// defaultCostLineTemplate is the hardcoded fallback that preserves the
+// pre-template status-bar segment exactly: render today's total and hide
+// when zero events have been recorded.
+const defaultCostLineTemplate = "{cost_today} today"
+
+// ResolveCostLineTemplate returns the active status-bar cost-line template
+// and hide-when-zero flag, applying the resolution chain:
+//
+//	profile.costs > [costs] > hardcoded "{cost_today} today" (template, default true for hide)
+//
+// Pointer semantics:
+//   - nil at any level falls through to the next level
+//   - explicit empty string for template disables the segment (returned as "")
+//   - explicit bool for hide_when_zero is honored at that level
+//
+// Safe to call with cfg == nil; returns the hardcoded default + true.
+func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, hideWhenZero bool) {
+	template = defaultCostLineTemplate
+	hideWhenZero = true
+
+	if cfg == nil {
+		return
+	}
+
+	var profileCosts *ProfileCosts
+	if cfg.Profiles != nil {
+		if p, ok := cfg.Profiles[profile]; ok {
+			profileCosts = p.Costs
+		}
+	}
+
+	// Template: profile (set) > global (set) > hardcoded
+	switch {
+	case profileCosts != nil && profileCosts.CostLineTemplate != nil:
+		template = *profileCosts.CostLineTemplate
+	case cfg.Costs.CostLineTemplate != nil:
+		template = *cfg.Costs.CostLineTemplate
+	}
+
+	// Hide flag: profile (set) > global (set) > true
+	switch {
+	case profileCosts != nil && profileCosts.CostLineHideWhenZero != nil:
+		hideWhenZero = *profileCosts.CostLineHideWhenZero
+	case cfg.Costs.CostLineHideWhenZero != nil:
+		hideWhenZero = *cfg.Costs.CostLineHideWhenZero
+	}
+
+	return
+}
+
 type BudgetSettings struct {
 	DailyLimit   float64                  `toml:"daily_limit"`
 	WeeklyLimit  float64                  `toml:"weekly_limit"`

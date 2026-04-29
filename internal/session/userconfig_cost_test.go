@@ -198,6 +198,144 @@ config_dir = "~/.claude-work"
 	}
 }
 
+func TestResolveCostLineTemplate_NilConfig(t *testing.T) {
+	tmpl, hide := ResolveCostLineTemplate(nil, "any")
+	if tmpl != "{cost_today} today" {
+		t.Errorf("nil cfg: template = %q, want hardcoded default", tmpl)
+	}
+	if !hide {
+		t.Errorf("nil cfg: hide_when_zero = %v, want true", hide)
+	}
+}
+
+func TestResolveCostLineTemplate_EmptyConfig(t *testing.T) {
+	cfg := &UserConfig{}
+	tmpl, hide := ResolveCostLineTemplate(cfg, "default")
+	if tmpl != "{cost_today} today" {
+		t.Errorf("empty cfg: template = %q, want hardcoded default", tmpl)
+	}
+	if !hide {
+		t.Errorf("empty cfg: hide_when_zero = %v, want true", hide)
+	}
+}
+
+func TestResolveCostLineTemplate_GlobalTemplate(t *testing.T) {
+	g := "{cost_yesterday} yda"
+	cfg := &UserConfig{Costs: CostsSettings{CostLineTemplate: &g}}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "default")
+	if tmpl != g {
+		t.Errorf("template = %q, want %q", tmpl, g)
+	}
+}
+
+func TestResolveCostLineTemplate_GlobalHideWhenZeroFalse(t *testing.T) {
+	f := false
+	cfg := &UserConfig{Costs: CostsSettings{CostLineHideWhenZero: &f}}
+	_, hide := ResolveCostLineTemplate(cfg, "default")
+	if hide {
+		t.Errorf("hide_when_zero = %v, want false", hide)
+	}
+}
+
+func TestResolveCostLineTemplate_ProfileOverridesGlobal(t *testing.T) {
+	g := "G"
+	p := "P"
+	cfg := &UserConfig{
+		Costs: CostsSettings{CostLineTemplate: &g},
+		Profiles: map[string]ProfileSettings{
+			"work": {Costs: &ProfileCosts{CostLineTemplate: &p}},
+		},
+	}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "work")
+	if tmpl != p {
+		t.Errorf("work profile: template = %q, want %q", tmpl, p)
+	}
+}
+
+func TestResolveCostLineTemplate_ProfileHideOverridesGlobal(t *testing.T) {
+	gTrue := true
+	pFalse := false
+	cfg := &UserConfig{
+		Costs: CostsSettings{CostLineHideWhenZero: &gTrue},
+		Profiles: map[string]ProfileSettings{
+			"work": {Costs: &ProfileCosts{CostLineHideWhenZero: &pFalse}},
+		},
+	}
+	_, hide := ResolveCostLineTemplate(cfg, "work")
+	if hide {
+		t.Errorf("work profile: hide_when_zero = %v, want false", hide)
+	}
+}
+
+func TestResolveCostLineTemplate_ProfileEmptyTemplateDisables(t *testing.T) {
+	g := "global"
+	empty := ""
+	cfg := &UserConfig{
+		Costs: CostsSettings{CostLineTemplate: &g},
+		Profiles: map[string]ProfileSettings{
+			"work": {Costs: &ProfileCosts{CostLineTemplate: &empty}},
+		},
+	}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "work")
+	if tmpl != "" {
+		t.Errorf("work profile explicit empty: template = %q, want empty (disabled)", tmpl)
+	}
+}
+
+func TestResolveCostLineTemplate_GlobalEmptyTemplateDisables(t *testing.T) {
+	empty := ""
+	cfg := &UserConfig{Costs: CostsSettings{CostLineTemplate: &empty}}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "default")
+	if tmpl != "" {
+		t.Errorf("global explicit empty: template = %q, want empty (disabled)", tmpl)
+	}
+}
+
+func TestResolveCostLineTemplate_ProfileNilCostsFallsThrough(t *testing.T) {
+	g := "global"
+	cfg := &UserConfig{
+		Costs: CostsSettings{CostLineTemplate: &g},
+		Profiles: map[string]ProfileSettings{
+			"work": {}, // Costs is nil
+		},
+	}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "work")
+	if tmpl != g {
+		t.Errorf("nil profile.Costs: template = %q, want %q (global)", tmpl, g)
+	}
+}
+
+func TestResolveCostLineTemplate_ProfileNilTemplateFallsThrough(t *testing.T) {
+	// Profile has a Costs block but only sets hide_when_zero, not template.
+	g := "global"
+	pHide := false
+	cfg := &UserConfig{
+		Costs: CostsSettings{CostLineTemplate: &g},
+		Profiles: map[string]ProfileSettings{
+			"work": {Costs: &ProfileCosts{CostLineHideWhenZero: &pHide}},
+		},
+	}
+	tmpl, hide := ResolveCostLineTemplate(cfg, "work")
+	if tmpl != g {
+		t.Errorf("template = %q, want %q (fall through to global)", tmpl, g)
+	}
+	if hide {
+		t.Errorf("hide_when_zero = %v, want false (profile)", hide)
+	}
+}
+
+func TestResolveCostLineTemplate_UnknownProfile(t *testing.T) {
+	g := "global"
+	cfg := &UserConfig{
+		Costs:    CostsSettings{CostLineTemplate: &g},
+		Profiles: map[string]ProfileSettings{},
+	}
+	tmpl, _ := ResolveCostLineTemplate(cfg, "nonexistent")
+	if tmpl != g {
+		t.Errorf("unknown profile: template = %q, want %q (global)", tmpl, g)
+	}
+}
+
 func TestUserConfig_CostLineTemplate_RoundTrip(t *testing.T) {
 	tmpl := "{cost_today} today | {cost_this_week} wk"
 	hide := true
