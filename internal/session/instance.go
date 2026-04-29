@@ -1230,16 +1230,36 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 // queryOpenCodeSession queries OpenCode CLI for sessions matching our project
 // directory. Unbound instances adopt the most recently updated session, while
 // already-bound instances keep their current ID as long as it still exists.
+//
+// Bounded wall-clock cost:
+//   - 5s context deadline for the subprocess itself.
+//   - WaitDelay=500ms so cmd.Output() returns after the context fires even if
+//     an opencode grandchild keeps stdout pipes open (Go 1.20+).
+//
+// 5s is the ceiling for cold opencode CLI on large session stores; on slower
+// machines this still usually succeeds, and on genuine hangs we log a Warn
+// and lastOpenCodeScanAt schedules the next retry 15s later.
 func (i *Instance) queryOpenCodeSession() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	// Run: opencode session list --format json
-	cmd := exec.Command("opencode", "session", "list", "--format", "json")
+	cmd := exec.CommandContext(ctx, "opencode", "session", "list", "--format", "json")
 	cmd.Dir = i.ProjectPath
+	cmd.WaitDelay = 500 * time.Millisecond
 
 	sessionLog.Debug("opencode_query_sessions", slog.String("dir", i.ProjectPath))
 
 	output, err := cmd.Output()
 	if err != nil {
-		sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		if ctx.Err() == context.DeadlineExceeded {
+			sessionLog.Warn("opencode_query_timeout",
+				slog.String("dir", i.ProjectPath),
+				slog.String("instance_id", i.ID),
+			)
+		} else {
+			sessionLog.Debug("opencode_query_failed", slog.String("error", err.Error()))
+		}
 		return ""
 	}
 
@@ -2945,9 +2965,15 @@ func (i *Instance) UpdateStatus() error {
 				i.UpdateCodexSession(exclude)
 			}
 
-			// Update OpenCode session tracking (non-blocking, best-effort)
+			// Update OpenCode session tracking (non-blocking, best-effort).
+			// The opencode CLI subprocess can take seconds and must not run
+			// under i.mu or it starves render-path RLocks and freezes the TUI.
+			// updateOpenCodeSession manages its own locking internally — we
+			// drop i.mu here and reacquire after it returns.
 			if i.Tool == "opencode" {
+				i.mu.Unlock()
 				i.UpdateOpenCodeSession()
+				i.mu.Lock()
 			}
 		}
 	}
@@ -3223,19 +3249,30 @@ func (i *Instance) UpdateOpenCodeSession() {
 	i.updateOpenCodeSession(false)
 }
 
+// updateOpenCodeSession self-manages i.mu: state reads/writes happen under the
+// lock but the queryOpenCodeSession subprocess runs outside it, so a slow
+// opencode CLI cannot starve render-path RLocks on this instance.
+//
+// Contract: callers MUST NOT hold i.mu when invoking this function.
 func (i *Instance) updateOpenCodeSession(force bool) {
 	if i.Tool != "opencode" {
 		return
 	}
 
+	i.mu.Lock()
 	now := time.Now()
 	if !force && !i.lastOpenCodeScanAt.IsZero() && now.Sub(i.lastOpenCodeScanAt) < opencodeRotationScanInterval {
+		i.mu.Unlock()
 		return
 	}
 	i.lastOpenCodeScanAt = now
+	i.mu.Unlock()
 
 	candidate := i.queryOpenCodeSession()
+
+	i.mu.Lock()
 	i.applyOpenCodeSessionCandidate(candidate)
+	i.mu.Unlock()
 }
 
 func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
