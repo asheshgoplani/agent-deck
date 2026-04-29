@@ -220,21 +220,32 @@ func CheckClaudeHooksInstalled(configDir string) bool {
 	return hooksAlreadyInstalled(existingHooks)
 }
 
-// hooksAlreadyInstalled checks if all required agent-deck hooks are present.
+// hooksAlreadyInstalled checks if all required agent-deck hooks are present
+// AND their config (Matcher and Async flag) matches the current
+// hookEventConfigs table. Returns false on any drift so a subsequent
+// InjectClaudeHooks call will merge the current config in.
+//
+// Pre-2026-04-29 this only checked presence, which let stale Async flags
+// from older binary versions linger across upgrades. The PermissionRequest
+// async-true to async-false flip in the /remote-control parity fix
+// surfaced the bug: settings.json kept the old flag because hooks install
+// no-opped on "already installed."
 func hooksAlreadyInstalled(hooks map[string]json.RawMessage) bool {
 	for _, cfg := range hookEventConfigs {
 		raw, ok := hooks[cfg.Event]
 		if !ok {
 			return false
 		}
-		if !eventHasAgentDeckHook(raw) {
+		if !eventHasAgentDeckHookMatchingConfig(raw, cfg.Matcher, cfg.Async) {
 			return false
 		}
 	}
 	return true
 }
 
-// eventHasAgentDeckHook checks if a hook event's matcher array contains our hook.
+// eventHasAgentDeckHook checks if a hook event's matcher array contains our
+// hook command anywhere, regardless of Matcher or Async config. Kept for
+// callers that only need a presence check.
 func eventHasAgentDeckHook(raw json.RawMessage) bool {
 	var matchers []claudeHookMatcher
 	if err := json.Unmarshal(raw, &matchers); err != nil {
@@ -244,6 +255,27 @@ func eventHasAgentDeckHook(raw json.RawMessage) bool {
 		for _, h := range m.Hooks {
 			if strings.Contains(h.Command, agentDeckHookCommand) {
 				return true
+			}
+		}
+	}
+	return false
+}
+
+// eventHasAgentDeckHookMatchingConfig checks both presence AND config match:
+// the agent-deck hook entry must live under a matcher block whose Matcher
+// field equals the expected value, and its Async flag must match.
+func eventHasAgentDeckHookMatchingConfig(raw json.RawMessage, expectedMatcher string, expectedAsync bool) bool {
+	var matchers []claudeHookMatcher
+	if err := json.Unmarshal(raw, &matchers); err != nil {
+		return false
+	}
+	for _, m := range matchers {
+		if m.Matcher != expectedMatcher {
+			continue
+		}
+		for _, h := range m.Hooks {
+			if strings.Contains(h.Command, agentDeckHookCommand) {
+				return h.Async == expectedAsync
 			}
 		}
 	}
@@ -264,10 +296,14 @@ func mergeHookEvent(existing json.RawMessage, matcher string, async bool) json.R
 	// Check if we already have a matcher entry with our hook
 	for i, m := range matchers {
 		if m.Matcher == matcher {
-			// Check if our hook is already in this matcher
-			for _, h := range m.Hooks {
+			// Update our existing entry to the current config (Async/Type),
+			// or append if it is missing. In-place update covers the
+			// binary-upgrade case where the hookEventConfigs table changes
+			// (e.g., flipping Async from true to false) and the persisted
+			// settings.json must drift to follow.
+			for j, h := range m.Hooks {
 				if strings.Contains(h.Command, agentDeckHookCommand) {
-					// Already present
+					matchers[i].Hooks[j] = agentDeckHook(async)
 					result, _ := json.Marshal(matchers)
 					return result
 				}

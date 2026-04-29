@@ -381,3 +381,100 @@ func TestNotificationMatcher(t *testing.T) {
 		t.Errorf("Notification matcher = %q, want %q", matchers[0].Matcher, "permission_prompt|elicitation_dialog")
 	}
 }
+
+// TestHooksAlreadyInstalled_DetectsAsyncDrift guards the binary-upgrade
+// case: settings.json may have an agent-deck hook with stale Async config
+// from a previous version. hooksAlreadyInstalled must return false so
+// InjectClaudeHooks rewrites the entry to match the current config.
+func TestHooksAlreadyInstalled_DetectsAsyncDrift(t *testing.T) {
+	// Build a hooks map that has every required event but with PermissionRequest
+	// stuck at Async=true (the pre-2026-04-29 config). The current code wants
+	// Async=false. This must register as drift.
+	staleHooks := map[string]json.RawMessage{}
+	for _, cfg := range hookEventConfigs {
+		stale := claudeHookMatcher{
+			Matcher: cfg.Matcher,
+			Hooks:   []claudeHookEntry{{Type: "command", Command: agentDeckHookCommand, Async: true}},
+		}
+		raw, _ := json.Marshal([]claudeHookMatcher{stale})
+		staleHooks[cfg.Event] = raw
+	}
+
+	if hooksAlreadyInstalled(staleHooks) {
+		t.Errorf("hooksAlreadyInstalled returned true on stale Async; expected false to trigger reinstall")
+	}
+}
+
+// TestInjectClaudeHooks_UpdatesStaleAsync verifies the integration: a
+// settings.json that already contains the agent-deck PermissionRequest hook
+// but with the old Async=true gets rewritten to Async=false on the next
+// InjectClaudeHooks call.
+func TestInjectClaudeHooks_UpdatesStaleAsync(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Hand-craft a settings.json mimicking the post-mitigation pre-fix
+	// state: PermissionRequest present with Async=true (stale).
+	stalePermissionRequest := []claudeHookMatcher{
+		{Hooks: []claudeHookEntry{{Type: "command", Command: agentDeckHookCommand, Async: true}}},
+	}
+	staleRaw, _ := json.Marshal(stalePermissionRequest)
+	hooks := map[string]json.RawMessage{"PermissionRequest": staleRaw}
+
+	// Add the rest of the events with whatever Async flags hookEventConfigs
+	// expects so only PermissionRequest is the drift point.
+	for _, cfg := range hookEventConfigs {
+		if cfg.Event == "PermissionRequest" {
+			continue
+		}
+		entry := claudeHookMatcher{
+			Matcher: cfg.Matcher,
+			Hooks:   []claudeHookEntry{{Type: "command", Command: agentDeckHookCommand, Async: cfg.Async}},
+		}
+		raw, _ := json.Marshal([]claudeHookMatcher{entry})
+		hooks[cfg.Event] = raw
+	}
+
+	settings := map[string]json.RawMessage{}
+	hooksRaw, _ := json.Marshal(hooks)
+	settings["hooks"] = hooksRaw
+	data, _ := json.MarshalIndent(settings, "", "  ")
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), data, 0644); err != nil {
+		t.Fatalf("Failed to seed settings.json: %v", err)
+	}
+
+	// Run InjectClaudeHooks; it should detect drift and rewrite.
+	installed, err := InjectClaudeHooks(tmpDir)
+	if err != nil {
+		t.Fatalf("InjectClaudeHooks failed: %v", err)
+	}
+	if !installed {
+		t.Errorf("InjectClaudeHooks returned installed=false; expected true because stale Async should trigger reinstall")
+	}
+
+	// Verify the post-write Async flag is now false.
+	postData, err := os.ReadFile(filepath.Join(tmpDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("Failed to read settings.json after reinstall: %v", err)
+	}
+	var postSettings map[string]json.RawMessage
+	if err := json.Unmarshal(postData, &postSettings); err != nil {
+		t.Fatalf("Failed to parse settings: %v", err)
+	}
+	var postHooks map[string]json.RawMessage
+	if err := json.Unmarshal(postSettings["hooks"], &postHooks); err != nil {
+		t.Fatalf("Failed to parse hooks: %v", err)
+	}
+	var postPR []claudeHookMatcher
+	if err := json.Unmarshal(postHooks["PermissionRequest"], &postPR); err != nil {
+		t.Fatalf("Failed to parse PermissionRequest: %v", err)
+	}
+	if len(postPR) == 0 || len(postPR[0].Hooks) == 0 {
+		t.Fatal("PermissionRequest has no hooks after reinstall")
+	}
+	if postPR[0].Hooks[0].Async {
+		t.Errorf("Post-reinstall PermissionRequest still has Async=true; expected false")
+	}
+	if postPR[0].Hooks[0].Command != agentDeckHookCommand {
+		t.Errorf("Post-reinstall command = %q, want %q", postPR[0].Hooks[0].Command, agentDeckHookCommand)
+	}
+}
