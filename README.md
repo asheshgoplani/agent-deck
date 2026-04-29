@@ -522,6 +522,31 @@ weekly_limit = 200.00
 "custom-model" = { input_per_mtok = 1.0, output_per_mtok = 5.0 }
 ```
 
+#### Customizing the status-line cost segment
+
+The home status bar shows a brief cost line drawn from the seven windows below. The default renders `$X.XX today`; configure `cost_line_template` to surface different windows or a per-profile layout. Variables substitute as `$X.XX`; unknown placeholders pass through literally so typos surface in the output.
+
+| Variable | Window |
+|---|---|
+| `{cost_today}` | Today (00:00 local) |
+| `{cost_yesterday}` | Prior day |
+| `{cost_this_week}` | Monday-start of this week |
+| `{cost_last_week}` | Prior Monday to Sunday |
+| `{cost_this_month}` | First of this month |
+| `{cost_last_month}` | Prior calendar month |
+| `{cost_projected}` | Rolling 7-day average times 30 |
+
+```toml
+[costs]
+cost_line_template = "{cost_today} today | {cost_this_week} wk"
+cost_line_hide_when_zero = true   # default; hide when every recognized var is $0.00
+
+[profiles.work.costs]
+cost_line_template = "{cost_yesterday} yda | {cost_today} today | {cost_projected}/mo"
+```
+
+Resolution chain: `profiles.<active>.costs.cost_line_template > [costs].cost_line_template > hardcoded "{cost_today} today"`. Setting the template to an empty string explicitly disables the segment.
+
 ### Socket Isolation (v1.7.50+)
 
 Run agent-deck on its own tmux server so it never touches your interactive tmux's config, bindings, or sessions. Opt-in via a single config line:

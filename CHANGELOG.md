@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Configurable status-line cost template** ([#818](https://github.com/asheshgoplani/agent-deck/issues/818)). The home status-bar cost segment is now driven by `[costs].cost_line_template` with optional per-profile override at `[profiles.<name>.costs].cost_line_template`. Seven cost variables supported: `{cost_today}`, `{cost_yesterday}`, `{cost_this_week}`, `{cost_last_week}`, `{cost_this_month}`, `{cost_last_month}`, `{cost_projected}`. Unknown placeholders pass through literally. `cost_line_hide_when_zero` (default true) preserves the prior auto-hide behavior. New `Store.TotalYesterday`, `TotalLastWeek`, `TotalLastMonth` helpers underpin the new variables.
+
 ## [1.7.74] - 2026-04-30
 
 Hotfix bundle for two notify-daemon regressions that surfaced during v1.7.73 production verification on the maintainer host. Both fixes ship together because the SQLite leak masked the dedup behavior — without the leak fix, the daemon wedged before the dedup test could complete.
