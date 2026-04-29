@@ -1,0 +1,129 @@
+# Web UI test suite — Vitest unit + Playwright e2e + screenshot regression.
+#
+# Triggered on any change that could affect the rendered UI or the parity
+# contract documented in tests/web/PARITY_MATRIX.md.
+#
+# See documentation/webui-overhaul-plan.md for context on why this suite
+# exists. Failure modes it defends against:
+#   1. Visual regression — unintended pixel diffs against baselines.
+#   2. State drift — web sees something the TUI doesn't, or vice versa.
+#   3. Parity-matrix gap — a documented MISSING action quietly gets added
+#      via the web without updating the matrix.
+
+name: Web tests
+
+on:
+  pull_request:
+    paths:
+      - 'internal/web/**'
+      - 'cmd/agent-deck/web_cmd.go'
+      - 'tests/web/**'
+      - 'documentation/webui-overhaul-plan.md'
+      - '.github/workflows/web-tests.yml'
+      - 'Makefile'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: vitest (unit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: tests/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/web/package-lock.json
+
+      - name: Install npm deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Run Vitest
+        run: npm run test:unit
+
+  e2e:
+    name: playwright (e2e + screenshots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tests/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/web/package-lock.json
+
+      - name: Install npm deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-ubuntu-${{ hashFiles('tests/web/package-lock.json') }}
+          restore-keys: playwright-ubuntu-
+
+      - name: Install Playwright (chromium only)
+        run: npx playwright install --with-deps chromium
+
+      - name: Build fixture binary
+        working-directory: .
+        env:
+          GOTOOLCHAIN: go1.24.0
+        run: go build -o tests/web/.tmp/web-fixture ./tests/web/fixtures/cmd/web-fixture/
+
+      - name: Run Playwright e2e
+        run: npm run test:e2e
+
+      # On failure, upload the screenshot diffs and HTML report so reviewers
+      # can see what changed without reproducing locally.
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/web/playwright-report
+          retention-days: 14
+
+      - name: Upload screenshot diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-screenshots
+          path: tests/web/e2e-output
+          retention-days: 14
+
+  parity-go:
+    name: go parity (web vs mutator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run TestParity_*
+        env:
+          GOTOOLCHAIN: go1.24.0
+        run: go test ./internal/web/ -run TestParity -race -count=1
