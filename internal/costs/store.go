@@ -1,6 +1,7 @@
 package costs
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -298,4 +299,71 @@ func repeatArg(n int) string {
 		s += ", ?"
 	}
 	return s
+}
+
+// PageEventsAfter returns up to `limit` cost_events with rowid > afterRowID,
+// ordered by rowid ascending, plus the rowid of the last returned row (or
+// afterRowID itself if no rows were returned). Use 0 as the initial
+// afterRowID. Cursor-based pagination is stable under concurrent inserts.
+func (s *Store) PageEventsAfter(afterRowID int64, limit int) ([]CostEvent, int64, error) {
+	rows, err := s.db.Query(`
+		SELECT rowid, id, session_id, timestamp, model,
+			input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			cost_microdollars
+		FROM cost_events
+		WHERE rowid > ?
+		ORDER BY rowid ASC
+		LIMIT ?`, afterRowID, limit)
+	if err != nil {
+		return nil, afterRowID, err
+	}
+	defer rows.Close()
+
+	lastRowID := afterRowID
+	var result []CostEvent
+	for rows.Next() {
+		var (
+			rowid int64
+			ev    CostEvent
+			ts    string
+		)
+		if err := rows.Scan(
+			&rowid, &ev.ID, &ev.SessionID, &ts, &ev.Model,
+			&ev.InputTokens, &ev.OutputTokens, &ev.CacheReadTokens, &ev.CacheWriteTokens,
+			&ev.CostMicrodollars,
+		); err != nil {
+			return nil, afterRowID, err
+		}
+		ev.Timestamp, _ = time.Parse(time.RFC3339, ts)
+		lastRowID = rowid
+		result = append(result, ev)
+	}
+	return result, lastRowID, rows.Err()
+}
+
+// ApplyCostUpdates writes a batch of cost_microdollars updates within a single
+// transaction. The map key is cost_event id. Returns an error and rolls back
+// on any failure; on success commits and returns nil.
+func (s *Store) ApplyCostUpdates(ctx context.Context, updates map[string]int64) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	stmt, err := tx.PrepareContext(ctx, `UPDATE cost_events SET cost_microdollars = ? WHERE id = ?`)
+	if err != nil {
+		return fmt.Errorf("prepare update: %w", err)
+	}
+	defer stmt.Close()
+
+	for id, value := range updates {
+		if _, err := stmt.ExecContext(ctx, value, id); err != nil {
+			return fmt.Errorf("update %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
 }

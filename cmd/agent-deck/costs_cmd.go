@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -8,9 +9,11 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+const costsUsage = "Usage: agent-deck costs <sync|summary|recompute>"
+
 func handleCosts(profile string, args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck costs <sync|summary>")
+		fmt.Fprintln(os.Stderr, costsUsage)
 		os.Exit(1)
 	}
 
@@ -19,9 +22,11 @@ func handleCosts(profile string, args []string) {
 		handleCostsSync(profile)
 	case "summary":
 		handleCostsSummary(profile)
+	case "recompute":
+		handleCostsRecompute(profile, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown costs subcommand: %s\n", args[0])
-		fmt.Fprintln(os.Stderr, "Usage: agent-deck costs <sync|summary>")
+		fmt.Fprintln(os.Stderr, costsUsage)
 		os.Exit(1)
 	}
 }
@@ -136,5 +141,52 @@ func handleCostsSummary(profile string) {
 		for model, cost := range byModel {
 			fmt.Printf("  %-30s %s\n", model, costs.FormatUSD(cost))
 		}
+	}
+}
+
+func handleCostsRecompute(profile string, args []string) {
+	dryRun := false
+	for _, a := range args {
+		switch a {
+		case "--dry-run", "-n":
+			dryRun = true
+		case "-h", "--help":
+			fmt.Println("Usage: agent-deck costs recompute [--dry-run]")
+			fmt.Println("\nRecalculate cost_microdollars for every cost_events row using current")
+			fmt.Println("pricing data (defaults + user overrides). Rows whose model is unknown to")
+			fmt.Println("the pricer are left untouched. Idempotent.")
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown flag: %s\n", a)
+			fmt.Fprintln(os.Stderr, "Usage: agent-deck costs recompute [--dry-run]")
+			os.Exit(1)
+		}
+	}
+
+	costStore, storage := openCostStore(profile)
+	defer storage.Close()
+	pricer := newPricerFromConfig()
+
+	if dryRun {
+		fmt.Println("Recomputing cost_events (dry-run, no rows will be modified)...")
+	} else {
+		fmt.Println("Recomputing cost_events...")
+	}
+
+	updated, skipped, err := costs.Recompute(context.Background(), costStore, pricer, dryRun)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\nResults:\n")
+	if dryRun {
+		fmt.Printf("  Would update: %d\n", updated)
+	} else {
+		fmt.Printf("  Updated:      %d\n", updated)
+	}
+	fmt.Printf("  Skipped:      %d (already correct or unknown model)\n", skipped)
+	if dryRun && updated > 0 {
+		fmt.Println("\nRe-run without --dry-run to apply changes.")
 	}
 }
