@@ -5,7 +5,29 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
+
+// tmuxSubprocessWaitDelay is the deadline cmd.Wait() waits for stdio I/O
+// goroutines to finish AFTER the tmux process exits (or its context is
+// canceled). It backstops the EOF hang where a forked child of tmux
+// inherits the subprocess's stdout pipe fd and never closes it — most
+// commonly the tmux server's terminal pass-through dups under bridged
+// stdio (Claude Code /remote-control, ssh ControlMaster, certain
+// container runtimes).
+//
+// Without this, cmd.Output() blocks indefinitely on the read goroutine
+// waiting for an EOF that never comes, even after the tmux client
+// process is dead and the context has fired. Two seconds is comfortably
+// more than any successful tmux subcommand takes (typically <50ms) but
+// well under the 5-second symptom threshold reported by users running
+// agent-deck CLI under /remote-control.
+//
+// Contract for callers using cmd.Output() / cmd.CombinedOutput(): when
+// errors.Is(err, exec.ErrWaitDelay) and the captured stdout looks valid
+// (non-empty, parses cleanly), treat it as success. The bytes were
+// written to the buffer before the I/O goroutine was abandoned.
+const tmuxSubprocessWaitDelay = 2 * time.Second
 
 // defaultSocketName is the process-wide socket used by package-level tmux
 // probes (version checks, list-all-sessions, duplicate-session reaping)
@@ -71,7 +93,9 @@ func tmuxArgs(socketName string, args ...string) []string {
 // `exec.Command("tmux", args...)`, preserving the contract of every
 // pre-v1.7.50 call site that was rewritten in #697.
 func tmuxExec(socketName string, args ...string) *exec.Cmd {
-	return exec.Command("tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.Command("tmux", tmuxArgs(socketName, args...)...)
+	cmd.WaitDelay = tmuxSubprocessWaitDelay
+	return cmd
 }
 
 // tmuxExecContext is the context-aware variant of tmuxExec. Several
@@ -79,7 +103,9 @@ func tmuxExec(socketName string, args ...string) *exec.Cmd {
 // timeout (e.g. SetEnvironment at internal/tmux/tmux.go:1412); this keeps
 // the -L plumbing centralised for them too.
 func tmuxExecContext(ctx context.Context, socketName string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
+	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, args...)...)
+	cmd.WaitDelay = tmuxSubprocessWaitDelay
+	return cmd
 }
 
 // tmuxCmd is the per-Session convenience wrapper. Every tmux subprocess
