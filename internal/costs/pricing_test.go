@@ -107,3 +107,36 @@ func TestPricerModelNormalization(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, int64(3_000_000), mp.InputPerMtokMicro)
 }
+
+// TestAnthropicPricing pins exact rates for every Anthropic model in defaults
+// against Anthropic's published rates. Source:
+// https://docs.anthropic.com/en/docs/about-claude/pricing
+// Cache-write column is the 5-minute TTL rate (the cache write rate the
+// pricing.json schema represents).
+func TestAnthropicPricing(t *testing.T) {
+	p := NewPricer(PricerConfig{})
+
+	tests := []struct {
+		model      string
+		input      int64
+		output     int64
+		cacheRead  int64
+		cacheWrite int64
+	}{
+		{"claude-opus-4-7", 5_000_000, 25_000_000, 500_000, 6_250_000},
+		{"claude-opus-4-6", 5_000_000, 25_000_000, 500_000, 6_250_000},
+		{"claude-sonnet-4-6", 3_000_000, 15_000_000, 300_000, 3_750_000},
+		{"claude-haiku-4-5", 1_000_000, 5_000_000, 100_000, 1_250_000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			mp, ok := p.GetPrice(tt.model)
+			require.True(t, ok, "model %s should have pricing", tt.model)
+			assert.Equal(t, tt.input, mp.InputPerMtokMicro, "input")
+			assert.Equal(t, tt.output, mp.OutputPerMtokMicro, "output")
+			assert.Equal(t, tt.cacheRead, mp.CacheReadPerMtokMicro, "cache_read")
+			assert.Equal(t, tt.cacheWrite, mp.CacheWritePerMtokMicro, "cache_write")
+		})
+	}
+}

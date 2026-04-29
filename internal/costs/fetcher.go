@@ -25,9 +25,11 @@ func (f *Fetcher) CacheAge() time.Duration {
 // Real HTML scraping is deferred — for now, writes hardcoded defaults.
 func (f *Fetcher) FetchAndCache() error {
 	defaults := map[string]pricingCacheModel{
+		// Anthropic rates: https://docs.anthropic.com/en/docs/about-claude/pricing
+		"claude-opus-4-7":   {InputPerMtok: 5.0, OutputPerMtok: 25.0, CacheReadPerMtok: 0.50, CacheWritePerMtok: 6.25},
+		"claude-opus-4-6":   {InputPerMtok: 5.0, OutputPerMtok: 25.0, CacheReadPerMtok: 0.50, CacheWritePerMtok: 6.25},
 		"claude-sonnet-4-6": {InputPerMtok: 3.0, OutputPerMtok: 15.0, CacheReadPerMtok: 0.30, CacheWritePerMtok: 3.75},
-		"claude-opus-4-6":   {InputPerMtok: 15.0, OutputPerMtok: 75.0, CacheReadPerMtok: 1.50, CacheWritePerMtok: 18.75},
-		"claude-haiku-4-5":  {InputPerMtok: 0.80, OutputPerMtok: 4.0, CacheReadPerMtok: 0.08, CacheWritePerMtok: 1.0},
+		"claude-haiku-4-5":  {InputPerMtok: 1.0, OutputPerMtok: 5.0, CacheReadPerMtok: 0.10, CacheWritePerMtok: 1.25},
 		"gemini-2.5-pro":    {InputPerMtok: 1.25, OutputPerMtok: 10.0},
 		"gemini-2.5-flash":  {InputPerMtok: 0.15, OutputPerMtok: 0.60},
 		"gpt-4o":            {InputPerMtok: 2.50, OutputPerMtok: 10.0},

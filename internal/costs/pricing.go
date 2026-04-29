@@ -69,9 +69,11 @@ func priceFromUSD(input, output, cacheRead, cacheWrite float64) ModelPrice {
 func NewPricer(cfg PricerConfig) *Pricer {
 	p := &Pricer{
 		defaults: map[string]ModelPrice{
+			// Anthropic rates: https://docs.anthropic.com/en/docs/about-claude/pricing
+			"claude-opus-4-7":   priceFromUSD(5.0, 25.0, 0.50, 6.25),
+			"claude-opus-4-6":   priceFromUSD(5.0, 25.0, 0.50, 6.25),
 			"claude-sonnet-4-6": priceFromUSD(3.0, 15.0, 0.30, 3.75),
-			"claude-opus-4-6":   priceFromUSD(15.0, 75.0, 1.50, 18.75),
-			"claude-haiku-4-5":  priceFromUSD(0.80, 4.0, 0.08, 1.0),
+			"claude-haiku-4-5":  priceFromUSD(1.0, 5.0, 0.10, 1.25),
 			"gemini-2.5-pro":    priceFromUSD(1.25, 10.0, 0, 0),
 			"gemini-2.5-flash":  priceFromUSD(0.15, 0.60, 0, 0),
 			"gpt-4o":            priceFromUSD(2.50, 10.0, 0, 0),
