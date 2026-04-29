@@ -237,6 +237,10 @@ func (rc RemoteConfig) GetProfile() string {
 type ProfileSettings struct {
 	// Claude defines Claude Code overrides for a specific profile.
 	Claude ProfileClaudeSettings `toml:"claude"`
+	// Costs defines profile-specific cost-tracking overrides.
+	// Nil pointer means "no [profiles.<name>.costs] block in TOML"; the
+	// resolver falls through to global [costs] settings.
+	Costs *ProfileCosts `toml:"costs"`
 }
 
 // ProfileClaudeSettings defines profile-specific Claude overrides.
@@ -2693,11 +2697,26 @@ func GetMCPDef(name string) *MCPDef {
 
 // CostsSettings configures cost tracking, budgets, and pricing overrides.
 type CostsSettings struct {
-	Currency      string          `toml:"currency"`
-	Timezone      string          `toml:"timezone"`
-	RetentionDays int             `toml:"retention_days"`
-	Budgets       BudgetSettings  `toml:"budgets"`
-	Pricing       PricingSettings `toml:"pricing"`
+	Currency      string `toml:"currency"`
+	Timezone      string `toml:"timezone"`
+	RetentionDays int    `toml:"retention_days"`
+	// CostLineTemplate overrides the home status-bar cost segment.
+	// Three-state pointer: nil falls through to the next layer
+	// (profile -> global -> hardcoded); explicit empty string disables.
+	CostLineTemplate *string `toml:"cost_line_template"`
+	// CostLineHideWhenZero hides the segment when every recognized variable
+	// in the active template renders to $0.00. Three-state pointer; default
+	// is true (preserves the legacy "no events, no segment" behavior).
+	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero"`
+	Budgets              BudgetSettings  `toml:"budgets"`
+	Pricing              PricingSettings `toml:"pricing"`
+}
+
+// ProfileCosts holds per-profile overrides for cost-related settings.
+// Pointer fields use the same fall-through semantics as CostsSettings.
+type ProfileCosts struct {
+	CostLineTemplate     *string `toml:"cost_line_template"`
+	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero"`
 }
 
 type BudgetSettings struct {

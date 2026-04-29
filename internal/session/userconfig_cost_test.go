@@ -85,3 +85,162 @@ func TestCostsSettings_Defaults(t *testing.T) {
 		t.Errorf("default timezone = %q, want Local", cfg.GetTimezone())
 	}
 }
+
+func TestLoadUserConfig_CostLineTemplate_Global(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	err := os.WriteFile(configPath, []byte(`
+[costs]
+cost_line_template = "{cost_today} today"
+cost_line_hide_when_zero = false
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("DecodeFile: %v", err)
+	}
+	if cfg.Costs.CostLineTemplate == nil {
+		t.Fatal("CostLineTemplate is nil, want non-nil")
+	}
+	if *cfg.Costs.CostLineTemplate != "{cost_today} today" {
+		t.Errorf("CostLineTemplate = %q, want %q", *cfg.Costs.CostLineTemplate, "{cost_today} today")
+	}
+	if cfg.Costs.CostLineHideWhenZero == nil {
+		t.Fatal("CostLineHideWhenZero is nil, want non-nil")
+	}
+	if *cfg.Costs.CostLineHideWhenZero != false {
+		t.Errorf("CostLineHideWhenZero = %v, want false", *cfg.Costs.CostLineHideWhenZero)
+	}
+}
+
+func TestLoadUserConfig_CostLineTemplate_AbsentLeavesNil(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	err := os.WriteFile(configPath, []byte(`
+[costs]
+currency = "usd"
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("DecodeFile: %v", err)
+	}
+	if cfg.Costs.CostLineTemplate != nil {
+		t.Errorf("CostLineTemplate = %v, want nil (unset)", cfg.Costs.CostLineTemplate)
+	}
+	if cfg.Costs.CostLineHideWhenZero != nil {
+		t.Errorf("CostLineHideWhenZero = %v, want nil (unset)", cfg.Costs.CostLineHideWhenZero)
+	}
+}
+
+func TestLoadUserConfig_CostLineTemplate_ProfileOverride(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	err := os.WriteFile(configPath, []byte(`
+[costs]
+cost_line_template = "{cost_today} today"
+
+[profiles.work.costs]
+cost_line_template = "{cost_today} today | {cost_this_week} wk"
+cost_line_hide_when_zero = true
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("DecodeFile: %v", err)
+	}
+	work, ok := cfg.Profiles["work"]
+	if !ok {
+		t.Fatal("Profiles[work] missing")
+	}
+	if work.Costs == nil {
+		t.Fatal("Profiles[work].Costs is nil, want non-nil block")
+	}
+	if work.Costs.CostLineTemplate == nil {
+		t.Fatal("Profiles[work].Costs.CostLineTemplate is nil, want set")
+	}
+	if got, want := *work.Costs.CostLineTemplate, "{cost_today} today | {cost_this_week} wk"; got != want {
+		t.Errorf("profile template = %q, want %q", got, want)
+	}
+	if work.Costs.CostLineHideWhenZero == nil || *work.Costs.CostLineHideWhenZero != true {
+		t.Errorf("profile hide_when_zero = %v, want true", work.Costs.CostLineHideWhenZero)
+	}
+}
+
+func TestLoadUserConfig_CostLineTemplate_ProfileBlockAbsent(t *testing.T) {
+	// A profile that has [profiles.X.claude] but no [profiles.X.costs] should
+	// have a nil Costs pointer so the resolver can fall through to global.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	err := os.WriteFile(configPath, []byte(`
+[profiles.work.claude]
+config_dir = "~/.claude-work"
+`), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg UserConfig
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		t.Fatalf("DecodeFile: %v", err)
+	}
+	work, ok := cfg.Profiles["work"]
+	if !ok {
+		t.Fatal("Profiles[work] missing")
+	}
+	if work.Costs != nil {
+		t.Errorf("Profiles[work].Costs = %+v, want nil (no [costs] block)", work.Costs)
+	}
+}
+
+func TestUserConfig_CostLineTemplate_RoundTrip(t *testing.T) {
+	tmpl := "{cost_today} today | {cost_this_week} wk"
+	hide := true
+
+	src := UserConfig{
+		Costs: CostsSettings{
+			CostLineTemplate:     &tmpl,
+			CostLineHideWhenZero: &hide,
+		},
+		Profiles: map[string]ProfileSettings{
+			"work": {Costs: &ProfileCosts{
+				CostLineTemplate: &tmpl,
+			}},
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.toml")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := toml.NewEncoder(f).Encode(&src); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	var dst UserConfig
+	if _, err := toml.DecodeFile(path, &dst); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dst.Costs.CostLineTemplate == nil || *dst.Costs.CostLineTemplate != tmpl {
+		t.Errorf("global template round-trip lost: got %v, want %q", dst.Costs.CostLineTemplate, tmpl)
+	}
+	if dst.Costs.CostLineHideWhenZero == nil || *dst.Costs.CostLineHideWhenZero != hide {
+		t.Errorf("global hide_when_zero round-trip lost: got %v, want true", dst.Costs.CostLineHideWhenZero)
+	}
+	work, ok := dst.Profiles["work"]
+	if !ok {
+		t.Fatal("Profiles[work] lost on round-trip")
+	}
+	if work.Costs == nil || work.Costs.CostLineTemplate == nil || *work.Costs.CostLineTemplate != tmpl {
+		t.Errorf("profile template round-trip lost: got %+v, want %q", work.Costs, tmpl)
+	}
+}
