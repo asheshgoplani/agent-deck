@@ -5,6 +5,18 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Outdated Anthropic pricing data for `claude-opus-4-6` and `claude-haiku-4-5`** ([#813](https://github.com/asheshgoplani/agent-deck/issues/813)). `claude-opus-4-6` was using legacy Opus 4 / 4.1 rates ($15 / $75 / $1.50 / $18.75); corrected to the current Opus 4.6 rates of $5 / $25 / $0.50 / $6.25. `claude-haiku-4-5` was at 80% of the published rates; corrected to $1 / $5 / $0.10 / $1.25. Source: https://docs.anthropic.com/en/docs/about-claude/pricing.
+
+- **Missing pricing for `claude-opus-4-7`** ([#813](https://github.com/asheshgoplani/agent-deck/issues/813)). Cost events for this model previously persisted with `cost_microdollars=0` because the pricer had no entry. Added at $5 / $25 / $0.50 / $6.25.
+
+### Added
+
+- **`agent-deck costs recompute`** ([#813](https://github.com/asheshgoplani/agent-deck/issues/813)). New CLI subcommand that recalculates `cost_microdollars` for every `cost_events` row using current pricing data (defaults plus user overrides). Idempotent. Rows whose `model` is unknown to the pricer are left untouched. Supports `--dry-run` for preview.
+
 ## [1.7.72] - 2026-04-28
 
 Bundle of fixes and contributor PRs, hours after v1.7.71. Two external contributors merged this cycle: @tarekrached (twice), @oryaacov.
