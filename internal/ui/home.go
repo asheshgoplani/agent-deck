@@ -5647,7 +5647,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 		// Vi-style pagination (#38) - half/full page scrolling
-	case "ctrl+u": // Half page up
+	case "ctrl+u", "pgup": // Half page up
 		pageSize := h.getVisibleHeight() / 2
 		if pageSize < 1 {
 			pageSize = 1
@@ -5661,7 +5661,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.markNavigationActivity()
 		return h, h.fetchSelectedPreview()
 
-	case "ctrl+d": // Half page down
+	case "ctrl+d", "pgdown": // Half page down
 		pageSize := h.getVisibleHeight() / 2
 		if pageSize < 1 {
 			pageSize = 1
@@ -5701,6 +5701,23 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor >= len(h.flatItems) {
 			h.cursor = len(h.flatItems) - 1
 		}
+		if h.cursor < 0 {
+			h.cursor = 0
+		}
+		h.previewScrollOffset = 0
+		h.syncViewport()
+		h.markNavigationActivity()
+		return h, h.fetchSelectedPreview()
+
+	case "home": // Jump to first item
+		h.cursor = 0
+		h.previewScrollOffset = 0
+		h.syncViewport()
+		h.markNavigationActivity()
+		return h, h.fetchSelectedPreview()
+
+	case "end": // Jump to last item
+		h.cursor = len(h.flatItems) - 1
 		if h.cursor < 0 {
 			h.cursor = 0
 		}

@@ -2864,3 +2864,82 @@ func TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog(t *testing.T) {
 		t.Fatal("pressing n on a remote group must NOT open the local new-session dialog")
 	}
 }
+
+// TestHome_TerminalNavigationKeys verifies the PgUp/PgDn/Home/End bindings
+// added alongside the existing vi-style pagination (#38). PgUp/PgDn are
+// half-page aliases of Ctrl+U/Ctrl+D; Home/End jump to the first/last item
+// (End fills the gap where no single-key jump-to-bottom existed, since G
+// opens global search).
+func TestHome_TerminalNavigationKeys(t *testing.T) {
+	// Build a 100-item list so pagination + absolute jumps have room to move.
+	items := make([]session.Item, 100)
+	for i := range items {
+		items[i] = session.Item{
+			Type:    session.ItemTypeSession,
+			Session: &session.Instance{ID: fmt.Sprintf("s%d", i), Title: fmt.Sprintf("S%d", i)},
+			Level:   0,
+		}
+	}
+
+	const width, height = 100, 30
+
+	// Compute half-page from the actual getVisibleHeight so the test
+	// stays correct if the viewport formula changes.
+	h0 := newTestHomeWithItems(width, height, items)
+	halfPage := h0.getVisibleHeight() / 2
+	if halfPage < 1 {
+		halfPage = 1
+	}
+	last := len(items) - 1
+
+	tests := []struct {
+		name        string
+		key         tea.KeyMsg
+		startCursor int
+		wantCursor  int
+	}{
+		{"PgUp from middle", tea.KeyMsg{Type: tea.KeyPgUp}, 50, 50 - halfPage},
+		{"PgUp clamps at top", tea.KeyMsg{Type: tea.KeyPgUp}, 0, 0},
+		{"PgDown from middle", tea.KeyMsg{Type: tea.KeyPgDown}, 10, 10 + halfPage},
+		{"PgDown clamps at bottom", tea.KeyMsg{Type: tea.KeyPgDown}, last, last},
+		{"Home from middle", tea.KeyMsg{Type: tea.KeyHome}, 50, 0},
+		{"Home at top no-op", tea.KeyMsg{Type: tea.KeyHome}, 0, 0},
+		{"End from middle", tea.KeyMsg{Type: tea.KeyEnd}, 5, last},
+		{"End at bottom no-op", tea.KeyMsg{Type: tea.KeyEnd}, last, last},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHomeWithItems(width, height, items)
+			h.cursor = tc.startCursor
+			h.previewScrollOffset = 42 // non-zero to verify reset contract
+			updated, _ := h.Update(tc.key)
+			got := updated.(*Home).cursor
+			if got != tc.wantCursor {
+				t.Fatalf("cursor = %d, want %d (halfPage=%d)", got, tc.wantCursor, halfPage)
+			}
+			if updated.(*Home).previewScrollOffset != 0 {
+				t.Fatalf("previewScrollOffset = %d, want 0 (nav handlers must reset)",
+					updated.(*Home).previewScrollOffset)
+			}
+		})
+	}
+
+	t.Run("End on empty list does not crash", func(t *testing.T) {
+		h := newTestHomeWithItems(width, height, nil)
+		updated, _ := h.Update(tea.KeyMsg{Type: tea.KeyEnd})
+		got := updated.(*Home).cursor
+		if got != 0 {
+			t.Fatalf("cursor = %d, want 0 on empty list", got)
+		}
+	})
+
+	t.Run("Home on empty list does not crash", func(t *testing.T) {
+		h := newTestHomeWithItems(width, height, nil)
+		updated, _ := h.Update(tea.KeyMsg{Type: tea.KeyHome})
+		got := updated.(*Home).cursor
+		if got != 0 {
+			t.Fatalf("cursor = %d, want 0 on empty list", got)
+		}
+	})
+}

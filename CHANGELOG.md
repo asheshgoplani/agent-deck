@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Terminal navigation keys in session list.** Session list now accepts `Home` / `End` (jump to first / last item) and `PgUp` / `PgDn` (half-page aliases of existing `Ctrl+U` / `Ctrl+D`). Fills a gap where no single-key jump-to-bottom existed, since `G` opens global search. `Home` / `End` also scroll the help overlay. Follows the same side-effect contract as the pagination handlers (preview scroll reset, navigation-activity mark, debounced preview fetch).
+
+### Fixed
+
+- **Home/End keys in TUI now work for iTerm2 over direct SSH.** iTerm2's default macOS profile emits Home/End as SS3 application-mode sequences (`ESC OH` / `ESC OF`) on direct SSH (no intermediate tmux or screen). Bubble Tea's decoder covers the xterm, vt220, and urxvt Home/End variants but not SS3 — `csiuReader.translate` now rewrites `ESC OH` to `ESC [H` and `ESC OF` to `ESC [F` before bytes reach Bubble Tea. All other `ESC O*` sequences pass through unchanged. Verified unchanged for iTerm2 → SSH → Screen (already emitted vt220 `ESC [1~` / `ESC [4~`).
+
 ## [1.7.75] - 2026-04-30
 
 Community quality-of-life bundle. Four contributor PRs landing the day after the v1.7.74 hotfix: regression fix for web mutations broken since v1.7.71, an SSH start-failure cleanup compensation, an `add` ergonomics fix for SSH-piped paths, and a configurable cost status-line. All four were dual-reviewed (Claude + Codex peer reviewer) before merge — first run of the dual-model review pipeline.
@@ -60,6 +68,26 @@ Resilience pass. Nine community-and-internal PRs addressing real user-impacting 
 - **Bare ESC keypress lost in tmux attach quarantine; ESC followed by arrow arrived as Alt+Up** (thanks @amkopyt for [PR #812](https://github.com/asheshgoplani/agent-deck/pull/812)). `internal/termreply/filter.go` set `pendingEsc = true` on ESC and emitted nothing, waiting for the next byte to disambiguate CSI / SS3 / OSC. Real keyboard ESC has no follow-up byte, so the press stayed buffered indefinitely and later concatenated with the next keystroke's encoding. User-visible symptoms in Claude Code: bare ESC (interrupt) didn't fire, ESC ESC (jump-to-previous-message) didn't work, arrow keys appeared to reset the input. Fix flushes the lone ESC after a short timeout so it reaches the inner agent.
 
 - **Outdated Anthropic pricing data + missing entry for `claude-opus-4-7`** (thanks @AdamiecRadek for [issue #813](https://github.com/asheshgoplani/agent-deck/issues/813) → [PR #814](https://github.com/asheshgoplani/agent-deck/pull/814)). `claude-opus-4-6` was using legacy Opus 4 / 4.1 rates (3× the actual current rate, over-attributing every Opus 4.6 token), `claude-haiku-4-5` was at 80% of the published rates, and `claude-opus-4-7` was missing entirely (1240+ cost-event rows in the wild persisted at $0). Cost dashboard accuracy was wrong in both directions. Fix corrects all three plus adds a new `agent-deck costs recompute` CLI subcommand that recalculates `cost_microdollars` for every `cost_events` row using current pricing data (idempotent; supports `--dry-run`).
+### Added
+
+- **Terminal navigation keys in session list.** Session list now accepts
+  `Home` / `End` (jump to first / last item) and `PgUp` / `PgDn` (half-page
+  aliases of existing `Ctrl+U` / `Ctrl+D`). Fills a gap where no single-key
+  jump-to-bottom existed, since `G` opens global search. `Home` / `End` also
+  scroll the help overlay. Follows the same side-effect contract as the
+  pagination handlers (preview scroll reset, navigation-activity mark,
+  debounced preview fetch).
+
+### Fixed
+
+- **Home/End keys in TUI now work for iTerm2 over direct SSH.** iTerm2's
+  default macOS profile emits Home/End as SS3 application-mode sequences
+  (`ESC OH` / `ESC OF`) on direct SSH (no intermediate tmux or screen).
+  Bubble Tea's decoder covers the xterm, vt220, and urxvt Home/End
+  variants but not SS3 — `csiuReader.translate` now rewrites `ESC OH` to
+  `ESC [H` and `ESC OF` to `ESC [F` before bytes reach Bubble Tea. All
+  other `ESC O*` sequences pass through unchanged. Verified unchanged
+  for iTerm2 → SSH → Screen (already emitted vt220 `ESC [1~` / `ESC [4~`).
 
 ## [1.7.72] - 2026-04-28
 
