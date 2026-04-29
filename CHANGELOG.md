@@ -5,6 +5,12 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Auto-confirm Claude "Resume from summary" picker on long-running conductors** ([#67](https://github.com/asheshgoplani/agent-deck/issues/67)). Previously, once a session crossed ~250k tokens, `claude --resume` showed an interactive picker that an unattended conductor could not answer, leaving the session frozen on `waiting`. After restart, agent-deck now samples the tmux pane for the picker text and auto-presses Enter to accept the default (Resume from summary). Opt out with `[claude].auto_resume_summary = false`.
+
 ## [1.7.72] - 2026-04-28
 
 Bundle of fixes and contributor PRs, hours after v1.7.71. Two external contributors merged this cycle: @tarekrached (twice), @oryaacov.
