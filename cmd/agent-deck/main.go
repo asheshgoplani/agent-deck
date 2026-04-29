@@ -323,6 +323,9 @@ func main() {
 		case "notify-daemon":
 			handleNotifyDaemon(args[1:])
 			return
+		case "inbox":
+			handleInbox(args[1:])
+			return
 		case "feedback":
 			handleFeedback(args[1:])
 			return

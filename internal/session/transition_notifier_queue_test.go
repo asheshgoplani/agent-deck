@@ -329,6 +329,11 @@ func TestNotifyTransition_ParentBusyEnqueuesNotMarksDone(t *testing.T) {
 	}
 
 	notifier := NewTransitionNotifier()
+	// scheduleBusyRetry (issue #805) spawns a goroutine that sleeps on the
+	// busyBackoff schedule (5s/15s/45s). Close() releases those sleeps so
+	// the goroutine doesn't outlive t.TempDir cleanup and write a stray
+	// inbox file under the developer's real ~/.agent-deck.
+	t.Cleanup(notifier.Close)
 	event := TransitionNotificationEvent{
 		ChildSessionID: child.ID,
 		ChildTitle:     child.Title,

@@ -66,9 +66,22 @@ type TransitionNotifier struct {
 	logPath    string
 	missedPath string
 	queuePath  string
+	orphanPath string
 
 	sender      transitionSender
 	sendTimeout time.Duration
+
+	// busyBackoff is the in-process retry schedule used when the parent is
+	// StatusRunning at dispatch time. After the last entry is exhausted the
+	// event is persisted to the per-conductor inbox. Defaults to
+	// {5s,15s,45s} via NewTransitionNotifier; tests override with shorter
+	// durations.
+	busyBackoff []time.Duration
+
+	// availability decides whether a target session is free to receive a
+	// send. Defaults to liveTargetAvailability (real tmux state); tests
+	// inject a deterministic stub.
+	availability targetAvailabilityResolver
 
 	mu    sync.Mutex
 	state transitionNotifyState
@@ -78,6 +91,18 @@ type TransitionNotifier struct {
 
 	slotsMu     sync.Mutex
 	targetSlots map[string]chan struct{}
+
+	// orphanMu guards orphanWarned. The set tracks child session ids we have
+	// already emitted a WARN for, so a long-lived orphan firing many
+	// transitions does not flood notifier-orphans.log.
+	orphanMu     sync.Mutex
+	orphanWarned map[string]bool
+
+	// stopCh closes when Close() is invoked. scheduleBusyRetry's sleep loops
+	// select on it so test cleanups can cancel pending retries instead of
+	// letting them write inbox files into the post-cleanup environment.
+	stopMu sync.Mutex
+	stopCh chan struct{}
 
 	// watchersWG tracks the short-lived goroutine that waits on a send's
 	// completion or timeout. Tests use it to synchronize before asserting
@@ -94,16 +119,47 @@ func NewTransitionNotifier() *TransitionNotifier {
 		logPath:     transitionNotifyLogPath(),
 		missedPath:  transitionNotifierMissedPath(),
 		queuePath:   transitionNotifierQueuePath(),
+		orphanPath:  transitionNotifierOrphanLogPath(),
 		sender:      SendSessionMessageReliable,
 		sendTimeout: defaultSendTimeout,
+		busyBackoff: []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second},
 		state: transitionNotifyState{
 			Records: map[string]transitionNotifyRecord{},
 		},
-		targetSlots: map[string]chan struct{}{},
+		targetSlots:  map[string]chan struct{}{},
+		orphanWarned: map[string]bool{},
+		stopCh:       make(chan struct{}),
 	}
 	n.loadState()
 	n.loadQueue()
 	return n
+}
+
+// Close cancels any pending in-process busy retries. Production callers do
+// not need it because the daemon process owns the notifier for its
+// lifetime; tests use it to stop scheduleBusyRetry goroutines from writing
+// to inbox files after t.TempDir cleanup. Idempotent.
+func (n *TransitionNotifier) Close() {
+	n.stopMu.Lock()
+	defer n.stopMu.Unlock()
+	if n.stopCh == nil {
+		return
+	}
+	select {
+	case <-n.stopCh:
+		// already closed
+	default:
+		close(n.stopCh)
+	}
+}
+
+func (n *TransitionNotifier) getStopCh() <-chan struct{} {
+	n.stopMu.Lock()
+	defer n.stopMu.Unlock()
+	if n.stopCh == nil {
+		n.stopCh = make(chan struct{})
+	}
+	return n.stopCh
 }
 
 func ShouldNotifyTransition(fromStatus, toStatus string) bool {
@@ -215,6 +271,19 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		return plan
 	}
 
+	// Orphan-on-creation guard (issue #805 cause A). When a child is born
+	// without a parent linkage — typically because a worktree-setup hook
+	// or sandboxed shell dropped $AGENTDECK_INSTANCE_ID — every transition
+	// it fires resolves to nil parent and drops silently. Log a single WARN
+	// per orphan child so the operator gets actionable signal pointing at
+	// the documented `agent-deck session set-parent` workflow.
+	if strings.TrimSpace(child.ParentSessionID) == "" {
+		n.logOrphanOnce(plan.event, child.ID)
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
 		plan.event.DeliveryResult = transitionDeliveryDropped
@@ -233,6 +302,13 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		plan.event.DeliveryResult = transitionDeliveryDeferred
 		plan.finalized = true
 		n.EnqueueDeferred(plan.event)
+		// In-process retry-with-backoff (issue #805 cause B). The disk
+		// queue + daemon poll path is the long-term retry; this is the
+		// fast path that catches the common case where the parent is
+		// busy for seconds, not minutes. After exhaustion the event is
+		// persisted to the per-conductor inbox so the conductor's next
+		// idle drain still sees it.
+		n.scheduleBusyRetry(plan.event)
 		return plan
 	}
 
@@ -676,4 +752,145 @@ func transitionNotifierQueuePath() string {
 		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "transition-deferred-queue.json")
 	}
 	return filepath.Join(dir, "runtime", "transition-deferred-queue.json")
+}
+
+func transitionNotifierOrphanLogPath() string {
+	dir, err := GetAgentDeckDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-orphans.log")
+	}
+	return filepath.Join(dir, "logs", "notifier-orphans.log")
+}
+
+// --- orphan WARN -------------------------------------------------------------
+
+// logOrphanOnce writes a single WARN line per child id to
+// notifier-orphans.log. Subsequent transitions for the same child are
+// silently dropped from this stream so a long-lived orphan does not flood
+// logs. The hint string is stable so operators can grep + redirect to the
+// documented `agent-deck session set-parent` workflow.
+func (n *TransitionNotifier) logOrphanOnce(event TransitionNotificationEvent, childID string) {
+	n.orphanMu.Lock()
+	if n.orphanWarned == nil {
+		n.orphanWarned = map[string]bool{}
+	}
+	if n.orphanWarned[childID] {
+		n.orphanMu.Unlock()
+		return
+	}
+	n.orphanWarned[childID] = true
+	n.orphanMu.Unlock()
+
+	path := n.orphanPath
+	if path == "" {
+		path = transitionNotifierOrphanLogPath()
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	entry := map[string]any{
+		"ts":      time.Now().Format(time.RFC3339Nano),
+		"level":   "WARN",
+		"child":   childID,
+		"title":   event.ChildTitle,
+		"profile": event.Profile,
+		"event":   fmt.Sprintf("%s→%s", event.FromStatus, event.ToStatus),
+		"message": "orphan child detected; run orphan sweep: agent-deck session set-parent <child> <conductor>",
+	}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
+}
+
+// --- in-process retry-with-backoff ------------------------------------------
+
+// scheduleBusyRetry kicks off a goroutine that retries delivery on a fixed
+// backoff schedule (n.busyBackoff, default {5s,15s,45s}). On each tick:
+//   - check availability(profile,target); if free, send via n.sender
+//   - on send success: log to delivery stream, mark dedup, drain queue entry
+//   - on availability false: continue to the next backoff entry
+//
+// After the last entry without a successful send, persist the event to the
+// per-conductor inbox and write notifier-missed.log{reason=exhausted_busy_retries}
+// so the conductor's next idle drain still sees the transition.
+//
+// Bounded by len(busyBackoff). Cancellable via Close() — the select on
+// stopCh releases pending sleeps so test cleanups don't leak retries past
+// t.TempDir teardown.
+func (n *TransitionNotifier) scheduleBusyRetry(event TransitionNotificationEvent) {
+	delays := n.busyBackoff
+	if len(delays) == 0 {
+		return
+	}
+	stop := n.getStopCh()
+
+	n.sendersWG.Add(1)
+	go func() {
+		defer n.sendersWG.Done()
+
+		for _, d := range delays {
+			select {
+			case <-time.After(d):
+			case <-stop:
+				return
+			}
+
+			isAvail := n.availability
+			if isAvail == nil {
+				isAvail = n.liveTargetAvailability
+			}
+			if !isAvail(event.Profile, event.TargetSessionID) {
+				continue
+			}
+
+			send := n.sender
+			if send == nil {
+				send = SendSessionMessageReliable
+			}
+			err := send(event.Profile, event.TargetSessionID, buildTransitionMessage(event))
+			if err == nil {
+				e := event
+				e.DeliveryResult = transitionDeliverySent
+				n.markNotified(e)
+				n.logEvent(e)
+				n.removeFromQueue(event)
+				return
+			}
+			// Send failed: try the next backoff entry.
+		}
+
+		// Exhausted — persist to the parent's inbox and signal via missed log.
+		if event.TargetSessionID != "" {
+			_ = WriteInboxEvent(event.TargetSessionID, event)
+		}
+		n.logMissed(event, "exhausted_busy_retries")
+		n.removeFromQueue(event)
+	}()
+}
+
+func (n *TransitionNotifier) removeFromQueue(event TransitionNotificationEvent) {
+	n.queueMu.Lock()
+	defer n.queueMu.Unlock()
+	key := deferredKey(event)
+	keep := n.queue.Entries[:0]
+	dropped := false
+	for _, entry := range n.queue.Entries {
+		if deferredKey(entry.Event) == key {
+			dropped = true
+			continue
+		}
+		keep = append(keep, entry)
+	}
+	if !dropped {
+		return
+	}
+	n.queue.Entries = keep
+	_ = n.saveQueueLocked()
 }
