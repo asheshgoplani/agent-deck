@@ -681,3 +681,98 @@ func TestRestoreLegacyKeyboardCmd(t *testing.T) {
 		t.Errorf("cmd() wrote %q to writer, want %q (Kitty pop sequence)", got, want)
 	}
 }
+
+// TestCSIuReader_SS3HomeEnd covers the SS3 application-mode Home/End rewrite.
+// iTerm2's default macOS profile emits Home/End as ESC OH / ESC OF (SS3),
+// which Bubble Tea v1.3.10's escSeq table does not decode. The csiuReader
+// rewrites only these two sequences to their CSI equivalents ESC [H / ESC [F.
+// All other SS3 sequences (arrows ESC OA-D, F1-F4 ESC OP-S) must pass through
+// unchanged because Bubble Tea handles them natively.
+func TestCSIuReader_SS3HomeEnd(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"SS3 Home rewrites to CSI H", "\x1bOH", "\x1b[H"},
+		{"SS3 End rewrites to CSI F", "\x1bOF", "\x1b[F"},
+		{"SS3 up arrow passes through", "\x1bOA", "\x1bOA"},
+		{"SS3 down arrow passes through", "\x1bOB", "\x1bOB"},
+		{"SS3 right arrow passes through", "\x1bOC", "\x1bOC"},
+		{"SS3 left arrow passes through", "\x1bOD", "\x1bOD"},
+		{"SS3 F1 passes through", "\x1bOP", "\x1bOP"},
+		{"SS3 F2 passes through", "\x1bOQ", "\x1bOQ"},
+		{"SS3 F3 passes through", "\x1bOR", "\x1bOR"},
+		{"SS3 F4 passes through", "\x1bOS", "\x1bOS"},
+		{"mixed: legacy byte, SS3 Home, SS3 End, legacy byte",
+			"j\x1bOH\x1bOFq", "j\x1b[H\x1b[Fq"},
+		{"SS3 Home followed by CSI PgUp (known-working)",
+			"\x1bOH\x1b[5~", "\x1b[H\x1b[5~"},
+		{"SS3 Home next to non-SS3 ESC (bare ESC preserved)",
+			"\x1bOH\x1bq", "\x1b[H\x1bq"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(bytes.NewReader([]byte(tt.input)))
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != tt.want {
+				t.Errorf("CSIuReader(%q) = %q, want %q", tt.input, string(out), tt.want)
+			}
+		})
+	}
+}
+
+// TestCSIuReader_SS3HomeEnd_ChunkedRead verifies that an SS3 Home/End sequence
+// split across two Read() calls (e.g. ESC O arrives in chunk 1, H in chunk 2)
+// is still rewritten correctly. The translator must buffer the partial ESC O
+// until the third byte is available.
+func TestCSIuReader_SS3HomeEnd_ChunkedRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks [][]byte
+		want   string
+	}{
+		{
+			"SS3 Home split between ESC O and H",
+			[][]byte{[]byte("\x1bO"), []byte("H")},
+			"\x1b[H",
+		},
+		{
+			"SS3 End split between ESC O and F",
+			[][]byte{[]byte("\x1bO"), []byte("F")},
+			"\x1b[F",
+		},
+		{
+			"SS3 Home split between ESC and OH",
+			[][]byte{[]byte("\x1b"), []byte("OH")},
+			"\x1b[H",
+		},
+		{
+			"SS3 passthrough (F1) split between ESC O and P",
+			[][]byte{[]byte("\x1bO"), []byte("P")},
+			"\x1bOP",
+		},
+		{
+			"mixed stream with SS3 Home at chunk boundary",
+			[][]byte{[]byte("j\x1bO"), []byte("Hq")},
+			"j\x1b[Hq",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewCSIuReader(&chunkedReader{chunks: tt.chunks})
+			out, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("ReadAll error: %v", err)
+			}
+			if string(out) != tt.want {
+				t.Errorf("chunked CSIuReader = %q, want %q", string(out), tt.want)
+			}
+		})
+	}
+}

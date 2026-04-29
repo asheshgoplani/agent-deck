@@ -383,6 +383,39 @@ func (c *csiuReader) translate(final bool) []byte {
 			i++
 			continue
 		}
+
+		// SS3 (ESC O) handling: rewrite ESC OH / ESC OF to ESC [H / ESC [F
+		// so Bubble Tea's escSeq table recognizes Home/End. Terminals that
+		// emit application-mode (DECKPAM) SS3 sequences for Home/End include
+		// iTerm2's default macOS profile over direct SSH. Other SS3 sequences
+		// (arrows ESC OA-D, function keys ESC OP-S) are already in Bubble
+		// Tea's escSeq table and must pass through unchanged.
+		if c.inBuf[i+1] == 'O' {
+			if i+2 >= len(c.inBuf) {
+				if !final {
+					break // buffer ESC O, wait for third byte
+				}
+				// final: pass through ESC O as-is.
+				out = append(out, c.inBuf[i:i+2]...)
+				i += 2
+				continue
+			}
+			switch c.inBuf[i+2] {
+			case 'H':
+				out = append(out, 0x1b, '[', 'H')
+				i += 3
+				continue
+			case 'F':
+				out = append(out, 0x1b, '[', 'F')
+				i += 3
+				continue
+			}
+			// Other ESC O* sequence — Bubble Tea handles natively.
+			out = append(out, c.inBuf[i:i+3]...)
+			i += 3
+			continue
+		}
+
 		if c.inBuf[i+1] != '[' {
 			out = append(out, c.inBuf[i])
 			i++
