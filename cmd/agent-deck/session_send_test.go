@@ -48,6 +48,21 @@ func TestWaitForCompletion_ImmediateWaiting(t *testing.T) {
 	}
 }
 
+func TestShouldSkipConductorHeartbeatSend_UsesHeartbeatPrefixOnlyForConductors(t *testing.T) {
+	conductor := &session.Instance{Title: "conductor-ops"}
+	regular := &session.Instance{Title: "ops"}
+
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("regular sessions must not be treated as conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorBridgeHeartbeatPrefix+" check") {
+		t.Fatal("regular sessions must not be treated as bridge conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(conductor, "hello") {
+		t.Fatal("non-heartbeat messages must not be treated as conductor heartbeats")
+	}
+}
+
 func TestWaitForCompletion_ActiveThenWaiting(t *testing.T) {
 	mock := &mockStatusChecker{
 		statuses: []string{"active", "active", "waiting"},

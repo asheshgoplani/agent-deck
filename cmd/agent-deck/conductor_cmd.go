@@ -111,6 +111,7 @@ func handleConductorSetup(profile string, args []string) {
 	description := fs.String("description", "", "Description for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
+	heartbeatIdleMinutes := fs.Int("heartbeat-idle-minutes", 0, "Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 	instructionsMD := fs.String("instructions-md", "", "Custom instructions file for this conductor (agent-specific, e.g., ~/docs/conductor-ops.md)")
 	sharedInstructionsMD := fs.String("shared-instructions-md", "", "Custom shared instructions file for all conductors of this agent")
 	claudeMD := fs.String("claude-md", "", "Custom CLAUDE.md for this conductor (e.g., ~/docs/conductor-ryan.md)")
@@ -140,6 +141,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Enable heartbeat for this conductor (default)")
 		fmt.Println("  -no-heartbeat")
 		fmt.Println("        Disable heartbeat for this conductor")
+		fmt.Println("  -heartbeat-idle-minutes int")
+		fmt.Println("        Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 		fmt.Println("  -no-clear-on-compact")
 		fmt.Println("        Claude-only: allow normal compaction instead of /clear when context fills up")
 		fmt.Println()
@@ -462,7 +465,7 @@ func handleConductorSetup(profile string, args []string) {
 	if len(envFlags) > 0 {
 		envMap = map[string]string(envFlags)
 	}
-	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, envMap, *envFile); err != nil {
+	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, envMap, *envFile, *heartbeatIdleMinutes); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}
@@ -918,26 +921,35 @@ func handleConductorStatus(_ string, args []string) {
 	}
 
 	type conductorStatus struct {
-		Name        string `json:"name"`
-		Agent       string `json:"agent"`
-		Profile     string `json:"profile"`
-		DirExists   bool   `json:"dir_exists"`
-		SessionID   string `json:"session_id,omitempty"`
-		SessionDone bool   `json:"session_registered"`
-		Running     bool   `json:"running"`
-		Heartbeat   bool   `json:"heartbeat"`
-		Description string `json:"description,omitempty"`
+		Name                 string `json:"name"`
+		Agent                string `json:"agent"`
+		Profile              string `json:"profile"`
+		DirExists            bool   `json:"dir_exists"`
+		SessionID            string `json:"session_id,omitempty"`
+		SessionDone          bool   `json:"session_registered"`
+		Running              bool   `json:"running"`
+		Heartbeat            bool   `json:"heartbeat"`
+		Description          string `json:"description,omitempty"`
+		LastActivityAt       string `json:"last_activity_at,omitempty"`
+		HeartbeatIdleMinutes int    `json:"heartbeat_idle_minutes"`
 	}
 	var statuses []conductorStatus
 
 	for _, meta := range conductors {
 		cs := conductorStatus{
-			Name:        meta.Name,
-			Agent:       meta.GetAgent(),
-			Profile:     meta.Profile,
-			DirExists:   session.IsConductorSetup(meta.Name),
-			Heartbeat:   meta.HeartbeatEnabled,
-			Description: meta.Description,
+			Name:                 meta.Name,
+			Agent:                meta.GetAgent(),
+			Profile:              meta.Profile,
+			DirExists:            session.IsConductorSetup(meta.Name),
+			Heartbeat:            meta.HeartbeatEnabled,
+			Description:          meta.Description,
+			HeartbeatIdleMinutes: meta.GetHeartbeatIdleMinutes(),
+		}
+
+		// Get last activity time across managed sessions (excludes conductor window).
+		// Zero time means no data — omit rather than emit a spurious ancient timestamp.
+		if lastActivity, err := session.GetConductorLastActivity(meta.Name, meta.Profile); err == nil && !lastActivity.IsZero() {
+			cs.LastActivityAt = lastActivity.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
 
 		// Check session
