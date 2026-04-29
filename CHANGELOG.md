@@ -5,6 +5,29 @@ All notable changes to Agent Deck will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Terminal navigation keys in session list.** Session list now accepts
+  `Home` / `End` (jump to first / last item) and `PgUp` / `PgDn` (half-page
+  aliases of existing `Ctrl+U` / `Ctrl+D`). Fills a gap where no single-key
+  jump-to-bottom existed, since `G` opens global search. `Home` / `End` also
+  scroll the help overlay. Follows the same side-effect contract as the
+  pagination handlers (preview scroll reset, navigation-activity mark,
+  debounced preview fetch).
+
+### Fixed
+
+- **Home/End keys in TUI now work for iTerm2 over direct SSH.** iTerm2's
+  default macOS profile emits Home/End as SS3 application-mode sequences
+  (`ESC OH` / `ESC OF`) on direct SSH (no intermediate tmux or screen).
+  Bubble Tea's decoder covers the xterm, vt220, and urxvt Home/End
+  variants but not SS3 — `csiuReader.translate` now rewrites `ESC OH` to
+  `ESC [H` and `ESC OF` to `ESC [F` before bytes reach Bubble Tea. All
+  other `ESC O*` sequences pass through unchanged. Verified unchanged
+  for iTerm2 → SSH → Screen (already emitted vt220 `ESC [1~` / `ESC [4~`).
+
 ## [1.7.72] - 2026-04-28
 
 Bundle of fixes and contributor PRs, hours after v1.7.71. Two external contributors merged this cycle: @tarekrached (twice), @oryaacov.

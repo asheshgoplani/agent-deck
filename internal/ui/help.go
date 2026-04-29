@@ -103,6 +103,12 @@ func (h *HelpOverlay) Update(msg tea.Msg) (*HelpOverlay, tea.Cmd) {
 				h.scrollOffset = 0
 			}
 			return h, nil
+		case "home":
+			h.scrollOffset = 0
+			return h, nil
+		case "end":
+			h.scrollOffset = 9999 // Will be clamped in View()
+			return h, nil
 		case "g":
 			h.scrollOffset = 0
 			return h, nil
@@ -168,7 +174,9 @@ func (h *HelpOverlay) View() string {
 				{"j / Down", "Move down"},
 				{"k / Up", "Move up"},
 				{"Ctrl+u/d", "Half page up/down"},
+				{"PgUp / PgDn", "Half page up/down"},
 				{"Ctrl+f/b", "Full page up/down"},
+				{"Home / End", "Jump to first / last item"},
 				{"gg / G", "Jump to top / global search"},
 				{"h / Left", "Collapse / parent"},
 				{"l / Right", "Expand / toggle"},
