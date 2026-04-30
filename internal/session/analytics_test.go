@@ -59,11 +59,25 @@ func TestSessionAnalytics_ContextPercent_OpusModel(t *testing.T) {
 	assert.InDelta(t, 50.0, analytics.ContextPercent(0), 0.01)
 }
 
+func TestSessionAnalytics_ContextPercent_Opus47Model(t *testing.T) {
+	analytics := &SessionAnalytics{
+		CurrentContextTokens: 145200,
+		Model:                "claude-opus-4-7",
+	}
+
+	// Opus 4.7 launched at 1M context default. 145200 / 1000000 * 100 = 14.52%.
+	// Without the prefix-table entry this falls back to 200k and reports 72.6%.
+	assert.InDelta(t, 14.52, analytics.ContextPercent(0), 0.01)
+}
+
 func TestContextWindowForModel(t *testing.T) {
+	// 4.7 models: 1M
+	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7"))
+	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7-20260301"))
 	// 4.6 models: 1M
 	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-6"))
 	assert.Equal(t, 1000000, contextWindowForModel("claude-sonnet-4-6"))
-	// 4.x non-4.6 models: 200k
+	// 4.x non-4.6/4.7 models: 200k
 	assert.Equal(t, 200000, contextWindowForModel("claude-opus-4-20250514"))
 	assert.Equal(t, 200000, contextWindowForModel("claude-sonnet-4-20250514"))
 	assert.Equal(t, 200000, contextWindowForModel("claude-haiku-4-5"))

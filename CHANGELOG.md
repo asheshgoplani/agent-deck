@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session Analytics context bar showed wrong percentage for `claude-opus-4-7`** ([#836](https://github.com/asheshgoplani/agent-deck/issues/836)). The model→context-window prefix table in `internal/session/analytics.go` had no entry for `claude-opus-4-7`, so `contextWindowForModel` fell through to the 200k default. The Session Analytics panel called `ContextPercent(0)` and rendered ~5x the actual context usage (e.g. 72.6% instead of 14.5% for ~145K tokens used). Fix adds `claude-opus-4-7` at 1,000,000 to the prefix table.
+
 ## [1.7.75] - 2026-04-30
 
 Community quality-of-life bundle. Four contributor PRs landing the day after the v1.7.74 hotfix: regression fix for web mutations broken since v1.7.71, an SSH start-failure cleanup compensation, an `add` ergonomics fix for SSH-piped paths, and a configurable cost status-line. All four were dual-reviewed (Claude + Codex peer reviewer) before merge — first run of the dual-model review pipeline.

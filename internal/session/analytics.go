@@ -75,10 +75,12 @@ var modelContextWindowPrefixes = []struct {
 	prefix string
 	size   int
 }{
+	// 4.7 models: 1M context (Opus 4.7 launched at 1M default)
+	{"claude-opus-4-7", 1000000},
 	// 4.6 models: 1M context
 	{"claude-opus-4-6", 1000000},
 	{"claude-sonnet-4-6", 1000000},
-	// 4.x models (non-4.6): 200k context
+	// 4.x models (non-4.6/4.7): 200k context
 	{"claude-opus-4", 200000},
 	{"claude-sonnet-4", 200000},
 	{"claude-haiku-4", 200000},
