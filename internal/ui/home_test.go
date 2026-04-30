@@ -92,6 +92,16 @@ func TestCreateSessionTool_Pi(t *testing.T) {
 	}
 }
 
+// TUI session creation must produce Tool="copilot" rather than
+// Tool="shell" with Command="copilot", matching the tmux/userconfig
+// wiring already present since v1.7.26.
+func TestCreateSessionTool_Copilot(t *testing.T) {
+	tool, command := createSessionTool("copilot")
+	if tool != "copilot" || command != "copilot" {
+		t.Fatalf("createSessionTool(\"copilot\") = (%q, %q), want (\"copilot\", \"copilot\")", tool, command)
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

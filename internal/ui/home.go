@@ -8088,6 +8088,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "opencode"
 	case "pi":
 		tool = "pi"
+	case "copilot":
+		tool = "copilot"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
