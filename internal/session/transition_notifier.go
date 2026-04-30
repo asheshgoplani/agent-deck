@@ -98,6 +98,23 @@ type TransitionNotifier struct {
 	orphanMu     sync.Mutex
 	orphanWarned map[string]bool
 
+	// missedMu guards missedSeen. The set tracks (fingerprint|reason) keys
+	// already written to notifier-missed.log so the same exhausted event
+	// firing repeatedly (issue #824) doesn't flood the log with identical
+	// lines. Process-local — restart resets the dedup state, which is fine:
+	// missed-log is operator signal, not durable replay.
+	missedMu   sync.Mutex
+	missedSeen map[string]bool
+
+	// terminatedMu guards terminatedFingerprints. An event whose retries
+	// exhausted is recorded here; subsequent EnqueueDeferred calls for the
+	// same fingerprint are no-ops. Without this guard the daemon's poll
+	// loop keeps re-pushing the exhausted event into the deferred queue,
+	// producing the 7-times-in-16-seconds re-fire loop in the production
+	// trace from issue #824.
+	terminatedMu           sync.Mutex
+	terminatedFingerprints map[string]bool
+
 	// stopCh closes when Close() is invoked. scheduleBusyRetry's sleep loops
 	// select on it so test cleanups can cancel pending retries instead of
 	// letting them write inbox files into the post-cleanup environment.
@@ -126,9 +143,11 @@ func NewTransitionNotifier() *TransitionNotifier {
 		state: transitionNotifyState{
 			Records: map[string]transitionNotifyRecord{},
 		},
-		targetSlots:  map[string]chan struct{}{},
-		orphanWarned: map[string]bool{},
-		stopCh:       make(chan struct{}),
+		targetSlots:            map[string]chan struct{}{},
+		orphanWarned:           map[string]bool{},
+		missedSeen:             map[string]bool{},
+		terminatedFingerprints: map[string]bool{},
+		stopCh:                 make(chan struct{}),
 	}
 	n.loadState()
 	n.loadQueue()
@@ -271,6 +290,20 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		return plan
 	}
 
+	// Top-level conductor self-suppress (issue #824 cause B). A real
+	// top-level conductor has parent_session_id == "" AND its own title
+	// starts with `conductor-`. That isn't an orphan — it's the root —
+	// so drop silently without writing to notifier-orphans.log. The
+	// production trace showed agent-deck conductors flooding the orphan
+	// log with their own self-transitions because PR #807's check at
+	// the outer line-211 only looked at event.ChildTitle, which was
+	// empty in some emit paths.
+	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
 	// Orphan-on-creation guard (issue #805 cause A). When a child is born
 	// without a parent linkage — typically because a worktree-setup hook
 	// or sandboxed shell dropped $AGENTDECK_INSTANCE_ID — every transition
@@ -279,6 +312,16 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 	// the documented `agent-deck session set-parent` workflow.
 	if strings.TrimSpace(child.ParentSessionID) == "" {
 		n.logOrphanOnce(plan.event, child.ID)
+		plan.event.DeliveryResult = transitionDeliveryDropped
+		plan.finalized = true
+		return plan
+	}
+
+	// Self-pointing conductor: parent_session_id == child.id. This is the
+	// case PR #807 explicitly covered. resolveParentNotificationTarget
+	// would also return nil here, but we drop earlier (without an orphan
+	// log) so a self-pointing conductor doesn't get spurious WARN noise.
+	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
 		plan.event.DeliveryResult = transitionDeliveryDropped
 		plan.finalized = true
 		return plan
@@ -528,6 +571,22 @@ func (n *TransitionNotifier) logEvent(event TransitionNotificationEvent) {
 }
 
 func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason string) {
+	// Dedup by (fingerprint|reason) so repeated exhaust calls for the same
+	// logical event don't flood the log. A different reason for the same
+	// event still records — operators want to see e.g. timeout AND expired
+	// for the same transition, but not seven exhaust lines in a row.
+	key := EventFingerprint(event) + "|" + reason
+	n.missedMu.Lock()
+	if n.missedSeen == nil {
+		n.missedSeen = map[string]bool{}
+	}
+	if n.missedSeen[key] {
+		n.missedMu.Unlock()
+		return
+	}
+	n.missedSeen[key] = true
+	n.missedMu.Unlock()
+
 	if err := os.MkdirAll(filepath.Dir(n.missedPath), 0o755); err != nil {
 		return
 	}
@@ -537,6 +596,7 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 		"event":  fmt.Sprintf("%s→%s", event.FromStatus, event.ToStatus),
 		"child":  event.ChildSessionID,
 		"reason": reason,
+		"fp":     EventFingerprint(event),
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -548,6 +608,24 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 	}
 	defer f.Close()
 	_, _ = f.Write(append(line, '\n'))
+}
+
+// markTerminated records that an event's retries have exhausted and the
+// event has been persisted to the inbox. Subsequent EnqueueDeferred calls
+// for the same fingerprint will no-op via isTerminated.
+func (n *TransitionNotifier) markTerminated(event TransitionNotificationEvent) {
+	n.terminatedMu.Lock()
+	defer n.terminatedMu.Unlock()
+	if n.terminatedFingerprints == nil {
+		n.terminatedFingerprints = map[string]bool{}
+	}
+	n.terminatedFingerprints[EventFingerprint(event)] = true
+}
+
+func (n *TransitionNotifier) isTerminated(event TransitionNotificationEvent) bool {
+	n.terminatedMu.Lock()
+	defer n.terminatedMu.Unlock()
+	return n.terminatedFingerprints[EventFingerprint(event)]
 }
 
 // --- deferred retry queue ----------------------------------------------------
@@ -562,6 +640,14 @@ func (n *TransitionNotifier) EnqueueDeferred(event TransitionNotificationEvent) 
 }
 
 func (n *TransitionNotifier) enqueueDeferredAt(event TransitionNotificationEvent, firstDeferredAt time.Time) {
+	// Terminated fingerprints (events already exhausted to inbox) must not
+	// be re-queued. Issue #824 trace showed the same event re-firing 7 times
+	// in 16 seconds because the daemon's poll loop kept re-discovering the
+	// transition and EnqueueDeferred kept accepting it.
+	if n.isTerminated(event) {
+		return
+	}
+
 	n.queueMu.Lock()
 	defer n.queueMu.Unlock()
 
@@ -866,10 +952,15 @@ func (n *TransitionNotifier) scheduleBusyRetry(event TransitionNotificationEvent
 			// Send failed: try the next backoff entry.
 		}
 
-		// Exhausted — persist to the parent's inbox and signal via missed log.
+		// Exhausted — persist to the parent's inbox, signal via missed log,
+		// and mark terminated so the deferred queue cannot re-add this
+		// fingerprint. Order matters: mark terminated BEFORE removeFromQueue
+		// so a concurrent drain that races us to EnqueueDeferred can't slip
+		// the event back in between the queue prune and the terminated mark.
 		if event.TargetSessionID != "" {
 			_ = WriteInboxEvent(event.TargetSessionID, event)
 		}
+		n.markTerminated(event)
 		n.logMissed(event, "exhausted_busy_retries")
 		n.removeFromQueue(event)
 	}()

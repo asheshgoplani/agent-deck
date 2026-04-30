@@ -26,6 +26,19 @@ import (
 
 var inboxWriteMu sync.Mutex // serializes appends to a single inbox file
 
+// inboxFingerprintCache holds, per inbox file path, the set of event
+// fingerprints already persisted. Populated lazily on first write to a path
+// (by scanning the existing file) and updated on every successful append.
+//
+// This cache is process-local. For cross-process correctness we still scan
+// the file on the first write per path within a process, so a fresh process
+// won't re-append events the previous process already wrote.
+//
+// Issue #824: scheduleBusyRetry's exhaustion path was firing repeatedly
+// for the same logical event, producing 13 duplicate JSONL lines for a
+// single transition. The cache + lazy file scan reduces those to one.
+var inboxFingerprintCache = map[string]map[string]struct{}{}
+
 // InboxDir returns the directory that holds per-parent inbox files.
 func InboxDir() string {
 	dir, err := GetAgentDeckDir()
@@ -54,6 +67,12 @@ func sanitizeInboxName(id string) string {
 
 // WriteInboxEvent appends one event to the parent's inbox as a JSONL line.
 // Safe for concurrent callers within a single process.
+//
+// Fingerprint dedup: events that share an EventFingerprint with one already
+// persisted in the file are silently skipped. This is the producer-side
+// guard for issue #824 (scheduleBusyRetry firing the same exhaustion path
+// for the same logical event multiple times). Consumers still get
+// at-most-once delivery via ReadAndTruncateInbox.
 func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) error {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return errors.New("inbox: empty parent session id")
@@ -62,13 +81,35 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	line, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
+
+	fp := EventFingerprint(event)
 
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
+
+	seen, ok := inboxFingerprintCache[path]
+	if !ok {
+		// Lazy file scan recovers dedup state across process restarts. Without
+		// this a fresh process would happily re-append events that a prior
+		// process had already persisted.
+		seen = loadInboxFingerprintsLocked(path)
+		inboxFingerprintCache[path] = seen
+	}
+	if _, dup := seen[fp]; dup {
+		return nil
+	}
+
+	// Embed the fingerprint into the persisted JSON so on-disk state is
+	// self-describing — the file-scan recovery path can reconstruct the
+	// dedup set without re-deriving fingerprints from the event body.
+	type wireEvent struct {
+		TransitionNotificationEvent
+		Fingerprint string `json:"fp,omitempty"`
+	}
+	line, err := json.Marshal(wireEvent{TransitionNotificationEvent: event, Fingerprint: fp})
+	if err != nil {
+		return err
+	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -78,7 +119,54 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return err
 	}
+	seen[fp] = struct{}{}
 	return nil
+}
+
+// loadInboxFingerprintsLocked scans an existing inbox file and returns the
+// set of fingerprints already persisted. Caller holds inboxWriteMu.
+//
+// Two formats are tolerated: the new format with an explicit "fp" field,
+// and the legacy format from before this fix where the event was stored
+// without a fingerprint. For legacy lines we re-derive the fingerprint
+// from the event fields so dedup still applies.
+func loadInboxFingerprintsLocked(path string) map[string]struct{} {
+	out := map[string]struct{}{}
+	f, err := os.Open(path)
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var probe struct {
+			TransitionNotificationEvent
+			Fingerprint string `json:"fp"`
+		}
+		if err := json.Unmarshal([]byte(line), &probe); err != nil {
+			continue
+		}
+		fp := probe.Fingerprint
+		if fp == "" {
+			fp = EventFingerprint(probe.TransitionNotificationEvent)
+		}
+		out[fp] = struct{}{}
+	}
+	return out
+}
+
+// ResetInboxFingerprintCacheForTest clears the process-local dedup cache.
+// Tests use it to simulate a fresh process so the on-disk recovery path is
+// exercised. Production code does not call this.
+func ResetInboxFingerprintCacheForTest() {
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+	inboxFingerprintCache = map[string]map[string]struct{}{}
 }
 
 // ReadAndTruncateInbox reads all events from the parent's inbox and removes
@@ -132,5 +220,9 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return out, err
 	}
+	// Truncating drops the dedup cache for this path: the next write should
+	// be free to land, even if the same fingerprint was just drained. The
+	// drain itself is the consumer's acknowledgement.
+	delete(inboxFingerprintCache, path)
 	return out, nil
 }
