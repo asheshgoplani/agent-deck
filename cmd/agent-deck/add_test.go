@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -523,5 +525,45 @@ func TestResolveGroupPathForAdd_ByNameAndNormalizedPath(t *testing.T) {
 
 	if got := resolveGroupPathForAdd(tree, "my team"); got != "my-team" {
 		t.Fatalf("Expected normalized selector to resolve to my-team, got %q", got)
+	}
+}
+
+// TestResolveAddPath covers the path-arg resolver used by `agent-deck add`.
+// Regression: prior to the fix, `~` was passed through filepath.Abs and resolved
+// to <cwd>/~, breaking remote SSH-driven adds where the shell preserves a
+// literal tilde. ExpandPath handles ~, ~/foo, $HOME, and ${VAR}.
+func TestResolveAddPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"dot uses cwd", ".", cwd},
+		{"bare tilde expands to home", "~", home},
+		{"tilde with subdir", "~/projects/foo", filepath.Join(home, "projects/foo")},
+		{"HOME env var", "$HOME", home},
+		{"HOME env var with subdir", "$HOME/bar", filepath.Join(home, "bar")},
+		{"absolute path passes through", "/tmp/abs", "/tmp/abs"},
+		{"relative resolves against cwd", "rel/sub", filepath.Join(cwd, "rel/sub")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveAddPath(tt.in)
+			if err != nil {
+				t.Fatalf("resolveAddPath(%q) error = %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("resolveAddPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }

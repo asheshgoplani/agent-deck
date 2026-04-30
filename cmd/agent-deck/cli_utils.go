@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -131,6 +132,17 @@ func resolveGroupSelection(currentGroup, parentGroup string, explicitGroupProvid
 		return currentGroup
 	}
 	return parentGroup
+}
+
+// resolveAddPath resolves the user-provided positional path arg for `agent-deck add`.
+// Handles ".", "~", "~/foo", "$VAR/foo", and relative/absolute paths uniformly.
+// session.ExpandPath runs first so a literal tilde from a non-expanding shell
+// (e.g. SSH-driven invocation) reaches a real home directory before Abs.
+func resolveAddPath(rawPathArg string) (string, error) {
+	if rawPathArg == "." {
+		return os.Getwd()
+	}
+	return filepath.Abs(session.ExpandPath(rawPathArg))
 }
 
 // CLIOutput handles consistent output formatting across all CLI commands

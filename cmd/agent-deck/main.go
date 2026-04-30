@@ -1219,18 +1219,10 @@ func handleAdd(profile string, args []string) {
 	}
 
 	if explicitPathProvided {
-		if rawPathArg == "." {
-			path, err = os.Getwd()
-			if err != nil {
-				fmt.Printf("Error: failed to get current directory: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
-			path, err = filepath.Abs(rawPathArg)
-			if err != nil {
-				fmt.Printf("Error: failed to resolve path: %v\n", err)
-				os.Exit(1)
-			}
+		path, err = resolveAddPath(rawPathArg)
+		if err != nil {
+			fmt.Printf("Error: failed to resolve path: %v\n", err)
+			os.Exit(1)
 		}
 	} else {
 		// No explicit path provided: use group default path first, then cwd fallback.
