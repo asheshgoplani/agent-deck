@@ -247,6 +247,7 @@ func (n *TransitionNotifier) prepareDispatch(event TransitionNotificationEvent) 
 		plan.finalized = true
 		return plan
 	}
+	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		plan.event.DeliveryResult = transitionDeliveryFailed
@@ -660,6 +661,7 @@ func (n *TransitionNotifier) liveTargetAvailability(profile, targetID string) bo
 	if err != nil {
 		return false
 	}
+	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
 		return false
