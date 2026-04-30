@@ -25,6 +25,7 @@ type wsServerMessage struct {
 	Event     string    `json:"event,omitempty"`
 	Code      string    `json:"code,omitempty"`
 	Message   string    `json:"message,omitempty"`
+	Hint      string    `json:"hint,omitempty"` // #782: actionable next step for terminal-fatal errors
 	SessionID string    `json:"sessionId,omitempty"`
 	Profile   string    `json:"profile,omitempty"`
 	ReadOnly  bool      `json:"readOnly,omitempty"`
@@ -114,14 +115,20 @@ func (s *Server) handleSessionWS(w http.ResponseWriter, r *http.Request) {
 				slog.String("error", err.Error()))
 			code := "TERMINAL_ATTACH_FAILED"
 			message := "failed to attach terminal bridge"
+			// #782: terminal-fatal errors get an actionable hint so the
+			// WebUI can render guidance instead of repeating an opaque
+			// `[error:CODE]` line on every reconnect attempt.
+			hint := "Check the server logs for details."
 			if errors.Is(err, ErrTmuxSessionNotFound) {
 				code = "TMUX_SESSION_NOT_FOUND"
 				message = "tmux session is not available"
+				hint = "The tmux session for this entry no longer exists. Restart it from the sidebar (Restart icon, or press 'r' with the row focused) to create a fresh tmux session."
 			}
 			_ = writer.WriteJSON(wsServerMessage{
 				Type:      "error",
 				Code:      code,
 				Message:   message,
+				Hint:      hint,
 				SessionID: sessionID,
 				Time:      time.Now().UTC(),
 			})
