@@ -638,6 +638,17 @@ agent-deck remote update dev      # specific remote
 
 Remote configuration is stored under `[remotes]` in `~/.agent-deck/config.toml`. All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
 
+### Reaching services running inside remote sessions
+
+If you run a dev server, REPL, or web UI inside a remote session and want to reach it from your local browser, use **[Tailscale](https://tailscale.com)** rather than ad-hoc SSH port forwarding. Tailscale gives every machine on your tailnet a direct IP, so a service on `localhost:3000` of your remote box is reachable at `http://<remote-tailnet-ip>:3000` from your laptop with no `-L`/`-R` setup, no port collisions when multiple sessions share a remote, and no ControlMaster edge cases.
+
+Setup once:
+1. Install Tailscale on your local machine and on each remote: `curl -fsSL https://tailscale.com/install.sh | sh`
+2. `sudo tailscale up` on both ends, sign in with the same account
+3. Use the remote's tailnet IP (or MagicDNS name) in your browser
+
+This is why agent-deck does not ship native SSH `-L`/`-R` forwarding: Tailscale solves the same problem more robustly with no per-session configuration.
+
 ## Installation
 
 **Works on:** macOS, Linux, Windows (WSL)
