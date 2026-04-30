@@ -76,6 +76,12 @@ export function TerminalPanel() {
   // null when there's no fatal error; an object { code, message, hint }
   // when one has been signalled by the server.
   const [fatalError, setFatalError] = useState(null)
+  // #782 (codex review): bumping reconnectKey forces the main useEffect to
+  // tear down the disabled-reconnect ctx and rebuild a fresh terminal +
+  // WebSocket. Without this, after the user clicks "Restart session" the
+  // banner clears but ctx.wsReconnectEnabled is stuck at false from the
+  // earlier TMUX_SESSION_NOT_FOUND, and the terminal never reattaches.
+  const [reconnectKey, setReconnectKey] = useState(0)
 
   // Signal vanilla app.js to suppress its terminal path while TerminalPanel is mounted
   useEffect(() => {
@@ -105,8 +111,15 @@ export function TerminalPanel() {
       return
     }
 
-    // Prevent double-init
-    if (ctxRef.current && ctxRef.current.sessionId === sessionId) return
+    // Prevent double-init. Both sessionId AND reconnectKey are part of
+    // the identity: bumping reconnectKey (after a successful Restart from
+    // the #782 fatal banner) forces a fresh terminal + ws even though
+    // sessionId is unchanged.
+    if (
+      ctxRef.current &&
+      ctxRef.current.sessionId === sessionId &&
+      ctxRef.current.reconnectKey === reconnectKey
+    ) return
     cleanup()
     // #782: a fresh session connection clears any prior fatal banner.
     setFatalError(null)
@@ -188,6 +201,7 @@ export function TerminalPanel() {
     // Context object for this session
     const ctx = {
       sessionId,
+      reconnectKey, // #782: stamp the key so the double-init guard can detect a forced reconnect
       terminal,
       fitAddon,
       ws: null,
@@ -375,7 +389,7 @@ export function TerminalPanel() {
       clearTimeout(resizeTimer)
       cleanup()
     }
-  }, [sessionId, cleanup])
+  }, [sessionId, reconnectKey, cleanup])
 
   if (!sessionId) {
     return html`<${EmptyStateDashboard} />`
@@ -390,6 +404,12 @@ export function TerminalPanel() {
     try {
       await apiFetch('POST', '/api/sessions/' + sessionId + '/restart')
       setFatalError(null)
+      // #782 (codex review): bumping reconnectKey forces the main effect
+      // to tear down the disabled-reconnect ctx and rebuild a fresh
+      // terminal + WebSocket. Without this, ctx.wsReconnectEnabled stays
+      // false from the prior TMUX_SESSION_NOT_FOUND and the terminal
+      // never reattaches to the freshly-restarted tmux session.
+      setReconnectKey((k) => k + 1)
     } catch (_e) {
       // Errors surface via the global toast layer; leave the banner up.
     }

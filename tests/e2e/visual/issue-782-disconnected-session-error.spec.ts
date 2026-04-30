@@ -97,4 +97,27 @@ test.describe('Issue #782 — disconnected-session error UX', () => {
       'TerminalPanel.js must collapse the raw `[error:` terminal write paths so a fatal session loss is shown ONCE in a banner, not on every reconnect — #782',
     ).toBeLessThanOrEqual(1);
   });
+
+  test('structural: handleFatalRestart actually re-opens the WebSocket (codex review fix)', () => {
+    // Codex review on PR #834 caught: clearing fatalError after a restart
+    // POST is not enough — ctx.wsReconnectEnabled is stuck at false and
+    // the main useEffect does not re-run for an unchanged sessionId, so
+    // the terminal never reattaches. The fix introduces a `reconnectKey`
+    // state that handleFatalRestart bumps after a successful restart,
+    // which is wired into the main useEffect's dep list so the effect
+    // tears down the disabled-reconnect ctx and rebuilds a fresh terminal.
+    const src = readFileSync(join(APP_ROOT, 'TerminalPanel.js'), 'utf-8');
+    expect(
+      /reconnectKey/.test(src),
+      'TerminalPanel.js must declare a reconnectKey state to force a forced terminal reconnect after Restart — codex review of #782',
+    ).toBe(true);
+    expect(
+      /setReconnectKey\s*\(\s*\(?\s*k\s*\)?\s*=>\s*k\s*\+\s*1\s*\)/.test(src),
+      'handleFatalRestart must bump reconnectKey after a successful POST so the main useEffect rebuilds the terminal — codex review of #782',
+    ).toBe(true);
+    expect(
+      /\}\s*,\s*\[\s*sessionId\s*,\s*reconnectKey/.test(src),
+      'The main useEffect must include reconnectKey in its dependency list so bumping it triggers a fresh connect — codex review of #782',
+    ).toBe(true);
+  });
 });
