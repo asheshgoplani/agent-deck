@@ -412,6 +412,101 @@ func TestQueue_ExhaustedEventRemovedFromDeferredQueue(t *testing.T) {
 	}
 }
 
+// TestQueue_SuccessfulRetryMarksTerminated: v1.7.75 follow-up to #825.
+//
+// The exhaustion path of scheduleBusyRetry calls markTerminated. The success
+// path historically did not — so when 5 daemon polls during a busy window
+// spawned 5 parallel scheduleBusyRetry goroutines (NotifyTransition's deferred
+// branch skips markNotified, so isDuplicate doesn't gate them), all 5 raced
+// to deliver once the parent freed up and the user got the [EVENT] line 5
+// times. Concrete production trace: child 384aa29c-1777532624 with 5 deferred
+// + 5 sent records at the same wall-clock timestamp.
+//
+// The fix: success path also marks terminated, so the daemon's next poll
+// can't re-enqueue the same fingerprint via EnqueueDeferred.
+func TestQueue_SuccessfulRetryMarksTerminated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_DECK_HOME", "")
+	t.Setenv("AGENT_DECK_PROFILE", "")
+	ClearUserConfigCache()
+	t.Cleanup(func() {
+		ClearUserConfigCache()
+		ResetInboxFingerprintCacheForTest()
+	})
+	ResetInboxFingerprintCacheForTest()
+
+	dir := t.TempDir()
+	n := &TransitionNotifier{
+		statePath:   filepath.Join(dir, "state.json"),
+		logPath:     filepath.Join(dir, "transition-notifier.log"),
+		missedPath:  filepath.Join(dir, "notifier-missed.log"),
+		queuePath:   filepath.Join(dir, "queue.json"),
+		orphanPath:  filepath.Join(dir, "notifier-orphans.log"),
+		sendTimeout: 200 * time.Millisecond,
+		state: transitionNotifyState{
+			Records: map[string]transitionNotifyRecord{},
+		},
+		targetSlots: map[string]chan struct{}{},
+		busyBackoff: []time.Duration{2 * time.Millisecond, 4 * time.Millisecond, 6 * time.Millisecond},
+	}
+	// Parent is busy on the first availability check, free thereafter. This
+	// reproduces the production scenario where the parent is busy at dispatch
+	// time and frees up before the backoff schedule exhausts.
+	var availChecks atomic.Int32
+	n.availability = func(profile, targetID string) bool {
+		return availChecks.Add(1) > 1
+	}
+	var sendCount atomic.Int32
+	n.sender = func(profile, targetID, message string) error {
+		sendCount.Add(1)
+		return nil
+	}
+
+	ts := time.Unix(1700000500, 0).UTC()
+	ev := TransitionNotificationEvent{
+		ChildSessionID:  "child-success-terminate",
+		ChildTitle:      "worker",
+		Profile:         "_test",
+		FromStatus:      "running",
+		ToStatus:        "waiting",
+		Timestamp:       ts,
+		TargetSessionID: "parent-success-terminate",
+		TargetKind:      "parent",
+	}
+
+	// Mirror the production sequence: deferred path enqueues the event AND
+	// kicks off the in-process retry goroutine.
+	n.EnqueueDeferred(ev)
+	if got := len(n.snapshotQueueForTest()); got != 1 {
+		t.Fatalf("precondition: expected 1 entry pre-retry, got %d", got)
+	}
+
+	n.scheduleBusyRetry(ev)
+	n.Flush()
+
+	if got := sendCount.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 successful send, got %d", got)
+	}
+
+	if got := len(n.snapshotQueueForTest()); got != 0 {
+		t.Fatalf("queue must be empty after successful retry, got %d entries", got)
+	}
+
+	if !n.isTerminated(ev) {
+		t.Fatalf("fingerprint must be in terminated set after successful retry; this is the v1.7.75 follow-up to #825")
+	}
+
+	// The daemon's next poll re-discovers the same waiting child and calls
+	// EnqueueDeferred. Without the success-path markTerminated, this re-adds
+	// the entry and a 2nd scheduleBusyRetry goroutine fires another [EVENT]
+	// to the parent's pane.
+	n.EnqueueDeferred(ev)
+	if got := len(n.snapshotQueueForTest()); got != 0 {
+		t.Fatalf("2nd retry attempt must not re-fire: terminated fingerprint must block re-add, got %d entries", got)
+	}
+}
+
 // TestQueue_TerminatedFingerprintBlocksReAdd: after an event has exhausted
 // retries and persisted to the inbox, a subsequent EnqueueDeferred for the
 // same fingerprint must be a no-op. Without this guard the daemon's poll

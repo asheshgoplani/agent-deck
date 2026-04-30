@@ -948,6 +948,16 @@ func (n *TransitionNotifier) scheduleBusyRetry(event TransitionNotificationEvent
 				e.DeliveryResult = transitionDeliverySent
 				n.markNotified(e)
 				n.logEvent(e)
+				// Terminal: subsequent EnqueueDeferred calls for the same
+				// fingerprint must no-op. v1.7.74 (#825) added this for the
+				// exhaustion path; without the same guard here, parallel
+				// scheduleBusyRetry goroutines spawned during a busy window
+				// each fire a [EVENT] when the parent frees up (production
+				// trace: child 384aa29c had 5 sent records at the same ts).
+				// Mark terminated BEFORE removeFromQueue so a concurrent
+				// drain that races us to EnqueueDeferred can't slip the
+				// event back in between the queue prune and the mark.
+				n.markTerminated(event)
 				n.removeFromQueue(event)
 				return
 			}
