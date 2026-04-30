@@ -60,10 +60,13 @@ func TestSessionAnalytics_ContextPercent_OpusModel(t *testing.T) {
 }
 
 func TestContextWindowForModel(t *testing.T) {
+	// 4.7 models: 1M (must match before 4.x fallback)
+	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7"))
+	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-7-20260101"))
 	// 4.6 models: 1M
 	assert.Equal(t, 1000000, contextWindowForModel("claude-opus-4-6"))
 	assert.Equal(t, 1000000, contextWindowForModel("claude-sonnet-4-6"))
-	// 4.x non-4.6 models: 200k
+	// 4.x non-4.6/4.7 models: 200k
 	assert.Equal(t, 200000, contextWindowForModel("claude-opus-4-20250514"))
 	assert.Equal(t, 200000, contextWindowForModel("claude-sonnet-4-20250514"))
 	assert.Equal(t, 200000, contextWindowForModel("claude-haiku-4-5"))
