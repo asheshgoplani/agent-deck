@@ -186,7 +186,7 @@ for line in "${CONDUCTOR_LINES[@]}"; do
   ADD_OUT="$("$BIN" -p "$PROFILE" add \
       -t "$CHILD_TITLE" \
       -g "$CGROUP" \
-      -parent "$CID" \
+      --parent "$CID" \
       -c claude \
       -json \
       "$REPO_ROOT" 2>&1 || true)"
