@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.75] - 2026-04-30
+
+Community quality-of-life bundle. Four contributor PRs landing the day after the v1.7.74 hotfix: regression fix for web mutations broken since v1.7.71, an SSH start-failure cleanup compensation, an `add` ergonomics fix for SSH-piped paths, and a configurable cost status-line. All four were dual-reviewed (Claude + Codex peer reviewer) before merge — first run of the dual-model review pipeline.
+
+### Fixed
+
+- **Web mutations disabled by default since v1.7.71; restart/delete buttons returned 403/503** (thanks @JMBattista for [issue #781](https://github.com/asheshgoplani/agent-deck/issues/781) → [PR #785](https://github.com/asheshgoplani/agent-deck/pull/785)). Two compounding bugs: `WebMutations` defaulted to `false` in the config struct, and `buildWebServer` never called `SetMutator` so even an explicit-true config did nothing. Fix flips the default back to `true` (matching pre-#519 behavior), wires `ui.NewWebMutator(homeModel)` into the only `buildWebServer` call site in `main.go`, adds `*bool` TOML pattern to distinguish "absent" from "explicit false", and ships 6 regression tests including `TestBuildWebServer_WiresMutator` + `HasMutator()` to lock against re-introduction. `--read-only` CLI flag still forces mutations off; loopback-only listener and existing Token gate unchanged.
+
+- **`agent-deck add` failed on `~` and `$VAR` in positional path arg over SSH** ([issue #820](https://github.com/asheshgoplani/agent-deck/issues/820), thanks @paskal for [PR #821](https://github.com/asheshgoplani/agent-deck/pull/821)). Interactive shells expand `~` before exec, but `ssh user@host "agent-deck add ~"` passes the literal tilde — `filepath.Abs` then treated `~` as a literal directory name. Fix routes the positional path through the existing `session.ExpandPath` helper (correctly orders env-var expansion → tilde expansion). The `.` shortcut still fast-paths to `os.Getwd()` so error semantics on cwd-failure are preserved. Table-driven regression test covers `.`, `~`, `~/foo`, `$HOME`, `$HOME/bar`, absolute, and relative paths.
+
+- **Orphan remote session row when SSH `session start` fails** (thanks @paskal for [PR #822](https://github.com/asheshgoplani/agent-deck/pull/822)). The two-step `add` + `session start` SSH flow could leave a session row in agent-deck's state.db when the start failed (e.g. flaky network), with no way to retry. Fix adds a compensation step in `CreateSession`'s start-failure branch that calls `DeleteSession` with a fresh `context.Background()` + 10s timeout — correct choice since upstream `ctx` cancellation is often *what caused* the start failure. Best-effort (`_ = DeleteSession`) so a still-broken network doesn't surface two errors at once. Two new tests via a `runFn` injection cover both failure and happy paths without restructuring production code.
+
 ### Added
 
-- **Configurable status-line cost template** ([#818](https://github.com/asheshgoplani/agent-deck/issues/818)). The home status-bar cost segment is now driven by `[costs].cost_line_template` with optional per-profile override at `[profiles.<name>.costs].cost_line_template`. Seven cost variables supported: `{cost_today}`, `{cost_yesterday}`, `{cost_this_week}`, `{cost_last_week}`, `{cost_this_month}`, `{cost_last_month}`, `{cost_projected}`. Unknown placeholders pass through literally. `cost_line_hide_when_zero` (default true) preserves the prior auto-hide behavior. New `Store.TotalYesterday`, `TotalLastWeek`, `TotalLastMonth` helpers underpin the new variables.
+- **Configurable status-line cost template** ([#818](https://github.com/asheshgoplani/agent-deck/issues/818) → [#819](https://github.com/asheshgoplani/agent-deck/pull/819), thanks @AdamiecRadek). The home status-bar cost segment is now driven by `[costs].cost_line_template` with optional per-profile override at `[profiles.<name>.costs].cost_line_template`. Seven cost variables supported: `{cost_today}`, `{cost_yesterday}`, `{cost_this_week}`, `{cost_last_week}`, `{cost_this_month}`, `{cost_last_month}`, `{cost_projected}`. Unknown placeholders pass through literally. `cost_line_hide_when_zero` (default true) preserves the prior auto-hide behavior. New `Store.TotalYesterday`, `TotalLastWeek`, `TotalLastMonth` helpers underpin the new variables. 42 new tests cover boundary cases, nil/empty config, profile-vs-global resolution chain, and TOML round-trip.
 
 ## [1.7.74] - 2026-04-30
 
