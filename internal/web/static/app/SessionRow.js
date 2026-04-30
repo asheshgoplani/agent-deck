@@ -40,6 +40,13 @@ function SessionRowImpl({ item, focused }) {
   // single onFocus/onBlur pair suffices.
   const [hasFocusWithin, setHasFocusWithin] = useState(false)
 
+  // #783: single predicate reused by BOTH the absolute-positioned action
+  // toolbar AND the in-flow tool/cost labels. The toolbar is `absolute
+  // right-2`, so when it appears it draws on top of the flow-laid-out
+  // shell label — hiding the metadata when the toolbar is visible
+  // eliminates the overlap without relayouting either piece.
+  const toolbarVisible = mutationsEnabled && (hovered || focused || isSelected || hasFocusWithin)
+
   function handleClick() {
     selectedIdSignal.value = session.id
   }
@@ -111,11 +118,11 @@ function SessionRowImpl({ item, focused }) {
       >
         <span class="w-2.5 h-2.5 rounded-full flex-shrink-0 ${dotColor}" title=${session.status}></span>
         <span class="flex-1 truncate min-w-0" title=${session.title || session.id}>${session.title || session.id}</span>
-        <span class="text-xs dark:text-tn-muted text-gray-600 flex-shrink-0">
+        <span class="text-xs dark:text-tn-muted text-gray-600 flex-shrink-0 ${toolbarVisible ? 'invisible' : ''}">
           ${session.tool || 'shell'}
         </span>
         ${costLabel && html`
-          <span class="text-xs dark:text-tn-green text-green-700 flex-shrink-0 font-mono">
+          <span class="text-xs dark:text-tn-green text-green-700 flex-shrink-0 font-mono ${toolbarVisible ? 'invisible' : ''}">
             ${costLabel}
           </span>
         `}
@@ -138,7 +145,7 @@ function SessionRowImpl({ item, focused }) {
             onMouseDown=${(e) => e.stopPropagation()}
             class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5
                    transition-opacity duration-[120ms] motion-reduce:transition-none
-                   ${(hovered || focused || isSelected || hasFocusWithin) ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
+                   ${toolbarVisible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
                    group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
           >
             ${(displayStatus === 'running' || displayStatus === 'waiting') && html`
