@@ -1,0 +1,5 @@
+# Generated reports — keep the directory, ignore the contents (they may
+# contain real session IDs from probed conductors and shouldn't be
+# committed).
+*
+!.gitignore
