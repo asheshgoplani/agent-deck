@@ -33,6 +33,9 @@ type SSHRunner struct {
 	Host          string // SSH destination (e.g., "user@host")
 	AgentDeckPath string // Remote agent-deck binary path
 	Profile       string // Remote profile name
+
+	// runFn lets tests stub out command execution. nil = real SSH.
+	runFn func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -53,6 +56,9 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 
 // run executes an agent-deck command on the remote host using the provided context directly.
 func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
+	if r.runFn != nil {
+		return r.runFn(ctx, args...)
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
@@ -461,6 +467,12 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if _, err := r.run(startCtx, "session", "start", result.ID); err != nil {
+		// Compensate: the remote DB has the row but no tmux process. Best-effort
+		// delete with a fresh context so an upstream cancellation doesn't skip
+		// the cleanup. Surface the original start failure.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_ = r.DeleteSession(cleanupCtx, result.ID)
 		return "", fmt.Errorf("failed to start remote session: %w", err)
 	}
 
