@@ -1307,6 +1307,152 @@ func TestMoveSessionDownOrder(t *testing.T) {
 	}
 }
 
+// childrenOf returns IDs of sub-sessions whose ParentSessionID matches parentID,
+// in the order they appear in the group's flat session slice. Mirrors the
+// rendering path's bucketing in groups.go::Items().
+func childrenOf(group *Group, parentID string) []string {
+	var ids []string
+	for _, s := range group.Sessions {
+		if s.ParentSessionID == parentID {
+			ids = append(ids, s.ID)
+		}
+	}
+	return ids
+}
+
+// TestMoveSessionUp_SubSessionSkipsNonSiblings documents the bug fix:
+// when sub-sessions of different parents are interleaved in the flat
+// group.Sessions slice, MoveSessionUp on a sub-session must swap with
+// the previous SAME-parent sibling, not with the immediately-preceding
+// non-sibling. Otherwise a single key press produces no visible change
+// and the user has to press the reorder key multiple times.
+func TestMoveSessionUp_SubSessionSkipsNonSiblings(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1b *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1b" {
+			s1b = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(s1b)
+
+	// After one move, the visual children-of-p1 order should be [s1b, s1a].
+	got := childrenOf(group, "p1")
+	want := []string{"s1b", "s1a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("children of p1 after MoveSessionUp(s1b) = %v, want %v", got, want)
+	}
+}
+
+func TestMoveSessionDown_SubSessionSkipsNonSiblings(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	tree.MoveSessionDown(s1a)
+
+	got := childrenOf(group, "p1")
+	want := []string{"s1b", "s1a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("children of p1 after MoveSessionDown(s1a) = %v, want %v", got, want)
+	}
+}
+
+// TestMoveSessionUp_SubSessionAtFirstSiblingNoOp guards against the
+// pre-fix behavior of swapping a sub-session with its immediately-preceding
+// element when that element is NOT a sibling (e.g. the parent itself).
+// The first sub-session under a parent must stay in place when moved up.
+func TestMoveSessionUp_SubSessionAtFirstSiblingNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	before := []string{}
+	for _, s := range group.Sessions {
+		before = append(before, s.ID)
+	}
+
+	tree.MoveSessionUp(s1a)
+
+	after := []string{}
+	for _, s := range group.Sessions {
+		after = append(after, s.ID)
+	}
+
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("expected no-op when first child has no previous sibling; got %v -> %v", before, after)
+			break
+		}
+	}
+}
+
+// TestMoveSessionUp_TopLevelSkipsSubSessions: a top-level session moved up
+// should swap with the previous TOP-LEVEL session, skipping any sub-sessions
+// belonging to another parent that happen to be between them in the slice.
+func TestMoveSessionUp_TopLevelSkipsSubSessions(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.MoveSessionUp(p2)
+
+	// Top-level peers (sessions with empty ParentSessionID) order should
+	// now be [p2, p1].
+	got := childrenOf(group, "")
+	want := []string{"p2", "p1"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("top-level order after MoveSessionUp(p2) = %v, want %v", got, want)
+	}
+}
+
 func TestSessionOrderPersistence(t *testing.T) {
 	// Simulate sessions with Order values (as if saved after reorder)
 	instances := []*Instance{

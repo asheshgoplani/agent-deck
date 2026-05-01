@@ -557,38 +557,63 @@ func (t *GroupTree) MoveGroupDown(path string) {
 	}
 }
 
-// MoveSessionUp moves a session up within its group
+// MoveSessionUp moves a session up among its visual siblings: top-level
+// sessions (empty ParentSessionID) reorder among other top-level sessions
+// in the same group; sub-sessions reorder among other sub-sessions of the
+// same parent. Non-siblings interleaved in the flat slice are skipped, so
+// a single call always produces a visible change when one is possible.
 func (t *GroupTree) MoveSessionUp(inst *Instance) {
 	group, exists := t.Groups[inst.GroupPath]
 	if !exists {
 		return
 	}
 
+	currentIdx, prevSiblingIdx := -1, -1
 	for i, s := range group.Sessions {
-		if s.ID == inst.ID && i > 0 {
-			group.Sessions[i], group.Sessions[i-1] = group.Sessions[i-1], group.Sessions[i]
+		if s.ID == inst.ID {
+			currentIdx = i
 			break
 		}
+		if s.ParentSessionID == inst.ParentSessionID {
+			prevSiblingIdx = i
+		}
 	}
+	if currentIdx < 0 || prevSiblingIdx < 0 {
+		return
+	}
+	group.Sessions[currentIdx], group.Sessions[prevSiblingIdx] = group.Sessions[prevSiblingIdx], group.Sessions[currentIdx]
+
 	// Normalize Order for all sessions in group
 	for i, s := range group.Sessions {
 		s.Order = i
 	}
 }
 
-// MoveSessionDown moves a session down within its group
+// MoveSessionDown moves a session down among its visual siblings.
+// See MoveSessionUp for the sibling-aware semantics; this is the symmetric
+// case that swaps with the next same-parent session in the slice.
 func (t *GroupTree) MoveSessionDown(inst *Instance) {
 	group, exists := t.Groups[inst.GroupPath]
 	if !exists {
 		return
 	}
 
+	currentIdx, nextSiblingIdx := -1, -1
 	for i, s := range group.Sessions {
-		if s.ID == inst.ID && i < len(group.Sessions)-1 {
-			group.Sessions[i], group.Sessions[i+1] = group.Sessions[i+1], group.Sessions[i]
+		if s.ID == inst.ID {
+			currentIdx = i
+			continue
+		}
+		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID {
+			nextSiblingIdx = i
 			break
 		}
 	}
+	if currentIdx < 0 || nextSiblingIdx < 0 {
+		return
+	}
+	group.Sessions[currentIdx], group.Sessions[nextSiblingIdx] = group.Sessions[nextSiblingIdx], group.Sessions[currentIdx]
+
 	// Normalize Order for all sessions in group
 	for i, s := range group.Sessions {
 		s.Order = i

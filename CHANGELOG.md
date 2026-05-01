@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session reorder (`K` / `J`, `Shift+Up` / `Shift+Down`) required multiple key presses to produce a visible move when sub-sessions of different parents were interleaved in a group.** `MoveSessionUp` / `MoveSessionDown` swapped with the immediate slice neighbor, but the render path re-buckets sub-sessions under their parents, so a swap with a non-sibling produced zero visible change. Fixed by walking the slice for the previous/next session with the same `ParentSessionID` (top-level peers treat each other as siblings, sub-sessions reorder among same-parent siblings only). One key press now always produces a visible move when one is possible. Tests in `internal/session/groups_test.go` cover the interleaving case, the first-sibling no-op, and the top-level-skips-subs case.
+
 ## [1.7.78] - 2026-05-01
 
 P0 hotfix for a data-loss bug in submodule worktree handling.
