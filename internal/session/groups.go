@@ -660,6 +660,24 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 	}
 }
 
+// PromoteSession converts a sub-session into a top-level peer in the same
+// group. Slice position is preserved so the renderer places the session as
+// a top-level peer immediately after its former parent's children block.
+// Top-level sessions are unchanged.
+func (t *GroupTree) PromoteSession(inst *Instance) {
+	if inst.ParentSessionID == "" {
+		return
+	}
+	group, exists := t.Groups[inst.GroupPath]
+	if !exists {
+		return
+	}
+	inst.ClearParent()
+	for i, s := range group.Sessions {
+		s.Order = i
+	}
+}
+
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	oldGroupPath := inst.GroupPath
