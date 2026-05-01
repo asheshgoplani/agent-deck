@@ -22,7 +22,9 @@ Complete reference for agent-deck Terminal UI features.
 | `n` | New session (inherits current group) |
 | `r` | Rename session or group |
 | `R` | Restart session (reloads MCPs) |
-| `K` / `J` | Move item up/down in order |
+| `K` / `Shift+↑` | Move item up (auto-promotes a sub-session to top-level when at the parent's first child) |
+| `J` / `Shift+↓` | Move item down (auto-promotes a sub-session to top-level when at the parent's last child) |
+| `Shift+→` / `Shift+←` | Indent / outdent within current group (single-level nesting) |
 | `M` | Move session to different group |
 | `m` | Open MCP Manager (Claude/Gemini) |
 | `s` | Open Skills Manager |
