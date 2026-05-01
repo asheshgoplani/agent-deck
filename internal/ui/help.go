@@ -246,6 +246,7 @@ func (h *HelpOverlay) View() string {
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
 				{reorderKeys, "Reorder up/down"},
+				{"Shift+→ / ←", "Indent / outdent (sub-session)"},
 				{forkKeys, "Fork session (Claude only)"},
 				{copyKey, "Copy output to clipboard"},
 				{"C", "Copy preview info (Repo / Path / Branch)"},
