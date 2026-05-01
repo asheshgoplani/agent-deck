@@ -678,6 +678,66 @@ func (t *GroupTree) PromoteSession(inst *Instance) {
 	}
 }
 
+// DemoteSession converts a top-level session into a sub-session of the
+// previous top-level peer in the same group, inserting it as that peer's
+// last child. No-op if there is no previous peer (group's first
+// top-level), if the session is already a sub-session, or if it has its
+// own children — single-level nesting only, mirroring the validation in
+// `session set-parent`.
+func (t *GroupTree) DemoteSession(inst *Instance) {
+	if inst.ParentSessionID != "" {
+		return
+	}
+	group, exists := t.Groups[inst.GroupPath]
+	if !exists {
+		return
+	}
+
+	for _, s := range group.Sessions {
+		if s.ParentSessionID == inst.ID {
+			return
+		}
+	}
+
+	currentIdx, prevTopIdx := -1, -1
+	for i, s := range group.Sessions {
+		if s.ID == inst.ID {
+			currentIdx = i
+			break
+		}
+		if s.ParentSessionID == "" {
+			prevTopIdx = i
+		}
+	}
+	if currentIdx < 0 || prevTopIdx < 0 {
+		return
+	}
+
+	parent := group.Sessions[prevTopIdx]
+	inst.SetParentWithPath(parent.ID, parent.ProjectPath)
+
+	insertIdx := prevTopIdx + 1
+	for i := prevTopIdx + 1; i < len(group.Sessions); i++ {
+		if i == currentIdx {
+			continue
+		}
+		if group.Sessions[i].ParentSessionID == parent.ID {
+			insertIdx = i + 1
+		}
+	}
+
+	s := group.Sessions[currentIdx]
+	group.Sessions = append(group.Sessions[:currentIdx], group.Sessions[currentIdx+1:]...)
+	if insertIdx > currentIdx {
+		insertIdx--
+	}
+	group.Sessions = append(group.Sessions[:insertIdx], append([]*Instance{s}, group.Sessions[insertIdx:]...)...)
+
+	for i, s := range group.Sessions {
+		s.Order = i
+	}
+}
+
 // MoveSessionToGroup moves a session to a different group
 func (t *GroupTree) MoveSessionToGroup(inst *Instance, newGroupPath string) {
 	oldGroupPath := inst.GroupPath

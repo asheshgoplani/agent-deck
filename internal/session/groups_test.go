@@ -1932,3 +1932,126 @@ func TestPromoteSession_TopLevelNoOp(t *testing.T) {
 		}
 	}
 }
+
+// TestDemoteSession_TopLevelBecomesLastChild: explicit Shift+Right demote
+// makes the cursor's session a sub-session of the previous top-level peer,
+// inserted as that peer's last child.
+func TestDemoteSession_TopLevelBecomesLastChild(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p2)
+
+	if p2.ParentSessionID != "p1" {
+		t.Errorf("p2.ParentSessionID after demote = %q, want %q", p2.ParentSessionID, "p1")
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1a", "p2"}
+	if len(gotKids) != len(wantKids) {
+		t.Fatalf("p1's children after demoting p2 = %v, want %v", gotKids, wantKids)
+	}
+	for i := range wantKids {
+		if gotKids[i] != wantKids[i] {
+			t.Errorf("p1's children[%d] = %q, want %q", i, gotKids[i], wantKids[i])
+		}
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1"}
+	if len(gotTop) != len(wantTop) || gotTop[0] != wantTop[0] {
+		t.Errorf("top-level after demote = %v, want %v", gotTop, wantTop)
+	}
+}
+// TestDemoteSession_FirstTopLevelNoOp: DemoteSession on the first top-level
+// in a group is a no-op (no previous peer to nest under). Cross-group moves
+// stay on the M shortcut.
+func TestDemoteSession_FirstTopLevelNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p1" {
+			p1 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p1)
+
+	if p1.ParentSessionID != "" {
+		t.Errorf("p1 should remain top-level; got ParentSessionID = %q", p1.ParentSessionID)
+	}
+}
+// TestDemoteSession_SubSessionNoOp: demote on an already-sub-session is a
+// no-op (single-level nesting only).
+func TestDemoteSession_SubSessionNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1", Title: "child1", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1" {
+			s1 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(s1)
+
+	if s1.ParentSessionID != "p1" {
+		t.Errorf("sub-session should not change parent on demote; got %q", s1.ParentSessionID)
+	}
+}
+// TestDemoteSession_WithChildrenNoOp: a top-level session that already has
+// children of its own cannot be demoted (single-level nesting invariant,
+// matches `session set-parent` validation).
+func TestDemoteSession_WithChildrenNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+		{ID: "s2", Title: "child2", GroupPath: "test", ParentSessionID: "p2"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	tree.DemoteSession(p2)
+
+	if p2.ParentSessionID != "" {
+		t.Errorf("p2 with children should not be demoted; got ParentSessionID = %q", p2.ParentSessionID)
+	}
+	gotKids := childrenOf(group, "p2")
+	wantKids := []string{"s2"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p2's children should be unchanged; got %v, want %v", gotKids, wantKids)
+	}
+}
