@@ -1855,3 +1855,80 @@ func TestFlattenIncludesWindowType(t *testing.T) {
 	assert.Equal(t, 1, sessionCount)
 	assert.Equal(t, 0, windowCount, "no windows injected at Flatten level")
 }
+
+// TestPromoteSession_SubSessionBecomesTopLevel: explicit Shift+Left promote
+// converts a sub-session into a top-level peer. Slice position is preserved
+// so the renderer places it after the parent's children block.
+func TestPromoteSession_SubSessionBecomesTopLevel(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "s1a", Title: "child1a", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "s1b", Title: "child1b", GroupPath: "test", ParentSessionID: "p1"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var s1a *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "s1a" {
+			s1a = s
+			break
+		}
+	}
+
+	tree.PromoteSession(s1a)
+
+	if s1a.ParentSessionID != "" {
+		t.Errorf("s1a.ParentSessionID after promote = %q, want empty", s1a.ParentSessionID)
+	}
+	gotKids := childrenOf(group, "p1")
+	wantKids := []string{"s1b"}
+	if len(gotKids) != len(wantKids) || gotKids[0] != wantKids[0] {
+		t.Errorf("p1's children after promoting s1a = %v, want %v", gotKids, wantKids)
+	}
+	gotTop := childrenOf(group, "")
+	wantTop := []string{"p1", "s1a", "p2"}
+	if len(gotTop) != len(wantTop) {
+		t.Fatalf("top-level after promote = %v, want %v", gotTop, wantTop)
+	}
+	for i := range wantTop {
+		if gotTop[i] != wantTop[i] {
+			t.Errorf("top-level[%d] = %q, want %q", i, gotTop[i], wantTop[i])
+		}
+	}
+}
+// TestPromoteSession_TopLevelNoOp: PromoteSession on an already-top-level
+// session is a no-op.
+func TestPromoteSession_TopLevelNoOp(t *testing.T) {
+	instances := []*Instance{
+		{ID: "p1", Title: "parent1", GroupPath: "test"},
+		{ID: "p2", Title: "parent2", GroupPath: "test"},
+	}
+	tree := NewGroupTree(instances)
+	group := tree.Groups["test"]
+
+	var p2 *Instance
+	for _, s := range group.Sessions {
+		if s.ID == "p2" {
+			p2 = s
+			break
+		}
+	}
+
+	before := []string{}
+	for _, s := range group.Sessions {
+		before = append(before, s.ID)
+	}
+	tree.PromoteSession(p2)
+	after := []string{}
+	for _, s := range group.Sessions {
+		after = append(after, s.ID)
+	}
+	for i := range before {
+		if before[i] != after[i] {
+			t.Errorf("PromoteSession on top-level should be no-op; got %v -> %v", before, after)
+			break
+		}
+	}
+}
