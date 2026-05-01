@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.77] - 2026-05-01
+
+Hotfix re-cut of v1.7.76. The v1.7.76 tag exists on the repo but no binaries were ever published — release CI failed on a chunked-read edge case in the SS3 reader added in #840 (rebased from #815). v1.7.77 contains all of v1.7.76 plus the chunked-read fix.
+
+### Fixed
+
+- **`csiuReader` flushed lone ESC at chunk boundary, breaking SS3 detection across split reads** ([PR #842](https://github.com/asheshgoplani/agent-deck/pull/842)). When `\x1b` arrived in one Read() chunk and `OH` in the next, the translator emitted ESC immediately and treated `OH` as plain bytes, skipping the SS3 → CSI Home rewrite. Fix mirrors the existing ESC-O-at-buffer-end pattern: when not final, buffer the lone ESC and wait for the next chunk; on final flush emit ESC as-is to preserve standalone-escape semantics. `TestCSIuReader_SS3HomeEnd_ChunkedRead/SS3_Home_split_between_ESC_and_OH` (added in #840) now passes — locked the regression that blocked v1.7.76's release CI.
+
+(All v1.7.76 entries below carry forward unchanged — see "1.7.76" section for the polish + community-bug bundle that this release re-cuts.)
+
 ## [1.7.76] - 2026-05-01
 
 Polish + community-bug bundle the day after v1.7.75. Three contributor fixes (Hristo, AdamiecRadek diagnosis, strofimovsky), three WebUI bug fixes from JMBattista combined into one PR, and a v1.7.74 follow-up I caught during production verification. All of #783/#784 + the busy-retry follow-up went through Claude+Codex dual-review (with codex trust pre-registration so peer review actually worked this time). Dual-review pipeline notes: codex-as-sibling topology works; codex-as-child-of-claude-worker hits sub-of-sub spawn limits.
