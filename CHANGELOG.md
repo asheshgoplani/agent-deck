@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-group hierarchy keys: K/J auto-promote at the parent's edge, and Shift+Left / Shift+Right explicitly outdent / indent.** `K` / `J` (and `Shift+Up` / `Shift+Down`) now promote a sub-session to top-level when it is the first / last child of its parent, instead of silently no-op. `Shift+Right` demotes the cursor's top-level session to a sub-session of the previous top-level peer (last child); `Shift+Left` is the symmetric outdent. All four shortcuts stay scoped to the current group — cross-group moves remain on `M`. Single-level nesting and child-count guards mirror the existing `session set-parent` CLI validation. New `GroupTree.PromoteSession` / `GroupTree.DemoteSession` methods plus boundary-promote logic inside `MoveSessionUp` / `MoveSessionDown`; covered by `TestPromoteSession_*`, `TestDemoteSession_*`, `TestMoveSession*Promotes`, `TestMoveSession*TopLevelAt*NoOp` in `internal/session/groups_test.go`.
+
 ## [1.9.1] - 2026-05-11
 
 Patch release on top of v1.9.0 — two stability fixes from same-day post-release triage. Both touch the session lifecycle: cascade-prevention via serial-within-group as the new default, and `agent-deck rm` correctness under concurrency plus notifier cleanup.
