@@ -68,6 +68,55 @@ func gitCommonDirAbs(dir string) (string, error) {
 	return commonDir, nil
 }
 
+// resolveWorktreeToToplevel returns the actual working tree for path via
+// `git rev-parse --show-toplevel`. No-op for a regular working tree; for a
+// submodule's gitdir (which `git worktree list --porcelain` reports as the
+// worktree path for the main checkout) it returns the real working tree.
+// Falls back to path on any git failure.
+func resolveWorktreeToToplevel(path string) string {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return path
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return path
+	}
+	return top
+}
+
+// isGitDir reports whether dir is a git directory (bare repo, a .git folder,
+// .git/modules/<sub>, .git/worktrees/<wt>) rather than a real working tree.
+// Used as a deletion-safety check before os.RemoveAll.
+//
+// Detection is path-structural plus IsBareRepo. `git rev-parse --show-toplevel`
+// is unusable here: it errors out from inside .git/ and .git/worktrees/ (no
+// working tree), AND it returns false-negative for a submodule gitdir under
+// .git/modules/ (because that gitdir's core.worktree config makes git treat
+// the submodule's working tree as the toplevel). Both classes are caught
+// structurally instead.
+//
+// Non-git paths and orphaned worktree directories at user-chosen locations
+// (the case exercised by TestRemoveWorktree's force-fallback path) are NOT
+// flagged — they are legitimate os.RemoveAll targets.
+func isGitDir(dir string) bool {
+	if IsBareRepo(dir) {
+		return true
+	}
+	clean := filepath.Clean(dir)
+	if filepath.Base(clean) == ".git" {
+		return true
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	for i := 0; i+1 < len(parts); i++ {
+		if parts[i] == ".git" && (parts[i+1] == "modules" || parts[i+1] == "worktrees") {
+			return true
+		}
+	}
+	return false
+}
+
 // findNestedBareRepo returns the path to a bare git repository nested under
 // dir, if one exists. The conventional layout from issue #715 places it at
 // "<projectRoot>/.bare"; this helper first probes that path, then scans
@@ -355,6 +404,14 @@ func parseWorktreeList(output string) []Worktree {
 		worktrees = append(worktrees, current)
 	}
 
+	// `git worktree list --porcelain` reports the gitdir (not the working
+	// tree) for a plain submodule's main checkout — normalize it back.
+	for i := range worktrees {
+		if !worktrees[i].Bare {
+			worktrees[i].Path = resolveWorktreeToToplevel(worktrees[i].Path)
+		}
+	}
+
 	return worktrees
 }
 
@@ -384,6 +441,14 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 		// Force mode: git worktree remove --force can still fail when the
 		// directory contains untracked content. Fall back to deleting the
 		// directory and pruning the stale worktree reference.
+		//
+		// Refuse if the path is a git directory (bare repo, .git/modules/<sub>,
+		// .git/worktrees/<wt>). A pre-fix bug stored a submodule gitdir as
+		// WorktreePath; without this guard, session deletion destroyed the
+		// submodule's git history.
+		if isGitDir(worktreePath) {
+			return fmt.Errorf("refusing to remove %q: path is a git directory, not a working tree (likely a stale session row from before the submodule path-normalization fix)", worktreePath)
+		}
 		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
 			return fmt.Errorf("failed to remove worktree directory: %w (git error: %s)", rmErr, strings.TrimSpace(string(output)))
 		}
