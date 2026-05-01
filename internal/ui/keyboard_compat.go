@@ -377,8 +377,13 @@ func (c *csiuReader) translate(final bool) []byte {
 			continue
 		}
 
-		// Preserve a lone ESC as-is to avoid hanging standalone escape.
+		// Lone ESC at buffer end: if mid-stream, buffer it for the next Read so
+		// SS3 (ESC OH / ESC OF) can be detected when the next byte arrives. On
+		// final flush we pass it through to avoid hanging a standalone escape.
 		if i+1 >= len(c.inBuf) {
+			if !final {
+				break
+			}
 			out = append(out, c.inBuf[i])
 			i++
 			continue
