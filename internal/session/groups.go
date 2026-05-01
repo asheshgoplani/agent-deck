@@ -566,30 +566,54 @@ func (t *GroupTree) MoveGroupDown(path string) {
 // MoveSessionUp moves a session up among its visual siblings: top-level
 // sessions (empty ParentSessionID) reorder among other top-level sessions
 // in the same group; sub-sessions reorder among other sub-sessions of the
-// same parent. Non-siblings interleaved in the flat slice are skipped, so
-// a single call always produces a visible change when one is possible.
+// same parent. Non-siblings interleaved in the flat slice are skipped.
+//
+// When a sub-session has no previous same-parent sibling (it is at the
+// top of its parent's children block), it is promoted to top-level and
+// inserted in the slice immediately before the parent. At the group's
+// top boundary (no previous top-level peer) the call is a no-op;
+// cross-group moves remain on the M shortcut.
 func (t *GroupTree) MoveSessionUp(inst *Instance) {
 	group, exists := t.Groups[inst.GroupPath]
 	if !exists {
 		return
 	}
 
-	currentIdx, prevSiblingIdx := -1, -1
+	currentIdx, prevSiblingIdx, parentIdx := -1, -1, -1
 	for i, s := range group.Sessions {
 		if s.ID == inst.ID {
 			currentIdx = i
-			break
+			continue
 		}
-		if s.ParentSessionID == inst.ParentSessionID {
+		if currentIdx < 0 && s.ParentSessionID == inst.ParentSessionID {
 			prevSiblingIdx = i
 		}
+		if inst.ParentSessionID != "" && s.ID == inst.ParentSessionID {
+			parentIdx = i
+		}
 	}
-	if currentIdx < 0 || prevSiblingIdx < 0 {
+	if currentIdx < 0 {
 		return
 	}
-	group.Sessions[currentIdx], group.Sessions[prevSiblingIdx] = group.Sessions[prevSiblingIdx], group.Sessions[currentIdx]
 
-	// Normalize Order for all sessions in group
+	switch {
+	case prevSiblingIdx >= 0:
+		group.Sessions[currentIdx], group.Sessions[prevSiblingIdx] = group.Sessions[prevSiblingIdx], group.Sessions[currentIdx]
+	case inst.ParentSessionID != "" && parentIdx >= 0:
+		// Promote sub-session to top-level: clear parent and reposition
+		// the slice entry immediately before the parent so the renderer
+		// shows it as a top-level peer just above the parent's block.
+		inst.ClearParent()
+		s := group.Sessions[currentIdx]
+		group.Sessions = append(group.Sessions[:currentIdx], group.Sessions[currentIdx+1:]...)
+		if parentIdx > currentIdx {
+			parentIdx--
+		}
+		group.Sessions = append(group.Sessions[:parentIdx], append([]*Instance{s}, group.Sessions[parentIdx:]...)...)
+	default:
+		return
+	}
+
 	for i, s := range group.Sessions {
 		s.Order = i
 	}
@@ -598,6 +622,12 @@ func (t *GroupTree) MoveSessionUp(inst *Instance) {
 // MoveSessionDown moves a session down among its visual siblings.
 // See MoveSessionUp for the sibling-aware semantics; this is the symmetric
 // case that swaps with the next same-parent session in the slice.
+//
+// When a sub-session has no following same-parent sibling (it is at the
+// bottom of its parent's children block), it is promoted to top-level
+// at its current slice position so the renderer shows it as a top-level
+// peer immediately after the parent's block. At the group's bottom
+// boundary (no following top-level peer) the call is a no-op.
 func (t *GroupTree) MoveSessionDown(inst *Instance) {
 	group, exists := t.Groups[inst.GroupPath]
 	if !exists {
@@ -610,17 +640,27 @@ func (t *GroupTree) MoveSessionDown(inst *Instance) {
 			currentIdx = i
 			continue
 		}
-		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID {
+		if currentIdx >= 0 && s.ParentSessionID == inst.ParentSessionID && nextSiblingIdx < 0 {
 			nextSiblingIdx = i
-			break
 		}
 	}
-	if currentIdx < 0 || nextSiblingIdx < 0 {
+	if currentIdx < 0 {
 		return
 	}
-	group.Sessions[currentIdx], group.Sessions[nextSiblingIdx] = group.Sessions[nextSiblingIdx], group.Sessions[currentIdx]
 
-	// Normalize Order for all sessions in group
+	switch {
+	case nextSiblingIdx >= 0:
+		group.Sessions[currentIdx], group.Sessions[nextSiblingIdx] = group.Sessions[nextSiblingIdx], group.Sessions[currentIdx]
+	case inst.ParentSessionID != "":
+		// Promote sub-session to top-level. The slice entry already sits
+		// after the parent's other children, so just clearing the parent
+		// pointer is enough — the renderer will place it as a top-level
+		// peer immediately after the parent's block.
+		inst.ClearParent()
+	default:
+		return
+	}
+
 	for i, s := range group.Sessions {
 		s.Order = i
 	}
