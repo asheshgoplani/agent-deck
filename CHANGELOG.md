@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.78] - 2026-05-01
+
+P0 hotfix for a data-loss bug in submodule worktree handling.
+
+### Fixed
+
+- **🚨 DATA LOSS: deleting a session whose worktree resolved to a submodule's gitdir destroyed the submodule's git data** ([PR #844](https://github.com/asheshgoplani/agent-deck/pull/844), thanks @plutohan for the catch and the fix). `git worktree list --porcelain` from inside a plain submodule reports the **gitdir** (`<super>/.git/modules/<name>`) as the worktree path for the main checkout, not the actual `<super>/<name>` working tree. Three flows (`agent-deck add -w`, `agent-deck launch -w`, TUI new-session with worktree enabled) consumed that path as `Instance.ProjectPath` and the tmux `-c` cwd. Sessions then dropped users inside the gitdir where source files don't exist, and worse — deleting the session via `session remove --force` invoked `RemoveWorktree(force=true)`, whose force-fallback called `os.RemoveAll(worktreePath)`, destroying the submodule's git history. Reproduced in the reporter's environment. Two-layer fix: (1) **prevention** — `parseWorktreeList` normalizes each non-bare entry through `git rev-parse --show-toplevel`, returning the actual working tree even when invoked from inside a gitdir; all three call sites and any future caller of `ListWorktrees` / `GetWorktreeForBranch` get the correct path; (2) **defense-in-depth** — `RemoveWorktree` refuses the `os.RemoveAll` fallback when the target path is structurally a git directory (`.git` basename, `.git/modules/<sub>`, `.git/worktrees/<wt>`, or bare repo via `IsBareRepo`). This catches stale session rows persisted before the prevention fix — they now error on delete instead of nuking git internals. 4 new tests cover the data-loss regression gate, the prevention invariant, and the defense-in-depth coverage of all gitdir-shaped paths. Out-of-scope follow-up flagged by reporter: TUI fork-with-reused-worktree path at `internal/ui/home.go:8441` updates `WorktreePath` but not `WorkDir`, leaving fork sessions with the originally-generated path as cwd — unrelated to submodules, separate concern.
+
+**If you create sessions in submodules, upgrade to v1.7.78 immediately** — the prevention fix stops new sessions from getting the broken path; the defense-in-depth catches existing stale session rows on delete.
+
 ## [1.7.77] - 2026-05-01
 
 Hotfix re-cut of v1.7.76. The v1.7.76 tag exists on the repo but no binaries were ever published — release CI failed on a chunked-read edge case in the SS3 reader added in #840 (rebased from #815). v1.7.77 contains all of v1.7.76 plus the chunked-read fix.
