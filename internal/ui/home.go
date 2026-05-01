@@ -5977,6 +5977,45 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "shift+left":
+		// Promote: outdent a sub-session to top-level peer in the same group.
+		// Top-level sessions and groups are unaffected. Cross-group moves
+		// stay on M.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				sessionID := item.Session.ID
+				h.groupTree.PromoteSession(item.Session)
+				h.rebuildFlatItems()
+				h.moveCursorToSession(sessionID)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
+				h.saveInstances()
+			}
+		}
+		return h, nil
+
+	case "shift+right":
+		// Demote: nest the cursor's top-level session under the previous
+		// top-level peer as that peer's last child. No-op when already a
+		// sub-session, when the session has its own children (single-level
+		// nesting only), or when there is no previous peer in the group.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				sessionID := item.Session.ID
+				h.groupTree.DemoteSession(item.Session)
+				h.rebuildFlatItems()
+				h.moveCursorToSession(sessionID)
+				if h.cursor >= len(h.flatItems) {
+					h.cursor = max(0, len(h.flatItems)-1)
+				}
+				h.saveInstances()
+			}
+		}
+		return h, nil
+
 	case "p":
 		// Edit multi-repo paths
 		if h.cursor < len(h.flatItems) {
