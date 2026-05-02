@@ -3206,6 +3206,51 @@ func (h *Home) triggerStatusUpdate() {
 	}
 }
 
+func (h *Home) refreshAttachedSessionStatus(sessionID string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+
+	h.instancesMu.RLock()
+	inst := h.instanceByID[sessionID]
+	h.instancesMu.RUnlock()
+	if inst == nil {
+		return
+	}
+
+	// Attach return is the one moment where stale hook files are most visible:
+	// Claude/Codex may have exited via /q without writing a fresh "dead" hook.
+	// Force the attached session through the live tmux path before the list is
+	// redrawn so the status icon reflects a dead pane immediately.
+	inst.ClearHookStatus()
+	inst.ForceNextStatusCheck()
+
+	if inst.GetTmuxSession() != nil {
+		tmux.RefreshSessionCache()
+		tmux.RefreshPaneInfoCache()
+	}
+
+	oldStatus := inst.GetStatusThreadSafe()
+	_ = inst.UpdateStatus()
+	newStatus := inst.GetStatusThreadSafe()
+	if newStatus != oldStatus {
+		h.cachedStatusCounts.valid.Store(false)
+		h.publishCurrentSessionStates()
+		if db := statedb.GetGlobal(); db != nil {
+			_ = db.WriteStatus(inst.ID, string(newStatus), inst.GetToolThreadSafe())
+		}
+	}
+	h.refreshSessionRenderSnapshot(nil)
+}
+
+func (h *Home) publishCurrentSessionStates() {
+	h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(h.instances))
+	copy(instances, h.instances)
+	h.instancesMu.RUnlock()
+	h.publishWebSessionStates(instances)
+}
+
 // processStatusUpdate implements round-robin status updates (Priority 1A + 1B)
 // Called by the background worker goroutine
 // Instead of updating ALL sessions every tick (which causes lag with 100+ sessions),
@@ -4192,6 +4237,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
+		h.refreshAttachedSessionStatus(msg.attachedSessionID)
 
 		selectedBefore := h.captureSelectedItemIdentity()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
@@ -4251,7 +4297,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// resets mouse reporting), restore legacy keyboard reporting (tmux's
 		// extended-keys setting leaves Kitty/modifyOtherKeys on the outer terminal;
 		// see RestoreLegacyKeyboardCmd for the full rationale), and schedule a
-		// delayed refresh so the main menu reflects attach-return state changes.
+		// delayed repaint for any pane-title/content cache changes that settle just
+		// after tmux restores the outer client.
 		return h, tea.Batch(
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
@@ -4261,7 +4308,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case attachReturnRefreshMsg:
 		selectedBefore := h.captureSelectedItemIdentity()
 		tmux.RefreshSessionCache()
+		tmux.RefreshPaneInfoCache()
 		h.rebuildFlatItemsPreservingSelection(selectedBefore)
+		h.refreshSessionRenderSnapshot(nil)
 		return h, nil
 
 	case previewDebounceMsg:

@@ -2652,6 +2652,25 @@ func TestStatusUpdateMsg_PreservesSelectedSessionAcrossRebuild(t *testing.T) {
 	}
 }
 
+func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
+	h := newAttachReturnTestHome()
+	inst := session.NewInstanceWithGroup("exited", "/tmp/exited", "work")
+	inst.ID = "exited-session"
+	inst.CreatedAt = time.Now().Add(-2 * time.Second)
+	inst.Status = session.StatusRunning
+	setAttachReturnTestInstances(h, []*session.Instance{inst})
+
+	model, _ := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
+	home := model.(*Home)
+
+	if got := inst.GetStatusThreadSafe(); got != session.StatusError {
+		t.Fatalf("attached session status = %q, want %q", got, session.StatusError)
+	}
+	if got := home.getSessionRenderState(inst).status; got != session.StatusError {
+		t.Fatalf("render snapshot status = %q, want %q", got, session.StatusError)
+	}
+}
+
 func TestStatusUpdateMsg_FollowsNotificationSwitchSession(t *testing.T) {
 	h := newAttachReturnTestHome()
 	s1 := session.NewInstanceWithGroup("first", "/tmp/first", "work")
