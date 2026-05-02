@@ -141,6 +141,13 @@ type Instance struct {
 	// It is intentionally transient and never persisted.
 	pendingCodexRestartWarning string `json:"-"`
 
+	// GitHub Copilot CLI integration
+	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
+	CopilotDetectedAt time.Time `json:"copilot_detected_at,omitempty"`
+	CopilotStartedAt  int64     `json:"-"` // Unix millis when we started Copilot (for session matching, not persisted)
+	CopilotModel      string    `json:"copilot_model,omitempty"`     // Active model for this session
+	CopilotAllowAll   bool      `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
+
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
 	Notes             string    `json:"notes,omitempty"`
@@ -2318,6 +2325,10 @@ func (i *Instance) Start() error {
 		}
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
+	case i.Tool == "copilot":
+		command = buildCopilotCommand(i)
+		// Record start time for session ID detection (Unix millis)
+		i.CopilotStartedAt = time.Now().UnixMilli()
 	case i.Tool == "opencode":
 		command = i.buildOpenCodeCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
@@ -2395,6 +2406,10 @@ func (i *Instance) Start() error {
 	}
 	// OpenCode and Codex IDs are detected asynchronously; SyncSessionIDsToTmux() handles
 	// propagation once they are available.
+	// Copilot session ID propagation (if already known from prior session)
+	if i.CopilotSessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
+	}
 
 	// Propagate COLORFGBG into the tmux session environment so that any new
 	// shell or process spawned inside the session inherits the correct
@@ -2427,6 +2442,12 @@ func (i *Instance) Start() error {
 	// This runs in background and captures the session ID once Codex creates it
 	if IsCodexCompatible(i.Tool) {
 		go i.detectCodexSessionAsync()
+	}
+
+	// Start async session ID detection for Copilot
+	// This runs in background and captures the session ID from events.jsonl
+	if i.Tool == "copilot" && i.CopilotSessionID == "" {
+		go i.detectCopilotSessionAsync()
 	}
 
 	return nil
@@ -3503,6 +3524,23 @@ func (i *Instance) PostStartSync(maxWait time.Duration) {
 		i.WaitForClaudeSession(maxWait)
 	case i.Tool == "gemini":
 		i.UpdateGeminiSession(nil)
+	case i.Tool == "copilot":
+		// Copilot uses async detection via detectCopilotSessionAsync().
+		// If the session was not yet detected, attempt a quick sync check.
+		if i.CopilotSessionID == "" {
+			cwd := i.EffectiveWorkingDir()
+			startedAfter := time.Now().Add(-30 * time.Second)
+			if i.CopilotStartedAt > 0 {
+				startedAfter = time.UnixMilli(i.CopilotStartedAt).Add(-2 * time.Second)
+			}
+			if sid := detectCopilotSessionFromDisk(cwd, startedAfter); sid != "" {
+				i.CopilotSessionID = sid
+				i.CopilotDetectedAt = time.Now()
+				if i.tmuxSession != nil {
+					_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", sid)
+				}
+			}
+		}
 	}
 	// OpenCode/Codex: async detection already started by Start(), skip here
 }
@@ -3587,6 +3625,11 @@ func (i *Instance) SyncSessionIDsToTmux() {
 	if i.CodexSessionID != "" {
 		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", i.CodexSessionID)
 	}
+
+	// Sync CopilotSessionID
+	if i.CopilotSessionID != "" {
+		_ = i.tmuxSession.SetEnvironment("COPILOT_SESSION_ID", i.CopilotSessionID)
+	}
 }
 
 func (i *Instance) clearSessionBindingForFreshStart() {
@@ -3615,6 +3658,12 @@ func (i *Instance) clearSessionBindingForFreshStart() {
 		i.mu.Lock()
 		i.pendingCodexRestartWarning = ""
 		i.mu.Unlock()
+	}
+
+	if i.Tool == "copilot" {
+		i.CopilotSessionID = ""
+		i.CopilotDetectedAt = time.Time{}
+		i.CopilotStartedAt = 0
 	}
 }
 
@@ -3678,6 +3727,13 @@ func (i *Instance) SyncSessionIDsFromTmux() {
 
 	if id, err := i.tmuxSession.GetEnvironment("CODEX_SESSION_ID"); err == nil && id != "" {
 		i.CodexSessionID = id
+	}
+
+	if id, err := i.tmuxSession.GetEnvironment("COPILOT_SESSION_ID"); err == nil && id != "" {
+		i.CopilotSessionID = id
+		if i.CopilotDetectedAt.IsZero() {
+			i.CopilotDetectedAt = time.Now()
+		}
 	}
 }
 
