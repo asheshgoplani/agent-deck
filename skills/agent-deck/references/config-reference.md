@@ -61,6 +61,9 @@ config_dir = "~/.claude"           # Path to Claude config directory
 dangerous_mode = true              # Enable --dangerously-skip-permissions
 auto_mode = false                  # Enable --permission-mode auto (classifier-based)
 allow_dangerous_mode = false       # Enable --allow-dangerously-skip-permissions
+use_chrome = false                 # Enable --chrome
+use_teammate_mode = false          # Enable --teammate-mode tmux
+extra_args = ["--agent", "reviewer"] # Extra Claude CLI flags
 env_file = "~/.claude.env"         # .env file specific to Claude sessions
 
 [profiles.work.claude]
@@ -74,6 +77,9 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 | `dangerous_mode` | bool | `false` | Adds `--dangerously-skip-permissions`. Forces bypass on. Takes precedence over `auto_mode` and `allow_dangerous_mode`. |
 | `auto_mode` | bool | `false` | Adds `--permission-mode auto`. A classifier model auto-approves safe operations while blocking risky ones. Ignored when `dangerous_mode` is true. |
 | `allow_dangerous_mode` | bool | `false` | Adds `--allow-dangerously-skip-permissions`. Unlocks bypass as an option without activating it. Ignored when `dangerous_mode` or `auto_mode` is true. |
+| `use_chrome` | bool | `false` | Adds `--chrome` to Claude sessions and is remembered from the New Session dialog. |
+| `use_teammate_mode` | bool | `false` | Adds `--teammate-mode tmux` to Claude sessions and is remembered from the New Session dialog. |
+| `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 
 Config resolution order for Claude config dir:

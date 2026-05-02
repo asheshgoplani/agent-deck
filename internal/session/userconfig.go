@@ -671,6 +671,17 @@ type ClaudeSettings struct {
 	// Default: false
 	AutoMode bool `toml:"auto_mode"`
 
+	// ExtraArgs are user-supplied Claude CLI flags used as the New Session
+	// dialog default. They are persisted as discrete TOML array entries and
+	// copied to Instance.ExtraArgs when a Claude session is created.
+	ExtraArgs []string `toml:"extra_args"`
+
+	// UseChrome enables --chrome by default for Claude sessions.
+	UseChrome bool `toml:"use_chrome"`
+
+	// UseTeammateMode enables --teammate-mode tmux by default for Claude sessions.
+	UseTeammateMode bool `toml:"use_teammate_mode"`
+
 	// EnvFile is a .env file specific to Claude sessions
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
@@ -2350,6 +2361,11 @@ func CreateExampleConfig() error {
 # config_dir = "~/.claude-work"
 # Enable --dangerously-skip-permissions by default (default: false)
 # dangerous_mode = true
+# Extra Claude CLI flags remembered from the New Session dialog
+# extra_args = ["--agent", "reviewer"]
+# Enable Chrome / teammate mode by default
+# use_chrome = false
+# use_teammate_mode = false
 
 # Gemini CLI integration
 # [gemini]
