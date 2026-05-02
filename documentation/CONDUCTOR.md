@@ -1,5 +1,7 @@
 # Conductor: a persistent orchestrator for your agent-deck sessions
 
+![Conductor overview](assets/conductor-overview.png)
+
 A **conductor** is one long-lived Claude Code session whose whole job is to supervise other sessions. You do not code in it. You do not read files with it. You talk to it (from your terminal, from Telegram, from Slack, from anywhere you have a bot) and it delegates the work to child sessions, watches what they do, and reports back.
 
 If you have ever run `claude` directly, closed the terminal, and come back to find the session gone, you already understand half the problem a conductor solves. The other half is that even while your `claude` is alive, it is bound to your keyboard: you cannot ask it for status from your phone, you cannot hand off to a colleague, you cannot fan out three investigations in parallel and reconvene.
@@ -65,6 +67,8 @@ agent-deck session output my-conductor
 ```
 
 ### 3. Attach a Telegram channel (optional but recommended)
+
+![Channels topology — one bot per conductor](assets/channels-topology.png)
 
 Attaching a channel is what makes the conductor reachable remotely.
 

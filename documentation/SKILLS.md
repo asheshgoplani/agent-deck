@@ -1,5 +1,7 @@
 # Skills: on-demand capabilities for agent-deck sessions
 
+![Skills two-tier model — user-level vs pool](assets/skills-tiers.png)
+
 Skills are packaged instructions that a Claude Code session can load to gain new capabilities. Each skill is a single directory with a `SKILL.md` file and optional scripts, references, and assets alongside. When Claude reads a `SKILL.md`, its instructions enter the current context and stay active until the session ends or the context is compacted away.
 
 agent-deck uses skills in two tiers. Understanding when to use which is the whole point of this doc.

@@ -1,5 +1,7 @@
 # Watchers: lean triggers from the outside world into your conductors
 
+![Watcher doorbell pattern](assets/watcher-doorbell.png)
+
 A watcher is the thing that rings the doorbell. It does not carry the package inside; it just rings. When a GitHub issue gets filed, when a Slack message arrives, when your phone fires an ntfy push, when your gmail-watcher script notices a new label — a watcher's only job is to drop a short, normalized trigger onto a conductor session so the conductor can decide what to do next.
 
 This doc explains the watcher framework that ships in `internal/watcher/`, the philosophy behind it, and how to extend it with your own custom sources.
