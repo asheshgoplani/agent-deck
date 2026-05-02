@@ -1,4 +1,4 @@
-.PHONY: build run install clean dev release-local test fmt lint ci css tools css-verify
+.PHONY: build run install clean dev release-local test fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
@@ -166,3 +166,25 @@ release-local:
 	goreleaser release --clean
 	@echo "=== Release complete ==="
 	@echo "Verify: gh release view $$(git describe --tags --exact-match) --repo asheshgoplani/agent-deck"
+
+# Web UI test targets
+# Vitest (unit) + Playwright (e2e + screenshot regression). Both run against
+# the in-memory web fixture binary at tests/web/fixtures/cmd/web-fixture/.
+# See documentation/webui-overhaul-plan.md for the parity strategy.
+
+# One-shot install for fresh clones / CI. Installs npm deps + chromium browser.
+test-web-install:
+	cd tests/web && npm install --no-audit --no-fund
+	cd tests/web && npx playwright install --with-deps chromium
+
+# Unit tests (Vitest, jsdom). Fast (<5s on warm cache).
+test-web-unit:
+	cd tests/web && npm run test:unit
+
+# End-to-end tests (Playwright). Builds the fixture binary, boots it,
+# runs every spec including screenshot regression.
+test-web-e2e:
+	cd tests/web && npm run test:e2e
+
+# Full suite (default): unit + e2e.
+test-web: test-web-unit test-web-e2e
