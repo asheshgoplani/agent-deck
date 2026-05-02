@@ -17,7 +17,16 @@ import (
 const (
 	ConductorAgentClaude = "claude"
 	ConductorAgentCodex  = "codex"
+
+	ConductorSessionTitlePrefix     = "conductor-"
+	ConductorHeartbeatMessagePrefix = "Heartbeat:"
+	ConductorBridgeHeartbeatPrefix  = "[HEARTBEAT]"
 )
+
+func IsConductorHeartbeatMessage(message string) bool {
+	return strings.HasPrefix(message, ConductorHeartbeatMessagePrefix) ||
+		strings.HasPrefix(message, ConductorBridgeHeartbeatPrefix)
+}
 
 // ConductorAgentSpec describes conductor-specific behavior for an agent runtime.
 type ConductorAgentSpec struct {
@@ -145,6 +154,10 @@ type ConductorMeta struct {
 	// EnvFile is a path to a .env file to source before the conductor command.
 	// Supports ~ and $VAR expansion.
 	EnvFile string `json:"env_file,omitempty"`
+
+	// HeartbeatIdleMinutes is the minutes of inactivity before pausing heartbeats.
+	// 0 or negative = disabled (never pause). Positive = number of minutes.
+	HeartbeatIdleMinutes int `json:"heartbeat_idle_minutes"`
 }
 
 // GetAgent returns the normalized conductor agent, defaulting to Claude.
@@ -226,6 +239,98 @@ func (c *ConductorSettings) GetHeartbeatInterval() int {
 	return c.HeartbeatInterval
 }
 
+// GetHeartbeatIdleMinutes returns the heartbeat idle threshold in minutes.
+// Returns 0 when disabled (value is 0 or negative).
+// Returns the configured value when positive.
+func (m *ConductorMeta) GetHeartbeatIdleMinutes() int {
+	if m == nil {
+		return 0 // nil meta: disabled
+	}
+	if m.HeartbeatIdleMinutes <= 0 {
+		return 0 // disabled (0 or negative)
+	}
+	return m.HeartbeatIdleMinutes
+}
+
+// GetConductorLastActivity returns the most recent persistent agent activity across
+// sessions watched by the conductor. Conductors watch sessions in their profile,
+// including sessions that are not parented under the conductor, so the activity
+// scope includes every non-conductor session in the profile plus any conductor
+// descendants. The conductor's own session is intentionally excluded so that
+// heartbeat responses written to it do not reset the idle timer.
+//
+// Returns zero time (and no error) when the conductor has no managed sessions;
+// callers decide whether zero means "no data" or "idle".
+func GetConductorLastActivity(name, profile string) (time.Time, error) {
+	storage, err := NewStorageWithProfile(profile)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("storage for profile %s: %w", profile, err)
+	}
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("load instances: %w", err)
+	}
+
+	// Find the conductor's session ID.
+	conductorTitle := ConductorSessionTitle(name)
+	var conductorID string
+	for _, inst := range instances {
+		if inst.Title == conductorTitle {
+			conductorID = inst.ID
+			break
+		}
+	}
+	if conductorID == "" {
+		return time.Time{}, fmt.Errorf("conductor session %q not found in storage", conductorTitle)
+	}
+
+	// Build a parent→children index for a single BFS pass.
+	children := make(map[string][]*Instance, len(instances))
+	for _, inst := range instances {
+		if inst.ParentSessionID != "" {
+			children[inst.ParentSessionID] = append(children[inst.ParentSessionID], inst)
+		}
+	}
+
+	var latest time.Time
+	seen := make(map[string]struct{}, len(instances))
+	consider := func(inst *Instance) {
+		if inst == nil {
+			return
+		}
+		if _, ok := seen[inst.ID]; ok {
+			return
+		}
+		seen[inst.ID] = struct{}{}
+
+		if hs := readHookStatusFile(inst.ID); hs != nil && hs.UpdatedAt.After(latest) {
+			latest = hs.UpdatedAt
+		}
+	}
+
+	// Include unparented/watched profile sessions. This matches conductor
+	// behavior: a conductor can monitor sessions that were created before it
+	// and therefore have no ParentSessionID link to the conductor.
+	for _, inst := range instances {
+		if inst.ID == conductorID || inst.IsConductor {
+			continue
+		}
+		consider(inst)
+	}
+
+	// Also include explicit descendants in case future conductor-managed
+	// sessions are marked as conductors or otherwise fall outside the broad
+	// profile scan above.
+	queue := children[conductorID]
+	for len(queue) > 0 {
+		inst := queue[0]
+		queue = queue[1:]
+		consider(inst)
+		queue = append(queue, children[inst.ID]...)
+	}
+	return latest, nil
+}
+
 // GetProfiles returns the configured profiles, defaulting to ["default"]
 func (c *ConductorSettings) GetProfiles() []string {
 	if len(c.Profiles) == 0 {
@@ -269,7 +374,7 @@ func ConductorProfileDir(profile string) (string, error) {
 
 // ConductorSessionTitle returns the session title for a named conductor
 func ConductorSessionTitle(name string) string {
-	return fmt.Sprintf("conductor-%s", name)
+	return ConductorSessionTitlePrefix + name
 }
 
 // ValidateConductorName checks that a conductor name is valid
@@ -439,7 +544,7 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact 
 // If customInstructionsMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool, clearOnCompact bool, description string, customInstructionsMD string, customPolicyMD string, env map[string]string, envFile string) error {
+func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool, clearOnCompact bool, description string, customInstructionsMD string, customPolicyMD string, env map[string]string, envFile string, heartbeatIdleMinutes ...int) error {
 	if err := ValidateConductorName(name); err != nil {
 		return err
 	}
@@ -510,6 +615,10 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	if !clearOnCompact {
 		meta.ClearOnCompact = &clearOnCompact
 	}
+	// Set heartbeat idle minutes if provided (non-negative value)
+	if len(heartbeatIdleMinutes) > 0 && heartbeatIdleMinutes[0] >= 0 {
+		meta.HeartbeatIdleMinutes = heartbeatIdleMinutes[0]
+	}
 	if err := SaveConductorMeta(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
 	}
@@ -532,16 +641,20 @@ func InstallHeartbeatScript(name, profile string) error {
 	if err != nil {
 		return err
 	}
-	profile = normalizeConductorProfile(profile)
+	scriptPath := filepath.Join(dir, "heartbeat.sh")
+	return os.WriteFile(scriptPath, []byte(renderConductorHeartbeatScript(name, profile)), 0o755)
+}
 
+func renderConductorHeartbeatScript(name, profile string) string {
+	profile = normalizeConductorProfile(profile)
 	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
 	script = strings.ReplaceAll(script, "{PROFILE}", profile)
+	script = strings.ReplaceAll(script, "{HEARTBEAT_PREFIX}", ConductorHeartbeatMessagePrefix)
 	if profile == DefaultProfile {
 		// For default profile, omit -p flag entirely
 		script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
 	}
-	scriptPath := filepath.Join(dir, "heartbeat.sh")
-	return os.WriteFile(scriptPath, []byte(script), 0o755)
+	return script
 }
 
 // HeartbeatPlistLabel returns the launchd label for a conductor's heartbeat
@@ -737,7 +850,7 @@ fi
 STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | awk -F'"' '/"status"/{print $4; exit}')
 
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention." --no-wait -q
+    agent-deck -p "$PROFILE" session send "$SESSION" "{HEARTBEAT_PREFIX} Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention." --no-wait -q
 fi
 `
 
@@ -1149,11 +1262,7 @@ func MigrateConductorHeartbeatScripts() ([]string, error) {
 		}
 
 		scriptPath := filepath.Join(dir, "heartbeat.sh")
-		expected := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", meta.Name)
-		expected = strings.ReplaceAll(expected, "{PROFILE}", normalizeConductorProfile(meta.Profile))
-		if normalizeConductorProfile(meta.Profile) == DefaultProfile {
-			expected = strings.ReplaceAll(expected, `-p "$PROFILE" `, "")
-		}
+		expected := renderConductorHeartbeatScript(meta.Name, meta.Profile)
 
 		existing, err := os.ReadFile(scriptPath)
 		if err != nil {
