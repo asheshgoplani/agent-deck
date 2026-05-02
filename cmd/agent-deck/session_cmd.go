@@ -1861,7 +1861,7 @@ func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bo
 		return false
 	}
 	if lastActivity.IsZero() {
-		return true
+		return false
 	}
 	return time.Since(lastActivity) >= time.Duration(idleMinutes)*time.Minute
 }
