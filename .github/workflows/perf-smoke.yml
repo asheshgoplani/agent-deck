@@ -1,0 +1,88 @@
+# Performance regression CI gate.
+#
+# Runs on every PR that touches a file under the perf mandate (see CLAUDE.md
+# "Performance regression: mandatory test coverage"). Two jobs:
+#
+#   1. perf-tests        — TestPerf_* walltime regressions, hard gate.
+#   2. perf-bench-trend  — Benchmark* ns/op output, advisory (continue-on-error).
+#
+# perf-tests red blocks the PR. perf-bench-trend uploads benchout.txt as an
+# artifact for offline trending; it never fails CI on its own.
+#
+# Single-shard ubuntu-latest only. Matrix runs amplify variance and would
+# flake the walltime budgets.
+
+name: Performance smoke
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/agent-deck/main.go'
+      - 'cmd/agent-deck/coldstart_perf_test.go'
+      - 'internal/testutil/perfbudget.go'
+      - 'internal/testutil/perfbudget_test.go'
+      - '**/*_perf_test.go'
+      - '.github/workflows/perf-smoke.yml'
+      - 'CLAUDE.md'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  perf-tests:
+    name: TestPerf_ walltime regressions (-race, multiplier=2.0)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run TestPerf_ suite
+        env:
+          PERF_BUDGET_MULTIPLIER: '2.0'
+        # ./... so any TestPerf_* added in any package is exercised — the
+        # path filter triggers on **/*_perf_test.go and the mandate covers
+        # the whole module, so the test invocation must match.
+        run: |
+          go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
+            ./... \
+            | tee perf-medians.txt
+
+      - name: Upload perf median log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-medians
+          path: perf-medians.txt
+          retention-days: 30
+
+  perf-bench-trend:
+    name: Benchmark ns/op trend (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run benchmarks
+        run: |
+          go test -run '^$' -bench '^Benchmark' -benchmem -benchtime=1x -count=3 -timeout 5m \
+            ./cmd/agent-deck/... ./internal/tmux/... \
+            | tee benchout.txt
+
+      - name: Upload bench output
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-bench-output
+          path: benchout.txt
+          retention-days: 30
