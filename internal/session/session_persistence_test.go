@@ -53,11 +53,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
 // uniqueTmuxServerName returns a tmux server name with the mandatory
@@ -1646,4 +1649,144 @@ func TestEnsureClaudeSessionIDFromDisk_RestartDoesDiscovery(t *testing.T) {
 			"should discover JSONL. Got ClaudeSessionID=%q, want %q.",
 			inst.ClaudeSessionID, existingUUID)
 	}
+}
+
+// TestPersistence_PluginsSurviveRestart locks the RFC PLUGIN_ATTACH.md §2
+// invariant: an Instance with a populated Plugins list MUST replay its
+// enabledPlugins overlay on every spawn. The contract is "Plugins persist
+// across restart and re-apply on the next worker-scratch creation."
+//
+// This test exercises the full persistence cycle without requiring a real
+// tmux session (which is independently covered by
+// TestPersistence_RestartResumesConversation). The cycle:
+//
+//  1. Construct an Instance with Plugins=["octopus"] under a HOME with a
+//     valid catalog containing octopus.
+//  2. Call EnsureWorkerScratchConfigDir → assert scratch settings.json
+//     contains enabledPlugins["octopus@nyldn/claude-octopus"] = true.
+//  3. Persist via state.db: MarshalToolData → UnmarshalToolData → assert
+//     the unmarshalled Plugins matches the original list.
+//  4. Construct a "reloaded" Instance from the unmarshalled data, call
+//     Ensure again on a fresh scratch dir → assert enabledPlugins still
+//     reflects the same overlay (i.e., Restart's worker-scratch path
+//     re-applies the persisted Plugins).
+//
+// Mandate: CLAUDE.md:13-31 lists internal/session/{instance,userconfig,storage*}.go
+// as touched paths for plugin attach. RFC §2/§8.1 explicitly committed
+// to this test. Removing it requires an RFC.
+func TestPersistence_PluginsSurviveRestart(t *testing.T) {
+	home := isolatedHomeDir(t)
+
+	// Catalog with a non-channel-emitting plugin (channel auto-link is
+	// covered separately in plugin_channels_test.go; this test focuses on
+	// the persistence/scratch-replay invariant).
+	catalogPath := filepath.Join(home, ".agent-deck", "config.toml")
+	if err := os.WriteFile(catalogPath, []byte(`
+[plugins.octopus]
+name = "octopus"
+source = "nyldn/claude-octopus"
+emits_channel = false
+auto_install = false
+`), 0o600); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+	ClearUserConfigCache()
+
+	// Source profile dir for the scratch's symlink mirror.
+	sourceProfile := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(sourceProfile, 0o700); err != nil {
+		t.Fatalf("mkdir source profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceProfile, "settings.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write source settings: %v", err)
+	}
+
+	// Phase 1: original instance writes scratch settings.json with the
+	// allow-list overlay.
+	original := &Instance{
+		ID:      "11111111-1111-1111-1111-111111111111",
+		Tool:    "claude",
+		Title:   "persist-test",
+		Plugins: []string{"octopus"},
+	}
+
+	scratch1, err := original.EnsureWorkerScratchConfigDir(sourceProfile)
+	if err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	if scratch1 == "" {
+		t.Fatal("first Ensure must create scratch dir for non-empty Plugins")
+	}
+	assertScratchHasOctopus := func(scratchDir, phase string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(scratchDir, "settings.json"))
+		if err != nil {
+			t.Fatalf("[%s] read scratch settings.json: %v", phase, err)
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("[%s] unmarshal scratch settings: %v", phase, err)
+		}
+		plugins, _ := parsed["enabledPlugins"].(map[string]interface{})
+		if plugins == nil {
+			t.Fatalf("[%s] scratch settings missing enabledPlugins block: %s", phase, string(data))
+		}
+		if v, ok := plugins["octopus@nyldn/claude-octopus"]; !ok || v != true {
+			t.Fatalf("[%s] enabledPlugins[octopus@...] must be true; got %v (full block: %v)", phase, plugins["octopus@nyldn/claude-octopus"], plugins)
+		}
+	}
+	assertScratchHasOctopus(scratch1, "first-spawn")
+
+	// Phase 2: state.db round-trip. Marshal the instance the same way
+	// storage.go does, then Unmarshal — this is the exact bytes-on-disk
+	// path that survives a process restart.
+	marshalled := statedb.MarshalToolData(
+		original.ClaudeSessionID, original.ClaudeDetectedAt,
+		original.GeminiSessionID, original.GeminiDetectedAt,
+		original.GeminiYoloMode, original.GeminiModel,
+		original.OpenCodeSessionID, original.OpenCodeDetectedAt,
+		original.CodexSessionID, original.CodexDetectedAt,
+		original.LatestPrompt, original.Notes, original.LoadedMCPNames,
+		original.ToolOptionsJSON,
+		nil, original.SandboxContainer, // sandbox JSON nil — not needed for plugins persistence
+		original.SSHHost, original.SSHRemotePath,
+		original.MultiRepoEnabled, original.AdditionalPaths,
+		original.MultiRepoTempDir, nil,
+		original.Channels,
+		original.ExtraArgs,
+		original.Plugins,
+		original.PluginChannelLinkDisabled,
+		original.AutoLinkedChannels,
+		original.Color,
+	)
+	_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _,
+		_, _, _, _, _, _, restoredPlugins, restoredLinkDisabled, _, _ := statedb.UnmarshalToolData(marshalled)
+	if !reflect.DeepEqual(restoredPlugins, []string{"octopus"}) {
+		t.Fatalf("state.db round-trip: Plugins = %v, want [octopus]", restoredPlugins)
+	}
+	if restoredLinkDisabled != false {
+		t.Fatalf("state.db round-trip: PluginChannelLinkDisabled = %v, want false", restoredLinkDisabled)
+	}
+
+	// Phase 3: reconstruct the instance from persisted bytes and re-Ensure.
+	// This models a session reload after a process restart — the scratch
+	// dir is recreated under the same instance ID, with the same Plugins.
+	reloaded := &Instance{
+		ID:                        original.ID,
+		Tool:                      original.Tool,
+		Title:                     original.Title,
+		Plugins:                   restoredPlugins,
+		PluginChannelLinkDisabled: restoredLinkDisabled,
+	}
+	scratch2, err := reloaded.EnsureWorkerScratchConfigDir(sourceProfile)
+	if err != nil {
+		t.Fatalf("re-Ensure after restart: %v", err)
+	}
+	if scratch2 == "" {
+		t.Fatal("re-Ensure must produce scratch dir for reloaded instance with non-empty Plugins")
+	}
+	if scratch2 != scratch1 {
+		t.Fatalf("scratch dir is keyed on instance ID and MUST be deterministic across restarts; got first=%q, second=%q", scratch1, scratch2)
+	}
+	assertScratchHasOctopus(scratch2, "post-restart")
 }

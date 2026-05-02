@@ -195,6 +195,33 @@ type Instance struct {
 	// messages on conductor restart.
 	Channels []string `json:"channels,omitempty"`
 
+	// Plugins is the catalog-key list of Claude Code plugins enabled for
+	// this session via `agent-deck add --plugin <name>` /
+	// `session set <id> plugins <csv>`. Names are short catalog keys (NOT
+	// fully-qualified `<name>@<source>` ids) and resolve through the
+	// [plugins.<name>] table in ~/.agent-deck/config.toml at spawn time.
+	// When non-empty on a claude session, EnsureWorkerScratchConfigDir
+	// writes enabledPlugins[<id>] = true into the scratch settings.json so
+	// the plugin loads only for this session, not globally.
+	// RFC: docs/rfc/PLUGIN_ATTACH.md.
+	Plugins []string `json:"plugins,omitempty"`
+
+	// PluginChannelLinkDisabled opts the session out of the catalog-driven
+	// auto-link between Plugins and Channels (RFC §4.7). When true, an
+	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
+	// auto-add `plugin:foo@source` to Channels. Useful for tools-only
+	// usage of channel-emitting plugins. CLI flag: `--no-channel-link`.
+	PluginChannelLinkDisabled bool `json:"plugin_channel_link_disabled,omitempty"`
+
+	// AutoLinkedChannels is the persisted set of channel ids that
+	// syncPluginChannels last added via the auto-link mechanism. Lets
+	// reconciliation distinguish "channel I owned" from "channel the
+	// user added manually" — without it, a plugin removed from the
+	// catalog or an opt-out toggle would leave stale autolinks behind
+	// (G4 / C2). Updated on every Plugins mutation; never written
+	// directly by users.
+	AutoLinkedChannels []string `json:"auto_linked_channels,omitempty"`
+
 	// WorkerScratchConfigDir is the ephemeral CLAUDE_CONFIG_DIR prepared
 	// for a non-conductor claude worker (issue #59, v1.7.68). The
 	// scratch dir copies the ambient profile's settings.json with the
@@ -597,24 +624,29 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Check if CLAUDE_CONFIG_DIR is explicitly configured (env var or config.toml)
-	// If NOT explicit, we don't set it in the command - let the shell's environment handle it.
-	// This is critical for WSL and other environments where users have CLAUDE_CONFIG_DIR
-	// set in their .bashrc/.zshrc - we should NOT override that with a default path.
-	// Also skip if using a custom command (alias handles config dir)
+	// Resolve CLAUDE_CONFIG_DIR for this spawn. Three branches, in order:
+	//   1. Custom command (alias like cdw/cdp) — handles config_dir itself, skip.
+	//   2. WorkerScratchConfigDir is prepared — ALWAYS route through scratch.
+	//      Scratch is the whole point of the indirection: it carries the
+	//      mutated enabledPlugins (per-session plugin attach state, issue #59
+	//      and RFC PLUGIN_ATTACH.md). Without exporting it here, claude reads
+	//      the ambient `~/.claude/settings.json` and a globally-enabled
+	//      catalog plugin (e.g. a prior `/plugin install fakechat`) bleeds
+	//      through into the worker — defeating detach.
+	//   3. Explicit config_dir from env/config — pass through unchanged.
+	//
+	// Branch 2 is always-on regardless of branch 3 because scratch is
+	// derived from the resolved source dir AND mutates settings.json on top
+	// — strictly an override.
 	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		// Worker scratch dir override: if a per-instance scratch
-		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
-		// route the claude binary through it so it loads the mutated
-		// settings.json with the telegram plugin pinned off. Conductors
-		// and explicit channel owners leave WorkerScratchConfigDir
-		// empty and use the ambient profile — see worker_scratch.go.
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
+	if !hasCustomCommand {
+		switch {
+		case i.WorkerScratchConfigDir != "":
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", i.WorkerScratchConfigDir)
+		case IsClaudeConfigDirExplicitForInstance(i):
+			configDir := GetClaudeConfigDirForInstance(i)
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 		}
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so Claude's hook subprocesses
@@ -734,19 +766,18 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
-// It always exports AGENTDECK_INSTANCE_ID, and conditionally adds CLAUDE_CONFIG_DIR.
+// Always exports AGENTDECK_INSTANCE_ID. CLAUDE_CONFIG_DIR is exported when
+// a worker scratch dir is prepared (always wins) OR when the user has
+// explicit config_dir — same priority as buildClaudeCommandWithMessage
+// and buildClaudeResumeCommand. Scratch is the override for the
+// per-session enabledPlugins overlay (RFC PLUGIN_ATTACH.md).
 func (i *Instance) buildBashExportPrefix() string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-	if IsClaudeConfigDirExplicitForInstance(i) {
+	switch {
+	case i.WorkerScratchConfigDir != "":
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", i.WorkerScratchConfigDir)
+	case IsClaudeConfigDirExplicitForInstance(i):
 		configDir := GetClaudeConfigDirForInstance(i)
-		// Worker scratch dir override (issue #59, v1.7.68). Mirrors the
-		// same override in the inline CLAUDE_CONFIG_DIR= prefix path
-		// above — both must route workers through the scratch dir so
-		// the telegram plugin is pinned off regardless of which
-		// command-build branch runs.
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
 	}
 	return prefix
@@ -2266,7 +2297,7 @@ func (i *Instance) Start() error {
 	// (issue #59, v1.7.68). Runs before command-building so the
 	// CLAUDE_CONFIG_DIR= prefix picks up the scratch path. No-op for
 	// conductors, explicit telegram channel owners, and non-claude tools.
-	i.prepareWorkerScratchConfigDirForSpawn()
+	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Build command based on tool type
 	// Priority: claude-compatible (built-in + custom wrapping claude) → built-in tools → custom tools → raw command
@@ -2444,7 +2475,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// (issue #59, v1.7.68). Same call as in Start() — both spawn paths
 	// must pin the telegram plugin off for workers.
-	i.prepareWorkerScratchConfigDirForSpawn()
+	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	// Start session normally (no embedded message logic)
 	// Priority: built-in tools (claude, gemini, opencode, codex) → custom tools from config.toml → raw command
@@ -4414,6 +4445,16 @@ func (i *Instance) Restart() error {
 	// Skip if MCP dialog just wrote the config (avoids race condition).
 	i.prepareRestartMCPConfig()
 
+	// Regenerate worker-scratch CLAUDE_CONFIG_DIR before restart so
+	// changes to Instance.Plugins (added/removed via TUI Plugin Manager
+	// or `agent-deck plugin attach/detach`) propagate into the scratch
+	// settings.json before claude re-reads it. Without this, the
+	// respawn-pane fast path below uses the OLD scratch and claude
+	// sees the plugin enablement state from session creation, not the
+	// current state. Same call as Start()/recreate paths — idempotent
+	// per (sourceProfileDir, plugins-set) and best-effort on failure.
+	i.prepareWorkerScratchConfigDirForSpawn()
+
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
 		resumeCmd, containerName, err := i.prepareCommand(i.buildClaudeResumeCommand())
@@ -4657,7 +4698,7 @@ func (i *Instance) Restart() error {
 
 	// Prepare scratch CLAUDE_CONFIG_DIR for non-conductor claude workers
 	// on the restart path too (issue #59, v1.7.68).
-	i.prepareWorkerScratchConfigDirForSpawn()
+	i.prepareWorkerScratchConfigDirForSpawn() // also runs plugin auto-install per fix C1
 
 	var command string
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" {
@@ -4804,22 +4845,20 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Check if CLAUDE_CONFIG_DIR is explicitly configured
-	// If NOT explicit, don't set it - let the shell's environment handle it
-	// Also skip if using a custom command (alias handles config dir)
+	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the three-branch
+	// logic in buildClaudeCommandWithMessage — scratch always wins when
+	// prepared, otherwise pass through any explicit config. See the comment
+	// there for why scratch is unconditional (it carries per-session
+	// enabledPlugins and a deny-pinned telegram plugin).
 	configDirPrefix := ""
-	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		// Worker scratch dir override: if a per-instance scratch
-		// CLAUDE_CONFIG_DIR has been prepared (issue #59, v1.7.68),
-		// route the claude binary through it so it loads the mutated
-		// settings.json with the telegram plugin pinned off. Conductors
-		// and explicit channel owners leave WorkerScratchConfigDir
-		// empty and use the ambient profile — see worker_scratch.go.
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
+	if !hasCustomCommand {
+		switch {
+		case i.WorkerScratchConfigDir != "":
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", i.WorkerScratchConfigDir)
+		case IsClaudeConfigDirExplicitForInstance(i):
+			configDir := GetClaudeConfigDirForInstance(i)
+			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 		}
-		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so hook subprocesses

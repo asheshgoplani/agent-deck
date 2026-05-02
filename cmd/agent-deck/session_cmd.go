@@ -908,6 +908,24 @@ func handleSessionShow(profile string, args []string) {
 		if len(inst.Channels) > 0 {
 			jsonData["channels"] = inst.Channels
 		}
+
+		// Plugins (RFC docs/rfc/PLUGIN_ATTACH.md §10.5) — surface when
+		// non-empty so downstream tooling can introspect per-session
+		// enabledPlugins state without parsing the scratch settings.json.
+		if len(inst.Plugins) > 0 {
+			jsonData["plugins"] = inst.Plugins
+		}
+		// Surface the auto-link opt-out (RFC §4.7) when set, so tooling
+		// can distinguish "user disabled auto-link" from "no plugins".
+		if inst.PluginChannelLinkDisabled {
+			jsonData["plugin_channel_link_disabled"] = true
+		}
+		// AutoLinkedChannels (RFC §4.7, G4/C2 fix) — internal-ish state
+		// for ownership tracking, but exposing in JSON helps downstream
+		// tooling distinguish auto-linked vs user-managed channels.
+		if len(inst.AutoLinkedChannels) > 0 {
+			jsonData["auto_linked_channels"] = inst.AutoLinkedChannels
+		}
 	}
 
 	if tmuxSession := inst.GetTmuxSession(); tmuxSession != nil {
@@ -961,6 +979,19 @@ func handleSessionShow(profile string, args []string) {
 			}
 			sb.WriteString(fmt.Sprintf("MCPs:    %s\n", strings.Join(mcpParts, ", ")))
 		}
+
+		// Channels and Plugins (RFC docs/rfc/PLUGIN_ATTACH.md). Surfaced
+		// for claude sessions so users can verify per-session topology
+		// without parsing state.db or the scratch settings.json.
+		if len(inst.Channels) > 0 {
+			sb.WriteString(fmt.Sprintf("Channels:%s\n", " "+strings.Join(inst.Channels, ", ")))
+		}
+		if len(inst.Plugins) > 0 {
+			sb.WriteString(fmt.Sprintf("Plugins: %s\n", strings.Join(inst.Plugins, ", ")))
+			if inst.PluginChannelLinkDisabled {
+				sb.WriteString("         (auto-channel-link disabled — RFC §4.7)\n")
+			}
+		}
 	}
 
 	if inst.NoTransitionNotify {
@@ -1012,6 +1043,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
+		fmt.Println("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in ~/.agent-deck/config.toml")
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")

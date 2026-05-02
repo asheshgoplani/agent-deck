@@ -261,6 +261,9 @@ func main() {
 		case "mcp":
 			handleMCP(profile, args[1:])
 			return
+		case "plugin":
+			handlePlugin(profile, args[1:])
+			return
 		case "skill":
 			handleSkill(profile, args[1:])
 			return
@@ -867,6 +870,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"-p": true, "--parent": true,
 		"--mcp":       true,
 		"--channel":   true,
+		"--plugin":    true,
 		"--extra-arg": true,
 		"--wrapper":   true,
 		"-w":          true, "--worktree": true,
@@ -1065,6 +1069,17 @@ func handleAdd(profile string, args []string) {
 		channelFlags = append(channelFlags, s)
 		return nil
 	})
+
+	// Plugin enablement flag — repeatable, catalog-only, claude-only.
+	// Persisted on Instance.Plugins; resolved at spawn through
+	// [plugins.<name>] in ~/.agent-deck/config.toml and applied via the
+	// per-session scratch settings.json (RFC docs/rfc/PLUGIN_ATTACH.md).
+	var pluginFlags []string
+	fs.Func("plugin", "Catalog plugin to enable for this session (can specify multiple times); requires -c claude; configure in [plugins.<name>] in ~/.agent-deck/config.toml", func(s string) error {
+		pluginFlags = append(pluginFlags, s)
+		return nil
+	})
+	noChannelLink := fs.Bool("no-channel-link", false, "Disable auto-link between --plugin entries with emits_channel=true and --channel (RFC §4.7)")
 
 	// Extra claude CLI tokens - repeatable; each invocation is one already-
 	// tokenised arg (e.g. --extra-arg --agent --extra-arg reviewer).
@@ -1420,6 +1435,25 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 		newInstance.Channels = channelFlags
+	}
+
+	// Apply --plugin flags (catalog-only, claude-only, RFC docs/rfc/PLUGIN_ATTACH.md).
+	if len(pluginFlags) > 0 {
+		if newInstance.Tool != "claude" {
+			fmt.Println("Error: --plugin only supported for claude sessions (use -c claude); plugins enable Claude Code plugin features per-session via enabledPlugins")
+			os.Exit(1)
+		}
+		if err := validatePluginFlags(pluginFlags); err != nil {
+			fmt.Println("Error:", err)
+			os.Exit(1)
+		}
+		newInstance.Plugins = pluginFlags
+		newInstance.PluginChannelLinkDisabled = *noChannelLink
+		applyPluginChannelAutolink(newInstance)
+	} else if *noChannelLink {
+		// No-op flag without --plugin — quietly persist the preference
+		// for future session set / dialog edits.
+		newInstance.PluginChannelLinkDisabled = true
 	}
 
 	// Apply --extra-arg flags (claude only for now — these are passed to the

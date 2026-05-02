@@ -37,26 +37,17 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// telegramPluginID is the Claude Code plugin id we force-disable in
-// the worker's scratch settings.json. Kept in sync with
-// `telegramChannelPrefix` consumers in env.go / telegram_validator.go.
 const telegramPluginID = "telegram@claude-plugins-official"
 
-// hostHasTelegramConductor returns true when the user has actually
-// configured a Telegram conductor (a bot token is present in the
-// active user config). Issue #759: the worker-scratch indirection
-// (#732) is only load-bearing on hosts where a real Telegram bot
-// poller exists for a worker to race. On every other host the
-// indirection is pure collateral damage — it breaks per-group
-// config_dir account isolation because macOS Claude Code keys
-// OAuth credentials by the literal CLAUDE_CONFIG_DIR path, and the
-// scratch path is opaque (not the path Claude logged in under).
-//
-// Exposed as a package var so tests can override it without faking
-// the entire user-config cache.
+// Issue #759: the worker-scratch indirection (#732) is only load-bearing
+// when a real Telegram bot poller exists for a worker to race. Elsewhere
+// it breaks per-group config_dir account isolation (macOS Claude keys
+// OAuth credentials by the literal CLAUDE_CONFIG_DIR path).
+// Package var so tests can override.
 var hostHasTelegramConductor = func() bool {
 	cfg, err := LoadUserConfig()
 	if err != nil || cfg == nil {
@@ -65,22 +56,70 @@ var hostHasTelegramConductor = func() bool {
 	return strings.TrimSpace(cfg.Conductor.Telegram.Token) != ""
 }
 
-// NeedsWorkerScratchConfigDir returns true when a scratch CLAUDE_CONFIG_DIR
-// should be prepared for this instance at spawn time. The predicate
-// mirrors `telegramStateDirStripExpr` so both the env strip (TSD) and
-// the plugin disable (this scratch dir) fire for exactly the same
-// sessions — layered defense against the conductor-poller storm.
+// NeedsWorkerScratchConfigDir is true when a scratch CLAUDE_CONFIG_DIR
+// must be prepared at spawn. Reasons:
+//  1. Telegram poller defense (v1.7.68 / #759) — pin telegramPluginID off.
+//  2. Per-session plugin enablement (RFC docs/rfc/PLUGIN_ATTACH.md) —
+//     write enabledPlugins[<id>] = true without contaminating the ambient
+//     profile or peer sessions.
 //
-// Additionally gated on `hostHasTelegramConductor` per issue #759: the
-// scratch indirection only fires when a Telegram conductor is actually
-// configured on the host. Without that gate, every per-group
-// config_dir worker on every host gets its CLAUDE_CONFIG_DIR rewritten
-// to an opaque scratch path, breaking macOS account isolation.
+// When both fire, EnsureWorkerScratchConfigDir combines the deny+allow lists.
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
+	return needsScratchForTelegram(i) || needsScratchForExplicitPlugins(i)
+}
+
+func needsScratchForTelegram(i *Instance) bool {
 	if telegramStateDirStripExpr(i) == "" {
 		return false
 	}
 	return hostHasTelegramConductor()
+}
+
+func needsScratchForExplicitPlugins(i *Instance) bool {
+	if i == nil || i.Tool != "claude" {
+		return false
+	}
+	return len(i.Plugins) > 0
+}
+
+func computeDenyList(i *Instance) []string {
+	if needsScratchForTelegram(i) {
+		return []string{telegramPluginID}
+	}
+	return nil
+}
+
+// allCatalogPluginIDs lets EnsureWorkerScratchConfigDir strip catalog-managed
+// entries from inherited source state — so detach actually clears the entry
+// in this session's scratch instead of inheriting the global default.
+func allCatalogPluginIDs() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, def := range GetAvailablePlugins() {
+		out[def.ID()] = struct{}{}
+	}
+	return out
+}
+
+// computeAllowList resolves Instance.Plugins to fully-qualified ids.
+// Telegram-official is filtered defense-in-depth (also blocked at the
+// catalog-read layer, RFC §6). Allow is applied AFTER deny so an explicit
+// opt-in wins (irrelevant in v1; RFC PLUGIN_TELEGRAM_RETROFIT.md tracks v2).
+func computeAllowList(i *Instance) []string {
+	if i == nil || len(i.Plugins) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(i.Plugins))
+	for _, name := range i.Plugins {
+		def := GetPluginDef(name)
+		if def == nil {
+			continue
+		}
+		if IsTelegramOfficialRefusal(def.Name, def.Source) {
+			continue
+		}
+		out = append(out, def.ID())
+	}
+	return out
 }
 
 // WorkerScratchDirRoot returns the path that holds every worker's
@@ -91,24 +130,16 @@ func workerScratchDirRoot(home string) string {
 	return filepath.Join(home, ".agent-deck", "worker-scratch")
 }
 
-// workerScratchDirFor returns the scratch path for a specific instance
-// id under the given home. `<home>/.agent-deck/worker-scratch/<id>/`.
 func workerScratchDirFor(home, instanceID string) string {
 	return filepath.Join(workerScratchDirRoot(home), instanceID)
 }
 
-// EnsureWorkerScratchConfigDir prepares (idempotently) a scratch
-// CLAUDE_CONFIG_DIR for this instance and returns its path. Returns
-// "" (no error) when the instance is a conductor, explicit telegram
-// channel owner, or non-claude tool — callers should treat "" as
-// "use the ambient profile as-is".
-//
-// `sourceProfileDir` is the ambient CLAUDE_CONFIG_DIR that the worker
-// would otherwise load. The scratch dir mirrors it via symlinks and
-// rewrites `settings.json` with the telegram plugin pinned off.
-//
-// Not an error when source is absent — we still create the scratch
-// dir with a minimal `settings.json` (defense-in-depth).
+// EnsureWorkerScratchConfigDir idempotently prepares the scratch
+// CLAUDE_CONFIG_DIR. Returns "" (no error) when no scratch is needed —
+// callers treat that as "use the ambient profile". The scratch mirrors
+// sourceProfileDir via symlinks and rewrites settings.json with the
+// deny+allow overlay. Source absence is fine — we emit a minimal
+// settings.json.
 func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string, error) {
 	if !i.NeedsWorkerScratchConfigDir() {
 		return "", nil
@@ -123,38 +154,73 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 	}
 	scratch := workerScratchDirFor(home, i.ID)
 
-	if err := os.MkdirAll(scratch, 0o755); err != nil {
+	// 0o700: scratch settings.json holds plugin topology that shouldn't
+	// be world-readable on a multi-user host.
+	if err := os.MkdirAll(scratch, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir scratch: %w", err)
 	}
 
-	// Write the mutated settings.json (telegram plugin pinned off).
-	// Any prior scratch settings.json is clobbered — this is called at
-	// spawn time where stale state is a liability, not an asset.
+	// Mutate settings.json with a deny ∪ allow overlay on enabledPlugins
+	// (RFC §4.3). Any prior scratch state is clobbered — at spawn time
+	// stale state is a liability.
 	settings := map[string]interface{}{}
 	if sourceProfileDir != "" {
 		if data, readErr := os.ReadFile(filepath.Join(sourceProfileDir, "settings.json")); readErr == nil {
 			_ = json.Unmarshal(data, &settings)
 		}
-		// Absent file is fine — we'll emit a minimal settings.json below.
 	}
+	// Wrong-shape enabledPlugins (e.g. legacy array form) → warn so users
+	// notice the reset.
 	plugins, _ := settings["enabledPlugins"].(map[string]interface{})
 	if plugins == nil {
+		if raw, present := settings["enabledPlugins"]; present && raw != nil {
+			sessionLog.Warn("worker_scratch_enabledPlugins_unexpected_shape",
+				slog.String("instance_id", i.ID),
+				slog.String("source", sourceProfileDir),
+				slog.String("got_type", fmt.Sprintf("%T", raw)),
+				slog.String("hint", "scratch settings.json will reset enabledPlugins to an object; source profile may have used a non-object format"),
+			)
+		}
 		plugins = map[string]interface{}{}
 	}
-	plugins[telegramPluginID] = false
+
+	// Catalog plugins are managed EXCLUSIVELY per-session via Instance.Plugins.
+	// Detached catalog ids must be set to false EXPLICITLY — Claude Code
+	// scans plugins/cache/ and defaults installed-but-unspecified plugins
+	// to enabled, so omission would bleed-through. Non-catalog plugins
+	// pass through unchanged.
+	catalogIDs := allCatalogPluginIDs()
+	for id := range plugins {
+		if _, isCatalog := catalogIDs[id]; isCatalog {
+			delete(plugins, id)
+		}
+	}
+
+	for _, id := range computeDenyList(i) {
+		plugins[id] = false
+	}
+	allowSet := map[string]struct{}{}
+	for _, id := range computeAllowList(i) {
+		plugins[id] = true
+		allowSet[id] = struct{}{}
+	}
+	for id := range catalogIDs {
+		if _, attached := allowSet[id]; attached {
+			continue
+		}
+		plugins[id] = false
+	}
 	settings["enabledPlugins"] = plugins
 
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal settings: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(scratch, "settings.json"), out, 0o644); err != nil {
+	// G5: atomic write so concurrent Ensure calls don't tear settings.json.
+	if err := atomicWriteFile(filepath.Join(scratch, "settings.json"), out, 0o600); err != nil {
 		return "", fmt.Errorf("write scratch settings: %w", err)
 	}
 
-	// Mirror everything else from source via symlinks. Skip settings.json
-	// (we just wrote a mutated copy) and skip bare symlinks we've
-	// already materialised on a prior call to keep Ensure idempotent.
 	if sourceProfileDir != "" {
 		if err := mirrorProfileEntries(scratch, sourceProfileDir); err != nil {
 			return "", err
@@ -164,12 +230,15 @@ func (i *Instance) EnsureWorkerScratchConfigDir(sourceProfileDir string) (string
 	return scratch, nil
 }
 
-// mirrorProfileEntries ensures every top-level entry in source (except
-// settings.json) is reachable from dest via a symlink. Existing dest
-// entries are left alone — Ensure must be safe to call repeatedly.
+// mirrorProfileEntries symlinks every top-level entry in source (except
+// settings.json) into dest. Idempotent: existing dest entries are left
+// alone; G6 EEXIST races are benign.
 func mirrorProfileEntries(dest, source string) error {
 	entries, err := os.ReadDir(source)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("read source profile: %w", err)
 	}
 	for _, entry := range entries {
@@ -179,20 +248,20 @@ func mirrorProfileEntries(dest, source string) error {
 		}
 		linkPath := filepath.Join(dest, name)
 		if _, statErr := os.Lstat(linkPath); statErr == nil {
-			continue // already present (from a prior Ensure call)
+			continue
 		}
 		target := filepath.Join(source, name)
 		if err := os.Symlink(target, linkPath); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
 			return fmt.Errorf("symlink %s: %w", name, err)
 		}
 	}
 	return nil
 }
 
-// CleanupWorkerScratchConfigDir removes the scratch dir for this
-// instance. Best-effort — callers ignore the error. Called from the
-// session stop / remove path so short-lived workers don't leak
-// scratch dirs across reboots.
+// CleanupWorkerScratchConfigDir removes the scratch dir. Best-effort.
 func (i *Instance) CleanupWorkerScratchConfigDir() {
 	if i.WorkerScratchConfigDir == "" {
 		return
@@ -206,11 +275,39 @@ func (i *Instance) CleanupWorkerScratchConfigDir() {
 // StartWithMessage(), and the restart fallback path. Best-effort —
 // a failure here falls back to the ambient profile rather than
 // blocking the spawn, with a warning to the session log.
+//
+// On darwin, when the scratch dir is created BECAUSE OF Plugins
+// (not telegram), emits a one-shot loud warning per (host, source-profile)
+// pair about Claude Code's path-keyed OAuth credential store
+// (RFC docs/rfc/PLUGIN_ATTACH.md §7, issue #759 successor).
+//
+// Order contract (RFC §4.6 / fix C1): plugin auto-install runs BEFORE
+// the scratch dir is built, because the scratch's plugins/ symlink
+// captures source-profile state at scratch creation time. If install
+// ran second, the scratch would symlink an empty source profile and
+// claude would start with enabledPlugins[<id>]=true but without the
+// plugin code reachable, until the next restart rebuilt scratch.
 func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 	if !i.NeedsWorkerScratchConfigDir() {
 		return
 	}
 	sourceDir := GetClaudeConfigDirForInstance(i)
+
+	// Step 1: install plugin code into the SOURCE profile (not scratch).
+	// Best-effort — failures log but don't block. Runs first so the
+	// subsequent scratch's plugins/ symlink resolves to a populated tree.
+	if len(i.Plugins) > 0 {
+		_ = i.EnsurePluginsInstalled(sourceDir)
+	}
+
+	// Step 2: macOS warning if the scratch is plugin-driven on a host
+	// without a TG conductor.
+	if needsScratchForExplicitPlugins(i) && !needsScratchForTelegram(i) {
+		maybeEmitMacOSScratchWarning(sourceDir)
+	}
+
+	// Step 3: build the scratch dir. By this point the source profile
+	// has the plugin code so symlinks resolve correctly.
 	scratch, err := i.EnsureWorkerScratchConfigDir(sourceDir)
 	if err != nil {
 		sessionLog.Warn("worker_scratch_prepare_failed",
@@ -221,4 +318,159 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 		return
 	}
 	i.WorkerScratchConfigDir = scratch
+}
+
+// macOSScratchWarningEmitter is the package-level seam that lets tests
+// observe and override the warning emission. Real callers go through
+// maybeEmitMacOSScratchWarning which is darwin-gated and state-cached.
+var macOSScratchWarningEmitter func(sourceProfileDir string) = emitMacOSScratchWarningToStderr
+
+// maybeEmitMacOSScratchWarning is a no-op on non-darwin and a one-shot
+// per-(host, sourceProfileDir) pair on darwin. Cache lives in
+// `~/.agent-deck/state.json` under the key
+// `macos_plugin_scratch_warning_shown[<sourceProfileDir>]` so a second
+// session re-using the same source profile silently skips the warning.
+//
+// Best-effort: state-file errors (read or write) do NOT block the
+// session. Worst case: warning is shown twice.
+func maybeEmitMacOSScratchWarning(sourceProfileDir string) {
+	if runtimeGOOS() != "darwin" {
+		return
+	}
+	already, _ := readMacOSScratchWarningFlag(sourceProfileDir)
+	if already {
+		return
+	}
+	macOSScratchWarningEmitter(sourceProfileDir)
+	_ = writeMacOSScratchWarningFlag(sourceProfileDir)
+}
+
+// runtimeGOOS is exposed as a var so tests can pretend to be darwin
+// without rebuilding under GOOS=darwin.
+var runtimeGOOS = func() string { return goosNative() }
+
+// goosNative returns runtime.GOOS — exposed as a function rather than a
+// const so the runtimeGOOS package var can shadow it in tests without
+// touching real OS detection.
+func goosNative() string { return runtime.GOOS }
+
+// macOSWarningStateFile is the single-flag JSON state file recording
+// which source profile dirs already showed the macOS plugin-scratch
+// warning. Lives at `~/.agent-deck/macos-plugin-warning-state.json`.
+//
+// Schema: { "shown": { "<source-profile-dir>": true, ... } }
+//
+// Best-effort everywhere — read errors degrade to "not yet shown",
+// write errors degrade to "may show twice". No mandate-level guard.
+func macOSWarningStateFile() (string, error) {
+	dir, err := GetAgentDeckDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "macos-plugin-warning-state.json"), nil
+}
+
+type macosWarningState struct {
+	Shown map[string]bool `json:"shown"`
+}
+
+func readMacOSScratchWarningFlag(sourceProfileDir string) (bool, error) {
+	path, err := macOSWarningStateFile()
+	if err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var state macosWarningState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false, err
+	}
+	return state.Shown[sourceProfileDir], nil
+}
+
+func writeMacOSScratchWarningFlag(sourceProfileDir string) error {
+	path, err := macOSWarningStateFile()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	state := macosWarningState{Shown: map[string]bool{}}
+	if data, readErr := os.ReadFile(path); readErr == nil {
+		_ = json.Unmarshal(data, &state)
+		if state.Shown == nil {
+			state.Shown = map[string]bool{}
+		}
+	}
+	state.Shown[sourceProfileDir] = true
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	// Atomic temp+rename — defends against symlink overwrite (G1) and
+	// concurrent-writer races (G5). os.WriteFile would follow symlinks
+	// and clobber whatever they point at; rename(2) replaces the path
+	// atomically without dereferencing the original.
+	return atomicWriteFile(path, out, 0o600)
+}
+
+// atomicWriteFile writes data to path via a temp file in the same
+// directory, then renames atomically. The rename is symlink-safe:
+// rename(2) does not follow the destination, so a malicious symlink
+// at `path` is replaced rather than dereferenced.
+//
+// Used for shared state files that may be written concurrently by two
+// agent-deck processes (TUI + CLI / two TUI windows).
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		// On any error path, ensure the temp file doesn't linger.
+		if _, statErr := os.Stat(tmpPath); statErr == nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func emitMacOSScratchWarningToStderr(sourceProfileDir string) {
+	const banner = "" +
+		"┌─ NOTICE: per-session plugin scratch on macOS ──────────────────┐\n" +
+		"│ This session enables plugins via a per-session CLAUDE_CONFIG_DIR. │\n" +
+		"│ On macOS, Claude Code keys OAuth credentials to the literal     │\n" +
+		"│ config-dir path, so this session may show \"login required.\"     │\n" +
+		"│                                                                  │\n" +
+		"│ If that happens:                                                 │\n" +
+		"│   1. Open a regular shell                                        │\n" +
+		"│   2. Run: CLAUDE_CONFIG_DIR=<scratch-path> claude                │\n" +
+		"│   3. Authenticate                                                │\n" +
+		"│   4. Restart this agent-deck session                             │\n" +
+		"│                                                                  │\n" +
+		"│ See: docs/rfc/PLUGIN_ATTACH.md §7                                │\n" +
+		"└──────────────────────────────────────────────────────────────────┘\n"
+	fmt.Fprint(os.Stderr, banner)
+	sessionLog.Warn("macos_plugin_scratch_warning_shown",
+		slog.String("source_profile_dir", sourceProfileDir),
+	)
 }
