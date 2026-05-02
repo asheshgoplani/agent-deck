@@ -82,6 +82,62 @@ func TestApplyCreateSessionToolOverrides_NonGeminiNoop(t *testing.T) {
 	}
 }
 
+func TestPersistClaudeDialogDefaults(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	session.ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		session.ClearUserConfigCache()
+	}()
+
+	persistClaudeDialogDefaults(&session.ClaudeOptions{
+		SkipPermissions:      false,
+		AllowSkipPermissions: true,
+		AutoMode:             true,
+		UseChrome:            true,
+		UseTeammateMode:      true,
+	}, []string{"--agent", "reviewer", "", " --model "})
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	want := []string{"--agent", "reviewer", "--model"}
+	if len(cfg.Claude.ExtraArgs) != len(want) {
+		t.Fatalf("Claude.ExtraArgs = %v, want %v", cfg.Claude.ExtraArgs, want)
+	}
+	for i := range want {
+		if cfg.Claude.ExtraArgs[i] != want[i] {
+			t.Fatalf("Claude.ExtraArgs[%d] = %q, want %q", i, cfg.Claude.ExtraArgs[i], want[i])
+		}
+	}
+	if cfg.Claude.DangerousMode == nil || *cfg.Claude.DangerousMode {
+		t.Fatalf("Claude.DangerousMode = %v, want explicit false", cfg.Claude.DangerousMode)
+	}
+	if !cfg.Claude.AllowDangerousMode {
+		t.Fatal("Claude.AllowDangerousMode = false, want true")
+	}
+	if !cfg.Claude.AutoMode {
+		t.Fatal("Claude.AutoMode = false, want true")
+	}
+	if !cfg.Claude.UseChrome {
+		t.Fatal("Claude.UseChrome = false, want true")
+	}
+	if !cfg.Claude.UseTeammateMode {
+		t.Fatal("Claude.UseTeammateMode = false, want true")
+	}
+
+	persistClaudeDialogDefaults(&session.ClaudeOptions{}, nil)
+	cfg, err = session.LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig after clear: %v", err)
+	}
+	if cfg.Claude.ExtraArgs != nil {
+		t.Fatalf("Claude.ExtraArgs should clear to nil, got %v", cfg.Claude.ExtraArgs)
+	}
+}
+
 // Co-credit @masta-g3 (PR #674): TUI session creation must produce
 // Tool="pi" rather than Tool="shell" with Command="pi", matching the
 // tmux/userconfig wiring already present.

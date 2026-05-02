@@ -93,6 +93,9 @@ func (p *ClaudeOptionsPanel) SetDefaults(config *session.UserConfig) {
 		p.skipPermissions = config.Claude.GetDangerousMode()
 		p.allowSkipPermissions = config.Claude.AllowDangerousMode
 		p.autoMode = config.Claude.AutoMode
+		p.SetExtraArgs(config.Claude.ExtraArgs)
+		p.useChrome = config.Claude.UseChrome
+		p.useTeammateMode = config.Claude.UseTeammateMode
 	}
 }
 
