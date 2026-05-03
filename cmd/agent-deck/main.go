@@ -688,17 +688,19 @@ func main() {
 	}
 
 	// Start web server alongside TUI if "web" subcommand was used
+	noTUI := false
 	if webEnabled {
 		effectiveProfile := session.GetEffectiveProfile(profile)
 		fallbackMenuData := web.NewSessionDataService(effectiveProfile)
 		liveMenuData := web.NewMemoryMenuData(fallbackMenuData)
 		homeModel.SetWebMenuData(liveMenuData)
 
-		server, err := buildWebServer(effectiveProfile, webArgs, liveMenuData, ui.NewWebMutator(homeModel))
+		server, parsedNoTUI, err := buildWebServer(effectiveProfile, webArgs, liveMenuData, ui.NewWebMutator(homeModel))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: web server setup failed: %v\n", err)
 			os.Exit(1)
 		}
+		noTUI = parsedNoTUI
 		if costStore != nil {
 			server.SetCostStore(costStore)
 		}
@@ -714,6 +716,12 @@ func main() {
 			defer cancel()
 			_ = server.Shutdown(ctx)
 		}()
+	}
+
+	// --no-tui: skip bubbletea (its cancel-reader fails on headless CI epoll)
+	// and block until the global signal handler (SIGINT/SIGTERM) os.Exit(0)s.
+	if noTUI {
+		select {}
 	}
 
 	// Disable the Kitty keyboard protocol before starting the TUI.

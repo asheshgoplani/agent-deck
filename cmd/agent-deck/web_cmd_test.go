@@ -33,6 +33,12 @@ func (noopMutator) DeleteGroup(string) error         { return nil }
 // packages — the kind of break that would otherwise only surface at runtime.
 var _ web.SessionMutator = (*ui.WebMutator)(nil)
 
+type stubMenuDataLoader struct{}
+
+func (stubMenuDataLoader) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
+	return &web.MenuSnapshot{}, nil
+}
+
 // withTempHomeAndConfig is the same fixture used by internal/session tests:
 // point HOME at a temp dir, optionally write config.toml, and clear the
 // session.LoadUserConfig cache. Restores HOME and clears the cache on cleanup.
@@ -109,7 +115,7 @@ mutations_enabled = false
 func TestBuildWebServer_WiresMutator(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 
-	server, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0"}, nil, noopMutator{})
+	server, _, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0"}, nil, noopMutator{})
 	if err != nil {
 		t.Fatalf("buildWebServer: %v", err)
 	}
@@ -125,11 +131,62 @@ func TestBuildWebServer_WiresMutator(t *testing.T) {
 func TestBuildWebServer_NilMutator_StaysUnwired(t *testing.T) {
 	withTempHomeAndConfig(t, "")
 
-	server, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0"}, nil, nil)
+	server, _, err := buildWebServer("test-profile", []string{"--listen", "127.0.0.1:0"}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildWebServer: %v", err)
 	}
 	if server.HasMutator() {
 		t.Fatal("buildWebServer wired a mutator when nil was passed — nil should be a no-op for the test escape hatch")
+	}
+}
+
+func TestBuildWebServer_NoTUIFlag(t *testing.T) {
+	withTempHomeAndConfig(t, "")
+
+	tests := []struct {
+		name      string
+		args      []string
+		wantNoTUI bool
+	}{
+		{
+			name:      "default omits no-tui",
+			args:      []string{"--listen", "127.0.0.1:0", "--token", "t"},
+			wantNoTUI: false,
+		},
+		{
+			name:      "long form sets no-tui",
+			args:      []string{"--no-tui", "--listen", "127.0.0.1:0", "--token", "t"},
+			wantNoTUI: true,
+		},
+		{
+			name:      "single dash form sets no-tui",
+			args:      []string{"-no-tui", "--listen", "127.0.0.1:0", "--token", "t"},
+			wantNoTUI: true,
+		},
+		{
+			name:      "explicit --no-tui=false",
+			args:      []string{"--no-tui=false", "--listen", "127.0.0.1:0", "--token", "t"},
+			wantNoTUI: false,
+		},
+		{
+			name:      "explicit --no-tui=true",
+			args:      []string{"--no-tui=true", "--listen", "127.0.0.1:0", "--token", "t"},
+			wantNoTUI: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, gotNoTUI, err := buildWebServer("test-profile", tc.args, stubMenuDataLoader{}, nil)
+			if err != nil {
+				t.Fatalf("buildWebServer: unexpected error: %v", err)
+			}
+			if srv == nil {
+				t.Fatal("buildWebServer: expected non-nil server")
+			}
+			if gotNoTUI != tc.wantNoTUI {
+				t.Errorf("noTUI = %v, want %v", gotNoTUI, tc.wantNoTUI)
+			}
+		})
 	}
 }
