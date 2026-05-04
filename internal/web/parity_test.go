@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,10 +124,68 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 				return id
 			},
 		},
+		{
+			// Web POST /api/groups vs direct CreateGroup mutator. Asserts both
+			// paths produce a snapshot containing the new group.
+			name: "create_group",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				body, _ := json.Marshal(map[string]string{
+					"name":       "experiments",
+					"parentPath": "",
+				})
+				req := httptest.NewRequest(http.MethodPost, "/api/groups", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				webFx.server.handleGroupsCollection(w, req)
+				if w.Code != http.StatusCreated {
+					t.Fatalf("web POST /api/groups: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if _, err := directFx.store.CreateGroup("experiments", ""); err != nil {
+					t.Fatalf("direct CreateGroup: %v", err)
+				}
+				return "group:experiments"
+			},
+		},
+		{
+			name: "rename_group",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				body, _ := json.Marshal(map[string]string{"name": "home"})
+				req := httptest.NewRequest(http.MethodPatch, "/api/groups/work", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				webFx.server.handleGroupByPath(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("web PATCH /api/groups/work: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if err := directFx.store.RenameGroup("work", "home"); err != nil {
+					t.Fatalf("direct RenameGroup: %v", err)
+				}
+				return "group:work"
+			},
+		},
+		{
+			name: "delete_group",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				// Seed an extra group so deleting one doesn't leave the
+				// snapshot empty (and isn't the default group).
+				_, _ = webFx.store.CreateGroup("scratch", "")
+				_, _ = directFx.store.CreateGroup("scratch", "")
+
+				req := httptest.NewRequest(http.MethodDelete, "/api/groups/scratch", nil)
+				w := httptest.NewRecorder()
+				webFx.server.handleGroupByPath(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("web DELETE /api/groups/scratch: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if err := directFx.store.DeleteGroup("scratch"); err != nil {
+					t.Fatalf("direct DeleteGroup: %v", err)
+				}
+				return "group:scratch"
+			},
+		},
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			webFx := newParityFixture()
@@ -141,6 +200,28 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 			directSnap, err := directFx.store.LoadMenuSnapshot()
 			if err != nil {
 				t.Fatalf("direct snapshot: %v", err)
+			}
+
+			// Group-typed cases: id is "group:<path>".
+			if path, ok := strings.CutPrefix(id, "group:"); ok {
+				webGrp := findGroupByPath(webSnap, path)
+				directGrp := findGroupByPath(directSnap, path)
+				if tc.name == "delete_group" {
+					if webGrp != nil || directGrp != nil {
+						t.Fatalf("delete_group: expected absent in both, got web=%+v direct=%+v", webGrp, directGrp)
+					}
+				} else {
+					if webGrp == nil || directGrp == nil {
+						t.Fatalf("post-action group missing: web=%v direct=%v (path=%q)", webGrp != nil, directGrp != nil, path)
+					}
+					if webGrp.Name != directGrp.Name {
+						t.Fatalf("group name drift: web=%q direct=%q (path=%q)", webGrp.Name, directGrp.Name, path)
+					}
+				}
+				if webSnap.TotalGroups != directSnap.TotalGroups {
+					t.Fatalf("group count drift: web=%d direct=%d", webSnap.TotalGroups, directSnap.TotalGroups)
+				}
+				return
 			}
 
 			webSess := findSessionByID(webSnap, id)
@@ -439,6 +520,18 @@ func findSessionByID(snap *MenuSnapshot, id string) *MenuSession {
 	for _, item := range snap.Items {
 		if item.Type == MenuItemTypeSession && item.Session != nil && item.Session.ID == id {
 			return item.Session
+		}
+	}
+	return nil
+}
+
+func findGroupByPath(snap *MenuSnapshot, path string) *MenuGroup {
+	if snap == nil {
+		return nil
+	}
+	for _, item := range snap.Items {
+		if item.Type == MenuItemTypeGroup && item.Group != nil && item.Group.Path == path {
+			return item.Group
 		}
 	}
 	return nil

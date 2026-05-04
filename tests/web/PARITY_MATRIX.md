@@ -66,12 +66,12 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | **WORKTREE OPERATIONS** |
 | Finish worktree | `internal/ui/home.go:6038` (`W`/`shift+w`) | MISSING | N/A | N/A | Merge + cleanup; TUI dialog only |
 | **COST TRACKING** |
-| View costs dashboard | `internal/ui/home.go` (TUI only) | GET `/api/costs/summary` | N/A | `handlers_costs_test.go` | Sessions cost aggregation |
-| Cost export | N/A | GET `/api/costs/export` | N/A | `handlers_costs_test.go` | Web-only; CSV/JSON export |
+| View costs dashboard | `internal/ui/home.go` (TUI only) | GET `/api/costs/summary` | N/A | `handlers_costs_test.go` | Sessions cost aggregation. **e2e parity: degraded-only** — fixture omits the SQLite cost store, so the e2e probe asserts the documented 503 `UNAVAILABLE` response. Happy-path (200 + payload) coverage is `parity-test-deferred` to PR-B fixture wiring. |
+| Cost export | N/A | GET `/api/costs/export` | N/A | `handlers_costs_test.go` | Web-only; CSV/JSON export. **e2e parity: degraded-only** (503 without cost store). Happy-path `parity-test-deferred` to PR-B. |
 | **PUSH NOTIFICATIONS** |
-| Subscribe to push | `internal/ui/home.go` (TUI none) | POST `/api/push/subscribe` | N/A | `handlers_push_test.go` | Web browser push only |
-| Unsubscribe push | `internal/ui/home.go` (TUI none) | POST `/api/push/unsubscribe` | N/A | `handlers_push_test.go` | Web browser push only |
-| Update push presence | `internal/ui/home.go` (TUI none) | POST `/api/push/presence` | N/A | `handlers_push_test.go` | Web browser focus tracking |
+| Subscribe to push | `internal/ui/home.go` (TUI none) | POST `/api/push/subscribe` | N/A | `handlers_push_test.go` | Web browser push only. **e2e parity: degraded-only** — fixture has no push service (no VAPID keys + subscription db), so the probe asserts 503 `PUSH_NOT_CONFIGURED`. Happy-path `parity-test-deferred` to PR-B. |
+| Unsubscribe push | `internal/ui/home.go` (TUI none) | POST `/api/push/unsubscribe` | N/A | `handlers_push_test.go` | Web browser push only. **e2e parity: degraded-only** (503 without push service). Happy-path `parity-test-deferred` to PR-B. |
+| Update push presence | `internal/ui/home.go` (TUI none) | POST `/api/push/presence` | N/A | `handlers_push_test.go` | Web browser focus tracking. **e2e parity: degraded-only** (503 without push service). Happy-path `parity-test-deferred` to PR-B. |
 
 ---
 
@@ -142,6 +142,29 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | `gemini_analytics` | Cost/token panel | MISSING | Per-session Gemini metrics |
 
 ---
+
+## Behavioral Coverage Status (PR-A)
+
+Every IMPLEMENTED row above is exercised by either the Playwright e2e suite
+(`tests/web/e2e/parity-actions.spec.js`), the Go runtime parity test
+(`internal/web/parity_test.go`), or both. Rows split into three coverage
+tiers:
+
+- **Happy-path** (web mutation + state observation): session lifecycle
+  (create/start/stop/restart/delete/fork), group ops (create/rename/delete),
+  `GET /api/settings`. Go parity test additionally pins web↔direct-mutator
+  parity for create/start/stop/delete sessions and create/rename/delete
+  groups.
+- **Degraded-only** (503 + documented error code): cost endpoints
+  (`/api/costs/summary`, `/api/costs/export`) and push endpoints
+  (`/api/push/{subscribe,unsubscribe,presence}`). The fixture binary
+  intentionally omits the SQLite cost store and the push service; happy-path
+  coverage requires fixture wiring deferred to PR-B.
+- **MISSING-stays-missing** (regression guard, 404/405 expected): 15 of the
+  30 MISSING actions have plausible URL patterns probed by
+  `inferMissingProbe()` in `tests/web/helpers/parity-matrix.js`. The other
+  15 are TUI-UX-only (search, copy, jump, help, …) where no plausible web
+  endpoint exists — those rows are matrix-tracked but not URL-probed.
 
 ## Summary Statistics
 

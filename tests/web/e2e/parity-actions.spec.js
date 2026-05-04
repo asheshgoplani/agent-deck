@@ -154,6 +154,152 @@ test.describe('parity: session lifecycle', () => {
   })
 })
 
+test.describe('parity: group operations', () => {
+  test.beforeEach(async ({ request }) => {
+    await resetFixture(request)
+  })
+
+  test('create group — POST /api/groups creates a top-level group', async ({ request }) => {
+    const before = await snapshot(request)
+    const beforeGroups = before.totalGroups
+
+    const res = await request.post('/api/groups', {
+      data: { name: 'experiments' },
+    })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.path).toBe('experiments')
+
+    const after = await snapshot(request)
+    expect(after.totalGroups).toBe(beforeGroups + 1)
+    const created = (after.items || []).find(
+      (it) => it.type === 'group' && it.group && it.group.path === 'experiments',
+    )
+    expect(created, 'newly-created group must surface in snapshot').toBeDefined()
+  })
+
+  test('create group with parent — POST /api/groups creates nested path', async ({ request }) => {
+    const res = await request.post('/api/groups', {
+      data: { name: 'sandbox', parentPath: 'work' },
+    })
+    expect(res.status()).toBe(201)
+    const body = await res.json()
+    expect(body.path).toBe('work/sandbox')
+  })
+
+  test('create group rejects empty name', async ({ request }) => {
+    const res = await request.post('/api/groups', { data: { name: '' } })
+    expect(res.status()).toBe(400)
+  })
+
+  test('rename group — PATCH /api/groups/{path} updates the group name', async ({ request }) => {
+    const res = await request.fetch('/api/groups/personal', {
+      method: 'PATCH',
+      data: { name: 'home' },
+    })
+    expect(res.ok()).toBe(true)
+    const body = await res.json()
+    expect(body.name).toBe('home')
+
+    const after = await snapshot(request)
+    const renamed = (after.items || []).find(
+      (it) => it.type === 'group' && it.group && it.group.path === 'personal',
+    )
+    expect(renamed, 'renamed group must still exist at the same path').toBeDefined()
+    expect(renamed.group.name).toBe('home')
+  })
+
+  test('rename group rejects empty name', async ({ request }) => {
+    const res = await request.fetch('/api/groups/personal', {
+      method: 'PATCH',
+      data: { name: '' },
+    })
+    expect(res.status()).toBe(400)
+  })
+
+  test('delete group — DELETE /api/groups/{path} removes the group', async ({ request }) => {
+    const before = await snapshot(request)
+    const beforeGroups = before.totalGroups
+    expect(beforeGroups).toBeGreaterThanOrEqual(2)
+
+    const res = await request.delete('/api/groups/personal')
+    expect(res.ok()).toBe(true)
+
+    const after = await snapshot(request)
+    expect(after.totalGroups).toBe(beforeGroups - 1)
+    const stillThere = (after.items || []).find(
+      (it) => it.type === 'group' && it.group && it.group.path === 'personal',
+    )
+    expect(stillThere).toBeUndefined()
+  })
+})
+
+test.describe('parity: settings + degraded-mode endpoints', () => {
+  test.beforeEach(async ({ request }) => {
+    await resetFixture(request)
+  })
+
+  test('GET /api/settings returns the fixture profile snapshot', async ({ request }) => {
+    const res = await request.get('/api/settings')
+    expect(res.ok()).toBe(true)
+    const body = await res.json()
+    expect(body).toMatchObject({
+      profile: 'fixture',
+      readOnly: false,
+      webMutations: true,
+    })
+    expect(body.version).toBeTruthy()
+  })
+
+  // Costs + push handlers are wired and reachable but the in-memory fixture
+  // intentionally does NOT initialise a costStore (sqlite-backed) or a push
+  // service (VAPID keys + subscription db). Both paths therefore degrade to
+  // 503 with a documented error code. Asserting the degraded path is real
+  // behavioral coverage: it proves the route is registered, auth passes, and
+  // the dependency-missing branch returns the contract-shape body. PR-B's
+  // fixture extensions can flip these to 200 without changing the matrix.
+  test('GET /api/costs/summary returns 503 when fixture has no cost store', async ({ request }) => {
+    const res = await request.get('/api/costs/summary')
+    expect(res.status()).toBe(503)
+    const body = await res.json()
+    expect(body.code || body.error?.code).toBe('UNAVAILABLE')
+  })
+
+  test('GET /api/costs/export returns 503 when fixture has no cost store', async ({ request }) => {
+    const res = await request.get('/api/costs/export')
+    expect(res.status()).toBe(503)
+  })
+
+  test('POST /api/push/subscribe returns 503 when fixture has no push service', async ({
+    request,
+  }) => {
+    const res = await request.post('/api/push/subscribe', {
+      data: { endpoint: 'https://example.invalid/p', keys: { p256dh: 'x', auth: 'y' } },
+    })
+    expect(res.status()).toBe(503)
+    const body = await res.json()
+    expect(body.code || body.error?.code).toBe('PUSH_NOT_CONFIGURED')
+  })
+
+  test('POST /api/push/unsubscribe returns 503 when fixture has no push service', async ({
+    request,
+  }) => {
+    const res = await request.post('/api/push/unsubscribe', {
+      data: { endpoint: 'https://example.invalid/p' },
+    })
+    expect(res.status()).toBe(503)
+  })
+
+  test('POST /api/push/presence returns 503 when fixture has no push service', async ({
+    request,
+  }) => {
+    const res = await request.post('/api/push/presence', {
+      data: { endpoint: 'https://example.invalid/p', focused: true },
+    })
+    expect(res.status()).toBe(503)
+  })
+})
+
 test.describe('parity: sync invariant — TUI-style change visible to web', () => {
   test.beforeEach(async ({ request }) => {
     await resetFixture(request)
