@@ -1577,6 +1577,52 @@ func TestNewDialog_GetClaudeStartQuery_ReturnsInputValue(t *testing.T) {
 	}
 }
 
+func TestNewDialog_ShowInGroup_LoadsConfiguredClaudeExtraArgs(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	tmpHome := t.TempDir()
+	os.Setenv("HOME", tmpHome)
+	session.ClearUserConfigCache()
+	defer func() {
+		os.Setenv("HOME", origHome)
+		session.ClearUserConfigCache()
+	}()
+
+	if err := session.SaveUserConfig(&session.UserConfig{
+		Claude: session.ClaudeSettings{
+			ExtraArgs:       []string{"--agent", "reviewer", "--model", "opus"},
+			UseChrome:       true,
+			UseTeammateMode: true,
+		},
+	}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	dialog := NewNewDialog()
+	dialog.SetDefaultTool("claude")
+	dialog.ShowInGroup("default", "default", "", nil, "")
+
+	got := dialog.GetClaudeExtraArgs()
+	want := []string{"--agent", "reviewer", "--model", "opus"}
+	if len(got) != len(want) {
+		t.Fatalf("GetClaudeExtraArgs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("GetClaudeExtraArgs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	opts := dialog.GetClaudeOptions()
+	if opts == nil {
+		t.Fatal("GetClaudeOptions() = nil")
+	}
+	if !opts.UseChrome {
+		t.Fatal("GetClaudeOptions().UseChrome = false, want true")
+	}
+	if !opts.UseTeammateMode {
+		t.Fatal("GetClaudeOptions().UseTeammateMode = false, want true")
+	}
+}
+
 // TestNewDialog_StartQuery_ClearsBetweenOpenings is the RED regression for
 // #741 (@Clindbergh). Filed against v1.7.67 after #725 shipped the dedicated
 // "Start query" field: opening the new-session dialog a second time showed

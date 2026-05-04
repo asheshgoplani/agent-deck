@@ -229,7 +229,9 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	dangerousModeBool := true
 	config := &UserConfig{
 		Claude: ClaudeSettings{
-			DangerousMode: &dangerousModeBool,
+			DangerousMode:   &dangerousModeBool,
+			UseChrome:       true,
+			UseTeammateMode: true,
 		},
 	}
 
@@ -240,6 +242,12 @@ func TestNewClaudeOptions_WithConfig(t *testing.T) {
 	}
 	if !opts.SkipPermissions {
 		t.Error("expected SkipPermissions=true when config.DangerousMode=true")
+	}
+	if !opts.UseChrome {
+		t.Error("expected UseChrome=true")
+	}
+	if !opts.UseTeammateMode {
+		t.Error("expected UseTeammateMode=true")
 	}
 }
 

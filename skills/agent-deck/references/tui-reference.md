@@ -80,8 +80,11 @@ Complete reference for agent-deck Terminal UI features.
 - Project path (required, supports `~/`)
 - Command (claude/gemini/opencode/codex/custom)
 - Parent group (auto-selected)
+- Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, and start query
 
 **Controls:** `Tab` move fields | `Enter` create | `Esc` cancel
+
+Claude New Session defaults are remembered in `~/.agent-deck/config.toml` under `[claude]`, except start query and resume IDs, which are per-launch values.
 
 ### MCP Manager (`m`)
 

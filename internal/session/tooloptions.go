@@ -110,6 +110,8 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 		opts.SkipPermissions = config.Claude.GetDangerousMode()
 		opts.AutoMode = config.Claude.AutoMode
 		opts.AllowSkipPermissions = config.Claude.AllowDangerousMode
+		opts.UseChrome = config.Claude.UseChrome
+		opts.UseTeammateMode = config.Claude.UseTeammateMode
 	}
 	return opts
 }

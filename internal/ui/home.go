@@ -5192,6 +5192,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if command == "claude" && claudeOpts != nil {
 			toolOptionsJSON, _ = session.MarshalToolOptions(claudeOpts)
 			claudeExtraArgs = h.newDialog.GetClaudeExtraArgs()
+			persistClaudeDialogDefaults(claudeOpts, claudeExtraArgs)
 			claudeStartQuery = h.newDialog.GetClaudeStartQuery()
 		} else if command == "codex" {
 			yolo := h.newDialog.GetCodexYoloMode()
@@ -5275,6 +5276,30 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	h.newDialog, cmd = h.newDialog.Update(msg)
 	return h, cmd
+}
+
+func persistClaudeDialogDefaults(opts *session.ClaudeOptions, args []string) {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil || opts == nil {
+		return
+	}
+	cleaned := make([]string, 0, len(args))
+	for _, arg := range args {
+		if tok := strings.TrimSpace(arg); tok != "" {
+			cleaned = append(cleaned, tok)
+		}
+	}
+	if len(cleaned) == 0 {
+		cfg.Claude.ExtraArgs = nil
+	} else {
+		cfg.Claude.ExtraArgs = cleaned
+	}
+	cfg.Claude.DangerousMode = &opts.SkipPermissions
+	cfg.Claude.AllowDangerousMode = opts.AllowSkipPermissions
+	cfg.Claude.AutoMode = opts.AutoMode
+	cfg.Claude.UseChrome = opts.UseChrome
+	cfg.Claude.UseTeammateMode = opts.UseTeammateMode
+	_ = session.SaveUserConfig(cfg)
 }
 
 func (h *Home) beginNotesEditing(inst *session.Instance) {

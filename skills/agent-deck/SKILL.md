@@ -375,6 +375,9 @@ See `agent-deck watcher --help` for the full command surface and per-adapter exa
 [claude]
 config_dir = "~/.claude-work"    # Custom Claude profile
 dangerous_mode = true            # --dangerously-skip-permissions
+use_chrome = false               # --chrome
+use_teammate_mode = false        # --teammate-mode tmux
+extra_args = ["--agent", "reviewer"]
 
 [logs]
 max_size_mb = 10                 # Max before truncation

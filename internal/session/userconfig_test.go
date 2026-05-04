@@ -466,6 +466,46 @@ func TestSaveUserConfig(t *testing.T) {
 	}
 }
 
+func TestClaudeExtraArgsConfigRoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	config := &UserConfig{
+		Claude: ClaudeSettings{
+			ExtraArgs:       []string{"--agent", "reviewer", "--model", "opus"},
+			UseChrome:       true,
+			UseTeammateMode: true,
+		},
+	}
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig failed: %v", err)
+	}
+
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig failed: %v", err)
+	}
+	want := []string{"--agent", "reviewer", "--model", "opus"}
+	if len(loaded.Claude.ExtraArgs) != len(want) {
+		t.Fatalf("Claude.ExtraArgs = %v, want %v", loaded.Claude.ExtraArgs, want)
+	}
+	for i := range want {
+		if loaded.Claude.ExtraArgs[i] != want[i] {
+			t.Fatalf("Claude.ExtraArgs[%d] = %q, want %q", i, loaded.Claude.ExtraArgs[i], want[i])
+		}
+	}
+	if !loaded.Claude.UseChrome {
+		t.Fatal("Claude.UseChrome = false, want true")
+	}
+	if !loaded.Claude.UseTeammateMode {
+		t.Fatal("Claude.UseTeammateMode = false, want true")
+	}
+}
+
 func TestGetTheme_Default(t *testing.T) {
 	// Setup: use temp directory with no config
 	tempDir := t.TempDir()
