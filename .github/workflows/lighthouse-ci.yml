@@ -74,8 +74,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Idempotent: try to create; treat "already exists" as success.
-          # Any other failure (auth, perms, network) prints the raw output
-          # and fails the step so it surfaces clearly in the run log.
+          # On fork PRs the GITHUB_TOKEN is read-only on the upstream repo
+          # regardless of declared `issues: write` permission, so a label-
+          # bootstrap attempt 403s. Soft-fail with a warning in that case —
+          # a one-time maintainer-side `gh label create` (or any non-fork
+          # run of this workflow) seeds the label, after which every fork
+          # PR hits the "already exists" branch and the override step just
+          # reads the label, which works on read-only tokens.
+          # Other failures (network, malformed args) still hard-fail.
           set +e
           output=$(gh label create "$ACK_LABEL" \
             --repo "$GITHUB_REPOSITORY" \
@@ -88,6 +94,10 @@ jobs:
           fi
           if echo "$output" | grep -qiE "already exists|already_exists"; then
             echo "Label '$ACK_LABEL' already exists; nothing to do."
+            exit 0
+          fi
+          if echo "$output" | grep -qiE "HTTP 403|Resource not accessible by integration"; then
+            echo "::warning title=Skipped ack-label bootstrap::GITHUB_TOKEN is read-only on '$GITHUB_REPOSITORY' (typical for fork PRs). The override step will still read the label if a maintainer has seeded it. To seed once: gh label create '$ACK_LABEL' --repo '$GITHUB_REPOSITORY' --color fbca04"
             exit 0
           fi
           echo "::error title=Failed to ensure ack label::gh label create exited $rc"
