@@ -7,9 +7,9 @@
   "scripts": {
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed",
-    "test:e2e:update-snapshots": "playwright test --update-snapshots",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:e2e:headed": "node scripts/run-e2e.mjs --headed",
+    "test:e2e:update-snapshots": "node scripts/run-e2e.mjs --update-snapshots",
     "test:install-browsers": "playwright install --with-deps chromium",
     "test:all": "npm run test:unit && npm run test:e2e"
   },

@@ -1,54 +1,98 @@
-// e2e/parity-state.spec.js -- field-level parity assertions.
+// e2e/parity-state.spec.js -- field-level parity assertions, derived from
+// PARITY_MATRIX.md.
 //
-// Every state field listed in PARITY_MATRIX.md must be retrievable from the
-// web JSON. This test pins the current set so that:
-//   - if the web JSON drops a field that the TUI still shows, the test fails
-//   - if a NEW field is added (e.g. `notes` exposed), this test plus the
-//     matrix must be updated in lockstep — the failure is a useful nudge.
+// The matrix is the single source of truth for which session fields the web
+// JSON should expose. Anything in the matrix marked Present (web JSON cell
+// is `MenuSession.<key>`) MUST appear in /api/sessions output. Anything
+// marked MISSING MUST NOT appear until it is intentionally promoted in
+// lockstep with the matrix.
 
 import { test, expect } from '@playwright/test'
+import { loadMatrix } from '../helpers/parity-matrix.js'
 
-test.describe('parity: state fields surfaced by /api/sessions', () => {
-  test('present fields match the matrix-documented set', async ({ request }) => {
-    await request.post('/__fixture/reset')
-    const res = await request.get('/api/sessions')
-    expect(res.ok()).toBe(true)
-    const body = await res.json()
-    expect(body.sessions.length).toBeGreaterThan(0)
+const MATRIX = loadMatrix()
 
-    // Pick a representative session.
-    const s = body.sessions.find((x) => x.id === 'sess-001')
-    expect(s).toBeDefined()
+// Pinned counts so silent row deletion fails the build.
+const EXPECTED_STATE_ROWS = 45
+const EXPECTED_PRESENT_FIELDS = 12
 
-    const expectedKeys = [
-      'id', 'title', 'tool', 'status', 'groupPath', 'projectPath',
-      'order', 'createdAt',
-    ].sort()
-    const actualKeys = Object.keys(s).filter((k) => s[k] !== undefined && s[k] !== null && s[k] !== '').sort()
-    // Every expected key MUST be present.
-    for (const k of expectedKeys) {
-      expect(actualKeys, `expected key ${k} on session JSON`).toContain(k)
-    }
+const PRESENT = MATRIX.stateFields.filter((f) => !f.isMissing && f.jsonKey)
+const MISSING = MATRIX.stateFields.filter((f) => f.isMissing)
+
+test.describe('parity: matrix structural invariants', () => {
+  test('state-field row count matches expected (deletion guard)', () => {
+    expect(
+      MATRIX.stateFields.length,
+      `PARITY_MATRIX.md state-field row count drifted (was ${EXPECTED_STATE_ROWS}, now ${MATRIX.stateFields.length}). Update EXPECTED_STATE_ROWS and add/remove tests in lockstep.`,
+    ).toBe(EXPECTED_STATE_ROWS)
   })
 
-  test('matrix-documented MISSING fields stay absent until intentionally added', async ({
-    request,
-  }) => {
-    await request.post('/__fixture/reset')
-    const res = await request.get('/api/sessions')
-    const body = await res.json()
-    const s = body.sessions.find((x) => x.id === 'sess-001')
-    expect(s).toBeDefined()
-
-    // A subset of fields the matrix flags as MISSING. If any of these
-    // appears, the matrix is out of date AND the parity tests for that
-    // field need to be added in the same PR.
-    const stillMissing = [
-      'notes', 'color', 'command', 'wrapper', 'channels', 'extraArgs',
-      'toolOptions', 'loadedMcpNames', 'sandbox', 'sshHost', 'worktreePath',
-    ]
-    for (const k of stillMissing) {
-      expect(s[k], `field ${k} surfaced unexpectedly — update PARITY_MATRIX.md`).toBeUndefined()
-    }
+  test('present-field count matches expected (extraction guard)', () => {
+    expect(
+      PRESENT.length,
+      `Present-field count changed (was ${EXPECTED_PRESENT_FIELDS}, now ${PRESENT.length}) — confirm matrix rows still parse correctly and update the pin.`,
+    ).toBe(EXPECTED_PRESENT_FIELDS)
   })
 })
+
+test.describe('parity: state fields surfaced by /api/sessions', () => {
+  test.beforeEach(async ({ request }) => {
+    await request.post('/__fixture/reset')
+    // Fork sess-001 so a session in the snapshot has parentSessionId set.
+    // The matrix promises that field is present in the JSON shape; an empty
+    // string would be omitted by Go's `omitempty` tag, so we need at least
+    // one session that legitimately carries it.
+    await request.post('/api/sessions/sess-001/fork')
+  })
+
+  // One test per PRESENT field — every matrix row gets a hit. The matrix
+  // claim is about JSON shape (the field CAN be surfaced), not that every
+  // session has a non-empty value, so we assert "at least one session in
+  // the snapshot has the key".
+  for (const field of PRESENT) {
+    test(`field "${field.jsonKey}" is present on session JSON (matrix: ${field.field})`, async ({
+      request,
+    }) => {
+      const res = await request.get('/api/sessions')
+      expect(res.ok()).toBe(true)
+      const body = await res.json()
+      expect(body.sessions.length).toBeGreaterThan(0)
+      const someoneHasIt = body.sessions.some((s) =>
+        Object.prototype.hasOwnProperty.call(s, field.jsonKey),
+      )
+      expect(
+        someoneHasIt,
+        `expected at least one session JSON to carry MenuSession.${field.jsonKey} (matrix row "${field.field}"). ` +
+          `Sessions seen: ${body.sessions.map((s) => s.id).join(', ')}.`,
+      ).toBe(true)
+    })
+  }
+
+  // One test per MISSING field — they must stay absent on every session
+  // until promoted in lockstep with the matrix.
+  for (const field of MISSING) {
+    const candidateKeys = candidateJsonKeys(field.field)
+    test(`field "${field.field}" stays MISSING from session JSON until matrix is updated`, async ({
+      request,
+    }) => {
+      const res = await request.get('/api/sessions')
+      const body = await res.json()
+      expect(body.sessions.length).toBeGreaterThan(0)
+      for (const s of body.sessions) {
+        for (const key of candidateKeys) {
+          expect(
+            s[key],
+            `session ${s.id} unexpectedly exposes "${key}" — promote PARITY_MATRIX.md row "${field.field}" out of MISSING in the same PR.`,
+          ).toBeUndefined()
+        }
+      }
+    })
+  }
+})
+
+// Convert a matrix snake_case field name to plausible JSON key candidates.
+// "loaded_mcp_names" → ["loadedMcpNames", "loaded_mcp_names"].
+function candidateJsonKeys(snakeName) {
+  const camel = snakeName.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
+  return camel === snakeName ? [camel] : [camel, snakeName]
+}

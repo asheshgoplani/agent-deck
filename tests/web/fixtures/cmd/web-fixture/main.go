@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,15 +29,35 @@ import (
 )
 
 func main() {
-	addr := flag.String("listen", "127.0.0.1:38291", "Listen address")
+	addr := flag.String("listen", "127.0.0.1:38291", "Listen address (use 127.0.0.1:0 for OS-allocated ephemeral port)")
 	mutationsAllowed := flag.Bool("allow-mutations", true, "Allow POST/DELETE actions through the web API")
+	portFile := flag.String("port-file", "", "If set, write the bound TCP port to this file once listening (used with :0)")
+	startupToken := flag.String("startup-token", "", "Echoed at /__fixture/whoami so callers can verify they're talking to this exact process")
 	flag.Parse()
 
 	store := newFixtureStore()
 	store.seed()
+	store.startupToken = *startupToken
+
+	// Bind the listener up-front so we can resolve `:0` to a real port and
+	// publish it before any test connects. This eliminates the false-pass
+	// scenario where a fixed port is already held by a stale server: the
+	// listener call fails loudly here, no zombie can answer.
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "web-fixture: listen %s failed: %v\n", *addr, err)
+		os.Exit(1)
+	}
+	boundAddr := listener.Addr().(*net.TCPAddr)
+	if *portFile != "" {
+		if err := os.WriteFile(*portFile, fmt.Appendf(nil, "%d", boundAddr.Port), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "web-fixture: writing port-file %s failed: %v\n", *portFile, err)
+			os.Exit(1)
+		}
+	}
 
 	server := web.NewServer(web.Config{
-		ListenAddr:   *addr,
+		ListenAddr:   boundAddr.String(),
 		Profile:      "fixture",
 		ReadOnly:     false,
 		WebMutations: *mutationsAllowed,
@@ -52,15 +73,15 @@ func main() {
 	mux.Handle("/", handler)
 
 	httpSrv := &http.Server{
-		Addr:              *addr,
+		Addr:              boundAddr.String(),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		fmt.Fprintf(os.Stderr, "web-fixture listening on %s\n", *addr)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Fprintf(os.Stderr, "web-fixture listening on %s (pid=%d)\n", boundAddr.String(), os.Getpid())
+		if err := httpSrv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
@@ -87,13 +108,14 @@ func main() {
 // fixtureStore implements both web.MenuDataLoader and web.SessionMutator
 // against in-memory state. All operations are concurrency-safe.
 type fixtureStore struct {
-	mu       sync.Mutex
-	now      func() time.Time
-	profile  string
-	groups   map[string]*web.MenuGroup // keyed by path
-	sessions map[string]*web.MenuSession
-	order    []string // session id order
-	nextID   int
+	mu           sync.Mutex
+	now          func() time.Time
+	profile      string
+	groups       map[string]*web.MenuGroup // keyed by path
+	sessions     map[string]*web.MenuSession
+	order        []string // session id order
+	nextID       int
+	startupToken string // echoed at /__fixture/whoami for spawn verification
 }
 
 func newFixtureStore() *fixtureStore {
@@ -127,6 +149,11 @@ func (s *fixtureStore) seed() {
 			ID: "sess-002", Title: "frontend", Tool: "claude",
 			Status: session.StatusRunning, GroupPath: "work", ProjectPath: "/srv/frontend",
 			Order: 1, CreatedAt: now,
+			// Populate tmux internals on the running session so parity-state
+			// tests can verify the JSON shape carries these fields per the
+			// matrix promise. Not rendered by the UI; no screenshot impact.
+			TmuxSession:    "agentdeck-fixture-sess-002",
+			TmuxSocketName: "agentdeck-fixture",
 		},
 		"sess-003": {
 			ID: "sess-003", Title: "innotrade-api", Tool: "codex",
@@ -289,6 +316,20 @@ func (s *fixtureStore) transition(id string, to session.Status) error {
 // session lifecycle (which depends on tmux being present on the host).
 func (s *fixtureStore) adminHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/__fixture/whoami", func(w http.ResponseWriter, r *http.Request) {
+		// Returns this binary's PID and the startup token it was launched
+		// with. Lets test setup verify it is talking to the exact process
+		// it spawned, not a stale server that happened to be on the port.
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET only", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"pid":          os.Getpid(),
+			"startupToken": s.startupToken,
+		})
+	})
 	mux.HandleFunc("/__fixture/reset", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)

@@ -1,13 +1,25 @@
-// e2e/parity-actions.spec.js -- one test per parity-matrix row that has a
-// web counterpart. Drives the web HTTP API directly (Playwright's `request`
-// fixture) and asserts the resulting state via the same /__fixture/snapshot
-// endpoint that any TUI-side observer would query.
+// e2e/parity-actions.spec.js -- one test per parity-matrix row.
 //
-// "Both views see the same truth" is the contract — these tests fail if
-// the web mutation lands but the snapshot the TUI reads doesn't reflect
-// it, or vice versa.
+// The full row set is derived from tests/web/PARITY_MATRIX.md via the
+// helpers/parity-matrix.js parser. Anything that lands in the matrix
+// automatically becomes a test row; anything that disappears triggers the
+// pinned row-count assertion to fail. This catches the class of bug where
+// PR-B silently drops a row not in a hard-coded subset.
+//
+// The contract is "both views see the same truth": web mutations must show
+// up in the snapshot any TUI-side observer would consume, and missing
+// endpoints must stay missing until they're explicitly added (in lockstep
+// with the matrix).
 
 import { test, expect } from '@playwright/test'
+import { loadMatrix, inferMissingProbe } from '../helpers/parity-matrix.js'
+
+const MATRIX = loadMatrix()
+
+// Pinned row counts. If the matrix grows or shrinks, these MUST be updated
+// in the same PR — the failure is the point.
+const EXPECTED_ACTION_ROWS = 47
+const EXPECTED_PROBEABLE_MISSING = 15
 
 test.describe.configure({ mode: 'serial' })
 
@@ -30,6 +42,30 @@ function findSession(snap, predicate) {
   }
   return null
 }
+
+test.describe('parity: matrix structural invariants', () => {
+  test('action row count matches expected (deletion guard)', () => {
+    expect(
+      MATRIX.actions.length,
+      `PARITY_MATRIX.md changed action row count from ${EXPECTED_ACTION_ROWS} to ${MATRIX.actions.length} — update EXPECTED_ACTION_ROWS in parity-actions.spec.js and add/remove tests in lockstep.`,
+    ).toBe(EXPECTED_ACTION_ROWS)
+  })
+
+  test('probeable-missing count matches expected (probe coverage guard)', () => {
+    const probeable = MATRIX.actions.filter(
+      (a) => a.isMissing && inferMissingProbe(a) !== null,
+    )
+    expect(
+      probeable.length,
+      `Missing-action probe count drifted (was ${EXPECTED_PROBEABLE_MISSING}, now ${probeable.length}). Update inferMissingProbe() and EXPECTED_PROBEABLE_MISSING together.`,
+    ).toBe(EXPECTED_PROBEABLE_MISSING)
+  })
+
+  test('every implemented action row has a parseable METHOD path', () => {
+    const broken = MATRIX.actions.filter((a) => !a.isMissing && !a.method)
+    expect(broken, `unparseable matrix rows: ${broken.map((b) => b.action).join(', ')}`).toEqual([])
+  })
+})
 
 test.describe('parity: session lifecycle', () => {
   test.beforeEach(async ({ request }) => {
@@ -142,27 +178,31 @@ test.describe('parity: sync invariant — TUI-style change visible to web', () =
   })
 })
 
+// Drive the missing-endpoint regression guard from the matrix itself: every
+// row whose webEndpoint is MISSING and which has an inferable URL pattern
+// (see helpers/parity-matrix.js inferMissingProbe) is probed. If a future PR
+// quietly implements one of these without updating the matrix, the test
+// flips green for the wrong reason — but because the matrix row still says
+// MISSING, the EXPECTED_PROBEABLE_MISSING pin keeps the count honest.
 test.describe('parity: MISSING actions stay MISSING (regression guard)', () => {
-  // The PARITY_MATRIX flags 30 actions the web does not yet expose. This
-  // test pins the closure of that gap: when PR-B (or later) adds a real
-  // endpoint for one of these, this test will fail loudly and the matrix
-  // must be updated in lockstep.
-  const expectedNotFound = [
-    { method: 'POST', path: '/api/sessions/sess-001/close' },        // soft-close (`D` key)
-    { method: 'POST', path: '/api/sessions/sess-001/rename' },       // rename (`r` key)
-    { method: 'POST', path: '/api/sessions/sess-001/restart-fresh' },// restart fresh (`T` key)
-    { method: 'POST', path: '/api/sessions/sess-001/mcps/exa' },     // attach MCP (`m` dialog)
-    { method: 'DELETE', path: '/api/sessions/sess-001/mcps/exa' },   // detach MCP
-    { method: 'POST', path: '/api/sessions/sess-001/skills/x' },     // attach skill (`s` dialog)
-    { method: 'DELETE', path: '/api/sessions/sess-001/skills/x' },   // detach skill
-    { method: 'POST', path: '/api/sessions/sess-001/notes' },        // edit notes (`e` key)
-  ]
+  const probes = MATRIX.actions
+    .filter((a) => a.isMissing)
+    .map((a) => ({ row: a, probe: inferMissingProbe(a) }))
+    .filter(({ probe }) => probe !== null)
 
-  for (const { method, path } of expectedNotFound) {
-    test(`${method} ${path} is still 404 (not yet implemented)`, async ({ request }) => {
-      const res = await request.fetch(path, { method, data: {} })
+  for (const { row, probe } of probes) {
+    test(`${probe.method} ${probe.path} is still 404 (matrix row: "${row.action}")`, async ({
+      request,
+    }) => {
+      const res = await request.fetch(probe.path, {
+        method: probe.method,
+        data: probe.method === 'GET' || probe.method === 'DELETE' ? undefined : {},
+      })
       // 404 OR 405 are both acceptable signals the route is unimplemented.
-      expect([404, 405]).toContain(res.status())
+      expect(
+        [404, 405],
+        `${probe.method} ${probe.path} returned ${res.status()} — if you intentionally implemented this, update PARITY_MATRIX.md row "${row.action}" so its Web Endpoint is no longer MISSING.`,
+      ).toContain(res.status())
     })
   }
 })
