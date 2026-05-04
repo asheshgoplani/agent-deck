@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **WebUI test infrastructure + TUI⇄web parity matrix (PR-A of WebUI overhaul, [PR #804](https://github.com/asheshgoplani/agent-deck/pull/804)).** Foundation PR for the WebUI redesign — pure test infrastructure with no design changes. Adds Vitest unit tests (`tests/web/unit/`, jsdom + @testing-library/preact, 11 specs against `api.js` + `state.js`), Playwright e2e + screenshot regression (`tests/web/e2e/`, 78 specs across 3 viewports — smoke, parity-actions, parity-state, visual baselines), an in-memory web fixture binary (`tests/web/fixtures/cmd/web-fixture/main.go`), the TUI ↔ web parity matrix at `tests/web/PARITY_MATRIX.md` cataloging 47 actions and ~50 state fields (surfaces a 64% action gap and 76% state-field gap from TUI to web), a Go runtime sync-invariant test at `internal/web/parity_test.go` that fires actions through both the HTTP surface and the mutator and asserts equal observable state, `Makefile` targets (`test-web`, `test-web-unit`, `test-web-e2e`, `test-web-install`), and a `.github/workflows/web-tests.yml` CI workflow. Lifecycle endpoints get positive parity tests; missing endpoints get "stay missing" regression guards so any silent addition fails the build until the matrix is updated in lockstep. Stack stays Preact + htm + signals (already vendored). PR-B (visual redesign) builds on top of this. Plan: `documentation/webui-overhaul-plan.md`.
+
 ## [1.7.79] - 2026-05-01
 
 Two TUI polish fixes from @AdamiecRadek (their 5th and 6th PR landing this week — #813→#814 pricing, #818→#819 cost line, #836→#837 context window, #846, #847).
