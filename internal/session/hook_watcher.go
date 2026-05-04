@@ -143,6 +143,13 @@ func (w *StatusFileWatcher) GetHookStatus(instanceID string) *HookStatus {
 	return w.statuses[instanceID]
 }
 
+// ClearHookStatus removes the cached hook status for an instance.
+func (w *StatusFileWatcher) ClearHookStatus(instanceID string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.statuses, instanceID)
+}
+
 // loadExisting reads all current status files on startup.
 func (w *StatusFileWatcher) loadExisting() {
 	entries, err := os.ReadDir(w.hooksDir)

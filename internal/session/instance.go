@@ -3236,14 +3236,22 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	return i.hookStatus, fresh
 }
 
-// ClearHookStatus resets the hook-based status, forcing the next UpdateStatus()
-// to fall through to polling. Used when the user manually overrides status (e.g., pressing 'u'
-// to unacknowledge after an Escape interrupt where the Stop hook didn't fire).
+// ClearHookStatus resets the hook-based status and removes the persisted hook
+// record, forcing the next UpdateStatus() to fall through to polling. Used
+// when the user manually overrides status (e.g., pressing 'u' to unacknowledge
+// after an Escape interrupt where the Stop hook didn't fire).
 func (i *Instance) ClearHookStatus() {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	i.hookStatus = ""
 	i.hookLastUpdate = time.Time{}
+	i.mu.Unlock()
+
+	if err := os.Remove(filepath.Join(GetHooksDir(), i.ID+".json")); err != nil && !os.IsNotExist(err) {
+		sessionLog.Debug("clear_hook_status_file_failed",
+			slog.String("instance", i.ID),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // ForceNextStatusCheck clears the idle polling optimization so the next

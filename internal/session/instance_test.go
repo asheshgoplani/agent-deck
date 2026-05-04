@@ -3149,6 +3149,38 @@ func TestInstance_UpdateHookStatus_Nil(t *testing.T) {
 	}
 }
 
+func TestInstance_ClearHookStatus_RemovesPersistedHookFile(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	inst := NewInstanceWithTool("test", "/tmp", "codex")
+	inst.ID = "clear-hook-file"
+
+	hooksDir := GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, inst.ID+".json")
+	if err := os.WriteFile(hookPath, []byte(`{"status":"running","event":"UserPromptSubmit","ts":1}`), 0o644); err != nil {
+		t.Fatalf("write hook file: %v", err)
+	}
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	inst.ClearHookStatus()
+
+	if status, fresh := inst.GetHookStatus(); status != "" || fresh {
+		t.Fatalf("hook status = %q fresh=%v, want cleared", status, fresh)
+	}
+	if _, err := os.Stat(hookPath); !os.IsNotExist(err) {
+		t.Fatalf("hook file still exists or stat failed with unexpected error: %v", err)
+	}
+}
+
 func TestInstance_UpdateHookStatus_UsesAnchorWhenHookSessionIDMissing_Claude(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

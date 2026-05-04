@@ -3223,6 +3223,9 @@ func (h *Home) refreshAttachedSessionStatus(sessionID string) {
 	// Force the attached session through the live tmux path before the list is
 	// redrawn so the status icon reflects a dead pane immediately.
 	inst.ClearHookStatus()
+	if h.hookWatcher != nil {
+		h.hookWatcher.ClearHookStatus(inst.ID)
+	}
 	inst.ForceNextStatusCheck()
 
 	if inst.GetTmuxSession() != nil {
@@ -4237,6 +4240,8 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.isAttaching.Store(false) // Atomic store for thread safety
 		now := time.Now()
 		h.beginAttachReturnGrace(now)
+		// Reconcile the attached session synchronously before the normal delayed
+		// refresh so an exited pane does not render as still running for a tick.
 		h.refreshAttachedSessionStatus(msg.attachedSessionID)
 
 		selectedBefore := h.captureSelectedItemIdentity()
