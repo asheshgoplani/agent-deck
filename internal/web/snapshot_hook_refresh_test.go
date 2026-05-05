@@ -42,12 +42,15 @@ func TestRefreshSnapshotHookStatuses_FreshHookOverridesStaleSnapshotError(t *tes
 	}
 }
 
-// TestRefreshSnapshotHookStatuses_StaleHookDoesNotOverrideRunning asserts that
-// a stale "waiting" hook does NOT clobber a snapshot that has positive newer
-// state (running). The TUI's running observation may be more recent than the
-// hook file (e.g. a UserPromptSubmit fired but the hook-file write is racing
-// behind), so the snapshot wins.
-func TestRefreshSnapshotHookStatuses_StaleHookDoesNotOverrideRunning(t *testing.T) {
+// TestRefreshSnapshotHookStatuses_WaitingHookOverridesAnyNonStopped covers the
+// durability rule: a "waiting" hook record represents the latest hook event
+// for the instance — no subsequent transition happened at the hook layer (the
+// next UserPromptSubmit would have replaced the file with "running"). So even
+// if the snapshot has latched at "running" because the TUI's inotify watcher
+// missed the Stop event AND a stale tmux pane heuristic is now stuck on
+// "active", the web should report "waiting" to match what `agent-deck list`
+// shows for the same database state.
+func TestRefreshSnapshotHookStatuses_WaitingHookOverridesAnyNonStopped(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 5, 5, 19, 0, 0, 0, time.UTC)
 	hooks := map[string]*session.HookStatus{
@@ -56,11 +59,17 @@ func TestRefreshSnapshotHookStatuses_StaleHookDoesNotOverrideRunning(t *testing.
 			UpdatedAt: now.Add(-2*time.Hour - time.Second),
 		},
 	}
-	snap := snapshotWithSession("sess-A", "claude", session.StatusRunning)
-	refreshSnapshotHookStatusesAt(snap, hooks, now)
-
-	if got := snap.Items[0].Session.Status; got != session.StatusRunning {
-		t.Fatalf("stale waiting must not clobber snapshot=running: got %q want %q", got, session.StatusRunning)
+	for _, snapshotState := range []session.Status{
+		session.StatusRunning, session.StatusError, session.StatusIdle, session.StatusStarting,
+	} {
+		snapshotState := snapshotState
+		t.Run(string(snapshotState), func(t *testing.T) {
+			snap := snapshotWithSession("sess-A", "claude", snapshotState)
+			refreshSnapshotHookStatusesAt(snap, hooks, now)
+			if got := snap.Items[0].Session.Status; got != session.StatusWaiting {
+				t.Fatalf("snapshot=%q + hook=waiting must yield waiting: got %q", snapshotState, got)
+			}
+		})
 	}
 }
 

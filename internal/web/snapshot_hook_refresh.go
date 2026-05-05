@@ -74,29 +74,17 @@ func applyHookStatusToMenuSession(sess *MenuSession, hs *session.HookStatus, now
 
 	switch hs.Status {
 	case "waiting":
-		// Two-tier override:
-		// (1) Fresh waiting (within 2-min hookFastPathWindow): mirrors
-		//     Instance.UpdateStatus's hook fast-path — replace any non-stopped
-		//     status. This catches the most common form of the bug: a Claude
-		//     turn just ended, the TUI's inotify watcher missed it, and the
-		//     snapshot is still showing the prior running state.
-		//
-		// (2) Stale waiting + snapshot says error: still override to waiting.
-		//     Rationale — "waiting" is a durable Claude state. After a Stop
-		//     hook fires, the session does not transition to a different
-		//     state until the next UserPromptSubmit, which would itself
-		//     write a fresh "running" hook. So an old "waiting" hook with
-		//     no newer hook event means Claude is still at the prompt. The
-		//     CLI captures this via tmux pane-title heuristics (which the
-		//     web does not have access to without per-request subprocess
-		//     calls); the override mirrors that result for the specific
-		//     symptom the user reports — snapshot stuck at error while CLI
-		//     shows waiting. Other snapshot states (running/idle/starting)
-		//     are left alone for stale hooks because they may reflect newer
-		//     observations the TUI has captured outside of hooks.
-		if fresh || sess.Status == session.StatusError {
-			sess.Status = session.StatusWaiting
-		}
+		// "waiting" is a durable Claude state. After a Stop hook fires, the
+		// session does not transition to any other state until the next
+		// UserPromptSubmit — which itself writes a fresh "running" hook
+		// event. So if the hook file's latest record says "waiting", no
+		// subsequent transition has occurred at the hook layer. Override
+		// any non-stopped snapshot Status to mirror what `agent-deck list`
+		// reports for the same database state. The CLI achieves the same
+		// effect via Instance.UpdateStatus's tmux pane-title heuristic; the
+		// web cannot afford that subprocess on every request, so we trust
+		// the hook record instead.
+		sess.Status = session.StatusWaiting
 	case "running":
 		// Running is transient: only override on fresh hooks. A stale
 		// "running" hook can be misleading because the next "Stop" hook
