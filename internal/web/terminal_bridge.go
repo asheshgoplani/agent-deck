@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -152,33 +151,26 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 		return fmt.Errorf("bridge not initialized")
 	}
 
-	var firstErr error
-
-	// Step 1: Resize the local PTY master (per D-02: pty.Setsize first).
-	// This sends SIGWINCH to the tmux attach process. With ignore-size on the
-	// attach client, the tmux server will not auto-resize from this signal,
-	// but the PTY master's own TIOCGWINSZ is updated so xterm.js cell layout
-	// calculations are correct.
+	// Resize the local PTY master. This sends SIGWINCH to the tmux attach
+	// process. Because the attach client (see tmuxAttachCommand) is no longer
+	// flagged `-f ignore-size`, the tmux server now uses this client's PTY
+	// size as its declared geometry and re-arbitrates the window dimensions
+	// per the session's `window-size` policy (`largest` — set at Session.Start
+	// in internal/tmux/tmux.go). The previous `tmux resize-window` call here
+	// was removed because it implicitly flipped the session option to
+	// `window-size=manual` and pinned the window to the web viewport, which
+	// dragged native attached clients (Ghostty, iTerm) along with it. Letting
+	// tmux do the arbitration via `largest` keeps every client at the size of
+	// the biggest viewer; smaller clients see a clipped portion of the larger
+	// window content (no dot-filled void cells).
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
 	}); err != nil {
-		firstErr = fmt.Errorf("resize pty: %w", err)
+		return fmt.Errorf("resize pty: %w", err)
 	}
 
-	// Step 2: Tell the tmux server the new window dimensions (per D-01).
-	// Required because ignore-size prevents the server from adopting the
-	// attach client's PTY size automatically.
-	args := []string{
-		"resize-window", "-t", b.tmuxSession,
-		"-x", strconv.Itoa(cols),
-		"-y", strconv.Itoa(rows),
-	}
-	if output, err := tmuxCommand(b.tmuxSocketName, args...).CombinedOutput(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("tmux resize-window: %w (output: %s)", err, strings.TrimSpace(string(output)))
-	}
-
-	return firstErr
+	return nil
 }
 
 func (b *tmuxPTYBridge) Close() {
@@ -259,8 +251,15 @@ func tmuxCommand(socketName string, args ...string) *exec.Cmd {
 }
 
 func tmuxAttachCommand(sessionName, socketName string) *exec.Cmd {
-	// Keep this web client from influencing other attached client sizes (for example, the local TUI).
-	return tmuxCommand(socketName, "attach-session", "-f", "ignore-size", "-t", sessionName)
+	// Web's attach is now a normal client whose PTY size participates in tmux's
+	// `window-size=largest` arbitration (set at Session.Start). Previously we
+	// passed `-f ignore-size` together with a manual `tmux resize-window` call
+	// in (*tmuxPTYBridge).Resize; the manual resize-window flipped the session
+	// option to `window-size=manual` and pinned the window to the web viewport
+	// for ALL attached clients (Ghostty, iTerm) — the dots-in-window symptom.
+	// With largest in effect, every client sees content sized to the biggest
+	// viewer; smaller clients see a clipped portion rather than dot-filled void.
+	return tmuxCommand(socketName, "attach-session", "-t", sessionName)
 }
 
 func tmuxSocketFromEnv() (string, bool) {

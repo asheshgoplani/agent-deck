@@ -68,7 +68,14 @@ func TestTmuxPTYBridgeResize(t *testing.T) {
 		t.Fatalf("failed to send resize message: %v", err)
 	}
 
-	// Poll for up to 2 seconds to handle async tmux propagation.
+	// The web bridge no longer issues a `tmux resize-window -x N -y M` call
+	// (that flipped session window-size to manual and dragged native clients —
+	// the dots-in-window bug). Instead the bridge only Setsizes the local PTY
+	// to the requested cols x rows, and tmux's window-size policy arbitrates
+	// across all attached clients. With one attach client at PTY 120x40 and
+	// tmux's default 1-row status bar, the resulting window content size is
+	// 120x39 (rows are reduced by the status bar height).
+	const wantSize = "120x39"
 	var got string
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -77,10 +84,10 @@ func TestTmuxPTYBridgeResize(t *testing.T) {
 			t.Fatalf("tmux display-message failed: %v", err)
 		}
 		got = strings.TrimSpace(string(out))
-		if got == "120x40" {
+		if got == wantSize {
 			return // PASS
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("tmux window size after Resize: got %q, want %q", got, "120x40")
+	t.Fatalf("tmux window size after Resize: got %q, want %q", got, wantSize)
 }

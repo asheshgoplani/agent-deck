@@ -6,12 +6,21 @@ import (
 	"testing"
 )
 
-func TestTmuxAttachCommandUsesIgnoreSizeFlag(t *testing.T) {
+// TestTmuxAttachCommand_NoIgnoreSize: the web's tmux attach must NOT pass
+// `-f ignore-size`. Earlier the bridge combined ignore-size with a manual
+// `tmux resize-window` call (since reverted) which had the side effect of
+// flipping the session option to `window-size=manual`, dragging the window
+// for ALL attached clients (Ghostty, iTerm) — the dots-in-window bug.
+// With ignore-size removed and resize-window dropped, the web client
+// participates in tmux's `window-size=largest` arbitration set at
+// Session.Start (internal/tmux/tmux.go), so every client sees content sized
+// to the biggest viewer.
+func TestTmuxAttachCommand_NoIgnoreSize(t *testing.T) {
 	t.Setenv("TMUX", "")
 
 	cmd := tmuxAttachCommand("sess-1", "")
 
-	wantArgs := []string{"tmux", "attach-session", "-f", "ignore-size", "-t", "sess-1"}
+	wantArgs := []string{"tmux", "attach-session", "-t", "sess-1"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("unexpected args: got %v want %v", cmd.Args, wantArgs)
 	}
@@ -22,7 +31,7 @@ func TestTmuxAttachCommandUsesSocketFromTMUXEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("sess-2", "")
 
-	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-f", "ignore-size", "-t", "sess-2"}
+	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-t", "sess-2"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("unexpected args with TMUX env: got %v want %v", cmd.Args, wantArgs)
 	}
@@ -47,7 +56,7 @@ func TestTmuxAttachCommand_SocketNameOverridesEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("agentdeck-foo", "agent-deck")
 
-	wantArgs := []string{"tmux", "-L", "agent-deck", "attach-session", "-f", "ignore-size", "-t", "agentdeck-foo"}
+	wantArgs := []string{"tmux", "-L", "agent-deck", "attach-session", "-t", "agentdeck-foo"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("socket name must take precedence over $TMUX env\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}
@@ -69,7 +78,7 @@ func TestTmuxAttachCommand_WhitespaceSocketNameFallsBackToEnv(t *testing.T) {
 
 	cmd := tmuxAttachCommand("sess-3", "   \t")
 
-	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-f", "ignore-size", "-t", "sess-3"}
+	wantArgs := []string{"tmux", "-S", "/tmp/tmux-test.sock", "attach-session", "-t", "sess-3"}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("whitespace-only socket name must fall through to legacy TMUX env\n got:  %v\n want: %v", cmd.Args, wantArgs)
 	}

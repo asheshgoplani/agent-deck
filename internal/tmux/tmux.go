@@ -1866,6 +1866,21 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
+	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
+	// control client (controlpipe.go) at the same time as native `tmux attach`
+	// clients (Ghostty, iTerm). Default `window-size latest` makes the window
+	// flip to whichever client most recently sent input, so larger clients see
+	// dot-filled void cells and smaller clients clip. `largest` keeps the
+	// window sized to the biggest client; `aggressive-resize` only resizes
+	// windows that are actively viewed (avoids cross-window resize storms).
+	// See tmux(1) "window-size" / "aggressive-resize" and tmux issue #2594.
+	// Both are gated through OptionOverrides so users can opt out.
+	if _, ok := s.OptionOverrides["window-size"]; !ok {
+		startArgs = append(startArgs, ";", "set-option", "-t", s.Name, "window-size", "largest")
+	}
+	if _, ok := s.OptionOverrides["aggressive-resize"]; !ok {
+		startArgs = append(startArgs, ";", "set-window-option", "-t", s.Name, "aggressive-resize", "on")
+	}
 	_ = s.tmuxCmd(startArgs...).Run()
 
 	// Bind Ctrl+Q to detach at the tmux level as fallback for terminals where
