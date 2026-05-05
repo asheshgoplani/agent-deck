@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -82,6 +83,17 @@ func resolveTemplate(template string, vars templateVars) string {
 		"{session-id}", vars.sessionID,
 	)
 	resolved := replacer.Replace(template)
+
+	// Expand ~ to the user's home directory.
+	if strings.HasPrefix(resolved, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			resolved = filepath.Join(home, resolved[2:])
+		}
+	} else if resolved == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			resolved = home
+		}
+	}
 
 	// Handle relative paths - resolve relative to repo root.
 	if !filepath.IsAbs(resolved) {

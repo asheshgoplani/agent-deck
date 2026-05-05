@@ -1,12 +1,21 @@
 package git
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func mustUserHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		panic(err)
+	}
+	return home
+}
 
 func TestSanitizeBranchForPath(t *testing.T) {
 	t.Parallel()
@@ -308,6 +317,17 @@ func TestResolveTemplate(t *testing.T) {
 				sessionID: "a1b2c3d4",
 			},
 			expected: "/tmp/feature",
+		},
+		{
+			name:     "tilde expands to home directory",
+			template: "~/.agent-deck/worktrees/{repo-name}/{branch}",
+			vars: templateVars{
+				branch:    "feature-branch",
+				repoName:  "my-project",
+				repoRoot:  "/Users/me/src/my-project",
+				sessionID: "a1b2c3d4",
+			},
+			expected: filepath.Join(mustUserHomeDir(), ".agent-deck/worktrees/my-project/feature-branch"),
 		},
 	}
 
