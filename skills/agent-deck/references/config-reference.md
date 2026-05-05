@@ -9,6 +9,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[claude] Section](#claude-section)
 - [[codex] Section](#codex-section)
 - [[docker] Section](#docker-section)
+- [[worktree] Section](#worktree-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
@@ -158,6 +159,55 @@ volume_ignores = []            # Directories to exclude from project mount
 | `auto_cleanup` | bool | `true` | Remove sandbox containers when sessions are killed. |
 | `environment` | array | `[]` | Host environment variable names to forward into containers. |
 | `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
+
+## [worktree] Section
+
+Git worktree settings. Worktrees allow creating isolated working directories for branches, so each session gets its own checkout.
+
+```toml
+[worktree]
+default_enabled = false                              # Pre-check "Create in worktree" in dialogs
+default_location = "sibling"                         # "sibling", "subdirectory", or custom path
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"  # Custom path (overrides default_location)
+branch_prefix = "feature/"                           # Prefix for branch names ("" to disable)
+auto_cleanup = true                                  # Remove worktree when session is deleted
+setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_enabled` | bool | `false` | Pre-check "Create in worktree" in new-session and fork dialogs. |
+| `default_location` | string | `"sibling"` | Where to create worktrees: `"sibling"` (next to repo), `"subdirectory"` (inside `.worktrees/`), or a custom path (e.g., `"~/worktrees"`) creating `<path>/<repo_name>/<branch>`. Ignored when `path_template` is set. |
+| `path_template` | string | none | Custom path template. Overrides `default_location`. Variables: `{repo-name}`, `{repo-root}`, `{session-id}`, `{branch}` (sanitized, human-friendly), `{branch-escaped}` (URL-escaped, collision-resistant). |
+| `branch_prefix` | string | `"feature/"` | Prefix prepended to branch names. Supports environment variable expansion (e.g., `"$USER/"`). Set to `""` to disable. Won't double-prepend if the branch already starts with the prefix. |
+| `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
+| `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
+
+### Path template examples
+
+```toml
+# Sibling directories (default behavior)
+path_template = "../worktrees/{repo-name}/{branch}"
+
+# Central location under home
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"
+
+# Collision-resistant (useful with many similar branch names)
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch-escaped}"
+```
+
+### Branch prefix examples
+
+```toml
+# Default: prefix with "feature/"
+branch_prefix = "feature/"        # "my-session" -> "feature/my-session"
+
+# Username prefix (env var expansion)
+branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
+
+# No prefix (just the session name)
+branch_prefix = ""                # "my-session" -> "my-session"
+```
 
 ## [logs] Section
 
@@ -451,6 +501,11 @@ yolo_mode = false
 [docker]
 default_enabled = false
 mount_ssh = true
+
+[worktree]
+default_location = "sibling"
+auto_cleanup = true
+branch_prefix = "$USER/"
 
 [logs]
 max_size_mb = 10
