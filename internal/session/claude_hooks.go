@@ -248,24 +248,6 @@ func hooksAlreadyInstalled(hooks map[string]json.RawMessage) bool {
 	return true
 }
 
-// eventHasAgentDeckHook checks if a hook event's matcher array contains our
-// hook command anywhere, regardless of Matcher or Async config. Kept for
-// callers that only need a presence check.
-func eventHasAgentDeckHook(raw json.RawMessage) bool {
-	var matchers []claudeHookMatcher
-	if err := json.Unmarshal(raw, &matchers); err != nil {
-		return false
-	}
-	for _, m := range matchers {
-		for _, h := range m.Hooks {
-			if strings.Contains(h.Command, agentDeckHookCommand) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // eventHasAgentDeckHookMatchingConfig checks both presence AND config match:
 // the agent-deck hook entry must live under a matcher block whose Matcher
 // field equals the expected value, and its Async flag must match.
