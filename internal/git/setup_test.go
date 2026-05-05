@@ -13,7 +13,7 @@ import (
 func TestFindWorktreeSetupScript_NotPresent(t *testing.T) {
 	dir := t.TempDir()
 
-	result := FindWorktreeSetupScript(dir)
+	result, _ := FindWorktreeSetupScript(dir)
 	if result != "" {
 		t.Errorf("expected empty string, got %q", result)
 	}
@@ -32,9 +32,33 @@ func TestFindWorktreeSetupScript_Present(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := FindWorktreeSetupScript(dir)
+	result, mode := FindWorktreeSetupScript(dir)
 	if result != scriptPath {
 		t.Errorf("expected %q, got %q", scriptPath, result)
+	}
+	if mode&0o111 != 0 {
+		t.Errorf("expected non-executable mode, got %o", mode)
+	}
+}
+
+func TestFindWorktreeSetupScript_PresentExecutable(t *testing.T) {
+	dir := t.TempDir()
+
+	scriptDir := filepath.Join(dir, ".agent-deck")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(scriptDir, "worktree-setup.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/bash\necho hello\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, mode := FindWorktreeSetupScript(dir)
+	if result != scriptPath {
+		t.Errorf("expected %q, got %q", scriptPath, result)
+	}
+	if mode&0o111 == 0 {
+		t.Errorf("expected executable mode, got %o", mode)
 	}
 }
 
@@ -59,7 +83,7 @@ echo "copying done"
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, repoDir, worktreeDir, &stdout, &stderr, 0)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, repoDir, worktreeDir, &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v (stderr: %s)", err, stderr.String())
 	}
@@ -92,7 +116,7 @@ exit 1
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 0)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, t.TempDir(), worktreeDir, &stdout, &stderr, 0)
 	if err == nil {
 		t.Fatal("expected error from failing script")
 	}
@@ -113,7 +137,7 @@ sleep 300
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 1*time.Second)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, t.TempDir(), worktreeDir, &stdout, &stderr, 1*time.Second)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

@@ -29,7 +29,7 @@ echo "done"
 
 	// timeout == 0 → unlimited (no context deadline).
 	start := time.Now()
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 0)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, t.TempDir(), worktreeDir, &stdout, &stderr, 0)
 	elapsed := time.Since(start)
 
 	if err != nil {

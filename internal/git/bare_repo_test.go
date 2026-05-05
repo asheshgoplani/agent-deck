@@ -207,7 +207,7 @@ func TestFindWorktreeSetupScript_BareRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := FindWorktreeSetupScript(projectRoot)
+	got, _ := FindWorktreeSetupScript(projectRoot)
 	if got != scriptPath {
 		t.Errorf("FindWorktreeSetupScript(%q) = %q, want %q", projectRoot, got, scriptPath)
 	}

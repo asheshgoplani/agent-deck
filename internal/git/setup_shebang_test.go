@@ -29,7 +29,7 @@ func TestRunWorktreeSetupScript_HonorsShebangWhenExecutable(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, tmp, tmp, &stdout, &stderr, 5*time.Second)
+	err := RunWorktreeSetupScript(scriptPath, 0o755, tmp, tmp, &stdout, &stderr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("expected success when shebang dispatches /bin/echo: %v\nstderr: %s", err, stderr.String())
 	}
@@ -54,7 +54,7 @@ func TestRunWorktreeSetupScript_FallsBackToShellWhenNotExecutable(t *testing.T) 
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := RunWorktreeSetupScript(scriptPath, tmp, tmp, &stdout, &stderr, 5*time.Second)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, tmp, tmp, &stdout, &stderr, 5*time.Second)
 	if err != nil {
 		t.Fatalf("expected non-executable script to run via sh fallback: %v\nstderr: %s", err, stderr.String())
 	}

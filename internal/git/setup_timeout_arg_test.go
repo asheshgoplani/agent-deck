@@ -27,7 +27,7 @@ sleep 300
 	var stdout, stderr bytes.Buffer
 
 	start := time.Now()
-	err := RunWorktreeSetupScript(scriptPath, t.TempDir(), worktreeDir, &stdout, &stderr, 1*time.Second)
+	err := RunWorktreeSetupScript(scriptPath, 0o644, t.TempDir(), worktreeDir, &stdout, &stderr, 1*time.Second)
 	elapsed := time.Since(start)
 
 	if err == nil {

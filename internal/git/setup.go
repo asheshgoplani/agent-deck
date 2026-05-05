@@ -12,12 +12,14 @@ import (
 
 // FindWorktreeSetupScript returns the path to the worktree setup script
 // if one exists at <repoDir>/.agent-deck/worktree-setup.sh, or empty string.
-func FindWorktreeSetupScript(repoDir string) string {
+// The returned os.FileMode captures the file's permission bits at discovery
+// time, eliminating a TOCTOU race between finding and dispatching the script.
+func FindWorktreeSetupScript(repoDir string) (string, os.FileMode) {
 	p := filepath.Join(repoDir, ".agent-deck", "worktree-setup.sh")
-	if _, err := os.Stat(p); err == nil {
-		return p
+	if info, err := os.Stat(p); err == nil {
+		return p, info.Mode()
 	}
-	return ""
+	return "", 0
 }
 
 // RunWorktreeSetupScript executes the setup script with AGENT_DECK_REPO_ROOT
@@ -38,7 +40,7 @@ func FindWorktreeSetupScript(repoDir string) string {
 //
 // The session layer resolves the legacy 60s default before calling here;
 // callers that want bounded runs must pass a positive duration explicitly.
-func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
+func RunWorktreeSetupScript(scriptPath string, scriptMode os.FileMode, repoDir, worktreePath string, stdout, stderr io.Writer, timeout time.Duration) error {
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -48,7 +50,7 @@ func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, st
 	}
 	defer cancel()
 
-	cmd := buildSetupCmd(ctx, scriptPath)
+	cmd := buildSetupCmd(ctx, scriptPath, scriptMode)
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(),
 		"AGENT_DECK_REPO_ROOT="+repoDir,
@@ -72,8 +74,13 @@ func RunWorktreeSetupScript(scriptPath, repoDir, worktreePath string, stdout, st
 // buildSetupCmd picks how to invoke the setup script (#773). Executable
 // scripts run directly so the kernel honors their shebang line; legacy
 // non-executable scripts run via `sh -e <path>` for backwards compatibility.
-func buildSetupCmd(ctx context.Context, scriptPath string) *exec.Cmd {
-	if info, err := os.Stat(scriptPath); err == nil && info.Mode()&0o111 != 0 {
+//
+// The mode is passed from the caller (captured at discovery time) to avoid
+// a redundant os.Stat that is vulnerable to TOCTOU races — e.g. when
+// a concurrent `git rebase` on the main worktree momentarily removes the
+// file between FindWorktreeSetupScript and execution.
+func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *exec.Cmd {
+	if mode&0o111 != 0 {
 		return exec.CommandContext(ctx, scriptPath)
 	}
 	return exec.CommandContext(ctx, "sh", "-e", scriptPath)
@@ -95,14 +102,14 @@ func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, s
 		return nil, err
 	}
 
-	scriptPath := FindWorktreeSetupScript(repoDir)
+	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
 	if scriptPath == "" {
 		return nil, nil
 	}
 
 	fmt.Fprintln(stderr, "Running worktree setup script...")
 	start := time.Now()
-	setupErr = RunWorktreeSetupScript(scriptPath, repoDir, worktreePath, stdout, stderr, setupTimeout)
+	setupErr = RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
 	if setupErr != nil {
 		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
