@@ -1,8 +1,9 @@
-// GroupNameDialog.js -- Modal form for creating or renaming a group
-// Opens when groupNameDialogSignal.value is { mode, groupPath, currentName, onSubmit }.
+// GroupNameDialog.js -- Modal form for creating or renaming a group.
+// Restyled (PR-B) to use the bundle's `.dialog` chrome from app.css.
 // mode: 'create' -> POST /api/groups, 'rename' -> PATCH /api/groups/{path}
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
+import { Icon, ICONS } from './icons.js'
 import { groupNameDialogSignal } from './state.js'
 import { apiFetch } from './api.js'
 
@@ -12,8 +13,9 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
   const [submitting, setSubmitting] = useState(false)
 
   const isCreate = mode === 'create'
-  const dialogTitle = isCreate ? 'New Group' : 'Rename Group'
+  const dialogTitle = isCreate ? 'New group' : 'Rename group'
   const submitLabel = isCreate ? 'Create' : 'Rename'
+  const close = () => (groupNameDialogSignal.value = null)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -35,35 +37,36 @@ export function GroupNameDialog({ mode, groupPath, currentName, onSubmit }) {
   }
 
   return html`
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-         onClick=${(e) => e.target === e.currentTarget && (groupNameDialogSignal.value = null)}>
-      <div class="dark:bg-tn-card bg-white rounded-lg shadow-xl p-sp-24 w-full max-w-sm mx-4">
-        <h2 class="text-lg font-semibold dark:text-tn-fg text-gray-900 mb-4">${dialogTitle}</h2>
-        <form onSubmit=${handleSubmit} class="flex flex-col gap-sp-12">
-          <input autofocus required
-            placeholder="Group name"
-            value=${name} onInput=${e => setName(e.target.value)}
-            class="w-full px-3 py-2 rounded border dark:border-tn-muted/30 dark:bg-tn-bg dark:text-tn-fg
-                   bg-gray-50 text-gray-900 border-gray-300
-                   focus:outline-none focus:ring-2 focus:ring-tn-blue/50" />
-          ${error && html`<p class="text-sm dark:text-tn-red text-red-600">${error}</p>`}
-          <div class="flex gap-sp-8 justify-end mt-2">
-            <button type="button"
-              onClick=${() => (groupNameDialogSignal.value = null)}
-              class="px-4 py-2 rounded dark:text-tn-muted text-gray-600
-                     hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors">
-              Cancel
-            </button>
-            <button type="submit" disabled=${submitting}
-              class="px-4 py-2 rounded dark:bg-tn-blue/20 bg-blue-100
-                     dark:text-tn-blue text-blue-700
-                     hover:dark:bg-tn-blue/30 hover:bg-blue-200 transition-colors
-                     disabled:opacity-50">
-              ${submitting ? (isCreate ? 'Creating...' : 'Renaming...') : submitLabel}
-            </button>
+    <div class="overlay" onClick=${(e) => e.target === e.currentTarget && close()}>
+      <form class="dialog" style="max-width: 460px;"
+            onClick=${e => e.stopPropagation()}
+            onSubmit=${handleSubmit}>
+        <div class="dh">
+          <span class="kicker">${isCreate ? 'NEW' : 'RENAME'}</span>
+          <div class="t">${dialogTitle}</div>
+          <button type="button" class="icon-btn" onClick=${close} aria-label="Close">
+            <${Icon} d=${ICONS.x}/>
+          </button>
+        </div>
+        <div class="db">
+          <div class="field">
+            <label>NAME</label>
+            <input autofocus required value=${name} onInput=${e => setName(e.target.value)} placeholder="my-group"/>
           </div>
-        </form>
-      </div>
+          ${error && html`
+            <div style="font-family: var(--mono); font-size: 11.5px; color: var(--tn-red); padding: 8px 10px;
+                        border: 1px solid rgba(247,118,142,0.3); border-radius: 4px; background: rgba(247,118,142,0.06);">
+              ${error}
+            </div>
+          `}
+        </div>
+        <div class="df">
+          <button type="button" class="btn ghost" onClick=${close}>Cancel</button>
+          <button type="submit" class="btn primary" disabled=${submitting || !name}>
+            ${submitting ? (isCreate ? 'Creating…' : 'Renaming…') : submitLabel}
+          </button>
+        </div>
+      </form>
     </div>
   `
 }
