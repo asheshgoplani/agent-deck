@@ -56,14 +56,23 @@
     <script type="module" src="{{ASSET:app/main.js}}"></script>
 
     <!-- 5. Stylesheets — LAST in <head> to win the cascade.
-         styles.css is the compiled Tailwind v4 output (see internal/web/static_files.go
-         //go:generate directive). It MUST load AFTER xterm.css so utility classes
-         take precedence over vendor overrides. Preserving this order matches the
-         cascade-order baseline captured in tests/e2e/baselines/cascade-order.json. -->
+         Order matters:
+           xterm.css         → terminal vendor styles (preserved)
+           styles.css        → compiled Tailwind v4 output (preserved for legacy components)
+           design-tokens.css → bundle's CSS custom properties (PR-B redesign)
+           app.css           → bundle's component-class rules (PR-B redesign)
+         design-tokens.css must precede app.css so component rules can resolve `var(--*)`. -->
     <link rel="stylesheet" href="/static/vendor/xterm.css" />
     <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+          rel="stylesheet" />
+    <link rel="stylesheet" href="/static/app/design-tokens.css" />
+    <link rel="stylesheet" href="/static/app/app.css" />
   </head>
-  <body class="bg-gray-100 dark:bg-tn-bg text-gray-900 dark:text-tn-fg min-h-screen">
+  <body class="bg-gray-100 dark:bg-tn-bg text-gray-900 dark:text-tn-fg min-h-screen"
+        data-accent="blue" data-density="balanced" data-rail="visible">
     <!-- Preact app mounts here -->
     <div id="app-root" class="min-h-screen"></div>
   </body>

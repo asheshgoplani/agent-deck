@@ -1,180 +1,92 @@
-// Topbar.js -- Full-width topbar with sidebar toggle, brand, connection, theme, profile, info drawer toggle
-// WEB-P1-5: on viewports <600 px, the right-side controls (Costs, Connection,
-// Theme, Profile, Info, ToastHistory, Push) collapse into an overflow `⋯` popover menu.
-// Desktop layout is unchanged (>=600 px shows the existing inline buttons).
-// Hamburger preserves Phase 6 06-02 z-topbar-primary + pointer-events-auto invariant.
+// Topbar.js -- Top navigation bar (rewrite). Brand left, tabs+search center,
+// connection pill / profile / rail toggle / tweaks right.
+//
+// Replaces the previous Tailwind-based Topbar. Uses bundle's `.topbar` class
+// from app.css. Tabs are NOT wired to API endpoints that don't exist —
+// MCP/Skills/Conductor/Watchers panes render informative placeholders.
 import { html } from 'htm/preact'
-import { useState, useEffect, useRef } from 'preact/hooks'
-import { ThemeToggle } from './ThemeToggle.js'
-import { ProfileDropdown } from './ProfileDropdown.js'
-import { ConnectionIndicator } from './ConnectionIndicator.js'
-import { activeTabSignal, infoDrawerOpenSignal } from './state.js'
-import { PushControls } from './PushControls.js'
-import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
+import { Logo, Icon, ICONS } from './icons.js'
+import { menuModelSignal } from './dataModel.js'
+import { connectionSignal } from './state.js'
+import {
+  activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
+  railSignal, profileSignal,
+} from './uiState.js'
 
-export function Topbar({ onToggleSidebar, sidebarOpen }) {
-  const [overflowOpen, setOverflowOpen] = useState(false)
-  const overflowRef = useRef(null)
-  const overflowBtnRef = useRef(null)
+const TABS = [
+  { id: 'fleet',     label: 'Fleet'     },
+  { id: 'terminal',  label: 'Terminal'  },
+  { id: 'mcp',       label: 'MCPs'      },
+  { id: 'skills',    label: 'Skills'    },
+  { id: 'conductor', label: 'Conductor' },
+  { id: 'watchers',  label: 'Watchers'  },
+  { id: 'costs',     label: 'Costs'     },
+  { id: 'search',    label: 'Search'    },
+]
 
-  // Click-outside dismissal (mirrors ProfileDropdown.js pattern)
-  useEffect(() => {
-    if (!overflowOpen) return
-    function onClickOutside(e) {
-      if (overflowRef.current && !overflowRef.current.contains(e.target) &&
-          overflowBtnRef.current && !overflowBtnRef.current.contains(e.target)) {
-        setOverflowOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside)
-    return () => document.removeEventListener('mousedown', onClickOutside)
-  }, [overflowOpen])
+export function Topbar() {
+  const activeTab = activeTabSignal.value
+  const conn = connectionSignal.value
+  const rail = railSignal.value
+  const { sessions } = menuModelSignal.value
+  const sessionsBadge = sessions.filter(s => s.status === 'waiting' || s.status === 'error').length
+  const pendingNeeds = sessions.reduce((n, s) => n + (s.pendingNeeds || 0), 0)
 
-  // Escape-key dismissal (separate effect to keep handlers cleanly separated)
-  useEffect(() => {
-    if (!overflowOpen) return
-    function onKey(e) {
-      if (e.key === 'Escape') setOverflowOpen(false)
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [overflowOpen])
-
-  function toggleCosts() {
-    activeTabSignal.value = activeTabSignal.value === 'costs' ? 'terminal' : 'costs'
-    setOverflowOpen(false)
-  }
-
-  function toggleInfo() {
-    infoDrawerOpenSignal.value = !infoDrawerOpenSignal.value
-    setOverflowOpen(false)
-  }
+  const connClass = conn === 'connected' ? '' : 'off'
+  const connDotStyle = conn === 'connected'
+    ? {}
+    : { background: 'var(--tn-red)', boxShadow: '0 0 6px var(--tn-red)' }
 
   return html`
-    <header class="flex items-center justify-between px-sp-12 py-sp-8
-      dark:bg-tn-panel bg-white border-b dark:border-tn-muted/20 border-gray-200
-      flex-shrink-0 relative z-sticky">
-      <div class="flex items-center gap-3 min-w-0">
-        <button
-          type="button"
-          onClick=${onToggleSidebar}
-          class="lg:hidden relative z-topbar-primary pointer-events-auto p-2 -ml-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
-          aria-label=${sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
-          aria-expanded=${sidebarOpen}
-        >
-          ${sidebarOpen
-            ? html`<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-              </svg>`
-            : html`<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-              </svg>`
-          }
-        </button>
-        <span class="flex items-center gap-1.5">
-          <svg class="w-5 h-5" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-            <rect x="18" y="8" width="36" height="44" rx="6" fill="currentColor" opacity="0.2"/>
-            <rect x="13" y="12" width="36" height="44" rx="6" fill="currentColor" opacity="0.4"/>
-            <rect x="8" y="16" width="36" height="44" rx="6" fill="currentColor" opacity="0.7"/>
-            <rect x="14" y="28" width="16" height="3" rx="1.5" fill="#73daca"/>
-            <circle cx="34" cy="29.5" r="2" fill="#73daca"/>
-          </svg>
-          <span class="font-semibold text-sm dark:text-tn-fg text-gray-900 md:hidden lg:inline">Agent Deck</span>
-        </span>
+    <div class="topbar">
+      <div class="top-brand">
+        <${Logo}/>
+        <div class="brand-text">agent-deck<span class="dim">web</span></div>
       </div>
-
-      <!-- Desktop right-side controls (>=600 px) -- existing layout, hidden on mobile.
-           Keeps the Phase 6 06-02 invariant: this wrapper uses z-topbar (NOT z-topbar-primary)
-           so the hamburger always sits above sibling controls per p6-bug1-hamburger.spec.ts. -->
-      <div class="relative z-topbar flex items-center gap-3 flex-shrink-0 max-[599px]:hidden">
-        <button
-          type="button"
-          onClick=${toggleCosts}
-          class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors px-3 py-2 min-h-[44px] flex items-center rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
-          aria-label=${activeTabSignal.value === 'costs' ? 'Switch to terminal' : 'Open cost dashboard'}
-          title="Cost Dashboard"
-        >
-          ${activeTabSignal.value === 'costs' ? 'Terminal' : 'Costs'}
+      <div class="top-mid">
+        <button class="top-search" onClick=${() => (paletteOpenSignal.value = true)}>
+          <${Icon} d=${ICONS.search} size=${13}/>
+          <input readonly placeholder="Jump to session, search conversations, run command…"/>
+          <span class="kbd">⌘K</span>
         </button>
-        <${ConnectionIndicator} />
-        <${ThemeToggle} />
-        <${ProfileDropdown} />
-        <button
-          type="button"
-          onClick=${toggleInfo}
-          class="text-xs dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 transition-colors px-3 py-2 min-h-[44px] flex items-center rounded hover:dark:bg-tn-muted/10 hover:bg-gray-100"
-          title="Toggle info panel"
-          aria-expanded=${infoDrawerOpenSignal.value}
-          aria-label=${infoDrawerOpenSignal.value ? 'Close info panel' : 'Open info panel'}
-        >
-          Info
-        </button>
-        <${ToastHistoryDrawerToggle} />
-        <${PushControls} />
+        <div class="top-tabs">
+          ${TABS.map(t => html`
+            <button key=${t.id}
+              class=${`top-tab ${activeTab === t.id ? 'active' : ''}`}
+              onClick=${() => (activeTabSignal.value = t.id)}>
+              ${t.label}
+              ${t.id === 'conductor' && pendingNeeds > 0 && html`<span class="badge">${pendingNeeds}</span>`}
+              ${t.id === 'fleet' && sessionsBadge > 0 && html`<span class="badge">${sessionsBadge}</span>`}
+            </button>
+          `)}
+        </div>
       </div>
-
-      <!-- Mobile overflow trigger (<600 px) -- collapses all right-side controls. -->
-      <div class="hidden max-[599px]:flex items-center gap-1 flex-shrink-0 relative">
+      <div class="top-right">
+        <div class=${`conn-pill ${connClass}`}>
+          <span class="dot" style=${connDotStyle}/>ws · ${conn === 'connected' ? 'live' : conn}
+        </div>
+        <select class="icon-btn" style=${{ width: 'auto', padding: '0 8px', fontFamily: 'var(--mono)', fontSize: '11px' }}
+          value=${profileSignal.value}
+          onChange=${e => (profileSignal.value = e.target.value)}>
+          <option value="personal">personal</option>
+          <option value="work">work</option>
+        </select>
         <button
-          ref=${overflowBtnRef}
-          type="button"
-          onClick=${() => setOverflowOpen(!overflowOpen)}
-          class="min-w-[44px] min-h-[44px] flex items-center justify-center rounded dark:text-tn-muted text-gray-500 hover:dark:text-tn-fg hover:text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors relative z-topbar-primary"
-          aria-haspopup="menu"
-          aria-expanded=${overflowOpen}
-          aria-label="More options"
-          title="More options"
-        >
-          <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
-            <path d="M10 3a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM10 8.5a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM10 14a1.5 1.5 0 100 3 1.5 1.5 0 000-3z"/>
+          class=${`icon-btn ${rail === 'visible' ? 'active' : ''}`}
+          onClick=${() => (railSignal.value = rail === 'visible' ? 'hidden' : 'visible')}
+          title=${rail === 'visible' ? 'Hide right rail (])' : 'Show right rail (])'}
+          aria-label="Toggle right rail">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <line x1="15" y1="3" x2="15" y2="21"/>
+            ${rail === 'visible' && html`<line x1="18" y1="8" x2="18" y2="16" opacity="0.5"/>`}
           </svg>
         </button>
-        ${overflowOpen && html`
-          <div
-            ref=${overflowRef}
-            role="menu"
-            aria-label="More options menu"
-            class="absolute top-full right-0 mt-1 rounded-lg shadow-lg
-                   dark:bg-tn-panel bg-white border dark:border-tn-muted/20 border-gray-200
-                   min-w-[220px] max-w-[90vw] py-1 z-topbar-primary"
-          >
-            <button
-              role="menuitem"
-              type="button"
-              onClick=${toggleCosts}
-              class="w-full text-left px-3 py-2 min-h-[44px] text-sm dark:text-tn-fg text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
-            >
-              ${activeTabSignal.value === 'costs' ? 'Terminal' : 'Costs'}
-            </button>
-            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
-              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Status:</span>
-              <${ConnectionIndicator} />
-            </div>
-            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
-              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Theme:</span>
-              <${ThemeToggle} />
-            </div>
-            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
-              <span class="text-xs dark:text-tn-muted text-gray-500 mr-2">Profile:</span>
-              <${ProfileDropdown} />
-            </div>
-            <button
-              role="menuitem"
-              type="button"
-              onClick=${toggleInfo}
-              class="w-full text-left px-3 py-2 min-h-[44px] text-sm dark:text-tn-fg text-gray-700 hover:dark:bg-tn-muted/10 hover:bg-gray-100 transition-colors"
-            >
-              Info
-            </button>
-            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
-              <${ToastHistoryDrawerToggle} />
-            </div>
-            <div class="px-3 py-2 min-h-[44px] flex items-center" role="menuitem">
-              <${PushControls} />
-            </div>
-          </div>
-        `}
+        <button class="icon-btn" onClick=${() => (tweaksOpenSignal.value = !tweaksOpenSignal.value)} title="Tweaks (?)" aria-label="Tweaks">
+          <${Icon} d=${ICONS.settings}/>
+        </button>
       </div>
-    </header>
+    </div>
   `
 }
