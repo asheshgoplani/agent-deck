@@ -265,12 +265,16 @@ func TestStore_TotalLastWeek_OnlyThisWeekEvent(t *testing.T) {
 
 func TestStore_TotalLastWeek_OnlyLastWeekEvent(t *testing.T) {
 	s := testStore(t)
-	// 9 days ago is reliably in "last week" except in the narrow case where
-	// today is exactly Monday and the event would shift into the week before
-	// last. Acceptable test fragility: test rarely runs on Monday-morning UTC.
-	nineDaysAgo := time.Now().AddDate(0, 0, -9)
+	// Compute the midpoint of last week deterministically: walk back to this
+	// week's Monday, then go to last Thursday (Monday-7+3 = -4 days from
+	// this Monday). This avoids the previous fragility where "9 days ago"
+	// landed in the week-before-last when the test ran on Monday UTC.
+	now := time.Now()
+	daysSinceMonday := (int(now.Weekday()) + 6) % 7 // Monday=0..Sunday=6
+	thisMonday := now.AddDate(0, 0, -daysSinceMonday)
+	lastWeekMidpoint := thisMonday.AddDate(0, 0, -4)
 	if err := s.WriteCostEvent(costs.CostEvent{
-		ID: "evt-lw", SessionID: "s1", Timestamp: nineDaysAgo,
+		ID: "evt-lw", SessionID: "s1", Timestamp: lastWeekMidpoint,
 		Model: "claude-sonnet-4-6", CostMicrodollars: 70000,
 	}); err != nil {
 		t.Fatal(err)
