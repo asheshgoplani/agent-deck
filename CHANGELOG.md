@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.81] - 2026-05-05
+
+Hotfix for a multi-client tmux size-negotiation bug that caused dot-filled void cells when the web UI and direct `tmux attach` clients were both connected to the same agent-deck session at different geometries.
+
+### Fixed
+
+- **Multi-client size mismatch ("dots in the window") between web UI and direct tmux clients.** Two contributing bugs combined: tmux's default `window-size latest` policy snapped the window to whichever client most recently sent input, and `(*tmuxPTYBridge).Resize` issued an explicit `tmux resize-window -x N -y M` on every browser FitAddon resize, which per `man tmux` implicitly flips the session option to `window-size=manual`. Together this dragged native attach clients (Ghostty, iTerm) to the web viewport's geometry and pinned them there. Fixed in two places: `internal/tmux/tmux.go` now sets `window-size=largest` (session) + `aggressive-resize=on` (window) per session at `Session.Start`, gated through the existing `[tmux] options` config-override mechanism so users can opt out; `internal/web/terminal_bridge.go` no longer issues `tmux resize-window` from `Resize` (the local `pty.Setsize` keeps xterm.js's grid correct), and the `-f ignore-size` flag was dropped from `tmuxAttachCommand` (no longer needed since the web client now participates in the `largest` arbitration alongside native clients). Smaller clients see clipped content rather than dragging the window. New integration test `TestSession_MultiClientSizePolicy_Integration` asserts both options are set after `Session.Start`. See tmux issue [#2594](https://github.com/tmux/tmux/issues/2594) for the upstream pattern.
+
 ## [1.7.80] - 2026-05-05
 
 WebUI overhaul Phase 1 + one small Claude-session UX fix.
