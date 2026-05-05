@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.82] - 2026-05-05
+
+Hotfix for a status-divergence bug that left the web UI showing `error` for sessions the CLI/TUI had correctly identified as `waiting`.
+
+### Fixed
+
+- **Web `/api/sessions` reported `error` for sessions whose hook file said `waiting`, while `agent-deck list --json` reported `waiting` for the same sessions at the same instant.** Root cause: the live web reads from `MemoryMenuData`, an in-memory snapshot pushed by the TUI's `publishWebSessionStates`. The TUI's view of `Instance.hookStatus` is fed by `StatusFileWatcher` (inotify); when an inotify event is dropped (queue overflow under load — 1100+ hook files in `~/.agent-deck/hooks/` is enough to hit this in steady state) the TUI's `hookStatus` stays stale, the hook fast-path freshness window expires, `Instance.UpdateStatus` falls through to tmux pane heuristics, and the published Status flips to `error`. The CLI does not have this gap because `agent-deck list --json` reads each hook file from disk per call via `session.RefreshInstancesForCLIStatus`. Fix adds `internal/web/snapshot_hook_refresh.go` that re-applies the hook fast-path Status mapping (matching `Instance.UpdateStatus`'s switch on `hookStatus`) to the cached `MenuSnapshot` before the GET handlers (`/api/sessions`, `/api/menu`, `/api/session/{id}`) serialize it. Stopped sessions are never overridden (user-intentional). Fresh hooks (within the 2-min `hookFastPathWindow`) override any non-stopped state. Stale `waiting` hooks specifically override snapshot=`error` because Claude's "waiting" state is durable across hook event gaps — a Stop hook that fired hours ago without a follow-up UserPromptSubmit means Claude is still at the prompt, exactly the case the CLI captures via tmux pane-title heuristics that the web cannot reach without per-request subprocesses. Live before/after on a system with 21 waiting sessions: web reported `waiting=0` before the fix, `waiting=21` after (CLI reported 21 throughout).
+
+  Test coverage in `internal/web/snapshot_hook_refresh_test.go`: a regression test (`TestParity_WaitingStatusFlowsThroughHandler`) reproduces the exact production divergence by seeding a snapshot with `Status: StatusError` and an in-memory hook overlay saying `waiting`, then asserting `GET /api/sessions` returns `waiting`; this test fails before the fix and passes after. A property test (`TestRefreshSnapshotHookStatuses_NoHookFilePreservesAllStatuses` and the parallel `TestParity_AllStatusesPreservedThroughGetSessions`) iterates all six `session.Status` enum values (`StatusRunning`, `StatusWaiting`, `StatusIdle`, `StatusError`, `StatusStarting`, `StatusStopped`) and asserts each round-trips through the API unchanged when no hook overlay applies — locking the contract that adding a new Status without wiring the web fails the build. Plus targeted unit tests for stale/fresh override semantics, stopped-stickiness, and shell-tool no-op.
+
 ## [1.7.81] - 2026-05-05
 
 Hotfix for a multi-client tmux size-negotiation bug that caused dot-filled void cells when the web UI and direct `tmux attach` clients were both connected to the same agent-deck session at different geometries.

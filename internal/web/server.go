@@ -66,6 +66,11 @@ type Server struct {
 	costStore       *costs.Store
 	mutator         SessionMutator
 	mutationLimiter *rate.Limiter
+
+	// hookStatusLoader returns the latest hook payload for every instance
+	// whose hook file is present on disk. Defaults to defaultLoadHookStatuses
+	// (which reads ~/.agent-deck/hooks/) but is injectable for tests.
+	hookStatusLoader func() map[string]*session.HookStatus
 }
 
 // NewServer creates a new web server with base routes and middleware.
@@ -80,10 +85,11 @@ func NewServer(cfg Config) *Server {
 	}
 
 	s := &Server{
-		cfg:             cfg,
-		menuData:        menuData,
-		menuSubscribers: make(map[chan struct{}]struct{}),
-		mutationLimiter: rate.NewLimiter(rate.Limit(20), 40), // 20 req/s, burst 40
+		cfg:              cfg,
+		menuData:         menuData,
+		menuSubscribers:  make(map[chan struct{}]struct{}),
+		mutationLimiter:  rate.NewLimiter(rate.Limit(20), 40), // 20 req/s, burst 40
+		hookStatusLoader: defaultLoadHookStatuses,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())
 	webLog := logging.ForComponent(logging.CompWeb)
