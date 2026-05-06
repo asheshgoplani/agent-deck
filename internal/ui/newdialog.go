@@ -1046,11 +1046,11 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		// Recent sessions picker handling
 		if d.showRecentPicker && len(d.recentSessions) > 0 {
 			switch msg.String() {
-			case "ctrl+n", "down":
+			case "ctrl+n", "down", "j":
 				d.recentSessionCursor = (d.recentSessionCursor + 1) % len(d.recentSessions)
 				d.previewRecentSession(d.recentSessions[d.recentSessionCursor])
 				return d, nil
-			case "ctrl+p", "up":
+			case "ctrl+p", "up", "k":
 				d.recentSessionCursor--
 				if d.recentSessionCursor < 0 {
 					d.recentSessionCursor = len(d.recentSessions) - 1
@@ -1090,10 +1090,10 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		if d.suggestionsActive && d.currentTarget() == focusPath {
 			total := len(d.pathSuggestions) + 1 // +1 for the "Type custom" entry
 			switch msg.String() {
-			case "down", "j":
+			case "down", "j", "ctrl+n":
 				d.pathSuggestionCursor = (d.pathSuggestionCursor + 1) % total
 				return d, nil
-			case "up", "k":
+			case "up", "k", "ctrl+p":
 				d.pathSuggestionCursor--
 				if d.pathSuggestionCursor < 0 {
 					d.pathSuggestionCursor = total - 1
@@ -1212,6 +1212,27 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.suggestionNavigated = true
 				return d, nil
 			}
+			// Emacs fallback: advance to next form field (mirrors "down").
+			if cur == focusConductor {
+				total := len(d.conductorSessions) + 1
+				if d.conductorCursor < total-1 {
+					d.conductorCursor++
+					return d, nil
+				}
+			}
+			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
+				if d.multiRepoPathCursor < len(d.multiRepoPaths)-1 {
+					d.multiRepoPathCursor++
+					return d, nil
+				}
+			}
+			if d.focusIndex < maxIdx {
+				d.focusIndex++
+				d.updateFocus()
+			} else if cur == focusOptions && d.toolOptions != nil {
+				return d, d.toolOptions.Update(msg)
+			}
+			return d, nil
 
 		case "ctrl+p":
 			// Previous suggestion (cursor space includes synthetic "Type custom" at 0).
@@ -1225,6 +1246,28 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.suggestionNavigated = true
 				return d, nil
 			}
+			// Emacs fallback: retreat to previous form field (mirrors "shift+tab"/"up").
+			if cur == focusConductor {
+				if d.conductorCursor > 0 {
+					d.conductorCursor--
+					return d, nil
+				}
+			}
+			if cur == focusMultiRepo && d.multiRepoEnabled && !d.multiRepoEditing {
+				if d.multiRepoPathCursor > 0 {
+					d.multiRepoPathCursor--
+					return d, nil
+				}
+			}
+			if cur == focusOptions && d.toolOptions != nil && !d.toolOptions.AtTop() {
+				return d, d.toolOptions.Update(msg)
+			}
+			d.focusIndex--
+			if d.focusIndex < 0 {
+				d.focusIndex = maxIdx
+			}
+			d.updateFocus()
+			return d, nil
 
 		case "ctrl+f":
 			if cur == focusBranch {
