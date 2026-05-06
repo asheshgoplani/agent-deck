@@ -2614,9 +2614,25 @@ func (h *Home) refreshSessionRenderSnapshot(instances []*session.Instance) {
 			tool:   inst.GetToolThreadSafe(),
 		}
 		// Look up pane title from the already-refreshed tmux cache.
+		// Only RefreshPaneInfoCache (called from backgroundStatusUpdate) keeps
+		// the cache fresh; processStatusUpdate and other rebuild paths run on
+		// their own cadence. When that cache crosses the 4-second freshness
+		// threshold (GetCachedPaneInfo returns ok=false), keep the previous
+		// snapshot's paneTitle so the inline suffix in renderSessionItem does
+		// not blink to empty between successful refreshes — the user would
+		// otherwise read the disappearance as "title only updated once."
+		// Reading the latest snapshot inside the per-instance branch (rather
+		// than once before the loop) narrows the read-store race window: if a
+		// concurrent rebuild lands a fresher value while we're walking the
+		// instances slice, the fallback uses that value instead of stamping
+		// an even-older one back into the snapshot.
 		if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 			if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
 				state.paneTitle = cleanPaneTitle(paneInfo.Title)
+			} else if prev := h.getSessionRenderSnapshot(); prev != nil {
+				if prevState, hadPrev := prev[inst.ID]; hadPrev {
+					state.paneTitle = prevState.paneTitle
+				}
 			}
 		}
 		snap[inst.ID] = state
