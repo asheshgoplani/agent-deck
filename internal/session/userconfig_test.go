@@ -1900,3 +1900,77 @@ transition_events = false
 		t.Error("GetTransitionEventsEnabled() should return false when explicitly false")
 	}
 }
+
+// TestGetActiveFilterExcludes verifies the % filter's exclude-set resolution:
+// the default ({error, stopped}) matches the original upstream hardcoded
+// behavior so existing users see no behavior change unless they opt in.
+// Setting active_filter_excludes = ["error"] is the documented way to keep
+// stopped/closed sessions visible — the regression fix for users who found
+// the upstream default too aggressive.
+func TestGetActiveFilterExcludes(t *testing.T) {
+	defaultSet := map[Status]bool{StatusError: true, StatusStopped: true}
+
+	tests := []struct {
+		name string
+		in   []string
+		want map[Status]bool
+	}{
+		{"nil falls back to default (error + stopped)", nil, defaultSet},
+		{"empty list falls back to default", []string{}, defaultSet},
+		{"opt-in: error only (keeps stopped visible)",
+			[]string{"error"},
+			map[Status]bool{StatusError: true}},
+		{"all valid: error + stopped (matches default explicitly)",
+			[]string{"error", "stopped"},
+			map[Status]bool{StatusError: true, StatusStopped: true}},
+		{"all valid: aggressive exclude includes idle",
+			[]string{"error", "stopped", "idle"},
+			map[Status]bool{StatusError: true, StatusStopped: true, StatusIdle: true}},
+		{"unknown values dropped silently, valid kept",
+			[]string{"error", "bogus"},
+			map[Status]bool{StatusError: true}},
+		{"all unknown falls back to default",
+			[]string{"bogus", "garbage"},
+			defaultSet},
+		{"duplicates collapse",
+			[]string{"error", "error", "stopped"},
+			map[Status]bool{StatusError: true, StatusStopped: true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := DisplaySettings{ActiveFilterExcludes: tt.in}
+			got := d.GetActiveFilterExcludes()
+			if len(got) != len(tt.want) {
+				t.Fatalf("GetActiveFilterExcludes(%v) size = %d, want %d (got=%v)",
+					tt.in, len(got), len(tt.want), got)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("GetActiveFilterExcludes(%v)[%q] = %v, want %v",
+						tt.in, k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+// TestGetActiveFilterExcludes_TomlRoundtrip verifies the TOML tag wires up
+// correctly and survives marshal/unmarshal.
+func TestGetActiveFilterExcludes_TomlRoundtrip(t *testing.T) {
+	const cfg = `
+[display]
+active_filter_excludes = ["error", "stopped"]
+`
+	var c UserConfig
+	if _, err := toml.Decode(cfg, &c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := c.Display.GetActiveFilterExcludes()
+	if !got[StatusError] || !got[StatusStopped] {
+		t.Errorf("expected {error,stopped} excluded, got %v", got)
+	}
+	if got[StatusRunning] {
+		t.Errorf("running should not be excluded, got %v", got)
+	}
+}

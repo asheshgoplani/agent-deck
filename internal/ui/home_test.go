@@ -2487,29 +2487,57 @@ func TestRebuildFlatItemsKeepsValidStatusFilter(t *testing.T) {
 }
 
 func TestMatchesStatusFilter(t *testing.T) {
+	// Default matches upstream's original hardcoded behavior so existing
+	// users see no change unless they opt into a narrower exclude-set.
+	defaultExcludes := map[session.Status]bool{
+		session.StatusError:   true,
+		session.StatusStopped: true,
+	}
+	errorOnly := map[session.Status]bool{session.StatusError: true}
+	excludeNothing := map[session.Status]bool{}
+
 	tests := []struct {
-		filter session.Status
-		status session.Status
-		want   bool
+		name     string
+		filter   session.Status
+		status   session.Status
+		excludes map[session.Status]bool
+		want     bool
 	}{
-		// Active filter: excludes error and stopped only
-		{FilterModeActive, session.StatusRunning, true},
-		{FilterModeActive, session.StatusWaiting, true},
-		{FilterModeActive, session.StatusIdle, true},
-		{FilterModeActive, session.StatusStarting, true},
-		{FilterModeActive, session.StatusError, false},
-		{FilterModeActive, session.StatusStopped, false},
-		// Concrete status filters: exact match
-		{session.StatusRunning, session.StatusRunning, true},
-		{session.StatusRunning, session.StatusWaiting, false},
-		{session.StatusError, session.StatusError, true},
-		{session.StatusError, session.StatusStopped, false},
+		// Default exclude-set ({error, stopped}): % hides both, matching
+		// upstream's prior hardcoded behavior exactly.
+		{"default-running", FilterModeActive, session.StatusRunning, defaultExcludes, true},
+		{"default-waiting", FilterModeActive, session.StatusWaiting, defaultExcludes, true},
+		{"default-idle", FilterModeActive, session.StatusIdle, defaultExcludes, true},
+		{"default-starting", FilterModeActive, session.StatusStarting, defaultExcludes, true},
+		{"default-error-hidden", FilterModeActive, session.StatusError, defaultExcludes, false},
+		{"default-stopped-hidden", FilterModeActive, session.StatusStopped, defaultExcludes, false},
+
+		// Opt-in via active_filter_excludes = ["error"]: closed/stopped
+		// sessions remain visible — the regression fix for users who
+		// found the upstream default too aggressive.
+		{"erronly-stopped-visible", FilterModeActive, session.StatusStopped, errorOnly, true},
+		{"erronly-error-hidden", FilterModeActive, session.StatusError, errorOnly, false},
+		{"erronly-running-visible", FilterModeActive, session.StatusRunning, errorOnly, true},
+
+		// Empty exclude-set: % filter shows everything (degenerate but valid).
+		{"empty-error-visible", FilterModeActive, session.StatusError, excludeNothing, true},
+		{"empty-stopped-visible", FilterModeActive, session.StatusStopped, excludeNothing, true},
+
+		// Concrete status filters ignore the exclude-set entirely.
+		{"concrete-running-match", session.StatusRunning, session.StatusRunning, defaultExcludes, true},
+		{"concrete-running-no-match", session.StatusRunning, session.StatusWaiting, defaultExcludes, false},
+		{"concrete-error-match", session.StatusError, session.StatusError, defaultExcludes, true},
+		{"concrete-error-no-stopped", session.StatusError, session.StatusStopped, defaultExcludes, false},
 	}
 	for _, tt := range tests {
-		got := matchesStatusFilter(tt.filter, tt.status)
-		if got != tt.want {
-			t.Errorf("matchesStatusFilter(%q, %q) = %v, want %v", tt.filter, tt.status, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			h := &Home{activeFilterExcludes: tt.excludes}
+			got := h.matchesStatusFilter(tt.filter, tt.status)
+			if got != tt.want {
+				t.Errorf("matchesStatusFilter(%q, %q, %v) = %v, want %v",
+					tt.filter, tt.status, tt.excludes, got, tt.want)
+			}
+		})
 	}
 }
 

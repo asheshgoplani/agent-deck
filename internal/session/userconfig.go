@@ -1455,6 +1455,43 @@ type DisplaySettings struct {
 	// ActiveFilterLabel sets the label shown on the filter pill when the active
 	// filter is engaged. Default: "Open". Examples: "Active", "Live", "Open".
 	ActiveFilterLabel string `toml:"active_filter_label"`
+
+	// ActiveFilterExcludes is the list of session statuses that the % "Open"
+	// filter hides. Default: ["error", "stopped"] — matches the original
+	// upstream behavior. Set to ["error"] to keep stopped/closed sessions
+	// visible while still hiding errors, or extend with "idle" for an
+	// aggressive "show only running/waiting" definition. Unknown statuses
+	// are dropped silently; if all entries are unknown the default applies.
+	// Valid statuses: "running", "waiting", "idle", "error", "starting",
+	// "stopped".
+	ActiveFilterExcludes []string `toml:"active_filter_excludes"`
+}
+
+// GetActiveFilterExcludes returns the resolved set of statuses the % filter
+// should hide. Default {error, stopped} matches the original upstream
+// hardcoded behavior; opt into ["error"] to keep stopped sessions visible.
+// Unknown values are dropped; an empty resolved set falls back to the default.
+func (d DisplaySettings) GetActiveFilterExcludes() map[Status]bool {
+	defaults := func() map[Status]bool {
+		return map[Status]bool{StatusError: true, StatusStopped: true}
+	}
+	if len(d.ActiveFilterExcludes) == 0 {
+		return defaults()
+	}
+	valid := map[Status]bool{
+		StatusRunning: true, StatusWaiting: true, StatusIdle: true,
+		StatusError: true, StatusStarting: true, StatusStopped: true,
+	}
+	out := make(map[Status]bool, len(d.ActiveFilterExcludes))
+	for _, s := range d.ActiveFilterExcludes {
+		if st := Status(s); valid[st] {
+			out[st] = true
+		}
+	}
+	if len(out) == 0 {
+		return defaults()
+	}
+	return out
 }
 
 // ValidDefaultFilters lists acceptable values for DefaultFilter.
