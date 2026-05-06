@@ -115,6 +115,7 @@ func handleConductorSetup(profile string, args []string) {
 	sharedInstructionsMD := fs.String("shared-instructions-md", "", "Custom shared instructions file for all conductors of this agent")
 	claudeMD := fs.String("claude-md", "", "Custom CLAUDE.md for this conductor (e.g., ~/docs/conductor-ryan.md)")
 	policyMD := fs.String("policy-md", "", "Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
+	heartbeatRulesMD := fs.String("heartbeat-rules-md", "", "Custom HEARTBEAT_RULES.md for this conductor (e.g., ~/docs/my-heartbeat-rules.md)")
 	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
 	sharedPolicyMD := fs.String("shared-policy-md", "", "Custom path for shared POLICY.md (e.g., ~/docs/conductor-policy.md)")
 	envFile := fs.String("env-file", "", "Path to .env file to source before conductor starts (e.g., ~/.conductor.env)")
@@ -150,6 +151,8 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("        Deprecated Claude-only alias for -instructions-md")
 		fmt.Println("  -policy-md string")
 		fmt.Println("        Custom POLICY.md for this conductor (e.g., ~/docs/my-policy.md)")
+		fmt.Println("  -heartbeat-rules-md string")
+		fmt.Println("        Custom HEARTBEAT_RULES.md for this conductor (e.g., ~/docs/my-heartbeat-rules.md)")
 		fmt.Println()
 		fmt.Println("Shared files (all conductors):")
 		fmt.Println("  -shared-instructions-md string")
@@ -462,7 +465,7 @@ func handleConductorSetup(profile string, args []string) {
 	if len(envFlags) > 0 {
 		envMap = map[string]string(envFlags)
 	}
-	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, envMap, *envFile); err != nil {
+	if err := session.SetupConductorWithAgent(name, resolvedProfile, spec.Agent, heartbeatEnabled, clearOnCompact, *description, resolvedInstructionsMD, *policyMD, *heartbeatRulesMD, envMap, *envFile); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}

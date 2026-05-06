@@ -431,15 +431,17 @@ func matchesTemplateContent(actual, expected string) bool {
 
 // SetupConductor creates a Claude conductor for backward compatibility.
 // New callers should prefer SetupConductorWithAgent.
-func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string, env map[string]string, envFile string) error {
-	return SetupConductorWithAgent(name, profile, ConductorAgentClaude, heartbeatEnabled, clearOnCompact, description, customClaudeMD, customPolicyMD, env, envFile)
+func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string, customHeartbeatRulesMD string, env map[string]string, envFile string) error {
+	return SetupConductorWithAgent(name, profile, ConductorAgentClaude, heartbeatEnabled, clearOnCompact, description, customClaudeMD, customPolicyMD, customHeartbeatRulesMD, env, envFile)
 }
 
 // SetupConductorWithAgent creates the conductor directory, agent-specific instructions file, and meta.json.
 // If customInstructionsMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
+// If customHeartbeatRulesMD is provided, creates a per-conductor HEARTBEAT_RULES.md symlink
+// (overrides the shared HEARTBEAT_RULES.md and any per-profile override).
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool, clearOnCompact bool, description string, customInstructionsMD string, customPolicyMD string, env map[string]string, envFile string) error {
+func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool, clearOnCompact bool, description string, customInstructionsMD string, customPolicyMD string, customHeartbeatRulesMD string, env map[string]string, envFile string) error {
 	if err := ValidateConductorName(name); err != nil {
 		return err
 	}
@@ -493,6 +495,16 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 		policyPath := filepath.Join(dir, "POLICY.md")
 		if err := createSymlinkWithExpansion(policyPath, customPolicyMD); err != nil {
 			return fmt.Errorf("failed to create POLICY.md symlink: %w", err)
+		}
+	}
+
+	// Write per-conductor HEARTBEAT_RULES.md symlink if custom path provided.
+	// Takes precedence over the per-profile and global HEARTBEAT_RULES.md
+	// (lookup order is mirrored by both conductor/bridge.py and the OS heartbeat script).
+	if customHeartbeatRulesMD != "" {
+		rulesPath := filepath.Join(dir, "HEARTBEAT_RULES.md")
+		if err := createSymlinkWithExpansion(rulesPath, customHeartbeatRulesMD); err != nil {
+			return fmt.Errorf("failed to create HEARTBEAT_RULES.md symlink: %w", err)
 		}
 	}
 
@@ -784,7 +796,7 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // SetupConductorProfile creates a default Claude conductor for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, true, "", "", "", nil, "")
+	return SetupConductor(profile, profile, true, true, "", "", "", "", nil, "")
 }
 
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.
