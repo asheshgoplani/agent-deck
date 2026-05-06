@@ -1723,6 +1723,17 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	if shouldSkipConductorHeartbeatSend(inst, message) {
+		out.Success(fmt.Sprintf("Skipped heartbeat for '%s'", inst.Title), map[string]interface{}{
+			"success":       true,
+			"skipped":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"message":       message,
+		})
+		return
+	}
+
 	// Get tmux session
 	tmuxSess := inst.GetTmuxSession()
 	if tmuxSess == nil {
@@ -1827,6 +1838,32 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 	}
+}
+
+func shouldSkipConductorHeartbeatSend(inst *session.Instance, message string) bool {
+	if inst == nil || !session.IsConductorHeartbeatMessage(message) {
+		return false
+	}
+	name := strings.TrimPrefix(inst.Title, session.ConductorSessionTitlePrefix)
+	if name == inst.Title || name == "" {
+		return false
+	}
+	meta, err := session.LoadConductorMeta(name)
+	if err != nil {
+		return false
+	}
+	idleMinutes := meta.GetHeartbeatIdleMinutes()
+	if idleMinutes <= 0 {
+		return false
+	}
+	lastActivity, err := session.GetConductorLastActivity(name, meta.Profile)
+	if err != nil {
+		return false
+	}
+	if lastActivity.IsZero() {
+		return false
+	}
+	return time.Since(lastActivity) >= time.Duration(idleMinutes)*time.Minute
 }
 
 // sendWithRetry sends a message atomically and retries Enter if the agent

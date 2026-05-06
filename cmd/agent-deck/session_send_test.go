@@ -48,6 +48,51 @@ func TestWaitForCompletion_ImmediateWaiting(t *testing.T) {
 	}
 }
 
+func TestShouldSkipConductorHeartbeatSend_UsesHeartbeatPrefixOnlyForConductors(t *testing.T) {
+	conductor := &session.Instance{Title: "conductor-ops"}
+	regular := &session.Instance{Title: "ops"}
+
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("regular sessions must not be treated as conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorBridgeHeartbeatPrefix+" check") {
+		t.Fatal("regular sessions must not be treated as bridge conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(conductor, "hello") {
+		t.Fatal("non-heartbeat messages must not be treated as conductor heartbeats")
+	}
+}
+
+func TestShouldSkipConductorHeartbeatSend_ZeroLastActivitySends(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := session.SaveConductorMeta(&session.ConductorMeta{
+		Name:                 "ops",
+		Profile:              "default",
+		Agent:                session.ConductorAgentClaude,
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 10,
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("save conductor meta: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+	conductor := session.NewInstance("conductor-ops", "/tmp")
+	conductor.IsConductor = true
+	if err := storage.Save([]*session.Instance{conductor}); err != nil {
+		t.Fatalf("save conductor instance: %v", err)
+	}
+
+	if shouldSkipConductorHeartbeatSend(conductor, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("zero last activity must not suppress conductor heartbeats")
+	}
+}
+
 func TestWaitForCompletion_ActiveThenWaiting(t *testing.T) {
 	mock := &mockStatusChecker{
 		statuses: []string{"active", "active", "waiting"},

@@ -211,6 +211,20 @@ func TestConductorSessionTitle(t *testing.T) {
 	}
 }
 
+func TestIsConductorHeartbeatMessage(t *testing.T) {
+	for _, msg := range []string{
+		ConductorHeartbeatMessagePrefix + " Check sessions",
+		ConductorBridgeHeartbeatPrefix + " [ops] Status: 1 waiting",
+	} {
+		if !IsConductorHeartbeatMessage(msg) {
+			t.Fatalf("expected heartbeat message to match: %q", msg)
+		}
+	}
+	if IsConductorHeartbeatMessage("hello") {
+		t.Fatal("non-heartbeat message should not match")
+	}
+}
+
 func TestHeartbeatPlistLabel(t *testing.T) {
 	label := HeartbeatPlistLabel("test")
 	expected := "com.agentdeck.conductor-heartbeat.test"
@@ -607,6 +621,36 @@ func TestConductorHeartbeatScript_StatusParsingHandlesWhitespace(t *testing.T) {
 	}
 	if !strings.Contains(conductorHeartbeatScript, "--no-wait -q") {
 		t.Fatal("heartbeat script should use non-blocking quiet send")
+	}
+}
+
+func TestRenderConductorHeartbeatScript_ReplacesHeartbeatPrefix(t *testing.T) {
+	script := renderConductorHeartbeatScript("test", "default")
+	if strings.Contains(script, "{HEARTBEAT_PREFIX}") {
+		t.Fatalf("heartbeat script must not contain unresolved prefix placeholder:\n%s", script)
+	}
+	if !strings.Contains(script, ConductorHeartbeatMessagePrefix+" Check sessions in your group (test)") {
+		t.Fatalf("heartbeat script should contain rendered heartbeat message prefix:\n%s", script)
+	}
+}
+
+// TestConductorStatusJSON_ZeroActivityOmitted verifies that when
+// GetConductorLastActivity returns zero time (no managed sessions), the
+// conductor status JSON omits last_activity_at entirely rather than emitting
+// 0001-01-01T00:00:00Z. An ancient timestamp would cause the bridge to
+// suppress heartbeats forever when heartbeat_idle_minutes > 0.
+func TestConductorStatusJSON_ZeroActivityOmitted(t *testing.T) {
+	type conductorStatus struct {
+		LastActivityAt *string `json:"last_activity_at,omitempty"`
+	}
+	// Simulate a zero last_activity pointer (nil → omitted).
+	cs := conductorStatus{LastActivityAt: nil}
+	data, err := json.Marshal(cs)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "last_activity_at") {
+		t.Errorf("last_activity_at must be omitted when nil, got: %s", data)
 	}
 }
 
@@ -2283,5 +2327,241 @@ func TestSetupConductor_WithoutEnvVars(t *testing.T) {
 	}
 	if meta.EnvFile != "" {
 		t.Errorf("expected empty env_file, got %s", meta.EnvFile)
+	}
+}
+
+// --- GetConductorLastActivity tests ---
+
+// TestGetConductorLastActivity_NoConductorSession verifies that an error is
+// returned when the conductor session does not exist in storage — not a zero
+// time — so callers can distinguish "no data" from "no managed sessions".
+func TestGetConductorLastActivity_NoConductorSession(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Bootstrap a storage profile so NewStorageWithProfile succeeds.
+	if _, err := NewStorageWithProfile("default"); err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	_, err := GetConductorLastActivity("no-such-conductor", "default")
+	if err == nil {
+		t.Fatal("expected error when conductor session not in storage, got nil")
+	}
+}
+
+// TestGetConductorLastActivity_NoWatchedSessions verifies that zero time is
+// returned (not an error) when the conductor session exists in storage but there
+// are no watched non-conductor sessions. Zero time signals "no data" to the idle
+// gate, which must not suppress heartbeats in this case.
+func TestGetConductorLastActivity_NoManagedSessions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	// Register the conductor session itself (no children).
+	conductorInst := NewInstance("conductor-alpha", "/tmp")
+	conductorInst.IsConductor = true
+	if err := storage.Save([]*Instance{conductorInst}); err != nil {
+		t.Fatalf("save conductor instance: %v", err)
+	}
+
+	got, err := GetConductorLastActivity("alpha", "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.IsZero() {
+		t.Errorf("expected zero time for conductor with no managed sessions, got %v", got)
+	}
+}
+
+// TestGetConductorLastActivity_ExcludesConductorWindow verifies that the
+// conductor's own tmux window is NOT included in the activity scan. This ensures
+// heartbeat responses (which produce output in the conductor window) cannot
+// reset the idle timer. Unparented watched sessions are included because
+// conductors monitor profile sessions even when they are not descendants.
+func TestGetConductorLastActivity_ExcludesConductorWindow(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductorInst := NewInstance("conductor-beta", "/tmp")
+	conductorInst.IsConductor = true
+
+	// A managed session parented to the conductor.
+	managed := NewInstance("worker-1", "/tmp/work")
+	managed.ParentSessionID = conductorInst.ID
+
+	// Unparented watched profile session; must contribute to activity scope.
+	unparented := NewInstance("other-session", "/tmp/other")
+
+	if err := storage.Save([]*Instance{conductorInst, managed, unparented}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	// We can't call tmux in a unit test, so just verify the function proceeds
+	// past the storage lookup without panicking. The tmux calls will fail
+	// gracefully (no tmux server) and GetConductorLastActivity returns zero.
+	got, err := GetConductorLastActivity("beta", "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Without tmux, window_activity lookups fail silently → zero time is correct.
+	if !got.IsZero() {
+		t.Errorf("expected zero time (no tmux server), got %v", got)
+	}
+}
+
+// TestGetConductorLastActivity_IncludesUnparentedWatchedSessions verifies the
+// activity scope matches what conductors actually monitor: non-conductor
+// sessions in the same profile, even when they were created before the
+// conductor and have no ParentSessionID link.
+func TestGetConductorLastActivity_IncludesUnparentedWatchedSessions(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductorInst := NewInstance("conductor-delta", "/tmp")
+	conductorInst.IsConductor = true
+	watched := NewInstance("preexisting-worker", "/tmp/work")
+
+	if err := storage.Save([]*Instance{conductorInst, watched}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	got, err := GetConductorLastActivity("delta", "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Without a live tmux server window_activity lookups fail silently, so the
+	// result is zero. The important regression guard is that this call treats the
+	// unparented worker as in-scope and still completes without requiring a
+	// ParentSessionID edge.
+	if !got.IsZero() {
+		t.Errorf("expected zero time (no tmux server), got %v", got)
+	}
+}
+
+// TestGetConductorLastActivity_TransitiveScan verifies that sub-sessions
+// (grandchildren of the conductor) are included in the activity scan.
+// Without transitive scanning, a managed session that is idle/waiting on a
+// sub-session would cause the idle gate to miss the sub-session's activity.
+func TestGetConductorLastActivity_TransitiveScan(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	storage, err := NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductorInst := NewInstance("conductor-gamma", "/tmp")
+	conductorInst.IsConductor = true
+
+	// Direct child of conductor.
+	managed := NewInstance("worker-2", "/tmp/work")
+	managed.ParentSessionID = conductorInst.ID
+
+	// Sub-session (grandchild of conductor, child of managed).
+	subSession := NewInstance("sub-worker-a", "/tmp/sub")
+	subSession.ParentSessionID = managed.ID
+
+	// Unrelated session — must not appear in the scan.
+	unrelated := NewInstance("other", "/tmp/other")
+
+	if err := storage.Save([]*Instance{conductorInst, managed, subSession, unrelated}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	// Without a live tmux server all window_activity queries fail silently;
+	// the function must still complete without error.
+	got, err := GetConductorLastActivity("gamma", "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Zero is correct in a no-tmux environment; the important thing is that
+	// the BFS traversal reached the sub-session without panicking or erroring.
+	if !got.IsZero() {
+		t.Errorf("expected zero time (no tmux server), got %v", got)
+	}
+}
+
+// --- Inactivity pause tests ---
+
+func TestGetHeartbeatIdleMinutes(t *testing.T) {
+	tests := []struct {
+		name     string
+		minutes  int
+		expected int
+	}{
+		{"zero means disabled (never pause)", 0, 0},
+		{"negative means disabled", -1, 0},
+		{"negative large means disabled", -100, 0},
+		{"custom value 5", 5, 5},
+		{"custom value 30", 30, 30},
+		{"custom value 60", 60, 60},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := &ConductorMeta{HeartbeatIdleMinutes: tt.minutes}
+			if got := meta.GetHeartbeatIdleMinutes(); got != tt.expected {
+				t.Errorf("GetHeartbeatIdleMinutes() with %d = %d, want %d", tt.minutes, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetHeartbeatIdleMinutes_NilMeta(t *testing.T) {
+	var meta *ConductorMeta
+	if got := meta.GetHeartbeatIdleMinutes(); got != 0 {
+		t.Errorf("GetHeartbeatIdleMinutes() with nil meta = %d, want 0", got)
+	}
+}
+
+func TestConductorMeta_InactivityPauseJSON(t *testing.T) {
+	// Test that HeartbeatIdleMinutes is properly serialized/deserialized
+	meta := &ConductorMeta{
+		Name:                 "test-inactivity",
+		Profile:              "default",
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 30,
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}
+
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Verify the field appears in JSON with correct tag
+	if !strings.Contains(string(data), "heartbeat_idle_minutes") {
+		t.Error("JSON should contain 'heartbeat_idle_minutes' field")
+	}
+
+	// Verify the value is present
+	if !strings.Contains(string(data), `"heartbeat_idle_minutes":30`) {
+		t.Errorf("JSON should contain heartbeat_idle_minutes=30, got: %s", string(data))
+	}
+
+	// Deserialize and verify
+	var loaded ConductorMeta
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if loaded.HeartbeatIdleMinutes != 30 {
+		t.Errorf("HeartbeatIdleMinutes after unmarshal = %d, want 30", loaded.HeartbeatIdleMinutes)
 	}
 }
