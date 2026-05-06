@@ -1,0 +1,41 @@
+name: python-compat
+
+# Regression gate for #864 - bridge.py must import on the Python version
+# shipped by default with WSL Ubuntu 20.04 (3.8). Runs on every PR that
+# touches the conductor bridge or its tests.
+
+on:
+  pull_request:
+    paths:
+      - 'conductor/bridge.py'
+      - 'conductor/tests/**'
+      - '.github/workflows/python-compat.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'conductor/bridge.py'
+      - 'conductor/tests/**'
+      - '.github/workflows/python-compat.yml'
+
+jobs:
+  bridge-import:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install runtime deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install toml aiogram pytest
+      - name: Compile-check
+        run: python -m py_compile conductor/bridge.py
+      - name: Import-check
+        run: python -c "import sys; sys.path.insert(0, 'conductor'); import bridge"
+      - name: Compatibility test suite
+        run: python -m pytest conductor/tests/test_python_compat.py -v

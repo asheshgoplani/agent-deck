@@ -28,9 +28,8 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Coroutine
 
 import toml
 

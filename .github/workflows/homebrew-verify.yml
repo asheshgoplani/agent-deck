@@ -1,0 +1,29 @@
+name: homebrew-verify
+
+# Regression gate for #873 - users on Mac/Linux/WSL run
+# `brew install asheshgoplani/tap/agent-deck` from README and release notes.
+# That path silently broke once when goreleaser's brews block was misconfigured;
+# this workflow probes the live tap so the next break is caught in CI.
+
+on:
+  pull_request:
+    paths:
+      - 'README.md'
+      - '.goreleaser.yml'
+      - 'scripts/verify-homebrew-install.sh'
+      - '.github/workflows/homebrew-verify.yml'
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    # Weekly probe so a broken tap is detected even without commits.
+    - cron: '0 9 * * 1'
+  workflow_dispatch: {}
+
+jobs:
+  verify-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify homebrew tap publishes a working formula
+        run: bash scripts/verify-homebrew-install.sh
