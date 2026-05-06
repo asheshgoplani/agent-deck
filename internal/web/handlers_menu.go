@@ -38,6 +38,7 @@ func (s *Server) handleMenu(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load menu data")
 		return
 	}
+	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
 
 	writeJSON(w, http.StatusOK, snapshot)
 }
@@ -68,6 +69,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load session data")
 		return
 	}
+	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
 
 	for _, item := range snapshot.Items {
 		if item.Type != MenuItemTypeSession || item.Session == nil {
