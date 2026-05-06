@@ -3572,6 +3572,82 @@ func TestInstance_BuildClaudeResumeCommand_AfterFlap_ResumesRichID(t *testing.T)
 	}
 }
 
+// TestInstance_UpdateHookStatus_ClearCreatesNewSession_RebindsRegardlessOfSize
+// pins issue #856. When the user runs `/clear` (or any user-initiated session
+// switch) the new jsonl is by definition smaller than the dormant old one, so
+// the strict size guard added in v1.7.23 rejects it on every poll until the
+// new conversation outgrows the old one in bytes.
+//
+// The discriminator is mtime gap: in a flap (issue #661) the user keeps typing
+// into the rich session so its mtime stays fresh; in /clear the user abandons
+// the old session, so its mtime stales while the new jsonl's mtime advances.
+// When the candidate's jsonl is significantly newer than the current's (by
+// more than the mtime-grace threshold), this is a user-initiated new session
+// and must rebind regardless of size.
+func TestInstance_UpdateHookStatus_ClearCreatesNewSession_RebindsRegardlessOfSize(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(tmpHome, ".claude"))
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+
+	projectPath := filepath.Join(tmpHome, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	inst := NewInstanceWithTool("hook-clear-rebind", projectPath, "claude")
+
+	oldID := "5ea244ce-0000-0000-0000-000000000001"
+	newID := "2266314c-0000-0000-0000-000000000002"
+
+	// Old rich session (~209KB, like the issue's evidence).
+	oldPath := seedClaudeJSONL(t, inst, oldID, 200, 1024)
+	// User runs /clear, then sends a prompt → new session writes 1 record.
+	newPath := seedClaudeJSONL(t, inst, newID, 1, 8)
+
+	// Mtime gap: the old session is dormant (last touched ~2 minutes ago),
+	// the new session's jsonl is fresh (just written). This mirrors the real
+	// /clear timeline — between the user's last interaction with the old
+	// session and the first prompt of the new one, time has passed.
+	now := time.Now()
+	oldMtime := now.Add(-2 * time.Minute)
+	if err := os.Chtimes(oldPath, oldMtime, oldMtime); err != nil {
+		t.Fatalf("chtimes old: %v", err)
+	}
+	if err := os.Chtimes(newPath, now, now); err != nil {
+		t.Fatalf("chtimes new: %v", err)
+	}
+
+	inst.ClaudeSessionID = oldID
+
+	inst.UpdateHookStatus(&HookStatus{
+		Status:    "running",
+		SessionID: newID,
+		Event:     "UserPromptSubmit",
+		UpdatedAt: time.Now(),
+	})
+
+	if inst.ClaudeSessionID != newID {
+		t.Fatalf("ClaudeSessionID = %q, want %q (/clear-created new session must win even though smaller)",
+			inst.ClaudeSessionID, newID)
+	}
+
+	// And the lifecycle log must record this as a rebind, not a reject.
+	events := readLifecycleEvents(t)
+	sawRebind := false
+	for _, ev := range events {
+		if ev.Action == "reject" && ev.Reason == "candidate_has_less_conversation_data" {
+			t.Fatalf("expected rebind for /clear-created session, got reject: %+v", ev)
+		}
+		if ev.Action == "rebind" && ev.NewID == newID {
+			sawRebind = true
+		}
+	}
+	if !sawRebind {
+		t.Fatalf("expected rebind event with new_id=%s; events: %+v", newID, events)
+	}
+}
+
 func TestInstance_SetAcknowledgedFromShared_RunningIgnored(t *testing.T) {
 	inst := NewInstanceWithTool("ack-shared-running", "/tmp/test", "codex")
 	inst.Status = StatusRunning

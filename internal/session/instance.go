@@ -2691,6 +2691,14 @@ const errorRecheckInterval = 30 * time.Second
 // without noticeably slowing the restart path when there truly is no jsonl.
 var resumeCheckRetryDelay = 200 * time.Millisecond
 
+// clearRebindMtimeGrace is the mtime gap (candidate.mtime - current.mtime)
+// above which UpdateHookStatus treats a smaller candidate as a legitimate
+// user-initiated new session (e.g. /clear) instead of a stale flap (issue
+// #856). 5s is well above the ~2s hook poll cadence — a #661 flap touches
+// both files within that window — but well below the time it takes a user
+// to type /clear and a follow-up prompt.
+var clearRebindMtimeGrace = 5 * time.Second
+
 func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	if !IsCodexCompatible(tool) {
 		return hookFastPathWindow
@@ -3100,16 +3108,32 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// Byte size is a robust proxy for "how much history this session
 		// holds" — immune to record-count ties and faster than re-scanning
 		// the file.
+		//
+		// Issue #856: but a strict size-only rule rejects user-initiated
+		// new sessions (e.g. /clear) indefinitely, since they're smaller by
+		// definition. Mtime gap is the discriminator: in a flap the user
+		// keeps typing into the rich session so its mtime stays fresh; in
+		// /clear the user abandons the old session, so its mtime stales
+		// while the new jsonl's mtime advances. If the candidate's jsonl
+		// is significantly newer than the current's (clearRebindMtimeGrace),
+		// treat it as a user-initiated new session and rebind regardless
+		// of size.
 		if sessionHasConversationData(i, i.ClaudeSessionID) {
 			currentSize := sessionConversationByteSize(i, i.ClaudeSessionID)
 			candidateSize := sessionConversationByteSize(i, sessionID)
 			if candidateSize <= currentSize {
-				_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
-					InstanceID: i.ID, Tool: i.Tool, Action: "reject",
-					Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
-					HookEvent: status.Event, Reason: "candidate_has_less_conversation_data",
-				})
-				return
+				currentMtime := sessionConversationMtime(i, i.ClaudeSessionID)
+				candidateMtime := sessionConversationMtime(i, sessionID)
+				clearRebind := !currentMtime.IsZero() && !candidateMtime.IsZero() &&
+					candidateMtime.Sub(currentMtime) >= clearRebindMtimeGrace
+				if !clearRebind {
+					_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+						InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+						Source: hookSource, OldID: i.ClaudeSessionID, Candidate: sessionID,
+						HookEvent: status.Event, Reason: "candidate_has_less_conversation_data",
+					})
+					return
+				}
 			}
 		}
 		i.bindClaudeSessionFromHook(sessionID, hookSource, status.Event, "rebind")
@@ -5513,6 +5537,47 @@ func sessionConversationByteSize(inst *Instance, sessionID string) int64 {
 		}
 	}
 	return 0
+}
+
+// sessionConversationMtime returns the modification time of the Claude
+// session's jsonl file (or the zero time if it cannot be located). Issue
+// #856: when both current and candidate jsonls have data, mtime gap is the
+// discriminator between a stale flap (rich session still being actively
+// written, candidate is a momentary blip) and a user-initiated new session
+// like /clear (rich session is dormant, candidate is the new active jsonl).
+// Path resolution mirrors sessionConversationByteSize.
+func sessionConversationMtime(inst *Instance, sessionID string) time.Time {
+	var configDir string
+	if inst != nil {
+		configDir = GetClaudeConfigDirForInstance(inst)
+	} else {
+		configDir = GetClaudeConfigDir()
+	}
+	if configDir == "" {
+		configDir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+	projectPath := ""
+	if inst != nil {
+		projectPath = inst.EffectiveWorkingDir()
+	}
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encodedPath := ConvertToClaudeDirName(resolvedPath)
+	if encodedPath == "" {
+		encodedPath = "-"
+	}
+	sessionFile := filepath.Join(configDir, "projects", encodedPath, sessionID+".jsonl")
+	if info, err := os.Stat(sessionFile); err == nil {
+		return info.ModTime()
+	}
+	if fallback := findSessionFileInAllProjects(inst, sessionID); fallback != "" {
+		if info, err := os.Stat(fallback); err == nil {
+			return info.ModTime()
+		}
+	}
+	return time.Time{}
 }
 
 // bindClaudeSessionFromHook performs the common bookkeeping when
