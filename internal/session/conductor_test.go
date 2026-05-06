@@ -610,6 +610,28 @@ func TestConductorHeartbeatScript_StatusParsingHandlesWhitespace(t *testing.T) {
 	}
 }
 
+// TestConductorHeartbeatScript_InjectsHeartbeatRules verifies parity with
+// conductor/bridge.py (PR #218): the OS heartbeat must also resolve and inline
+// HEARTBEAT_RULES.md so rules survive context compaction regardless of which
+// heartbeat mechanism is active.
+func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
+	if !strings.Contains(conductorHeartbeatScript, "HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should reference HEARTBEAT_RULES.md")
+	}
+	if !strings.Contains(conductorHeartbeatScript, "{NAME}/HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should look up per-conductor HEARTBEAT_RULES.md first")
+	}
+	if !strings.Contains(conductorHeartbeatScript, "{PROFILE}/HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should look up per-profile HEARTBEAT_RULES.md")
+	}
+	if !strings.Contains(conductorHeartbeatScript, "/.agent-deck/conductor/HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should fall back to the global HEARTBEAT_RULES.md")
+	}
+	if !strings.Contains(conductorHeartbeatScript, "[HEARTBEAT]") {
+		t.Fatal("heartbeat script should send messages prefixed with [HEARTBEAT] (matches bridge.py)")
+	}
+}
+
 // --- Symlink-based CLAUDE.md tests ---
 
 func TestInstallSharedClaudeMD_Default(t *testing.T) {

@@ -736,8 +736,31 @@ fi
 # Only send if the session is running
 STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | awk -F'"' '/"status"/{print $4; exit}')
 
+# Resolve HEARTBEAT_RULES.md (per-conductor, then per-profile, then global fallback).
+# Mirrors the lookup order used by conductor/bridge.py since PR #218.
+RULES_FILE=""
+for candidate in \
+    "$HOME/.agent-deck/conductor/{NAME}/HEARTBEAT_RULES.md" \
+    "$HOME/.agent-deck/conductor/{PROFILE}/HEARTBEAT_RULES.md" \
+    "$HOME/.agent-deck/conductor/HEARTBEAT_RULES.md"; do
+    if [ -f "$candidate" ]; then
+        RULES_FILE="$candidate"
+        break
+    fi
+done
+
+MSG="[HEARTBEAT] Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention."
+if [ -n "$RULES_FILE" ]; then
+    RULES=$(cat "$RULES_FILE")
+    if [ -n "$RULES" ]; then
+        MSG="$MSG
+
+$RULES"
+    fi
+fi
+
 if [ "$STATUS" = "idle" ] || [ "$STATUS" = "waiting" ]; then
-    agent-deck -p "$PROFILE" session send "$SESSION" "Heartbeat: Check sessions in your group ({NAME}). List any that are waiting, auto-respond where safe, and report what needs my attention." --no-wait -q
+    agent-deck -p "$PROFILE" session send "$SESSION" "$MSG" --no-wait -q
 fi
 `
 
