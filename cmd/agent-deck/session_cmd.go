@@ -1829,13 +1829,22 @@ func handleSessionSend(profile string, args []string) {
 	}
 }
 
+// defaultSendOptions returns the verification-loop options used by the default
+// (non-`--no-wait`) CLI send path. verifyDelivery is enabled so the CLI
+// surfaces silent drops as errors rather than returning false success — see
+// issue #876.
+func defaultSendOptions() sendRetryOptions {
+	return sendRetryOptions{
+		maxRetries:     50,
+		checkDelay:     300 * time.Millisecond,
+		verifyDelivery: true,
+	}
+}
+
 // sendWithRetry sends a message atomically and retries Enter if the agent
 // doesn't start processing within a reasonable time.
 func sendWithRetry(tmuxSess *tmux.Session, message string, skipVerify bool) error {
-	return sendWithRetryTarget(tmuxSess, message, skipVerify, sendRetryOptions{
-		maxRetries: 50,
-		checkDelay: 300 * time.Millisecond,
-	})
+	return sendWithRetryTarget(tmuxSess, message, skipVerify, defaultSendOptions())
 }
 
 // noWaitSendOptions returns the verification-loop options used by the
@@ -1855,6 +1864,11 @@ func noWaitSendOptions() sendRetryOptions {
 		maxRetries:     30,
 		checkDelay:     200 * time.Millisecond,
 		maxFullResends: -1,
+		// Issue #876: even on the --no-wait path, callers expect that a
+		// `Sent` exit means the message reached the agent. Without this,
+		// the verification loop would still fall through to nil on a
+		// silent drop.
+		verifyDelivery: true,
 	}
 }
 
@@ -1935,6 +1949,15 @@ type sendRetryOptions struct {
 	maxRetries     int
 	checkDelay     time.Duration
 	maxFullResends int // >0 overrides default (3); <0 disables Ctrl+C-then-resend; 0 uses default
+
+	// verifyDelivery, when true, requires the verification loop to observe at
+	// least one positive signal that the message reached the inner agent (an
+	// "active" status transition, an unsent-prompt composer marker, a full
+	// resend, or the message body appearing in the captured pane). If the
+	// budget is exhausted without any such signal, the function returns an
+	// error instead of the prior best-effort `nil`. Closes the silent-drop
+	// path reported in issue #876.
+	verifyDelivery bool
 }
 
 func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool, opts sendRetryOptions) error {
@@ -1981,6 +2004,19 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	activeChecks := 0
 	sawActiveAfterSend := false
 	fullResendCount := 0
+	// sawDeliveryEvidence flips true on any positive signal that the message
+	// reached the agent: an "active" status transition, an unsent-prompt
+	// composer marker, the message body appearing verbatim in the pane, or a
+	// successful full resend. When opts.verifyDelivery is set and this stays
+	// false for the entire budget, the function returns an error instead of
+	// silently succeeding (issue #876).
+	sawDeliveryEvidence := false
+	// Snippet of the message body to look for in captured pane content. Some
+	// TUI frameworks (and non-Claude tools) won't render a "[Pasted text …]"
+	// or "❯ <msg>" marker, so direct verbatim content is the only signal.
+	// Take the first run of non-whitespace content, capped, to avoid false
+	// positives from matching common short strings.
+	deliveryToken := messageDeliveryToken(message)
 	for retry := 0; retry < opts.maxRetries; retry++ {
 		time.Sleep(opts.checkDelay)
 
@@ -1988,10 +2024,14 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 			content := tmux.StripANSI(rawContent)
 			unsentPromptDetected = send.HasUnsentPastedPrompt(content) || send.HasUnsentComposerPrompt(content, message)
+			if !sawDeliveryEvidence && deliveryToken != "" && strings.Contains(content, deliveryToken) {
+				sawDeliveryEvidence = true
+			}
 		}
 		status, err := target.GetStatus()
 
 		if unsentPromptDetected {
+			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks = 0
@@ -2001,6 +2041,7 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 
 		if err == nil && status == "active" {
 			sawActiveAfterSend = true
+			sawDeliveryEvidence = true
 			waitingNoMarkerChecks = 0
 			waitingNoActivityChecks = 0
 			activeChecks++
@@ -2030,7 +2071,14 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					waitingNoActivityChecks = 0
 					_ = target.SendCtrlC()
 					time.Sleep(200 * time.Millisecond)
-					_ = target.SendKeysAndEnter(message)
+					if resendErr := target.SendKeysAndEnter(message); resendErr == nil {
+						// A successful resend is not yet evidence of receipt
+						// — the next iteration must still observe a positive
+						// signal — but we record the attempt so verifyDelivery
+						// can distinguish "send pipe ever fired" from "never
+						// even acked". Intentionally NOT setting
+						// sawDeliveryEvidence here.
+					}
 					continue
 				}
 
@@ -2055,8 +2103,34 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 		}
 	}
 
-	// Best effort: don't fail even if verification is inconclusive.
+	// Issue #876: with verifyDelivery, refuse to claim success when no
+	// positive signal was ever observed — the message was very likely
+	// dropped silently. Without it, preserve the legacy best-effort
+	// contract used by paths that gate verification elsewhere.
+	if opts.verifyDelivery && !sawDeliveryEvidence {
+		return fmt.Errorf("send dropped silently: no evidence of delivery after %d checks (issue #876). "+
+			"The agent never transitioned to 'active', no composer/unsent-paste marker appeared, "+
+			"and the message body was not visible in the pane. Verify the inner agent is reading from "+
+			"its TTY before retrying", opts.maxRetries)
+	}
 	return nil
+}
+
+// messageDeliveryToken returns a short, content-bearing slice of the message
+// suitable for "did this body appear in the pane?" verification. Returns "" if
+// the message contains no usefully-distinctive token (e.g. all whitespace, or
+// only short common words).
+func messageDeliveryToken(message string) string {
+	const minTokenLen = 12
+	const maxTokenLen = 64
+	trimmed := strings.TrimSpace(message)
+	if len(trimmed) < minTokenLen {
+		return ""
+	}
+	if len(trimmed) > maxTokenLen {
+		trimmed = trimmed[:maxTokenLen]
+	}
+	return trimmed
 }
 
 // waitForAgentReady waits for Claude/Gemini/other agents to be ready for input

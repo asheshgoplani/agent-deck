@@ -1128,3 +1128,117 @@ func TestSessionOutput_RefreshesSessionID(t *testing.T) {
 		}
 	})
 }
+
+// Issue #876 regression tests. Reported by @DOKoenegras (v1.7.71): when running
+// `agent-deck session send` to sub-sessions in quick succession, prompts could
+// be silently dropped — the CLI returned success but the inner agent never
+// received the input. Root cause: sendWithRetryTarget exhausted its
+// verification budget and fell through to `return nil` even when no evidence
+// of delivery was ever observed. Fix: opt-in `verifyDelivery` flag tracks
+// positive evidence and surfaces an error if none is seen.
+
+func TestSendWithRetryTarget_VerifyDelivery_ErrorsWhenNoEvidenceOfReceipt(t *testing.T) {
+	statuses := make([]string, 12)
+	panes := make([]string, 12)
+	for i := range statuses {
+		statuses[i] = "waiting"
+		panes[i] = ""
+	}
+	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 12, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: expected delivery-verification error when " +
+			"agent never showed evidence of receiving the message, got nil")
+	}
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
+	}
+}
+
+func TestSendWithRetryTarget_VerifyDelivery_AcceptsActiveStatus(t *testing.T) {
+	mock := &mockSendRetryTarget{
+		statuses: []string{"active", "active"},
+		panes:    []string{"", ""},
+	}
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, verifyDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("verifyDelivery must accept active-status as receipt evidence: %v", err)
+	}
+}
+
+func TestSendWithRetryTarget_VerifyDelivery_AcceptsUnsentMarker(t *testing.T) {
+	statuses := make([]string, 6)
+	panes := make([]string, 6)
+	for i := range statuses {
+		statuses[i] = "waiting"
+		panes[i] = "[Pasted text #1 +89 lines]"
+	}
+	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 6, checkDelay: 0, verifyDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("verifyDelivery must accept unsent-prompt marker as receipt evidence: %v", err)
+	}
+}
+
+func TestSendWithRetryTarget_VerifyDelivery_AcceptsMessageInPane(t *testing.T) {
+	// If the message body itself shows up in the captured pane (e.g. behind a
+	// non-Claude composer that doesn't render an "unsent paste" marker), that
+	// is direct evidence the keystrokes were received. Must not error.
+	statuses := make([]string, 6)
+	panes := make([]string, 6)
+	for i := range statuses {
+		statuses[i] = "waiting"
+		panes[i] = "DELIVERY_TOKEN_876 — verbatim message body in pane"
+	}
+	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
+	err := sendWithRetryTarget(mock, "DELIVERY_TOKEN_876", false, sendRetryOptions{
+		maxRetries: 6, checkDelay: 0, verifyDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("verifyDelivery must accept message-in-pane as receipt evidence: %v", err)
+	}
+}
+
+func TestSendWithRetryTarget_VerifyDelivery_OffPreservesLegacyBestEffort(t *testing.T) {
+	// Without verifyDelivery, the legacy best-effort contract is preserved:
+	// the function returns nil even when no evidence is observed. This guards
+	// the existing test surface from accidental contract drift.
+	statuses := []string{"waiting", "waiting", "waiting", "waiting"}
+	panes := []string{"", "", "", ""}
+	mock := &mockSendRetryTarget{statuses: statuses, panes: panes}
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, // verifyDelivery omitted (= false)
+	})
+	if err != nil {
+		t.Fatalf("legacy best-effort path must remain non-erroring without verifyDelivery: %v", err)
+	}
+}
+
+func TestDefaultSendOptions_EnablesVerifyDelivery(t *testing.T) {
+	// The CLI's default send path (sendWithRetry → defaultSendOptions) MUST
+	// opt into delivery verification so callers of `agent-deck session send`
+	// receive a strict success contract.
+	opts := defaultSendOptions()
+	if !opts.verifyDelivery {
+		t.Fatal("issue #876: defaultSendOptions().verifyDelivery must be true " +
+			"so the CLI surfaces silent drops as errors")
+	}
+	if opts.maxRetries < 30 {
+		t.Errorf("defaultSendOptions().maxRetries unexpectedly small: %d", opts.maxRetries)
+	}
+}
+
+func TestNoWaitSendOptions_EnablesVerifyDelivery(t *testing.T) {
+	// `--no-wait` callers also need the strict contract — silent drops are
+	// the entire reason the workaround in #876 exists.
+	opts := noWaitSendOptions()
+	if !opts.verifyDelivery {
+		t.Fatal("issue #876: noWaitSendOptions().verifyDelivery must be true")
+	}
+}
