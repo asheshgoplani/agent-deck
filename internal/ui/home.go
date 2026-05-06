@@ -9251,8 +9251,7 @@ func (h *Home) renderFilterBar() string {
 		}
 	}
 
-	// Hint for keyboard shortcuts (cached — content is static)
-	hint := cachedFilterBarHint()
+	hint := h.renderFilterBarHint()
 
 	// Join pills with spaces (leading space replaces Padding)
 	filterRow := " " + strings.Join(pills, " ") + hint
@@ -13991,16 +13990,28 @@ func (h *Home) matchesStatusFilter(filter, status session.Status) bool {
 	return status == filter
 }
 
-// cachedFilterBarHint returns the static filter bar hint string.
-// Cached after first call since the content never changes after theme init.
-var _cachedFilterBarHint string
+// renderFilterBarHint renders the filter-bar keyboard-shortcut hint with the
+// shortcut character of the currently-engaged filter highlighted (subtle shade
+// brighter than the surrounding faint hint text).
+func (h *Home) renderFilterBarHint() string {
+	dim := lipgloss.NewStyle().Foreground(ColorComment).Faint(true)
+	hi := lipgloss.NewStyle().Foreground(ColorTextDim) // same hue, no Faint
 
-func cachedFilterBarHint() string {
-	if _cachedFilterBarHint == "" {
-		_cachedFilterBarHint = lipgloss.NewStyle().
-			Foreground(ColorComment).
-			Faint(true).
-			Render("  !@#$ filter • 0 all • " + FilterKeyActive + " open")
+	mark := func(c string, on bool) string {
+		if on {
+			return hi.Render(c)
+		}
+		return dim.Render(c)
 	}
-	return _cachedFilterBarHint
+
+	return dim.Render("  ") +
+		mark("!", h.statusFilter == session.StatusRunning) +
+		mark("@", h.statusFilter == session.StatusWaiting) +
+		mark("#", h.statusFilter == session.StatusIdle) +
+		mark("$", h.statusFilter == session.StatusError) +
+		dim.Render(" filter • ") +
+		mark("0", h.statusFilter == "") +
+		dim.Render(" all • ") +
+		mark(FilterKeyActive, h.statusFilter == FilterModeActive) +
+		dim.Render(" open")
 }
