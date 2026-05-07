@@ -537,7 +537,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "pi", "cursor", "crush"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -576,6 +576,11 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bpi\s+cli\b`),
 		regexp.MustCompile(`(?i)\bpi\s+code\b`),
 	},
+	"cursor": {
+		// Cursor CLI agent TUI
+		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
+		regexp.MustCompile(`(?i)cursor\s+cli\b`),
+	},
 }
 
 func detectToolFromCommand(command string) string {
@@ -602,6 +607,8 @@ func detectToolFromCommand(command string) string {
 			return "crush"
 		case "pi":
 			return "pi"
+		case "cursor":
+			return "cursor"
 		}
 	}
 
@@ -620,6 +627,8 @@ func detectToolFromCommand(command string) string {
 		return "crush"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
+	case strings.Contains(cmdLower, "cursor"):
+		return "cursor"
 	default:
 		return ""
 	}

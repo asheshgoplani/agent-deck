@@ -8368,6 +8368,9 @@ func createSessionTool(command string) (string, string) {
 		tool = "pi"
 	case "copilot":
 		tool = "copilot"
+	case "cursor":
+		tool = "cursor"
+		command = "cursor agent"
 	case "crush":
 		tool = "crush"
 	default:
@@ -8489,7 +8492,11 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		tool = "claude"
 	}
 	if command == "" {
-		command = tool
+		if tool == "cursor" {
+			command = "cursor agent"
+		} else {
+			command = tool
+		}
 	}
 
 	// Generate unique name
@@ -12098,6 +12105,13 @@ func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime
 			toolDesc = "Resuming OpenCode session..."
 		} else {
 			toolDesc = "Starting OpenCode..."
+		}
+	case "cursor":
+		toolName = "Cursor Agent"
+		if isResuming {
+			toolDesc = "Resuming Cursor session..."
+		} else {
+			toolDesc = "Starting Cursor Agent..."
 		}
 	default:
 		toolName = "Shell"

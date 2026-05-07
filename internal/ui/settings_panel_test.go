@@ -30,6 +30,18 @@ func setSettingsPanelHotkeyConfigForTest(t *testing.T, tomlBody string) {
 	t.Cleanup(session.ClearUserConfigCache)
 }
 
+// toolValueIndex returns the index of value in panel.toolValues (for name-based tests).
+func toolValueIndex(t *testing.T, panel *SettingsPanel, value string) int {
+	t.Helper()
+	for i, v := range panel.toolValues {
+		if v == value {
+			return i
+		}
+	}
+	t.Fatalf("tool value %q not found in %#v", value, panel.toolValues)
+	return -1
+}
+
 func TestSettingsPanel_InitialState(t *testing.T) {
 	panel := NewSettingsPanel()
 
@@ -86,9 +98,8 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 	}
 	panel.LoadConfig(config)
 
-	// Check tool selection (gemini should be index 1)
-	if panel.selectedTool != 1 {
-		t.Errorf("selectedTool: got %d, want 1 (gemini)", panel.selectedTool)
+	if got := panel.toolValues[panel.selectedTool]; got != "gemini" {
+		t.Errorf("default tool: got %q, want %q", got, "gemini")
 	}
 	if !panel.dangerousMode {
 		t.Error("dangerousMode should be true")
@@ -156,18 +167,19 @@ func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 	panel := NewSettingsPanel()
 
 	tests := []struct {
-		name     string
-		tool     string
-		expected int
+		name      string
+		tool      string
+		wantValue string // selected slot's config value ("", "" for None / unknown)
 	}{
-		{"claude", "claude", 0},
-		{"gemini", "gemini", 1},
-		{"opencode", "opencode", 2},
-		{"codex", "codex", 3},
-		{"pi", "pi", 4},
-		{"crush", "crush", 5},
-		{"empty", "", 6}, // None
-		{"unknown", "unknown-tool", 6},
+		{"claude", "claude", "claude"},
+		{"gemini", "gemini", "gemini"},
+		{"opencode", "opencode", "opencode"},
+		{"codex", "codex", "codex"},
+		{"pi", "pi", "pi"},
+		{"cursor", "cursor", "cursor"},
+		{"crush", "crush", "crush"},
+		{"empty", "", ""}, // None
+		{"unknown", "unknown-tool", ""},
 	}
 
 	for _, tt := range tests {
@@ -176,9 +188,9 @@ func TestSettingsPanel_LoadConfig_DefaultTool(t *testing.T) {
 				DefaultTool: tt.tool,
 			}
 			panel.LoadConfig(config)
-			if panel.selectedTool != tt.expected {
-				t.Errorf("LoadConfig(%q): selectedTool = %d, want %d",
-					tt.tool, panel.selectedTool, tt.expected)
+			if got := panel.toolValues[panel.selectedTool]; got != tt.wantValue {
+				t.Errorf("LoadConfig(%q): toolValues[selectedTool] = %q, want %q",
+					tt.tool, got, tt.wantValue)
 			}
 		})
 	}
@@ -198,8 +210,8 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 
 	panel.LoadConfig(config)
 
-	wantNames := []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Crush", "Openclaw", "Zeta", "None"}
-	wantValues := []string{"claude", "gemini", "opencode", "codex", "pi", "crush", "openclaw", "zeta", ""}
+	wantNames := []string{"Claude", "Gemini", "OpenCode", "Codex", "Pi", "Cursor", "Crush", "Openclaw", "Zeta", "None"}
+	wantValues := []string{"claude", "gemini", "opencode", "codex", "pi", "cursor", "crush", "openclaw", "zeta", ""}
 
 	if !reflect.DeepEqual(panel.toolNames, wantNames) {
 		t.Fatalf("toolNames = %#v, want %#v", panel.toolNames, wantNames)
@@ -207,8 +219,9 @@ func TestSettingsPanel_LoadConfig_CustomTools(t *testing.T) {
 	if !reflect.DeepEqual(panel.toolValues, wantValues) {
 		t.Fatalf("toolValues = %#v, want %#v", panel.toolValues, wantValues)
 	}
-	if panel.selectedTool != 6 {
-		t.Fatalf("selectedTool = %d, want 6 for openclaw", panel.selectedTool)
+	wantIdx := toolValueIndex(t, panel, "openclaw")
+	if panel.selectedTool != wantIdx {
+		t.Fatalf("selectedTool = %d, want %d for openclaw", panel.selectedTool, wantIdx)
 	}
 }
 
@@ -245,7 +258,7 @@ func TestSettingsPanel_LoadConfig_SearchTier(t *testing.T) {
 
 func TestSettingsPanel_GetConfig(t *testing.T) {
 	panel := NewSettingsPanel()
-	panel.selectedTool = 2 // opencode
+	panel.selectedTool = toolValueIndex(t, panel, "opencode")
 	panel.dangerousMode = true
 	panel.claudeConfigDir = "~/.claude-custom"
 	panel.checkForUpdates = false
@@ -348,25 +361,26 @@ func TestSettingsPanel_GetConfig_ToolMapping(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		index    int
+		value    string
 		expected string
 	}{
-		{"claude", 0, "claude"},
-		{"gemini", 1, "gemini"},
-		{"opencode", 2, "opencode"},
-		{"codex", 3, "codex"},
-		{"pi", 4, "pi"},
-		{"crush", 5, "crush"},
-		{"none", 6, ""},
+		{"claude", "claude", "claude"},
+		{"gemini", "gemini", "gemini"},
+		{"opencode", "opencode", "opencode"},
+		{"codex", "codex", "codex"},
+		{"pi", "pi", "pi"},
+		{"cursor", "cursor", "cursor"},
+		{"crush", "crush", "crush"},
+		{"none", "", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			panel.selectedTool = tt.index
+			panel.selectedTool = toolValueIndex(t, panel, tt.value)
 			config := panel.GetConfig()
 			if config.DefaultTool != tt.expected {
-				t.Errorf("GetConfig for tool index %d: DefaultTool = %q, want %q",
-					tt.index, config.DefaultTool, tt.expected)
+				t.Errorf("GetConfig for tool %q: DefaultTool = %q, want %q",
+					tt.value, config.DefaultTool, tt.expected)
 			}
 		})
 	}
@@ -380,7 +394,7 @@ func TestSettingsPanel_GetConfig_CustomToolMapping(t *testing.T) {
 		},
 	})
 
-	panel.selectedTool = 6
+	panel.selectedTool = toolValueIndex(t, panel, "openclaw")
 	config := panel.GetConfig()
 	if config.DefaultTool != "openclaw" {
 		t.Fatalf("DefaultTool: got %q, want %q", config.DefaultTool, "openclaw")

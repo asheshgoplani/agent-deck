@@ -261,7 +261,7 @@ func TestDetection_CompilePatterns(t *testing.T) {
 // TestDetection_ToolConfig verifies that NewInstanceWithTool correctly sets the
 // Tool field for each supported tool type.
 func TestDetection_ToolConfig(t *testing.T) {
-	tools := []string{"claude", "gemini", "opencode", "codex", "shell"}
+	tools := []string{"claude", "gemini", "opencode", "codex", "shell", "cursor"}
 
 	for _, tool := range tools {
 		t.Run(tool, func(t *testing.T) {
