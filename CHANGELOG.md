@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-05-07
+
+Hotfix bundle on top of v1.8.2. Three contributor PRs: a TUI inline-title regression and two conductor heartbeat-rules improvements bringing the OS heartbeat path to parity with `bridge.py`.
+
+### Fixed
+
+- **Inline pane title vanished between refreshes when the tmux pane-info cache went stale** ([PR #877](https://github.com/asheshgoplani/agent-deck/pull/877), thanks @borng). `refreshSessionRenderSnapshot` reads `tmux.GetCachedPaneInfo` on every rebuild, but only `backgroundStatusUpdate` refreshes that cache. When other rebuild paths (e.g. `processStatusUpdate`) ran past the 4 s freshness threshold, `GetCachedPaneInfo` returned `ok=false` and the rebuild zeroed `paneTitle` — the inline task suffix added in #474 (Claude `/rename`, spinner state) blinked to empty between successful ticks. Fixed by falling back to the previous snapshot's `paneTitle` on cache miss; the fallback re-reads the latest snapshot inside the per-instance branch to narrow the read-store race between concurrent rebuild goroutines. Adds two regression tests: `TestRefreshSessionRenderSnapshot_PaneTitleUpdatesEachRefresh` (fresh-cache contract) and `TestRefreshSessionRenderSnapshot_PaneTitlePreservedWhenCacheStale` (the regression pin, fails on un-fixed code).
+
+- **`HEARTBEAT_RULES.md` silently ignored on hosts using the OS heartbeat daemon** ([PR #886](https://github.com/asheshgoplani/agent-deck/pull/886), thanks @nlenepveu). PR #218 externalized heartbeat policy into `HEARTBEAT_RULES.md` but only wired it into `conductor/bridge.py`. The second heartbeat path — `heartbeat.sh` generated from `conductorHeartbeatScript` and scheduled by systemd/launchd — never read the file, and bridge.py auto-disables its own loop when the OS daemon is detected. Net effect: on the default Linux/macOS path the rules existed, the docs referenced them, and the script that actually fired ignored them. Fixed by resolving `HEARTBEAT_RULES.md` with the same triple fallback (per-conductor → per-profile → global), appending the rules after a blank line when the file is non-empty, and switching the message prefix from `Heartbeat:` to `[HEARTBEAT]` to match bridge.py and the conductor template docs. `MigrateConductorHeartbeatScripts` rewrites `heartbeat.sh` automatically — no user action required.
+
+- **No way to point a conductor at a project-repo `HEARTBEAT_RULES.md` without copying** ([PR #887](https://github.com/asheshgoplani/agent-deck/pull/887), thanks @nlenepveu). `agent-deck conductor setup` already supported `--policy-md` for `POLICY.md`, but the equivalent for the heartbeat rules file was missing even though both share the same per-conductor → per-profile → global lookup order. Added `--heartbeat-rules-md`, a direct mirror of `--policy-md`: it creates a symlink at `~/.agent-deck/conductor/<name>/HEARTBEAT_RULES.md` pointing at the user-supplied path, claiming the highest-precedence slot in the lookup order. Wired through `cmd/agent-deck/conductor_cmd.go` (flag + Usage block alongside `--policy-md`) and `internal/session/conductor.go` (`SetupConductor` / `SetupConductorWithAgent` accept `customHeartbeatRulesMD`, slotted right after `customPolicyMD`, reusing `createSymlinkWithExpansion` for `~` handling).
+
 ## [1.8.2] - 2026-05-07
 
 Three real-bug fixes addressing top items from the priority survey: size-guard regression, tmux SIGSEGV adoption from a contributor branch, and TUI/web profile resolution divergence.
