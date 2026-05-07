@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-05-07
+
+Three real-bug fixes addressing top items from the priority survey: size-guard regression, tmux SIGSEGV adoption from a contributor branch, and TUI/web profile resolution divergence.
+
+### Fixed
+
+- **Size-guard rejected new sessions created by Claude `/clear`** ([#856](https://github.com/asheshgoplani/agent-deck/issues/856), [PR #883](https://github.com/asheshgoplani/agent-deck/pull/883)). Reported by @ZDreamer2. After `/clear` Claude wrote a fresh smaller jsonl that the size-guard refused to rebind to, leaving the TUI stuck on the old session. Fixed by adding an mtime-newer escape hatch: if the candidate jsonl is older by ≥5 s and the new one isn't, rebind regardless of byte size — preserves all existing flap-protection (where files seed within microseconds) while letting legitimate user-initiated `/clear` events through.
+
+- **tmux SIGSEGV during ControlPipe shutdown on macOS Mac** ([#816](https://github.com/asheshgoplani/agent-deck/issues/816), [PR #882](https://github.com/asheshgoplani/agent-deck/pull/882), thanks @tarekrached). Cherry-picked from @tarekrached's `tarek/controlpipe-eof-clean-shutdown` branch — he ran 36/36 stress trials clean. Switches `ControlPipe.Close()` from a SIGTERM-then-grace fallback to a stdin EOF fast path with a 200 ms grace before falling back to soft-kill. Eliminates the upstream tmux #4980-class crash in real workflows.
+
+- **TUI and web showed different sessions for the same user when `AGENTDECK_PROFILE` was set in env but not in `config.json` `default_profile`** ([#881](https://github.com/asheshgoplani/agent-deck/issues/881) [PR #884](https://github.com/asheshgoplani/agent-deck/pull/884)). The TUI/CLI inherit `AGENTDECK_PROFILE` from the parent shell; the web server read only `default_profile` from config. Same DB, two views — trust-killer. Fixed by unifying resolution: web now consults `AGENTDECK_PROFILE` first (matches TUI/CLI), falling back to `config.json`. Single source of truth.
+
 ## [1.8.1] - 2026-05-06
 
 Hotfix bundle on top of v1.8.0. Five focused bug fixes — three from external contributors, two from accumulated triage.
