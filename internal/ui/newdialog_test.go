@@ -52,6 +52,22 @@ func TestDialogSetSize(t *testing.T) {
 	}
 }
 
+func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
+	d := NewNewDialog()
+
+	d.SetSize(120, 40)
+	// Preferred outer width 84 → text fields 84 − 12 = 72.
+	if got := d.pathInput.Width; got != 72 {
+		t.Fatalf("wide terminal: pathInput.Width = %d, want 72", got)
+	}
+
+	d.SetSize(55, 40)
+	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33.
+	if got := d.pathInput.Width; got != 33 {
+		t.Fatalf("narrow terminal: pathInput.Width = %d, want 33", got)
+	}
+}
+
 func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
