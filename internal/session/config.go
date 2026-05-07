@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const (
@@ -300,8 +301,15 @@ func SetDefaultProfile(profile string) error {
 // GetEffectiveProfile returns the profile to use, considering:
 // 1. Explicitly provided profile (from -p flag)
 // 2. Environment variable AGENTDECK_PROFILE
-// 3. Config default profile
-// 4. Fallback to "default"
+// 3. Inferred from CLAUDE_CONFIG_DIR (e.g. ~/.claude-work -> "work")
+// 4. Config default profile
+// 5. Fallback to "default"
+//
+// Priority 3 was added to fix issue #881: prior to this, the TUI's
+// profile.DetectCurrentProfile honored CLAUDE_CONFIG_DIR while the web /
+// storage / push paths did not, so the same user on the same machine could
+// see different sessions in TUI vs web. Both call sites now route through
+// this function to guarantee a single source of truth.
 func GetEffectiveProfile(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -309,6 +317,10 @@ func GetEffectiveProfile(explicit string) string {
 
 	if envProfile := os.Getenv("AGENTDECK_PROFILE"); envProfile != "" {
 		return envProfile
+	}
+
+	if inferred := profileFromClaudeConfigDir(os.Getenv("CLAUDE_CONFIG_DIR")); inferred != "" {
+		return inferred
 	}
 
 	config, err := LoadConfig()
@@ -321,4 +333,34 @@ func GetEffectiveProfile(explicit string) string {
 	}
 
 	return DefaultProfile
+}
+
+// profileFromClaudeConfigDir maps a CLAUDE_CONFIG_DIR path to a profile name.
+// The supported shapes mirror the cdw / cdp shell aliases that drive the
+// dual-profile setup:
+//
+//	~/.claude-work        -> "work"
+//	~/.claude-personal    -> "personal"
+//	~/.claude             -> ""  (no inference; let config default apply)
+//	/opt/claude-prod      -> "prod"
+//
+// Returns "" when no profile can be inferred — the caller then falls back
+// to the global config default.
+func profileFromClaudeConfigDir(configDir string) string {
+	if configDir == "" {
+		return ""
+	}
+	baseName := filepath.Base(configDir)
+	if strings.HasPrefix(baseName, ".claude-") {
+		if suffix := strings.TrimPrefix(baseName, ".claude-"); suffix != "" {
+			return suffix
+		}
+	}
+	if strings.Contains(baseName, "-") {
+		parts := strings.Split(baseName, "-")
+		if last := parts[len(parts)-1]; last != "" {
+			return last
+		}
+	}
+	return ""
 }
