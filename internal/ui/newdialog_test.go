@@ -68,11 +68,23 @@ func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
 	}
 }
 
+func TestDisplayCommandPreset(t *testing.T) {
+	if got := displayCommandPreset("cursor"); got != "cursor agent" {
+		t.Errorf("cursor → %q, want cursor agent", got)
+	}
+	if got := displayCommandPreset("claude"); got != "claude" {
+		t.Errorf("claude passthrough: got %q", got)
+	}
+	if got := displayCommandPreset(""); got != "" {
+		t.Errorf("empty passthrough: got %q", got)
+	}
+}
+
 func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
-	// Should have shell (empty), claude, gemini, opencode, codex, pi, copilot
-	expectedCommands := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot"}
+	// Should have shell (empty), claude, gemini, opencode, codex, pi, copilot, cursor
+	expectedCommands := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "cursor"}
 
 	if len(d.presetCommands) != len(expectedCommands) {
 		t.Errorf("Expected %d preset commands, got %d", len(expectedCommands), len(d.presetCommands))

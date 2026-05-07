@@ -224,10 +224,20 @@ type dialogSnapshot struct {
 	conductorCursor  int
 }
 
+// displayCommandPreset returns the visible label for a built-in preset slot.
+// The stored preset for Cursor remains "cursor" (tool id); the pill shows the
+// actual CLI users run ("cursor agent").
+func displayCommandPreset(cmd string) string {
+	if cmd == "cursor" {
+		return "cursor agent"
+	}
+	return cmd
+}
+
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "cursor"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -1823,6 +1833,8 @@ func (d *NewDialog) View() string {
 		displayName := cmd
 		if displayName == "" {
 			displayName = "shell"
+		} else {
+			displayName = displayCommandPreset(cmd)
 		}
 		// Prepend icon for custom tools
 		if icon := session.GetToolIcon(cmd); cmd != "" && icon != "" {

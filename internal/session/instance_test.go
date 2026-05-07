@@ -1647,6 +1647,34 @@ func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
 	}
 }
 
+func TestBuildCursorCommand(t *testing.T) {
+	inst := NewInstanceWithTool("c1", "/tmp/c1", "cursor")
+	inst.Command = ""
+	got := inst.buildCursorCommand(inst.Command, false)
+	if !strings.Contains(got, "cursor agent") {
+		t.Fatalf("fresh session: want cursor agent in command, got %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "--continue") {
+		t.Fatalf("fresh session: should not add --continue, got %q", got)
+	}
+
+	got = inst.buildCursorCommand("cursor agent", true)
+	if !strings.Contains(strings.ToLower(got), "--continue") {
+		t.Fatalf("restart: want --continue, got %q", got)
+	}
+
+	inst.Command = "cursor agent --continue"
+	got = inst.buildCursorCommand(inst.Command, true)
+	if strings.Count(strings.ToLower(got), "--continue") != 1 {
+		t.Fatalf("duplicate --continue: got %q", got)
+	}
+
+	inst.Tool = "shell"
+	if passthrough := inst.buildCursorCommand("echo hi", true); passthrough != "echo hi" {
+		t.Fatalf("non-cursor tool should passthrough, got %q", passthrough)
+	}
+}
+
 // writeFakeCodexRollout creates an empty rollout JSONL under
 // codexHome/sessions/YYYY/MM/DD/ matching the layout buildCodexCommand
 // globs against (Issue #756).

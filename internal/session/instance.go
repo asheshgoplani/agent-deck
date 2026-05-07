@@ -1189,6 +1189,27 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	return envPrefix + command + yoloFlag
 }
 
+// buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
+// continuePrev adds --continue so Restart resumes the previous chat in the workspace.
+// Env files from [shell].env_files are applied via buildEnvSourceCommand.
+func (i *Instance) buildCursorCommand(baseCommand string, continuePrev bool) string {
+	if i.Tool != "cursor" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" || strings.EqualFold(cmd, "cursor") {
+		cmd = "cursor agent"
+	}
+
+	out := envPrefix + cmd
+	if continuePrev && !strings.Contains(strings.ToLower(cmd), "--continue") {
+		out += " --continue"
+	}
+	return out
+}
+
 // codexRolloutExists reports whether Codex has flushed a rollout JSONL for
 // the given session ID under $CODEX_HOME/sessions. Used by buildCodexCommand
 // to gate `codex resume <sid>` on a real on-disk rollout file (Issue #756).
@@ -2479,6 +2500,8 @@ func (i *Instance) Start() error {
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "cursor":
+		command = i.buildCursorCommand(i.Command, false)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2651,6 +2674,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "cursor":
+		command = i.buildCursorCommand(i.Command, false)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4878,6 +4903,8 @@ func (i *Instance) Restart() error {
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
+		case i.Tool == "cursor":
+			command = i.buildCursorCommand(i.Command, true)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
