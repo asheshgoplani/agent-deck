@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,6 +22,15 @@ const (
 	controlPipeHandshakeTimeout = 4 * time.Second
 	controlPipeCommandTimeout   = 5 * time.Second
 	controlPipeRetryBackoff     = 150 * time.Millisecond
+
+	// controlPipeEOFExitGrace is how long Close() waits for the child
+	// `tmux -C` process to self-exit after stdin EOF before escalating to
+	// a signal-driven shutdown. Empirically, tmux 3.6a's `tmux -C` emits
+	// %exit and exits in 1-4ms after stdin closes, even under notification
+	// load and 50-way concurrent close. 200ms is ~50× the observed max —
+	// generous slack for scheduler jitter while still keeping shutdown
+	// snappy when a client is genuinely stuck.
+	controlPipeEOFExitGrace = 200 * time.Millisecond
 )
 
 // ControlPipe wraps a persistent `tmux -C attach-session -t <name>` process.
@@ -349,42 +359,78 @@ func (cp *ControlPipe) Done() <-chan struct{} {
 	return cp.done
 }
 
-// Close shuts down the control mode pipe and kills the process.
+// Close shuts down the control mode pipe.
 //
-// Teardown is staged: (1) close stdin so tmux's `tmux -C attach-session`
-// child sees EOF and can shut down on its own; (2) SIGTERM with a 500ms
-// grace via softKillProcessGroup so a healthy client tears down its
-// control-mode state cleanly before exit; (3) SIGKILL fallback for stuck
-// clients. SIGKILL'ing a live control client races tmux's notify path
-// and on macOS Homebrew tmux 3.6a (tmux/tmux#4980) crashes the entire
-// server — wiping every agent-deck session. The grace closes that race.
+// Teardown is staged: (1) close stdin so the `tmux -C attach-session`
+// child sees EOF and orderly-detaches via the control protocol's %exit
+// path; (2) wait up to controlPipeEOFExitGrace (200ms) for that to
+// complete — the vast majority of cases settle in 1-4ms; (3) only on
+// timeout, escalate to softKillProcessGroup (SIGTERM+grace, SIGKILL
+// fallback) for stuck or wedged clients.
+//
+// The previous implementation went straight from stdin.Close() to
+// softKillProcessGroup with no wait. Even the SIGTERM-with-grace form
+// races tmux's server-side control_notify_client_detached walk
+// (tmux/tmux#4980, present in macOS Homebrew tmux 3.6a) — the bug is
+// server-side, so any signal-driven detach can trigger it. Letting the
+// child self-exit on EOF goes through the protocol's orderly-detach
+// codepath instead, which empirically does not trigger the crash.
+// See ~/.claude/scratchpad/agent-deck/tmux-issues/PLAN.md "Empirical
+// validation" for the measurements.
 func (cp *ControlPipe) Close() {
 	cp.closeOnce.Do(func() {
 		cp.mu.Lock()
 		cp.alive = false
 		cp.mu.Unlock()
 
-		// Close stdin first (tells tmux to disconnect)
+		// Stage 1: stdin EOF triggers tmux's orderly-detach %exit path.
 		cp.stdin.Close()
 
-		// Reap the process group with SIGTERM+grace→SIGKILL escalation.
-		// Process-group kill (negative pgid) is preserved from the
-		// original Close() so any helpers tmux spawned are reaped too.
-		if cp.cmd.Process != nil {
-			pgid, err := syscall.Getpgid(cp.cmd.Process.Pid)
-			if err == nil {
-				_ = softKillProcessGroup(pgid, controlClientKillGrace)
-			} else {
-				// Pgid lookup failed (process already exited) — fall
-				// back to single-pid soft-kill.
-				_ = softKillProcess(cp.cmd.Process.Pid, controlClientKillGrace)
-			}
-		}
-
-		// Wait for the process to exit (prevents zombies). Routed through
-		// reap() so reader() and Close() cannot double-Wait (#677).
-		cp.reap()
+		// Stage 2 (fast path) and Stage 3 (signal escalation fallback).
+		// reapWithEOFGrace runs cp.reap() in a goroutine so we get a
+		// timeout, while still routing the underlying cmd.Wait() through
+		// the waitOnce gate that protects against a concurrent Wait from
+		// reader() (#677).
+		_ = reapWithEOFGrace(cp.reap, cp.cmd.Process, controlPipeEOFExitGrace, controlClientKillGrace)
 
 		pipeLog.Debug("pipe_closed", slog.String("session", cp.sessionName))
 	})
+}
+
+// reapWithEOFGrace runs reap in a goroutine and waits up to eofGrace for
+// it to complete. If reap doesn't return in time, it falls back to
+// soft-killing the process group (or single pid if pgid lookup fails).
+//
+// The expected fast path: caller closes stdin first, the child detects
+// EOF and exits, reap returns within a few milliseconds. The fallback
+// exists for genuinely stuck or wedged children that don't act on EOF.
+//
+// Returns true if the signal-driven fallback was used.
+//
+// reap is a function (rather than a *exec.Cmd) so callers can route the
+// underlying cmd.Wait through their own once-guard — the production
+// caller (ControlPipe.Close) needs this to coordinate with reader()'s
+// concurrent reap (#677); the test caller passes a plain wrapper.
+func reapWithEOFGrace(reap func(), proc *os.Process, eofGrace, killGrace time.Duration) (usedFallback bool) {
+	reapDone := make(chan struct{})
+	go func() {
+		reap()
+		close(reapDone)
+	}()
+	select {
+	case <-reapDone:
+		return false
+	case <-time.After(eofGrace):
+	}
+	if proc != nil {
+		if pgid, err := syscall.Getpgid(proc.Pid); err == nil {
+			_ = softKillProcessGroup(pgid, killGrace)
+		} else {
+			// Pgid lookup failed (process already exited or not a group
+			// leader) — fall back to single-pid soft-kill.
+			_ = softKillProcess(proc.Pid, killGrace)
+		}
+	}
+	<-reapDone
+	return true
 }

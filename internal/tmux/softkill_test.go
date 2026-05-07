@@ -2,10 +2,12 @@ package tmux
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runSoftkillHelper implements two child-process behaviours selected by env.
+// runSoftkillHelper implements child-process behaviours selected by env.
 // Dispatched from testmain_test.go's TestMain when SOFTKILL_TEST_HELPER is
 // set. We cannot rely on /bin/sh traps because dash/bash on Linux delay trap
 // dispatch until the foreground `sleep` returns — SIGTERM-while-sleeping is
@@ -23,6 +25,9 @@ import (
 //   - "clean": on SIGTERM, touch $MARKER then exit 0 (must run in < grace).
 //   - "ignore": install a no-op handler for SIGTERM so it is ignored, then
 //     block forever. Parent must fall back to SIGKILL.
+//   - "eof_clean": exit 0 on stdin EOF. If SIGTERM arrives first, write
+//     $ANTIMARKER and exit 1 (proves the parent took the signal-driven
+//     path when it should have taken the EOF path).
 func runSoftkillHelper(role string) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGTERM)
@@ -40,6 +45,26 @@ func runSoftkillHelper(role string) {
 			}
 		}()
 		select {} // block forever
+	case "eof_clean":
+		// SIGTERM should not arrive on the happy path; if it does,
+		// flag the regression.
+		go func() {
+			<-ch
+			if anti := os.Getenv("ANTIMARKER"); anti != "" {
+				_ = os.WriteFile(anti, []byte("term"), 0o644)
+			}
+			os.Exit(1)
+		}()
+		buf := make([]byte, 1024)
+		for {
+			_, err := os.Stdin.Read(buf)
+			if errors.Is(err, io.EOF) {
+				os.Exit(0)
+			}
+			if err != nil {
+				os.Exit(2)
+			}
+		}
 	default:
 		os.Exit(2)
 	}
@@ -306,6 +331,136 @@ func TestControlPipeClose_FallsBackToSIGKILL(t *testing.T) {
 
 	err = syscall.Kill(pid, 0)
 	assert.True(t, errors.Is(err, syscall.ESRCH), "child process should be dead after SIGKILL; got err=%v", err)
+}
+
+// spawnHelperWithStdinPipe is like spawnHelperInOwnGroup but additionally
+// connects an os.Pipe to the child's stdin and returns the writable end
+// so the test can close it to deliver EOF to the helper. Used by
+// reapWithEOFGrace tests where the production code's contract is "close
+// stdin and wait."
+func spawnHelperWithStdinPipe(t *testing.T, role string, extraEnv ...string) (*exec.Cmd, io.WriteCloser) {
+	t.Helper()
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.Command(exe, "-test.run=^$")
+	env := append(os.Environ(), "SOFTKILL_TEST_HELPER="+role)
+	env = append(env, extraEnv...)
+	cmd.Env = env
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	return cmd, stdin
+}
+
+// TestReapWithEOFGrace_FastPathOnEOF asserts that when the child exits
+// cleanly on stdin EOF, reapWithEOFGrace returns usedFallback=false and
+// does NOT send any signal to the child. Antimarker absence is the
+// conclusive evidence — its presence would mean SIGTERM was delivered.
+//
+// This is the core regression guard for the controlpipe.go EOF-clean
+// shutdown fix: the whole point is to avoid signaling the child when
+// stdin EOF is sufficient (it is, in 1-4ms — see PLAN.md "Empirical
+// validation").
+func TestReapWithEOFGrace_FastPathOnEOF(t *testing.T) {
+	tmpDir := t.TempDir()
+	antiMarker := filepath.Join(tmpDir, "term-fired")
+
+	cmd, stdin := spawnHelperWithStdinPipe(t, "eof_clean", "ANTIMARKER="+antiMarker)
+	pid := cmd.Process.Pid
+	waitForPidAlive(pid, 1*time.Second)
+
+	// Mirror production: caller closes stdin, then reapWithEOFGrace runs
+	// reap (cmd.Wait wrapped) with a timeout.
+	require.NoError(t, stdin.Close())
+
+	once := sync.Once{}
+	reap := func() {
+		once.Do(func() {
+			_, _ = cmd.Process.Wait()
+		})
+	}
+
+	// Generous eofGrace so race-instrumented children have time to exit
+	// (the production setting of 200ms is sized against non-instrumented
+	// tmux which exits in 1-4ms; under -race the same Go child easily
+	// takes >200ms). The assertion that matters is usedFallback=false +
+	// antimarker-absence, not strict timing — those prove the EOF path
+	// completed without a signal.
+	usedFallback := reapWithEOFGrace(reap, cmd.Process, 5*time.Second, 500*time.Millisecond)
+
+	assert.False(t, usedFallback, "EOF-clean child must not trigger signal-driven fallback")
+
+	_, err := os.Stat(antiMarker)
+	assert.True(t, errors.Is(err, os.ErrNotExist),
+		"antimarker must not exist — its existence proves SIGTERM was delivered (regression: code went down the signal path)")
+}
+
+// TestReapWithEOFGrace_FallbackOnHungChild asserts that when the child
+// ignores stdin EOF AND ignores SIGTERM, reapWithEOFGrace escalates all
+// the way to SIGKILL and returns usedFallback=true. This guarantees a
+// stuck client cannot linger indefinitely — preserves the safety
+// guarantee the original SIGKILL provided, while keeping the fast path
+// signal-free.
+func TestReapWithEOFGrace_FallbackOnHungChild(t *testing.T) {
+	// "ignore" helper: ignores SIGTERM and never reads stdin. EOF won't
+	// reach it (it's not reading); SIGTERM is drained; only SIGKILL ends
+	// it. The exact fallback worst case.
+	cmd := spawnHelperInOwnGroup(t, "ignore")
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
+	require.NoError(t, err)
+	require.Equal(t, pid, pgid, "child must be its own pgroup leader")
+
+	waitForPidAlive(pid, 1*time.Second)
+
+	once := sync.Once{}
+	reap := func() {
+		once.Do(func() {
+			_, _ = cmd.Process.Wait()
+		})
+	}
+
+	start := time.Now()
+	// Short eofGrace so the test runs fast; killGrace controls SIGTERM→SIGKILL.
+	usedFallback := reapWithEOFGrace(reap, cmd.Process, 50*time.Millisecond, 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	assert.True(t, usedFallback, "hung child must trigger signal-driven fallback")
+	// Worst case: 50ms eofGrace + 200ms killGrace + scheduler slack.
+	assert.Less(t, elapsed, 1*time.Second,
+		"reapWithEOFGrace must return promptly after fallback (got %v)", elapsed)
+
+	err = syscall.Kill(pid, 0)
+	assert.True(t, errors.Is(err, syscall.ESRCH),
+		"child must be fully reaped after fallback; got err=%v", err)
+}
+
+// TestReapWithEOFGrace_AlreadyDeadIsNoop asserts that calling
+// reapWithEOFGrace on a child that has already exited returns
+// usedFallback=false and does not panic — covers the race where the
+// child wins the EOF/signal race before reapWithEOFGrace even starts.
+func TestReapWithEOFGrace_AlreadyDeadIsNoop(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	proc := cmd.Process
+
+	// Already-reaped: the once-guarded reap completes instantly.
+	once := sync.Once{}
+	reaped := false
+	reap := func() {
+		once.Do(func() {
+			_, _ = proc.Wait()
+			reaped = true
+		})
+	}
+
+	usedFallback := reapWithEOFGrace(reap, proc, 100*time.Millisecond, 100*time.Millisecond)
+	assert.False(t, usedFallback, "already-exiting child should not trigger fallback")
+	assert.True(t, reaped, "reap function must have been called")
 }
 
 // TestSoftKillProcessGroup_AlreadyDeadIsNoop asserts that calling
