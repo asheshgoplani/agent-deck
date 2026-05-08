@@ -63,8 +63,9 @@ internal/web/static/.brute-tw.src.css
 __pycache__/
 *.pyc
 
-# Claude harness lock (per-session, never committed)
+# Claude harness (per-session state, never committed)
 .claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Internal planning / scratch (design docs, phase plans) — private to maintainer host
 .planning/
