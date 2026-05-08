@@ -50,13 +50,13 @@ func TestKillStaleControlClients_BurstDoesNotCrashServer(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: real tmux required, takes seconds")
 	}
-	// Gated: 100 trials × 10 clients × 100 ms settle ≈ 4 min on macOS, and
-	// the test was empirically a smoke check (0/100 baseline 2026-05-08,
-	// 0/400 prior closeGate-path baseline 2026-05-07) — useful as on-demand
-	// validation harness for the closeGate fix, not as a default-path
-	// regression check. See PLAN.md P0''-companion notes.
+	// Gated: 100 trials × 10 clients × 100 ms settle ≈ 4 min on macOS,
+	// and at every closeGate cadence tested so far the harness produces
+	// 0 crashes — the orphan-PID SIGTERM-burst path needs server-aging
+	// state that a per-trial fresh server can't reach. Kept on-demand
+	// rather than on the default test path.
 	if os.Getenv("AGENT_DECK_BURST_TEST") == "" {
-		t.Skip("integration: set AGENT_DECK_BURST_TEST=1 to run; see PLAN.md")
+		t.Skip("integration: set AGENT_DECK_BURST_TEST=1 to run")
 	}
 
 	trials := envInt("SIGTERM_BURST_TRIALS", 100)

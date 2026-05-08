@@ -20,9 +20,6 @@ import (
 // %client-detached notifications — back-to-back detaches let the iteration
 // hit a freed-but-still-listed client.
 //
-// See ~/.claude/scratchpad/agent-deck/tmux-issues/PLAN.md section P0'' for
-// the full diagnosis.
-//
 // Method:
 //  1. Spawn N tmux sessions, each running a small notification-load script
 //     (windowing operations + steady output) so the server's notify-walk
@@ -53,11 +50,15 @@ func TestPipeManager_BurstClose_DoesNotCrashServer(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration: real tmux required, takes seconds")
 	}
-	// Gated: empirically a smoke check (0/400 trials across configs
-	// 2026-05-07) — fresh isolated server can't reach the freed-but-listed
-	// timing window. Kept as on-demand closeGate-fix validation harness.
+	// Gated: at the un-gated production default (closeGateStagger=0)
+	// this harness produces 0 crashes — a fresh isolated server can't
+	// reach the freed-but-still-listed timing window without server-
+	// aging state. The harness reproduces reliably (~14 % at
+	// stagger=15ms) when AGENT_DECK_CLOSE_STAGGER_MS is set into the
+	// danger band, which is why it's kept in tree as a regression-
+	// against-mistakes canary, not run on the default test path.
 	if os.Getenv("AGENT_DECK_BURST_TEST") == "" {
-		t.Skip("integration: set AGENT_DECK_BURST_TEST=1 to run; see PLAN.md")
+		t.Skip("integration: set AGENT_DECK_BURST_TEST=1 to run")
 	}
 
 	trials := envInt("BURST_CLOSE_TRIALS", 100)

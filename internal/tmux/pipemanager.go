@@ -452,9 +452,13 @@ func killStaleControlClients(sessionName, socketName string) {
 	}
 
 	// Track burst stats so production logs surface how often this function
-	// fires N>0 SIGTERMs across parallel Connect() calls. Crash 2 on
-	// 2026-05-08 10:32:17 was 5 SIGTERMs in 11 ms across 3 concurrent
-	// Connect()s — see PLAN.md P0''.
+	// fires N>0 SIGTERMs across parallel Connect() calls. The cascade
+	// pattern (multiple SIGTERMs within tens of milliseconds, across
+	// concurrent Connect() goroutines) is the trigger shape for
+	// tmux/tmux#4980's server-side use-after-free in
+	// control_notify_client_detached. The Debug-level
+	// killed_stale_control_client log emits per-PID; this Info line
+	// surfaces the cascade as a single observable event.
 	burstStart := time.Now()
 	killCount := 0
 
@@ -505,13 +509,15 @@ const controlClientKillGrace = 500 * time.Millisecond
 // triggers (stdin EOF on a ControlPipe; SIGTERM on an orphan tmux -C
 // client). Defaults to 0 — gate disabled in production.
 //
-// The 2026-05-08 parameter sweep (PLAN.md §closeGate dose-response)
-// showed the freed-but-still-listed race in tmux/tmux#4980 has an
-// empirical window of ~5-100 ms: any client-side stagger inside that
-// window INCREASES crash rate (peaked at ~18 % at 50 ms vs. 0 %
-// un-gated) by spacing each detach into the previous one's notify-walk
-// drain window. Both 0 ms and >= 200 ms are safe in our harness; 0 ms
-// also matches HEAD behavior, so prod ships un-gated.
+// Empirical parameter sweep on the burst regression harness in this
+// package (TestPipeManager_BurstClose_DoesNotCrashServer at varying
+// AGENT_DECK_CLOSE_STAGGER_MS values) showed the freed-but-still-listed
+// race in tmux/tmux#4980 has an empirical window of ~5-100 ms: any
+// client-side stagger inside that window INCREASES crash rate
+// (peaked at ~18 % at 50 ms vs. 0 % un-gated) by spacing each detach
+// into the previous one's notify-walk drain window. Both 0 ms and
+// >= 200 ms are safe in the harness; 0 ms also matches the un-gated
+// production default.
 //
 // The knob is retained so the burst regression tests
 // (AGENT_DECK_BURST_TEST=1) can opt into the in-window cadence to

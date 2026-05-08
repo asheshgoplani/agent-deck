@@ -10,8 +10,9 @@ import (
 // TestTriggerCloseGated_SerializesWithStagger pins the closeGate primitive's
 // behavior: N concurrent triggerCloseGated calls must record their trigger
 // times >= closeGateStagger apart (modulo a small scheduler-jitter slack).
-// The whole point of the gate is to keep server-side detach triggers from
-// stacking inside tmux's notify-walk drain window — see PLAN.md P0''.
+// The gate's purpose is to keep server-side detach triggers from stacking
+// inside tmux's notify-walk drain window (the freed-but-still-listed race
+// in tmux/tmux#4980).
 //
 // This is a unit test for the gating primitive only; the integration shape
 // (gated burst doesn't crash a real tmux server) is exercised by the
