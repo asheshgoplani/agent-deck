@@ -451,6 +451,13 @@ func killStaleControlClients(sessionName, socketName string) {
 		return // session may not exist or no clients attached
 	}
 
+	// Track burst stats so production logs surface how often this function
+	// fires N>0 SIGTERMs across parallel Connect() calls. Crash 2 on
+	// 2026-05-08 10:32:17 was 5 SIGTERMs in 11 ms across 3 concurrent
+	// Connect()s — see PLAN.md P0''.
+	burstStart := time.Now()
+	killCount := 0
+
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
@@ -474,10 +481,18 @@ func killStaleControlClients(sessionName, socketName string) {
 		// lets the client drain and exit cleanly; SIGKILL is retained as a
 		// 500ms fallback for clients that ignore TERM.
 		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
+		killCount++
 		pipeLog.Debug("killed_stale_control_client",
 			slog.String("session", sessionName),
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
+	}
+
+	if killCount > 0 {
+		pipeLog.Info("stale_control_clients_swept",
+			slog.String("session", sessionName),
+			slog.Int("kill_count", killCount),
+			slog.Duration("duration", time.Since(burstStart)))
 	}
 }
 
