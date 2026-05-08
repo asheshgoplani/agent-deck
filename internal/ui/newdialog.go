@@ -1187,6 +1187,19 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if d.multiRepoEditing {
 				return d, nil
 			}
+			// Issue #896 (problem 1): don't advance focus from a non-empty path
+			// that doesn't point to an existing directory. Tab should stick to
+			// the input until the user has a usable path; otherwise it silently
+			// jumps to the agent selector and the typed path is left dangling.
+			if isPathEditing {
+				v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+				if v != "" {
+					expanded := session.ExpandPath(v)
+					if info, err := os.Stat(expanded); err != nil || !info.IsDir() {
+						return d, nil
+					}
+				}
+			}
 			// Move to next field.
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
@@ -1223,6 +1236,28 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathSuggestionCursor = len(d.pathSuggestions)
 				}
 				d.suggestionNavigated = true
+				return d, nil
+			}
+
+		case "ctrl+w":
+			// Path-aware backward word delete: stop at '/', not just whitespace.
+			// Default bubbles textinput behaviour wipes the entire field for
+			// path values that contain no spaces. Issue #896.
+			switch {
+			case cur == focusPath || (cur == focusMultiRepo && d.multiRepoEditing):
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+				deleteWordBackwardPath(&d.pathInput)
+				d.suggestionNavigated = false
+				d.suggestionsActive = false
+				d.suggestionsHidden = false
+				d.pathSuggestionCursor = 0
+				d.pathCycler.Reset()
+				d.filterPathSuggestions()
+				return d, nil
+			case cur == focusBranch:
+				deleteWordBackwardPath(&d.branchInput)
+				d.branchAutoSet = false
 				return d, nil
 			}
 
