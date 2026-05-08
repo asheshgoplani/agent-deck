@@ -501,14 +501,77 @@ func killStaleControlClients(sessionName, socketName string) {
 // times for `tmux -C attach-session` on macOS + Linux.
 const controlClientKillGrace = 500 * time.Millisecond
 
+// closeGateStagger is the minimum spacing between server-side detach
+// triggers (stdin EOF on a ControlPipe; SIGTERM on an orphan tmux -C
+// client). Defaults to 0 — gate disabled in production.
+//
+// The 2026-05-08 parameter sweep (PLAN.md §closeGate dose-response)
+// showed the freed-but-still-listed race in tmux/tmux#4980 has an
+// empirical window of ~5-100 ms: any client-side stagger inside that
+// window INCREASES crash rate (peaked at ~18 % at 50 ms vs. 0 %
+// un-gated) by spacing each detach into the previous one's notify-walk
+// drain window. Both 0 ms and >= 200 ms are safe in our harness; 0 ms
+// also matches HEAD behavior, so prod ships un-gated.
+//
+// The knob is retained so the burst regression tests
+// (AGENT_DECK_BURST_TEST=1) can opt into the in-window cadence to
+// reliably trigger the bug, giving us a regression-against-mistakes
+// canary: any future code path that introduces an inadvertent 5-100 ms
+// close cadence will be caught by re-running the harness at the cadence
+// in question. Override via AGENT_DECK_CLOSE_STAGGER_MS.
+var closeGateStagger = func() time.Duration {
+	if s := os.Getenv("AGENT_DECK_CLOSE_STAGGER_MS"); s != "" {
+		var ms int
+		if _, err := fmt.Sscanf(s, "%d", &ms); err == nil && ms >= 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return 0
+}()
+
+// closeGateMu serializes server-side detach triggers across every Close
+// path in this process. Held only for the trigger syscall plus
+// closeGateStagger — never for the EOF-wait or SIGKILL-poll phases, so
+// per-close latency stays bounded by the underlying grace, not by
+// N × stagger. Process-global because there is one tmux server per
+// socket and one PipeManager per agent-deck process: the gate
+// corresponds to "this server's notify-walk drain budget" regardless
+// of which goroutine triggered the detach.
+var closeGateMu sync.Mutex
+
+// triggerCloseGated invokes trigger under closeGateMu and sleeps
+// closeGateStagger before unlocking. trigger MUST be the call that
+// initiates the server-side detach (cp.stdin.Close, syscall.Kill
+// SIGTERM); the reap / poll-for-exit phase MUST run outside this gate
+// so per-close latency stays bounded by the underlying grace, not
+// N × stagger. A zero closeGateStagger short-circuits to a direct
+// trigger() call — production default, identical to the un-gated
+// path that shipped pre-2026-05-08.
+func triggerCloseGated(trigger func()) {
+	if closeGateStagger == 0 {
+		trigger()
+		return
+	}
+	closeGateMu.Lock()
+	defer closeGateMu.Unlock()
+	trigger()
+	time.Sleep(closeGateStagger)
+}
+
 // softKillProcess sends SIGTERM to pid, polls every 25ms up to grace for the
 // process to exit, and escalates to SIGKILL if it doesn't. Returns true iff
 // SIGKILL was ultimately used. A non-existent pid (ESRCH) is treated as
 // already-dead and returns false without escalation.
 func softKillProcess(pid int, grace time.Duration) bool {
-	// Initial SIGTERM. If the process is already gone, we're done.
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
+	// Initial SIGTERM, routed through closeGate so burst-regression
+	// tests can opt into a freed-but-still-listed cadence via
+	// AGENT_DECK_CLOSE_STAGGER_MS. The gate is a no-op at stagger=0 (the
+	// production default), so this call is identical to a bare
+	// syscall.Kill in shipped builds.
+	var sigtermErr error
+	triggerCloseGated(func() { sigtermErr = syscall.Kill(pid, syscall.SIGTERM) })
+	if sigtermErr != nil {
+		if errors.Is(sigtermErr, syscall.ESRCH) {
 			return false
 		}
 		// Permission or other error — try SIGKILL as last resort.

@@ -384,7 +384,13 @@ func (cp *ControlPipe) Close() {
 		cp.mu.Unlock()
 
 		// Stage 1: stdin EOF triggers tmux's orderly-detach %exit path.
-		cp.stdin.Close()
+		// Routed through the closeGate primitive so the burst regression
+		// harness (AGENT_DECK_BURST_TEST=1, AGENT_DECK_CLOSE_STAGGER_MS) can
+		// opt into a cadence inside tmux/tmux#4980's freed-but-still-listed
+		// window to trigger the bug deterministically. Production default
+		// is stagger=0, which short-circuits triggerCloseGated to a direct
+		// call — no behavior change vs. a bare cp.stdin.Close().
+		triggerCloseGated(func() { cp.stdin.Close() })
 
 		// Stage 2 (fast path) and Stage 3 (signal escalation fallback).
 		// reapWithEOFGrace runs cp.reap() in a goroutine so we get a
