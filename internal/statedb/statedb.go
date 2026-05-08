@@ -13,8 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	_ "modernc.org/sqlite"
 )
+
+var statedbLog = logging.ForComponent(logging.CompStorage)
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
@@ -714,15 +717,21 @@ func (s *StateDB) DeleteGroup(path string) error {
 // --- Status + Acknowledgment ---
 
 // WriteStatus updates the status and tool for an instance.
+// Retries on SQLITE_BUSY: the transition daemon writes status from a
+// hot loop concurrent with SaveInstances' large DELETE+INSERT batch;
+// without retry, BUSY surfaces immediately and updates are silently
+// lost (#755 family). See critical-hunt audit #5.
 func (s *StateDB) WriteStatus(id, status, tool string) error {
-	_, err := s.db.Exec(
-		`UPDATE instances
-		 SET status = ?, tool = ?,
-		     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
-		 WHERE id = ?`,
-		status, tool, status, id,
-	)
-	return err
+	return withBusyRetry("WriteStatus", func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			 SET status = ?, tool = ?,
+			     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			 WHERE id = ?`,
+			status, tool, status, id,
+		)
+		return err
+	})
 }
 
 // ReadAllStatuses returns status + acknowledged flag for every instance.
@@ -1065,29 +1074,30 @@ func (s *StateDB) LoadWatchers() ([]*WatcherRow, error) {
 func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedTo, sessionID string, maxEvents int) (bool, error) {
 	// Retry on SQLITE_BUSY: concurrent INSERTs across connections can trip the
 	// write lock even with WAL + busy_timeout if the driver surfaces BUSY
-	// before the backoff completes. Retries are cheap because the operation
-	// is idempotent (INSERT OR IGNORE).
+	// before the backoff completes. INSERT OR IGNORE is idempotent so retry
+	// is safe.
 	var result sql.Result
-	var err error
-	for attempt := 0; attempt < 5; attempt++ {
-		result, err = s.db.Exec(`
+	err := withBusyRetry("SaveWatcherEvent", func() error {
+		var execErr error
+		result, execErr = s.db.Exec(`
 			INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`, watcherID, dedupKey, sender, subject, routedTo, sessionID, time.Now().Unix())
-		if err == nil {
-			break
-		}
-		if !isSQLiteBusy(err) {
-			return false, err
-		}
-		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
-	}
+		return execErr
+	})
 	if err != nil {
 		return false, err
 	}
 	n, _ := result.RowsAffected()
 	if n > 0 {
-		_ = s.pruneWatcherEvents(watcherID, maxEvents)
+		if err := s.pruneWatcherEvents(watcherID, maxEvents); err != nil {
+			// Surface (don't swallow): an unrecoverable prune failure means
+			// watcher_events grows unbounded. The helper already logged
+			// ERROR; propagate so the caller's metric / alerting path sees
+			// it. The insert itself succeeded — return inserted=true.
+			statedbLog.Warn("watcher_events_prune_after_insert_failed",
+				"watcher_id", watcherID, "err", err.Error())
+		}
 	}
 	return n > 0, nil
 }
@@ -1100,6 +1110,48 @@ func isSQLiteBusy(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "sqlite_busy") || strings.Contains(msg, "database is locked")
+}
+
+// withBusyRetry runs op up to busyRetryAttempts times, retrying only on
+// SQLITE_BUSY / "database is locked" transient errors with linear backoff
+// (10/20/30/40/50ms). Any other error is returned immediately.
+//
+// Logs WARN once on the first BUSY retry (so a single transient blip is
+// visible) and ERROR if all attempts are exhausted (so contention storms
+// are diagnosable). name should be a short op label like "WriteStatus".
+//
+// Lifted from the inline pattern in SaveWatcherEvent so its three sister
+// writers (UpdateWatcherEventRoutedTo, pruneWatcherEvents, WriteStatus)
+// stop drifting. See critical-hunt audit #5/#6/#7.
+const busyRetryAttempts = 5
+
+func withBusyRetry(name string, op func() error) error {
+	var err error
+	warned := false
+	for attempt := range busyRetryAttempts {
+		err = op()
+		if err == nil {
+			return nil
+		}
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if !warned {
+			statedbLog.Warn("sqlite_busy_retry",
+				"op", name,
+				"attempt", attempt+1,
+				"err", err.Error(),
+			)
+			warned = true
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
+	statedbLog.Error("sqlite_busy_giveup",
+		"op", name,
+		"attempts", busyRetryAttempts,
+		"err", err.Error(),
+	)
+	return err
 }
 
 // LookupWatcherEventSessionByDedupKey queries the session_id for a specific event.
@@ -1137,10 +1189,18 @@ func (s *StateDB) UpdateWatcherEventSessionID(watcherID, dedupKey, sessionID str
 // for the row matching (watcher_id, dedup_key). Returns a wrapped error if no row matches
 // (0 rows affected), allowing the caller to distinguish "update OK" from "event not found".
 func (s *StateDB) UpdateWatcherEventRoutedTo(watcherID, dedupKey, routedTo, triageSessionID string) error {
-	res, err := s.db.Exec(
-		`UPDATE watcher_events SET routed_to = ?, triage_session_id = ? WHERE watcher_id = ? AND dedup_key = ?`,
-		routedTo, triageSessionID, watcherID, dedupKey,
-	)
+	// Retry on SQLITE_BUSY to match SaveWatcherEvent. Without this, the
+	// triage reaper (4 callers) silently drops routing UPDATEs under
+	// contention. UPDATE on a (watcher_id, dedup_key) row is idempotent.
+	var res sql.Result
+	err := withBusyRetry("UpdateWatcherEventRoutedTo", func() error {
+		var execErr error
+		res, execErr = s.db.Exec(
+			`UPDATE watcher_events SET routed_to = ?, triage_session_id = ? WHERE watcher_id = ? AND dedup_key = ?`,
+			routedTo, triageSessionID, watcherID, dedupKey,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("statedb: update routed_to: %w", err)
 	}
@@ -1152,14 +1212,19 @@ func (s *StateDB) UpdateWatcherEventRoutedTo(watcherID, dedupKey, routedTo, tria
 }
 
 // pruneWatcherEvents keeps only the newest maxCount events for a watcher.
+// Retries on SQLITE_BUSY so a contention-induced miss doesn't permanently
+// leave the table over capacity (per critical-hunt audit #7: an
+// unbounded watcher_events row count was the failure mode).
 func (s *StateDB) pruneWatcherEvents(watcherID string, maxCount int) error {
-	_, err := s.db.Exec(`
-		DELETE FROM watcher_events WHERE watcher_id = ? AND id NOT IN (
-			SELECT id FROM watcher_events WHERE watcher_id = ?
-			ORDER BY id DESC LIMIT ?
-		)
-	`, watcherID, watcherID, maxCount)
-	return err
+	return withBusyRetry("pruneWatcherEvents", func() error {
+		_, err := s.db.Exec(`
+			DELETE FROM watcher_events WHERE watcher_id = ? AND id NOT IN (
+				SELECT id FROM watcher_events WHERE watcher_id = ?
+				ORDER BY id DESC LIMIT ?
+			)
+		`, watcherID, watcherID, maxCount)
+		return err
+	})
 }
 
 // LoadWatcherByName returns the watcher with the given name, or nil if not found.
