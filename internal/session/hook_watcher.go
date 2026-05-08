@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -125,9 +126,92 @@ func (w *StatusFileWatcher) Start() {
 			if !ok {
 				return
 			}
+			if isOverflowError(err) {
+				w.handleOverflow(err)
+				continue
+			}
 			hookLog.Warn("hook_watcher_error", slog.String("error", err.Error()))
 		}
 	}
+}
+
+// isOverflowError reports whether err is (or wraps) fsnotify.ErrEventOverflow.
+func isOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, fsnotify.ErrEventOverflow)
+}
+
+// handleOverflow recovers from an inotify queue overflow by re-walking the
+// hooks directory from disk and atomically replacing the in-memory status
+// map. After overflow, individual file events were dropped, so the in-memory
+// map can be arbitrarily out of sync with disk; a full re-scan is the only
+// reliable recovery.
+func (w *StatusFileWatcher) handleOverflow(err error) {
+	hookLog.Warn("hook_watcher_overflow_resync",
+		slog.String("dir", w.hooksDir),
+		slog.String("error", errString(err)),
+	)
+
+	rebuilt := w.scanDisk()
+
+	w.mu.Lock()
+	w.statuses = rebuilt
+	w.mu.Unlock()
+
+	if w.onChange != nil {
+		w.onChange()
+	}
+}
+
+// scanDisk reads every .json hook status file in hooksDir and returns a
+// fresh map. Errors on individual files are skipped (they're either
+// mid-write or corrupt; the next event will retry).
+func (w *StatusFileWatcher) scanDisk() map[string]*HookStatus {
+	out := make(map[string]*HookStatus)
+	entries, err := os.ReadDir(w.hooksDir)
+	if err != nil {
+		hookLog.Warn("hook_watcher_scan_read_dir_failed",
+			slog.String("dir", w.hooksDir),
+			slog.String("error", err.Error()),
+		)
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(w.hooksDir, entry.Name())
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
+		var raw struct {
+			Status    string `json:"status"`
+			SessionID string `json:"session_id"`
+			Event     string `json:"event"`
+			Timestamp int64  `json:"ts"`
+		}
+		if uerr := json.Unmarshal(data, &raw); uerr != nil {
+			continue
+		}
+		instanceID := strings.TrimSuffix(entry.Name(), ".json")
+		out[instanceID] = &HookStatus{
+			Status:    raw.Status,
+			SessionID: raw.SessionID,
+			Event:     raw.Event,
+			UpdatedAt: time.Unix(raw.Timestamp, 0),
+		}
+	}
+	return out
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Stop shuts down the watcher.

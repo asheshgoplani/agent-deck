@@ -2943,6 +2943,9 @@ func (h *Home) backgroundStatusUpdate() {
 					slog.String("old", string(oldStatus)),
 					slog.String("new", string(newStatus)),
 				)
+				// T1+T3: synthesize a flicker_detected WARN if this session
+				// has oscillated >3 times within 60s. One alert per burst.
+				session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
 			}
 			return nil
 		})
