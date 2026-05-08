@@ -452,9 +452,13 @@ func killStaleControlClients(sessionName, socketName string) {
 	}
 
 	// Track burst stats so production logs surface how often this function
-	// fires N>0 SIGTERMs across parallel Connect() calls. Crash 2 on
-	// 2026-05-08 10:32:17 was 5 SIGTERMs in 11 ms across 3 concurrent
-	// Connect()s — see PLAN.md P0''.
+	// fires N>0 SIGTERMs across parallel Connect() calls. The cascade
+	// pattern (multiple SIGTERMs within tens of milliseconds, across
+	// concurrent Connect() goroutines) is the trigger shape for
+	// tmux/tmux#4980's server-side use-after-free in
+	// control_notify_client_detached. The Debug-level
+	// killed_stale_control_client log emits per-PID; this Info line
+	// surfaces the cascade as a single observable event.
 	burstStart := time.Now()
 	killCount := 0
 
