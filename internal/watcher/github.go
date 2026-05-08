@@ -14,7 +14,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
+
+var githubLog = logging.ForComponent(logging.CompWatcher)
 
 // GitHubAdapter implements WatcherAdapter by running an HTTP server that accepts
 // POST requests on /github and verifies X-Hub-Signature-256 HMAC-SHA256 signatures
@@ -147,7 +151,19 @@ func (a *GitHubAdapter) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize the GitHub event
 	eventType := r.Header.Get("X-GitHub-Event")
-	evt := normalizeGitHubEvent(eventType, body)
+	evt, err := normalizeGitHubEvent(eventType, body)
+	if err != nil {
+		// Drop the event rather than emit a zero-valued one. Emitting a
+		// zero `Sender`/`Subject` would feed dedup + routing on garbage
+		// values and silently misroute. The 202 was already sent so the
+		// HTTP-protocol contract is preserved.
+		githubLog.Warn("github_payload_unmarshal_failed",
+			"event_type", eventType,
+			"err", err.Error(),
+			"body_bytes", len(body),
+		)
+		return
+	}
 
 	// Non-blocking send (drop event if channel full)
 	a.mu.RLock()
@@ -182,7 +198,12 @@ func verifyGitHubSignature(secret, signature string, body []byte) bool {
 // normalizeGitHubEvent converts a GitHub webhook payload into a normalized Event.
 // Supported event types: issues, pull_request, push. Unknown types produce a
 // generic event per D-14.
-func normalizeGitHubEvent(eventType string, body []byte) Event {
+//
+// Returns an error when the payload fails to unmarshal. Before the fix, the
+// four normalizers all swallowed the unmarshal error and proceeded to emit an
+// Event with zero `Sender`/`Subject`/`Ref`, which the downstream router used
+// for dedup + routing — silently misroute or drop. See critical-hunt audit #1.
+func normalizeGitHubEvent(eventType string, body []byte) (Event, error) {
 	switch eventType {
 	case "issues":
 		return normalizeIssuesEvent(body)
@@ -252,9 +273,11 @@ type ghGenericPayload struct {
 	} `json:"repository"`
 }
 
-func normalizeIssuesEvent(body []byte) Event {
+func normalizeIssuesEvent(body []byte) (Event, error) {
 	var p ghIssuesPayload
-	_ = json.Unmarshal(body, &p)
+	if err := json.Unmarshal(body, &p); err != nil {
+		return Event{}, fmt.Errorf("issues payload unmarshal: %w", err)
+	}
 
 	return Event{
 		Source:     "github",
@@ -263,12 +286,14 @@ func normalizeIssuesEvent(body []byte) Event {
 		Body:       p.Issue.Body,
 		Timestamp:  time.Now(),
 		RawPayload: json.RawMessage(body),
-	}
+	}, nil
 }
 
-func normalizePREvent(body []byte) Event {
+func normalizePREvent(body []byte) (Event, error) {
 	var p ghPRPayload
-	_ = json.Unmarshal(body, &p)
+	if err := json.Unmarshal(body, &p); err != nil {
+		return Event{}, fmt.Errorf("pull_request payload unmarshal: %w", err)
+	}
 
 	return Event{
 		Source:     "github",
@@ -277,12 +302,14 @@ func normalizePREvent(body []byte) Event {
 		Body:       p.PullRequest.Body,
 		Timestamp:  time.Now(),
 		RawPayload: json.RawMessage(body),
-	}
+	}, nil
 }
 
-func normalizePushEvent(body []byte) Event {
+func normalizePushEvent(body []byte) (Event, error) {
 	var p ghPushPayload
-	_ = json.Unmarshal(body, &p)
+	if err := json.Unmarshal(body, &p); err != nil {
+		return Event{}, fmt.Errorf("push payload unmarshal: %w", err)
+	}
 
 	shortRef := strings.TrimPrefix(p.Ref, "refs/heads/")
 
@@ -304,12 +331,14 @@ func normalizePushEvent(body []byte) Event {
 		Body:       commitBody,
 		Timestamp:  time.Now(),
 		RawPayload: json.RawMessage(body),
-	}
+	}, nil
 }
 
-func normalizeUnknownEvent(eventType string, body []byte) Event {
+func normalizeUnknownEvent(eventType string, body []byte) (Event, error) {
 	var p ghGenericPayload
-	_ = json.Unmarshal(body, &p)
+	if err := json.Unmarshal(body, &p); err != nil {
+		return Event{}, fmt.Errorf("%s payload unmarshal: %w", eventType, err)
+	}
 
 	bodyStr := string(body)
 	if len(bodyStr) > 1000 {
@@ -325,7 +354,7 @@ func normalizeUnknownEvent(eventType string, body []byte) Event {
 		Body:       bodyStr,
 		Timestamp:  time.Now(),
 		RawPayload: json.RawMessage(body),
-	}
+	}, nil
 }
 
 // Teardown is a no-op because the server is shut down in Listen via context cancellation.
