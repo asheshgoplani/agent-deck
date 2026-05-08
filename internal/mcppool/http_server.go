@@ -38,6 +38,23 @@ type HTTPServer struct {
 	status      ServerStatus
 	startedByUs bool  // True if we started the server vs. discovered external
 	lastError   error // Last error encountered
+
+	// startMu serializes concurrent Start calls on the same server. Without
+	// it, two callers could both observe StatusStarting (which the existing
+	// early-return only catches as StatusRunning) and both reach `s.process
+	// = exec.CommandContext(...)` — clobbering the reference and orphaning
+	// one child. Reproducer: the HTTPPool's "exists -> existing.Start()"
+	// path can fire concurrently under load (v1.9 cascade dedup).
+	// Held for the full Start so waitReady's polling uses a stable s.process.
+	// Distinct from `mu` because waitReady acquires mu.RLock, and `mu` is
+	// not reentrant.
+	startMu sync.Mutex
+
+	// processDone is closed by monitorProcess() once it has Wait()'d on the
+	// current s.process. killLeftoverProcess waits on it (with a 2s safety
+	// net) instead of polling Cmd.ProcessState directly, which would race
+	// with Wait()'s write to that field. Re-allocated per spawn.
+	processDone chan struct{}
 }
 
 // NewHTTPServer creates a new HTTP server manager
@@ -111,9 +128,67 @@ func (s *HTTPServer) GetLastError() error {
 	return s.lastError
 }
 
+// killLeftoverProcess SIGKILLs any previously-spawned child whose
+// reference is still in s.process and which has not been reaped yet.
+// Called at the top of Start (under startMu) so the new spawn cannot
+// run alongside an orphaned older one. Idempotent.
+//
+// We don't call Wait() here because monitorProcess() is already calling
+// it on the same Cmd, and exec.Cmd.Wait is not idempotent — a second call
+// returns "exec: Wait was already called". Instead we send SIGKILL and
+// wait on s.processDone, which monitorProcess closes after its Wait()
+// returns. Polling Cmd.ProcessState directly would race with Wait()'s
+// write to that field (caught by -race).
+func (s *HTTPServer) killLeftoverProcess() {
+	s.mu.Lock()
+	old := s.process
+	done := s.processDone
+	s.mu.Unlock()
+
+	if old == nil || old.Process == nil || done == nil {
+		return
+	}
+	// Fast path: monitorProcess already finished — nothing to kill.
+	select {
+	case <-done:
+		return
+	default:
+	}
+
+	httpLog.Info("kill_leftover_process",
+		slog.String("mcp", s.name),
+		slog.Int("pid", old.Process.Pid))
+	_ = old.Process.Kill()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		httpLog.Warn("leftover_process_reap_timeout",
+			slog.String("mcp", s.name),
+			slog.Int("pid", old.Process.Pid))
+	}
+}
+
 // Start starts the HTTP server process
 // If the URL is already reachable, marks as external and skips process creation
 func (s *HTTPServer) Start() error {
+	// Serialize concurrent Starts so the s.process write at line 156 isn't
+	// raced. After we acquire startMu, any other Start that was already
+	// in-flight has finished — we re-check status under mu and short-circuit
+	// if the server is now running. Without this, two goroutines could both
+	// pass the StatusRunning check while in StatusStarting and both spawn
+	// a child process, leaking the first one. (v1.9 cascade dedup.)
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
+	// Reap any leftover child from a previous failed Start (e.g. waitReady
+	// timed out and we returned without sending the spawned MCP a kill
+	// signal). Without this, every Start cycle of an unhealthy MCP leaks
+	// one alive child — the cascade-triggering pattern observed when 43
+	// `@upstash/context7-mcp` instances accumulated before systemd-oomd
+	// fired. Idempotent: returns immediately if there is no leftover.
+	s.killLeftoverProcess()
+
 	s.mu.Lock()
 
 	// Already running?
@@ -185,8 +260,32 @@ func (s *HTTPServer) Start() error {
 
 	httpLog.Info("server_process_started", slog.String("mcp", s.name), slog.Int("pid", s.process.Process.Pid))
 
+	// Allocate the per-spawn done-channel before launching the watcher.
+	// killLeftoverProcess uses this channel to wait for monitorProcess's
+	// Wait() to return; polling cmd.ProcessState directly is racy.
+	s.mu.Lock()
+	s.processDone = make(chan struct{})
+	done := s.processDone
+	proc := s.process
+	s.mu.Unlock()
+
 	// Monitor process exit in background
-	go s.monitorProcess()
+	go func() {
+		defer close(done)
+		err := proc.Wait()
+		if err != nil {
+			httpLog.Warn("process_exit_error", slog.String("mcp", s.name), slog.String("error", err.Error()))
+		} else {
+			httpLog.Info("process_exited", slog.String("mcp", s.name))
+		}
+		s.mu.Lock()
+		// Only mark as failed if we were running (not during shutdown)
+		if s.status == StatusRunning {
+			s.status = StatusFailed
+			s.lastError = err
+		}
+		s.mu.Unlock()
+	}()
 
 	// Wait for server to become ready
 	if err := s.waitReady(); err != nil {
@@ -302,28 +401,6 @@ func (s *HTTPServer) waitReady() error {
 	}
 
 	return fmt.Errorf("timeout waiting for server to start (waited %v)", s.startupTimeout)
-}
-
-// monitorProcess watches for process exit and updates status
-func (s *HTTPServer) monitorProcess() {
-	if s.process == nil {
-		return
-	}
-
-	err := s.process.Wait()
-	if err != nil {
-		httpLog.Warn("process_exit_error", slog.String("mcp", s.name), slog.String("error", err.Error()))
-	} else {
-		httpLog.Info("process_exited", slog.String("mcp", s.name))
-	}
-
-	s.mu.Lock()
-	// Only mark as failed if we were running (not during shutdown)
-	if s.status == StatusRunning {
-		s.status = StatusFailed
-		s.lastError = err
-	}
-	s.mu.Unlock()
 }
 
 // Restart stops and restarts the server
