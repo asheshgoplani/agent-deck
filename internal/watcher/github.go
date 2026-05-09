@@ -18,6 +18,9 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
+// githubLog is the package-level logger for the GitHub adapter. Used to
+// surface webhook-payload parse failures that pre-v1.9 silently swallowed
+// (`_ = json.Unmarshal(...)` × 4). See arch-review S2.
 var githubLog = logging.ForComponent(logging.CompWatcher)
 
 // GitHubAdapter implements WatcherAdapter by running an HTTP server that accepts
@@ -149,7 +152,9 @@ func (a *GitHubAdapter) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Respond 202 Accepted BEFORE processing the event
 	w.WriteHeader(http.StatusAccepted)
 
-	// Normalize the GitHub event
+	// Normalize the GitHub event. Pre-v1.9 normalize* functions silently
+	// dropped json.Unmarshal errors; v1.9 propagates them so the webhook
+	// pipeline can log+drop instead of forwarding a stub Event.
 	eventType := r.Header.Get("X-GitHub-Event")
 	evt, err := normalizeGitHubEvent(eventType, body)
 	if err != nil {
@@ -216,6 +221,19 @@ func normalizeGitHubEvent(eventType string, body []byte) (Event, error) {
 	}
 }
 
+// safeUnmarshalGitHubPayload is the single helper that all four GitHub
+// webhook normalizers route through to parse `body` into a payload
+// struct. Pre-v1.9 each normalizer used `_ = json.Unmarshal(body, &p)`
+// — four sister-function copies of the same swallow. Centralizing into
+// this helper guarantees that any JSON-decode failure becomes an error
+// rather than a stub Event with empty fields.
+func safeUnmarshalGitHubPayload(eventType string, body []byte, target any) error {
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("github webhook %s: unmarshal failed: %w", eventType, err)
+	}
+	return nil
+}
+
 // GitHub payload structs for type-safe field extraction.
 
 type ghIssuesPayload struct {
@@ -275,8 +293,8 @@ type ghGenericPayload struct {
 
 func normalizeIssuesEvent(body []byte) (Event, error) {
 	var p ghIssuesPayload
-	if err := json.Unmarshal(body, &p); err != nil {
-		return Event{}, fmt.Errorf("issues payload unmarshal: %w", err)
+	if err := safeUnmarshalGitHubPayload("issues", body, &p); err != nil {
+		return Event{}, err
 	}
 
 	return Event{
@@ -291,8 +309,8 @@ func normalizeIssuesEvent(body []byte) (Event, error) {
 
 func normalizePREvent(body []byte) (Event, error) {
 	var p ghPRPayload
-	if err := json.Unmarshal(body, &p); err != nil {
-		return Event{}, fmt.Errorf("pull_request payload unmarshal: %w", err)
+	if err := safeUnmarshalGitHubPayload("pull_request", body, &p); err != nil {
+		return Event{}, err
 	}
 
 	return Event{
@@ -307,8 +325,8 @@ func normalizePREvent(body []byte) (Event, error) {
 
 func normalizePushEvent(body []byte) (Event, error) {
 	var p ghPushPayload
-	if err := json.Unmarshal(body, &p); err != nil {
-		return Event{}, fmt.Errorf("push payload unmarshal: %w", err)
+	if err := safeUnmarshalGitHubPayload("push", body, &p); err != nil {
+		return Event{}, err
 	}
 
 	shortRef := strings.TrimPrefix(p.Ref, "refs/heads/")
@@ -336,8 +354,8 @@ func normalizePushEvent(body []byte) (Event, error) {
 
 func normalizeUnknownEvent(eventType string, body []byte) (Event, error) {
 	var p ghGenericPayload
-	if err := json.Unmarshal(body, &p); err != nil {
-		return Event{}, fmt.Errorf("%s payload unmarshal: %w", eventType, err)
+	if err := safeUnmarshalGitHubPayload(eventType, body, &p); err != nil {
+		return Event{}, err
 	}
 
 	bodyStr := string(body)

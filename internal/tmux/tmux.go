@@ -185,6 +185,21 @@ var (
 	sessionCacheTime time.Time
 )
 
+// sessionCacheTTL is the single TTL governing both sessionExistsFromCache
+// and sessionActivityFromCache. 2 seconds = 4 ticks at 500ms. Both readers
+// MUST consult this constant — splitting the TTL between them produces the
+// "session is alive but has no activity" parity bug (#886 family).
+const sessionCacheTTL = 2 * time.Second
+
+// sessionCacheStale reports whether the shared session cache is past TTL
+// or empty. Caller must hold sessionCacheMu (read or write). Centralizing
+// the check ensures both existence and activity readers expire the cache
+// together — see arch-review S2 for why two divergent in-line checks
+// caused #886-class drift.
+func sessionCacheStale() bool {
+	return sessionCacheData == nil || time.Since(sessionCacheTime) > sessionCacheTTL
+}
+
 // RefreshSessionCache updates the cache of existing tmux sessions and their activity
 // Call this ONCE per tick, then use Session.Exists() and Session.GetWindowActivity()
 // which read from cache. This reduces 30+ subprocess spawns to just 1 per tick cycle.
@@ -314,9 +329,8 @@ func sessionExistsFromCache(name string) (bool, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return false, false // Cache invalid
+	if sessionCacheStale() {
+		return false, false
 	}
 
 	_, exists := sessionCacheData[name]
@@ -345,9 +359,8 @@ func sessionActivityFromCache(name string) (int64, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return 0, false // Cache invalid
+	if sessionCacheStale() {
+		return 0, false
 	}
 
 	activity, exists := sessionCacheData[name]
