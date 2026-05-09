@@ -206,6 +206,57 @@ func TestEmitITermBadgeViaTty_NoOpOutsideITerm2(t *testing.T) {
 	}, "EmitITermBadgeViaTty must be a silent no-op outside iTerm2")
 }
 
+// TestEmitITermBadgeViaTty_NoFDLeak asserts the iTerm badge debug log
+// (gated by AGENTDECK_ITERM_BADGE_DEBUG=1) is closed at function exit on
+// every call. Critical-hunt #2 flagged this site as a potential FD leak
+// because the *os.File is stashed in iTermBadgeDebugLog.f; the existing
+// `defer dbg.flush()` in EmitITermBadgeViaTty IS the close path, but it
+// is one missed defer away from a real leak. This test pins the contract
+// so a future refactor that drops the defer fails immediately.
+// (V1.9 T5, critical-hunt #2.)
+func TestEmitITermBadgeViaTty_NoFDLeak(t *testing.T) {
+	if _, err := os.Stat("/proc/self/fd"); err != nil {
+		t.Skip("/proc/self/fd unavailable — non-Linux")
+	}
+
+	// Force the gated open path on every call.
+	t.Setenv("AGENTDECK_ITERM_BADGE_DEBUG", "1")
+	// Stay outside iTerm2 so the function returns at the gate without
+	// opening /dev/tty, exercising the early-return defer path.
+	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	t.Setenv("ITERM_SESSION_ID", "")
+	t.Setenv("LC_TERMINAL", "")
+	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+
+	pathSubstring := fmt.Sprintf("agent-deck-iterm-badge-%d.log", os.Getuid())
+
+	countOpenBadgeLogFDs := func() int {
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			return 0
+		}
+		n := 0
+		for _, e := range entries {
+			target, err := os.Readlink("/proc/self/fd/" + e.Name())
+			if err != nil {
+				continue
+			}
+			if strings.Contains(target, pathSubstring) {
+				n++
+			}
+		}
+		return n
+	}
+
+	for i := 0; i < 200; i++ {
+		EmitITermBadgeViaTty("test", true)
+	}
+
+	if got := countOpenBadgeLogFDs(); got != 0 {
+		t.Errorf("after 200 EmitITermBadgeViaTty calls, %d badge-log FDs are still open; expected 0 (defer dbg.flush regression)", got)
+	}
+}
+
 // TestSession_SetTerminalChromeEnabled pins the setter contract: a fresh
 // Session built via NewSession defaults to disabled (opt-in), and
 // SetTerminalChromeEnabled flips the bit returned by the read accessor.

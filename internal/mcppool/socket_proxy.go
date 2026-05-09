@@ -214,6 +214,18 @@ func (p *SocketProxy) Start() error {
 	}
 	p.logWriter = logWriter
 
+	// If Start() returns an error after this point, the caller has no
+	// Stop()-driven cleanup path, so logWriter would leak its FD on every
+	// failed start. Track success so the deferred fallback closes the
+	// writer only on the error paths. (V1.9 T5, critical-hunt #3.)
+	startOK := false
+	defer func() {
+		if !startOK {
+			_ = logWriter.Close()
+			p.logWriter = nil
+		}
+	}()
+
 	launchCmd, launchArgs, scopeWrapped, scopeUnit := wrapMCPCommand(
 		fmt.Sprintf("%d", os.Getpid()), p.name, p.command, p.args)
 	p.mcpProcess = exec.CommandContext(p.ctx, launchCmd, launchArgs...)
@@ -289,6 +301,7 @@ func (p *SocketProxy) Start() error {
 	p.statusMu.Lock()
 	p.successSince = time.Now()
 	p.statusMu.Unlock()
+	startOK = true
 	return nil
 }
 
