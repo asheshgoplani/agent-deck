@@ -243,9 +243,21 @@ func (w *StatusFileWatcher) loadExisting() {
 }
 
 // processFile reads a status file and updates the internal map.
+// Closes logging-review G9/G10/G11: corrupt files now WARN instead of
+// fail-open silently; success-path logs at INFO with file path so a hook
+// audit can be done without opening SQLite.
 func (w *StatusFileWatcher) processFile(filePath string) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
+		// Not-exist is benign (file was deleted between event and read).
+		// Anything else is real corruption.
+		if !os.IsNotExist(err) {
+			hookLog.Warn("hook_file_corrupt",
+				slog.String("path", filePath),
+				slog.String("reason", "read"),
+				slog.String("error", err.Error()),
+			)
+		}
 		return
 	}
 
@@ -256,6 +268,12 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 		Timestamp int64  `json:"ts"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
+		hookLog.Warn("hook_file_corrupt",
+			slog.String("path", filePath),
+			slog.String("reason", "unmarshal"),
+			slog.String("error", err.Error()),
+			slog.Int("bytes_read", len(data)),
+		)
 		return
 	}
 
@@ -274,10 +292,11 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	w.statuses[instanceID] = hookStatus
 	w.mu.Unlock()
 
-	hookLog.Debug("hook_status_updated",
+	hookLog.Info("hook_status_updated",
 		slog.String("instance", instanceID),
 		slog.String("status", status.Status),
 		slog.String("event", status.Event),
+		slog.String("path", filePath),
 	)
 
 	if w.onChange != nil {

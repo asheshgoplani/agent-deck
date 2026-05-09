@@ -767,6 +767,10 @@ type Session struct {
 	// Last status returned (for debugging)
 	lastStableStatus string
 
+	// hashFallbackOnce gates the one-time hash_fallback_used WARN landmark.
+	// See logging_additions.go and logging-review G8.
+	hashFallbackOnce sync.Once
+
 	// OptionOverrides are user-specified tmux set-option overrides from config.
 	// Applied AFTER all defaults in Start(), so they take precedence.
 	// Keys are tmux option names, values are their settings.
@@ -2498,8 +2502,10 @@ func (s *Session) CapturePane() (string, error) {
 					slog.Duration("elapsed", time.Since(pipeStart)))
 				return content, nil
 			}
-			// Pipe failed: log it so we can verify zero subprocess usage
-			statusLog.Debug("capture_pane_subprocess_fallback", slog.String("session", s.Name))
+			// Pipe failed: aggregate so today's 5,068/30min DEBUG storm
+			// becomes one event_summary INFO per flush window with a
+			// running count. See logging-review G14.
+			s.recordPipeDegraded()
 		}
 
 		// Subprocess fallback: 3s timeout
@@ -3177,6 +3183,9 @@ func (s *Session) GetStatus() (string, error) {
 // getStatusFallback uses content-hash based detection as fallback
 // when activity timestamp detection fails
 func (s *Session) getStatusFallback() (string, error) {
+	// Once-per-session WARN landmark; closes logging-review G8.
+	s.recordHashFallbackUsed()
+
 	shortName := s.DisplayName
 	if len(shortName) > 12 {
 		shortName = shortName[:12]

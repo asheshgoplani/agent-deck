@@ -385,6 +385,12 @@ type Home struct {
 		timestamp                       time.Time   // For time-based expiration
 	}
 
+	// Status-transition tracker: emits enriched status_changed INFO,
+	// flicker_detected WARN, and session_status_cascade INFO.
+	// Lazy-initialized via getTransitionTracker().
+	transitionTrackerOnce sync.Once
+	transitionTracker     *transitionTracker
+
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
 	fullRepaint          bool
@@ -2906,6 +2912,8 @@ func (h *Home) backgroundStatusUpdate() {
 	pm := tmux.GetPipeManager()
 	var skipped int
 
+	tracker := h.getTransitionTracker()
+
 	g := new(errgroup.Group)
 	g.SetLimit(10) // Pool of 10 workers (tmux server serializes, more doesn't help)
 
@@ -2947,6 +2955,7 @@ func (h *Home) backgroundStatusUpdate() {
 				// T1+T3: synthesize a flicker_detected WARN if this session
 				// has oscillated >3 times within 60s. One alert per burst.
 				session.GlobalFlickerDetector().Observe(inst.ID, string(newStatus))
+				tracker.record(inst.ID, inst.Title, inst.Tool, string(oldStatus), string(newStatus))
 			}
 			return nil
 		})
@@ -2954,6 +2963,7 @@ func (h *Home) backgroundStatusUpdate() {
 	_ = g.Wait() // Errors are logged within each goroutine
 
 	statusDur := time.Since(statusStart)
+	tracker.tickEnd(statusStart, time.Now())
 	if skipped > 0 {
 		perfLog.Debug(
 			"idle_sessions_skipped",

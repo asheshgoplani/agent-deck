@@ -497,7 +497,7 @@ func NewInstance(title, projectPath string) *Instance {
 	tmuxSess.SetClearOnRestart(GetTmuxSettings().ClearOnRestart)
 	tmuxSess.SetTerminalChromeEnabled(GetTerminalSettings().GetITermBadge())
 
-	return &Instance{
+	inst := &Instance{
 		ID:             id,
 		Title:          title,
 		ProjectPath:    projectPath,
@@ -508,6 +508,21 @@ func NewInstance(title, projectPath string) *Instance {
 		TmuxSocketName: socket,
 		tmuxSession:    tmuxSess,
 	}
+	logSessionCreated(inst)
+	return inst
+}
+
+// logSessionCreated emits one INFO record per new session. Single source of
+// truth so each NewInstance* constructor logs identically. See
+// logging-review G1 (2026-05-07).
+func logSessionCreated(inst *Instance) {
+	sessionLog.Info("session_created",
+		slog.String("instance_id", inst.ID),
+		slog.String("title", inst.Title),
+		slog.String("project_path", inst.ProjectPath),
+		slog.String("tool", inst.Tool),
+		slog.String("group_path", inst.GroupPath),
+	)
 }
 
 // NewInstanceWithGroup creates a new session instance with explicit group
@@ -544,6 +559,7 @@ func NewInstanceWithTool(title, projectPath, tool string) *Instance {
 	// Claude session ID will be detected from files Claude creates
 	// No pre-assignment needed
 
+	logSessionCreated(inst)
 	return inst
 }
 
