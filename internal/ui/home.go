@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
@@ -883,7 +884,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	tmux.SetPipeManager(pm)
 
 	// Connect pipes for all existing running sessions in background
-	go func() {
+	safego.Go(pipeUILog, "startup_pipe_connect", func() {
 		time.Sleep(500 * time.Millisecond) // Let TUI render first
 		h.instancesMu.RLock()
 		instances := make([]*session.Instance, len(h.instances))
@@ -900,7 +901,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			}
 		}
 		pipeUILog.Debug("startup_pipes_connected", slog.Int("count", pm.ConnectedCount()))
-	}()
+	})
 
 	// Start background status worker (Priority 1C)
 	go h.statusWorker()
@@ -998,10 +999,10 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Also initializes lastLogMaintenance and lastLogCheck so periodic checks start from now
 	h.lastLogMaintenance = time.Now()
 	h.lastLogCheck = time.Now()
-	go func() {
+	safego.Go(uiLog, "startup_log_maintenance", func() {
 		logSettings := session.GetLogSettings()
 		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.RemoveOrphans)
-	}()
+	})
 
 	// v1.7.60: one-shot nav-discoverability hint. Reuses the maintenance-banner
 	// slot so no extra layout math is needed. Dismisses via the existing ESC
@@ -2001,14 +2002,14 @@ func (h *Home) propagateThemeToSessions() {
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
 
-	go func() {
+	safego.Go(uiLog, "apply_theme_to_sessions", func() {
 		for _, inst := range instances {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil && tmuxSess.Exists() {
 				_ = tmuxSess.SetEnvironment("COLORFGBG", colorfgbg)
 				_ = tmuxSess.ApplyThemeOptions()
 			}
 		}
-	}()
+	})
 }
 
 // fetchRemoteSessions fetches sessions from all configured remotes.
@@ -2880,7 +2881,7 @@ func (h *Home) backgroundStatusUpdate() {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				h.clearOnCompactSent[inst.ID] = time.Now()
 				conductorName := strings.TrimPrefix(inst.Title, "conductor-")
-				go func() {
+				safego.Go(uiLog, "conductor_clear_and_heartbeat", func() {
 					time.Sleep(500 * time.Millisecond)
 					_ = tmuxSess.SendKeysAndEnter("/clear")
 					// After /clear wipes context, immediately send heartbeat to restore orientation
@@ -2891,7 +2892,7 @@ func (h *Home) backgroundStatusUpdate() {
 					}
 					msg := fmt.Sprintf("Heartbeat: Check sessions in your group (%s). List any that are waiting, auto-respond where safe, and report what needs my attention.", conductorName)
 					_ = tmuxSess.SendKeysAndEnter(msg)
-				}()
+				})
 			}
 		}
 	}

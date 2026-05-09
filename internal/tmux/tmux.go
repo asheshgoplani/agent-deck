@@ -2529,7 +2529,14 @@ func (s *Session) CapturePane() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return v.(string), nil
+	// Defensive: the singleflight closure above unconditionally returns
+	// (string, nil), so this assertion cannot panic today. The comma-ok form
+	// guards against future closure refactors that might return a different
+	// type and silently introduce a nil-deref panic. (V1.9 §T6 / arch-review §5)
+	if s, ok := v.(string); ok {
+		return s, nil
+	}
+	return "", nil
 }
 
 // CapturePaneFresh captures pane content via a direct tmux subprocess call.
