@@ -96,12 +96,29 @@ func newTmuxPTYBridge(tmuxSession, tmuxSocketName, sessionID string, writer *wsC
 	return b, nil
 }
 
+// snapshotPtmx returns the current ptmx *os.File under RLock. It returns
+// nil if the bridge has been Closed. Consumers (WriteInput, streamOutput)
+// use this to read the field race-free with respect to Close()'s
+// Lock-guarded `b.ptmx = nil` store. The returned *os.File itself is
+// goroutine-safe with respect to Close (Go's runtime poller handles
+// Close vs. blocked I/O), so callers need not hold the RLock during the
+// I/O syscall. (V1.9 T5, race-review 2.1.)
+func (b *tmuxPTYBridge) snapshotPtmx() *os.File {
+	b.ptmxMu.RLock()
+	defer b.ptmxMu.RUnlock()
+	return b.ptmx
+}
+
 func (b *tmuxPTYBridge) streamOutput() {
 	defer close(b.done)
 
 	buf := make([]byte, 4096)
 	for {
-		n, err := b.ptmx.Read(buf)
+		ptmx := b.snapshotPtmx()
+		if ptmx == nil {
+			return
+		}
+		n, err := ptmx.Read(buf)
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
@@ -127,13 +144,17 @@ func (b *tmuxPTYBridge) streamOutput() {
 }
 
 func (b *tmuxPTYBridge) WriteInput(data string) error {
-	if b == nil || b.ptmx == nil {
+	if b == nil {
 		return fmt.Errorf("bridge not initialized")
 	}
 	if data == "" {
 		return nil
 	}
-	_, err := b.ptmx.Write([]byte(data))
+	ptmx := b.snapshotPtmx()
+	if ptmx == nil {
+		return fmt.Errorf("bridge not initialized")
+	}
+	_, err := ptmx.Write([]byte(data))
 	return err
 }
 

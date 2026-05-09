@@ -227,6 +227,20 @@ func (s *HTTPServer) Start() error {
 	}
 	s.logWriter = logWriter
 
+	// If Start() returns before s.process.Start() succeeds, the caller has
+	// no Stop() path and logWriter would leak its FD on every failed
+	// start. Track whether the underlying process actually started: if not,
+	// close logWriter on return. After process.Start() succeeds, monitorProcess
+	// + s.process.Stderr need logWriter alive, and Stop() owns Close.
+	// (V1.9 T5, critical-hunt #4.)
+	processStarted := false
+	defer func() {
+		if !processStarted {
+			_ = logWriter.Close()
+			s.logWriter = nil
+		}
+	}()
+
 	// Start the server process. On Linux+systemd we wrap each MCP child
 	// inside its own transient user scope so systemd-oomd's per-cgroup
 	// kill heuristic targets the misbehaving MCP, not the conductor.
@@ -266,6 +280,9 @@ func (s *HTTPServer) Start() error {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
+	// Process is now alive and owns logWriter via Stderr; deferred
+	// fallback close must not run.
+	processStarted = true
 
 	httpLog.Info("server_process_started", slog.String("mcp", s.name), slog.Int("pid", s.process.Process.Pid))
 
