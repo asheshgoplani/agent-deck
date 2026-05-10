@@ -34,7 +34,7 @@ import (
 var (
 	sessionLog                  = logging.ForComponent(logging.CompSession)
 	mcpLog                      = logging.ForComponent(logging.CompMCP)
-	codexSessionIDPathPatternRE = regexp.MustCompile(`/.codex/sessions/\S*/rollout-\S*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl`)
+	codexSessionIDPathPatternRE = regexp.MustCompile(`/sessions/\S*/rollout-\S*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl`)
 	uuidPatternRE               = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	geminiPromptRE              = regexp.MustCompile(`^(>|>>>|\$|❯|➜|gemini>|✦)\s*$`)
 	shellPromptRE               = regexp.MustCompile(`^[\s]*(>|>>>|\$|❯|➜|#|%)\s*$`)
@@ -993,6 +993,100 @@ func (i *Instance) resolveCodexYoloFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexCommand(baseCommand string) string {
+	command := strings.TrimSpace(baseCommand)
+	if i.Tool == "codex" && (command == "" || command == "codex") {
+		return GetCodexCommand()
+	}
+	if command == "" {
+		return "codex"
+	}
+	return command
+}
+
+func codexHomeFromCommand(command string) string {
+	rest := strings.TrimSpace(command)
+	for rest != "" {
+		token, remainder, ok := nextShellWord(rest)
+		if !ok {
+			return ""
+		}
+		if !isShellEnvAssignment(token) {
+			return ""
+		}
+		key, value, ok := strings.Cut(token, "=")
+		if !ok {
+			return ""
+		}
+		if key == "CODEX_HOME" && strings.TrimSpace(value) != "" {
+			return ExpandPath(strings.TrimSpace(value))
+		}
+		rest = strings.TrimLeft(remainder, " \t\r\n")
+	}
+	return ""
+}
+
+func nextShellWord(s string) (word string, remainder string, ok bool) {
+	s = strings.TrimLeft(s, " \t\r\n")
+	if s == "" {
+		return "", "", false
+	}
+
+	var b strings.Builder
+	quote := byte(0)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote == 0 {
+			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+				return b.String(), s[i:], true
+			}
+			switch c {
+			case '\'', '"':
+				quote = c
+			case '\\':
+				if i+1 < len(s) {
+					i++
+					b.WriteByte(s[i])
+				} else {
+					b.WriteByte(c)
+				}
+			default:
+				b.WriteByte(c)
+			}
+			continue
+		}
+
+		if c == quote {
+			quote = 0
+			continue
+		}
+		if quote == '"' && c == '\\' && i+1 < len(s) {
+			i++
+			b.WriteByte(s[i])
+			continue
+		}
+		b.WriteByte(c)
+	}
+	if quote != 0 {
+		return "", "", false
+	}
+	return b.String(), "", true
+}
+
+func getCodexHomeDirForCommand(command string) string {
+	if codexHome := codexHomeFromCommand(command); codexHome != "" {
+		return codexHome
+	}
+	return getCodexHomeDir()
+}
+
+func (i *Instance) getCodexHomeDir() string {
+	if i == nil {
+		return getCodexHomeDir()
+	}
+	return getCodexHomeDirForCommand(i.resolveCodexCommand(i.Command))
+}
+
 // Codex stores sessions in ~/.codex/sessions/YYYY/MM/DD/*.jsonl
 // Resume: codex resume <session-id> or codex resume --last
 // Also sources .env files from [shell].env_files
@@ -1007,11 +1101,8 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
-
-	command := strings.TrimSpace(baseCommand)
-	if command == "" {
-		command = "codex"
-	}
+	command := i.resolveCodexCommand(baseCommand)
+	codexHome := getCodexHomeDirForCommand(command)
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
 	// If Codex died before flushing its rollout JSONL (tmux crash, kill -9
@@ -1021,12 +1112,12 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	// flipping the session back to error in an infinite loop. Drop the
 	// stale ID, clear the .sid sidecar so the next hook tick rebinds
 	// cleanly, and spawn fresh.
-	if i.CodexSessionID != "" && !codexRolloutExists(i.CodexSessionID) {
+	if i.CodexSessionID != "" && !codexRolloutExistsInHome(i.CodexSessionID, codexHome) {
 		sessionLog.Warn("codex_resume_stale_sid_dropped",
 			slog.String("instance_id", i.ID),
 			slog.String("title", i.Title),
 			slog.String("sid", i.CodexSessionID),
-			slog.String("codex_home", getCodexHomeDir()))
+			slog.String("codex_home", codexHome))
 		i.CodexSessionID = ""
 		i.CodexDetectedAt = time.Time{}
 		ClearHookSessionAnchor(i.ID)
@@ -1046,11 +1137,15 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 //
 // Codex layout: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
 func codexRolloutExists(sessionID string) bool {
+	return codexRolloutExistsInHome(sessionID, getCodexHomeDir())
+}
+
+func codexRolloutExistsInHome(sessionID, codexHome string) bool {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return false
 	}
-	pattern := filepath.Join(getCodexHomeDir(), "sessions", "*", "*", "*",
+	pattern := filepath.Join(codexHome, "sessions", "*", "*", "*",
 		"rollout-*-"+sessionID+".jsonl")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
@@ -1366,7 +1461,7 @@ func (i *Instance) detectCodexSessionAsync() {
 
 func getCodexHomeDir() string {
 	if codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME")); codexHome != "" {
-		return codexHome
+		return ExpandPath(codexHome)
 	}
 
 	home, err := os.UserHomeDir()
@@ -1413,7 +1508,7 @@ const codexWalkDirTimeout = 5 * time.Second
 //  1. Prefer sessions whose JSONL metadata matches this instance's project path.
 //  2. Optionally allow unscoped fallback (no cwd metadata) for initial bootstrap.
 func (i *Instance) queryCodexSession(excludeIDs map[string]bool, allowUnscoped bool) string {
-	sessionsDir := filepath.Join(getCodexHomeDir(), "sessions")
+	sessionsDir := filepath.Join(i.getCodexHomeDir(), "sessions")
 	if _, err := os.Stat(sessionsDir); os.IsNotExist(err) {
 		return ""
 	}
@@ -1835,7 +1930,7 @@ func (i *Instance) queryCodexSessionFromDockerProcFD() (string, string) {
 for f in /proc/[0-9]*/fd/*; do
 	t=$(readlink "$f" 2>/dev/null || true)
 	case "$t" in
-		*/.codex/sessions/*rollout-*.jsonl*)
+		*/sessions/*rollout-*.jsonl*)
 			printf '%%s\n' "$t"
 			;;
 	esac
