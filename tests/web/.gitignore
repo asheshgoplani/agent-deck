@@ -1,0 +1,6 @@
+# node + tooling artifacts that should never land in git
+node_modules/
+.tmp/
+coverage/
+playwright-report/
+e2e-output/

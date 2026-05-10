@@ -1,0 +1,27 @@
+{
+  "name": "agent-deck-web-tests",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Web UI test suite for agent-deck (Vitest unit + Playwright e2e + screenshot regression).",
+  "scripts": {
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:e2e:headed": "node scripts/run-e2e.mjs --headed",
+    "test:e2e:update-snapshots": "node scripts/run-e2e.mjs --update-snapshots",
+    "test:install-browsers": "playwright install --with-deps chromium",
+    "test:all": "npm run test:unit && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@testing-library/preact": "^3.2.4",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/user-event": "^14.5.2",
+    "htm": "^3.1.1",
+    "jsdom": "^25.0.1",
+    "preact": "^10.24.3",
+    "@preact/signals": "^1.3.0",
+    "vitest": "^2.1.4"
+  }
+}
