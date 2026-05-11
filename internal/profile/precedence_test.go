@@ -94,21 +94,21 @@ func TestProfileResolution_LiteralDefaultFloor(t *testing.T) {
 // prof-002: the full precedence ladder.
 //
 // Documented in config.go:301-336:
-//   1. explicit (passed-through arg, e.g. -p flag)
-//   2. AGENTDECK_PROFILE env
-//   3. CLAUDE_CONFIG_DIR-inferred
-//   4. config.json default_profile
-//   5. literal "default"
+//  1. explicit (passed-through arg, e.g. -p flag)
+//  2. AGENTDECK_PROFILE env
+//  3. CLAUDE_CONFIG_DIR-inferred
+//  4. config.json default_profile
+//  5. literal "default"
 //
 // A regression that re-orders any of these has the same visible symptom
 // (wrong profile) but very different blast radii. This table-driven case
 // nails every transition so a re-order can't go in unnoticed.
 func TestProfileResolution_PrecedenceLadder(t *testing.T) {
 	type env struct {
-		explicit       string
-		agentdeckProf  string
+		explicit        string
+		agentdeckProf   string
 		claudeConfigDir string
-		configDefault  string // "" means do not write config.json
+		configDefault   string // "" means do not write config.json
 	}
 	cases := []struct {
 		name string
