@@ -1945,6 +1945,18 @@ func handleRemove(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// Best-effort post-removal cleanup for transition-notifier state
+	// (issue #910). Failures are warned but do not block the rm — the
+	// SQLite removal is the user-visible contract.
+	if swept, err := session.SweepInboxesForChildSession(removedID); err != nil && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "warn: inbox sweep for %s failed: %v\n", removedID, err)
+	} else if swept > 0 && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "swept %d stale inbox event(s) for removed session\n", swept)
+	}
+	if _, err := session.RemoveNotifyStateRecord(removedID); err != nil && !*jsonOutput {
+		fmt.Fprintf(os.Stderr, "warn: notify-state sweep for %s failed: %v\n", removedID, err)
+	}
+
 	out.Success(
 		fmt.Sprintf("Removed session: %s (from profile '%s')", removedTitle, storage.Profile()),
 		map[string]interface{}{
