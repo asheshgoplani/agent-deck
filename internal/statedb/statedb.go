@@ -525,7 +525,18 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // SaveInstances inserts or replaces multiple instances in a single transaction.
 // It also removes any rows from the database that are not in the provided list,
 // ensuring deleted sessions don't reappear on reload.
+//
+// Wrapped in withBusyRetry because parallel writers (CLI + TUI + heartbeat
+// daemons) contend on the WAL writer slot. The whole save is idempotent at
+// the row level (INSERT OR REPLACE + DELETE WHERE NOT IN), so retrying the
+// outer transaction on SQLITE_BUSY is safe. Part of the v1.9.1 #909 fix.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
+	return withBusyRetry(func() error {
+		return s.saveInstancesOnce(insts)
+	})
+}
+
+func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// Pre-fetch existing tool_data per instance ID so we can preserve any
 	// keys not modeled by the typed schema (e.g., manually-set
 	// clear_on_compact). Without this merge, every INSERT OR REPLACE
@@ -683,9 +694,32 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 }
 
 // DeleteInstance removes an instance by ID.
+//
+// Wrapped in withBusyRetry because parallel `agent-deck rm` invocations
+// (e.g. xargs -P 14) all contend on the same WAL writer slot. Without
+// retry, transient SQLITE_BUSY silently drops the DELETE while the CLI
+// still reports success — the silent-loss half of issue #909.
 func (s *StateDB) DeleteInstance(id string) error {
-	_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
-	return err
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
+		return err
+	})
+}
+
+// InstanceExists returns true iff a row with the given id is present.
+// Used by the rm path's post-commit verify (issue #909) to detect
+// resurrection by a concurrent SaveInstances rewrite.
+func (s *StateDB) InstanceExists(id string) (bool, error) {
+	row := s.db.QueryRow("SELECT 1 FROM instances WHERE id = ? LIMIT 1", id)
+	var one int
+	err := row.Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // UpdateInstanceField updates a single column for a given instance.
