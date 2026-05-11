@@ -362,6 +362,8 @@ func StatusString(status session.Status) string {
 		return "error"
 	case session.StatusStopped:
 		return "stopped"
+	case session.StatusQueued:
+		return "queued"
 	default:
 		return "unknown"
 	}

@@ -61,6 +61,11 @@ type Group struct {
 	Sessions    []*Instance
 	Order       int
 	DefaultPath string // Explicit default path for new sessions in this group
+	// MaxConcurrent caps simultaneous running sessions in this group (v1.9.1).
+	// 0 = unlimited (legacy default for groups predating this field); 1 = serial
+	// (default for newly-created groups); N>=2 = bounded parallelism. Negative
+	// values are treated as unlimited (explicit opt-out).
+	MaxConcurrent int
 }
 
 // GroupTree manages hierarchical session organization
@@ -133,12 +138,13 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 	// First, create groups from stored data (preserves empty groups)
 	for _, gd := range storedGroups {
 		group := &Group{
-			Name:        gd.Name,
-			Path:        gd.Path,
-			Expanded:    gd.Expanded,
-			Sessions:    []*Instance{},
-			Order:       gd.Order,
-			DefaultPath: gd.DefaultPath,
+			Name:          gd.Name,
+			Path:          gd.Path,
+			Expanded:      gd.Expanded,
+			Sessions:      []*Instance{},
+			Order:         gd.Order,
+			DefaultPath:   gd.DefaultPath,
+			MaxConcurrent: gd.MaxConcurrent,
 		}
 		tree.Groups[gd.Path] = group
 		tree.Expanded[gd.Path] = gd.Expanded
@@ -714,6 +720,11 @@ func (t *GroupTree) CreateGroup(name string) *Group {
 		Expanded: true,
 		Sessions: []*Instance{},
 		Order:    rootCount, // Order among root groups
+		// v1.9.1: newly-created groups default to serial (max_concurrent=1)
+		// to prevent the parallel-worker cascade observed on 2026-05-08.
+		// Pre-existing groups loaded via NewGroupTreeWithGroups keep their
+		// stored MaxConcurrent (0 → unlimited for backward compat).
+		MaxConcurrent: 1,
 	}
 	t.Groups[path] = group
 	t.Expanded[path] = true
@@ -746,6 +757,8 @@ func (t *GroupTree) CreateSubgroup(parentPath, name string) *Group {
 		Expanded: true,
 		Sessions: []*Instance{},
 		Order:    siblingCount, // Order among siblings
+		// v1.9.1: subgroups also default to serial. See CreateGroup.
+		MaxConcurrent: 1,
 	}
 	t.Groups[fullPath] = group
 	t.Expanded[fullPath] = true
@@ -1143,11 +1156,12 @@ func (t *GroupTree) ShallowCopyForSave() *GroupTree {
 	groupListCopy := make([]*Group, len(t.GroupList))
 	for i, g := range t.GroupList {
 		groupListCopy[i] = &Group{
-			Name:        g.Name,
-			Path:        g.Path,
-			Expanded:    g.Expanded,
-			Order:       g.Order,
-			DefaultPath: g.DefaultPath,
+			Name:          g.Name,
+			Path:          g.Path,
+			Expanded:      g.Expanded,
+			Order:         g.Order,
+			DefaultPath:   g.DefaultPath,
+			MaxConcurrent: g.MaxConcurrent,
 			// Don't copy Sessions - not needed for save, only metadata is saved
 		}
 	}

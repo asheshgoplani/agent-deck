@@ -396,6 +396,31 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
+	// v1.9.1 group concurrency cap: if the target group is at its
+	// max_concurrent cap, mark this session queued instead of starting.
+	// Groups with max_concurrent<=0 (legacy default) skip this check.
+	tree := session.NewGroupTreeWithGroups(instances, groups)
+	maxC := session.GroupMaxConcurrent(tree, newInstance.GroupPath)
+	if session.ShouldQueue(instances, newInstance.GroupPath, maxC) {
+		newInstance.Status = session.StatusQueued
+		if err := saveSessionData(storage, instances, groups); err != nil {
+			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		out.Success(
+			fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC),
+			map[string]interface{}{
+				"success":        true,
+				"id":             newInstance.ID,
+				"title":          newInstance.Title,
+				"status":         "queued",
+				"group":          newInstance.GroupPath,
+				"max_concurrent": maxC,
+			},
+		)
+		return
+	}
+
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt
 	// - --no-wait: start immediately, then fire-and-forget send below

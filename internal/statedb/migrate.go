@@ -60,11 +60,12 @@ type jsonInstanceData struct {
 
 // jsonGroupData mirrors session.GroupData for migration.
 type jsonGroupData struct {
-	Name        string `json:"name"`
-	Path        string `json:"path"`
-	Expanded    bool   `json:"expanded"`
-	Order       int    `json:"order"`
-	DefaultPath string `json:"default_path,omitempty"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	Expanded      bool   `json:"expanded"`
+	Order         int    `json:"order"`
+	DefaultPath   string `json:"default_path,omitempty"`
+	MaxConcurrent int    `json:"max_concurrent,omitempty"`
 }
 
 // toolDataBlob is the JSON structure stored in the tool_data column.
@@ -183,11 +184,12 @@ func MigrateFromJSON(jsonPath string, db *StateDB) (int, int, error) {
 	groupRows := make([]*GroupRow, 0, len(storage.Groups))
 	for _, g := range storage.Groups {
 		groupRows = append(groupRows, &GroupRow{
-			Path:        g.Path,
-			Name:        g.Name,
-			Expanded:    g.Expanded,
-			Order:       g.Order,
-			DefaultPath: g.DefaultPath,
+			Path:          g.Path,
+			Name:          g.Name,
+			Expanded:      g.Expanded,
+			Order:         g.Order,
+			DefaultPath:   g.DefaultPath,
+			MaxConcurrent: g.MaxConcurrent,
 		})
 	}
 
