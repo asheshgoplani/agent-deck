@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-05-11
+
+Patch release on top of v1.9.0 — two stability fixes from same-day post-release triage. Both touch the session lifecycle: cascade-prevention via serial-within-group as the new default, and `agent-deck rm` correctness under concurrency plus notifier cleanup.
+
+### Fixed
+
+- **`agent-deck rm` silently lost ~11 of 14 removals under parallel `xargs -P` invocation** ([#909](https://github.com/asheshgoplani/agent-deck/issues/909), [PR #935](https://github.com/asheshgoplani/agent-deck/pull/935)). `SaveWithGroups` rewrites the entire instances table via `INSERT OR REPLACE`, so a concurrent `rm` process resurrects rows another process just deleted — the CLI nevertheless printed `✓ Removed` for each call. Fixed by the new `RemoveSessionAndVerify` flow in `internal/session/storage.go`: targeted DELETE wrapped in `withBusyRetry` (the helper landed in #912), `SaveGroupsOnly` for any group structural change (never `SaveWithGroups`), then re-read the row and re-DELETE on resurrection with linear backoff. Returns `ErrRemovalNotPersistent` after exhaustion so the CLI exits nonzero instead of falsely claiming success. Same shape also fixes the separately-noted "`session remove --force` reports success but the row stays" failure mode — both `cmd/agent-deck/main.go` (`handleRemove`) and `session_remove_cmd.go` (`--force` + `--all-errored`) route through the new helper. Two-way correctness check: temporarily reverting to the old `DeleteInstance + SaveWithGroups` flow reproduced 11/12/13 survivors across three runs of `TestRm_ParallelDoesNotLoseRemovals` — matching the issue's "only ~3 of 14 actually deleted" report. With the fix restored, `go test -race -count=5 -run TestRm_ ./internal/session/` is green (PR #935).
+
+- **Notifier inboxes replayed `deferred_target_busy` events forever for sessions removed via `agent-deck rm`** ([#910](https://github.com/asheshgoplani/agent-deck/issues/910), [PR #935](https://github.com/asheshgoplani/agent-deck/pull/935)). `~/.agent-deck/inboxes/<conductor>.jsonl` and `runtime/transition-notify-state.json` accumulate entries keyed by `child_session_id`; nothing previously cleared them when the child went away. New `internal/session/rm_sweep.go` adds `SweepInboxesForChildSession(id)` (atomic per-file temp+rename; whole-file removal when nothing survives) and `RemoveNotifyStateRecord(id)` (idempotent JSON edit). Both are best-effort: failures warn but never block the rm. Wired into both single-session and `--all-errored` bulk rm paths after a successful `RemoveSessionAndVerify` (PR #935).
+
+### Changed
+
+- **Serial-within-group is now the default for newly-created groups** ([PR #933](https://github.com/asheshgoplani/agent-deck/pull/933)). Adds `MaxConcurrent` to `Group` / `GroupData` / `GroupRow` (SQLite column added idempotently); semantics are `<=0` unlimited (legacy default for pre-v1.9.1 groups), `1` serial (new-group default), `N>=2` cap at N. `agent-deck launch` and `agent-deck session start` consult the target group's cap; over-cap launches persist as `Status=queued` (a new real registry state surfaced in `list --json` as `status=queued`) instead of starting. `agent-deck session stop` drains the queue: after Kill, finds the oldest queued sibling in the same group via FIFO and starts it. CLI exposes the field via `agent-deck group create --max-concurrent N` and `agent-deck group update --max-concurrent N`. Driven by two converging signals: the **2026-05-08 cascade** (9 parallel workers launched into `agent-deck-stability` triggered systemd-oomd → killed the conductor scope; the per-MCP cgroup wrapper from #902 prevents one MCP from dragging the orchestrator down, but doesn't cap the *number* of co-resident workers a group may spawn), and **Factory Missions research** ("Parallel agents conflict, duplicate work, make inconsistent architectural calls. Serial is the working pattern."). Backward compat preserved — existing groups loaded from a row with `max_concurrent=0` keep legacy unlimited behavior; only groups created via `GroupTree.CreateGroup` post-v1.9.1 default to 1 (PR #933).
+
+### Known issues
+
+- `internal/costs::TestStore_TotalLastWeek_OnlyLastWeekEvent` still fails when the local clock is on a Monday in UTC (issue [#932](https://github.com/asheshgoplani/agent-deck/issues/932), unchanged from v1.9.0). Test-fixture time-arithmetic edge case in a package untouched by v1.9.1; does not affect built binaries.
+
 ## [1.9.0] - 2026-05-11
 
 Stability + cascade-prevention release. Closes the v1.8 flicker / silent-drop / panic-cascade bug class and the 2026-05-08 conductor-OOM cascade. Seven themed bundles from the V1.9 priority plan land here; remaining T2 / T5 / T7 longer-tail items follow in v1.9.x patches.
