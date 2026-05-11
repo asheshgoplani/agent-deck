@@ -203,6 +203,32 @@ func handleSessionStart(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// v1.9.1 group concurrency cap: if the target group is at its
+	// max_concurrent cap, mark this session queued instead of starting.
+	// The queue drains in handleSessionStop. Groups with max_concurrent<=0
+	// (legacy default) skip this check entirely.
+	tree := session.NewGroupTreeWithGroups(instances, groups)
+	max := session.GroupMaxConcurrent(tree, inst.GroupPath)
+	if session.ShouldQueue(instances, inst.GroupPath, max) {
+		inst.Status = session.StatusQueued
+		if err := saveSessionData(storage, instances, groups); err != nil {
+			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		out.Success(
+			fmt.Sprintf("Queued session: %s (group at cap %d)", inst.Title, max),
+			map[string]interface{}{
+				"success":        true,
+				"id":             inst.ID,
+				"title":          inst.Title,
+				"status":         "queued",
+				"group":          inst.GroupPath,
+				"max_concurrent": max,
+			},
+		)
+		return
+	}
+
 	// Start the session (with or without initial message)
 	if initialMessage != "" {
 		if err := inst.StartWithMessage(initialMessage); err != nil {
@@ -307,6 +333,12 @@ func handleSessionStop(profile string, args []string) {
 		os.Exit(1)
 	}
 
+	// v1.9.1 queue drain: a slot freed up. If the group has a cap and a
+	// queued sibling is waiting, start the oldest one. Only one drain per
+	// stop: if max_concurrent>=2 and multiple slots are now free, the next
+	// stop drains the next entry.
+	drained := drainGroupQueue(inst.GroupPath, instances, groups)
+
 	// Save updated state
 	if err := saveSessionData(storage, instances, groups); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
@@ -314,11 +346,38 @@ func handleSessionStop(profile string, args []string) {
 	}
 
 	// Output success
-	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), map[string]interface{}{
+	result := map[string]interface{}{
 		"success": true,
 		"id":      inst.ID,
 		"title":   inst.Title,
-	})
+	}
+	if drained != nil {
+		result["drained"] = drained.ID
+		result["drained_title"] = drained.Title
+	}
+	out.Success(fmt.Sprintf("Stopped session: %s", inst.Title), result)
+}
+
+// drainGroupQueue starts the oldest queued instance in groupPath when a slot
+// is available. Returns the drained instance (or nil if nothing to drain).
+// The caller is responsible for persisting state afterward.
+func drainGroupQueue(groupPath string, instances []*session.Instance, groups []*session.GroupData) *session.Instance {
+	tree := session.NewGroupTreeWithGroups(instances, groups)
+	max := session.GroupMaxConcurrent(tree, groupPath)
+	if session.IsAtCap(session.CountRunningInGroup(instances, groupPath), max) {
+		return nil
+	}
+	next := session.FindNextQueued(instances, groupPath)
+	if next == nil {
+		return nil
+	}
+	if err := next.Start(); err != nil {
+		// Drain is best-effort. Surface as queued + log; don't fail the stop.
+		next.Status = session.StatusError
+		fmt.Fprintf(os.Stderr, "queue drain failed to start %s: %v\n", next.Title, err)
+		return nil
+	}
+	return next
 }
 
 // handleSessionRestart restarts a session (or all active sessions with --all)
