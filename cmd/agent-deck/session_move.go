@@ -68,6 +68,21 @@ func handleSessionMove(profile string, args []string) {
 			fs.Usage()
 			os.Exit(1)
 		}
+		// Reject path-move flags that don't apply when migrating across
+		// profiles — silently ignoring them masks user mistakes. Detect via
+		// flag.Visit which only enumerates flags that were explicitly set.
+		var incompatible []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "group", "no-restart", "copy":
+				incompatible = append(incompatible, "--"+f.Name)
+			}
+		})
+		if len(incompatible) > 0 {
+			out.Error(fmt.Sprintf("--to-profile is incompatible with: %s", incompatible), ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
 		handleSessionMoveToProfile(profile, *toProfile, fs.Arg(0), *force, out)
 		return
 	}

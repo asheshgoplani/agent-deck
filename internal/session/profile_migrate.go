@@ -135,40 +135,53 @@ func MigrateConductorToProfile(name, sourceProfile, targetProfile string, opts P
 	dst := dstStorage.GetDB()
 
 	// Find the conductor session in src by title + is_conductor.
-	// Fall back to dst if it's already migrated (idempotency).
 	conductorTitle := ConductorSessionTitle(name)
-	conductorRow, err := findConductorByTitle(src, conductorTitle)
+	srcConductor, err := findConductorByTitle(src, conductorTitle)
 	if err != nil {
 		return nil, err
 	}
-	if conductorRow == nil {
-		// Already at dst? Then we only need to update meta.json.
-		if existsAt, err := findConductorByTitle(dst, conductorTitle); err == nil && existsAt != nil {
-			result := &ProfileMigrateResult{SkippedIdempotent: []string{existsAt.ID}}
-			if err := updateConductorMetaProfile(name, targetProfile); err != nil {
-				return result, fmt.Errorf("update conductor meta.json: %w", err)
-			}
-			result.MetaUpdated = true
-			return result, nil
-		}
+	dstConductor, err := findConductorByTitle(dst, conductorTitle)
+	if err != nil {
+		return nil, err
+	}
+	if srcConductor == nil && dstConductor == nil {
 		return nil, fmt.Errorf("conductor %q not found in profile %q", name, sourceProfile)
 	}
 
-	// Children first, conductor last on the source-delete side (parent_session_id
-	// will be re-anchored by the target writes since IDs round-trip). For the
-	// target-write side, order doesn't matter — INSERT OR REPLACE.
-	children, err := src.LoadInstanceChildren(conductorRow.ID)
-	if err != nil {
-		return nil, fmt.Errorf("load conductor children: %w", err)
+	// Determine the conductor ID used to look up worker children — fall back
+	// to dst when the conductor row itself has already been migrated, so a
+	// partial prior run (conductor moved but some workers stranded) still
+	// completes on re-run rather than leaving children in the source profile.
+	conductorID := ""
+	if srcConductor != nil {
+		conductorID = srcConductor.ID
+	} else {
+		conductorID = dstConductor.ID
 	}
 
-	ids := make([]string, 0, len(children)+1)
-	ids = append(ids, conductorRow.ID)
-	for _, c := range children {
+	// Workers first, conductor last in the migration order. If we ever crash
+	// after the conductor row leaves src but before all workers do, a re-run
+	// hits the dstConductor != nil branch above with conductorID == dstConductor.ID
+	// and still sweeps the stranded workers.
+	srcChildren, err := src.LoadInstanceChildren(conductorID)
+	if err != nil {
+		return nil, fmt.Errorf("load conductor children from src: %w", err)
+	}
+	ids := make([]string, 0, len(srcChildren)+1)
+	for _, c := range srcChildren {
 		ids = append(ids, c.ID)
+	}
+	if srcConductor != nil {
+		ids = append(ids, srcConductor.ID)
 	}
 
 	result := &ProfileMigrateResult{}
+	if dstConductor != nil && srcConductor == nil {
+		// Conductor itself is already migrated. Report it as
+		// SkippedIdempotent so CLI output reflects what happened.
+		result.SkippedIdempotent = append(result.SkippedIdempotent, dstConductor.ID)
+		result.MovedSessionIDs = append(result.MovedSessionIDs, dstConductor.ID)
+	}
 	for _, id := range ids {
 		if err := migrateOneSession(src, dst, id, opts, result); err != nil {
 			return result, err
@@ -235,8 +248,11 @@ func MigrateGroupToProfile(groupPath, sourceProfile, targetProfile string, opts 
 			}
 		}
 	}
+	// Empty source group is a successful no-op for idempotency: a second run
+	// of the same migration finds the source emptied by the first run, which
+	// is the desired end state — not an error.
 	if len(rows) == 0 {
-		return nil, fmt.Errorf("group %q has no sessions in profile %q", groupPath, sourceProfile)
+		return &ProfileMigrateResult{}, nil
 	}
 
 	ids := make([]string, 0, len(rows))
@@ -322,7 +338,24 @@ func migrateOneSession(src, dst *statedb.StateDB, sessionID string, opts Profile
 		}
 		result.MovedCostEvents++
 	}
+	// Before inserting watcher_events, ensure the referenced watcher row
+	// exists at dst — watcher_events.watcher_id is a foreign key to
+	// watchers(id) and foreign_keys are ON, so a missing watcher would fail
+	// the event insert. Track which watcher_ids we've already checked this
+	// call so the round-trip cost is one statedb hit per distinct watcher.
+	seenWatchers := make(map[string]bool, 4)
 	for _, ev := range watcherRows {
+		if !seenWatchers[ev.WatcherID] {
+			seenWatchers[ev.WatcherID] = true
+			if err := ensureWatcherAtDst(src, dst, ev.WatcherID); err != nil {
+				if dstRow == nil {
+					_ = dst.DeleteInstanceRow(sessionID)
+					_ = dst.DeleteCostEventsForSession(sessionID)
+					_ = dst.DeleteWatcherEventsForSession(sessionID)
+				}
+				return fmt.Errorf("ensure watcher %q at target: %w", ev.WatcherID, err)
+			}
+		}
 		if err := dst.InsertWatcherEventRow(ev); err != nil {
 			if dstRow == nil {
 				_ = dst.DeleteInstanceRow(sessionID)
@@ -354,14 +387,45 @@ func migrateOneSession(src, dst *statedb.StateDB, sessionID string, opts Profile
 }
 
 // rollbackTargetWrites removes rows from dst that the current call inserted.
-// If targetAlreadyHadInstance is true, the instance row was pre-existing and
-// must be left in place (we only added the children rows).
+// If targetAlreadyHadInstance is true, the destination may have legitimately
+// pre-existing cost_events / watcher_events for this session_id (e.g., from
+// a partial prior migration that we are now re-running). Bulk-deleting them
+// would clobber legitimate data, so in that branch we leave everything in
+// place — re-running the migration is safe (INSERT OR IGNORE / INSERT OR
+// REPLACE on every target write).
 func rollbackTargetWrites(dst *statedb.StateDB, sessionID string, targetAlreadyHadInstance bool) {
+	if targetAlreadyHadInstance {
+		return
+	}
 	_ = dst.DeleteWatcherEventsForSession(sessionID)
 	_ = dst.DeleteCostEventsForSession(sessionID)
-	if !targetAlreadyHadInstance {
-		_ = dst.DeleteInstanceRow(sessionID)
+	_ = dst.DeleteInstanceRow(sessionID)
+}
+
+// ensureWatcherAtDst copies the watchers row referenced by a watcher_event
+// from src to dst if dst lacks it. Required because watcher_events.watcher_id
+// has a foreign-key constraint to watchers(id) and foreign_keys are ON.
+// No-op if dst already has the watcher (leaving its state field untouched —
+// watcher status is owned by whichever process is actually running it).
+func ensureWatcherAtDst(src, dst *statedb.StateDB, watcherID string) error {
+	existing, err := dst.LoadWatcherByID(watcherID)
+	if err != nil {
+		return err
 	}
+	if existing != nil {
+		return nil
+	}
+	srcWatcher, err := src.LoadWatcherByID(watcherID)
+	if err != nil {
+		return err
+	}
+	if srcWatcher == nil {
+		// Watcher row is gone from src too — the event references a deleted
+		// watcher. Surface a clear error so the user can decide whether to
+		// drop the orphaned event manually before migrating.
+		return fmt.Errorf("watcher %q is referenced by watcher_events but missing from both source and target", watcherID)
+	}
+	return dst.SaveWatcher(srcWatcher)
 }
 
 // ensureGroupAtDst copies a group row from src to dst if dst lacks it.

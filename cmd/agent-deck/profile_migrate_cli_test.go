@@ -230,6 +230,45 @@ func TestGroupMoveToProfile_BatchMigratesAllSessions(t *testing.T) {
 	}
 }
 
+// TestSessionMoveToProfile_RejectsIncompatibleFlags asserts that --to-profile
+// errors out when combined with --group / --no-restart / --copy rather than
+// silently ignoring them (Copilot fix #6).
+func TestSessionMoveToProfile_RejectsIncompatibleFlags(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess CLI test skipped in short mode")
+	}
+	home := t.TempDir()
+	bootstrapProfile(t, home, "src")
+	bootstrapProfile(t, home, "dst")
+	id := addInProfile(t, home, "src", "incompat", filepath.Join(home, "p"))
+
+	cases := []struct {
+		name string
+		flag string
+	}{
+		{"group", "--group"},
+		{"no-restart", "--no-restart"},
+		{"copy", "--copy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"-p", "src", "session", "move", id,
+				"--to-profile", "dst", "--json", tc.flag}
+			if tc.flag == "--group" {
+				args = append(args, "work/api")
+			}
+			stdout, stderr, code := runAgentDeck(t, home, args...)
+			if code == 0 {
+				t.Fatalf("expected failure when --to-profile is combined with %s; stdout=%s", tc.flag, stdout)
+			}
+			combined := strings.ToLower(stdout + stderr)
+			if !strings.Contains(combined, "incompatible") {
+				t.Errorf("error should mention incompatibility; got stdout=%s stderr=%s", stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestConductorMoveToProfile_RequiresToProfile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("subprocess CLI test skipped in short mode")

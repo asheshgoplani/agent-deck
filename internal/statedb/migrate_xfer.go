@@ -325,6 +325,28 @@ func (s *StateDB) DeleteWatcherEventsForSession(sessionID string) error {
 	})
 }
 
+// LoadWatcherByID returns the watcher row with the given id, or (nil, nil)
+// if absent. Used by cross-profile migration to copy referenced watcher rows
+// from src to dst before inserting watcher_events (the events table FK-
+// references watchers(id) with foreign_keys=on).
+func (s *StateDB) LoadWatcherByID(id string) (*WatcherRow, error) {
+	var w WatcherRow
+	var createdAt, updatedAt int64
+	err := s.db.QueryRow(`
+		SELECT id, name, type, config_path, status, conductor, created_at, updated_at
+		FROM watchers WHERE id = ?
+	`, id).Scan(&w.ID, &w.Name, &w.Type, &w.ConfigPath, &w.Status, &w.Conductor, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	w.CreatedAt = time.Unix(createdAt, 0)
+	w.UpdatedAt = time.Unix(updatedAt, 0)
+	return &w, nil
+}
+
 // --- group round-trip ---
 
 // LoadGroup returns the row for the given path, or (nil, nil) if absent.

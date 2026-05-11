@@ -500,6 +500,141 @@ func TestMigrateSessionsToProfile_ConcurrentDifferentSessions(t *testing.T) {
 	}
 }
 
+// TestMigrateConductorToProfile_RescuesStrandedChildrenOnRerun simulates the
+// partial-failure case Copilot flagged: a prior run moved the conductor and
+// the first worker, then crashed before the second worker migrated. Re-running
+// must sweep the stranded worker rather than just updating meta.json.
+func TestMigrateConductorToProfile_RescuesStrandedChildrenOnRerun(t *testing.T) {
+	src, dst := migrateTestSetup(t, "src", "dst")
+
+	// Conductor + worker A already in dst (the prior-run survivors).
+	cond := makeRow("c-resume", ConductorSessionTitle("rescue"), DefaultGroupPath)
+	cond.IsConductor = true
+	seedSession(t, dst.GetDB(), cond)
+	wA := makeRow("worker-a-resume", "worker-a", DefaultGroupPath)
+	wA.ParentSessionID = cond.ID
+	seedSession(t, dst.GetDB(), wA)
+
+	// Worker B is stranded in src, still pointing at the (now-dst) conductor.
+	wB := makeRow("worker-b-resume", "worker-b", DefaultGroupPath)
+	wB.ParentSessionID = cond.ID
+	seedSession(t, src.GetDB(), wB)
+
+	if err := SaveConductorMeta(&ConductorMeta{
+		Name: "rescue", Agent: ConductorAgentClaude, Profile: "src",
+	}); err != nil {
+		t.Fatalf("seed meta: %v", err)
+	}
+
+	result, err := MigrateConductorToProfile("rescue", "src", "dst", ProfileMigrateOptions{})
+	if err != nil {
+		t.Fatalf("rerun migrate: %v", err)
+	}
+	// The stranded worker must be at dst now and gone from src.
+	if r, _ := dst.GetDB().LoadInstanceByID(wB.ID); r == nil {
+		t.Errorf("stranded worker %q was not rescued to dst", wB.ID)
+	}
+	if r, _ := src.GetDB().LoadInstanceByID(wB.ID); r != nil {
+		t.Errorf("stranded worker %q still in src after re-run", wB.ID)
+	}
+	// Conductor is reported as idempotent-skipped.
+	foundCond := false
+	for _, id := range result.SkippedIdempotent {
+		if id == cond.ID {
+			foundCond = true
+		}
+	}
+	if !foundCond {
+		t.Errorf("expected conductor %q in SkippedIdempotent, got %v", cond.ID, result.SkippedIdempotent)
+	}
+	got, _ := LoadConductorMeta("rescue")
+	if got == nil || got.Profile != "dst" {
+		t.Errorf("meta.json not updated to dst on rescue rerun: %+v", got)
+	}
+}
+
+// TestMigrateSessionsToProfile_CopiesReferencedWatcherRow verifies fix #3 from
+// the Copilot review: watcher_events.watcher_id is FK-constrained, so we
+// must copy the watchers row from src→dst before inserting events.
+func TestMigrateSessionsToProfile_CopiesReferencedWatcherRow(t *testing.T) {
+	src, dst := migrateTestSetup(t, "src", "dst")
+	seedSession(t, src.GetDB(), makeRow("sess-fk", "S", DefaultGroupPath))
+
+	// Watcher exists in src only. Without the fix, the watcher_event insert
+	// at dst would fail with FOREIGN KEY constraint failed.
+	if err := src.GetDB().SaveWatcher(&statedb.WatcherRow{
+		ID: "w-fk", Name: "fk-watch", Type: "github", ConfigPath: "/tmp/w.toml",
+		Status: "stopped", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed src watcher: %v", err)
+	}
+	if err := src.GetDB().InsertWatcherEventRow(&statedb.WatcherEventRow{
+		WatcherID: "w-fk", DedupKey: "d-fk", SessionID: "sess-fk", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed watcher event: %v", err)
+	}
+
+	if _, err := MigrateSessionsToProfile("src", "dst", []string{"sess-fk"}, ProfileMigrateOptions{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// dst must have the watcher row (copied) AND the event.
+	w, _ := dst.GetDB().LoadWatcherByID("w-fk")
+	if w == nil {
+		t.Error("dst missing watcher row that was referenced by a migrated event")
+	}
+	events, _ := dst.GetDB().LoadWatcherEventsForSession("sess-fk")
+	if len(events) != 1 {
+		t.Errorf("dst missing migrated watcher event: %d", len(events))
+	}
+}
+
+// TestMigrateGroupToProfile_EmptyGroupIsNoOp verifies fix #5: re-running a
+// group migration after the source group has been emptied must succeed.
+func TestMigrateGroupToProfile_EmptyGroupIsNoOp(t *testing.T) {
+	migrateTestSetup(t, "src", "dst")
+	// No sessions seeded in src.
+	result, err := MigrateGroupToProfile("nonexistent-group", "src", "dst", ProfileMigrateOptions{})
+	if err != nil {
+		t.Errorf("expected empty group to be a no-op, got error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result on no-op")
+	}
+	if len(result.MovedSessionIDs) != 0 {
+		t.Errorf("expected zero moved sessions, got %v", result.MovedSessionIDs)
+	}
+}
+
+// TestRollbackTargetWrites_PreservesPreexistingRows ensures fix #4: if the
+// migration is rerun and the destination already has the session row + its
+// associated cost/watcher rows from a prior partial run, a source-delete
+// failure must NOT bulk-delete those rows at the destination.
+func TestRollbackTargetWrites_PreservesPreexistingRows(t *testing.T) {
+	_, dst := migrateTestSetup(t, "src", "dst")
+
+	// Seed dst with a session + cost event that we'd consider "legitimately
+	// pre-existing" from a prior partial migration.
+	seedSession(t, dst.GetDB(), makeRow("preexist", "P", DefaultGroupPath))
+	if err := dst.GetDB().InsertCostEventRow(&statedb.CostEventRow{
+		ID: "cp-1", SessionID: "preexist", Timestamp: time.Now().UTC().Format(time.RFC3339), Model: "m", CostMicrodollars: 100,
+	}); err != nil {
+		t.Fatalf("seed dst cost: %v", err)
+	}
+
+	// Simulate rollback with targetAlreadyHadInstance=true: must NOT delete
+	// the pre-existing cost row.
+	rollbackTargetWrites(dst.GetDB(), "preexist", true)
+
+	costs, _ := dst.GetDB().LoadCostEventsForSession("preexist")
+	if len(costs) != 1 {
+		t.Errorf("rollback with targetAlreadyHadInstance=true clobbered pre-existing cost rows: have %d, want 1", len(costs))
+	}
+	inst, _ := dst.GetDB().LoadInstanceByID("preexist")
+	if inst == nil {
+		t.Error("rollback clobbered pre-existing instance row")
+	}
+}
+
 // Sanity check: the helper that pre-validates target existence rejects a
 // directory-without-state.db case.
 func TestRequireProfileExists_RejectsBareDir(t *testing.T) {
