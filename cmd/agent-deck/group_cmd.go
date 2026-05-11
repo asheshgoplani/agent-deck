@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -646,21 +647,26 @@ func handleGroupDelete(profile string, args []string) {
 	})
 }
 
-// handleGroupMove moves a session to a different group
+// handleGroupMove moves a session to a different group, or (with --to-profile)
+// migrates every session in a group to another profile's DB (issue #928).
 func handleGroupMove(profile string, args []string) {
 	fs := flag.NewFlagSet("group move", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	toProfile := fs.String("to-profile", "", "Migrate every session in <group> to another profile's DB (issue #928)")
+	force := fs.Bool("force", false, "With --to-profile: migrate even if a session is running")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck group move <session-id> <group>")
+		fmt.Println("       agent-deck group move <group> --to-profile <name> [--force]")
 		fmt.Println()
-		fmt.Println("Move a session to a different group.")
+		fmt.Println("Move a session to a different group (default form), or migrate every")
+		fmt.Println("session in <group> to another profile's DB (with --to-profile).")
 		fmt.Println()
 		fmt.Println("Arguments:")
 		fmt.Println("  <session-id>   Session title, ID prefix, or path")
-		fmt.Println("  <group>        Target group path (use \"\" or root for ungrouped)")
+		fmt.Println("  <group>        Target group path (or, with --to-profile, the source group)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -669,6 +675,7 @@ func handleGroupMove(profile string, args []string) {
 		fmt.Println("  agent-deck group move my-project work/frontend")
 		fmt.Println("  agent-deck group move my-project \"\"              # Move to root")
 		fmt.Println("  agent-deck group move my-project root            # Move to root")
+		fmt.Println("  agent-deck group move work/api --to-profile march")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -676,6 +683,22 @@ func handleGroupMove(profile string, args []string) {
 	}
 
 	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	// Cross-profile group migration (issue #928): different argument shape.
+	if *toProfile != "" {
+		if fs.NArg() < 1 {
+			out.Error("group move --to-profile requires <group>", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		if fs.NArg() > 1 {
+			out.Error("--to-profile takes a single <group> argument", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		handleGroupMoveToProfile(profile, *toProfile, fs.Arg(0), *force, out)
+		return
+	}
 
 	sessionID := fs.Arg(0)
 	targetGroup := fs.Arg(1)
@@ -1164,4 +1187,45 @@ func handleGroupChange(profile string, args []string) {
 		"from": sourcePath,
 		"to":   newPath,
 	})
+}
+
+// handleGroupMoveToProfile implements `group move <group> --to-profile <name>`
+// (issue #928). Every session in <group> at the source profile is migrated to
+// the target profile. The group row itself is also created in the target.
+func handleGroupMoveToProfile(sourceProfile, targetProfile, groupPath string, force bool, out *CLIOutput) {
+	if groupPath == "root" || groupPath == "" {
+		groupPath = session.DefaultGroupPath
+	}
+
+	result, err := session.MigrateGroupToProfile(
+		groupPath, sourceProfile, targetProfile,
+		session.ProfileMigrateOptions{Force: force},
+	)
+	if err != nil {
+		exitCode := ErrCodeInvalidOperation
+		hint := ""
+		switch {
+		case errors.Is(err, session.ErrProfileMissing):
+			exitCode = ErrCodeNotFound
+		case errors.Is(err, session.ErrSessionRunning):
+			hint = " (stop the running session(s) first, or re-run with --force)"
+		}
+		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
+		os.Exit(1)
+	}
+
+	out.Success(
+		fmt.Sprintf("Migrated group %q: profile %s → %s (%d sessions)",
+			groupPath, sourceProfile, targetProfile, len(result.MovedSessionIDs)),
+		map[string]interface{}{
+			"success":        true,
+			"group":          groupPath,
+			"from_profile":   sourceProfile,
+			"to_profile":     targetProfile,
+			"sessions_moved": result.MovedSessionIDs,
+			"cost_events":    result.MovedCostEvents,
+			"watcher_events": result.MovedWatcherEvents,
+			"groups_created": result.CreatedGroups,
+		},
+	)
 }

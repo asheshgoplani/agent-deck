@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -43,6 +44,8 @@ func handleConductor(profile string, args []string) {
 		handleConductorStatus(profile, args[1:])
 	case "list":
 		handleConductorList(profile, args[1:])
+	case "move":
+		handleConductorMove(profile, args[1:])
 	case "help", "--help", "-h":
 		printConductorHelp()
 	default:
@@ -1201,4 +1204,77 @@ func printConductorHelp() {
 	fmt.Println("  agent-deck conductor status")
 	fmt.Println("  agent-deck conductor teardown infra --remove")
 	fmt.Println("  agent-deck conductor teardown --all --remove")
+	fmt.Println("  agent-deck conductor move ryan --to-profile march")
+}
+
+// handleConductorMove migrates a conductor (session row + all child sessions
+// + meta.json) to another profile (issue #928).
+func handleConductorMove(sourceProfile string, args []string) {
+	fs := flag.NewFlagSet("conductor move", flag.ExitOnError)
+	toProfile := fs.String("to-profile", "", "Target profile (required)")
+	force := fs.Bool("force", false, "Migrate even if the conductor or a worker is running")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	quiet := fs.Bool("quiet", false, "Minimal output")
+	quietShort := fs.Bool("q", false, "Minimal output (short)")
+
+	fs.Usage = func() {
+		fmt.Println("Usage: agent-deck conductor move <name> --to-profile <profile> [--force]")
+		fmt.Println()
+		fmt.Println("Migrate a conductor session and all its worker sessions to another")
+		fmt.Println("profile's DB, and update ~/.agent-deck/conductor/<name>/meta.json in lockstep.")
+		fmt.Println()
+		fmt.Println("Options:")
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		os.Exit(1)
+	}
+
+	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	if fs.NArg() < 1 {
+		out.Error("conductor move requires <name>", ErrCodeInvalidOperation)
+		fs.Usage()
+		os.Exit(1)
+	}
+	if *toProfile == "" {
+		out.Error("--to-profile is required", ErrCodeInvalidOperation)
+		fs.Usage()
+		os.Exit(1)
+	}
+
+	name := fs.Arg(0)
+	result, err := session.MigrateConductorToProfile(
+		name, sourceProfile, *toProfile,
+		session.ProfileMigrateOptions{Force: *force},
+	)
+	if err != nil {
+		exitCode := ErrCodeInvalidOperation
+		hint := ""
+		switch {
+		case errors.Is(err, session.ErrProfileMissing):
+			exitCode = ErrCodeNotFound
+		case errors.Is(err, session.ErrSessionRunning):
+			hint = " (stop the conductor/workers first, or re-run with --force)"
+		}
+		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
+		os.Exit(1)
+	}
+
+	out.Success(
+		fmt.Sprintf("Migrated conductor %q: profile %s → %s (%d sessions)",
+			name, sourceProfile, *toProfile, len(result.MovedSessionIDs)),
+		map[string]interface{}{
+			"success":        true,
+			"conductor":      name,
+			"from_profile":   sourceProfile,
+			"to_profile":     *toProfile,
+			"sessions_moved": result.MovedSessionIDs,
+			"cost_events":    result.MovedCostEvents,
+			"watcher_events": result.MovedWatcherEvents,
+			"groups_created": result.CreatedGroups,
+			"meta_updated":   result.MetaUpdated,
+		},
+	)
 }

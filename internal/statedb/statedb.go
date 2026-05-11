@@ -110,14 +110,32 @@ type WatcherRow struct {
 
 // WatcherEventRow represents a single event row from the watcher_events table.
 type WatcherEventRow struct {
-	ID        int64
-	WatcherID string
-	DedupKey  string
-	Sender    string
-	Subject   string
-	RoutedTo  string
-	SessionID string
-	CreatedAt time.Time
+	ID              int64
+	WatcherID       string
+	DedupKey        string
+	Sender          string
+	Subject         string
+	RoutedTo        string
+	SessionID       string
+	TriageSessionID string
+	CreatedAt       time.Time
+}
+
+// CostEventRow mirrors the cost_events table for raw round-trip operations
+// (e.g., cross-profile migration). The canonical CostEvent type lives in
+// internal/costs, but we keep this minimal struct here so the statedb package
+// can read/write rows without a circular import.
+type CostEventRow struct {
+	ID                  string
+	SessionID           string
+	Timestamp           string // RFC3339; preserve verbatim — cost_events stores TEXT
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheWriteTokens    int64
+	CostMicrodollars    int64
+	BudgetStopTriggered bool
 }
 
 // GroupRow represents a group row in the database.
