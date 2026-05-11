@@ -50,6 +50,10 @@ const (
 	StatusError    Status = "error"
 	StatusStarting Status = "starting" // Session is being created (tmux initializing)
 	StatusStopped  Status = "stopped"  // Session intentionally stopped by user (not crashed)
+	// StatusQueued: session is waiting for group capacity. v1.9.1 introduces
+	// group max_concurrent caps; a launch into a group at cap stores the
+	// instance with this status and starts it once a running session ends.
+	StatusQueued Status = "queued"
 )
 
 const wrapperPlaceholder = "{command}"

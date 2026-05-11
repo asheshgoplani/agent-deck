@@ -127,6 +127,10 @@ type GroupRow struct {
 	Expanded    bool
 	Order       int
 	DefaultPath string
+	// MaxConcurrent caps simultaneous running sessions in this group (v1.9.1).
+	// 0 = unlimited (legacy default for groups predating this field); 1 = serial
+	// (default for newly-created groups); N>=2 = bounded parallelism.
+	MaxConcurrent int
 }
 
 // StatusRow holds status + acknowledgment for a session.
@@ -261,17 +265,29 @@ func (s *StateDB) Migrate() error {
 		return fmt.Errorf("statedb: create instances: %w", err)
 	}
 
-	// groups table
+	// groups table.
+	// max_concurrent (v1.9.1): caps simultaneous running sessions in the
+	// group. DEFAULT 0 preserves backward compat (legacy unlimited) for any
+	// row inserted before this column existed; newly-created groups set 1.
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS groups (
-			path         TEXT PRIMARY KEY,
-			name         TEXT NOT NULL,
-			expanded     INTEGER NOT NULL DEFAULT 1,
-			sort_order   INTEGER NOT NULL DEFAULT 0,
-			default_path TEXT NOT NULL DEFAULT ''
+			path           TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			expanded       INTEGER NOT NULL DEFAULT 1,
+			sort_order     INTEGER NOT NULL DEFAULT 0,
+			default_path   TEXT NOT NULL DEFAULT '',
+			max_concurrent INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create groups: %w", err)
+	}
+
+	// ALTER for pre-existing databases (idempotent: ignore "duplicate column").
+	if _, err := tx.Exec(`ALTER TABLE groups ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0`); err != nil {
+		// SQLite returns "duplicate column name" when the column already exists.
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("statedb: add groups.max_concurrent: %w", err)
+		}
 	}
 
 	// instance heartbeats
@@ -696,8 +712,8 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	}
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO groups (path, name, expanded, sort_order, default_path)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -709,7 +725,7 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 		if g.Expanded {
 			expanded = 1
 		}
-		if _, err := stmt.Exec(g.Path, g.Name, expanded, g.Order, g.DefaultPath); err != nil {
+		if _, err := stmt.Exec(g.Path, g.Name, expanded, g.Order, g.DefaultPath, g.MaxConcurrent); err != nil {
 			return err
 		}
 	}
@@ -720,7 +736,7 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 // LoadGroups returns all groups ordered by sort_order.
 func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 	rows, err := s.db.Query(`
-		SELECT path, name, expanded, sort_order, default_path
+		SELECT path, name, expanded, sort_order, default_path, max_concurrent
 		FROM groups ORDER BY sort_order
 	`)
 	if err != nil {
@@ -732,7 +748,7 @@ func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 	for rows.Next() {
 		g := &GroupRow{}
 		var expanded int
-		if err := rows.Scan(&g.Path, &g.Name, &expanded, &g.Order, &g.DefaultPath); err != nil {
+		if err := rows.Scan(&g.Path, &g.Name, &expanded, &g.Order, &g.DefaultPath, &g.MaxConcurrent); err != nil {
 			return nil, err
 		}
 		g.Expanded = expanded != 0

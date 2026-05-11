@@ -122,6 +122,10 @@ type GroupData struct {
 	Expanded    bool   `json:"expanded"`
 	Order       int    `json:"order"`
 	DefaultPath string `json:"default_path,omitempty"`
+	// MaxConcurrent caps simultaneous running sessions in this group (v1.9.1).
+	// 0 = unlimited (legacy default for groups predating this field); 1 = serial
+	// (default for newly-created groups); N>=2 = bounded parallelism.
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
 }
 
 // Storage handles persistence of session data via SQLite.
@@ -369,11 +373,12 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 		groupRows := make([]*statedb.GroupRow, 0, len(groupTree.GroupList))
 		for _, g := range groupTree.GroupList {
 			groupRows = append(groupRows, &statedb.GroupRow{
-				Path:        g.Path,
-				Name:        g.Name,
-				Expanded:    g.Expanded,
-				Order:       g.Order,
-				DefaultPath: g.DefaultPath,
+				Path:          g.Path,
+				Name:          g.Name,
+				Expanded:      g.Expanded,
+				Order:         g.Order,
+				DefaultPath:   g.DefaultPath,
+				MaxConcurrent: g.MaxConcurrent,
 			})
 		}
 		if err := s.db.SaveGroups(groupRows); err != nil {
@@ -423,11 +428,12 @@ func (s *Storage) SaveGroupsOnly(groupTree *GroupTree) error {
 	groupRows := make([]*statedb.GroupRow, 0, len(groupTree.GroupList))
 	for _, g := range groupTree.GroupList {
 		groupRows = append(groupRows, &statedb.GroupRow{
-			Path:        g.Path,
-			Name:        g.Name,
-			Expanded:    g.Expanded,
-			Order:       g.Order,
-			DefaultPath: g.DefaultPath,
+			Path:          g.Path,
+			Name:          g.Name,
+			Expanded:      g.Expanded,
+			Order:         g.Order,
+			DefaultPath:   g.DefaultPath,
+			MaxConcurrent: g.MaxConcurrent,
 		})
 	}
 
@@ -539,11 +545,12 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 	groups := make([]*GroupData, len(dbGroups))
 	for i, g := range dbGroups {
 		groups[i] = &GroupData{
-			Path:        g.Path,
-			Name:        g.Name,
-			Expanded:    g.Expanded,
-			Order:       g.Order,
-			DefaultPath: g.DefaultPath,
+			Path:          g.Path,
+			Name:          g.Name,
+			Expanded:      g.Expanded,
+			Order:         g.Order,
+			DefaultPath:   g.DefaultPath,
+			MaxConcurrent: g.MaxConcurrent,
 		}
 	}
 
@@ -645,11 +652,12 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 	data.Groups = make([]*GroupData, len(dbGroups))
 	for i, g := range dbGroups {
 		data.Groups[i] = &GroupData{
-			Path:        g.Path,
-			Name:        g.Name,
-			Expanded:    g.Expanded,
-			Order:       g.Order,
-			DefaultPath: g.DefaultPath,
+			Path:          g.Path,
+			Name:          g.Name,
+			Expanded:      g.Expanded,
+			Order:         g.Order,
+			DefaultPath:   g.DefaultPath,
+			MaxConcurrent: g.MaxConcurrent,
 		}
 	}
 
