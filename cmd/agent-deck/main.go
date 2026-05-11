@@ -1922,16 +1922,16 @@ func handleRemove(profile string, args []string) {
 		_ = git.PruneWorktrees(inst.WorktreeRepoRoot)
 	}
 
-	// Direct SQL DELETE first to prevent resurrection by concurrent TUI force saves.
-	// The TUI's forceSaveInstances() can race with CLI deletion and re-insert the session.
-	// By deleting the row directly, we ensure it's gone even if SaveWithGroups races.
-	if err := storage.DeleteInstance(removedID); err != nil {
-		if !*jsonOutput {
-			fmt.Printf("Warning: direct delete failed: %v\n", err)
-		}
-	}
-
-	// Rebuild instance list without the deleted session and save with groups
+	// Rebuild instance list without the deleted session and persist groups.
+	// v1.9.1 (#909): the rm path now uses RemoveSessionAndVerify which
+	//   1. issues a targeted DELETE (busy-retried in statedb),
+	//   2. saves groups WITHOUT rewriting the instances table (SaveGroupsOnly,
+	//      not SaveWithGroups — the latter's load-modify-write INSERT OR
+	//      REPLACE was the structural source of the silent-loss race), and
+	//   3. verifies the row is actually gone, retrying the DELETE on
+	//      resurrection by a concurrent SaveInstances rewrite.
+	// On persistent failure the CLI exits 1 instead of falsely printing
+	// "✓ Removed".
 	newInstances := make([]*session.Instance, 0, len(instances)-1)
 	for _, s := range instances {
 		if s.ID != removedID {
@@ -1940,8 +1940,8 @@ func handleRemove(profile string, args []string) {
 	}
 	groupTree := session.NewGroupTreeWithGroups(newInstances, groups)
 
-	if err := storage.SaveWithGroups(newInstances, groupTree); err != nil {
-		out.Error(fmt.Sprintf("failed to save: %v", err), ErrCodeInvalidOperation)
+	if err := storage.RemoveSessionAndVerify(removedID, newInstances, groupTree); err != nil {
+		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 

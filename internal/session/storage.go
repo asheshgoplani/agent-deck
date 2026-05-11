@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -402,6 +403,102 @@ func (s *Storage) DeleteInstance(id string) error {
 	}
 
 	_ = s.db.Touch()
+	return nil
+}
+
+// InstanceExists returns true iff a row with the given id is currently
+// persisted. Used by RemoveSessionAndVerify to confirm a DELETE actually
+// landed (issue #909).
+func (s *Storage) InstanceExists(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return false, fmt.Errorf("storage database not initialized")
+	}
+	return s.db.InstanceExists(id)
+}
+
+// ErrRemovalNotPersistent is returned by RemoveSessionAndVerify when, after
+// retries, the row is still observed in the database. The most likely cause
+// is a concurrent SaveInstances rewrite from another agent-deck process
+// that loaded the instances slice before this DELETE landed and re-inserted
+// the row via INSERT OR REPLACE.
+//
+// Surfacing this as a real error (rather than silently printing "✓ Removed")
+// is the user-facing half of the issue #909 fix.
+var ErrRemovalNotPersistent = errors.New("removal not persistent: row resurrected by concurrent writer")
+
+// rmVerifyAttempts and rmVerifyBackoff control the post-commit verify loop
+// inside RemoveSessionAndVerify. The defaults absorb the bounded window in
+// which a competing rewriter can resurrect the row (parallel xargs -P N).
+// Tests override via the package-private setters so they don't sit through
+// the production backoff schedule.
+var (
+	rmVerifyAttempts = 6
+	rmVerifyBackoff  = []time.Duration{
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		80 * time.Millisecond,
+		160 * time.Millisecond,
+		320 * time.Millisecond,
+	}
+)
+
+// RemoveSessionAndVerify performs a durable session removal.
+//
+// Flow (v1.9.1 issue #909 fix):
+//  1. DeleteInstance(id) — targeted DELETE, busy-retry inside statedb.
+//  2. SaveGroupsOnly(groupTree) — persist any group structure changes
+//     WITHOUT rewriting the instances table. Rewriting (SaveWithGroups)
+//     is the load-modify-write pattern that lets a concurrent rm
+//     resurrect this row via INSERT OR REPLACE; skipping it eliminates
+//     the structural race for our own write.
+//  3. Verify InstanceExists(id) is false. If still present (because some
+//     other process did a SaveInstances rewrite that included the row),
+//     re-issue the targeted DELETE and loop with linear backoff.
+//  4. After exhausting attempts, return ErrRemovalNotPersistent so the
+//     caller can fail loudly instead of printing "✓ Removed" on a row
+//     that's still there.
+//
+// remainingInstances is the post-removal session list, used only to
+// compute group sort_order / membership for SaveGroupsOnly. groupTree may
+// be nil if the caller doesn't care to persist groups.
+func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instance, groupTree *GroupTree) error {
+	if err := s.DeleteInstance(id); err != nil {
+		return err
+	}
+	if groupTree != nil {
+		if err := s.SaveGroupsOnly(groupTree); err != nil {
+			return fmt.Errorf("failed to save groups during rm: %w", err)
+		}
+	}
+
+	for attempt := 0; attempt < rmVerifyAttempts; attempt++ {
+		exists, err := s.InstanceExists(id)
+		if err != nil {
+			return fmt.Errorf("verify rm of %s: %w", id, err)
+		}
+		if !exists {
+			return nil
+		}
+		if attempt < len(rmVerifyBackoff) {
+			time.Sleep(rmVerifyBackoff[attempt])
+		}
+		// Re-issue the targeted DELETE; this races against the resurrecting
+		// writer but eventually wins because every retry shrinks the window.
+		if err := s.DeleteInstance(id); err != nil {
+			return err
+		}
+	}
+
+	exists, err := s.InstanceExists(id)
+	if err != nil {
+		return fmt.Errorf("verify rm of %s: %w", id, err)
+	}
+	if exists {
+		return fmt.Errorf("%w: %s", ErrRemovalNotPersistent, id)
+	}
 	return nil
 }
 
