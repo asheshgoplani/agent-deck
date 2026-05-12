@@ -391,6 +391,11 @@ type Home struct {
 	transitionTrackerOnce sync.Once
 	transitionTracker     *transitionTracker
 
+	// Logs once per engine instance when the first watcher event is consumed
+	// from the engine's EventCh. Helps diagnose listener-not-firing issues
+	// without needing to instrument every event.
+	firstWatcherEventOnce sync.Once
+
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
 	fullRepaint          bool
@@ -1989,11 +1994,27 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 	}
 
 	h.watcherEngine = eng
+	h.firstWatcherEventOnce = sync.Once{}
+
+	uiLog.Info("watcher_engine_started",
+		slog.Int("watcher_count", len(rows)),
+		slog.Int("running_count", runningCount(rows)))
 
 	return tea.Batch(
 		listenForWatcherEvent(eng.EventCh()),
 		listenForWatcherHealth(eng.HealthCh()),
 	)
+}
+
+// runningCount returns how many watcher rows are in the "running" state.
+func runningCount(rows []*statedb.WatcherRow) int {
+	n := 0
+	for _, r := range rows {
+		if r != nil && r.Status == "running" {
+			n++
+		}
+	}
+	return n
 }
 
 // propagateThemeToSessions updates COLORFGBG in all running tmux sessions
@@ -4574,6 +4595,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case watcherEventMsg:
+		// One-shot log per engine instance to confirm the listener path is alive.
+		h.firstWatcherEventOnce.Do(func() {
+			uiLog.Info("watcher_event_first_received",
+				slog.String("sender", msg.event.Sender),
+				slog.String("routed_to", msg.event.RoutedTo))
+		})
 		// Refresh watcher panel data on new events and re-register listener.
 		h.refreshWatcherPanel()
 		// Deliver event to the routed conductor's tmux pane (parity with
