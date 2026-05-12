@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1978,7 +1979,7 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 		adapterCfg := watcher.AdapterConfig{
 			Type:     row.Type,
 			Name:     row.Name,
-			Settings: map[string]string{},
+			Settings: loadWatcherSourceSettings(row.Name),
 		}
 		eng.RegisterAdapter(row.ID, adapter, adapterCfg, maxSilenceMinutes)
 	}
@@ -1994,6 +1995,29 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 		listenForWatcherEvent(eng.EventCh()),
 		listenForWatcherHealth(eng.HealthCh()),
 	)
+}
+
+// loadWatcherSourceSettings reads the [source] table from
+// ~/.agent-deck/watcher/<name>/watcher.toml into a map[string]string suitable for
+// AdapterConfig.Settings. Returns an empty (non-nil) map on any error so the engine
+// falls back to per-adapter defaults instead of failing to register.
+func loadWatcherSourceSettings(name string) map[string]string {
+	out := map[string]string{}
+	dir, err := session.WatcherNameDir(name)
+	if err != nil {
+		return out
+	}
+	path := filepath.Join(dir, "watcher.toml")
+	var cfg struct {
+		Source map[string]string `toml:"source"`
+	}
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return out
+	}
+	for k, v := range cfg.Source {
+		out[k] = v
+	}
+	return out
 }
 
 // propagateThemeToSessions updates COLORFGBG in all running tmux sessions
