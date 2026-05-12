@@ -182,8 +182,13 @@ func TestCreateWorktreeWithSetup_NoScript(t *testing.T) {
 	createTestRepoForSetup(t, dir)
 	worktreePath := filepath.Join(dir, ".worktrees", "test-branch")
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "test-branch", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(backend, worktreePath, "test-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -222,9 +227,14 @@ echo "setup done"
 		t.Fatal(err)
 	}
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+
 	worktreePath := filepath.Join(dir, ".worktrees", "setup-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "setup-branch", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(backend, worktreePath, "setup-branch", &stdout, &stderr, 0)
 	if err != nil {
 		t.Fatalf("worktree creation failed: %v", err)
 	}
@@ -262,9 +272,14 @@ exit 1
 		t.Fatal(err)
 	}
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+
 	worktreePath := filepath.Join(dir, ".worktrees", "fail-branch")
 	var stdout, stderr bytes.Buffer
-	setupErr, err := CreateWorktreeWithSetup(dir, worktreePath, "fail-branch", &stdout, &stderr, 0)
+	setupErr, err := CreateWorktreeWithSetup(backend, worktreePath, "fail-branch", &stdout, &stderr, 0)
 
 	// Worktree creation should succeed
 	if err != nil {

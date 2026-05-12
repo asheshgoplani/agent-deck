@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // Helper function to create a git repo for testing
@@ -59,6 +61,28 @@ func createBranch(t *testing.T, dir, branchName string) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to create branch %s: %v", branchName, err)
 	}
+}
+
+// Helper to create a test repo and return a GitBackend for it
+func newTestBackend(t *testing.T, dir string) *GitBackend {
+	t.Helper()
+	createTestRepo(t, dir)
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+	return backend
+}
+
+// getCurrentBranch is a test helper that gets current branch using raw git commands
+func getCurrentBranch(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get current branch: %v", err)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -162,17 +186,16 @@ func TestGetRepoRoot(t *testing.T) {
 	})
 }
 
-func TestGetCurrentBranch(t *testing.T) {
+func TestGitBackend_GetCurrentBranch_Extended(t *testing.T) {
 	t.Run("returns main/master for new repo", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
-		branch, err := GetCurrentBranch(dir)
+		branch, err := backend.GetCurrentBranch()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Could be main or master depending on git config
 		if branch != "main" && branch != "master" {
 			t.Errorf("expected main or master, got %s", branch)
 		}
@@ -180,7 +203,7 @@ func TestGetCurrentBranch(t *testing.T) {
 
 	t.Run("returns correct branch after checkout", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 		createBranch(t, dir, "feature-branch")
 
 		cmd := exec.Command("git", "checkout", "feature-branch")
@@ -189,7 +212,7 @@ func TestGetCurrentBranch(t *testing.T) {
 			t.Fatalf("failed to checkout branch: %v", err)
 		}
 
-		branch, err := GetCurrentBranch(dir)
+		branch, err := backend.GetCurrentBranch()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -198,42 +221,25 @@ func TestGetCurrentBranch(t *testing.T) {
 			t.Errorf("expected feature-branch, got %s", branch)
 		}
 	})
-
-	t.Run("returns error for non-git directory", func(t *testing.T) {
-		dir := t.TempDir()
-
-		_, err := GetCurrentBranch(dir)
-		if err == nil {
-			t.Error("expected error for non-git directory")
-		}
-	})
 }
 
-func TestBranchExists(t *testing.T) {
+func TestGitBackend_BranchExists_Extended(t *testing.T) {
 	t.Run("returns true for existing branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 		createBranch(t, dir, "existing-branch")
 
-		if !BranchExists(dir, "existing-branch") {
+		if !backend.BranchExists("existing-branch") {
 			t.Error("expected BranchExists to return true for existing branch")
 		}
 	})
 
 	t.Run("returns false for non-existing branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
-		if BranchExists(dir, "nonexistent-branch") {
+		if backend.BranchExists("nonexistent-branch") {
 			t.Error("expected BranchExists to return false for non-existing branch")
-		}
-	})
-
-	t.Run("returns false for non-git directory", func(t *testing.T) {
-		dir := t.TempDir()
-
-		if BranchExists(dir, "any-branch") {
-			t.Error("expected BranchExists to return false for non-git directory")
 		}
 	})
 }
@@ -448,29 +454,24 @@ func TestGenerateWorktreePath(t *testing.T) {
 	})
 }
 
-func TestCreateWorktree(t *testing.T) {
+func TestGitBackend_CreateWorktree(t *testing.T) {
 	t.Run("creates worktree with existing branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 		createBranch(t, dir, "existing-branch")
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "existing-branch")
+		err := backend.CreateWorktree(worktreePath, "existing-branch")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Verify worktree was created
 		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 			t.Error("worktree directory was not created")
 		}
 
-		// Verify it's on the correct branch
-		branch, err := GetCurrentBranch(worktreePath)
-		if err != nil {
-			t.Fatalf("failed to get branch: %v", err)
-		}
+		branch := getCurrentBranch(t, worktreePath)
 		if branch != "existing-branch" {
 			t.Errorf("expected branch existing-branch, got %s", branch)
 		}
@@ -478,49 +479,110 @@ func TestCreateWorktree(t *testing.T) {
 
 	t.Run("creates worktree with new branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "new-branch")
+		err := backend.CreateWorktree(worktreePath, "new-branch")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Verify worktree was created
 		if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 			t.Error("worktree directory was not created")
 		}
 
-		// Verify it's on the new branch
-		branch, err := GetCurrentBranch(worktreePath)
-		if err != nil {
-			t.Fatalf("failed to get branch: %v", err)
-		}
+		branch := getCurrentBranch(t, worktreePath)
 		if branch != "new-branch" {
 			t.Errorf("expected branch new-branch, got %s", branch)
 		}
 	})
 
-	t.Run("returns error for invalid branch name", func(t *testing.T) {
+	t.Run("creates worktree from default remote branch", func(t *testing.T) {
 		dir := t.TempDir()
 		createTestRepo(t, dir)
 
+		remoteDir := filepath.Join(t.TempDir(), "origin.git")
+		if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+			t.Fatalf("failed to create remote dir: %v", err)
+		}
+		runGit(t, remoteDir, "init", "--bare")
+		runGit(t, dir, "remote", "add", "origin", remoteDir)
+		runGit(t, dir, "push", "-u", "origin", "main")
+		runGit(t, dir, "checkout", "-b", "remote-only")
+		runGit(t, dir, "push", "-u", "origin", "remote-only")
+		runGit(t, dir, "checkout", "main")
+		runGit(t, dir, "branch", "-D", "remote-only")
+
+		backend, err := NewGitBackend(dir)
+		if err != nil {
+			t.Fatalf("failed to create GitBackend: %v", err)
+		}
+
+		worktreePath := filepath.Join(t.TempDir(), "worktree")
+		if err := backend.CreateWorktree(worktreePath, "remote-only"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !backend.BranchExists("remote-only") {
+			t.Fatal("expected CreateWorktree to create a local tracking branch")
+		}
+
+		// Check the worktree's HEAD directly: NewGitBackend resolves to the main
+		// repo root, so GetCurrentBranch() would report the main repo's branch.
+		branch := runGit(t, worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+		if branch != "remote-only" {
+			t.Fatalf("expected remote-only branch, got %s", branch)
+		}
+
+		upstream := runGit(t, worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+		if upstream != "origin/remote-only" {
+			t.Fatalf("expected upstream origin/remote-only, got %s", upstream)
+		}
+	})
+
+	t.Run("returns error for invalid branch name", func(t *testing.T) {
+		dir := t.TempDir()
+		backend := newTestBackend(t, dir)
+
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
 
-		err := CreateWorktree(dir, worktreePath, "invalid..branch")
+		err := backend.CreateWorktree(worktreePath, "invalid..branch")
 		if err == nil {
 			t.Error("expected error for invalid branch name")
 		}
 	})
+}
 
-	t.Run("returns error for non-git directory", func(t *testing.T) {
+func TestResolveWorktreeBranch(t *testing.T) {
+	t.Run("prefers local branch over default remote branch", func(t *testing.T) {
 		dir := t.TempDir()
-		worktreePath := filepath.Join(t.TempDir(), "worktree")
+		createTestRepo(t, dir)
 
-		err := CreateWorktree(dir, worktreePath, "branch")
-		if err == nil {
-			t.Error("expected error for non-git directory")
+		remoteDir := filepath.Join(t.TempDir(), "origin.git")
+		if err := os.MkdirAll(remoteDir, 0o755); err != nil {
+			t.Fatalf("failed to create remote dir: %v", err)
+		}
+		runGit(t, remoteDir, "init", "--bare")
+		runGit(t, dir, "remote", "add", "origin", remoteDir)
+		runGit(t, dir, "push", "-u", "origin", "main")
+		runGit(t, dir, "checkout", "-b", "shared-branch")
+		runGit(t, dir, "push", "-u", "origin", "shared-branch")
+		runGit(t, dir, "checkout", "main")
+
+		backend, err := NewGitBackend(dir)
+		if err != nil {
+			t.Fatalf("failed to create GitBackend: %v", err)
+		}
+		resolution, err := backend.resolveWorktreeBranch("shared-branch")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resolution.Mode != worktreeBranchLocal {
+			t.Fatalf("expected local branch resolution, got mode %d", resolution.Mode)
+		}
+		if resolution.Remote != "" {
+			t.Fatalf("expected no remote for local resolution, got %q", resolution.Remote)
 		}
 	})
 }
@@ -554,7 +616,11 @@ func TestListBranchCandidates(t *testing.T) {
 	runGit(t, dir, "checkout", "main")
 	runGit(t, dir, "branch", "-D", "feature/fork-remote")
 
-	branches, err := ListBranchCandidates(dir)
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("failed to create GitBackend: %v", err)
+	}
+	branches, err := backend.ListBranchCandidates()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -579,28 +645,25 @@ func containsString(items []string, want string) bool {
 	return false
 }
 
-func TestListWorktrees(t *testing.T) {
+func TestGitBackend_ListWorktrees(t *testing.T) {
 	t.Run("lists worktrees in repo", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
-		// Create a worktree
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-branch"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
-		worktrees, err := ListWorktrees(dir)
+		worktrees, err := backend.ListWorktrees()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Should have at least 2 worktrees (main + feature)
 		if len(worktrees) < 2 {
 			t.Errorf("expected at least 2 worktrees, got %d", len(worktrees))
 		}
 
-		// Find the feature worktree
 		var found bool
 		for _, wt := range worktrees {
 			resolvedPath, _ := filepath.EvalSymlinks(wt.Path)
@@ -616,34 +679,24 @@ func TestListWorktrees(t *testing.T) {
 			t.Error("feature worktree not found in list")
 		}
 	})
-
-	t.Run("returns error for non-git directory", func(t *testing.T) {
-		dir := t.TempDir()
-
-		_, err := ListWorktrees(dir)
-		if err == nil {
-			t.Error("expected error for non-git directory")
-		}
-	})
 }
 
-func TestRemoveWorktree(t *testing.T) {
+func TestGitBackend_RemoveWorktree(t *testing.T) {
 	t.Run("removes worktree", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-branch"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
-		err := RemoveWorktree(dir, worktreePath, false)
+		err := backend.RemoveWorktree(worktreePath, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		// Verify worktree was removed from list
-		worktrees, err := ListWorktrees(dir)
+		worktrees, err := backend.ListWorktrees()
 		if err != nil {
 			t.Fatalf("failed to list worktrees: %v", err)
 		}
@@ -659,20 +712,19 @@ func TestRemoveWorktree(t *testing.T) {
 
 	t.Run("force removes worktree with changes", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "feature-branch"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-branch"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
-		// Make uncommitted changes
 		testFile := filepath.Join(worktreePath, "newfile.txt")
 		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 			t.Fatalf("failed to create test file: %v", err)
 		}
 
-		err := RemoveWorktree(dir, worktreePath, true)
+		err := backend.RemoveWorktree(worktreePath, true)
 		if err != nil {
 			t.Fatalf("unexpected error with force: %v", err)
 		}
@@ -680,9 +732,9 @@ func TestRemoveWorktree(t *testing.T) {
 
 	t.Run("returns error for non-existent worktree", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
-		err := RemoveWorktree(dir, "/nonexistent/worktree", false)
+		err := backend.RemoveWorktree("/nonexistent/worktree", false)
 		if err == nil {
 			t.Error("expected error for non-existent worktree")
 		}
@@ -693,14 +745,14 @@ func TestRemoveWorktree(t *testing.T) {
 	// RemoveWorktree must fall back to os.RemoveAll + PruneWorktrees.
 	t.Run("force falls back to direct removal when git refuses", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		// wtA: target of RemoveWorktree. Deleting its admin metadata under
 		// <repoDir>/.git/worktrees/<name>/ makes `git worktree remove --force`
 		// exit non-zero ("is not a working tree"). The worktree directory
 		// itself stays on disk, so the fallback's os.RemoveAll has real work.
 		wtA := filepath.Join(t.TempDir(), "wtA")
-		if err := CreateWorktree(dir, wtA, "feature-a"); err != nil {
+		if err := backend.CreateWorktree(wtA, "feature-a"); err != nil {
 			t.Fatalf("create wtA: %v", err)
 		}
 		if err := os.RemoveAll(filepath.Join(dir, ".git", "worktrees", filepath.Base(wtA))); err != nil {
@@ -711,14 +763,14 @@ func TestRemoveWorktree(t *testing.T) {
 		// Gives PruneWorktrees real work so a future refactor that drops
 		// the prune call would fail this test.
 		wtB := filepath.Join(t.TempDir(), "wtB")
-		if err := CreateWorktree(dir, wtB, "feature-b"); err != nil {
+		if err := backend.CreateWorktree(wtB, "feature-b"); err != nil {
 			t.Fatalf("create wtB: %v", err)
 		}
 		if err := os.RemoveAll(wtB); err != nil {
 			t.Fatalf("remove wtB dir: %v", err)
 		}
 
-		if err := RemoveWorktree(dir, wtA, true); err != nil {
+		if err := backend.RemoveWorktree(wtA, true); err != nil {
 			t.Fatalf("RemoveWorktree(force=true) should succeed via fallback: %v", err)
 		}
 
@@ -729,7 +781,7 @@ func TestRemoveWorktree(t *testing.T) {
 
 		// PruneWorktrees ran: wtB's dangling admin entry is swept, leaving
 		// only the main repo worktree.
-		worktrees, err := ListWorktrees(dir)
+		worktrees, err := backend.ListWorktrees()
 		if err != nil {
 			t.Fatalf("list worktrees: %v", err)
 		}
@@ -741,7 +793,7 @@ func TestRemoveWorktree(t *testing.T) {
 
 func TestWorktreeStruct(t *testing.T) {
 	t.Run("worktree has expected fields", func(t *testing.T) {
-		wt := Worktree{
+		wt := vcs.Worktree{
 			Path:   "/path/to/worktree",
 			Branch: "feature-branch",
 			Commit: "abc123",
@@ -764,36 +816,27 @@ func TestWorktreeStruct(t *testing.T) {
 }
 
 func TestIntegration_WorktreeLifecycle(t *testing.T) {
-	// Full lifecycle test: create repo -> create worktree -> list -> remove
 	dir := t.TempDir()
-	createTestRepo(t, dir)
+	backend := newTestBackend(t, dir)
 
-	// Verify initial state
 	if !IsGitRepo(dir) {
 		t.Fatal("test repo is not a git repo")
 	}
 
-	root, err := GetRepoRoot(dir)
-	if err != nil {
-		t.Fatalf("failed to get repo root: %v", err)
-	}
-
-	branch, err := GetCurrentBranch(dir)
+	branch, err := backend.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("failed to get current branch: %v", err)
 	}
 	t.Logf("Initial branch: %s", branch)
 
-	// Create worktree
-	worktreePath := GenerateWorktreePath(root, "feature-test", "sibling")
+	worktreePath := GenerateWorktreePath(backend.RepoDir(), "feature-test", "sibling")
 	t.Logf("Creating worktree at: %s", worktreePath)
 
-	if err := CreateWorktree(root, worktreePath, "feature-test"); err != nil {
+	if err := backend.CreateWorktree(worktreePath, "feature-test"); err != nil {
 		t.Fatalf("failed to create worktree: %v", err)
 	}
 
-	// List and verify
-	worktrees, err := ListWorktrees(root)
+	worktrees, err := backend.ListWorktrees()
 	if err != nil {
 		t.Fatalf("failed to list worktrees: %v", err)
 	}
@@ -802,18 +845,15 @@ func TestIntegration_WorktreeLifecycle(t *testing.T) {
 		t.Errorf("expected 2 worktrees, got %d", len(worktrees))
 	}
 
-	// Verify branch exists now
-	if !BranchExists(root, "feature-test") {
+	if !backend.BranchExists("feature-test") {
 		t.Error("feature-test branch should exist after worktree creation")
 	}
 
-	// Remove worktree
-	if err := RemoveWorktree(root, worktreePath, false); err != nil {
+	if err := backend.RemoveWorktree(worktreePath, false); err != nil {
 		t.Fatalf("failed to remove worktree: %v", err)
 	}
 
-	// Verify removal
-	worktrees, err = ListWorktrees(root)
+	worktrees, err = backend.ListWorktrees()
 	if err != nil {
 		t.Fatalf("failed to list worktrees after removal: %v", err)
 	}
@@ -822,7 +862,6 @@ func TestIntegration_WorktreeLifecycle(t *testing.T) {
 		t.Errorf("expected 1 worktree after removal, got %d", len(worktrees))
 	}
 
-	// Cleanup - remove the worktree directory if it still exists
 	os.RemoveAll(worktreePath)
 }
 
@@ -895,9 +934,9 @@ func TestHasUncommittedChanges(t *testing.T) {
 func TestGetDefaultBranch(t *testing.T) {
 	t.Run("detects main branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
-		branch, err := GetDefaultBranch(dir)
+		branch, err := backend.GetDefaultBranch()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -909,17 +948,17 @@ func TestGetDefaultBranch(t *testing.T) {
 
 	t.Run("returns error when no default branch exists", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		// Rename the default branch to something non-standard
-		currentBranch, _ := GetCurrentBranch(dir)
-		cmd := exec.Command("git", "branch", "-m", currentBranch, "develop")
+		curBranch := getCurrentBranch(t, dir)
+		cmd := exec.Command("git", "branch", "-m", curBranch, "develop")
 		cmd.Dir = dir
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("failed to rename branch: %v", err)
 		}
 
-		_, err := GetDefaultBranch(dir)
+		_, err := backend.GetDefaultBranch()
 		if err == nil {
 			t.Error("expected error when no main/master branch exists")
 		}
@@ -929,22 +968,22 @@ func TestGetDefaultBranch(t *testing.T) {
 func TestDeleteBranch(t *testing.T) {
 	t.Run("deletes merged branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 		createBranch(t, dir, "to-delete")
 
-		err := DeleteBranch(dir, "to-delete", false)
+		err := backend.DeleteBranch("to-delete", false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if BranchExists(dir, "to-delete") {
+		if backend.BranchExists("to-delete") {
 			t.Error("branch should have been deleted")
 		}
 	})
 
 	t.Run("force deletes unmerged branch", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		// Create branch with a unique commit
 		cmd := exec.Command("git", "checkout", "-b", "unmerged-branch")
@@ -963,9 +1002,8 @@ func TestDeleteBranch(t *testing.T) {
 		_ = cmd.Run()
 
 		// Switch back to default branch
-		defaultBranch, _ := GetCurrentBranch(dir)
-		if defaultBranch == "unmerged-branch" {
-			// Need to get the original branch name
+		curBranch := getCurrentBranch(t, dir)
+		if curBranch == "unmerged-branch" {
 			cmd = exec.Command("git", "checkout", "-")
 			cmd.Dir = dir
 			if err := cmd.Run(); err != nil {
@@ -974,18 +1012,18 @@ func TestDeleteBranch(t *testing.T) {
 		}
 
 		// Regular delete should fail
-		err := DeleteBranch(dir, "unmerged-branch", false)
+		err := backend.DeleteBranch("unmerged-branch", false)
 		if err == nil {
 			t.Error("expected error deleting unmerged branch without force")
 		}
 
 		// Force delete should succeed
-		err = DeleteBranch(dir, "unmerged-branch", true)
+		err = backend.DeleteBranch("unmerged-branch", true)
 		if err != nil {
 			t.Fatalf("unexpected error with force delete: %v", err)
 		}
 
-		if BranchExists(dir, "unmerged-branch") {
+		if backend.BranchExists("unmerged-branch") {
 			t.Error("branch should have been force-deleted")
 		}
 	})
@@ -994,7 +1032,7 @@ func TestDeleteBranch(t *testing.T) {
 func TestMergeBranch(t *testing.T) {
 	t.Run("fast-forward merge succeeds", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		// Create feature branch with a commit
 		cmd := exec.Command("git", "checkout", "-b", "feature-merge")
@@ -1020,7 +1058,7 @@ func TestMergeBranch(t *testing.T) {
 		}
 
 		// Merge feature branch
-		err := MergeBranch(dir, "feature-merge")
+		err := backend.MergeBranch("feature-merge")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1035,10 +1073,10 @@ func TestMergeBranch(t *testing.T) {
 func TestPruneWorktrees(t *testing.T) {
 	t.Run("prune after manually removing worktree dir", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "worktree")
-		if err := CreateWorktree(dir, worktreePath, "prune-test"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "prune-test"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1046,13 +1084,13 @@ func TestPruneWorktrees(t *testing.T) {
 		os.RemoveAll(worktreePath)
 
 		// Prune should clean up the stale reference
-		err := PruneWorktrees(dir)
+		err := backend.PruneWorktrees()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
 		// After pruning, listing worktrees should show only the main one
-		worktrees, err := ListWorktrees(dir)
+		worktrees, err := backend.ListWorktrees()
 		if err != nil {
 			t.Fatalf("failed to list worktrees: %v", err)
 		}
@@ -1074,10 +1112,10 @@ func TestIsWorktree(t *testing.T) {
 
 	t.Run("returns true for worktree", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-wt"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-wt"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1097,10 +1135,10 @@ func TestIsWorktree(t *testing.T) {
 func TestGetMainWorktreePath(t *testing.T) {
 	t.Run("returns main repo from worktree", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-main"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-main"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1155,10 +1193,10 @@ func TestGetWorktreeBaseRoot(t *testing.T) {
 
 	t.Run("returns main repo root from worktree", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-base"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-base"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1177,10 +1215,10 @@ func TestGetWorktreeBaseRoot(t *testing.T) {
 
 	t.Run("returns main repo root from worktree subdirectory", func(t *testing.T) {
 		dir := t.TempDir()
-		createTestRepo(t, dir)
+		backend := newTestBackend(t, dir)
 
 		worktreePath := filepath.Join(t.TempDir(), "wt")
-		if err := CreateWorktree(dir, worktreePath, "feature-sub"); err != nil {
+		if err := backend.CreateWorktree(worktreePath, "feature-sub"); err != nil {
 			t.Fatalf("failed to create worktree: %v", err)
 		}
 
@@ -1216,11 +1254,11 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 	// When creating a worktree from within another worktree, the new worktree
 	// should be a sibling (relative to the main repo), not nested inside the first.
 	dir := t.TempDir()
-	createTestRepo(t, dir)
+	backend := newTestBackend(t, dir)
 
 	// Create first worktree (simulates Session A)
 	wt1Path := filepath.Join(dir, ".worktrees", "feature-a")
-	if err := CreateWorktree(dir, wt1Path, "feature-a"); err != nil {
+	if err := backend.CreateWorktree(wt1Path, "feature-a"); err != nil {
 		t.Fatalf("failed to create first worktree: %v", err)
 	}
 
@@ -1239,7 +1277,7 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 
 	// Create second worktree using the resolved base root (simulates Session B fork)
 	wt2Path := GenerateWorktreePath(baseRoot, "feature-b", "subdirectory")
-	if err := CreateWorktree(baseRoot, wt2Path, "feature-b"); err != nil {
+	if err := backend.CreateWorktree(wt2Path, "feature-b"); err != nil {
 		t.Fatalf("failed to create second worktree: %v", err)
 	}
 
@@ -1269,4 +1307,226 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 	}
 	t.Logf("Correct path:  %s", actualWt2)
 	t.Logf("Wrong path:    %s (would have been nested)", wrongWt2)
+}
+
+// --- GitBackend tests ---
+
+func TestNewGitBackend(t *testing.T) {
+	t.Run("succeeds for git repo", func(t *testing.T) {
+		dir := t.TempDir()
+		createTestRepo(t, dir)
+
+		backend, err := NewGitBackend(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		expectedRoot, _ := filepath.EvalSymlinks(dir)
+		actualRoot, _ := filepath.EvalSymlinks(backend.RepoDir())
+		if actualRoot != expectedRoot {
+			t.Errorf("expected repo dir %s, got %s", expectedRoot, actualRoot)
+		}
+	})
+
+	t.Run("resolves through worktree", func(t *testing.T) {
+		dir := t.TempDir()
+		backend := newTestBackend(t, dir)
+
+		wtPath := filepath.Join(t.TempDir(), "wt")
+		if err := backend.CreateWorktree(wtPath, "feature-backend"); err != nil {
+			t.Fatalf("failed to create worktree: %v", err)
+		}
+
+		backend, err := NewGitBackend(wtPath)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		expectedRoot, _ := filepath.EvalSymlinks(dir)
+		actualRoot, _ := filepath.EvalSymlinks(backend.RepoDir())
+		if actualRoot != expectedRoot {
+			t.Errorf("expected main repo root %s, got %s", expectedRoot, actualRoot)
+		}
+	})
+
+	t.Run("returns error for non-git directory", func(t *testing.T) {
+		dir := t.TempDir()
+
+		_, err := NewGitBackend(dir)
+		if err == nil {
+			t.Error("expected error for non-git directory")
+		}
+	})
+}
+
+func TestGitBackend_BranchExists(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	createBranch(t, dir, "exists")
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !backend.BranchExists("exists") {
+		t.Error("expected BranchExists to return true")
+	}
+	if backend.BranchExists("nope") {
+		t.Error("expected BranchExists to return false")
+	}
+}
+
+func TestGitBackend_GetCurrentBranch(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	branch, err := backend.GetCurrentBranch()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "main" && branch != "master" {
+		t.Errorf("expected main or master, got %s", branch)
+	}
+}
+
+func TestGitBackend_GetDefaultBranch(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	branch, err := backend.GetDefaultBranch()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "main" && branch != "master" {
+		t.Errorf("expected main or master, got %s", branch)
+	}
+}
+
+func TestGitBackend_WorktreeLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Create worktree
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := backend.CreateWorktree(wtPath, "feature-lifecycle"); err != nil {
+		t.Fatalf("failed to create worktree: %v", err)
+	}
+
+	// List worktrees
+	worktrees, err := backend.ListWorktrees()
+	if err != nil {
+		t.Fatalf("failed to list worktrees: %v", err)
+	}
+	if len(worktrees) < 2 {
+		t.Errorf("expected at least 2 worktrees, got %d", len(worktrees))
+	}
+
+	// GetWorktreeForBranch
+	foundPath, err := backend.GetWorktreeForBranch("feature-lifecycle")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resolvedFound, _ := filepath.EvalSymlinks(foundPath)
+	resolvedExpected, _ := filepath.EvalSymlinks(wtPath)
+	if resolvedFound != resolvedExpected {
+		t.Errorf("expected worktree path %s, got %s", resolvedExpected, resolvedFound)
+	}
+
+	// Remove worktree
+	if err := backend.RemoveWorktree(wtPath, false); err != nil {
+		t.Fatalf("failed to remove worktree: %v", err)
+	}
+
+	// Prune
+	if err := backend.PruneWorktrees(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify removal
+	worktrees, err = backend.ListWorktrees()
+	if err != nil {
+		t.Fatalf("failed to list after removal: %v", err)
+	}
+	if len(worktrees) != 1 {
+		t.Errorf("expected 1 worktree after removal, got %d", len(worktrees))
+	}
+}
+
+func TestGitBackend_MergeAndDeleteBranch(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Create branch with commit
+	cmd := exec.Command("git", "checkout", "-b", "merge-test")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create branch: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "merge.txt"), []byte("merge"), 0644); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+	cmd = exec.Command("git", "add", ".")
+	cmd.Dir = dir
+	_ = cmd.Run()
+	cmd = exec.Command("git", "commit", "-m", "merge commit")
+	cmd.Dir = dir
+	_ = cmd.Run()
+
+	// Switch back
+	cmd = exec.Command("git", "checkout", "-")
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to checkout: %v", err)
+	}
+
+	// Merge
+	if err := backend.MergeBranch("merge-test"); err != nil {
+		t.Fatalf("merge failed: %v", err)
+	}
+
+	// Delete
+	if err := backend.DeleteBranch("merge-test", false); err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+
+	if backend.BranchExists("merge-test") {
+		t.Error("branch should have been deleted")
+	}
+}
+
+func TestGitBackend_ImplementsVCSBackend(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Use through the interface to verify it satisfies vcs.Backend
+	var b vcs.Backend = backend
+	if b.RepoDir() == "" {
+		t.Error("expected non-empty RepoDir")
+	}
 }

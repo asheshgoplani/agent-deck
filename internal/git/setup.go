@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // FindWorktreeSetupScript returns the path to the worktree setup script
@@ -86,10 +88,10 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 	return exec.CommandContext(ctx, "sh", "-e", scriptPath)
 }
 
-// CreateWorktreeWithSetup creates a worktree and runs the setup script if present.
-// Setup script failure is non-fatal: the worktree is still valid.
-// Output is streamed to the provided writers. A non-positive setupTimeout
-// means "no deadline" — see RunWorktreeSetupScript for the full semantic.
+// CreateWorktreeWithSetup creates a worktree via the given backend and runs the
+// setup script if present. Setup script failure is non-fatal: the worktree is
+// still valid. Output is streamed to the provided writers. A non-positive
+// setupTimeout means "no deadline" — see RunWorktreeSetupScript for the full semantic.
 //
 // User-visible progress (#768): the start preamble, an explicit completion
 // line on success, and an explicit failure line on error are written to
@@ -97,11 +99,12 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 // for later display) can show the user what happened. Without these,
 // users couldn't tell whether the script had run, finished, or finished
 // cleanly before claude started.
-func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
-	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
+func CreateWorktreeWithSetup(backend vcs.Backend, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	if err = backend.CreateWorktree(worktreePath, branchName); err != nil {
 		return nil, err
 	}
 
+	repoDir := backend.RepoDir()
 	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
 	if scriptPath == "" {
 		return nil, nil

@@ -81,7 +81,11 @@ func createSubmoduleLayout(t *testing.T) (super, submodule string) {
 func TestListWorktrees_SubmoduleReturnsWorkingTreeNotGitdir(t *testing.T) {
 	_, submodule := createSubmoduleLayout(t)
 
-	wts, err := ListWorktrees(submodule)
+	backend, err := NewGitBackend(submodule)
+	if err != nil {
+		t.Fatalf("NewGitBackend: %v", err)
+	}
+	wts, err := backend.ListWorktrees()
 	if err != nil {
 		t.Fatalf("ListWorktrees: %v", err)
 	}
@@ -107,12 +111,16 @@ func TestListWorktrees_SubmoduleReturnsWorkingTreeNotGitdir(t *testing.T) {
 func TestGetWorktreeForBranch_SubmoduleReturnsWorkingTree(t *testing.T) {
 	_, submodule := createSubmoduleLayout(t)
 
-	branch, err := GetCurrentBranch(submodule)
+	backend, err := NewGitBackend(submodule)
+	if err != nil {
+		t.Fatalf("NewGitBackend: %v", err)
+	}
+	branch, err := backend.GetCurrentBranch()
 	if err != nil {
 		t.Fatalf("GetCurrentBranch: %v", err)
 	}
 
-	got, err := GetWorktreeForBranch(submodule, branch)
+	got, err := backend.GetWorktreeForBranch(branch)
 	if err != nil {
 		t.Fatalf("GetWorktreeForBranch: %v", err)
 	}
@@ -142,7 +150,11 @@ func TestRemoveWorktree_RefusesToDeleteSubmoduleGitdir(t *testing.T) {
 	// Mirror the call shape from internal/ui/home.go:8562 and
 	// cmd/agent-deck/session_remove_cmd.go:177 — repoRoot = submodule worktree,
 	// worktreePath = (mistakenly) the gitdir, force = true.
-	err := RemoveWorktree(submodule, gitdir, true)
+	backend, err := NewGitBackend(submodule)
+	if err != nil {
+		t.Fatalf("NewGitBackend: %v", err)
+	}
+	err = backend.RemoveWorktree(gitdir, true)
 	if err == nil {
 		t.Fatal("RemoveWorktree(force=true) on a gitdir must return an error, not silently delete")
 	}
@@ -161,8 +173,13 @@ func TestRemoveWorktree_RefusesToDeleteRepoGitFolder(t *testing.T) {
 	dir := t.TempDir()
 	createTestRepo(t, dir)
 
+	backend, err := NewGitBackend(dir)
+	if err != nil {
+		t.Fatalf("NewGitBackend: %v", err)
+	}
+
 	wtPath := filepath.Join(t.TempDir(), "wt-feat")
-	if err := CreateWorktree(dir, wtPath, "feat"); err != nil {
+	if err := backend.CreateWorktree(wtPath, "feat"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
@@ -178,7 +195,7 @@ func TestRemoveWorktree_RefusesToDeleteRepoGitFolder(t *testing.T) {
 			if _, err := os.Stat(tc.path); err != nil {
 				t.Fatalf("%s should exist before RemoveWorktree (fixture bug?): %v", tc.path, err)
 			}
-			err := RemoveWorktree(dir, tc.path, true)
+			err := backend.RemoveWorktree(tc.path, true)
 			if err == nil {
 				t.Fatalf("RemoveWorktree(force=true) on %q must error, not delete git internals", tc.path)
 			}
