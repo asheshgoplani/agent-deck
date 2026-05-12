@@ -4576,6 +4576,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case watcherEventMsg:
 		// Refresh watcher panel data on new events and re-register listener.
 		h.refreshWatcherPanel()
+		// Deliver event to the routed conductor's tmux pane (parity with
+		// dispatchHealthAlert). Skipped for triage and unrouted events.
+		h.dispatchWatcherEvent(msg.event)
 		if h.watcherEngine != nil {
 			return h, listenForWatcherEvent(h.watcherEngine.EventCh())
 		}
@@ -7158,6 +7161,40 @@ func (h *Home) refreshWatcherPanel() {
 			}
 			h.watcherPanel.SetEvents(displayEvents)
 		}
+	}
+}
+
+// dispatchWatcherEvent sends a routed watcher event into the conductor's tmux pane.
+// Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
+// concrete delivery target yet. Mirrors dispatchHealthAlert: looks up the conductor session
+// by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
+	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
+		return
+	}
+	msg := fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, evt.Subject)
+	sessionTitle := session.ConductorSessionTitle(evt.RoutedTo)
+	h.instancesMu.RLock()
+	instances := h.instances
+	h.instancesMu.RUnlock()
+	for _, inst := range instances {
+		if inst.Title != sessionTitle {
+			continue
+		}
+		ts := inst.GetTmuxSession()
+		if ts == nil || ts.Name == "" {
+			return
+		}
+		tmuxName := ts.Name
+		socket := inst.TmuxSocketName
+		go func() {
+			if err := tmux.Exec(socket, "send-keys", "-t", tmuxName, msg, "Enter").Run(); err != nil {
+				uiLog.Warn("dispatch_watcher_event_send_failed",
+					slog.String("tmux_session", tmuxName),
+					slog.String("error", err.Error()))
+			}
+		}()
+		return
 	}
 }
 
