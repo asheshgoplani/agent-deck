@@ -20,6 +20,7 @@ require (
 	github.com/klauspost/compress v1.18.4
 	github.com/mattn/go-runewidth v0.0.21
 	github.com/muesli/termenv v0.16.0
+	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/stretchr/testify v1.11.1
 	github.com/thiagokokada/dark-mode-go v0.0.2
