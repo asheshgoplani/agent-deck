@@ -701,6 +701,40 @@ func TestSendWithRetryTarget_NoWaitDoesNotResend(t *testing.T) {
 	}
 }
 
+// TestExecuteDraft_SendsKeysWithoutEnter verifies --draft calls SendKeysChunked
+// with the message and does not press Enter.
+func TestExecuteDraft_SendsKeysWithoutEnter(t *testing.T) {
+	mock := &mockDraftSender{}
+	err := executeDraft(mock, "my draft message")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.calledWith != "my draft message" {
+		t.Errorf("expected SendKeysChunked called with %q, got %q", "my draft message", mock.calledWith)
+	}
+}
+
+func TestExecuteDraft_PropagatesError(t *testing.T) {
+	mock := &mockDraftSender{err: fmt.Errorf("tmux send failed")}
+	err := executeDraft(mock, "hello")
+	if err == nil {
+		t.Fatal("expected error from SendKeysChunked, got nil")
+	}
+	if !strings.Contains(err.Error(), "tmux send failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+type mockDraftSender struct {
+	calledWith string
+	err        error
+}
+
+func (m *mockDraftSender) SendKeysChunked(keys string) error {
+	m.calledWith = keys
+	return m.err
+}
+
 // skipIfNoTmuxServer skips the test if tmux is not available or not running.
 func skipIfNoTmuxServer(t *testing.T) {
 	t.Helper()
