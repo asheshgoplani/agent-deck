@@ -11,13 +11,15 @@ import (
 )
 
 // buildWebServer parses web-specific flags and returns a ready-to-start server.
+// The second return value reports whether --no-tui was set; the caller uses it
+// to decide whether to skip the bubbletea TUI init (which fails on headless CI).
 // The caller is responsible for calling server.Start() and server.Shutdown().
 //
 // mutator is wired via Server.SetMutator. Pass nil only in tests that don't
 // exercise mutation handlers — production callers MUST pass a real mutator
 // or every POST/PATCH/DELETE will 503 with NOT_IMPLEMENTED. See
 // TestBuildWebServer_WiresMutator for the regression guard on this contract.
-func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, mutator web.SessionMutator) (*web.Server, error) {
+func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, mutator web.SessionMutator) (*web.Server, bool, error) {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	listenAddr := fs.String("listen", "127.0.0.1:8420", "Listen address for web server")
 	readOnly := fs.Bool("read-only", false, "Run in read-only mode (input disabled)")
@@ -25,11 +27,13 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 	pushEnabled := fs.Bool("push", false, "Enable web push notifications (auto-generates VAPID keys per profile)")
 	pushVAPIDSubject := fs.String("push-vapid-subject", "mailto:agentdeck@localhost", "VAPID subject used for web push notifications")
 	pushTestEvery := fs.Duration("push-test-every", 0, "Send periodic push test notifications at this interval (e.g. 10s, 1m); 0 disables")
+	noTUI := fs.Bool("no-tui", false, "Run the web server without the bubbletea TUI; intended for headless CI (Lighthouse, Playwright)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck web [options]")
 		fmt.Println()
-		fmt.Println("Start the TUI with web UI server running alongside.")
+		fmt.Println("Start the web UI server. By default the TUI runs alongside; pass")
+		fmt.Println("--no-tui to skip the bubbletea TUI (e.g. for headless CI runs).")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -40,22 +44,23 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		fmt.Println("  agent-deck web --read-only")
 		fmt.Println("  agent-deck web --push")
 		fmt.Println("  agent-deck web --push --push-test-every 10s")
+		fmt.Println("  agent-deck web --no-tui --listen 127.0.0.1:19999")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
-		return nil, fmt.Errorf("flag parsing: %w", err)
+		return nil, false, fmt.Errorf("flag parsing: %w", err)
 	}
 	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
+		return nil, false, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
 	if *pushTestEvery < 0 {
-		return nil, fmt.Errorf("--push-test-every must be >= 0")
+		return nil, false, fmt.Errorf("--push-test-every must be >= 0")
 	}
 	if *pushTestEvery > 0 && !*pushEnabled {
-		return nil, fmt.Errorf("--push-test-every requires --push")
+		return nil, false, fmt.Errorf("--push-test-every requires --push")
 	}
 
 	effectiveProfile := session.GetEffectiveProfile(profile)
@@ -68,7 +73,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		var err error
 		resolvedPushPublic, resolvedPushPrivate, generated, err = web.EnsurePushVAPIDKeys(effectiveProfile, resolvedPushSubject)
 		if err != nil {
-			return nil, fmt.Errorf("failed to prepare web push keys: %w", err)
+			return nil, false, fmt.Errorf("failed to prepare web push keys: %w", err)
 		}
 		if generated {
 			fmt.Println("Push keys: generated new VAPID keypair for profile")
@@ -94,7 +99,7 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		server.SetMutator(mutator)
 	}
 
-	return server, nil
+	return server, *noTUI, nil
 }
 
 // resolveMutationsEnabled applies precedence: --read-only forces mutations off;

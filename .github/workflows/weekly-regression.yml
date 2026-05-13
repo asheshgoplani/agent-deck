@@ -82,8 +82,8 @@ jobs:
 
       - name: Start test server
         run: |
-          env -i HOME=$HOME PATH=$PATH TERM=xterm-256color AGENTDECK_PROFILE=_ci_weekly \
-            ./build/agent-deck web --listen 127.0.0.1:18420 --token test &
+          AGENTDECK_PROFILE=_ci_weekly \
+            ./build/agent-deck web --no-tui --listen 127.0.0.1:18420 --token test &
           SERVER_PID=$!
           echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
           # Wait for /healthz (up to 30 seconds)

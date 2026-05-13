@@ -52,7 +52,7 @@ fi
 # --- Start test server ---
 
 echo "[budget-check] Starting test server on port $PORT..."
-AGENTDECK_PROFILE=_test "$BINARY" web --listen "127.0.0.1:${PORT}" --token test &
+AGENTDECK_PROFILE=_test "$BINARY" web --no-tui --listen "127.0.0.1:${PORT}" --token test &
 SERVER_PID=$!
 
 echo "[budget-check] Waiting for /healthz (max 30s)..."

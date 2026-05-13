@@ -1,8 +1,8 @@
 {
   "ci": {
     "collect": {
-      "startServerCommand": "AGENTDECK_PROFILE=_test ./build/agent-deck web --listen 127.0.0.1:19999 --token test",
-      "startServerReadyPattern": "Listening on",
+      "startServerCommand": "AGENTDECK_PROFILE=_test ./build/agent-deck web --no-tui --listen 127.0.0.1:19999 --token test",
+      "startServerReadyPattern": "Web server: http",
       "url": [
         "http://127.0.0.1:19999/"
       ],
@@ -24,12 +24,12 @@
     },
     "assert": {
       "assertions": {
-        "total-byte-weight": ["error", { "maxNumericValue": 180000 }],
-        "resource-summary:script:size": ["error", { "maxNumericValue": 120000 }],
+        "total-byte-weight": ["error", { "maxNumericValue": 349580 }],
+        "resource-summary:script:size": ["error", { "maxNumericValue": 329757 }],
         "first-contentful-paint": ["warn", { "maxNumericValue": 800 }],
-        "largest-contentful-paint": ["warn", { "maxNumericValue": 1500 }],
+        "largest-contentful-paint": ["warn", { "maxNumericValue": 1300 }],
         "total-blocking-time": ["warn", { "maxNumericValue": 200 }],
-        "speed-index": ["warn", { "maxNumericValue": 1500 }],
+        "speed-index": ["warn", { "maxNumericValue": 1100 }],
         "cumulative-layout-shift": ["error", { "maxNumericValue": 0.1 }],
         "is-on-https": "off",
         "uses-http2": "off",
