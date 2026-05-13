@@ -462,6 +462,17 @@ func killStaleControlClients(sessionName, socketName string) {
 		return // session may not exist or no clients attached
 	}
 
+	// Track burst stats so production logs surface how often this function
+	// fires N>0 SIGTERMs across parallel Connect() calls. The cascade
+	// pattern (multiple SIGTERMs within tens of milliseconds, across
+	// concurrent Connect() goroutines) is the trigger shape for
+	// tmux/tmux#4980's server-side use-after-free in
+	// control_notify_client_detached. The Debug-level
+	// killed_stale_control_client log emits per-PID; this Info line
+	// surfaces the cascade as a single observable event.
+	burstStart := time.Now()
+	killCount := 0
+
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
@@ -494,10 +505,18 @@ func killStaleControlClients(sessionName, socketName string) {
 		// lets the client drain and exit cleanly; SIGKILL is retained as a
 		// 500ms fallback for clients that ignore TERM.
 		usedSIGKILL := softKillProcess(pid, controlClientKillGrace)
+		killCount++
 		pipeLog.Debug("killed_stale_control_client",
 			slog.String("session", sessionName),
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
+	}
+
+	if killCount > 0 {
+		pipeLog.Info("stale_control_clients_swept",
+			slog.String("session", sessionName),
+			slog.Int("kill_count", killCount),
+			slog.Duration("duration", time.Since(burstStart)))
 	}
 }
 
