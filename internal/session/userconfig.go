@@ -821,6 +821,10 @@ type OpenCodeSettings struct {
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
+	// Command is the Codex CLI command or alias to use (e.g., "codex", "codex-v2")
+	// Default: "codex"
+	Command string `toml:"command"`
+
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
@@ -1823,6 +1827,15 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// GetCodexCommand returns the configured Codex command/alias.
+func GetCodexCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && strings.TrimSpace(userConfig.Codex.Command) != "" {
+		return strings.TrimSpace(userConfig.Codex.Command)
+	}
+	return "codex"
+}
+
 func isClaudeCommand(command string) bool {
 	return isCommand(command, "claude")
 }
@@ -2485,6 +2498,8 @@ func CreateExampleConfig() error {
 
 # Codex CLI integration
 # [codex]
+# Codex CLI command or alias to use (default: "codex")
+# command = "codex"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
 

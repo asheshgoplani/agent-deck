@@ -10,6 +10,29 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestGetCodexCommand_DefaultAndConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	if got := GetCodexCommand(); got != "codex" {
+		t.Fatalf("GetCodexCommand() without config = %q, want codex", got)
+	}
+
+	cfg := &UserConfig{Codex: CodexSettings{Command: "codex-v2"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	if got := GetCodexCommand(); got != "codex-v2" {
+		t.Fatalf("GetCodexCommand() with config = %q, want codex-v2", got)
+	}
+}
+
 // TestLoadUserConfig_PicksUpExternalEdits is a regression test for the
 // stale-cache bug that caused the innotrade conductor to ignore
 // [conductors.<name>.claude].config_dir added to config.toml after the TUI

@@ -1401,6 +1401,7 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	}
 
 	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codex-v2"},
 		Tools: map[string]ToolDef{
 			"my-codex": {
 				Command:        "codex-wrapper",
@@ -1431,6 +1432,218 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	cmd = inst.buildCodexCommand(inst.Command)
 	if !strings.Contains(cmd, "codex-wrapper resume 019d1af6-c425-7791-8fd1-38c0fc43062c") {
 		t.Fatalf("buildCodexCommand should resume through the custom wrapper, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_UsesConfiguredCommandForBuiltinCodex(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	cfg := &UserConfig{Codex: CodexSettings{Command: "codex-v2", YoloMode: true}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("configured", "/tmp/configured", "codex")
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "codex-v2 --yolo") {
+		t.Fatalf("configured Codex command should be used with yolo flag, got %q", cmd)
+	}
+	if strings.Contains(cmd, " codex --yolo") {
+		t.Fatalf("default codex command should not be used when [codex].command is set, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_ConfiguredCommandResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	cfg := &UserConfig{Codex: CodexSettings{Command: "codex-v2"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("configured-resume", "/tmp/configured-resume", "codex")
+	id := "bbbbbbbb-1111-2222-3333-444444444444"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), id)
+
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "codex-v2 resume "+id) {
+		t.Fatalf("configured Codex command should be used for resume, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_ExplicitCommandBeatsConfiguredCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	cfg := &UserConfig{Codex: CodexSettings{Command: "codex-v2"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("explicit", "/tmp/explicit", "codex")
+	cmd := inst.buildCodexCommand("codex-nightly")
+	if !strings.Contains(cmd, "codex-nightly") {
+		t.Fatalf("explicit Codex command should be preserved, got %q", cmd)
+	}
+	if strings.Contains(cmd, "codex-v2") {
+		t.Fatalf("configured command should not override explicit session command, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_InlineCodexHomeForRolloutCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	codexHome := filepath.Join(tmpDir, ".codex-work")
+	cfg := &UserConfig{Codex: CodexSettings{Command: "CODEX_HOME=" + codexHome + " codex"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("inline-home", "/tmp/inline-home", "codex")
+	id := "cccccccc-1111-2222-3333-444444444444"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, codexHome, id)
+
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "CODEX_HOME="+codexHome+" codex resume "+id) {
+		t.Fatalf("inline CODEX_HOME command should resume from configured home, got %q", cmd)
+	}
+}
+
+func TestBuildCodexCommand_QuotedInlineCodexHomeWithSpaces(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	codexHome := filepath.Join(tmpDir, "codex work")
+	cfg := &UserConfig{Codex: CodexSettings{Command: `CODEX_HOME="` + codexHome + `" codex`}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("quoted-inline-home", "/tmp/quoted-inline-home", "codex")
+	id := "eeeeeeee-1111-2222-3333-444444444444"
+	inst.CodexSessionID = id
+	writeFakeCodexRollout(t, codexHome, id)
+
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, `CODEX_HOME="`+codexHome+`" codex resume `+id) {
+		t.Fatalf("quoted inline CODEX_HOME command should resume from configured home, got %q", cmd)
+	}
+	if inst.CodexSessionID != id {
+		t.Fatalf("CodexSessionID should be preserved when quoted CODEX_HOME rollout exists, got %q", inst.CodexSessionID)
+	}
+}
+
+func TestCodexHomeFromCommand_PreservesQuotedAssignmentSpaces(t *testing.T) {
+	tmpDir := t.TempDir()
+	codexHome := filepath.Join(tmpDir, "codex work")
+
+	got := codexHomeFromCommand(`FOO=bar CODEX_HOME="` + codexHome + `" codex`)
+	if got != codexHome {
+		t.Fatalf("codexHomeFromCommand() = %q, want %q", got, codexHome)
+	}
+
+	got = codexHomeFromCommand(`CODEX_HOME='` + codexHome + `' codex`)
+	if got != codexHome {
+		t.Fatalf("codexHomeFromCommand() single quoted = %q, want %q", got, codexHome)
+	}
+}
+
+func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		}
+	}()
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".agent-deck", "hooks"), 0o700); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+
+	codexHome := filepath.Join(tmpDir, ".codex-work")
+	cfg := &UserConfig{Codex: CodexSettings{Command: "CODEX_HOME=" + codexHome + " codex"}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("inline-stale", "/tmp/inline-stale", "codex")
+	id := "dddddddd-1111-2222-3333-444444444444"
+	inst.CodexSessionID = id
+	inst.CodexDetectedAt = time.Now()
+	WriteHookSessionAnchor(inst.ID, id)
+	writeFakeCodexRollout(t, filepath.Join(tmpDir, ".codex"), id)
+	if err := os.MkdirAll(filepath.Join(codexHome, "sessions", "2026", "04", "24"), 0o755); err != nil {
+		t.Fatalf("mkdir custom codex sessions: %v", err)
+	}
+
+	cmd := inst.buildCodexCommand("codex")
+	if strings.Contains(cmd, "resume "+id) {
+		t.Fatalf("resume should be dropped when rollout is absent from inline CODEX_HOME, got %q", cmd)
+	}
+	if inst.CodexSessionID != "" {
+		t.Fatalf("CodexSessionID should be cleared after stale-id drop, got %q", inst.CodexSessionID)
+	}
+	if got := ReadHookSessionAnchor(inst.ID); got != "" {
+		t.Fatalf(".sid anchor should be cleared after stale-id drop, got %q", got)
 	}
 }
 
@@ -3039,6 +3252,15 @@ func TestExtractCodexSessionIDFromPath_DeletedSuffix(t *testing.T) {
 	want := "019c9ffa-c9d6-7be1-9e1c-527080e68951"
 	if got != want {
 		t.Fatalf("extractCodexSessionIDFromPath() = %q, want %q", got, want)
+	}
+}
+
+func TestExtractCodexSessionIDFromPath_CustomCodexHome(t *testing.T) {
+	path := "/tmp/codex-work/sessions/2026/02/28/rollout-2026-02-28T00-42-18-019c9ffa-c9d6-7be1-9e1c-527080e68951.jsonl"
+	got := extractCodexSessionIDFromPath(path)
+	want := "019c9ffa-c9d6-7be1-9e1c-527080e68951"
+	if got != want {
+		t.Fatalf("extractCodexSessionIDFromPath() custom home = %q, want %q", got, want)
 	}
 }
 

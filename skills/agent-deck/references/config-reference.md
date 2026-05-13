@@ -126,12 +126,16 @@ Codex CLI integration settings.
 
 ```toml
 [codex]
+command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+
+When using a different Codex home, prefer an inline command such as `CODEX_HOME=~/.codex-work codex` or export `CODEX_HOME` before starting agent-deck. Shell aliases are allowed, but agent-deck cannot infer `CODEX_HOME` hidden inside an alias for resume-file discovery.
 
 ## [docker] Section
 
@@ -498,6 +502,7 @@ env_file = "~/.claude.env"
 config_dir = "~/.claude-work"
 
 [codex]
+command = "codex"
 yolo_mode = false
 
 [docker]
