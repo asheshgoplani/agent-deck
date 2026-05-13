@@ -391,6 +391,11 @@ type Home struct {
 	transitionTrackerOnce sync.Once
 	transitionTracker     *transitionTracker
 
+	// Logs once per engine instance when the first watcher event is consumed
+	// from the engine's EventCh. Helps diagnose listener-not-firing issues
+	// without needing to instrument every event.
+	firstWatcherEventOnce sync.Once
+
 	// Full repaint mode: issue tea.ClearScreen every tick to avoid
 	// incremental redraw drift in terminals with unicode grapheme widths
 	fullRepaint          bool
@@ -1989,11 +1994,27 @@ func (h *Home) startWatcherEngine() tea.Cmd {
 	}
 
 	h.watcherEngine = eng
+	h.firstWatcherEventOnce = sync.Once{}
+
+	uiLog.Info("watcher_engine_started",
+		slog.Int("watcher_count", len(rows)),
+		slog.Int("running_count", runningCount(rows)))
 
 	return tea.Batch(
 		listenForWatcherEvent(eng.EventCh()),
 		listenForWatcherHealth(eng.HealthCh()),
 	)
+}
+
+// runningCount returns how many watcher rows are in the "running" state.
+func runningCount(rows []*statedb.WatcherRow) int {
+	n := 0
+	for _, r := range rows {
+		if r != nil && r.Status == "running" {
+			n++
+		}
+	}
+	return n
 }
 
 // propagateThemeToSessions updates COLORFGBG in all running tmux sessions
@@ -4574,8 +4595,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case watcherEventMsg:
+		// One-shot log per engine instance to confirm the listener path is alive.
+		h.firstWatcherEventOnce.Do(func() {
+			uiLog.Info("watcher_event_first_received",
+				slog.String("sender", msg.event.Sender),
+				slog.String("routed_to", msg.event.RoutedTo))
+		})
 		// Refresh watcher panel data on new events and re-register listener.
 		h.refreshWatcherPanel()
+		// Deliver event to the routed conductor's tmux pane (parity with
+		// dispatchHealthAlert). Skipped for triage and unrouted events.
+		h.dispatchWatcherEvent(msg.event)
 		if h.watcherEngine != nil {
 			return h, listenForWatcherEvent(h.watcherEngine.EventCh())
 		}
@@ -7158,6 +7188,40 @@ func (h *Home) refreshWatcherPanel() {
 			}
 			h.watcherPanel.SetEvents(displayEvents)
 		}
+	}
+}
+
+// dispatchWatcherEvent sends a routed watcher event into the conductor's tmux pane.
+// Skipped for triage and unrouted events (RoutedTo empty or "triage") since those have no
+// concrete delivery target yet. Mirrors dispatchHealthAlert: looks up the conductor session
+// by title and uses tmux send-keys (T-16-08) to deliver the formatted line.
+func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
+	if evt.RoutedTo == "" || evt.RoutedTo == "triage" || strings.HasPrefix(evt.RoutedTo, "triage-") {
+		return
+	}
+	msg := fmt.Sprintf("[%s] %s: %s", evt.Source, evt.Sender, evt.Subject)
+	sessionTitle := session.ConductorSessionTitle(evt.RoutedTo)
+	h.instancesMu.RLock()
+	instances := h.instances
+	h.instancesMu.RUnlock()
+	for _, inst := range instances {
+		if inst.Title != sessionTitle {
+			continue
+		}
+		ts := inst.GetTmuxSession()
+		if ts == nil || ts.Name == "" {
+			return
+		}
+		tmuxName := ts.Name
+		socket := inst.TmuxSocketName
+		go func() {
+			if err := tmux.Exec(socket, "send-keys", "-t", tmuxName, msg, "Enter").Run(); err != nil {
+				uiLog.Warn("dispatch_watcher_event_send_failed",
+					slog.String("tmux_session", tmuxName),
+					slog.String("error", err.Error()))
+			}
+		}()
+		return
 	}
 }
 

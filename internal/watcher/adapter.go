@@ -69,6 +69,11 @@ type Event struct {
 	// ThreadSessionID is populated by the engine's writerLoop when a thread reply
 	// is routed to an existing session. Empty means spawn a new session.
 	ThreadSessionID string `json:"thread_session_id,omitempty"`
+
+	// RoutedTo is populated by the engine's writerLoop with the conductor name
+	// from Router.Match(Sender), or "triage" / "" when no rule matches.
+	// Consumed by the TUI to deliver events into the conductor's tmux pane.
+	RoutedTo string `json:"routed_to,omitempty"`
 }
 
 // DedupKey returns a deterministic hex-encoded SHA-256 hash of the event's
