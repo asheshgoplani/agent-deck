@@ -67,6 +67,18 @@ func TestMain(m *testing.M) {
 		return
 	}
 
+	// Child-helper mode for the #927 regression tests. Spawns a tmux -C
+	// attach-session against the requested session, prints its pid, and
+	// exits — leaving the grandchild orphaned (reparented to init/systemd/
+	// launchd). The parent must have already isolated TMUX_TMPDIR before
+	// spawning this helper; we inherit that env so we hit the same tmux
+	// server. Must run before IsolateTmuxSocket so we don't fight the
+	// parent's isolation.
+	if name := os.Getenv("ORPHAN_CONTROL_CLIENT_HELPER"); name != "" {
+		runOrphanControlClientHelper(name)
+		return
+	}
+
 	// Isolate the tmux socket. Without this, `tmux new-session` / `list-sessions` /
 	// `kill-session` calls in test setup & cleanup hit the user's default
 	// /tmp/tmux-<uid>/default socket — destabilizing their live sessions.

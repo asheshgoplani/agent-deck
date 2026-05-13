@@ -3,9 +3,12 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +21,25 @@ import (
 func createTestSession(t *testing.T, suffix string) string {
 	t.Helper()
 	skipIfNoTmuxServer(t)
+
+	name := SessionPrefix + "cptest-" + suffix
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name)
+	require.NoError(t, cmd.Run(), "failed to create test session %s", name)
+
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+	})
+
+	return name
+}
+
+// createTestSessionStrict is like createTestSession but only skips when the
+// tmux binary itself is missing. Used by #927 regression tests so they
+// actively run in CI rather than silent-skipping on cold-boot envs (where
+// the only live session is the TestMain bootstrap).
+func createTestSessionStrict(t *testing.T, suffix string) string {
+	t.Helper()
+	skipIfNoTmuxBinary(t)
 
 	name := SessionPrefix + "cptest-" + suffix
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", name)
@@ -279,47 +301,43 @@ func TestPipeManager_GlobalSingleton(t *testing.T) {
 }
 
 func TestKillStaleControlClients(t *testing.T) {
-	name := createTestSession(t, "stale-ctrl")
+	name := createTestSessionStrict(t, "stale-ctrl")
 
-	// Use NewControlPipe to create a proper control-mode client that we know works,
-	// then simulate it being "stale" by tracking its PID before killing it via our function.
-	stalePipe, err := NewControlPipe(name, "")
-	require.NoError(t, err)
-	stalePID := stalePipe.cmd.Process.Pid
-	t.Cleanup(func() { stalePipe.Close() })
+	// Simulate the #595 orphan scenario: a previous agent-deck TUI crashed,
+	// leaving its `tmux -C attach-session` child reparented to init/systemd.
+	// We materialize that state by spawning a helper subprocess that creates
+	// the control client and then exits — the grandchild outlives the helper
+	// and is now truly orphaned (PPID reparented away from any live TUI).
+	stalePID := spawnOrphanControlClient(t, name)
 
-	// Verify the control client is registered
+	// Verify the orphan registered with tmux.
 	require.Eventually(t, func() bool {
 		out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
 		return strings.Contains(string(out), fmt.Sprintf("1 %d", stalePID))
-	}, 3*time.Second, 100*time.Millisecond, "control client should register")
+	}, 3*time.Second, 100*time.Millisecond, "orphaned control client should register")
 
-	// Kill stale clients — this should kill the pipe's process
+	// Kill stale clients — orphan should be reaped.
 	killStaleControlClients(name, "")
 
-	// Verify the control client is no longer listed by tmux
 	require.Eventually(t, func() bool {
 		out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
 		return !strings.Contains(string(out), fmt.Sprintf("1 %d", stalePID))
-	}, 2*time.Second, 100*time.Millisecond, "stale control client should be gone from tmux client list")
+	}, 2*time.Second, 100*time.Millisecond, "orphaned control client should be gone from tmux client list")
 }
 
 func TestPipeManager_ConnectCleansStaleClients(t *testing.T) {
-	name := createTestSession(t, "pm-stale")
+	name := createTestSessionStrict(t, "pm-stale")
 
-	// Create a stale control pipe (simulates orphan from previous TUI)
-	stalePipe, err := NewControlPipe(name, "")
-	require.NoError(t, err)
-	stalePID := stalePipe.cmd.Process.Pid
-	t.Cleanup(func() { stalePipe.Close() })
+	// True orphan: spawned via a helper subprocess that exits, so the
+	// `tmux -C attach-session` grandchild is reparented away.
+	stalePID := spawnOrphanControlClient(t, name)
 
-	// Verify stale client is registered
 	require.Eventually(t, func() bool {
 		out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
 		return strings.Contains(string(out), fmt.Sprintf("1 %d", stalePID))
 	}, 3*time.Second, 100*time.Millisecond)
 
-	// Connect via PipeManager — should kill stale client and create a new one
+	// Connect via PipeManager — should kill stale orphan and create a new one.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pm := NewPipeManager(ctx, nil)
@@ -328,9 +346,90 @@ func TestPipeManager_ConnectCleansStaleClients(t *testing.T) {
 	require.NoError(t, pm.Connect(name, ""))
 	assert.True(t, pm.IsConnected(name))
 
-	// Stale client should be gone
 	out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
-	assert.NotContains(t, string(out), fmt.Sprintf("1 %d", stalePID), "stale client should have been killed by Connect")
+	assert.NotContains(t, string(out), fmt.Sprintf("1 %d", stalePID), "orphaned client should have been killed by Connect")
+}
+
+// TestKillStaleControlClients_PreservesLiveSibling is the #927 regression
+// guard. With allow_multiple=true (default), two simultaneous agent-deck
+// TUIs share a tmux server and each spawns its own control-mode client per
+// session. Before the fix, each TUI's killStaleControlClients sweep treated
+// the OTHER TUI's clients as orphans and SIGTERM'd them — both pipes
+// oscillated to StatusError within ~20s, bricking the two-TUI use case
+// (PC + phone via SSH).
+//
+// The simulated live sibling here is a ControlPipe spawned directly by the
+// test binary. Its parent (the test process) is alive AND has an
+// agent-deck-like executable path (matches os.Executable()), so the fixed
+// killStaleControlClients must classify it as a live sibling and leave it
+// alone.
+//
+// Unlike the legacy stale-client tests, this one uses skipIfNoTmuxBinary
+// (rather than skipIfNoTmuxServer) so it actively runs in CI — the duel
+// regression is meaningless if its guard silent-skips.
+func TestKillStaleControlClients_PreservesLiveSibling(t *testing.T) {
+	name := createTestSessionStrict(t, "live-sibling")
+
+	siblingPipe, err := NewControlPipe(name, "")
+	require.NoError(t, err)
+	siblingPID := siblingPipe.cmd.Process.Pid
+	t.Cleanup(func() { siblingPipe.Close() })
+
+	require.Eventually(t, func() bool {
+		out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
+		return strings.Contains(string(out), fmt.Sprintf("1 %d", siblingPID))
+	}, 3*time.Second, 100*time.Millisecond, "sibling control client should register")
+
+	// Simulate the other TUI's cleanup sweep.
+	killStaleControlClients(name, "")
+
+	// Give a soft-kill SIGTERM enough time to land if the fix is absent.
+	// controlClientKillGrace is 500ms; we wait a bit longer than the full
+	// SIGTERM→SIGKILL cycle (1s) to catch escalation too.
+	time.Sleep(controlClientKillGrace + 750*time.Millisecond)
+
+	assert.True(t, siblingPipe.IsAlive(),
+		"live sibling TUI's control client must survive killStaleControlClients (#927)")
+
+	// Sibling must remain in tmux's client list.
+	out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
+	assert.Contains(t, string(out), fmt.Sprintf("1 %d", siblingPID),
+		"live sibling's pid must still be tracked by tmux after kill sweep")
+}
+
+// TestPipeManager_ConnectPreservesLiveSibling verifies that the fix carries
+// through the high-level PipeManager.Connect path that calls
+// killStaleControlClients(). Two simultaneous TUIs reconnecting to the same
+// session must not delete each other's control pipes.
+func TestPipeManager_ConnectPreservesLiveSibling(t *testing.T) {
+	name := createTestSessionStrict(t, "pm-live-sibling")
+
+	// "Sibling TUI" pipe.
+	siblingPipe, err := NewControlPipe(name, "")
+	require.NoError(t, err)
+	siblingPID := siblingPipe.cmd.Process.Pid
+	t.Cleanup(func() { siblingPipe.Close() })
+
+	require.Eventually(t, func() bool {
+		out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
+		return strings.Contains(string(out), fmt.Sprintf("1 %d", siblingPID))
+	}, 3*time.Second, 100*time.Millisecond)
+
+	// "This TUI" connects — must not kill the sibling.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pm := NewPipeManager(ctx, nil)
+	defer pm.Close()
+
+	require.NoError(t, pm.Connect(name, ""))
+	assert.True(t, pm.IsConnected(name))
+
+	time.Sleep(controlClientKillGrace + 750*time.Millisecond)
+	assert.True(t, siblingPipe.IsAlive(),
+		"sibling pipe must remain alive after PipeManager.Connect (#927)")
+
+	out, _ := exec.Command("tmux", "list-clients", "-t", name, "-F", "#{client_control_mode} #{client_pid}").Output()
+	assert.Contains(t, string(out), fmt.Sprintf("1 %d", siblingPID))
 }
 
 func TestKillStaleControlClients_PreservesOwnProcess(t *testing.T) {
@@ -342,6 +441,75 @@ func TestKillStaleControlClients_PreservesOwnProcess(t *testing.T) {
 }
 
 // --- Helpers ---
+
+// runOrphanControlClientHelper is the TestMain child-helper entry point for
+// ORPHAN_CONTROL_CLIENT_HELPER. It spawns a `tmux -C attach-session` against
+// the given session, prints the spawned PID to stdout, releases the process,
+// and exits. The grandchild outlives this helper and is reparented away from
+// the original test binary, materializing the post-crash orphan state.
+//
+// The child's stdin is wired to /dev/zero so it survives this helper's exit.
+// `tmux -C` exits on stdin EOF; a stdin pipe would EOF the moment the helper
+// process closes its FD on exit, defeating the orphan setup. A /dev/zero
+// reader's open FD is inherited by the child (fork-exec dup) and is
+// independent of this helper's lifetime, so the child reads null bytes
+// indefinitely without seeing EOF — exactly the long-lived stale-client
+// state #595 was added to clean up.
+//
+// Failure modes are funneled to stderr+non-zero exit so the parent's
+// `cmd.Output()` returns a useful error.
+func runOrphanControlClientHelper(sessionName string) {
+	zero, err := os.Open("/dev/zero")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "orphan helper: open /dev/zero: %v\n", err)
+		os.Exit(2)
+	}
+	cmd := exec.Command("tmux", "-C", "attach-session", "-t", sessionName)
+	cmd.Stdin = zero
+	// Put the grandchild in its own process group so it survives this
+	// helper's exit cleanly (mirrors ControlPipe's own Setpgid).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "orphan helper: start tmux -C failed: %v\n", err)
+		os.Exit(2)
+	}
+	fmt.Println(cmd.Process.Pid)
+	// Release so the Go runtime doesn't wait on the grandchild. The kernel
+	// will reparent it to init / systemd-user on exit.
+	_ = cmd.Process.Release()
+	os.Exit(0)
+}
+
+// spawnOrphanControlClient runs a helper subprocess (the test binary with
+// ORPHAN_CONTROL_CLIENT_HELPER set; see testmain_test.go) that creates a
+// `tmux -C attach-session` child and then exits. The grandchild is reparented
+// to init / systemd-user / launchd — i.e., truly orphaned, the exact state
+// killStaleControlClients was added to clean up in #595. Returns the orphan
+// PID. The caller is responsible for triggering its cleanup (via
+// killStaleControlClients or a t.Cleanup of its own).
+func spawnOrphanControlClient(t *testing.T, sessionName string) int {
+	t.Helper()
+	exe, err := os.Executable()
+	require.NoError(t, err)
+
+	cmd := exec.Command(exe, "-test.run=^$")
+	cmd.Env = append(os.Environ(),
+		"ORPHAN_CONTROL_CLIENT_HELPER="+sessionName,
+	)
+	out, err := cmd.Output()
+	require.NoError(t, err, "orphan helper subprocess failed")
+
+	line := strings.TrimSpace(string(out))
+	pid, err := strconv.Atoi(line)
+	require.NoErrorf(t, err, "orphan helper produced non-numeric pid: %q", line)
+
+	// Best-effort safety net: if the test fails before killStaleControlClients
+	// reaps the orphan, make sure it dies with the test instead of leaking.
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+	return pid
+}
 
 func drainEvents(ch <-chan struct{}, duration time.Duration) {
 	deadline := time.After(duration)

@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -433,13 +436,21 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 	pm.mu.Unlock()
 }
 
-// killStaleControlClients kills control-mode clients attached to a session that
-// are not owned by the current process. These accumulate when the TUI is killed
-// without clean shutdown and restarted — the old `tmux -C attach-session`
-// processes survive because they run in their own process group (#595).
+// killStaleControlClients kills control-mode clients attached to a session
+// that are *orphans* — i.e., spawned by a previous agent-deck TUI whose
+// process has died, leaving the `tmux -C attach-session` child reparented to
+// init / systemd-user / launchd. These accumulate after agent-deck
+// crash/SIGKILL, OOM kill, or any exit that bypasses PipeManager.Close()
+// (#595).
 //
-// Expected to find stale clients after: agent-deck crash/SIGKILL, OOM kill,
-// or any exit that bypasses PipeManager.Close() (which normally tears them down).
+// Critically: control clients owned by a *live sibling* agent-deck TUI
+// (instances.allow_multiple=true scenario — e.g. PC + phone-over-SSH) MUST
+// be preserved. #927 was the regression where every client whose pid !=
+// os.Getpid() was treated as stale, so two simultaneous TUIs would
+// SIGTERM each other's pipes in a loop and brick every session inside ~20s.
+//
+// See isControlClientOrphan for how orphans are distinguished from live
+// siblings.
 func killStaleControlClients(sessionName, socketName string) {
 	myPID := os.Getpid()
 
@@ -466,6 +477,15 @@ func killStaleControlClients(sessionName, socketName string) {
 		if pid == myPID {
 			continue // don't kill our own process
 		}
+		if !isControlClientOrphan(pid) {
+			// Live sibling TUI — leave its pipe alone. Without this guard
+			// two concurrent agent-deck TUIs (allow_multiple=true) would
+			// SIGTERM each other's control clients on every reconnect (#927).
+			pipeLog.Debug("preserved_live_sibling_control_client",
+				slog.String("session", sessionName),
+				slog.Int("pid", pid))
+			continue
+		}
 		// Soft-kill the stale control-mode client process.
 		// On macOS Homebrew tmux 3.6a there is an unfixed NULL-deref in the
 		// control-mode notify path that races with client teardown (#737).
@@ -479,6 +499,119 @@ func killStaleControlClients(sessionName, socketName string) {
 			slog.Int("pid", pid),
 			slog.Bool("used_sigkill", usedSIGKILL))
 	}
+}
+
+// isControlClientOrphan reports whether the control-mode client pid is a
+// stale orphan (its owning agent-deck TUI is gone) vs a live sibling TUI's
+// active pipe.
+//
+// Signal: control clients are direct children of the TUI that spawned them
+// via `exec.Command("tmux", "-C", "attach-session", ...)`. While the TUI is
+// alive, the client's PPID equals that TUI's pid and that pid's executable
+// path matches the agent-deck binary (== os.Executable() for any other
+// running TUI on the same host, or the test binary in tests). When the TUI
+// crashes the kernel reparents the client to PID 1 (init) or a session
+// subreaper such as `systemd --user` / `launchd` — none of which match
+// agent-deck.
+//
+// Conservative: any error reading parent metadata returns true (treat as
+// orphan, sweep it). The prior behaviour was "kill anything that isn't me",
+// so falling back to that on metadata-read failures preserves cleanup
+// behaviour for #595's stale-client class without regressing.
+//
+// Why not a heartbeat file: would need TUI-startup wiring + a refresh
+// goroutine + lifecycle cleanup. The PPID+exe check is zero-state and
+// agrees on the same answer.
+func isControlClientOrphan(pid int) bool {
+	ppid, err := readParentPID(pid)
+	if err != nil || ppid <= 1 {
+		// PPID == 1 means the kernel has already reparented the client to
+		// init — definitively an orphan.
+		return true
+	}
+	// Liveness double-check on the parent. If the parent died between the
+	// list-clients call and now, the client is in the process of being
+	// orphaned right now — sweep it.
+	if err := syscall.Kill(ppid, 0); err != nil {
+		return true
+	}
+	parentExe, err := readProcessExe(ppid)
+	if err != nil {
+		// On Linux without /proc-read permission, or macOS with `ps`
+		// failing, we can't verify the parent. Fall back to "treat as
+		// orphan" so #595 cleanup still happens; the cost is that this
+		// regresses the #927 behaviour only on hosts where /proc is
+		// inaccessible AND `ps` doesn't work — which is essentially never.
+		return true
+	}
+	return !looksLikeAgentDeckBinary(parentExe)
+}
+
+// looksLikeAgentDeckBinary returns true when exePath plausibly refers to an
+// agent-deck process. Strongest signal: exact path match against
+// os.Executable() (covers prod, where every TUI runs the same binary, and
+// `go test`, where the parent's exe == the running test binary). Fallback:
+// basename heuristic for renamed installations and the `go test` package
+// binary name (`tmux.test` doesn't contain "agent-deck" but for production
+// the basename will).
+func looksLikeAgentDeckBinary(exePath string) bool {
+	if exePath == "" {
+		return false
+	}
+	if self, err := os.Executable(); err == nil {
+		if exePath == self {
+			return true
+		}
+		// Resolve symlinks in case one path is canonical and the other
+		// isn't (e.g. /usr/local/bin/agent-deck -> /opt/...).
+		if a, errA := filepath.EvalSymlinks(exePath); errA == nil {
+			if b, errB := filepath.EvalSymlinks(self); errB == nil && a == b {
+				return true
+			}
+		}
+	}
+	base := filepath.Base(exePath)
+	return strings.Contains(base, "agent-deck")
+}
+
+// readParentPID returns the parent PID for pid. Prefers /proc/<pid>/stat on
+// Linux (no fork); falls back to `ps -p <pid> -o ppid=` on macOS (or
+// Linux without /proc access).
+func readParentPID(pid int) (int, error) {
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		// stat format: "pid (comm-with-possible-spaces-and-parens) state ppid ..."
+		// The process name field may contain ')' so we split on the LAST one.
+		idx := strings.LastIndex(string(data), ")")
+		if idx < 0 {
+			return 0, fmt.Errorf("malformed /proc/%d/stat", pid)
+		}
+		fields := strings.Fields(string(data[idx+1:]))
+		if len(fields) < 2 {
+			return 0, fmt.Errorf("/proc/%d/stat: too few fields", pid)
+		}
+		return strconv.Atoi(fields[1])
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
+// readProcessExe returns the executable path for pid. Prefers
+// /proc/<pid>/exe readlink on Linux (full path, never truncated); falls back
+// to `ps -p <pid> -o comm=` on macOS or when /proc is unavailable. The `ps`
+// fallback may truncate to 16 chars on Linux but is full-width on macOS
+// (the macOS comm column is the full path).
+func readProcessExe(pid int) (string, error) {
+	if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); err == nil {
+		return exe, nil
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // controlClientKillGrace is how long softKillProcess waits after SIGTERM
