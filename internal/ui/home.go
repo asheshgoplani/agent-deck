@@ -4361,12 +4361,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-enable mouse mode after returning from tea.Exec (tmux detach-client
 		// resets mouse reporting), restore legacy keyboard reporting (tmux's
 		// extended-keys setting leaves Kitty/modifyOtherKeys on the outer terminal;
-		// see RestoreLegacyKeyboardCmd for the full rationale), and schedule a
-		// delayed repaint for any pane-title/content cache changes that settle just
-		// after tmux restores the outer client.
+		// see RestoreLegacyKeyboardCmd for the full rationale), force-poll
+		// terminal dimensions (#936: SIGWINCH propagation through nested SSH is
+		// late or lost — a host-terminal Cmd++ zoom during attach would otherwise
+		// land us back in the menu with stale pre-zoom column counts, making the
+		// input line render above the real viewport bottom and run off the
+		// right edge), and schedule a delayed repaint for any pane-title/content
+		// cache changes that settle just after tmux restores the outer client.
 		return h, tea.Batch(
 			tea.EnableMouseCellMotion,
 			RestoreLegacyKeyboardCmd(os.Stdout),
+			tea.WindowSize(),
 			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
 		)
 
