@@ -7,7 +7,11 @@ All options for `~/.agent-deck/config.toml`.
 - [Top-Level](#top-level)
 - [[shell] Section](#shell-section)
 - [[claude] Section](#claude-section)
+- [[gemini] Section](#gemini-section)
+- [[opencode] Section](#opencode-section)
 - [[codex] Section](#codex-section)
+- [[copilot] Section](#copilot-section)
+- [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
@@ -81,6 +85,7 @@ config_dir = "~/.claude-work"      # Optional override for profile "work"
 | `use_teammate_mode` | bool | `false` | Adds `--teammate-mode tmux` to Claude sessions and is remembered from the New Session dialog. |
 | `extra_args` | array of strings | `[]` | Extra Claude CLI flags remembered from the New Session dialog and appended to new/restarted Claude sessions. Do not store secrets here. |
 | `env_file` | string | `""` | A .env file sourced for Claude sessions only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
+| `command` | string | `"claude"` | Override the binary/invocation (e.g., `"cdw"` for a wrapper that sets `CLAUDE_CONFIG_DIR`). |
 
 Config resolution order for Claude config dir:
 1. `CLAUDE_CONFIG_DIR` env var
@@ -119,6 +124,44 @@ agent-deck hooks status -p work
 agent-deck hooks status -p clientx
 ```
 
+## [gemini] Section
+
+Gemini CLI integration settings.
+
+```toml
+[gemini]
+yolo_mode = true                    # Enable --yolo (auto-approve all actions)
+default_model = "gemini-2.5-flash"  # Model override
+env_file = "~/.gemini.env"          # .env file for Gemini sessions
+command = "gemini"                   # Binary/invocation override
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `yolo_mode` | bool | `false` | Maps to Gemini `--yolo`. |
+| `default_model` | string | `""` | Model to use (e.g., `"gemini-2.5-flash"`). Empty uses Gemini's default. |
+| `env_file` | string | `""` | A .env file sourced for Gemini sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"gemini"` | Override the binary/invocation. Supports flags. |
+
+## [opencode] Section
+
+OpenCode CLI integration settings.
+
+```toml
+[opencode]
+default_model = "anthropic/claude-sonnet-4-5-20250929"
+default_agent = ""
+env_file = "~/.opencode.env"
+command = "opencode"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_model` | string | `""` | Model in `provider/model` format. |
+| `default_agent` | string | `""` | Agent to use. Empty uses OpenCode's default. |
+| `env_file` | string | `""` | A .env file sourced for OpenCode sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"opencode"` | Override the binary/invocation. |
+
 ## [codex] Section
 
 Codex CLI integration settings.
@@ -126,11 +169,49 @@ Codex CLI integration settings.
 ```toml
 [codex]
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
+env_file = "~/.codex.env"
+command = "codex"
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
+| `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"codex"` | Override the binary/invocation. |
+
+## [copilot] Section
+
+GitHub Copilot CLI integration settings.
+
+```toml
+[copilot]
+env_file = "~/.copilot.env"
+command = "copilot"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `env_file` | string | `""` | A .env file sourced for Copilot sessions only. See [Path Resolution](#path-resolution). |
+| `command` | string | `"copilot"` | Override the binary/invocation. |
+
+## [hermes] Section
+
+Hermes Agent CLI integration settings ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)).
+
+```toml
+[hermes]
+command = "hermes --model gpt-5.5-pro --provider openai"
+env_file = "~/.hermes.env"
+yolo_mode = false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"hermes"` | Override the binary/invocation. Supports flags (e.g., model/provider). |
+| `env_file` | string | `""` | A .env file sourced for Hermes sessions only. See [Path Resolution](#path-resolution). |
+| `yolo_mode` | bool | `false` | Maps to `hermes --yolo` (auto-approve all tool calls). |
+
+Status detection: process-alive/dead only. Content-sniffing planned for future release.
 
 ## [docker] Section
 
@@ -413,7 +494,7 @@ env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 | `env_file` | string | No | A .env file sourced for this tool only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
 
-**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, cursor=📝, shell=🐚
+**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
 
 ## Path Resolution
 
@@ -447,7 +528,23 @@ env_file = "~/.claude.env"
 [profiles.work.claude]
 config_dir = "~/.claude-work"
 
+[gemini]
+yolo_mode = true
+env_file = "~/.gemini.env"
+
+[opencode]
+env_file = "~/.opencode.env"
+
 [codex]
+yolo_mode = false
+env_file = "~/.codex.env"
+
+[copilot]
+env_file = "~/.copilot.env"
+
+[hermes]
+command = "hermes --model gpt-5.5-pro --provider openai"
+env_file = "~/.hermes.env"
 yolo_mode = false
 
 [docker]

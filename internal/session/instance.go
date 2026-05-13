@@ -883,12 +883,14 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 
 	// If baseCommand is just "gemini", handle specially
 	if baseCommand == "gemini" {
+		cmd := GetToolCommand("gemini")
 		// If we already have a session ID, use simple resume
 		if i.GeminiSessionID != "" {
 			// GEMINI_YOLO_MODE and GEMINI_SESSION_ID are propagated via host-side
 			// SetEnvironment after tmux start. No inline tmux set-environment.
 			return envPrefix + fmt.Sprintf(
-				"gemini --resume %s%s%s",
+				"%s --resume %s%s%s",
+				cmd,
 				i.GeminiSessionID,
 				yoloFlag,
 				modelFlag,
@@ -900,7 +902,8 @@ func (i *Instance) buildGeminiCommand(baseCommand string) string {
 		// because Gemini processes the "." prompt which takes too long
 		// GEMINI_YOLO_MODE is propagated via host-side SetEnvironment after tmux start.
 		return envPrefix + fmt.Sprintf(
-			`gemini%s%s`,
+			`%s%s%s`,
+			cmd,
 			yoloFlag,
 			modelFlag,
 		)
@@ -927,17 +930,18 @@ func (i *Instance) buildOpenCodeCommand(baseCommand string) string {
 
 	// If baseCommand is just "opencode", handle specially
 	if baseCommand == "opencode" {
+		cmd := GetToolCommand("opencode")
 		extraFlags := i.buildOpenCodeExtraFlags()
 
 		// If we already have a session ID, use resume with -s flag.
 		// OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 		if i.OpenCodeSessionID != "" {
-			return envPrefix + fmt.Sprintf("opencode -s %s%s",
-				i.OpenCodeSessionID, extraFlags)
+			return envPrefix + fmt.Sprintf("%s -s %s%s",
+				cmd, i.OpenCodeSessionID, extraFlags)
 		}
 
 		// Start OpenCode fresh - session ID will be captured async after startup
-		return envPrefix + "opencode" + extraFlags
+		return envPrefix + cmd + extraFlags
 	}
 
 	// For custom commands (e.g., fork commands), return as-is
@@ -1002,6 +1006,16 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	envPrefix := i.buildEnvSourceCommand()
+
+	// Passthrough: if the tool is literally "codex" and user gave a custom command
+	// (not the bare "codex" name), return as-is without flag injection.
+	// Codex-compatible tools (e.g., "my-codex" with CompatibleWith="codex") always
+	// get the full treatment regardless of their command name.
+	trimmed := strings.TrimSpace(baseCommand)
+	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
+		return envPrefix + trimmed
+	}
+
 	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
 		i.ID, i.Title, i.Tool)
 	envPrefix += agentdeckEnvPrefix
@@ -1009,8 +1023,8 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	yoloFlag := i.resolveCodexYoloFlag()
 
 	command := strings.TrimSpace(baseCommand)
-	if command == "" {
-		command = "codex"
+	if command == "codex" || command == "" {
+		command = GetToolCommand("codex")
 	}
 
 	// Issue #756: Gate `codex resume <sid>` on rollout-file existence.
@@ -1038,6 +1052,23 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	return envPrefix + command + yoloFlag
+}
+
+// buildCopilotCommand builds the command for GitHub Copilot CLI.
+// If baseCommand is the bare "copilot" name, applies config command override + env prefix.
+// Otherwise returns the custom command as-is with env prefix (passthrough).
+func (i *Instance) buildCopilotCommand(baseCommand string) string {
+	if i.Tool != "copilot" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+
+	if baseCommand != "copilot" {
+		return envPrefix + baseCommand
+	}
+
+	return envPrefix + GetToolCommand("copilot")
 }
 
 // codexRolloutExists reports whether Codex has flushed a rollout JSONL for
@@ -2326,6 +2357,10 @@ func (i *Instance) Start() error {
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "hermes":
+		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "copilot":
+		command = i.buildCopilotCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2498,6 +2533,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "hermes":
+		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "copilot":
+		command = i.buildCopilotCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -4707,6 +4746,10 @@ func (i *Instance) Restart() error {
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
+		case i.Tool == "hermes":
+			command = i.buildHermesCommand(i.Command)
+		case i.Tool == "copilot":
+			command = i.buildCopilotCommand(i.Command)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {

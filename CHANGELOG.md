@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hermes Agent CLI as first-class tool** — Launch, attach, kill Hermes sessions (`hermes` from NousResearch/hermes-agent). Icon ☤, color gold. Config via `[hermes]` section with `command`, `env_file`, `yolo_mode`. Status: process-alive/dead (content-sniffing deferred). Detection via binary basename + content patterns.
+
+- **Uniform `[tool].command` override for all builtin agents** — All builtin agents now support a `command` field in their config section to override the default binary/invocation (e.g., `[gemini] command = "gemini-nightly --flag"`). Previously only `[claude].command` worked. Also adds `env_file` to `[codex]` and promotes copilot to a dedicated command builder.
+
+### Fixed
+
+- **`[opencode].env_file`, `[codex].env_file`, and `[copilot].env_file` silently ignored** — `getToolEnvFile()` fell through to `GetToolDef()` for these builtins, which returned nil. Now explicitly handled.
+
 ## [1.8.3] - 2026-05-07
 
 Hotfix bundle on top of v1.8.2. Three contributor PRs: a TUI inline-title regression and two conductor heartbeat-rules improvements bringing the OS heartbeat path to parity with `bridge.py`.
