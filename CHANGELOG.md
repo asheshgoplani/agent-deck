@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-05-13
+
+Hotfix release on top of v1.9.2 — single PR (#948) addressing two TUI rendering regressions reported on the day v1.9.2 shipped. Both issues were visible on first attach: viewport content from the previously-attached session bled into newly-attached panes until a manual resize, and emoji glyphs followed by a Variation Selector-16 (U+FE0F) were drawn at single-cell width, causing overlapping text in the session list and status bar. Thanks to @Kevsosmooth, @maxfi, and @jennings for repro details and pane captures.
+
+### Fixed
+
+- **Viewport content no longer bleeds across session-switch / resize until manual repaint** ([#936](https://github.com/asheshgoplani/agent-deck/issues/936), [PR #948](https://github.com/asheshgoplani/agent-deck/pull/948)). After v1.9.2's `home.go` refactor, attaching session B while session A's pane was still in the viewport left A's last-rendered content visible in B's frame until the user manually resized the terminal — the viewport's internal content cache wasn't being invalidated on the attach transition or on terminal resize, so Bubble Tea's diff renderer computed an empty diff against the stale cache and drew nothing for B. Fix: explicit `viewport.SetContent("")` + cache-invalidation flag on every attach-state transition (`attaching` → `attached` and `attached` → `detached`) and on every `tea.WindowSizeMsg`, before the next paint cycle. Coverage in `internal/ui/issue936_attach_resize_test.go` (PR #948, closes #936).
+
+- **Emoji + Variation Selector-16 (U+FE0F) sequences now render at correct two-cell width instead of overlapping** ([#937](https://github.com/asheshgoplani/agent-deck/issues/937), [PR #948](https://github.com/asheshgoplani/agent-deck/pull/948)). Sessions whose names contained emoji presentation sequences (e.g. `⚙️` = U+2699 + U+FE0F, `❤️` = U+2764 + U+FE0F) were measured at one cell because the cell-width function summed `runewidth.RuneWidth` per rune — VS16 reports width 0, and the base symbol is a width-1 "text-default" codepoint, so the combined glyph rendered as 1 cell while the terminal actually drew it at 2 cells, shifting every column to the right of it by one and producing overlap in the session list, status bar, and dialog labels. Fix: cell-width walker now detects the `<base, U+FE0F>` pair and returns 2 for the sequence, matching Unicode UAX #11 emoji presentation semantics and matching what every modern terminal (iTerm2, kitty, WezTerm, GNOME Terminal, Windows Terminal) actually paints. Coverage in `internal/ui/issue937_emoji_vs16_test.go` (PR #948, closes #937).
+
+### Known issues
+
+- `internal/costs::TestStore_TotalLastWeek_OnlyLastWeekEvent` still fails when the local clock is on a Monday in UTC (issue [#932](https://github.com/asheshgoplani/agent-deck/issues/932), unchanged from v1.9.0/v1.9.1/v1.9.2). v1.9.3 was cut on a Wednesday — full suite green.
+
 ## [1.9.2] - 2026-05-13
 
 Patch release on top of v1.9.1 — 17 community PRs merged over the two days since v1.9.1. Headline fix is the **two-TUI-against-one-profile** crash (#944, closes #927): with `allow_multiple=true` (the default), running agent-deck simultaneously on PC + phone-over-SSH caused every managed session to oscillate to StatusError within ~20s because each TUI's reconnect sweep killed the other's control pipes. Other bundles: conductor bridge.py robustness for non-UTF-8 output and `--wait`-vs-`session output --json` reply parsing (#926, closes #920/#921); cross-profile data migration CLI (`session move` / `conductor move` / `group move`, #929, closes #928); first-class per-session Claude Code plugin enablement mirroring the `--mcp` / `--channel` surface (#779); seven smaller TUI/CLI/UX fixes; and the v1.9.0 [Unreleased] hierarchy-keys work (#848) finally cuts.
