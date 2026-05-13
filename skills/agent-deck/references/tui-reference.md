@@ -22,7 +22,7 @@ Complete reference for agent-deck Terminal UI features.
 | `n` | New session (inherits current group) |
 | `r` | Rename session or group |
 | `R` | Restart session (reloads MCPs) |
-| `K` / `J` | Move item up/down in order |
+| `+` / `-` | Move item up/down in order |
 | `M` | Move session to different group |
 | `m` | Open MCP Manager (Claude/Gemini) |
 | `s` | Open Skills Manager |
