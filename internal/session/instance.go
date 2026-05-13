@@ -644,29 +644,27 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Resolve CLAUDE_CONFIG_DIR for this spawn. Three branches, in order:
-	//   1. Custom command (alias like cdw/cdp) — handles config_dir itself, skip.
-	//   2. WorkerScratchConfigDir is prepared — ALWAYS route through scratch.
-	//      Scratch is the whole point of the indirection: it carries the
-	//      mutated enabledPlugins (per-session plugin attach state, issue #59
-	//      and RFC PLUGIN_ATTACH.md). Without exporting it here, claude reads
-	//      the ambient `~/.claude/settings.json` and a globally-enabled
-	//      catalog plugin (e.g. a prior `/plugin install fakechat`) bleeds
-	//      through into the worker — defeating detach.
-	//   3. Explicit config_dir from env/config — pass through unchanged.
+	// Resolve CLAUDE_CONFIG_DIR for this spawn. We inject the prefix only
+	// when the user has an explicit config_dir resolved for this instance
+	// (env var, profile, group, conductor, or `[claude].config_dir`). When
+	// the gate is open, a prepared WorkerScratchConfigDir overrides the
+	// resolved value — scratch carries the mutated enabledPlugins overlay
+	// (per-session plugin attach state, issue #59 / RFC PLUGIN_ATTACH.md).
 	//
-	// Branch 2 is always-on regardless of branch 3 because scratch is
-	// derived from the resolved source dir AND mutates settings.json on top
-	// — strictly an override.
+	// Issue #949: injecting scratch unconditionally breaks macOS Claude
+	// Code's keychain-keyed-by-CLAUDE_CONFIG_DIR-path OAuth on hosts where
+	// scratch is created for telegram-poller defense (#759) but the user
+	// has no explicit config_dir — the worker is routed to an opaque
+	// scratch path the keychain never saw, triggering login + onboarding
+	// every spawn. Gating restores the v1.9.1 behaviour: dormant scratch
+	// in that case, ambient ~/.claude wins.
 	configDirPrefix := ""
-	if !hasCustomCommand {
-		switch {
-		case i.WorkerScratchConfigDir != "":
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", i.WorkerScratchConfigDir)
-		case IsClaudeConfigDirExplicitForInstance(i):
-			configDir := GetClaudeConfigDirForInstance(i)
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
+		configDir := GetClaudeConfigDirForInstance(i)
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
 		}
+		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so Claude's hook subprocesses
@@ -786,18 +784,19 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 }
 
 // buildBashExportPrefix builds the export prefix used in bash -c commands.
-// Always exports AGENTDECK_INSTANCE_ID. CLAUDE_CONFIG_DIR is exported when
-// a worker scratch dir is prepared (always wins) OR when the user has
-// explicit config_dir — same priority as buildClaudeCommandWithMessage
-// and buildClaudeResumeCommand. Scratch is the override for the
-// per-session enabledPlugins overlay (RFC PLUGIN_ATTACH.md).
+// Always exports AGENTDECK_INSTANCE_ID. CLAUDE_CONFIG_DIR is exported only
+// when the user has an explicit config_dir resolved for this instance;
+// when that gate is open, a prepared WorkerScratchConfigDir overrides
+// the resolved value — same priority as buildClaudeCommandWithMessage
+// and buildClaudeResumeCommand. See the comment there (issue #949) for
+// why the gate is required.
 func (i *Instance) buildBashExportPrefix() string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-	switch {
-	case i.WorkerScratchConfigDir != "":
-		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", i.WorkerScratchConfigDir)
-	case IsClaudeConfigDirExplicitForInstance(i):
+	if IsClaudeConfigDirExplicitForInstance(i) {
 		configDir := GetClaudeConfigDirForInstance(i)
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
+		}
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
 	}
 	return prefix
@@ -4992,20 +4991,18 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	claudeCmd := GetClaudeCommand()
 	hasCustomCommand := claudeCmd != "claude"
 
-	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the three-branch
-	// logic in buildClaudeCommandWithMessage — scratch always wins when
-	// prepared, otherwise pass through any explicit config. See the comment
-	// there for why scratch is unconditional (it carries per-session
-	// enabledPlugins and a deny-pinned telegram plugin).
+	// Resolve CLAUDE_CONFIG_DIR for this restart. Mirrors the gating logic
+	// in buildClaudeCommandWithMessage: we inject only when an explicit
+	// config_dir is resolved, with WorkerScratchConfigDir overriding the
+	// resolved value when set. See the comment there (issue #949) for the
+	// macOS-OAuth-keying motivation.
 	configDirPrefix := ""
-	if !hasCustomCommand {
-		switch {
-		case i.WorkerScratchConfigDir != "":
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", i.WorkerScratchConfigDir)
-		case IsClaudeConfigDirExplicitForInstance(i):
-			configDir := GetClaudeConfigDirForInstance(i)
-			configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
+	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
+		configDir := GetClaudeConfigDirForInstance(i)
+		if i.WorkerScratchConfigDir != "" {
+			configDir = i.WorkerScratchConfigDir
 		}
+		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
 	// AGENTDECK_INSTANCE_ID is set as an inline env var so hook subprocesses
