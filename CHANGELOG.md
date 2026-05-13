@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hermes Agent CLI as first-class tool** — Launch, attach, kill Hermes sessions (`hermes` from NousResearch/hermes-agent). Icon ☤, color gold. Config via `[hermes]` section with `command`, `env_file`, `yolo_mode`. Status: process-alive/dead (content-sniffing deferred). Detection via binary basename + content patterns. Original work by @sergeytrofimovsky in [#951](https://github.com/asheshgoplani/agent-deck/pull/951).
+
+- **Uniform `[tool].command` override for all builtin agents** — All builtin agents (claude, gemini, opencode, codex, copilot, hermes) now support a `command` field in their config section to override the default binary/invocation (e.g., `[gemini] command = "gemini-nightly --flag"`). Previously only `[claude].command` worked. Also adds `env_file` to `[codex]` and promotes copilot to a dedicated command builder.
+
 ### Fixed
 
 - **Auto-confirm Claude "Resume from summary" picker on long-running conductors** ([#67](https://github.com/asheshgoplani/agent-deck/issues/67)). Previously, once a session crossed ~250k tokens, `claude --resume` showed an interactive picker that an unattended conductor could not answer, leaving the session frozen on `waiting`. After restart, agent-deck now samples the tmux pane for the picker text and auto-presses Enter to accept the default (Resume from summary). Opt out with `[claude].auto_resume_summary = false`.
+
+- **`[opencode].env_file`, `[codex].env_file`, and `[copilot].env_file` silently ignored** — `getToolEnvFile()` fell through to `GetToolDef()` for these builtins, which returned nil. Now explicitly handled.
 
 ## [1.9.18] - 2026-05-19
 

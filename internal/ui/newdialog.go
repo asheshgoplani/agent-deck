@@ -246,7 +246,7 @@ func displayCommandPreset(cmd string) string {
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "cursor", "crush"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}

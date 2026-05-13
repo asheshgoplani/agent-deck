@@ -3071,6 +3071,8 @@ func detectTool(cmd string) string {
 		return "crush"
 	case strings.Contains(cmd, "cursor"):
 		return "cursor"
+	case strings.Contains(cmd, "hermes"):
+		return "hermes"
 	default:
 		return "shell"
 	}

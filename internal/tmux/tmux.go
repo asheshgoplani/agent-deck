@@ -537,7 +537,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "pi", "cursor", "crush"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -570,6 +570,11 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		// Distinct phrases to avoid colliding with the English word "crush".
 		regexp.MustCompile(`(?i)\bcharm\s+crush\b`),
 		regexp.MustCompile(`(?i)\bcrush>\s*`),
+	},
+	"hermes": {
+		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
+		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
+		regexp.MustCompile(`(?i)\bnous\s*research\b`),
 	},
 	"pi": {
 		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
@@ -605,10 +610,12 @@ func detectToolFromCommand(command string) string {
 			return "copilot"
 		case "crush":
 			return "crush"
-		case "pi":
-			return "pi"
 		case "cursor":
 			return "cursor"
+		case "hermes":
+			return "hermes"
+		case "pi":
+			return "pi"
 		}
 	}
 
@@ -625,10 +632,12 @@ func detectToolFromCommand(command string) string {
 		return "copilot"
 	case strings.Contains(cmdLower, "crush"):
 		return "crush"
-	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
-		return "pi"
 	case strings.Contains(cmdLower, "cursor"):
 		return "cursor"
+	case strings.Contains(cmdLower, "hermes"):
+		return "hermes"
+	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
+		return "pi"
 	default:
 		return ""
 	}
