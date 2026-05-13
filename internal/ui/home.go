@@ -25,7 +25,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mattn/go-runewidth"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
@@ -10512,7 +10511,10 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 
 	for i, part := range mcpParts {
 		plainPart := tmux.StripANSI(part)
-		partWidth := runewidth.StringWidth(plainPart)
+		// #937: ansi.StringWidth (uniseg grapheme-cluster aware) instead of
+		// runewidth.StringWidth, which under-counts <codepoint>+VS16 emoji
+		// sequences and produced row-offset drift on titles like "🏷️ ...".
+		partWidth := ansi.StringWidth(plainPart)
 
 		addedWidth := partWidth
 		if mcpCount > 0 {
@@ -10527,7 +10529,7 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 			wouldExceed = currentWidth+addedWidth > mcpMaxWidth
 		} else {
 			moreIndicator := fmt.Sprintf(" (+%d more)", remaining)
-			moreWidth := runewidth.StringWidth(moreIndicator)
+			moreWidth := ansi.StringWidth(moreIndicator)
 			wouldExceed = currentWidth+addedWidth+moreWidth > mcpMaxWidth
 		}
 
@@ -12629,7 +12631,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			for i, part := range mcpParts {
 				// Strip ANSI codes to measure actual display width
 				plainPart := tmux.StripANSI(part)
-				partWidth := runewidth.StringWidth(plainPart)
+				// #937: ansi.StringWidth (uniseg grapheme-cluster aware)
+				// instead of runewidth.StringWidth — see comment at the other
+				// MCP-row sizing loop for full rationale.
+				partWidth := ansi.StringWidth(plainPart)
 
 				// Calculate width including separator if not first
 				addedWidth := partWidth
@@ -12649,7 +12654,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 				} else {
 					// Not last - check with indicator space reserved
 					moreIndicator := fmt.Sprintf(" (+%d more)", remaining)
-					moreWidth := runewidth.StringWidth(moreIndicator)
+					moreWidth := ansi.StringWidth(moreIndicator)
 					wouldExceed = currentWidth+addedWidth+moreWidth > mcpMaxWidth
 				}
 
@@ -13487,7 +13492,13 @@ func (h *Home) renderNotesSection(inst *session.Instance, width, maxLines int) s
 			}
 			for _, line := range displayLines {
 				safe := stripControlCharsPreserveANSI(line)
-				safe = runewidth.Truncate(safe, contentWidth, "...")
+				// #937: ansi.Truncate is uniseg grapheme-cluster aware so
+				// pane content (notes lines) containing emoji+VS16 stays
+				// inside the panel width budget — runewidth.Truncate
+				// under-counted by 1 cell per VS16 sequence and let the
+				// overflow scroll the layout. Reported by @jennings as
+				// the pane-content half of #937.
+				safe = ansi.Truncate(safe, contentWidth, "...")
 				lines = append(lines, notesStyle.Render(safe))
 			}
 			if overflow && len(lines) > 0 {
@@ -13584,9 +13595,14 @@ func remapANSIBackground(s, replacement string) string {
 	return ansiBackgroundRE.ReplaceAllString(s, replacement)
 }
 
-// truncatePath shortens a path to fit within maxLen display width
+// truncatePath shortens a path to fit within maxLen display width.
+//
+// #937: width and truncate route through ansi.* (uniseg grapheme-cluster
+// aware) instead of runewidth.*, which under-counts <codepoint>+VS16 emoji
+// sequences and let oversized titles past the truncation gate, producing
+// row-offset drift on titles like "🏷️ /Users/foo/project".
 func truncatePath(path string, maxLen int) string {
-	pathWidth := runewidth.StringWidth(path)
+	pathWidth := ansi.StringWidth(path)
 	if pathWidth <= maxLen {
 		return path
 	}
@@ -13599,8 +13615,8 @@ func truncatePath(path string, maxLen int) string {
 	startLen := maxLen / 3
 	endLen := maxLen*2/3 - 3
 	if startLen+endLen+3 > len(runes) {
-		// Path is short in runes but wide in display - use simple truncation
-		return runewidth.Truncate(path, maxLen-3, "...")
+		// Path is short in runes but wide in display - use width-aware truncation
+		return ansi.Truncate(path, maxLen-3, "...")
 	}
 	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
 }
@@ -13796,9 +13812,13 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	var truncatedLines []string
 	for _, line := range lines {
 		cleanLine := tmux.StripANSI(line)
-		displayWidth := runewidth.StringWidth(cleanLine)
+		// #937: ansi.StringWidth + ansi.Truncate are uniseg-aware and
+		// count <codepoint>+VS16 emoji sequences as 2 cells (matching
+		// terminal rendering); runewidth.* counts them as 1 and let
+		// oversized lines overflow into the next row.
+		displayWidth := ansi.StringWidth(cleanLine)
 		if displayWidth > maxWidth {
-			truncated := runewidth.Truncate(cleanLine, maxWidth-3, "...")
+			truncated := ansi.Truncate(cleanLine, maxWidth-3, "...")
 			truncatedLines = append(truncatedLines, truncated)
 		} else {
 			truncatedLines = append(truncatedLines, line)
