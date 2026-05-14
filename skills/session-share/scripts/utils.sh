@@ -3,10 +3,12 @@
 
 set -euo pipefail
 
-# Encode a path the same way Claude does (/ becomes -)
+# Encode a path the same way Claude Code does: both `/` and `.` become `-`.
+# (See #895 — paths like /Users/first.last/... must encode to
+# -Users-first-last-... to find the on-disk projects directory.)
 encode_path() {
     local path="$1"
-    echo "$path" | sed 's|^/|-|' | sed 's|/|-|g'
+    echo "$path" | sed 's|^/|-|' | sed 's|[/.]|-|g'
 }
 
 # Decode an encoded path back to original
@@ -62,7 +64,7 @@ sanitize_jsonl() {
         # Replace username in paths
         sed "s|/Users/$escaped_username|/Users/\$USER|g" | \
         # Remove thinking blocks (they contain internal reasoning)
-        jq -c 'if .message.content then .message.content = [.message.content[] | select(.type != "thinking")] else . end' 2>/dev/null || echo "$content"
+        jq -c 'if (.message.content | type) == "array" then .message.content |= map(select(.type != "thinking")) else . end' 2>/dev/null || echo "$content"
 }
 
 # Generate export filename
