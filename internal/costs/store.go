@@ -9,12 +9,19 @@ import (
 
 // Store persists and queries cost events in SQLite.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 // NewStore creates a Store using an existing database connection.
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{db: db, now: time.Now}
+}
+
+// SetClock overrides the clock used for time-windowed queries. Tests use this
+// to pin "now" to a deterministic instant (e.g. a Monday UTC boundary).
+func (s *Store) SetClock(now func() time.Time) {
+	s.now = now
 }
 
 // DB returns the underlying database for transactional operations.
@@ -75,11 +82,19 @@ func (s *Store) TotalYesterday() (CostSummary, error) {
 		AND timestamp < date('now', 'start of day')`)
 }
 
-// TotalLastWeek returns the prior ISO-week's total costs (Monday start),
-// mirroring the boundary semantics of TotalThisWeek.
+// TotalLastWeek returns the prior ISO-week's total costs (Monday start).
+// Boundaries are computed in Go from the injected clock so the result is
+// stable across the Monday UTC tick — SQLite's `date('now', 'weekday 1')`
+// is a no-op on Monday and shifts the window by 7 days, producing the
+// week-before-last instead of last week (#932).
 func (s *Store) TotalLastWeek() (CostSummary, error) {
-	return s.querySum(`WHERE timestamp >= date('now', 'weekday 1', '-14 days')
-		AND timestamp < date('now', 'weekday 1', '-7 days')`)
+	now := s.now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	daysSinceMonday := (int(today.Weekday()) + 6) % 7 // Mon=0..Sun=6
+	thisMonday := today.AddDate(0, 0, -daysSinceMonday)
+	lastMonday := thisMonday.AddDate(0, 0, -7)
+	return s.querySum(`WHERE timestamp >= ? AND timestamp < ?`,
+		lastMonday.Format(time.RFC3339), thisMonday.Format(time.RFC3339))
 }
 
 // TotalLastMonth returns the prior calendar month's total costs.
