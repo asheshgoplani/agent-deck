@@ -10208,8 +10208,13 @@ func clampViewToViewport(content string, width, height int) string {
 	}
 
 	for i, line := range lines {
-		if ansi.StringWidth(line) > width {
-			lines[i] = ansi.Truncate(line, width, "")
+		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
+		// viewport-clamp safety net sees keycap clusters at their true
+		// terminal cell count. Any line that slips past upstream gates
+		// with a #️⃣ 0️⃣–9️⃣ *️⃣ glyph would otherwise overflow into the
+		// next row here — exactly @jennings's pane-content drift report.
+		if cellWidth(line) > width {
+			lines[i] = cellTruncate(line, width, "")
 		}
 	}
 
@@ -10516,10 +10521,11 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 
 	for i, part := range mcpParts {
 		plainPart := tmux.StripANSI(part)
-		// #937: ansi.StringWidth (uniseg grapheme-cluster aware) instead of
-		// runewidth.StringWidth, which under-counts <codepoint>+VS16 emoji
-		// sequences and produced row-offset drift on titles like "🏷️ ...".
-		partWidth := ansi.StringWidth(plainPart)
+		// #937 v2: cellWidth promotes keycap clusters (#️⃣ 0️⃣–9️⃣ *️⃣) to 2
+		// cells; ansi.StringWidth reports them at 1 and let MCP rows drift
+		// past the right edge — see internal/ui/cellwidth.go for the
+		// uniseg/terminal disagreement that motivates this shim.
+		partWidth := cellWidth(plainPart)
 
 		addedWidth := partWidth
 		if mcpCount > 0 {
@@ -10534,7 +10540,7 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 			wouldExceed = currentWidth+addedWidth > mcpMaxWidth
 		} else {
 			moreIndicator := fmt.Sprintf(" (+%d more)", remaining)
-			moreWidth := ansi.StringWidth(moreIndicator)
+			moreWidth := cellWidth(moreIndicator)
 			wouldExceed = currentWidth+addedWidth+moreWidth > mcpMaxWidth
 		}
 
@@ -11717,14 +11723,19 @@ func (h *Home) renderSessionItem(
 	)
 
 	// Append pane title filling remaining row space (only for the selected item).
-	// lipgloss.Width(row) accounts for indentation, tree connectors, and all badges,
-	// so deeply-nested sessions with many badges naturally get less pane title space.
+	// #937 v2: cellWidth/cellTruncate (not lipgloss.Width / ansi.Truncate)
+	// for both the row budget and the pane-title fit check. pane titles
+	// often surface tmux pane content which can contain keycap glyphs
+	// (#️⃣ 0️⃣–9️⃣ *️⃣) — uniseg reports those at 1 cell, terminals render 2,
+	// so the prior measurement let the trailing pane-title text overflow
+	// the panel and shove subsequent rows down by one cell. See
+	// internal/ui/cellwidth.go for the upstream disagreement.
 	if selected && instState.paneTitle != "" {
-		remaining := h.width - lipgloss.Width(row) - 2 // -2 for trailing margin
+		remaining := h.width - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
 			pt := instState.paneTitle
-			if lipgloss.Width(pt) > remaining {
-				pt = ansi.Truncate(pt, remaining, "…")
+			if cellWidth(pt) > remaining {
+				pt = cellTruncate(pt, remaining, "…")
 			}
 			row += DimStyle.Render(" " + pt)
 		}
@@ -12636,10 +12647,10 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			for i, part := range mcpParts {
 				// Strip ANSI codes to measure actual display width
 				plainPart := tmux.StripANSI(part)
-				// #937: ansi.StringWidth (uniseg grapheme-cluster aware)
-				// instead of runewidth.StringWidth — see comment at the other
-				// MCP-row sizing loop for full rationale.
-				partWidth := ansi.StringWidth(plainPart)
+				// #937 v2: cellWidth (not ansi.StringWidth) so keycap
+				// clusters in MCP names — see cellwidth.go — are sized
+				// at the cell count terminals actually render.
+				partWidth := cellWidth(plainPart)
 
 				// Calculate width including separator if not first
 				addedWidth := partWidth
@@ -12659,7 +12670,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 				} else {
 					// Not last - check with indicator space reserved
 					moreIndicator := fmt.Sprintf(" (+%d more)", remaining)
-					moreWidth := ansi.StringWidth(moreIndicator)
+					moreWidth := cellWidth(moreIndicator)
 					wouldExceed = currentWidth+addedWidth+moreWidth > mcpMaxWidth
 				}
 
@@ -13351,12 +13362,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			}
 			consecutiveEmpty = 0 // Reset counter on non-empty line
 
-			// Truncate based on display width using ANSI-aware measurement
-			// ansi.StringWidth ignores escape sequences for accurate width
-			displayWidth := ansi.StringWidth(safeLine)
+			// Truncate based on display width using ANSI-aware measurement.
+			// #937 v2: cellWidth/cellTruncate so pane-content lines from
+			// the tmux capture-pane buffer — which is where @jennings's
+			// keycap glyphs live — are sized at the cell count terminals
+			// actually render.
+			displayWidth := cellWidth(safeLine)
 			if displayWidth > maxWidth {
-				// ansi.Truncate preserves ANSI codes while truncating visible content
-				safeLine = ansi.Truncate(safeLine, maxWidth-3, "...")
+				safeLine = cellTruncate(safeLine, maxWidth-3, "...")
 			}
 
 			b.WriteString(safeLine)
@@ -13376,11 +13389,13 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	lines := strings.Split(result, "\n")
 	var truncatedLines []string
 	for _, line := range lines {
-		// Use ANSI-aware width measurement to handle lines with escape codes
-		displayWidth := ansi.StringWidth(line)
+		// #937 v2: cellWidth/cellTruncate so the right-panel width
+		// enforcement before lipgloss.JoinHorizontal handles keycap
+		// clusters; ansi.* alone under-counted them and let oversized
+		// lines bleed into the left panel.
+		displayWidth := cellWidth(line)
 		if displayWidth > maxWidth {
-			// ANSI-aware truncation preserves escape codes while trimming visible content
-			line = ansi.Truncate(line, maxWidth-3, "...")
+			line = cellTruncate(line, maxWidth-3, "...")
 		}
 		// Issue #699: captured Claude output (e.g., highlighted input line) can
 		// contain an unclosed SGR whose reset was off-screen or clipped by
@@ -13471,7 +13486,11 @@ func (h *Home) renderNotesSection(inst *session.Instance, width, maxLines int) s
 		}
 
 		for _, line := range viewLines {
-			lines = append(lines, ansi.Truncate(line, contentWidth, "..."))
+			// #937 v2: cellTruncate for notes-editor lines so a keycap
+			// glyph the user typed into the notes editor doesn't overflow
+			// the panel — same drift class as the renderNotesSection path
+			// just below.
+			lines = append(lines, cellTruncate(line, contentWidth, "..."))
 		}
 
 		lines = append(lines, hintStyle.Render("Ctrl+S save • Esc cancel"))
@@ -13497,13 +13516,13 @@ func (h *Home) renderNotesSection(inst *session.Instance, width, maxLines int) s
 			}
 			for _, line := range displayLines {
 				safe := stripControlCharsPreserveANSI(line)
-				// #937: ansi.Truncate is uniseg grapheme-cluster aware so
-				// pane content (notes lines) containing emoji+VS16 stays
-				// inside the panel width budget — runewidth.Truncate
-				// under-counted by 1 cell per VS16 sequence and let the
-				// overflow scroll the layout. Reported by @jennings as
-				// the pane-content half of #937.
-				safe = ansi.Truncate(safe, contentWidth, "...")
+				// #937 v2: cellTruncate (not ansi.Truncate) is the truncation
+				// gate for pane content. ansi/uniseg miss keycap clusters
+				// (#️⃣ 0️⃣–9️⃣ *️⃣) — exactly the emoji @jennings reported
+				// against v1.9.3 — so PR #948's swap to ansi.Truncate alone
+				// still let oversized lines past the gate and reproduced
+				// #937's per-frame row-offset drift. See cellwidth.go.
+				safe = cellTruncate(safe, contentWidth, "...")
 				lines = append(lines, notesStyle.Render(safe))
 			}
 			if overflow && len(lines) > 0 {
@@ -13602,12 +13621,15 @@ func remapANSIBackground(s, replacement string) string {
 
 // truncatePath shortens a path to fit within maxLen display width.
 //
-// #937: width and truncate route through ansi.* (uniseg grapheme-cluster
-// aware) instead of runewidth.*, which under-counts <codepoint>+VS16 emoji
-// sequences and let oversized titles past the truncation gate, producing
-// row-offset drift on titles like "🏷️ /Users/foo/project".
+// #937 v2: width and truncate route through cellWidth/cellTruncate (which
+// promote keycap clusters such as #️⃣ to 2 cells on top of ansi/uniseg's
+// VS16 handling). ansi.* alone — what PR #948 shipped — still let
+// keycap-prefixed titles past the truncation gate and reproduced #937's
+// row-offset drift on titles like "#️⃣ /Users/foo/keycap-channel".
+// See internal/ui/cellwidth.go for the upstream disagreement that
+// motivates this shim.
 func truncatePath(path string, maxLen int) string {
-	pathWidth := ansi.StringWidth(path)
+	pathWidth := cellWidth(path)
 	if pathWidth <= maxLen {
 		return path
 	}
@@ -13621,7 +13643,7 @@ func truncatePath(path string, maxLen int) string {
 	endLen := maxLen*2/3 - 3
 	if startLen+endLen+3 > len(runes) {
 		// Path is short in runes but wide in display - use width-aware truncation
-		return ansi.Truncate(path, maxLen-3, "...")
+		return cellTruncate(path, maxLen-3, "...")
 	}
 	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
 }
@@ -13817,13 +13839,13 @@ func (h *Home) renderGroupPreview(group *session.Group, width, height int) strin
 	var truncatedLines []string
 	for _, line := range lines {
 		cleanLine := tmux.StripANSI(line)
-		// #937: ansi.StringWidth + ansi.Truncate are uniseg-aware and
-		// count <codepoint>+VS16 emoji sequences as 2 cells (matching
-		// terminal rendering); runewidth.* counts them as 1 and let
-		// oversized lines overflow into the next row.
-		displayWidth := ansi.StringWidth(cleanLine)
+		// #937 v2: cellWidth + cellTruncate add keycap-cluster handling on
+		// top of ansi/uniseg's VS16 awareness, so group-preview lines
+		// containing #️⃣ 0️⃣–9️⃣ *️⃣ (jennings's pane-content reopen) stay
+		// inside the panel budget. See cellwidth.go.
+		displayWidth := cellWidth(cleanLine)
 		if displayWidth > maxWidth {
-			truncated := ansi.Truncate(cleanLine, maxWidth-3, "...")
+			truncated := cellTruncate(cleanLine, maxWidth-3, "...")
 			truncatedLines = append(truncatedLines, truncated)
 		} else {
 			truncatedLines = append(truncatedLines, line)
