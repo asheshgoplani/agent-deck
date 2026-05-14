@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
@@ -144,5 +145,134 @@ func Test_Issue937v2_TruncatePath_FitsKeycapTitle(t *testing.T) {
 				"titles past the truncation gate and produces #937's drift.",
 			in, maxLen, out, got, maxLen,
 		)
+	}
+}
+
+// Test_Issue937v2_CellTruncate_PreservesAnsiBoundariesAndKeycap is the joint
+// regression for the two failure modes that cellTruncate must handle at the
+// same time:
+//
+//  1. **Keycap width (#937 v2 — @jennings):** an input whose visible cell
+//     count is greater than ansi.StringWidth's count by exactly the number
+//     of keycap clusters it contains. The output's cellWidth must fit
+//     inside the requested cell budget.
+//
+//  2. **ANSI-escape boundaries (#699 — @javierciccarelli):** an input
+//     containing SGR escape sequences (e.g. "\x1b[43m...") must never have
+//     its escape sequence cut mid-byte by truncation, and the output must
+//     either not contain "\x1b" at all OR carry an exposed "\x1b" only as
+//     part of a complete escape sequence that the downstream renderPreview
+//     pane #699 reset can safely close.
+//
+// An earlier draft of cellTruncate walked the raw bytes through uniseg, which
+// split "\x1b[43m" into five clusters with non-zero width, both over-counting
+// invisible bytes AND letting a truncate land between the ESC and the rest of
+// the CSI sequence — producing dangling/partial SGR state that the row-end
+// reset at internal/ui/home.go:13407 (the #699 fix) could not safely close,
+// re-introducing the bleed eval failure (TestEval_FullViewDoesNotLeakSGRAcrossRows_Issue699).
+//
+// Post-fix: cellTruncate delegates to ansi.Truncate (which is escape-aware)
+// with a budget adjusted by the input's keycap count. The output preserves
+// every ANSI escape boundary AND keeps cellWidth(out) within the budget.
+//
+// Each row of this test pins one combination of {has keycap, has ANSI, has
+// both, is truncated, fits whole}. The two invariants checked per row are:
+//   - cellWidth(out) <= budget    (keycap-aware width gate)
+//   - no half-escape:             (every "\x1b" is followed by a complete CSI/SGR sequence)
+func Test_Issue937v2_CellTruncate_PreservesAnsiBoundariesAndKeycap(t *testing.T) {
+	cases := []struct {
+		name   string
+		in     string
+		budget int
+	}{
+		{"styled_only_truncated", "\x1b[43m> tell me about ghostty", 10},
+		{"styled_keycap_truncated", "\x1b[43m#️⃣ tell me about ghostty", 10},
+		{"styled_keycap_fits", "\x1b[43m#️⃣ tag", 10},
+		{"styled_two_keycaps_truncated", "\x1b[41m1️⃣ 2️⃣ 3️⃣ go", 6},
+		{"styled_only_fits", "\x1b[43mhi", 10},
+		{"keycap_no_style_truncated", "step #️⃣1 done", 6},
+		{"reset_in_middle", "\x1b[43mhi\x1b[0m there", 6},
+		{"reset_keycap_mix", "\x1b[43m#️⃣\x1b[0m kc", 4},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := cellTruncate(tc.in, tc.budget, "...")
+
+			// Invariant 1: cellWidth fits the budget.
+			if got := cellWidth(out); got > tc.budget {
+				t.Fatalf(
+					"cellTruncate(%q, %d, \"...\") = %q has cellWidth = %d, want <= %d "+
+						"— keycap-aware width gate broke.",
+					tc.in, tc.budget, out, got, tc.budget,
+				)
+			}
+
+			// Invariant 2: no half-escape. Every ESC byte must be followed by
+			// the start of a CSI/OSC sequence and a terminator within `out`.
+			// We walk the string the same way the #699 sgrActiveAt helper
+			// does: a CSI sequence is "\x1b[" ... final-byte in 0x40..0x7e.
+			// (We don't validate OSC here — preview pane content uses SGR.)
+			for i := 0; i < len(out); i++ {
+				if out[i] != 0x1b {
+					continue
+				}
+				if i+1 >= len(out) {
+					t.Fatalf(
+						"cellTruncate(%q, %d, \"...\") = %q ends with bare ESC "+
+							"(byte %d) — escape sequence was truncated mid-CSI and "+
+							"will bleed SGR state into the next row (#699).",
+						tc.in, tc.budget, out, i,
+					)
+				}
+				if out[i+1] != '[' {
+					t.Fatalf(
+						"cellTruncate(%q, %d, \"...\") = %q has ESC at byte %d "+
+							"followed by %q, not '[' — escape sequence is malformed.",
+						tc.in, tc.budget, out, i, string(out[i+1]),
+					)
+				}
+				// Find CSI terminator.
+				j := i + 2
+				for j < len(out) && !(out[j] >= 0x40 && out[j] <= 0x7e) {
+					j++
+				}
+				if j >= len(out) {
+					t.Fatalf(
+						"cellTruncate(%q, %d, \"...\") = %q has CSI starting at "+
+							"byte %d with no terminator — escape sequence was cut "+
+							"mid-parameter list (#699 cause).",
+						tc.in, tc.budget, out, i,
+					)
+				}
+				i = j
+			}
+
+			// Invariant 3 (belt-and-suspenders): if input contains keycap and
+			// the output drops it entirely, the kept ASCII prefix should
+			// reflect that — sanity-check that truncation produced a sensible
+			// non-empty result when budget allows.
+			if tc.budget > cellWidth("...") && out == "" {
+				t.Fatalf(
+					"cellTruncate(%q, %d, \"...\") returned empty for non-zero budget — "+
+						"adjust-by-keycap floor logic over-clamped.",
+					tc.in, tc.budget,
+				)
+			}
+
+			// Defensive: when the input contains "\x1b", the output that
+			// reaches renderPreviewPane's #699 post-fix at home.go:13407
+			// must STILL contain "\x1b" so that the ContainsRune-gated
+			// "\x1b[0m" reset still fires. cellTruncate must not strip
+			// ANSI escape sequences silently.
+			if strings.ContainsRune(tc.in, 0x1b) && !strings.ContainsRune(out, 0x1b) && out != "..." {
+				t.Fatalf(
+					"cellTruncate(%q, %d, \"...\") = %q dropped all ESC bytes "+
+						"from styled input — the #699 row-end reset will not fire "+
+						"and SGR state will leak from the input's styled prefix.",
+					tc.in, tc.budget, out,
+				)
+			}
+		})
 	}
 }
