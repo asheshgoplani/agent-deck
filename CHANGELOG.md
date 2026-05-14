@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-05-14
+
+Emergency P0 hotfix on top of v1.9.3 — single PR (#950) restoring macOS OAuth onboarding for users on the default Claude profile. v1.9.2's #779 (per-session Claude Code plugin enablement) inadvertently broke a long-standing invariant: worker-scratch `CLAUDE_CONFIG_DIR` injection was firing for every session, not just those with an explicit `config_dir`. On macOS this caused the Claude CLI to look up OAuth credentials in a non-keychain path and fail onboarding entirely. @paskal bisected the regression to #779 and shipped the fix within 2 hours of report — thank you.
+
+### Fixed
+
+- **macOS OAuth onboarding no longer breaks for sessions without an explicit `config_dir`** ([#949](https://github.com/asheshgoplani/agent-deck/issues/949), [PR #950](https://github.com/asheshgoplani/agent-deck/pull/950)). v1.9.2's #779 expanded `internal/session/instance.go`'s env-construction path so that the worker-scratch `CLAUDE_CONFIG_DIR` override was set unconditionally whenever the session had a worker-scratch directory — which is every managed session. Pre-#779, the override fired only when the user had explicitly configured a per-session `config_dir` (e.g. for multi-profile setups). On Linux this was mostly harmless; on macOS it diverted the Claude CLI away from the default keychain-backed OAuth credential store, so first-run onboarding silently failed with a generic "auth required" loop and existing OAuth tokens stopped being found. Fix: re-gate the worker-scratch `CLAUDE_CONFIG_DIR` injection on a non-empty `config_dir` field, restoring the v1.7.68/v1.9.1 invariant. Pinned by `internal/session/issue949_scratch_injection_gate_test.go` (PR #950, closes #949). Credit to @paskal for bisect-and-fix within 2 hours of the original report.
+
+### Known issues
+
+- `internal/costs::TestStore_TotalLastWeek_OnlyLastWeekEvent` still fails when the local clock is on a Monday in UTC (issue [#932](https://github.com/asheshgoplani/agent-deck/issues/932), unchanged from v1.9.0–v1.9.3). v1.9.4 was cut on a Thursday — full suite green.
+
 ## [1.9.3] - 2026-05-13
 
 Hotfix release on top of v1.9.2 — single PR (#948) addressing two TUI rendering regressions reported on the day v1.9.2 shipped. Both issues were visible on first attach: viewport content from the previously-attached session bled into newly-attached panes until a manual resize, and emoji glyphs followed by a Variation Selector-16 (U+FE0F) were drawn at single-cell width, causing overlapping text in the session list and status bar. Thanks to @Kevsosmooth, @maxfi, and @jennings for repro details and pane captures.
