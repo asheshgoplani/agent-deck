@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -14039,26 +14038,14 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 	return func() tea.Msg {
 		merged := false
 
-		// Step 1: Merge (if requested)
+		// Step 1: Merge (if requested). git.MergeBack handles both regular
+		// and bare-repo layouts; in bare layouts the project root has no
+		// working tree, so checkout/merge cannot run there (#891).
 		if mergeEnabled {
-			// Checkout target branch in main repo
-			cmd := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
-			checkoutOutput, err := cmd.CombinedOutput()
-			if err != nil {
+			if err := git.MergeBack(repoRoot, branchName, targetBranch); err != nil {
 				return worktreeFinishResultMsg{
 					sessionID: sessionID, sessionTitle: sessionTitle,
-					err: fmt.Errorf("failed to checkout %s: %s", targetBranch, strings.TrimSpace(string(checkoutOutput))),
-				}
-			}
-
-			// Merge the worktree branch
-			if err := git.MergeBranch(repoRoot, branchName); err != nil {
-				// Abort the merge to leave things clean
-				abortCmd := exec.Command("git", "-C", repoRoot, "merge", "--abort")
-				_ = abortCmd.Run()
-				return worktreeFinishResultMsg{
-					sessionID: sessionID, sessionTitle: sessionTitle,
-					err: fmt.Errorf("merge failed (aborted): %v", err),
+					err: fmt.Errorf("merge failed: %v", err),
 				}
 			}
 			merged = true
