@@ -601,6 +601,15 @@ func NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool string) *In
 	return inst
 }
 
+// GroupPathForProject is the exported wrapper around extractGroupPath. It
+// gives CLI callers (issue #972) a single source of truth for "what group
+// does this project path imply" — matching what NewInstance assigns by
+// default — so launch/add can prefer cwd-derived groups over inherited
+// parent groups without duplicating the heuristic.
+func GroupPathForProject(projectPath string) string {
+	return extractGroupPath(projectPath)
+}
+
 // extractGroupPath extracts a group path from project path
 // e.g., "/home/user/projects/devops" -> "projects"
 func extractGroupPath(projectPath string) string {
