@@ -564,6 +564,20 @@ func logSessionCreated(inst *Instance) {
 	)
 }
 
+// applyLaunchSettingsFromConfig copies LaunchInUserScope and LaunchAs from
+// the live TmuxSettings onto the tmux session, just before each Start().
+//
+// Regression pin for #958 (SSH-logout session loss): three Start() call
+// sites in this file each need this wire-up. Consolidating into one helper
+// means dropping a single Start() path can no longer silently regress the
+// fix — the field would just stay at its zero value (false / "") and the
+// hermetic tests in issue958_launch_settings_wiring_test.go would fail.
+func (i *Instance) applyLaunchSettingsFromConfig() {
+	settings := GetTmuxSettings()
+	i.tmuxSession.LaunchInUserScope = settings.GetLaunchInUserScope()
+	i.tmuxSession.LaunchAs = settings.GetLaunchAs()
+}
+
 // NewInstanceWithGroup creates a new session instance with explicit group
 func NewInstanceWithGroup(title, projectPath, groupPath string) *Instance {
 	inst := NewInstance(title, projectPath)
@@ -2522,8 +2536,7 @@ func (i *Instance) Start() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
-	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
-	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
+	i.applyLaunchSettingsFromConfig()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -2694,8 +2707,7 @@ func (i *Instance) StartWithMessage(message string) error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
-	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
-	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
+	i.applyLaunchSettingsFromConfig()
 
 	// Start the tmux session
 	if err := i.tmuxSession.Start(command); err != nil {
@@ -4925,8 +4937,7 @@ func (i *Instance) Restart() error {
 	// Sandbox sessions also get remain-on-exit for dead-pane detection.
 	i.tmuxSession.OptionOverrides = i.buildTmuxOptionOverrides()
 	i.tmuxSession.RunCommandAsInitialProcess = i.IsSandboxed() || i.Tool != "shell"
-	i.tmuxSession.LaunchInUserScope = GetTmuxSettings().GetLaunchInUserScope()
-	i.tmuxSession.LaunchAs = GetTmuxSettings().GetLaunchAs()
+	i.applyLaunchSettingsFromConfig()
 
 	mcpLog.Debug("restart_starting_new_session", slog.String("command", command))
 
