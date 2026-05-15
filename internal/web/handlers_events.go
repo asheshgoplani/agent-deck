@@ -38,6 +38,10 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load menu data")
 		return
 	}
+	// #963: SSE must apply the same hook overlay the REST handlers do,
+	// otherwise sessions stuck at error in the snapshot but waiting per
+	// the hook file surface as error on the web while CLI shows waiting.
+	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -67,6 +71,11 @@ func (s *Server) handleMenuEvents(w http.ResponseWriter, r *http.Request) {
 				slog.String("error", err.Error()))
 			return nil
 		}
+		// #963: re-apply the hook overlay before fingerprinting/emit so
+		// the fingerprint reflects what the client will actually see
+		// (otherwise the fingerprint matches pre-overlay state and the
+		// stream goes silent while the visible state still changes).
+		refreshSnapshotHookStatuses(nextSnapshot, s.hookStatusLoader)
 
 		nextFingerprint := menuSnapshotFingerprint(nextSnapshot)
 		if nextFingerprint == lastFingerprint {
