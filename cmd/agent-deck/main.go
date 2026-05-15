@@ -1222,11 +1222,15 @@ func handleAdd(profile string, args []string) {
 			fmt.Printf("Error: cannot create sub-session of a sub-session (single level only)\n")
 			os.Exit(1)
 		}
-		sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+		// handleAdd resolves `path` AFTER this block (see below), so the
+		// cwd-derived group is not available here. Passing "" preserves
+		// handleAdd's existing behavior; the #972 cwd-over-parent priority
+		// is wired into `launch` where path is already known at this point.
+		sessionGroup = resolveGroupSelection(sessionGroup, "", parentInstance.GroupPath, explicitGroupProvided)
 	} else if !*noParent {
 		parentInstance = resolveAutoParentInstance(instances)
 		if parentInstance != nil && !parentInstance.IsSubSession() {
-			sessionGroup = resolveGroupSelection(sessionGroup, parentInstance.GroupPath, explicitGroupProvided)
+			sessionGroup = resolveGroupSelection(sessionGroup, "", parentInstance.GroupPath, explicitGroupProvided)
 		} else {
 			parentInstance = nil
 		}
