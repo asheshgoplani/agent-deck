@@ -62,10 +62,18 @@ var hostHasTelegramConductor = func() bool {
 //  2. Per-session plugin enablement (RFC docs/rfc/PLUGIN_ATTACH.md) —
 //     write enabledPlugins[<id>] = true without contaminating the ambient
 //     profile or peer sessions.
+//  3. GLOBAL_ANTIPATTERN guard (issue #941) — channel-owning conductor with
+//     `enabledPlugins.telegram=true` already in the ambient settings.json.
+//     The TelegramValidator surfaces this as DOUBLE_LOAD but warnings
+//     don't prevent the spawn; the scratch pins telegram off so --channels
+//     is the only activation source and exactly one bun poller runs.
 //
-// When both fire, EnsureWorkerScratchConfigDir combines the deny+allow lists.
+// When multiple reasons fire, EnsureWorkerScratchConfigDir combines the
+// deny+allow lists.
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
-	return needsScratchForTelegram(i) || needsScratchForExplicitPlugins(i)
+	return needsScratchForTelegram(i) ||
+		needsScratchForExplicitPlugins(i) ||
+		needsScratchForGlobalChannelConflict(i)
 }
 
 func needsScratchForTelegram(i *Instance) bool {
@@ -82,8 +90,60 @@ func needsScratchForExplicitPlugins(i *Instance) bool {
 	return len(i.Plugins) > 0
 }
 
+// needsScratchForGlobalChannelConflict fires for issue #941: a
+// channel-owning conductor session whose ambient profile has
+// `enabledPlugins."telegram@claude-plugins-official" = true`.
+// Without intervention, claude loads the plugin twice (once from the
+// global setting, once from --channels) and two bun pollers race for
+// the same bot token → 409 Conflict.
+//
+// We can't just rely on the user disabling the global flag — the rule
+// is documented but not enforced. This predicate detects the topology
+// and triggers a scratch CLAUDE_CONFIG_DIR that pins telegram off.
+// --channels remains the only activation, yielding exactly one poller.
+func needsScratchForGlobalChannelConflict(i *Instance) bool {
+	if i == nil || i.Tool != "claude" {
+		return false
+	}
+	if !sessionHasTelegramChannel(i) {
+		return false
+	}
+	sourceDir := GetClaudeConfigDirForInstance(i)
+	if sourceDir == "" {
+		return false
+	}
+	return globalTelegramEnablementSet(sourceDir)
+}
+
+func sessionHasTelegramChannel(i *Instance) bool {
+	for _, ch := range i.Channels {
+		if strings.HasPrefix(ch, telegramChannelPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// globalTelegramEnablementSet reports whether the source profile's
+// settings.json has enabledPlugins."telegram@claude-plugins-official"=true.
+// Missing files, parse errors, or absent keys all return false — we
+// only fire the scratch guard when the antipattern is unambiguously present.
+func globalTelegramEnablementSet(sourceProfileDir string) bool {
+	data, err := os.ReadFile(filepath.Join(sourceProfileDir, "settings.json"))
+	if err != nil {
+		return false
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return false
+	}
+	plugins, _ := parsed["enabledPlugins"].(map[string]interface{})
+	v, ok := plugins[telegramPluginID].(bool)
+	return ok && v
+}
+
 func computeDenyList(i *Instance) []string {
-	if needsScratchForTelegram(i) {
+	if needsScratchForTelegram(i) || needsScratchForGlobalChannelConflict(i) {
 		return []string{telegramPluginID}
 	}
 	return nil
@@ -292,6 +352,19 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 		return
 	}
 	sourceDir := GetClaudeConfigDirForInstance(i)
+
+	// Issue #941: surface the GLOBAL_ANTIPATTERN at spawn so operators can
+	// flip enabledPlugins.telegram=false in their profile and stop relying
+	// on this guard. Log-level WARN keeps it visible without blocking.
+	if needsScratchForGlobalChannelConflict(i) {
+		sessionLog.Warn("telegram_global_antipattern_suppressed",
+			slog.String("instance_id", i.ID),
+			slog.String("title", i.Title),
+			slog.String("source_profile_dir", sourceDir),
+			slog.String("plugin_id", telegramPluginID),
+			slog.String("guidance", "enabledPlugins.\"telegram@claude-plugins-official\"=true in the ambient settings.json would have caused a duplicate bun telegram poller (issue #941). Pinning the plugin off in a per-session scratch config dir so --channels is the sole activation. Recommended fix: remove the global enablement and rely on --channels."),
+		)
+	}
 
 	// Step 1: install plugin code into the SOURCE profile (not scratch).
 	// Best-effort — failures log but don't block. Runs first so the
