@@ -377,3 +377,29 @@ func telegramStateDirStripExpr(inst *Instance) string {
 	}
 	return "unset TELEGRAM_STATE_DIR"
 }
+
+// ScrubProcessEnvForChildLaunch removes TELEGRAM_STATE_DIR from the
+// CURRENT process environment when the given instance represents a
+// non-channel-owning claude child. Issue #955: `agent-deck launch`
+// invoked from a conductor session inherits the conductor's
+// TELEGRAM_STATE_DIR; without this strip the var propagates into the
+// tmux server (which inherits the launching process env on first
+// `new-session`) and from there into every subprocess in the new
+// pane — Bash-tool spawns, fork claudes, restart respawn — even when
+// the S8 exec-layer (`env -u TELEGRAM_STATE_DIR claude`) protects the
+// immediate claude binary. Any of those descendants can load the
+// Claude Code telegram plugin and start a second `bun telegram`
+// poller against the conductor's bot, racing the conductor for the
+// Bot API lock (HTTP 409) and silently dropping inbound messages.
+//
+// Reuses telegramStateDirStripExpr as the single source of truth for
+// the strip predicate so this layer can never disagree with the
+// shell-level and exec-level layers about which sessions own the
+// telegram bot. No-op for conductors, explicit telegram channel
+// owners, and non-claude tools.
+func ScrubProcessEnvForChildLaunch(inst *Instance) {
+	if telegramStateDirStripExpr(inst) == "" {
+		return
+	}
+	_ = os.Unsetenv("TELEGRAM_STATE_DIR")
+}

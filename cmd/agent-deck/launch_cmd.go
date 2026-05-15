@@ -454,6 +454,15 @@ func handleLaunch(profile string, args []string) {
 		return
 	}
 
+	// Issue #955: strip TELEGRAM_STATE_DIR from the agent-deck CLI
+	// process env before the tmux server inherits it on the first
+	// `new-session`. No-op for conductors and explicit telegram
+	// channel owners — they legitimately own the bot token. Sits
+	// above the S8 exec-layer (env -u TELEGRAM_STATE_DIR claude …)
+	// so even non-claude descendants of the pane (Bash-tool spawns,
+	// fork claudes, restart respawn) start with a clean env.
+	session.ScrubProcessEnvForChildLaunch(newInstance)
+
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt
 	// - --no-wait: start immediately, then fire-and-forget send below
