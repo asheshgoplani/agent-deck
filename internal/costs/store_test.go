@@ -285,6 +285,67 @@ func TestStore_TotalLastWeek_OnlyLastWeekEvent(t *testing.T) {
 	}
 }
 
+// TestStore_TotalLastWeek_HandlesMondayBoundary pins the clock to a Monday at
+// 00:00:01 UTC and verifies that "last week" resolves to [previous Monday,
+// this Monday) — not [two-Mondays-ago, last Monday), which is what the
+// SQLite-only implementation produced because `date('now', 'weekday 1')` is a
+// no-op on Monday. Regression for #932.
+func TestStore_TotalLastWeek_HandlesMondayBoundary(t *testing.T) {
+	s := testStore(t)
+
+	// Pin to Monday 2025-11-10 at 00:00:01 UTC. This date is deliberately far
+	// from the wall-clock "now": a broken implementation that ignores the
+	// injected clock will compute the window relative to today's real date
+	// and find none of the inserted events, producing total=0 instead of the
+	// expected 71000.
+	monday := time.Date(2025, 11, 10, 0, 0, 1, 0, time.UTC)
+	s.SetClock(func() time.Time { return monday })
+
+	// Event firmly inside last week relative to pinned Monday (Thu 2025-11-06).
+	lastWeekEvent := time.Date(2025, 11, 6, 12, 0, 0, 0, time.UTC)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-lw-mon", SessionID: "s1", Timestamp: lastWeekEvent,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 70000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Event at last Monday 00:00 — boundary INCLUSIVE (2025-11-03).
+	lastMonday := time.Date(2025, 11, 3, 0, 0, 0, 0, time.UTC)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-lw-start", SessionID: "s1", Timestamp: lastMonday,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Event at the pinned Monday (this week's start) — boundary EXCLUSIVE.
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-this-mon", SessionID: "s1", Timestamp: monday,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 50000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Event two weeks ago relative to pinned Monday (Thu 2025-10-30).
+	twoWeeksAgo := time.Date(2025, 10, 30, 12, 0, 0, 0, time.UTC)
+	if err := s.WriteCostEvent(costs.CostEvent{
+		ID: "evt-2w", SessionID: "s1", Timestamp: twoWeeksAgo,
+		Model: "claude-sonnet-4-6", CostMicrodollars: 99999,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := s.TotalLastWeek()
+	if err != nil {
+		t.Fatalf("TotalLastWeek: %v", err)
+	}
+	want := int64(71000) // 70000 + 1000
+	if summary.TotalCostMicrodollars != want {
+		t.Errorf("Monday UTC: last-week total = %d, want %d", summary.TotalCostMicrodollars, want)
+	}
+	if summary.EventCount != 2 {
+		t.Errorf("Monday UTC: event count = %d, want 2", summary.EventCount)
+	}
+}
+
 func TestStore_TotalLastWeek_TwoWeeksAgoExcluded(t *testing.T) {
 	s := testStore(t)
 	twoWeeksAgo := time.Now().AddDate(0, 0, -16)
