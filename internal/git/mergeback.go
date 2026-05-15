@@ -29,13 +29,17 @@ func MergeBack(projectRoot, sourceBranch, targetBranch string) error {
 		return mergeBackInWorktree(projectRoot, sourceBranch, targetBranch)
 	}
 
+	// projectRoot is the bare repo itself (bare-at-root, or a caller
+	// that handed us the .bare/ dir directly): use it as-is, without scanning
+	// children. The child-scan path is only correct when projectRoot is a
+	// non-git dir that contains a nested bare repo (the .bare/ layout).
+	if IsBareRepo(projectRoot) {
+		return mergeBackInBareRepo(projectRoot, sourceBranch, targetBranch)
+	}
+
 	bareDir := findNestedBareRepo(projectRoot)
 	if bareDir == "" {
-		if IsBareRepo(projectRoot) {
-			bareDir = projectRoot
-		} else {
-			return fmt.Errorf("not a git repository or bare-repo project root: %s", projectRoot)
-		}
+		return fmt.Errorf("not a git repository or bare-repo project root: %s", projectRoot)
 	}
 
 	return mergeBackInBareRepo(bareDir, sourceBranch, targetBranch)
