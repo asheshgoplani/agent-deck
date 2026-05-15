@@ -1741,7 +1741,7 @@ func handleSessionSend(profile string, args []string) {
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
-	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for completion (used with --wait)")
+	timeout := fs.Duration("timeout", 10*time.Minute, "Max time to wait for the agent to become ready and (with --wait) to finish processing")
 	streamIdle := fs.Duration("stream-idle", 10*time.Second, "Max idle time before --stream aborts with error")
 	streamCharBudget := fs.Int("stream-char-budget", 4000, "Char budget for text flush in --stream mode")
 	streamToolBudget := fs.Int("stream-tool-budget", 3, "Tool-event budget for text flush in --stream mode")
@@ -1828,9 +1828,12 @@ func handleSessionSend(profile string, args []string) {
 		os.Exit(1)
 	}
 
-	// Wait for agent to be ready (unless --no-wait is specified)
+	// Wait for agent to be ready (unless --no-wait is specified).
+	// Issue #957: honor --timeout for the readiness phase too, not just the
+	// post-ready completion wait. Otherwise --timeout 5m against a busy
+	// recipient silently fails at ~80s.
 	if !*noWait {
-		if err := waitForAgentReady(tmuxSess, inst.Tool); err != nil {
+		if err := waitForAgentReady(tmuxSess, inst.Tool, *timeout); err != nil {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -2257,17 +2260,38 @@ func messageDeliveryToken(message string) string {
 	return trimmed
 }
 
+// agentReadyChecker abstracts the tmux surface that waitForAgentReady needs.
+// Lets tests exercise the readiness/timeout loop without a real tmux session.
+// *tmux.Session satisfies this interface naturally.
+type agentReadyChecker interface {
+	GetStatus() (string, error)
+	CapturePaneFresh() (string, error)
+}
+
 // waitForAgentReady waits for Claude/Gemini/other agents to be ready for input
-// Uses status detection: waits for "active" → "waiting" transition
-func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
+// Uses status detection: waits for "active" → "waiting" transition.
+//
+// Issue #957: before v1.9.x this loop was hardcoded to 80s and silently
+// overrode the caller's --timeout. `--timeout` now bounds the agent-ready
+// phase too, so `session send --timeout 5m` against a busy recipient actually
+// waits up to 5m for readiness before giving up.
+func waitForAgentReady(target agentReadyChecker, tool string, timeout time.Duration) error {
+	const pollInterval = 200 * time.Millisecond
+	if timeout <= 0 {
+		timeout = 80 * time.Second // preserve historical default if caller passes zero
+	}
+	maxAttempts := int(timeout / pollInterval)
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
 	sawActive := false
 	readyCount := 0
-	maxAttempts := 400 // 80 seconds max (400 * 200ms)
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(pollInterval)
 
-		status, err := tmuxSess.GetStatus()
+		status, err := target.GetStatus()
 		if err != nil {
 			readyCount = 0
 			continue
@@ -2291,7 +2315,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 		alreadyReady := readyCount >= 10 && attempt >= 15 // At least 3s elapsed
 		if (sawActive && (status == "waiting" || status == "idle")) || alreadyReady {
 			if tool == "claude" {
-				if rawContent, captureErr := tmuxSess.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
+				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil && !send.HasCurrentComposerPrompt(tmux.StripANSI(rawContent)) {
 					// Claude can report waiting before the interactive prompt is visible.
 					// Keep polling until the prompt line is present.
 					continue
@@ -2300,7 +2324,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 			// Gate Codex sends on prompt readiness: wait for "codex>" or
 			// "Continue?" to be visible before considering the agent ready.
 			if tool == "codex" {
-				if rawContent, captureErr := tmuxSess.CapturePaneFresh(); captureErr == nil {
+				if rawContent, captureErr := target.CapturePaneFresh(); captureErr == nil {
 					content := tmux.StripANSI(rawContent)
 					detector := tmux.NewPromptDetector("codex")
 					if !detector.HasPrompt(content) {
@@ -2314,7 +2338,7 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 		}
 	}
 
-	return fmt.Errorf("agent not ready after 80 seconds")
+	return fmt.Errorf("agent not ready after %s", timeout)
 }
 
 // statusChecker abstracts tmux status polling so waitForCompletion is testable.
