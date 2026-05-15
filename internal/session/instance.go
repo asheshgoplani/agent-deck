@@ -2426,6 +2426,41 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 		slog.String("reason", "jsonl_discovery"))
 }
 
+// ensureClaudeSessionIDFromDiskForRestart is the Restart()-path variant of
+// ensureClaudeSessionIDFromDisk. Issue #956: custom-command Claude sessions
+// (Tool=claude with a wrapper Command) bypass happy-path session-id capture,
+// and if no hook ever propagated CLAUDE_SESSION_ID back to the Instance the
+// ClaudeSessionID field stays empty even after a real conversation has
+// written a JSONL transcript to disk. On Restart() the fallback recreate
+// branch then re-spawns the wrapper without `--resume`, dropping history.
+//
+// Start()'s prelude (ensureClaudeSessionIDFromDisk) refuses to discover for
+// instances with ClaudeDetectedAt==zero (issue #608) so a brand-new spawn
+// does not adopt another session's history from the same project directory.
+// Restart() implies the instance previously ran — the tmux session existed
+// and (in the bug scenario) had a live Claude conversation — so the gate
+// is safe to bypass here. ClaudeDetectedAt is then stamped so subsequent
+// callers (status refresh, persistence) see a consistent capture time.
+func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
+	if i.ClaudeSessionID != "" {
+		return
+	}
+	lookupPath := i.EffectiveWorkingDir()
+	uuid, found := discoverLatestClaudeJSONL(lookupPath)
+	if !found {
+		return
+	}
+	i.ClaudeSessionID = uuid
+	if i.ClaudeDetectedAt.IsZero() {
+		i.ClaudeDetectedAt = time.Now()
+	}
+	sessionLog.Info("resume: id="+uuid+" reason=jsonl_discovery_restart",
+		slog.String("instance_id", i.ID),
+		slog.String("claude_session_id", uuid),
+		slog.String("path", lookupPath),
+		slog.String("reason", "jsonl_discovery_restart"))
+}
+
 // Start starts the session in tmux
 func (i *Instance) Start() error {
 	if i.tmuxSession == nil {
@@ -4631,6 +4666,20 @@ func (i *Instance) Restart() error {
 	// current state. Same call as Start()/recreate paths — idempotent
 	// per (sourceProfileDir, plugins-set) and best-effort on failure.
 	i.prepareWorkerScratchConfigDirForSpawn()
+
+	// Issue #956: custom-command Claude sessions whose hooks never fired
+	// (or whose wrapper script overrode CLAUDE_CONFIG_DIR) arrive at
+	// Restart() with empty ClaudeSessionID even when the live conversation
+	// wrote a JSONL to disk. Without this prelude the fallback recreate
+	// path below dispatches through buildClaudeCommand(i.Command), re-runs
+	// the wrapper fresh, and silently drops chat history. Discovery here
+	// populates ClaudeSessionID so the respawn-pane fast path
+	// (buildClaudeResumeCommand) engages and emits `claude --resume <uuid>`.
+	// Mirrors Start()'s ensureClaudeSessionIDFromDisk but bypasses the
+	// #608 brand-new-session gate — Restart() implies the instance ran.
+	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID == "" {
+		i.ensureClaudeSessionIDFromDiskForRestart()
+	}
 
 	// If Claude session with known ID AND tmux session exists, use respawn-pane.
 	if IsClaudeCompatible(i.Tool) && i.ClaudeSessionID != "" && i.tmuxSession != nil && i.tmuxSession.Exists() {
