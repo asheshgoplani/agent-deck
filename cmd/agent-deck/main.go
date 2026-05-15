@@ -544,6 +544,9 @@ func main() {
 	// inflate the counter.
 	if fbSt, _ := feedback.LoadState(); fbSt != nil {
 		feedback.RecordLaunch(fbSt, time.Now())
+		// #967: migrate pre-existing forever-opt-outs to per-release-series.
+		// Idempotent — no-op once OptOutVersion is set or feedback is enabled.
+		feedback.MigrateLegacyOptOut(fbSt, Version)
 		_ = feedback.SaveState(fbSt)
 	}
 
