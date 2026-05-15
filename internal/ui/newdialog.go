@@ -1118,6 +1118,25 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 		}
 
+		// Issue #896 sub-bug 4: when the path-suggestions popup is visible,
+		// arrow keys must navigate the popup from the very first press.
+		// Previously the user had to press Space or Ctrl+N first to enter
+		// "arrow-key mode"; arrows on a freshly-shown popup fell through to
+		// dialog focus advancement, leaving the popup feeling half-broken.
+		// Auto-activate on the first arrow press so the suggestionsActive
+		// handler below takes over and home.go's Enter handler can pick the
+		// highlighted suggestion (sub-bug 3).
+		if !d.suggestionsActive && d.currentTarget() == focusPath &&
+			len(d.pathSuggestions) > 0 && !d.suggestionsHidden {
+			if s := msg.String(); s == "down" || s == "up" {
+				d.suggestionsActive = true
+				d.pathSoftSelected = false
+				d.pathInput.Blur()
+				d.suggestionNavigated = true
+				// fall through to the suggestionsActive arrow handler below
+			}
+		}
+
 		// Suggestions dropdown active: arrow keys navigate, space/enter select,
 		// left/esc exit. The dropdown shows a synthetic "Type custom path..."
 		// entry at index 0, followed by real suggestions at indices 1..N.
