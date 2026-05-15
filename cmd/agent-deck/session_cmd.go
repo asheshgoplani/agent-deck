@@ -1912,6 +1912,19 @@ func handleSessionSend(profile string, args []string) {
 			out.Error(fmt.Sprintf("timeout waiting for agent: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		// Issue #966: after a restart, Claude reaches "waiting" + composer
+		// visible before its slash-command parser registers. Bare `/foo`
+		// in that window is silently dropped. Hold back only when needed.
+		if shouldGateSlashRegistration(inst.Tool, message) {
+			slashTimeout := *timeout
+			if slashTimeout <= 0 || slashTimeout > 10*time.Second {
+				slashTimeout = 10 * time.Second
+			}
+			if err := waitForSlashCommandReady(tmuxSess, inst.Tool, slashTimeout); err != nil {
+				out.Error(fmt.Sprintf("timeout waiting for slash-command registration: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// Record send time before the actual send so we can verify output freshness.
@@ -2414,6 +2427,70 @@ func waitForAgentReady(target agentReadyChecker, tool string, timeout time.Durat
 	}
 
 	return fmt.Errorf("agent not ready after %s", timeout)
+}
+
+// shouldGateSlashRegistration reports whether a send needs to wait for
+// Claude's slash-command parser to finish registering before relaying.
+//
+// Issue #966: after `session restart`, Claude reaches "waiting" with the
+// composer prompt visible *before* its slash-command router is armed. A
+// bare `/foo` sent in that window is silently dropped. The gate fires only
+// for the trigger condition — Claude tool plus a bare slash payload — so
+// conversational text and non-Claude tools don't pay the latency.
+func shouldGateSlashRegistration(tool, message string) bool {
+	if tool != "claude" {
+		return false
+	}
+	trimmed := strings.TrimLeft(message, " \t")
+	if trimmed == "" {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "/")
+}
+
+// waitForSlashCommandReady polls the pane until the composer prompt has been
+// continuously visible for the slash-registration settle window, then returns.
+// Callers must have already passed waitForAgentReady; this is an additional
+// hold-back specifically for the #966 race.
+//
+// The function probes (rather than blind-sleeps) so a long-already-ready
+// Claude returns near-immediately on retries, while a freshly restarted
+// Claude pays the full settle window.
+func waitForSlashCommandReady(target agentReadyChecker, tool string, timeout time.Duration) error {
+	const pollInterval = 100 * time.Millisecond
+	// Eight stable composer observations (~800ms) is the empirical floor
+	// for Claude to finish registering its slash-command parser after the
+	// composer first renders. Bumping this is a no-op for healthy sessions
+	// (we early-return as soon as stability is met); it only delays the
+	// first send after a restart.
+	const minStableHits = 8
+
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+
+	stable := 0
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+
+		rawContent, err := target.CapturePaneFresh()
+		if err != nil {
+			stable = 0
+			continue
+		}
+		content := tmux.StripANSI(rawContent)
+		if !send.HasCurrentComposerPrompt(content) {
+			stable = 0
+			continue
+		}
+		stable++
+		if stable >= minStableHits {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("slash-command registration not ready after %s (tool=%s)", timeout, tool)
 }
 
 // statusChecker abstracts tmux status polling so waitForCompletion is testable.
