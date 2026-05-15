@@ -336,8 +336,16 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 		remoteRef := resolution.Remote + "/" + branchName
 		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "--track", "-b", branchName, worktreePath, remoteRef)
 	default:
-		// Create a new local branch.
-		cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
+		// Create a new local branch. Regression #973: if an origin remote
+		// exists, fetch its default branch and root the new branch there
+		// rather than at the caller's local HEAD — which can be an old tag
+		// (the 414-file near-miss). Fetch is best-effort: offline / no remote
+		// falls through to a HEAD-based branch.
+		if base, ok := freshOriginDefaultBranchRef(repoDir); ok {
+			cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath, base)
+		} else {
+			cmd = exec.Command("git", "-C", repoDir, "worktree", "add", "-b", branchName, worktreePath)
+		}
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -591,6 +599,29 @@ func SanitizeBranchName(name string) string {
 	sanitized = strings.Trim(sanitized, "-")
 
 	return sanitized
+}
+
+// freshOriginDefaultBranchRef fetches the default branch from the default
+// remote and returns the remote-tracking ref (e.g. "origin/main") that callers
+// should base a new branch on. Returns ok=false when there is no remote, no
+// resolvable default branch, or the fetch fails (e.g. offline) — in which
+// case callers must fall back to a HEAD-based branch.
+//
+// Pinned by TestCreateWorktree_NewBranch_BranchesFromFreshOriginMain_RegressionFor973.
+func freshOriginDefaultBranchRef(repoDir string) (string, bool) {
+	remote, err := getDefaultRemote(repoDir)
+	if err != nil || remote == "" {
+		return "", false
+	}
+	defaultBranch, err := GetDefaultBranch(repoDir)
+	if err != nil || defaultBranch == "" {
+		return "", false
+	}
+	fetch := exec.Command("git", "-C", repoDir, "fetch", "--quiet", remote, defaultBranch)
+	if err := fetch.Run(); err != nil {
+		return "", false
+	}
+	return remote + "/" + defaultBranch, true
 }
 
 func resolveWorktreeBranch(repoDir, branchName string) (worktreeBranchResolution, error) {
