@@ -227,6 +227,16 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.ClaudeSessionID = value
 		inst.ClaudeDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "CLAUDE_SESSION_ID", value)
+		// Issue #923 (reporter @bautrey): when the user explicitly clears
+		// the session id, the hook .sid sidecar at
+		// `~/.agent-deck/hooks/<id>.sid` must also be removed. Otherwise
+		// the next restart's spawn-env construction reads the stale anchor
+		// via ReadHookSessionAnchor and re-injects the old id, undoing the
+		// clear. DB is authoritative for the empty case; empty means
+		// abandon, not "fall back to last seen".
+		if value == "" {
+			ClearHookSessionAnchor(inst.ID)
+		}
 
 	case FieldGeminiSessionID:
 		oldValue = inst.GeminiSessionID
