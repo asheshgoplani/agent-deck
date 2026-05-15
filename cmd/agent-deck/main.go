@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -2654,30 +2655,76 @@ func handleUpdateToSpecificVersion(requested string, checkOnly bool) {
 	fmt.Println("  Restart agent-deck to use this version.")
 }
 
+// brewRunner abstracts `brew <args...>` so tests can inject canned output
+// without touching the real binary. The contract: return the combined
+// stdout+stderr captured from the invocation, plus the process exit error
+// (nil on exit 0). Implementations may also tee output to the terminal so
+// the user still sees brew's live progress.
+type brewRunner interface {
+	Run(args ...string) ([]byte, error)
+}
+
+// execBrewRunner is the production runner: it invokes the real `brew` binary
+// and tees its output to the user's terminal while capturing a copy for the
+// post-run inspection that #954 requires.
+type execBrewRunner struct{ bin string }
+
+func (e *execBrewRunner) Run(args ...string) ([]byte, error) {
+	cmd := exec.Command(e.bin, args...)
+	cmd.Stdin = os.Stdin
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.Bytes(), err
+}
+
 func runHomebrewUpgradeWithRefresh(homebrewUpgradeCmd string) error {
 	cmdParts := strings.Fields(homebrewUpgradeCmd)
 	if len(cmdParts) == 0 {
 		return fmt.Errorf("empty Homebrew upgrade command")
 	}
+	return runHomebrewUpgradeWith(&execBrewRunner{bin: cmdParts[0]}, homebrewUpgradeCmd)
+}
 
-	brewBin := cmdParts[0]
-	refreshCmd := exec.Command(brewBin, "update")
-	refreshCmd.Stdout = os.Stdout
-	refreshCmd.Stderr = os.Stderr
-	refreshCmd.Stdin = os.Stdin
-	if err := refreshCmd.Run(); err != nil {
+// runHomebrewUpgradeWith executes `brew update` then `brew <upgrade args>` via
+// the supplied runner. It fails loudly when brew exits 0 but its output shows
+// the formula was refused (e.g. "Warning: agent-deck X.Y.Z already installed")
+// — see #954, reported by @alexandergharibian.
+func runHomebrewUpgradeWith(r brewRunner, homebrewUpgradeCmd string) error {
+	cmdParts := strings.Fields(homebrewUpgradeCmd)
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("empty Homebrew upgrade command")
+	}
+
+	if _, err := r.Run("update"); err != nil {
 		return fmt.Errorf("failed to refresh Homebrew metadata: %w", err)
 	}
 
-	upgradeCmd := exec.Command(brewBin, cmdParts[1:]...)
-	upgradeCmd.Stdout = os.Stdout
-	upgradeCmd.Stderr = os.Stderr
-	upgradeCmd.Stdin = os.Stdin
-	if err := upgradeCmd.Run(); err != nil {
+	out, err := r.Run(cmdParts[1:]...)
+	if err != nil {
 		return fmt.Errorf("failed to run `%s`: %w", homebrewUpgradeCmd, err)
 	}
 
+	if brewRefusedUpgrade(string(out)) {
+		return fmt.Errorf(
+			"brew did not upgrade agent-deck; the tap formula may be stale (#954). "+
+				"Try `brew untap asheshgoplani/tap && brew tap asheshgoplani/tap && %s`, "+
+				"or download the latest release directly from GitHub. brew output: %s",
+			homebrewUpgradeCmd,
+			strings.TrimSpace(string(out)),
+		)
+	}
+
 	return nil
+}
+
+// brewRefusedUpgrade reports whether `brew upgrade` output indicates brew
+// declined to install a new version. Brew prints "Warning: <formula> X.Y.Z
+// already installed" and exits 0 in that case — exactly the lying-success
+// path that #954 surfaced.
+func brewRefusedUpgrade(output string) bool {
+	return strings.Contains(strings.ToLower(output), "already installed")
 }
 
 // displayChangelog fetches and displays changelog between versions
