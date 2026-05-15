@@ -24,6 +24,8 @@ type GroupDialog struct {
 	visible       bool
 	mode          GroupDialogMode
 	nameInput     textinput.Model
+	pathInput     textinput.Model // Optional default working directory for new groups (Issue #918)
+	focusIndex    int             // 0 = nameInput, 1 = pathInput (Create mode only)
 	width         int
 	height        int
 	groupPath     string   // Current group being edited (for rename) or parent path (for create subgroup)
@@ -45,8 +47,15 @@ func NewGroupDialog() *GroupDialog {
 	ti.CharLimit = 50
 	ti.Width = 30
 
+	// Issue #918: optional default working directory for new groups.
+	pi := textinput.New()
+	pi.Placeholder = "Default path (optional)"
+	pi.CharLimit = 1024
+	pi.Width = 30
+
 	return &GroupDialog{
 		nameInput:  ti,
+		pathInput:  pi,
 		groupPaths: []string{},
 	}
 }
@@ -60,7 +69,8 @@ func (g *GroupDialog) Show() {
 	g.validationErr = ""
 	g.nameInput.SetValue("")
 	g.nameInput.CursorEnd() // Issue #604: reset cursor — SetValue only clamps, it does not reset.
-	g.nameInput.Focus()
+	g.resetPathInput()
+	g.focusName()
 }
 
 // ShowCreateSubgroup shows the dialog for creating a subgroup under a parent
@@ -72,7 +82,8 @@ func (g *GroupDialog) ShowCreateSubgroup(parentPath, parentName string) {
 	g.validationErr = ""
 	g.nameInput.SetValue("")
 	g.nameInput.CursorEnd() // Issue #604
-	g.nameInput.Focus()
+	g.resetPathInput()
+	g.focusName()
 }
 
 // ShowCreateWithContext opens the create dialog with cursor context for Tab toggling.
@@ -86,7 +97,8 @@ func (g *GroupDialog) ShowCreateWithContext(parentPath, parentName string) {
 	g.validationErr = ""
 	g.nameInput.SetValue("")
 	g.nameInput.CursorEnd() // Issue #604
-	g.nameInput.Focus()
+	g.resetPathInput()
+	g.focusName()
 
 	if parentPath != "" {
 		// Default to subgroup mode
@@ -110,7 +122,8 @@ func (g *GroupDialog) ShowCreateWithContextDefaultRoot(parentPath, parentName st
 	g.validationErr = ""
 	g.nameInput.SetValue("")
 	g.nameInput.CursorEnd() // Issue #604
-	g.nameInput.Focus()
+	g.resetPathInput()
+	g.focusName()
 
 	// Default to root mode, Tab toggles to subgroup
 	g.groupPath = ""
@@ -195,6 +208,35 @@ func (g *GroupDialog) Mode() GroupDialogMode {
 // GetValue returns the input value
 func (g *GroupDialog) GetValue() string {
 	return strings.TrimSpace(g.nameInput.Value())
+}
+
+// GetDefaultPath returns the default-path input value for the group being
+// created (Issue #918). Empty when the user left the field blank or when the
+// dialog is in a mode that does not expose the field.
+func (g *GroupDialog) GetDefaultPath() string {
+	return strings.TrimSpace(g.pathInput.Value())
+}
+
+// resetPathInput clears the path field and blurs it. Called by every Show*
+// entry point so a previous Create dialog never leaks its path into a Rename.
+func (g *GroupDialog) resetPathInput() {
+	g.pathInput.SetValue("")
+	g.pathInput.CursorEnd()
+	g.pathInput.Blur()
+}
+
+// focusName focuses the name input and updates the focus index accordingly.
+func (g *GroupDialog) focusName() {
+	g.focusIndex = 0
+	g.nameInput.Focus()
+	g.pathInput.Blur()
+}
+
+// focusPath focuses the path input and updates the focus index accordingly.
+func (g *GroupDialog) focusPath() {
+	g.focusIndex = 1
+	g.nameInput.Blur()
+	g.pathInput.Focus()
 }
 
 // Validate checks if the dialog values are valid and returns an error message if not
@@ -283,14 +325,39 @@ func (g *GroupDialog) Update(msg tea.KeyMsg) (*GroupDialog, tea.Cmd) {
 		return g, nil
 	}
 
-	// Tab toggles between Root and Subgroup modes
-	if msg.String() == "tab" && g.CanToggle() {
-		g.ToggleRootSubgroup()
-		return g, nil
+	// Issue #918: in Create mode, Tab cycles name ↔ path. Shift+Tab cycles back.
+	// When the Root/Subgroup toggle from #111 is available, Tab still toggles
+	// while focus is on the name field — preserving the existing #111 binding
+	// — and on the path field Tab returns focus to name.
+	if g.mode == GroupDialogCreate {
+		switch msg.String() {
+		case "tab":
+			if g.CanToggle() && g.focusIndex == 0 {
+				g.ToggleRootSubgroup()
+				return g, nil
+			}
+			if g.focusIndex == 0 {
+				g.focusPath()
+			} else {
+				g.focusName()
+			}
+			return g, nil
+		case "shift+tab":
+			if g.focusIndex == 0 {
+				g.focusPath()
+			} else {
+				g.focusName()
+			}
+			return g, nil
+		}
 	}
 
 	var cmd tea.Cmd
-	g.nameInput, cmd = g.nameInput.Update(msg)
+	if g.focusIndex == 1 {
+		g.pathInput, cmd = g.pathInput.Update(msg)
+	} else {
+		g.nameInput, cmd = g.nameInput.Update(msg)
+	}
 	return g, cmd
 }
 
@@ -305,15 +372,21 @@ func (g *GroupDialog) View() string {
 
 	switch g.mode {
 	case GroupDialogCreate:
+		labelStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+		// Issue #918: show "Name" + optional "Default Path" fields stacked.
+		nameRow := labelStyle.Render("Name:         ") + g.nameInput.View()
+		pathRow := labelStyle.Render("Default Path: ") + g.pathInput.View()
+		fields := nameRow + "\n" + pathRow
+
 		if g.parentName != "" {
 			title = "Create Subgroup"
 			parentInfo := lipgloss.NewStyle().
 				Foreground(ColorCyan).
 				Render("Parent: " + g.parentName)
-			content = parentInfo + "\n\n" + g.nameInput.View()
+			content = parentInfo + "\n\n" + fields
 		} else {
 			title = "Create New Group"
-			content = g.nameInput.View()
+			content = fields
 		}
 
 		// Add Root/Subgroup toggle indicator when Tab toggle is available
@@ -373,9 +446,12 @@ func (g *GroupDialog) View() string {
 	titleStyle := DialogTitleStyle.Width(titleWidth)
 	hintStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	var hint string
-	if g.CanToggle() {
-		hint = hintStyle.Render("Tab toggle │ Enter confirm │ Esc cancel")
-	} else {
+	switch {
+	case g.mode == GroupDialogCreate && g.CanToggle():
+		hint = hintStyle.Render("Tab toggle/next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
+	case g.mode == GroupDialogCreate:
+		hint = hintStyle.Render("Tab next │ Shift+Tab prev │ Enter confirm │ Esc cancel")
+	default:
 		hint = hintStyle.Render("Enter confirm │ Esc cancel")
 	}
 

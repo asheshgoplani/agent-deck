@@ -7720,13 +7720,20 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case GroupDialogCreate:
 			name := h.groupDialog.GetValue()
 			if name != "" {
+				var created *session.Group
 				if h.groupDialog.HasParent() {
 					// Create subgroup under parent
 					parentPath := h.groupDialog.GetParentPath()
-					h.groupTree.CreateSubgroup(parentPath, name)
+					created = h.groupTree.CreateSubgroup(parentPath, name)
 				} else {
 					// Create root-level group
-					h.groupTree.CreateGroup(name)
+					created = h.groupTree.CreateGroup(name)
+				}
+				// Issue #918: persist the optional default path captured in the dialog.
+				if created != nil {
+					if defaultPath := h.groupDialog.GetDefaultPath(); defaultPath != "" {
+						h.groupTree.SetDefaultPathForGroup(created.Path, defaultPath)
+					}
 				}
 				h.rebuildFlatItems()
 				h.saveInstances() // Persist the new group
