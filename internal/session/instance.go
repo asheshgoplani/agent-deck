@@ -669,12 +669,11 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	// scratch path the keychain never saw, triggering login + onboarding
 	// every spawn. Gating restores the v1.9.1 behaviour: dormant scratch
 	// in that case, ambient ~/.claude wins.
+	// Issue #922 (reporter @bautrey): route the worker-scratch swap through
+	// applyWorkerScratchOverride so it emits an INFO log instead of being silent.
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
+		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
@@ -804,10 +803,8 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 func (i *Instance) buildBashExportPrefix() string {
 	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
 	if IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
+		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
+		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
 	}
 	return prefix
@@ -5007,12 +5004,12 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// config_dir is resolved, with WorkerScratchConfigDir overriding the
 	// resolved value when set. See the comment there (issue #949) for the
 	// macOS-OAuth-keying motivation.
+	// Issue #922 (reporter @bautrey): route the worker-scratch swap through
+	// applyWorkerScratchOverride so the third spawn-env builder logs the swap
+	// with identical wording to the other two.
 	configDirPrefix := ""
 	if !hasCustomCommand && IsClaudeConfigDirExplicitForInstance(i) {
-		configDir := GetClaudeConfigDirForInstance(i)
-		if i.WorkerScratchConfigDir != "" {
-			configDir = i.WorkerScratchConfigDir
-		}
+		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 

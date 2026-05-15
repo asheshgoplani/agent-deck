@@ -270,6 +270,25 @@ func (i *Instance) CleanupWorkerScratchConfigDir() {
 	i.WorkerScratchConfigDir = ""
 }
 
+// applyWorkerScratchOverride is the single seam where the worker-scratch
+// CLAUDE_CONFIG_DIR replaces the resolved one. Returns the effective
+// config dir to use. Centralising the override here means every
+// spawn-env builder (buildClaudeCommandWithMessage, buildBashExportPrefix,
+// buildClaudeResumeCommand) logs the swap with identical wording. Issue
+// #922 (reporter @bautrey) closed the silent-override hole by making
+// this the only place the swap can happen.
+func (i *Instance) applyWorkerScratchOverride(resolvedConfigDir string) string {
+	if i.WorkerScratchConfigDir == "" {
+		return resolvedConfigDir
+	}
+	sessionLog.Info("worker_scratch_override",
+		slog.String("instance_id", i.ID),
+		slog.String("resolved_config_dir", resolvedConfigDir),
+		slog.String("worker_scratch_config_dir", i.WorkerScratchConfigDir),
+	)
+	return i.WorkerScratchConfigDir
+}
+
 // prepareWorkerScratchConfigDirForSpawn is the spawn-path wrapper
 // around EnsureWorkerScratchConfigDir. Called from Start(),
 // StartWithMessage(), and the restart fallback path. Best-effort —
