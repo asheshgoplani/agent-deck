@@ -270,6 +270,31 @@ def walk_pursuit(path: Path, dry_run: bool, verbose: bool) -> None:
         state["nudges_sent"] = 0
         record_event(pursuit, "receipt", newest.ts)
         vlog(verbose, f"new receipt at {newest.ts}; cycles={state['cycles_completed']}")
+
+        # Step 2a: detect STUCK marker. If the worker wrote STUCK: in its
+        # most recent receipt, it's telling us it can't proceed. Escalate
+        # immediately with the worker's own reason rather than continuing
+        # to nudge it. This is the contract: STUCK is the worker's honest
+        # signal that it needs help.
+        if "STUCK:" in newest.body or "STUCK :" in newest.body:
+            stuck_line = next(
+                (line for line in newest.body.splitlines() if "STUCK" in line),
+                "STUCK (no detail line)",
+            )
+            bundle = write_escalation_bundle(pursuit, 0)
+            state["status"] = "escalated"
+            state["escalated_at"] = now_iso()
+            state["ended_reason"] = f"worker reported {stuck_line.strip()[:200]}"
+            record_event(pursuit, "stuck_reported", stuck_line.strip()[:200])
+            record_event(pursuit, "escalated", str(bundle))
+            print(
+                f"[manager] WORKER STUCK: {pid} — {stuck_line.strip()[:120]}",
+                file=sys.stderr,
+            )
+            print(f"[manager] bundle at {bundle}", file=sys.stderr)
+            agent_deck_stop(pursuit.get("worker_session_title") or pursuit["worker_session_id"], dry_run, verbose)
+            save_pursuit(path, pursuit, dry_run)
+            return
     else:
         # Step 3: nudge if idle
         last_activity_iso = state.get("last_receipt_seen_at") or state.get("created_at")
