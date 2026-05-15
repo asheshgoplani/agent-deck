@@ -75,6 +75,63 @@ type GroupTree struct {
 	Expanded  map[string]bool   // Collapsed state persistence
 }
 
+// actionablePriority maps a session.Status to an "attention-needed" rank
+// used by SortInstancesByActionable. Lower = more actionable = surfaces
+// higher in the in-group list (issue #857).
+//
+// Buckets:
+//
+//	0  error                       (something broke, look at me)
+//	1  waiting                     (model done, awaiting user input)
+//	2  running, starting           (model actively working)
+//	3  idle, queued, "" (unset)    (nothing to do; "" matches legacy
+//	                                instances persisted before this field
+//	                                was widely populated — TestSessionOrder*
+//	                                rely on this neutral default)
+//	4  stopped                     (user-parked, bottom of pile)
+//
+// Any future Status value not enumerated above defaults to 5 so it sorts
+// after every known bucket rather than silently slotting into "idle".
+func actionablePriority(s Status) int {
+	switch s {
+	case StatusError:
+		return 0
+	case StatusWaiting:
+		return 1
+	case StatusRunning, StatusStarting:
+		return 2
+	case StatusIdle, StatusQueued, "":
+		return 3
+	case StatusStopped:
+		return 4
+	}
+	return 5
+}
+
+// SortInstancesByActionable sorts the given slice in place so the most
+// recently actionable sessions surface first within a group (issue #857).
+// Key precedence:
+//
+//  1. actionablePriority(Status)   asc  — error/waiting/running first
+//  2. LastAccessedAt              desc  — recent attention first
+//  3. Order                        asc  — preserves user-customized
+//     position as a stable tie-breaker
+//     (TestSessionOrderPersistence,
+//     TestSessionOrderMigration)
+func SortInstancesByActionable(insts []*Instance) {
+	sort.SliceStable(insts, func(i, j int) bool {
+		pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
+		if pi != pj {
+			return pi < pj
+		}
+		ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
+		if !ai.Equal(aj) {
+			return ai.After(aj)
+		}
+		return insts[i].Order < insts[j].Order
+	})
+}
+
 // NewGroupTree creates a new group tree from instances
 func NewGroupTree(instances []*Instance) *GroupTree {
 	tree := &GroupTree{
@@ -110,11 +167,12 @@ func NewGroupTree(instances []*Instance) *GroupTree {
 		group.Sessions = append(group.Sessions, inst)
 	}
 
-	// Sort sessions within each group by persisted Order
+	// Sort sessions within each group by actionability (issue #857).
+	// Persisted Order is preserved as the stable tie-breaker, so
+	// instances without a Status set behave identically to the prior
+	// Order-only sort.
 	for _, group := range tree.Groups {
-		sort.SliceStable(group.Sessions, func(i, j int) bool {
-			return group.Sessions[i].Order < group.Sessions[j].Order
-		})
+		SortInstancesByActionable(group.Sessions)
 	}
 
 	// Sort groups alphabetically and assign order
@@ -179,11 +237,12 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 		group.Sessions = append(group.Sessions, inst)
 	}
 
-	// Sort sessions within each group by persisted Order
+	// Sort sessions within each group by actionability (issue #857).
+	// Persisted Order is preserved as the stable tie-breaker, so
+	// instances without a Status set behave identically to the prior
+	// Order-only sort.
 	for _, group := range tree.Groups {
-		sort.SliceStable(group.Sessions, func(i, j int) bool {
-			return group.Sessions[i].Order < group.Sessions[j].Order
-		})
+		SortInstancesByActionable(group.Sessions)
 	}
 
 	// Rebuild group list maintaining stored order
