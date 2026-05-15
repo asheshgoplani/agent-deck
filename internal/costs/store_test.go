@@ -265,14 +265,13 @@ func TestStore_TotalLastWeek_OnlyThisWeekEvent(t *testing.T) {
 
 func TestStore_TotalLastWeek_OnlyLastWeekEvent(t *testing.T) {
 	s := testStore(t)
-	// Compute the midpoint of last week deterministically: walk back to this
-	// week's Monday, then go to last Thursday (Monday-7+3 = -4 days from
-	// this Monday). This avoids the previous fragility where "9 days ago"
-	// landed in the week-before-last when the test ran on Monday UTC.
-	now := time.Now()
-	daysSinceMonday := (int(now.Weekday()) + 6) % 7 // Monday=0..Sunday=6
-	thisMonday := now.AddDate(0, 0, -daysSinceMonday)
-	lastWeekMidpoint := thisMonday.AddDate(0, 0, -4)
+	// Pin to Monday 2025-11-10 UTC using the SetClock hook (#977). The prior
+	// wall-clock-based form walked back from time.Now() and was chronically
+	// flaky on the Monday UTC tick. The fixed clock makes "last week" resolve
+	// to [2025-11-03, 2025-11-10) on every weekday.
+	monday := time.Date(2025, 11, 10, 0, 0, 1, 0, time.UTC)
+	s.SetClock(func() time.Time { return monday })
+	lastWeekMidpoint := time.Date(2025, 11, 6, 12, 0, 0, 0, time.UTC) // Thu of last week
 	if err := s.WriteCostEvent(costs.CostEvent{
 		ID: "evt-lw", SessionID: "s1", Timestamp: lastWeekMidpoint,
 		Model: "claude-sonnet-4-6", CostMicrodollars: 70000,
