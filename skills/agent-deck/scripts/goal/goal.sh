@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# pursue.sh — Phase 1 wrapper that creates a pursuit JSON and spawns the worker.
+# goal.sh — Phase 1 wrapper that creates a goal JSON and spawns the worker.
 #
 # Phase 1 is intentionally minimal: no subcommand parsing, no daemon, no
-# cron auto-install. You run this once to start a pursuit, then run
+# cron auto-install. You run this once to start a goal, then run
 # manager.py periodically (manually or via cron) to advance it.
 #
 # Usage:
-#   pursue.sh <id> <goal> <done-cmd> [worker-title] [workdir]
+#   goal.sh <id> <goal> <done-cmd> [worker-title] [workdir]
 #
 # Examples:
-#   pursue.sh test-marker \
+#   goal.sh test-marker \
 #       "Create a test marker file" \
-#       'test -f /tmp/pursuit-test-marker.txt'
+#       'test -f /tmp/goal-test-marker.txt'
 #
-#   pursue.sh v160-release \
+#   goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
 #       pursue-v160 \
 #       /home/ashesh-goplani/agent-deck
 #
 # Writes to:
-#   ~/.agent-deck/pursuits/<id>.json
+#   ~/.agent-deck/goals/<id>.json
 #
 # Spawns:
 #   agent-deck session "<worker-title>" running the worker contract prompt
@@ -28,7 +28,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_TEMPLATE="$SCRIPT_DIR/prompts/worker.md"
-PURSUITS_DIR="${PURSUITS_DIR:-$HOME/.agent-deck/pursuits}"
+GOALS_DIR="${GOALS_DIR:-$HOME/.agent-deck/goals}"
 
 if [[ $# -lt 3 ]]; then
     sed -n '3,/^set -uo/p' "$0" | sed -n '3,/^set -uo/p' | head -25
@@ -49,11 +49,11 @@ CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
 
 [[ -f "$PROMPT_TEMPLATE" ]] || { echo "[pursue] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
-mkdir -p "$PURSUITS_DIR"
-PURSUIT_PATH="$PURSUITS_DIR/${ID}.json"
+mkdir -p "$GOALS_DIR"
+GOAL_PATH="$GOALS_DIR/${ID}.json"
 
-if [[ -f "$PURSUIT_PATH" ]]; then
-    echo "[pursue] pursuit already exists: $PURSUIT_PATH" >&2
+if [[ -f "$GOAL_PATH" ]]; then
+    echo "[pursue] goal already exists: $GOAL_PATH" >&2
     echo "[pursue] cancel it first or pick a different id" >&2
     exit 1
 fi
@@ -65,7 +65,7 @@ PROMPT="$(cat "$PROMPT_TEMPLATE")"
 PROMPT="${PROMPT//\{GOAL\}/$GOAL}"
 PROMPT="${PROMPT//\{DONE_CMD\}/$DONE_CMD}"
 PROMPT="${PROMPT//\{WORKDIR\}/$WORKDIR}"
-PROMPT="${PROMPT//\{PURSUIT_ID\}/$ID}"
+PROMPT="${PROMPT//\{GOAL_ID\}/$ID}"
 PROMPT="${PROMPT//\{CHECK_INTERVAL_SECONDS\}/$CHECK_INTERVAL_SECONDS}"
 PROMPT="${PROMPT//\{MAX_CYCLES\}/$MAX_CYCLES}"
 
@@ -74,7 +74,7 @@ PROMPT="${PROMPT//\{MAX_CYCLES\}/$MAX_CYCLES}"
 echo "[pursue] spawning worker: $WORKER_TITLE in $WORKDIR" >&2
 
 # Create the session
-if ! agent-deck -p "$PROFILE" add "$WORKDIR" -t "$WORKER_TITLE" -c claude -g pursuit 2>&1 | grep -E "(Created|exists)" >&2; then
+if ! agent-deck -p "$PROFILE" add "$WORKDIR" -t "$WORKER_TITLE" -c claude -g goal 2>&1 | grep -E "(Created|exists)" >&2; then
     :  # add may exit non-zero on "already exists"; we tolerate that
 fi
 
@@ -98,8 +98,8 @@ agent-deck -p "$PROFILE" session send "$WORKER_TITLE" "$(cat "$PROMPT_FILE")" --
 }
 rm -f "$PROMPT_FILE"
 
-# Write the pursuit JSON
-python3 - "$PURSUIT_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
+# Write the goal JSON
+python3 - "$GOAL_PATH" "$ID" "$GOAL" "$DONE_CMD" "$WORKER_TITLE" "$SESSION_ID" "$WORKDIR" "$CONDUCTOR" \
         "$CHECK_INTERVAL_SECONDS" "$MAX_IDLE_SECONDS" "$MAX_CYCLES" "$ESCALATE_AFTER" "$NOW" <<'PYEOF'
 import json
 import sys
@@ -141,7 +141,7 @@ with open(path, "w", encoding="utf-8") as f:
 print(f"[pursue] wrote {path}")
 PYEOF
 
-echo "[pursue] pursuit '$ID' is active." >&2
+echo "[pursue] goal '$ID' is active." >&2
 echo "[pursue] worker session: $WORKER_TITLE (id: $SESSION_ID)" >&2
 echo "[pursue] watch progress with:  agent-deck session output $WORKER_TITLE -q" >&2
 echo "[pursue] advance the manager with:  python3 $SCRIPT_DIR/manager.py --verbose" >&2

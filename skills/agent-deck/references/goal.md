@@ -1,8 +1,8 @@
-# Pursuit — goal-driven worker autonomy
+# Goal — goal-driven worker autonomy
 
 A small framework that lets an agent-deck user say "pursue this goal until done or stuck, nudge yourself with context if you stall, escalate to me if you can't make progress" — and have it actually happen without re-prompting.
 
-This is the **next layer on top of** the [Self-Improvement pipeline](self-improvement.md). Self-improvement is post-hoc analysis of what already happened. Pursuit is the live mechanism that prevents the kinds of stalls self-improvement keeps surfacing.
+This is the **next layer on top of** the [Self-Improvement pipeline](self-improvement.md). Self-improvement is post-hoc analysis of what already happened. Goal is the live mechanism that prevents the kinds of stalls self-improvement keeps surfacing.
 
 ## Why this exists (evidence from real transcripts)
 
@@ -25,13 +25,13 @@ The diagnosis from the FINDINGS:
 - **No worker driving.** When the conductor noticed stale outputs, it didn't poke the worker — it just reported them.
 - **No tactic-change enforcement.** The Behavior Rule "after 3 identical NEEDs change tactic" was a policy without a mechanism.
 
-Pursuit fixes each of these by **separating the three concerns** that today are collapsed into one entity.
+Goal fixes each of these by **separating the three concerns** that today are collapsed into one entity.
 
 ## Design principles
 
 1. **Three entities, not one.** Worker (does the work). Verifier (judges done). Manager (decides when to nudge). Collapsing any two into one creates conflict of interest — the bug we observed for 18 hours.
 
-2. **Done-conditions are external shell commands.** Not LLM judgment. Not the worker's self-assessment. A one-line shell command the manager runs independently. If you can't write the done-condition as a shell command, the goal is too fuzzy for autonomous pursuit. That's a forcing function, not a limitation.
+2. **Done-conditions are external shell commands.** Not LLM judgment. Not the worker's self-assessment. A one-line shell command the manager runs independently. If you can't write the done-condition as a shell command, the goal is too fuzzy for autonomous goal. That's a forcing function, not a limitation.
 
 3. **Progress receipts are the contract.** Each worker cycle must write one tangible artifact (a line in `task-log.md`, a commit, a comment, a file). The manager judges progress by receipts, not by anything the worker says about itself. No receipt = no progress.
 
@@ -39,9 +39,9 @@ Pursuit fixes each of these by **separating the three concerns** that today are 
 
 5. **Escalation is mechanical.** When N nudges produce no receipts, the manager pages you via Telegram with a structured stuck-bundle (last receipts, current state, recent transcript snippet). No "ESCALATE for user" placeholders — real pushes.
 
-6. **Pursuits feed back into self-improvement.** Each completed or failed pursuit is one structured data point. Patterns across N pursuits surface as findings: "Pursuits of type X stall at cycle 5 in 7/10 cases" → a filable bug or skill gap.
+6. **Goals feed back into self-improvement.** Each completed or failed goal is one structured data point. Patterns across N goals surface as findings: "Goals of type X stall at cycle 5 in 7/10 cases" → a filable bug or skill gap.
 
-7. **Single responsibility for the conductor.** The conductor remains a status-reporter and orchestrator. When it identifies a goal worth pursuing, it *delegates* to the pursuit manager and goes back to its other duties. The conductor is no longer also the pursuer.
+7. **Single responsibility for the conductor.** The conductor remains a status-reporter and orchestrator. When it identifies a goal worth pursuing, it *delegates* to the goal manager and goes back to its other duties. The conductor is no longer also the pursuer.
 
 ## The three entities
 
@@ -71,7 +71,7 @@ Pursuit fixes each of these by **separating the three concerns** that today are 
    ┌──────────────────────────────────────────────────────────────────┐
    │  MANAGER                                                         │
    │  A small Python daemon. Cron'd, ~150 lines, no LLM.              │
-   │  Every check_interval (default 5 min), for each active pursuit:  │
+   │  Every check_interval (default 5 min), for each active goal:  │
    │    1. Run verifier (done_cmd).                                   │
    │       If exit 0 → mark done, stop worker, write done-artifact,   │
    │                   push "✅ Done: <goal>" via Telegram.            │
@@ -88,9 +88,9 @@ Pursuit fixes each of these by **separating the three concerns** that today are 
    └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Pursuit registry schema
+## Goal registry schema
 
-A pursuit is a single JSON file at `~/.agent-deck/pursuits/<id>.json`. The registry is just the directory listing.
+A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is just the directory listing.
 
 ```json
 {
@@ -181,7 +181,7 @@ CONSTRAINTS:
   - Bash work that mutates state should happen in a child worker session
     you spawn, not in your own shell.
 
-PURSUIT ID: {pursuit_id}
+GOAL ID: {goal_id}
 RECEIPT PATH: {workdir}/task-log.md
 ```
 
@@ -196,60 +196,60 @@ RECEIPT PATH: {workdir}/task-log.md
 ```python
 # Pseudocode for the manager daemon (cron'd every check_interval)
 
-for pursuit_file in glob("~/.agent-deck/pursuits/*.json"):
-    pursuit = load(pursuit_file)
-    if pursuit.state.status != "active":
+for goal_file in glob("~/.agent-deck/goals/*.json"):
+    goal = load(goal_file)
+    if goal.state.status != "active":
         continue
 
     # Step 1: external verifier
-    rc = subprocess.run(pursuit.done_cmd, shell=True, timeout=30).returncode
-    record_event(pursuit, "verifier_check", f"exit={rc}")
+    rc = subprocess.run(goal.done_cmd, shell=True, timeout=30).returncode
+    record_event(goal, "verifier_check", f"exit={rc}")
     if rc == 0:
-        finalize(pursuit, status="done", reason="verifier passed")
-        stop_worker(pursuit.worker_session_id)
-        notify_user(f"✅ Done: {pursuit.goal}")
-        save(pursuit_file, pursuit)
+        finalize(goal, status="done", reason="verifier passed")
+        stop_worker(goal.worker_session_id)
+        notify_user(f"✅ Done: {goal.goal}")
+        save(goal_file, goal)
         continue
 
     # Step 2: look for new receipts
-    last_receipt = parse_task_log_tail(pursuit.workdir + "/task-log.md")
-    if last_receipt and last_receipt.ts > pursuit.state.last_receipt_seen_at:
-        pursuit.state.last_receipt_seen_at = last_receipt.ts
-        pursuit.state.last_receipt_text = last_receipt.summary
-        pursuit.state.cycles_completed += 1
-        pursuit.state.nudges_sent = 0  # progress resets nudge count
-        record_event(pursuit, "receipt", last_receipt.summary)
+    last_receipt = parse_task_log_tail(goal.workdir + "/task-log.md")
+    if last_receipt and last_receipt.ts > goal.state.last_receipt_seen_at:
+        goal.state.last_receipt_seen_at = last_receipt.ts
+        goal.state.last_receipt_text = last_receipt.summary
+        goal.state.cycles_completed += 1
+        goal.state.nudges_sent = 0  # progress resets nudge count
+        record_event(goal, "receipt", last_receipt.summary)
     else:
-        idle = now() - pursuit.state.last_receipt_seen_at
-        if idle.total_seconds() > pursuit.schedule.max_idle_seconds:
+        idle = now() - goal.state.last_receipt_seen_at
+        if idle.total_seconds() > goal.schedule.max_idle_seconds:
             # Step 3: nudge
-            pursuit.state.nudges_sent += 1
-            nudge = build_nudge(pursuit, last_receipt, idle)
-            agent_deck_session_send(pursuit.worker_session_id, nudge,
+            goal.state.nudges_sent += 1
+            nudge = build_nudge(goal, last_receipt, idle)
+            agent_deck_session_send(goal.worker_session_id, nudge,
                                      no_wait=True)
-            record_event(pursuit, "nudge_sent", nudge[:80])
+            record_event(goal, "nudge_sent", nudge[:80])
 
             # Step 4: escalate if nudges aren't working
-            if pursuit.state.nudges_sent >= pursuit.schedule.escalate_after_stuck_nudges:
-                escalate_to_user(pursuit, idle)
-                pursuit.state.status = "escalated"
-                pursuit.state.escalated_at = now()
+            if goal.state.nudges_sent >= goal.schedule.escalate_after_stuck_nudges:
+                escalate_to_user(goal, idle)
+                goal.state.status = "escalated"
+                goal.state.escalated_at = now()
 
     # Step 5: hard cycle cap
-    if pursuit.state.cycles_completed >= pursuit.schedule.max_cycles:
-        finalize(pursuit, status="failed", reason="max_cycles_exceeded")
-        stop_worker(pursuit.worker_session_id)
-        notify_user(f"⚠️ Pursuit '{pursuit.goal}' hit max cycles, stopping.")
+    if goal.state.cycles_completed >= goal.schedule.max_cycles:
+        finalize(goal, status="failed", reason="max_cycles_exceeded")
+        stop_worker(goal.worker_session_id)
+        notify_user(f"⚠️ Goal '{goal.goal}' hit max cycles, stopping.")
 
-    save(pursuit_file, pursuit)
+    save(goal_file, goal)
 ```
 
 ## Nudge generator — context-aware
 
-The nudge content is computed from the pursuit state. Template:
+The nudge content is computed from the goal state. Template:
 
 ```
-[PURSUIT NUDGE - cycle {N}, nudge {M}/{escalate_after}]
+[GOAL NUDGE - cycle {N}, nudge {M}/{escalate_after}]
 
 No progress receipt for {idle_minutes} min on goal:
   "{goal}"
@@ -285,7 +285,7 @@ Do not investigate forever; pick (a), (b), or (c) within 5 minutes.
 When the manager escalates, it pushes a Telegram message to the conductor's bot. The message includes a compact summary; details live in a file the user can `cat` or attach.
 
 ```
-⚠️ Pursuit escalated: {goal}
+⚠️ Goal escalated: {goal}
 Status: stuck after {nudges_sent} nudges, no receipt in {idle_h} hours.
 
 Worker:  {worker_session_title} ({worker_session_id})
@@ -303,7 +303,7 @@ Recent attempts:
   - {history[-2].ts} {history[-2].event}: {history[-2].detail[:60]}
   - {history[-1].ts} {history[-1].event}: {history[-1].detail[:60]}
 
-Full bundle: ~/.agent-deck/pursuits/{id}.json
+Full bundle: ~/.agent-deck/goals/{id}.json
 Worker output: agent-deck session output {worker_session_title} -q
 
 Options:
@@ -346,23 +346,23 @@ Done-conditions must be:
 |---|---|
 | Worker session crashes mid-cycle | Manager detects no new receipt → nudge cycle continues normally. Manager can also restart the session via `agent-deck session restart`. |
 | Verifier command itself errors (e.g., `gh` rate-limited) | Manager records `verifier_error`, continues without flipping status. After N consecutive verifier errors, escalates differently: "can't verify, please check". |
-| Telegram push fails | Manager logs locally, retries on next cycle. Pursuit doesn't progress to next state until escalation actually delivers. |
+| Telegram push fails | Manager logs locally, retries on next cycle. Goal doesn't progress to next state until escalation actually delivers. |
 | `task-log.md` doesn't exist or is corrupt | Manager treats as "no receipt", nudges normally. After 1st nudge, the worker should recreate it. |
 | Cycle count exceeded but goal isn't done | Hard stop. `failed` status. Push final Telegram. Don't silently retry. |
-| Two pursuits target the same worker | Refuse at create-time. One pursuit per worker session. |
-| Done-condition is buggy (always returns 0) | The pursuit completes spuriously. Manual recovery: user reads the done-condition before approving the pursuit. (Future: dry-run mode that runs done_cmd on creation and asks "this currently returns: <output>. Is that what 'done' looks like?") |
+| Two goals target the same worker | Refuse at create-time. One goal per worker session. |
+| Done-condition is buggy (always returns 0) | The goal completes spuriously. Manual recovery: user reads the done-condition before approving the goal. (Future: dry-run mode that runs done_cmd on creation and asks "this currently returns: <output>. Is that what 'done' looks like?") |
 
 ## Integration with existing agent-deck primitives
 
-| Existing primitive | How pursuit uses it |
+| Existing primitive | How goal uses it |
 |---|---|
-| `agent-deck launch -m "<prompt>"` | Spawn the worker with the pursuit contract baked in |
+| `agent-deck launch -m "<prompt>"` | Spawn the worker with the goal contract baked in |
 | `ScheduleWakeup(delaySeconds=N)` | Worker self-schedules between cycles |
 | `agent-deck session send <id> "<msg>" --no-wait` | Manager sends nudges (non-blocking, doesn't compete with worker cycles) |
 | `agent-deck session output <id> -q` | Manager can fetch transcript snippets for the escalation bundle |
-| `agent-deck session stop <id>` + `rm <id>` | Manager finalizes pursuit, cleans up worker session |
-| Conductor's CLAUDE.md Behavior Rule #10 | Pursuit *implements* this rule — "after 3 unchanged NEEDs change tactic" becomes "after `escalate_after_stuck_nudges` nudges, escalate to user with bundle" |
-| Conductor's `state.json` / `task-log.md` | Pursuit reuses task-log.md as the receipt store. The conductor's own state stays separate. |
+| `agent-deck session stop <id>` + `rm <id>` | Manager finalizes goal, cleans up worker session |
+| Conductor's CLAUDE.md Behavior Rule #10 | Goal *implements* this rule — "after 3 unchanged NEEDs change tactic" becomes "after `escalate_after_stuck_nudges` nudges, escalate to user with bundle" |
+| Conductor's `state.json` / `task-log.md` | Goal reuses task-log.md as the receipt store. The conductor's own state stays separate. |
 | Telegram bot per conductor | Manager uses the same channel for escalations |
 
 ## CLI surface
@@ -387,8 +387,8 @@ agent-deck pursue \
 Companion commands:
 
 ```bash
-agent-deck pursue list                  # show active pursuits + their state
-agent-deck pursue show <id>             # full JSON dump of one pursuit
+agent-deck pursue list                  # show active goals + their state
+agent-deck pursue show <id>             # full JSON dump of one goal
 agent-deck pursue tail <id>             # tail the worker's task-log.md
 agent-deck pursue cancel <id>           # stop the worker, mark stopped_by_user
 agent-deck pursue resume <id> "<msg>"   # send a hint and reset nudge counter
@@ -398,11 +398,11 @@ agent-deck pursue resume <id> "<msg>"   # send a hint and reset nudge counter
 
 Build in this order — each phase is independently shippable.
 
-### Phase 1: Hand-wired pursuit (proof, no CLI yet)
+### Phase 1: Hand-wired goal (proof, no CLI yet)
 
-Goal: prove the manager + worker contract works end-to-end on one real pursuit.
+Goal: prove the manager + worker contract works end-to-end on one real goal.
 
-- Hand-write a pursuit JSON
+- Hand-write a goal JSON
 - Hand-launch the worker via `agent-deck launch` with the contract prompt
 - Run the manager as a one-shot Python script (no cron yet)
 - Use Telegram via the existing conductor's bot
@@ -413,84 +413,84 @@ Goal: prove the manager + worker contract works end-to-end on one real pursuit.
 
 Goal: `agent-deck pursue --goal X --done '<cmd>'` works.
 
-- Add a bash wrapper (`agent-deck-pursue.sh`) that:
-  - Writes the pursuit JSON
+- Add a bash wrapper (`agent-deck-goal.sh`) that:
+  - Writes the goal JSON
   - Spawns the worker via `agent-deck launch` with the templated contract
   - Starts/refreshes the cron job
 - Add `pursue list / show / cancel / resume` subcommands
 
-**Done when:** one command starts a pursuit; another command cancels it.
+**Done when:** one command starts a goal; another command cancels it.
 
 ### Phase 3: Manager daemon as cron'd Python
 
-Goal: `~/.agent-deck/pursuits/` is checked every 5 min unattended.
+Goal: `~/.agent-deck/goals/` is checked every 5 min unattended.
 
 - Move manager logic into a standalone Python script
 - Add to user's crontab (or systemd timer if available)
 - Implement nudge generation, receipt parsing, escalation push
 - Telegram push via the conductor's already-running bot
 
-**Done when:** pursuit can run unattended overnight and either complete or escalate without manual intervention.
+**Done when:** goal can run unattended overnight and either complete or escalate without manual intervention.
 
 ### Phase 4: Self-improvement feedback
 
-Goal: each completed/failed pursuit produces a data point that the self-improvement pipeline can analyze.
+Goal: each completed/failed goal produces a data point that the self-improvement pipeline can analyze.
 
-- On finalize, write a summary to `~/.agent-deck/pursuits/history/<id>-{status}.md`
+- On finalize, write a summary to `~/.agent-deck/goals/history/<id>-{status}.md`
 - Self-improvement's `distill.py` learns to read the history dir
-- Next FINDINGS.md includes a "Pursuit patterns" section: success rates, common stuck reasons, average cycles to done by goal type
+- Next FINDINGS.md includes a "Goal patterns" section: success rates, common stuck reasons, average cycles to done by goal type
 
-**Done when:** running the self-improvement pipeline surfaces pursuit-level patterns alongside transcript-level findings.
+**Done when:** running the self-improvement pipeline surfaces goal-level patterns alongside transcript-level findings.
 
 ### Phase 5 (future): Polish
 
-- TUI panel for active pursuits
+- TUI panel for active goals
 - Web UI status page
-- `pursue retry <id>` to relaunch a failed pursuit with adjusted parameters
-- Pursuit templates: `agent-deck pursue --template release-merge --version v1.7.0`
+- `pursue retry <id>` to relaunch a failed goal with adjusted parameters
+- Goal templates: `agent-deck pursue --template release-merge --version v1.7.0`
 
 ## Open questions
 
-1. **Should the conductor be able to spawn its own pursuits?** Yes, probably — when the conductor identifies a goal worth pursuing (e.g., during heartbeat), it should be able to delegate to a pursuit instead of trying to drive the work itself. Requires a "create pursuit from conductor" API.
+1. **Should the conductor be able to spawn its own goals?** Yes, probably — when the conductor identifies a goal worth pursuing (e.g., during heartbeat), it should be able to delegate to a goal instead of trying to drive the work itself. Requires a "create goal from conductor" API.
 
-2. **What about pursuits that need user input mid-cycle?** Current design escalates only on nudge failure. But some goals need human decision at known points (e.g., "approve this PR description"). Possibly add a `wait_for_user` worker primitive that pauses the pursuit and prompts via Telegram.
+2. **What about goals that need user input mid-cycle?** Current design escalates only on nudge failure. But some goals need human decision at known points (e.g., "approve this PR description"). Possibly add a `wait_for_user` worker primitive that pauses the goal and prompts via Telegram.
 
-3. **How do pursuits compose?** Can a worker spawn its own sub-pursuits? Probably yes — multi-level pursuits become a dependency tree. But this is a future complexity, not a v1 feature.
+3. **How do goals compose?** Can a worker spawn its own sub-goals? Probably yes — multi-level goals become a dependency tree. But this is a future complexity, not a v1 feature.
 
-4. **Conflict between pursuit ScheduleWakeups and conductor heartbeats?** The worker schedules its own wake. The cron heartbeats independent. If both fire close together, the worker gets two prompts. Need to handle gracefully — worker dedupes recent prompts, or one is dropped.
+4. **Conflict between goal ScheduleWakeups and conductor heartbeats?** The worker schedules its own wake. The cron heartbeats independent. If both fire close together, the worker gets two prompts. Need to handle gracefully — worker dedupes recent prompts, or one is dropped.
 
-5. **Cost ceiling per pursuit?** A runaway worker could burn many tokens. Add `--max-tokens` or `--max-cost-usd` as a circuit breaker.
+5. **Cost ceiling per goal?** A runaway worker could burn many tokens. Add `--max-tokens` or `--max-cost-usd` as a circuit breaker.
 
 ## Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Buggy done-condition completes pursuit spuriously | High | Dry-run mode that prints `done_cmd` output at creation; user reviews before launching |
+| Buggy done-condition completes goal spuriously | High | Dry-run mode that prints `done_cmd` output at creation; user reviews before launching |
 | Worker ignores the contract (LLMs being LLMs) | Medium | Manager doesn't trust the worker anyway; verifier is the source of truth |
 | Nudge floods the worker context | Medium | Hard cap on nudges before escalation; nudges are short; `--no-wait` means they don't block the worker |
 | Manager misses receipts due to task-log.md format drift | Medium | Rigid receipt format; parser is strict; mismatch → no-receipt = nudge fires anyway |
-| Pursuit accumulates indefinitely | Low | `max_cycles` hard cap; auto-cleanup of pursuits in `done` / `failed` after N days |
+| Goal accumulates indefinitely | Low | `max_cycles` hard cap; auto-cleanup of goals in `done` / `failed` after N days |
 | Telegram bot rate-limited during burst escalation | Low | Manager exponential-backoffs on Telegram errors; falls back to local log file |
 
 ## Relationship to other pieces
 
-- **Self-Improvement** (post-hoc analysis): pursuit history feeds in; pursuit failures become findings
-- **Observer / Watchdog** (live stuck detection): pursuit manager subsumes part of this; the rest (non-pursuit conductors that stall) still needs a generic watchdog
-- **Conductor's CLAUDE.md Behavior Rules**: pursuit implements Rule #10 ("change tactic after 3 unchanged") as a mechanism, not just policy
-- **Existing agent-deck primitives**: pursuit is glue code; no agent-deck core changes required
+- **Self-Improvement** (post-hoc analysis): goal history feeds in; goal failures become findings
+- **Observer / Watchdog** (live stuck detection): goal manager subsumes part of this; the rest (non-goal conductors that stall) still needs a generic watchdog
+- **Conductor's CLAUDE.md Behavior Rules**: goal implements Rule #10 ("change tactic after 3 unchanged") as a mechanism, not just policy
+- **Existing agent-deck primitives**: goal is glue code; no agent-deck core changes required
 
 ## What this is NOT
 
-- **Not a planning agent.** Pursuit doesn't decompose goals into sub-tasks. The worker plans its own cycles. Pursuit just enforces "do something, write a receipt, check if done".
-- **Not a multi-agent orchestrator.** One pursuit = one worker. Multi-worker coordination is out of scope.
-- **Not a replacement for the conductor.** The conductor is still the long-lived orchestrator. Pursuits are spawned BY the conductor (or by you directly) for specific goal-bounded work.
-- **Not for fuzzy goals.** "Improve the codebase" is not a pursuit. "Get PR #X merged" or "Apply migration Y" or "Reach 80% test coverage on package Z" — those are pursuits.
+- **Not a planning agent.** Goal doesn't decompose goals into sub-tasks. The worker plans its own cycles. Goal just enforces "do something, write a receipt, check if done".
+- **Not a multi-agent orchestrator.** One goal = one worker. Multi-worker coordination is out of scope.
+- **Not a replacement for the conductor.** The conductor is still the long-lived orchestrator. Goals are spawned BY the conductor (or by you directly) for specific goal-bounded work.
+- **Not for fuzzy goals.** "Improve the codebase" is not a goal. "Get PR #X merged" or "Apply migration Y" or "Reach 80% test coverage on package Z" — those are goals.
 
 ## Verification this design closes the 18-hour stall
 
-Walk through the gsd-v160 release scenario with pursuit in place:
+Walk through the gsd-v160 release scenario with goal in place:
 
-| Hour | Today's behavior | Pursuit behavior |
+| Hour | Today's behavior | Goal behavior |
 |---|---|---|
 | 0 | Worker spawned manually with vague prompt | `agent-deck pursue --goal "Ship v1.6.0" --done '<gh release check>' --max-idle 1h --escalate-after 3` |
 | 1 | Cron fires, conductor reports `[STATUS] running` | Manager runs `done_cmd` → not yet. Reads receipt from cycle 1 → "tagged locally, pushed origin". Quiet, all good. |

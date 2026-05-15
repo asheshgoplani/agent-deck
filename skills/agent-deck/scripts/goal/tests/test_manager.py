@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the pursuit manager.
+"""Unit tests for the goal manager.
 
 Run from anywhere:
     python3 -m unittest discover -s tests -v
@@ -12,7 +12,7 @@ Tests cover each path in the manager loop:
   - newer_than: ISO timestamp comparison
   - build_nudge: nudge text generation with edge cases (no prior receipt)
   - run_done_cmd: verifier exit codes
-  - walk_pursuit: all four state transitions
+  - walk_goal: all four state transitions
       a. verifier passes → finalize as done
       b. new receipt → record cycle, reset nudge counter
       c. idle past max_idle → nudge attempt counted
@@ -29,6 +29,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -44,7 +45,7 @@ def iso_minutes_ago(n: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=n)).isoformat()
 
 
-def make_pursuit(
+def make_goal(
     *,
     pid: str = "test",
     done_cmd: str = "false",
@@ -59,13 +60,18 @@ def make_pursuit(
     cycles_completed: int = 0,
     status: str = "active",
 ) -> dict:
+    # Default workdir is a unique non-existent path so parse_task_log_tail
+    # finds no receipts. Tests that DO need a real task-log.md pass workdir
+    # explicitly (set to a real directory with the file inside).
+    if workdir is None:
+        workdir = f"/tmp/test-no-tasklog-{pid}-{uuid.uuid4().hex[:8]}"
     return {
         "id": pid,
         "goal": f"test goal {pid}",
         "done_cmd": done_cmd,
         "worker_session_title": f"worker-{pid}",
         "worker_session_id": f"id-{pid}",
-        "workdir": workdir or "/tmp",
+        "workdir": workdir,
         "conductor": "test",
         "schedule": {
             "check_interval_seconds": 60,
@@ -188,14 +194,14 @@ class TestNewerThan(unittest.TestCase):
 
 class TestBuildNudge(unittest.TestCase):
     def test_no_prior_receipt_handles_none(self):
-        p = make_pursuit(last_receipt_text=None)
+        p = make_goal(last_receipt_text=None)
         text = manager.build_nudge(p, idle_minutes=120)
         self.assertIn("no prior receipt", text.lower())
         self.assertIn("120 minutes", text)
         self.assertIn("test goal test", text)
 
     def test_includes_three_options(self):
-        p = make_pursuit(last_receipt_text="changed: applied patch X")
+        p = make_goal(last_receipt_text="changed: applied patch X")
         text = manager.build_nudge(p, idle_minutes=65)
         self.assertIn("a)", text)
         self.assertIn("b)", text)
@@ -224,8 +230,8 @@ class TestRunDoneCmd(unittest.TestCase):
         self.assertIn("timed out", out)
 
 
-class TestWalkPursuit(unittest.TestCase):
-    """Integration tests that exercise walk_pursuit end-to-end.
+class TestWalkGoal(unittest.TestCase):
+    """Integration tests that exercise walk_goal end-to-end.
 
     External commands (agent-deck send/stop) are patched so tests don't
     need a real agent-deck binary or workers.
@@ -233,36 +239,36 @@ class TestWalkPursuit(unittest.TestCase):
 
     def setUp(self):
         # Per-test sandbox under /tmp
-        self.tmpdir = Path(tempfile.mkdtemp(prefix="pursuit-test-"))
-        self.pursuits_dir = self.tmpdir / "pursuits"
-        self.pursuits_dir.mkdir()
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="goal-test-"))
+        self.goals_dir = self.tmpdir / "goals"
+        self.goals_dir.mkdir()
         # Redirect manager's module globals to point at our sandbox
-        self._orig_PURSUITS = manager.PURSUITS_DIR
+        self._orig_GOALS = manager.GOALS_DIR
         self._orig_ESCALATIONS = manager.ESCALATIONS_DIR
         self._orig_HISTORY = manager.HISTORY_DIR
-        manager.PURSUITS_DIR = self.pursuits_dir
-        manager.ESCALATIONS_DIR = self.pursuits_dir / "escalations"
-        manager.HISTORY_DIR = self.pursuits_dir / "history"
+        manager.GOALS_DIR = self.goals_dir
+        manager.ESCALATIONS_DIR = self.goals_dir / "escalations"
+        manager.HISTORY_DIR = self.goals_dir / "history"
 
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        manager.PURSUITS_DIR = self._orig_PURSUITS
+        manager.GOALS_DIR = self._orig_GOALS
         manager.ESCALATIONS_DIR = self._orig_ESCALATIONS
         manager.HISTORY_DIR = self._orig_HISTORY
 
-    def _write_pursuit(self, p: dict) -> Path:
-        path = self.pursuits_dir / f"{p['id']}.json"
+    def _write_goal(self, p: dict) -> Path:
+        path = self.goals_dir / f"{p['id']}.json"
         path.write_text(json.dumps(p, indent=2))
         return path
 
     def _load(self, p_id: str) -> dict:
-        return json.loads((self.pursuits_dir / f"{p_id}.json").read_text())
+        return json.loads((self.goals_dir / f"{p_id}.json").read_text())
 
     @patch("manager.agent_deck_stop", return_value=True)
     def test_verifier_pass_finalizes_done(self, mock_stop):
-        path = self._write_pursuit(make_pursuit(pid="vp", done_cmd="true"))
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(make_goal(pid="vp", done_cmd="true"))
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("vp")
         self.assertEqual(loaded["state"]["status"], "done")
         self.assertEqual(loaded["state"]["ended_reason"], "verifier passed")
@@ -273,15 +279,15 @@ class TestWalkPursuit(unittest.TestCase):
     @patch("manager.agent_deck_send", return_value=True)
     @patch("manager.agent_deck_stop", return_value=True)
     def test_idle_triggers_nudge_attempt(self, _mock_stop, mock_send):
-        p = make_pursuit(
+        p = make_goal(
             pid="idle",
             done_cmd="false",
             max_idle=10,         # 10s idle threshold
             escalate_after=99,    # don't escalate yet
             created_minutes_ago=10,
         )
-        path = self._write_pursuit(p)
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(p)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("idle")
         self.assertEqual(loaded["state"]["nudges_sent"], 1)
         mock_send.assert_called_once()
@@ -289,7 +295,7 @@ class TestWalkPursuit(unittest.TestCase):
     @patch("manager.agent_deck_send", return_value=False)  # nudge can't send
     @patch("manager.agent_deck_stop", return_value=True)
     def test_failed_nudges_still_count_and_escalate(self, _stop, _send):
-        p = make_pursuit(
+        p = make_goal(
             pid="esc",
             done_cmd="false",
             max_idle=10,
@@ -297,8 +303,8 @@ class TestWalkPursuit(unittest.TestCase):
             nudges_sent=1,        # one already attempted
             created_minutes_ago=10,
         )
-        path = self._write_pursuit(p)
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(p)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("esc")
         self.assertEqual(loaded["state"]["status"], "escalated")
         self.assertEqual(loaded["state"]["nudges_sent"], 2)
@@ -306,7 +312,7 @@ class TestWalkPursuit(unittest.TestCase):
         bundles = list(manager.ESCALATIONS_DIR.glob("esc-*.md"))
         self.assertEqual(len(bundles), 1)
         text = bundles[0].read_text()
-        self.assertIn("Pursuit escalation", text)
+        self.assertIn("Goal escalation", text)
         self.assertIn("test goal esc", text)
 
     @patch("manager.agent_deck_send", return_value=True)
@@ -326,7 +332,7 @@ class TestWalkPursuit(unittest.TestCase):
         workdir.mkdir()
         (workdir / "task-log.md").write_text(body)
 
-        p = make_pursuit(
+        p = make_goal(
             pid="recv",
             done_cmd="false",
             workdir=str(workdir),
@@ -334,8 +340,8 @@ class TestWalkPursuit(unittest.TestCase):
             nudges_sent=1,                          # nudge already sent
             max_idle=99999,
         )
-        path = self._write_pursuit(p)
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(p)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("recv")
         self.assertEqual(loaded["state"]["cycles_completed"], 1)
         self.assertEqual(loaded["state"]["nudges_sent"], 0)  # reset!
@@ -354,15 +360,15 @@ class TestWalkPursuit(unittest.TestCase):
         workdir.mkdir()
         (workdir / "task-log.md").write_text(body)
 
-        p = make_pursuit(
+        p = make_goal(
             pid="stuck",
             done_cmd="false",
             workdir=str(workdir),
             last_receipt_at=iso_minutes_ago(60),
             max_idle=99999,
         )
-        path = self._write_pursuit(p)
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(p)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("stuck")
         # STUCK detection should escalate immediately, regardless of nudge count
         self.assertEqual(loaded["state"]["status"], "escalated")
@@ -381,7 +387,7 @@ class TestWalkPursuit(unittest.TestCase):
         workdir.mkdir()
         (workdir / "task-log.md").write_text(body)
 
-        p = make_pursuit(
+        p = make_goal(
             pid="cap",
             done_cmd="false",
             workdir=str(workdir),
@@ -390,8 +396,8 @@ class TestWalkPursuit(unittest.TestCase):
             last_receipt_at=iso_minutes_ago(60),
             max_idle=99999,
         )
-        path = self._write_pursuit(p)
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        path = self._write_goal(p)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = self._load("cap")
         self.assertEqual(loaded["state"]["status"], "failed")
         self.assertEqual(loaded["state"]["ended_reason"], "max_cycles_exceeded")
@@ -399,23 +405,23 @@ class TestWalkPursuit(unittest.TestCase):
 
 class TestSkipInactive(unittest.TestCase):
     def setUp(self):
-        self.tmpdir = Path(tempfile.mkdtemp(prefix="pursuit-inactive-"))
-        self.pursuits_dir = self.tmpdir / "pursuits"
-        self.pursuits_dir.mkdir()
-        self._orig = manager.PURSUITS_DIR
-        manager.PURSUITS_DIR = self.pursuits_dir
+        self.tmpdir = Path(tempfile.mkdtemp(prefix="goal-inactive-"))
+        self.goals_dir = self.tmpdir / "goals"
+        self.goals_dir.mkdir()
+        self._orig = manager.GOALS_DIR
+        manager.GOALS_DIR = self.goals_dir
 
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        manager.PURSUITS_DIR = self._orig
+        manager.GOALS_DIR = self._orig
 
-    def test_done_pursuit_not_walked(self):
-        p = make_pursuit(pid="already-done", status="done")
-        path = self.pursuits_dir / "already-done.json"
+    def test_done_goal_not_walked(self):
+        p = make_goal(pid="already-done", status="done")
+        path = self.goals_dir / "already-done.json"
         path.write_text(json.dumps(p))
         # Should not raise even with a bogus done_cmd
-        manager.walk_pursuit(path, dry_run=False, verbose=False)
+        manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = json.loads(path.read_text())
         self.assertEqual(loaded["state"]["status"], "done")
 

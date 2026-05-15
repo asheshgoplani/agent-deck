@@ -452,11 +452,11 @@ Three layers run before anything leaves the box: regex sanitize → AI sanitizer
 
 For the full architecture, output schemas, lessons learned from real runs, and per-script reference, see [references/self-improvement.md](references/self-improvement.md).
 
-## Pursuit (goal-driven worker autonomy)
+## Goal (goal-driven worker autonomy)
 
 **Use when:** user says "pursue this", "set a goal", "make it work until done", "nudge the agent", "stop me having to message it again", or describes wanting an agent to keep working autonomously toward a specific goal without manual re-prompting.
 
-A complementary layer on top of [Self-Improvement](#self-improvement). Self-improvement is *post-hoc* analysis. Pursuit is the *live* mechanism that prevents the kinds of stalls self-improvement keeps surfacing — specifically the FINDINGS pattern where a conductor's hourly cron fires 18 times with identical `[STATUS]` replies and no actual progress.
+A complementary layer on top of [Self-Improvement](#self-improvement). Self-improvement is *post-hoc* analysis. Goal is the *live* mechanism that prevents the kinds of stalls self-improvement keeps surfacing — specifically the FINDINGS pattern where a conductor's hourly cron fires 18 times with identical `[STATUS]` replies and no actual progress.
 
 ### The core idea
 
@@ -484,12 +484,12 @@ Examples that DON'T work:
 
 ### Quick start (Phase 1 — hand-wired proof)
 
-The full spec is in [references/pursuit.md](references/pursuit.md). For early use, follow Phase 1:
+The full spec is in [references/goal.md](references/goal.md). For early use, follow Phase 1:
 
-1. Write a pursuit JSON at `~/.agent-deck/pursuits/<id>.json` (schema in the deep-dive doc).
+1. Write a goal JSON at `~/.agent-deck/goals/<id>.json` (schema in the deep-dive doc).
 2. Spawn the worker with the contract prompt (template in the deep-dive doc).
 3. Run the manager script manually every few minutes to check + nudge.
-4. After one real pursuit completes successfully, graduate to Phase 2 (CLI wrapper) and Phase 3 (cron'd daemon).
+4. After one real goal completes successfully, graduate to Phase 2 (CLI wrapper) and Phase 3 (cron'd daemon).
 
 ### Future CLI surface (Phase 2)
 
@@ -502,7 +502,7 @@ agent-deck pursue \
     --escalate-after 3 \
     --max-cycles 24
 
-agent-deck pursue list           # active pursuits + state
+agent-deck pursue list           # active goals + state
 agent-deck pursue show <id>      # full JSON dump
 agent-deck pursue tail <id>      # tail the worker's task-log.md
 agent-deck pursue cancel <id>    # stop the worker
@@ -511,7 +511,7 @@ agent-deck pursue resume <id> "<hint>"  # send context-rich hint, reset nudge co
 
 ### Deep dive
 
-For the full design — three-entity model, registry schema, worker contract prompt, manager loop pseudocode, nudge generator, escalation bundle, done-condition guidelines, failure modes, implementation phases, and the verification this closes the FINDINGS 18-hour stall — see [references/pursuit.md](references/pursuit.md).
+For the full design — three-entity model, registry schema, worker contract prompt, manager loop pseudocode, nudge generator, escalation bundle, done-condition guidelines, failure modes, implementation phases, and the verification this closes the FINDINGS 18-hour stall — see [references/goal.md](references/goal.md).
 
 ## Configuration
 
@@ -750,5 +750,5 @@ See the [Self-Improvement](#self-improvement) section for how these were discove
 - [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
 - [self-improvement.md](references/self-improvement.md) - Deep dive into the transcript-mining pipeline: architecture, privacy layers, output schemas, lessons learned
-- [pursuit.md](references/pursuit.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
+- [goal.md](references/goal.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
