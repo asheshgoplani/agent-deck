@@ -51,6 +51,11 @@ func handleSession(profile string, args []string) {
 		handleSessionSetParent(profile, args[1:])
 	case "unset-parent":
 		handleSessionUnsetParent(profile, args[1:])
+	case "update":
+		// Issue #974: users expect `session update <id> --no-parent` and
+		// `session update <id> --parent <p>` to mirror typical CRUD verbs.
+		// Route to the existing canonical handlers.
+		handleSessionUpdate(profile, args[1:])
 	case "set-transition-notify":
 		handleSessionSetTransitionNotify(profile, args[1:])
 	case "set-title-lock":
@@ -97,6 +102,8 @@ func printSessionHelp() {
 	fmt.Println("  search <query>          Search message content across Claude sessions")
 	fmt.Println("  set-parent <id> <parent>  Link session as sub-session of parent")
 	fmt.Println("  unset-parent <id>       Remove sub-session link")
+	fmt.Println("  update <id> --no-parent          Alias for unset-parent <id>")
+	fmt.Println("  update <id> --parent <pid>       Alias for set-parent <id> <pid>")
 	fmt.Println("  set-transition-notify <id> <on|off>  Enable/disable transition notifications")
 	fmt.Println("  set-title-lock <id> <on|off>         Lock/unlock title from Claude session-name sync (#697)")
 	fmt.Println()
@@ -1482,6 +1489,74 @@ func handleSessionSetParent(profile string, args []string) {
 		"group":           inst.GroupPath,
 		"group_inherited": *inheritGroup,
 	})
+}
+
+// resolveSessionUpdateAlias maps `session update <id>` invocations with
+// CRUD-style flags onto the existing canonical handlers. Returns the
+// canonical verb (`unset-parent` or `set-parent`) and the rewritten args
+// that handler expects.
+//
+// Issue #974: `session update <id> --no-parent` should behave the same as
+// `session unset-parent <id>`; `session update <id> --parent <pid>` should
+// behave the same as `session set-parent <id> <pid>`. If neither flag is
+// present we route to the generic `set` handler so the verb stays useful
+// for other field updates.
+//
+// Pure function — no I/O, safe to unit test.
+func resolveSessionUpdateAlias(args []string) (canonical string, newArgs []string) {
+	hasNoParent := false
+	hasParent := false
+	parentVal := ""
+	filtered := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-parent" || a == "-no-parent":
+			hasNoParent = true
+		case a == "--parent" || a == "-parent":
+			if i+1 < len(args) {
+				parentVal = args[i+1]
+				i++
+			}
+			hasParent = true
+		case strings.HasPrefix(a, "--parent="):
+			parentVal = strings.TrimPrefix(a, "--parent=")
+			hasParent = true
+		case strings.HasPrefix(a, "-parent="):
+			parentVal = strings.TrimPrefix(a, "-parent=")
+			hasParent = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+
+	switch {
+	case hasNoParent:
+		// `set-parent` and `--no-parent` together is contradictory; prefer
+		// the explicit detach (`--no-parent`) — matches the user's stated
+		// intent in the issue reproducer.
+		return "unset-parent", filtered
+	case hasParent:
+		return "set-parent", append(filtered, parentVal)
+	default:
+		return "set", filtered
+	}
+}
+
+// handleSessionUpdate dispatches `session update <id> [flags]` to the
+// appropriate canonical handler. See resolveSessionUpdateAlias for the
+// mapping rationale.
+func handleSessionUpdate(profile string, args []string) {
+	canonical, rewritten := resolveSessionUpdateAlias(args)
+	switch canonical {
+	case "unset-parent":
+		handleSessionUnsetParent(profile, rewritten)
+	case "set-parent":
+		handleSessionSetParent(profile, rewritten)
+	default:
+		handleSessionSet(profile, rewritten)
+	}
 }
 
 // handleSessionUnsetParent removes the sub-session link

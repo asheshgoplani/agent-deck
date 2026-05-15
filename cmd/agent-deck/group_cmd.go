@@ -10,6 +10,34 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// groupVerbCanonical maps a user-supplied group subcommand verb to its
+// canonical form, accepting common aliases. Returns ok=false if unknown.
+//
+// Issue #974: users coming from filesystem/`rm` vocabulary expect
+// `group remove` to work alongside `group delete` / `group rm`. We accept
+// all three so the user doesn't burn a round-trip guessing the verb.
+func groupVerbCanonical(verb string) (canonical string, ok bool) {
+	switch verb {
+	case "list", "ls":
+		return "list", true
+	case "create", "new":
+		return "create", true
+	case "update", "set":
+		return "update", true
+	case "delete", "rm", "remove":
+		return "delete", true
+	case "move", "mv":
+		return "move", true
+	case "change", "reparent":
+		return "change", true
+	case "reorder", "sort":
+		return "reorder", true
+	case "help", "--help", "-h":
+		return "help", true
+	}
+	return "", false
+}
+
 // handleGroup dispatches group subcommands
 func handleGroup(profile string, args []string) {
 	if len(args) == 0 {
@@ -18,29 +46,31 @@ func handleGroup(profile string, args []string) {
 		return
 	}
 
-	switch args[0] {
-	case "list", "ls":
-		handleGroupList(profile, args[1:])
-	case "create", "new":
-		handleGroupCreate(profile, args[1:])
-	case "update", "set":
-		handleGroupUpdate(profile, args[1:])
-	case "delete", "rm":
-		handleGroupDelete(profile, args[1:])
-	case "move", "mv":
-		handleGroupMove(profile, args[1:])
-	case "change", "reparent":
-		handleGroupChange(profile, args[1:])
-	case "reorder", "sort":
-		handleGroupReorder(profile, args[1:])
-	case "help", "--help", "-h":
-		printGroupHelp()
-		return
-	default:
+	canonical, ok := groupVerbCanonical(args[0])
+	if !ok {
 		fmt.Printf("Unknown group command: %s\n", args[0])
 		fmt.Println()
 		printGroupHelp()
 		os.Exit(1)
+	}
+
+	switch canonical {
+	case "list":
+		handleGroupList(profile, args[1:])
+	case "create":
+		handleGroupCreate(profile, args[1:])
+	case "update":
+		handleGroupUpdate(profile, args[1:])
+	case "delete":
+		handleGroupDelete(profile, args[1:])
+	case "move":
+		handleGroupMove(profile, args[1:])
+	case "change":
+		handleGroupChange(profile, args[1:])
+	case "reorder":
+		handleGroupReorder(profile, args[1:])
+	case "help":
+		printGroupHelp()
 	}
 }
 
@@ -52,7 +82,7 @@ func printGroupHelp() {
 	fmt.Println("  list              List all groups with session counts")
 	fmt.Println("  create <name>     Create a new group")
 	fmt.Println("  update <name>     Update group settings")
-	fmt.Println("  delete <name>     Delete a group")
+	fmt.Println("  delete <name>     Delete a group (aliases: rm, remove)")
 	fmt.Println("  move <id> <group> Move session to a different group")
 	fmt.Println("  change <group> [<dest>] Reparent a group (empty dest = move to root)")
 	fmt.Println("  reorder <name>    Reorder a group (--up, --down, --position N)")
