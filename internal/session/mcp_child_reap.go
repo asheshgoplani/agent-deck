@@ -2,6 +2,7 @@ package session
 
 import (
 	"log/slog"
+	"os/exec"
 	"syscall"
 	"time"
 )
@@ -47,6 +48,58 @@ func (i *Instance) UnregisterMCPChild(pid int) {
 		}
 	}
 	i.TrackedMCPPIDs = out
+}
+
+// discoverMCPChildrenFromPaneTree walks this Instance's tmux pane
+// process tree and registers depth >= 2 descendants as tracked MCP
+// children. Stdio MCP servers are spawned by claude/codex/gemini
+// reading .mcp.json — agent-deck never holds the exec.Cmd handle
+// directly, so this discovery is the only point at which their PIDs
+// become known to a per-session lifecycle hook.
+//
+// Filtering rules:
+//   - Pane PID itself is skipped: tmux teardown signals it directly.
+//   - Direct children of the pane PID (typically the tool process —
+//     claude/codex/gemini) are also skipped: tmux's pgroup-wide
+//     kill-session is the right path for them, and pre-empting it
+//     with SIGTERM causes the session to auto-destroy before
+//     kill-session runs, which surfaces a cosmetic teardown error.
+//   - Everything deeper IS registered: this is where stdio MCPs and
+//     their helpers (uvx, python, node, bun) live. Some MCPs setsid
+//     into their own session, escaping tmux's pgroup kill — those
+//     are exactly the leakers from issue #965.
+//
+// Issue #965 wiring follow-up to PR #1000.
+func (i *Instance) discoverMCPChildrenFromPaneTree() {
+	pids := i.collectTmuxPaneProcessTreePIDs()
+	if len(pids) <= 1 {
+		return
+	}
+	panePID := pids[0]
+
+	// Build a {pid -> ppid} map from a single ps snapshot so we can
+	// classify each descendant by its immediate parent without an
+	// extra syscall per PID. Falls back to no-op on platforms where
+	// `ps -eo pid=,ppid=` isn't available (same fallback shape as
+	// collectProcessTreePIDsFromTable in instance.go).
+	procTable, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
+	if err != nil {
+		return
+	}
+	childrenByParent := parsePSParentChildMap(procTable)
+	parentByPID := make(map[int]int, len(pids))
+	for parent, children := range childrenByParent {
+		for _, child := range children {
+			parentByPID[child] = parent
+		}
+	}
+
+	for _, pid := range pids[1:] {
+		if parentByPID[pid] == panePID {
+			continue // depth-1 — tmux teardown owns this
+		}
+		i.RegisterMCPChild(pid)
+	}
 }
 
 // reapTrackedMCPChildren SIGTERMs every PID in TrackedMCPPIDs, waits a
