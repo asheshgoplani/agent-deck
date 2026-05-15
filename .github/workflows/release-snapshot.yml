@@ -1,0 +1,86 @@
+# Release pipeline drift check.
+#
+# Runs `goreleaser release --snapshot --skip=publish` on every PR that
+# touches the goreleaser config or the binary entry point. Catches the
+# class of bugs that historically only surfaced at tag-push time (after
+# release.yml had already created the GitHub release):
+#
+#   - .goreleaser.yml missing a required field
+#   - cmd/agent-deck/main.go change that breaks the build for one of
+#     the four release targets (linux/darwin x amd64/arm64)
+#   - Archive / checksum / brew-formula template error
+#
+# Does NOT publish. No GitHub release is created. No tap push.
+# See FLEET-PIPELINE-PLAN.md "Release worker template" for why the
+# publish step lives only in release.yml.
+
+name: Release Snapshot (PR drift check)
+
+on:
+  pull_request:
+    paths:
+      - '.goreleaser.yml'
+      - 'cmd/agent-deck/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-snapshot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser (snapshot, no publish)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --snapshot --skip=publish --clean
+        env:
+          # Snapshot mode does not call GitHub or the tap, but goreleaser
+          # still resolves env-var templates in .goreleaser.yml. Provide
+          # placeholders so {{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }} in the
+          # brews block does not fail template evaluation.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: snapshot-placeholder
+
+      - name: Verify expected archives produced
+        run: |
+          set -euo pipefail
+          EXPECTED=(
+            "darwin_amd64.tar.gz"
+            "darwin_arm64.tar.gz"
+            "linux_amd64.tar.gz"
+            "linux_arm64.tar.gz"
+          )
+          MISSING=()
+          for suffix in "${EXPECTED[@]}"; do
+            if ! ls dist/ 2>/dev/null | grep -q "_${suffix}$"; then
+              MISSING+=("$suffix")
+            fi
+          done
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "ERROR: snapshot did not produce these expected archives:"
+            for m in "${MISSING[@]}"; do echo "  - *_${m}"; done
+            echo ""
+            echo "dist/ contents:"
+            ls -la dist/ || true
+            exit 1
+          fi
+          echo "All 4 platform tarballs produced by snapshot."
+
+          if [[ ! -f dist/checksums.txt ]]; then
+            echo "ERROR: dist/checksums.txt missing from snapshot output"
+            exit 1
+          fi
+          echo "checksums.txt present."

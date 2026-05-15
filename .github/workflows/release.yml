@@ -9,6 +9,14 @@ on:
     tags:
       - 'v*'
 
+# Serialize publish per tag. If a duplicate run is queued for the same tag
+# (e.g. local worker accidentally re-publishes), goreleaser would race with
+# itself and the second uploader would 422 already_exists on each of the 5
+# assets (the v1.9.0-v1.9.5 race).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
