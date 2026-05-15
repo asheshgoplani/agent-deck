@@ -179,6 +179,13 @@ func TestComputeDenyList_FiresOnlyWhenTelegramScratchNeeded(t *testing.T) {
 			hostHasTelegramConductor = func() bool { return tc.hostHasTG }
 			defer func() { hostHasTelegramConductor = orig }()
 
+			// Isolate from the host's real ~/.claude/settings.json so the
+			// issue #941 globalTelegramEnablementSet detection doesn't bleed
+			// the maintainer's profile state into the test. With CLAUDE_CONFIG_DIR
+			// pointed at an empty tempdir, the global antipattern is absent.
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+
 			inst := &Instance{ID: "x", Tool: "claude", Title: "worker"}
 			if !tc.stripExpr {
 				// Make telegramStateDirStripExpr return "" by adding a TG channel.

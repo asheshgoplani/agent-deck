@@ -138,11 +138,25 @@ func TestEnsureWorkerScratchConfigDir_ConductorKeepsAmbientProfile(t *testing.T)
 
 // A session that carries a `plugin:telegram@...` channel is the
 // explicit, opted-in telegram bot owner and MUST keep the ambient
-// profile — isolating it would break its own bot.
+// profile when the v3 topology is correct (global enabledPlugins.telegram
+// disabled, --channels is the sole activation). Isolating it would
+// break its own bot.
+//
+// Issue #941 amendment: if the ambient profile has global
+// enabledPlugins.telegram=true (the GLOBAL_ANTIPATTERN), scratch
+// creation is now expected (see
+// TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch).
 func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing.T) {
 	withTelegramConductorPresent(t)
 	source := t.TempDir()
-	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"telegram@claude-plugins-official":true}}`), 0o644)
+	// v3 topology: global flag is unset, only --channels activates.
+	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{}}`), 0o644)
+
+	// Pin source resolution so needsScratchForGlobalChannelConflict reads
+	// THIS settings.json (not the host's real ~/.claude).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", source)
 
 	inst := &Instance{
 		ID:       "bot1",
@@ -156,7 +170,48 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing
 		t.Fatalf("EnsureWorkerScratchConfigDir: %v", err)
 	}
 	if got != "" {
-		t.Errorf("telegram channel owner must keep ambient profile; got scratch=%q", got)
+		t.Errorf("telegram channel owner with correct v3 topology must keep ambient profile; got scratch=%q", got)
+	}
+}
+
+// Issue #941: when a channel-owning conductor's ambient profile has the
+// GLOBAL_ANTIPATTERN (enabledPlugins.telegram=true), the worker-scratch
+// guard MUST fire — pinning telegram off so --channels is the sole
+// activation source and only one bun poller spawns.
+func TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch(t *testing.T) {
+	withTelegramConductorPresent(t)
+	source := t.TempDir()
+	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"telegram@claude-plugins-official":true}}`), 0o644)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", source)
+
+	inst := &Instance{
+		ID:       "bot941",
+		Tool:     "claude",
+		Title:    "conductor-941",
+		Channels: []string{"plugin:telegram@claude-plugins-official"},
+	}
+
+	scratch, err := inst.EnsureWorkerScratchConfigDir(source)
+	if err != nil {
+		t.Fatalf("EnsureWorkerScratchConfigDir: %v", err)
+	}
+	if scratch == "" {
+		t.Fatalf("issue #941: channel owner with global enabledPlugins.telegram=true MUST get a scratch dir (got empty)")
+	}
+	data, err := os.ReadFile(filepath.Join(scratch, "settings.json"))
+	if err != nil {
+		t.Fatalf("read scratch settings: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	plugins := parsed["enabledPlugins"].(map[string]interface{})
+	if v, ok := plugins[telegramPluginID].(bool); !ok || v {
+		t.Errorf("issue #941: scratch settings.json must pin telegram OFF (false); got %v", plugins[telegramPluginID])
 	}
 }
 
