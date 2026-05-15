@@ -191,6 +191,14 @@ type Instance struct {
 	// Used to detect pending MCPs (added after session start) and stale MCPs (removed but still running)
 	LoadedMCPNames []string `json:"loaded_mcp_names,omitempty"`
 
+	// TrackedMCPPIDs holds the OS PIDs of stdio MCP children spawned for
+	// this session (issue #965). Session stop must SIGTERM (then SIGKILL
+	// after a grace period) each PID so children aren't reparented to
+	// PID 1 and leaked. Mutated only via RegisterMCPChild /
+	// UnregisterMCPChild to keep concurrent access safe.
+	TrackedMCPPIDs []int `json:"tracked_mcp_pids,omitempty"`
+	mcpPIDsMu      sync.Mutex
+
 	// Channels are Claude Code plugin-channel ids (e.g. "plugin:telegram@user/repo").
 	// When non-empty on a claude session, buildClaudeExtraFlags emits
 	// `--channels <csv>` so the session subscribes to inbound plugin messages.
@@ -4545,6 +4553,12 @@ func (i *Instance) KillAndWait() error {
 }
 
 func (i *Instance) killInternal(sync bool) error {
+	// Reap tracked MCP child PIDs first (issue #965). Stdio MCP children
+	// don't die with their parent claude process — they get reparented to
+	// PID 1 and accumulate. SIGTERM with a short grace period, then
+	// SIGKILL anything still alive.
+	i.reapTrackedMCPChildren()
+
 	// Kill tmux session first, but always continue to container cleanup.
 	var tmuxErr error
 	if i.tmuxSession != nil {
