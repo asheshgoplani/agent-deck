@@ -4553,6 +4553,16 @@ func (i *Instance) KillAndWait() error {
 }
 
 func (i *Instance) killInternal(sync bool) error {
+	// Issue #965 wiring (PR #1000 follow-up): claude/codex/gemini spawn
+	// stdio MCP children when they read .mcp.json — agent-deck never
+	// has a direct exec.Command for them, so spawn-time PID
+	// registration is impossible. Discover descendants from the pane
+	// process tree while the shell+tool are still alive, then SIGTERM
+	// them before tmux teardown. Without this, detached children
+	// (e.g., npx-wrapped MCPs that setsid into their own session)
+	// reparent to PID 1 and accumulate.
+	i.discoverMCPChildrenFromPaneTree()
+
 	// Reap tracked MCP child PIDs first (issue #965). Stdio MCP children
 	// don't die with their parent claude process — they get reparented to
 	// PID 1 and accumulate. SIGTERM with a short grace period, then
