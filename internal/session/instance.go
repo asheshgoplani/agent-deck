@@ -5127,6 +5127,18 @@ func (i *Instance) CanRestart() bool {
 		return true
 	}
 
+	// Claude sessions without ID can still restart (will start fresh or
+	// resume the latest JSONL via ensureClaudeSessionIDFromDisk). REQ-7
+	// reopen #911: custom-command Claude sessions (Tool=claude with a
+	// wrapper Command) bypass happy-path session-id capture and have an
+	// intentionally empty ClaudeSessionID. Without this branch they fall
+	// to the dead-or-error fallback below and the registry refuses
+	// restart even when the underlying tmux pane is alive — the false-
+	// error class this issue tracks. Mirrors the opencode/codex policy.
+	if IsClaudeCompatible(i.Tool) {
+		return true
+	}
+
 	// OpenCode sessions with known session ID can always be restarted
 	if i.Tool == "opencode" && i.OpenCodeSessionID != "" {
 		return true
