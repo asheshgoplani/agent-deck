@@ -856,30 +856,40 @@ func extractSelectFlag(args []string) (string, []string) {
 // Go's flag package stops parsing at the first non-flag argument,
 // so "add . -c claude" would fail to parse -c without this fix.
 // This reorders to "add -c claude ." which parses correctly.
+//
+// Issue #974: Go's flag package treats `-parent` and `--parent` as the
+// same flag, but this reorder pass historically only matched the exact
+// double-dash spelling. The result was that `launch -parent <pid>` did
+// not pair `-parent` with `<pid>` — `<pid>` got demoted to a positional
+// and the wrong arg ended up as the parent value. We now match flag
+// names by their normalized form (dashes stripped from the left) so
+// `-parent` and `--parent` behave identically here too.
 func reorderArgsForFlagParsing(args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
 
-	// Known flags that take a value (need to skip their values)
-	// Note: -b/--new-branch are boolean flags (no value), so not included here
-	valueFlags := map[string]bool{
-		"-t": true, "--title": true,
-		"-g": true, "--group": true,
-		"-c": true, "--cmd": true,
-		"-m": true, "--message": true,
-		"-p": true, "--parent": true,
-		"--mcp":       true,
-		"--channel":   true,
-		"--plugin":    true,
-		"--extra-arg": true,
-		"--wrapper":   true,
-		"-w":          true, "--worktree": true,
-		"--location":       true,
-		"--resume-session": true,
-		"--sandbox-image":  true,
-		"--ssh":            true,
-		"--remote-path":    true,
+	// Known flag *names* (no leading dashes) that take a value.
+	// Note: -b/--new-branch are boolean flags (no value), so not included here.
+	valueFlagNames := map[string]bool{
+		"t": true, "title": true,
+		"g": true, "group": true,
+		"c": true, "cmd": true,
+		"m": true, "message": true,
+		"p": true, "parent": true,
+		"mcp":            true,
+		"channel":        true,
+		"plugin":         true,
+		"extra-arg":      true,
+		"wrapper":        true,
+		"w":              true,
+		"worktree":       true,
+		"location":       true,
+		"resume-session": true,
+		"sandbox-image":  true,
+		"ssh":            true,
+		"remote-path":    true,
+		"tmux-socket":    true,
 	}
 
 	var flags []string
@@ -889,12 +899,17 @@ func reorderArgsForFlagParsing(args []string) []string {
 		arg := args[i]
 
 		// Check if it's a flag
-		if strings.HasPrefix(arg, "-") {
+		if strings.HasPrefix(arg, "-") && arg != "-" {
 			flags = append(flags, arg)
 
-			// Check if this flag takes a value (and value is separate)
-			// Handle both "-c value" and "-c=value" formats
-			if !strings.Contains(arg, "=") && valueFlags[arg] && i+1 < len(args) {
+			// `-foo=bar` carries its value in the same token.
+			if strings.Contains(arg, "=") {
+				continue
+			}
+
+			// Normalize "-foo" / "--foo" to "foo" for lookup.
+			name := strings.TrimLeft(arg, "-")
+			if valueFlagNames[name] && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
