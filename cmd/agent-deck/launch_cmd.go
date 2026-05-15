@@ -466,6 +466,15 @@ func handleLaunch(profile string, args []string) {
 	// Start the session.
 	// - default: StartWithMessage waits for readiness and delivers initial prompt
 	// - --no-wait: start immediately, then fire-and-forget send below
+	//
+	// Issue #964: gate the spawn through a process-wide semaphore so a burst
+	// of parallel `agent-deck launch` calls cannot cascade into swap thrash +
+	// fork:ENOMEM. Cap defaults to defaultMaxParallelLaunch (3) and honours
+	// AGENT_DECK_MAX_PARALLEL_LAUNCH.
+	throttle := defaultLaunchThrottle()
+	throttle.Acquire()
+	defer throttle.Release()
+
 	if initialMessage != "" && !*noWait {
 		if err := newInstance.StartWithMessage(initialMessage); err != nil {
 			out.Error(fmt.Sprintf("failed to start session: %v", err), ErrCodeInvalidOperation)
