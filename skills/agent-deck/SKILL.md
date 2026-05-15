@@ -452,6 +452,67 @@ Three layers run before anything leaves the box: regex sanitize → AI sanitizer
 
 For the full architecture, output schemas, lessons learned from real runs, and per-script reference, see [references/self-improvement.md](references/self-improvement.md).
 
+## Pursuit (goal-driven worker autonomy)
+
+**Use when:** user says "pursue this", "set a goal", "make it work until done", "nudge the agent", "stop me having to message it again", or describes wanting an agent to keep working autonomously toward a specific goal without manual re-prompting.
+
+A complementary layer on top of [Self-Improvement](#self-improvement). Self-improvement is *post-hoc* analysis. Pursuit is the *live* mechanism that prevents the kinds of stalls self-improvement keeps surfacing — specifically the FINDINGS pattern where a conductor's hourly cron fires 18 times with identical `[STATUS]` replies and no actual progress.
+
+### The core idea
+
+Three entities, never collapsed:
+
+| Entity | Job | Restriction |
+|---|---|---|
+| **Worker** | Take one bounded step per cycle, write a progress receipt | May NOT decide it's done. May NOT escalate. |
+| **Verifier** | An external shell command — runs the done-condition independently | NOT an LLM. NOT the worker's self-assessment. |
+| **Manager** | Small Python daemon (cron'd) — runs the verifier, reads receipts, nudges the worker, escalates to user when stuck | NOT involved in doing the work |
+
+Separating these three concerns is what prevents the "agent keeps reporting status but never finishes" failure mode the FINDINGS captured.
+
+### Done-conditions must be shell commands
+
+Examples that work:
+- `gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e '.publishedAt != null'`
+- `gh pr view 890 -R asheshgoplani/agent-deck --json mergedAt | jq -e '.mergedAt != null'`
+- `test -s /tmp/report.csv && [ "$(wc -l < /tmp/report.csv)" -gt 100 ]`
+
+Examples that DON'T work:
+- "Get this working" → not testable
+- "Make the code better" → not measurable
+- "Worker says it's done" → self-judgment (the bug we're avoiding)
+
+### Quick start (Phase 1 — hand-wired proof)
+
+The full spec is in [references/pursuit.md](references/pursuit.md). For early use, follow Phase 1:
+
+1. Write a pursuit JSON at `~/.agent-deck/pursuits/<id>.json` (schema in the deep-dive doc).
+2. Spawn the worker with the contract prompt (template in the deep-dive doc).
+3. Run the manager script manually every few minutes to check + nudge.
+4. After one real pursuit completes successfully, graduate to Phase 2 (CLI wrapper) and Phase 3 (cron'd daemon).
+
+### Future CLI surface (Phase 2)
+
+```bash
+agent-deck pursue \
+    --goal "Ship agent-deck v1.6.0" \
+    --done 'gh release view v1.6.0 --json publishedAt | jq -e ".publishedAt != null"' \
+    --check-every 5m \
+    --max-idle 1h \
+    --escalate-after 3 \
+    --max-cycles 24
+
+agent-deck pursue list           # active pursuits + state
+agent-deck pursue show <id>      # full JSON dump
+agent-deck pursue tail <id>      # tail the worker's task-log.md
+agent-deck pursue cancel <id>    # stop the worker
+agent-deck pursue resume <id> "<hint>"  # send context-rich hint, reset nudge counter
+```
+
+### Deep dive
+
+For the full design — three-entity model, registry schema, worker contract prompt, manager loop pseudocode, nudge generator, escalation bundle, done-condition guidelines, failure modes, implementation phases, and the verification this closes the FINDINGS 18-hour stall — see [references/pursuit.md](references/pursuit.md).
+
 ## Configuration
 
 **File:** `~/.agent-deck/config.toml`
@@ -689,4 +750,5 @@ See the [Self-Improvement](#self-improvement) section for how these were discove
 - [tui-reference.md](references/tui-reference.md) - TUI features and shortcuts
 - [troubleshooting.md](references/troubleshooting.md) - Common issues and bug reporting
 - [self-improvement.md](references/self-improvement.md) - Deep dive into the transcript-mining pipeline: architecture, privacy layers, output schemas, lessons learned
+- [pursuit.md](references/pursuit.md) - Deep dive into goal-driven worker autonomy: three-entity design, done-condition shell commands, manager loop, nudge generator, escalation bundle, implementation phases
 - [session-share skill](../session-share/SKILL.md) - Export/import sessions for collaboration
