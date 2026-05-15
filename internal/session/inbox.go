@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Per-conductor inbox: a JSONL file at
@@ -167,6 +168,207 @@ func ResetInboxFingerprintCacheForTest() {
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 	inboxFingerprintCache = map[string]map[string]struct{}{}
+}
+
+// defaultInboxTTL is the age past which a persisted inbox entry is swept
+// by SweepInboxByTTL. Issue #962 variant (running-session): without a
+// TTL, deferred_target_busy entries for children that never see another
+// transition accumulate unboundedly. Seven days is the same horizon the
+// deferred-queue uses for "old enough to give up on" semantics, scaled
+// up from minutes to days because the inbox is the operator-facing
+// drain rather than the in-process retry path.
+const defaultInboxTTL = 7 * 24 * time.Hour
+
+// InboxTTL returns the configured age past which persisted inbox events
+// are swept. Honors AGENT_DECK_INBOX_TTL (parsed by time.ParseDuration)
+// and falls back to defaultInboxTTL when unset or unparseable.
+func InboxTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("AGENT_DECK_INBOX_TTL"))
+	if raw == "" {
+		return defaultInboxTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultInboxTTL
+	}
+	return d
+}
+
+// SweepInboxByTuple drops every entry in the parent's inbox file whose
+// (child_session_id, from_status, to_status) matches the given tuple.
+// Returns the count of dropped entries.
+//
+// Issue #962 variant: when a transition for (child, from, to) is later
+// delivered successfully, any earlier persisted entry for the same
+// tuple represents an event the operator no longer needs to see — the
+// state it described has already been signaled to the conductor by the
+// live send. Without this sweep, the inbox JSONL grows by one entry
+// every time the target is busy at first-attempt time.
+//
+// Idempotent and best-effort: missing files are not an error. The
+// rewrite is atomic via temp file + rename, mirroring
+// SweepInboxesForChildSession.
+func SweepInboxByTuple(parentSessionID, childSessionID, fromStatus, toStatus string) (int, error) {
+	if strings.TrimSpace(parentSessionID) == "" {
+		return 0, errors.New("inbox tuple sweep: empty parent session id")
+	}
+	if strings.TrimSpace(childSessionID) == "" {
+		return 0, errors.New("inbox tuple sweep: empty child session id")
+	}
+
+	path := InboxPathFor(parentSessionID)
+
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+
+	return rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
+		return ev.ChildSessionID == childSessionID &&
+			ev.FromStatus == fromStatus &&
+			ev.ToStatus == toStatus
+	})
+}
+
+// SweepInboxByTTL walks every inbox file and drops entries older than
+// maxAge (computed against TransitionNotificationEvent.Timestamp).
+// Returns the total entries dropped across all inbox files.
+//
+// Issue #962 variant: defense-in-depth alongside SweepInboxByTuple. The
+// tuple sweep relies on a future successful transition for the same
+// (child, from, to) to clear stale entries. Children that complete and
+// never transition again would otherwise leave their last
+// deferred_target_busy entry in the inbox forever. The TTL puts a hard
+// ceiling on inbox growth.
+func SweepInboxByTTL(maxAge time.Duration) (int, error) {
+	if maxAge <= 0 {
+		return 0, errors.New("inbox TTL sweep: non-positive maxAge")
+	}
+
+	dir := InboxDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	cutoff := time.Now().Add(-maxAge)
+
+	inboxWriteMu.Lock()
+	defer inboxWriteMu.Unlock()
+
+	totalDropped := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		dropped, err := rewriteInboxLocked(path, func(ev TransitionNotificationEvent) bool {
+			// Drop entries whose timestamp is older than the cutoff.
+			// Entries with a zero timestamp (e.g. legacy or test data
+			// without a stable clock) are conservatively kept.
+			if ev.Timestamp.IsZero() {
+				return false
+			}
+			return ev.Timestamp.Before(cutoff)
+		})
+		if err != nil {
+			return totalDropped, err
+		}
+		totalDropped += dropped
+	}
+	return totalDropped, nil
+}
+
+// rewriteInboxLocked streams one inbox file and writes out every line
+// whose decoded event does NOT match shouldDrop. Returns the count of
+// dropped lines. Caller holds inboxWriteMu.
+//
+// Mirrors the rm_sweep.go strategy: temp file + atomic rename, with
+// unparseable lines preserved verbatim to avoid silent data loss during
+// cleanup.
+func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent) bool) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer f.Close()
+
+	var kept [][]byte
+	var dropped int
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		if len(strings.TrimSpace(string(raw))) == 0 {
+			continue
+		}
+		var ev TransitionNotificationEvent
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			kept = append(kept, append([]byte(nil), raw...))
+			continue
+		}
+		if shouldDrop(ev) {
+			dropped++
+			continue
+		}
+		kept = append(kept, append([]byte(nil), raw...))
+	}
+	if err := scanner.Err(); err != nil {
+		return dropped, err
+	}
+	_ = f.Close()
+
+	if dropped == 0 {
+		return 0, nil
+	}
+
+	if len(kept) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return dropped, err
+		}
+		delete(inboxFingerprintCache, path)
+		return dropped, nil
+	}
+
+	tmp := path + ".sweep.tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return dropped, err
+	}
+	w := bufio.NewWriter(out)
+	for _, line := range kept {
+		if _, err := w.Write(line); err != nil {
+			_ = w.Flush()
+			_ = out.Close()
+			_ = os.Remove(tmp)
+			return dropped, err
+		}
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			_ = w.Flush()
+			_ = out.Close()
+			_ = os.Remove(tmp)
+			return dropped, err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return dropped, err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return dropped, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return dropped, err
+	}
+	delete(inboxFingerprintCache, path)
+	return dropped, nil
 }
 
 // ReadAndTruncateInbox reads all events from the parent's inbox and removes
