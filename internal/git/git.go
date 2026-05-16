@@ -66,8 +66,15 @@ func isNestedBareLayout(bareDir string) bool {
 // IsBareRepoAtRoot returns true if dir is a bare repository serving as the
 // project root itself (linked worktrees live as direct children inside it).
 // False for normal repos, linked worktrees, and the nested ".bare/" layout.
+//
+// Uses isBareRepoSelf rather than IsBareRepo to filter the same false-positive
+// class that findNestedBareRepo addresses: `git rev-parse --is-bare-repository`
+// reports true for any descendant of a bare repo via parent discovery, so
+// `IsBareRepoAtRoot("/repo.git/hooks")` would otherwise return true (basename
+// "hooks" ≠ ".bare", and IsBareRepo says it's bare). isBareRepoSelf confirms
+// the candidate is itself the bare repo.
 func IsBareRepoAtRoot(dir string) bool {
-	return IsBareRepo(dir) && !isNestedBareLayout(dir)
+	return isBareRepoSelf(dir) && !isNestedBareLayout(dir)
 }
 
 // gitCommonDirAbs returns the absolute path reported by

@@ -112,6 +112,22 @@ func TestIsBareRepoAtRoot_FalseForNormalRepo(t *testing.T) {
 	}
 }
 
+// IsBareRepoAtRoot must filter the same false-positive class that
+// findNestedBareRepo addresses. `git rev-parse --is-bare-repository` walks
+// up the tree, so any descendant of a bare repo (hooks/, objects/, refs/...)
+// reports true. Pre-fix, IsBareRepoAtRoot used IsBareRepo and would have
+// returned true for "/repo.git/hooks" (basename "hooks" ≠ ".bare", and
+// IsBareRepo says it's bare). Post-fix it uses isBareRepoSelf and rejects.
+func TestIsBareRepoAtRoot_FalseForInternalSubdirs(t *testing.T) {
+	bareDir, _ := createBareAtRootLayout(t, "worktree1")
+	for _, internal := range []string{"hooks", "objects", "refs", "info"} {
+		sub := filepath.Join(bareDir, internal)
+		if IsBareRepoAtRoot(sub) {
+			t.Errorf("IsBareRepoAtRoot(%q) = true, want false (internal subdir of bare)", sub)
+		}
+	}
+}
+
 func TestIsBareRepoWorktree_TrueForAtRootLinkedWorktree(t *testing.T) {
 	_, worktrees := createBareAtRootLayout(t, "worktree1", "worktree2")
 	for _, wt := range worktrees {
