@@ -394,11 +394,7 @@ func IsClaudeConfigDirExplicitForInstance(inst *Instance) bool {
 // This allows users to configure an alias like "cdw" or "cdp" that sets
 // CLAUDE_CONFIG_DIR automatically, avoiding the need for config_dir setting
 func GetClaudeCommand() string {
-	userConfig, _ := LoadUserConfig()
-	if userConfig != nil && userConfig.Claude.Command != "" {
-		return userConfig.Claude.Command
-	}
-	return "claude"
+	return GetToolCommand("claude")
 }
 
 // GetClaudeSessionID returns the ACTIVE session ID for a project path

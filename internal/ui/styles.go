@@ -521,6 +521,8 @@ func initStyles() {
 		"claude":   lipgloss.NewStyle().Foreground(ColorOrange),
 		"gemini":   lipgloss.NewStyle().Foreground(ColorPurple),
 		"codex":    lipgloss.NewStyle().Foreground(ColorCyan),
+		"copilot":  lipgloss.NewStyle().Foreground(ColorAccent),
+		"hermes":   lipgloss.NewStyle().Foreground(ColorYellow),
 		"pi":       lipgloss.NewStyle().Foreground(ColorAccent),
 		"aider":    lipgloss.NewStyle().Foreground(ColorRed),
 		"cursor":   lipgloss.NewStyle().Foreground(ColorAccent),
@@ -599,6 +601,10 @@ func ToolIcon(tool string) string {
 		return IconOpenCode
 	case "codex":
 		return IconCodex
+	case "copilot":
+		return "🐙"
+	case "hermes":
+		return "☤"
 	case "pi":
 		return IconPi
 	case "cursor":
@@ -620,6 +626,10 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorPurple // Google AI purple
 	case "codex":
 		return ColorCyan // Light blue for OpenAI
+	case "copilot":
+		return ColorAccent // Blue for GitHub Copilot
+	case "hermes":
+		return ColorYellow // Gold for Hermes Agent
 	case "pi":
 		return ColorAccent
 	case "aider":

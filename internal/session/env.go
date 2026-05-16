@@ -272,6 +272,14 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Claude.EnvFile
 	case "gemini":
 		return config.Gemini.EnvFile
+	case "opencode":
+		return config.OpenCode.EnvFile
+	case "codex":
+		return config.Codex.EnvFile
+	case "copilot":
+		return config.Copilot.EnvFile
+	case "hermes":
+		return config.Hermes.EnvFile
 	default:
 		// Check custom tools
 		if def := GetToolDef(i.Tool); def != nil {

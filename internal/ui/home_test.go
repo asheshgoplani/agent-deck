@@ -158,6 +158,16 @@ func TestCreateSessionTool_Copilot(t *testing.T) {
 	}
 }
 
+// TUI session creation must produce Tool="hermes" rather than
+// Tool="shell" with Command="hermes", matching the tmux/userconfig
+// wiring for the Hermes Agent CLI integration.
+func TestCreateSessionTool_Hermes(t *testing.T) {
+	tool, command := createSessionTool("hermes")
+	if tool != "hermes" || command != "hermes" {
+		t.Fatalf("createSessionTool(\"hermes\") = (%q, %q), want (\"hermes\", \"hermes\")", tool, command)
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

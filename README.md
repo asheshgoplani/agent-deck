@@ -493,6 +493,8 @@ Agent Deck works with any terminal-based AI tool:
 | **Gemini CLI** | Full (status, MCP, resume) |
 | **OpenCode** | Status detection, organization |
 | **Codex** | Status detection, organization, conductor |
+| **Copilot** | Organization, launch |
+| **Hermes Agent** | Organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 

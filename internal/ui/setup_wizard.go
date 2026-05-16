@@ -54,7 +54,7 @@ func NewSetupWizard() *SetupWizard {
 		visible:             false,
 		complete:            false,
 		currentStep:         0,
-		toolOptions:         []string{"claude", "gemini", "opencode", "codex", "pi", "shell"},
+		toolOptions:         []string{"claude", "gemini", "opencode", "codex", "copilot", "hermes", "pi", "shell"},
 		selectedTool:        0, // Default to Claude
 		dangerousMode:       false,
 		useDefaultConfigDir: true,

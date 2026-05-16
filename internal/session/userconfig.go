@@ -102,6 +102,9 @@ type UserConfig struct {
 	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
 	Copilot CopilotSettings `toml:"copilot"`
 
+	// Hermes defines Hermes Agent CLI integration settings
+	Hermes HermesSettings `toml:"hermes"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -800,6 +803,10 @@ type GeminiSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for Gemini sessions.
+	// Supports flags (e.g., "gemini --custom-flag"). Default: "gemini"
+	Command string `toml:"command"`
 }
 
 // OpenCodeSettings defines OpenCode CLI configuration
@@ -817,17 +824,26 @@ type OpenCodeSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for OpenCode sessions.
+	// Supports flags (e.g., "opencode --custom-flag"). Default: "opencode"
+	Command string `toml:"command"`
 }
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
-	// Command is the Codex CLI command or alias to use (e.g., "codex", "codex-v2")
-	// Default: "codex"
+	// Command overrides the default binary/invocation for Codex sessions.
+	// Supports flags (e.g., "codex --custom-flag"). Default: "codex"
 	Command string `toml:"command"`
 
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+
+	// EnvFile is a .env file specific to Codex sessions
+	// Sourced AFTER global [shell].env_files
+	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
+	EnvFile string `toml:"env_file"`
 }
 
 // CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
@@ -837,6 +853,26 @@ type CopilotSettings struct {
 	// EnvFile is a .env file specific to Copilot sessions (sourced before
 	// the `copilot` command runs, like [gemini].env_file). Optional.
 	EnvFile string `toml:"env_file"`
+
+	// Command overrides the default binary/invocation for Copilot sessions.
+	// Supports flags (e.g., "copilot --custom-flag"). Default: "copilot"
+	Command string `toml:"command"`
+}
+
+// HermesSettings defines Hermes Agent CLI configuration.
+// Binary: `hermes` from github.com/NousResearch/hermes-agent (MIT, v0.13.0+).
+// Status detection: process-alive/dead only (content-sniffing deferred).
+type HermesSettings struct {
+	// Command is the Hermes CLI command or invocation to use.
+	// Supports flags (e.g., "hermes --model gpt-5.5-pro --provider openai").
+	// Default: "hermes"
+	Command string `toml:"command"`
+	// EnvFile is a .env file specific to Hermes sessions (sourced before
+	// the `hermes` command runs). Optional.
+	EnvFile string `toml:"env_file"`
+	// YoloMode enables --yolo flag for Hermes sessions (auto-approve all tool calls).
+	// Default: false
+	YoloMode bool `toml:"yolo_mode"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1827,15 +1863,6 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
-// GetCodexCommand returns the configured Codex command/alias.
-func GetCodexCommand() string {
-	userConfig, _ := LoadUserConfig()
-	if userConfig != nil && strings.TrimSpace(userConfig.Codex.Command) != "" {
-		return strings.TrimSpace(userConfig.Codex.Command)
-	}
-	return "codex"
-}
-
 func isClaudeCommand(command string) bool {
 	return isCommand(command, "claude")
 }
@@ -1928,9 +1955,45 @@ func GetCustomToolNames() []string {
 	return names
 }
 
+// GetToolCommand returns the configured command override for a builtin tool,
+// falling back to the bare tool name if no override is set.
+func GetToolCommand(toolName string) string {
+	config, _ := LoadUserConfig()
+	if config == nil {
+		return toolName
+	}
+	switch toolName {
+	case "claude":
+		if config.Claude.Command != "" {
+			return config.Claude.Command
+		}
+	case "gemini":
+		if config.Gemini.Command != "" {
+			return config.Gemini.Command
+		}
+	case "opencode":
+		if config.OpenCode.Command != "" {
+			return config.OpenCode.Command
+		}
+	case "codex":
+		if config.Codex.Command != "" {
+			return config.Codex.Command
+		}
+	case "copilot":
+		if config.Copilot.Command != "" {
+			return config.Copilot.Command
+		}
+	case "hermes":
+		if config.Hermes.Command != "" {
+			return config.Hermes.Command
+		}
+	}
+	return toolName
+}
+
 func isBuiltinToolName(toolName string) bool {
 	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "pi", "shell", "cursor", "aider":
+	case "claude", "gemini", "opencode", "codex", "copilot", "hermes", "pi", "shell", "cursor", "aider":
 		return true
 	default:
 		return false
@@ -1956,6 +2019,8 @@ func GetToolIcon(toolName string) string {
 		return "💻"
 	case "copilot":
 		return "🐙"
+	case "hermes":
+		return "☤"
 	case "pi":
 		return "π"
 	case "cursor":

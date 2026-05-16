@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hermes Agent CLI as first-class tool** — Launch, attach, kill Hermes sessions (`hermes` from NousResearch/hermes-agent). Icon ☤, color gold. Config via `[hermes]` section with `command`, `env_file`, `yolo_mode`. Status: process-alive/dead (content-sniffing deferred). Detection via binary basename + content patterns.
+
+- **Uniform `[tool].command` override for all builtin agents** — All builtin agents now support a `command` field in their config section to override the default binary/invocation (e.g., `[gemini] command = "gemini-nightly --flag"`). Previously only `[claude].command` worked. Also adds `env_file` to `[codex]` and promotes copilot to a dedicated command builder.
+
+### Fixed
+
+- **`[opencode].env_file`, `[codex].env_file`, and `[copilot].env_file` silently ignored** — `getToolEnvFile()` fell through to `GetToolDef()` for these builtins, which returned nil. Now explicitly handled.
+
 ## [1.9.9] - 2026-05-15
 
 Patch release on top of v1.9.8 — five user-facing fixes spanning the launch path, MCP plugin lifecycle, session reaping, send-after-restart timing, and the web waiting-status renderer. v1.9.9 is the **fourth release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`. Headline fixes: `agent-deck launch` no longer propagates `TELEGRAM_STATE_DIR` into child sessions, eliminating duplicate Telegram pollers that fired on every conductor-spawned child ([#998](https://github.com/asheshgoplani/agent-deck/pull/998), closes [#955](https://github.com/asheshgoplani/agent-deck/issues/955)); MCP pool now refreshes `.mcp.json` plugin pins on session upgrade so stale pin entries don't survive a plugin version bump ([#999](https://github.com/asheshgoplani/agent-deck/pull/999), closes [#960](https://github.com/asheshgoplani/agent-deck/issues/960)); the web event renderer maps `waiting` status to a waiting badge instead of misclassifying it as an error ([#997](https://github.com/asheshgoplani/agent-deck/pull/997), closes [#963](https://github.com/asheshgoplani/agent-deck/issues/963)); session stop now reaps lingering MCP child processes so a stopped session no longer leaves orphan stdio servers attached to the daemon — mechanism shipped, full session-cmd wiring follow-up TBD ([#1000](https://github.com/asheshgoplani/agent-deck/pull/1000), closes [#965](https://github.com/asheshgoplani/agent-deck/issues/965)); and `session send` after a restart waits for slash-command registration before dispatching the first slash payload, fixing the race that silently dropped the message ([#1001](https://github.com/asheshgoplani/agent-deck/pull/1001), closes [#966](https://github.com/asheshgoplani/agent-deck/issues/966)). (Note: REQ-7 [#989] and Node 24 actions [#991] remain pending and are deferred to v1.9.10.)
