@@ -19,6 +19,7 @@ const (
 	FieldTool               = "tool"
 	FieldWrapper            = "wrapper"
 	FieldChannels           = "channels"
+	FieldPlugins            = "plugins"
 	FieldExtraArgs          = "extra-args"
 	FieldColor              = "color"
 	FieldNotes              = "notes"
@@ -37,6 +38,7 @@ var ValidMutableFields = []string{
 	FieldTool,
 	FieldWrapper,
 	FieldChannels,
+	FieldPlugins,
 	FieldExtraArgs,
 	FieldColor,
 	FieldNotes,
@@ -57,7 +59,7 @@ const (
 
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
-	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldExtraArgs, FieldPath,
+	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
 		FieldSkipPermissions, FieldAutoMode:
 		return FieldRestartRequired
 	default:
@@ -148,6 +150,54 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		}
 		inst.Channels = parsed
 
+	case FieldPlugins:
+		// RFC docs/rfc/PLUGIN_ATTACH.md §4.5. Catalog-only validation:
+		// every name must resolve via GetPluginDef. Telegram-official
+		// is filtered at catalog load (§6) so this branch will reject
+		// it as "not in catalog".
+		if inst.Tool != "claude" {
+			return "", nil, &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("plugins only supported for claude sessions (this session's tool is %q); plugins are Claude Code enabledPlugins entries applied per-session via the worker scratch settings.json", inst.Tool),
+			}
+		}
+		oldValue = strings.Join(inst.Plugins, ",")
+		parsed := []string{}
+		for _, raw := range strings.Split(value, ",") {
+			s := strings.TrimSpace(raw)
+			if s == "" {
+				continue
+			}
+			if IsTelegramOfficialRefusal(s, telegramOfficialRefusalSource) || s == "telegram@"+telegramOfficialRefusalSource {
+				return oldValue, nil, &MutationError{
+					Field: field,
+					Msg:   fmt.Sprintf("plugin %q refused in v1: telegram@claude-plugins-official cannot be enabled via plugins. Use channels instead. See docs/rfc/PLUGIN_TELEGRAM_RETROFIT.md (planned) for the deferred refactor", s),
+				}
+			}
+			if def := GetPluginDef(s); def == nil {
+				available := GetAvailablePluginNames()
+				if len(available) == 0 {
+					return oldValue, nil, &MutationError{
+						Field: field,
+						Msg:   fmt.Sprintf("plugin %q: catalog is empty. Add a [plugins.%s] table to ~/.agent-deck/config.toml", s, s),
+					}
+				}
+				return oldValue, nil, &MutationError{
+					Field: field,
+					Msg:   fmt.Sprintf("plugin %q: not in catalog. Available: %s", s, strings.Join(available, ", ")),
+				}
+			}
+			parsed = append(parsed, s)
+		}
+		inst.Plugins = parsed
+
+		// Channel auto-link reconciliation (RFC §4.7, fixes G4+C2).
+		// syncPluginChannels handles the opt-out case internally — when
+		// PluginChannelLinkDisabled is true, it still removes stale
+		// auto-linked channels (otherwise toggling the flag mid-session
+		// would leak channels). Always call.
+		syncPluginChannels(inst)
+
 	case FieldExtraArgs:
 		if inst.Tool != "claude" {
 			return "", nil, &MutationError{
@@ -177,6 +227,16 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.ClaudeSessionID = value
 		inst.ClaudeDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "CLAUDE_SESSION_ID", value)
+		// Issue #923 (reporter @bautrey): when the user explicitly clears
+		// the session id, the hook .sid sidecar at
+		// `~/.agent-deck/hooks/<id>.sid` must also be removed. Otherwise
+		// the next restart's spawn-env construction reads the stale anchor
+		// via ReadHookSessionAnchor and re-injects the old id, undoing the
+		// clear. DB is authoritative for the empty case; empty means
+		// abandon, not "fall back to last seen".
+		if value == "" {
+			ClearHookSessionAnchor(inst.ID)
+		}
 
 	case FieldGeminiSessionID:
 		oldValue = inst.GeminiSessionID

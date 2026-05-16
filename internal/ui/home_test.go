@@ -2746,6 +2746,44 @@ func TestStatusUpdateMsg_PreservesSelectedSessionAcrossRebuild(t *testing.T) {
 	}
 }
 
+func TestStatusUpdateMsg_ReconcilesAttachedSessionBeforeRender(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	h := newAttachReturnTestHome()
+	inst := session.NewInstanceWithGroupAndTool("exited", "/tmp/exited", "work", "codex")
+	inst.ID = "exited-session"
+	inst.CreatedAt = time.Now().Add(-2 * time.Second)
+	inst.Status = session.StatusRunning
+	setAttachReturnTestInstances(h, []*session.Instance{inst})
+
+	hooksDir := session.GetHooksDir()
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hookPath := filepath.Join(hooksDir, inst.ID+".json")
+	hookBody := fmt.Sprintf(
+		`{"status":"running","session_id":"stale-session","event":"UserPromptSubmit","ts":%d}`,
+		time.Now().Unix(),
+	)
+	if err := os.WriteFile(hookPath, []byte(hookBody), 0o644); err != nil {
+		t.Fatalf("write stale hook: %v", err)
+	}
+
+	model, _ := h.Update(statusUpdateMsg{attachedSessionID: inst.ID})
+	home := model.(*Home)
+
+	if got := inst.GetStatusThreadSafe(); got != session.StatusError {
+		t.Fatalf("attached session status = %q, want %q", got, session.StatusError)
+	}
+	if got := home.getSessionRenderState(inst).status; got != session.StatusError {
+		t.Fatalf("render snapshot status = %q, want %q", got, session.StatusError)
+	}
+	if _, err := os.Stat(hookPath); !os.IsNotExist(err) {
+		t.Fatalf("stale hook file still exists or stat failed with unexpected error: %v", err)
+	}
+}
+
 func TestStatusUpdateMsg_FollowsNotificationSwitchSession(t *testing.T) {
 	h := newAttachReturnTestHome()
 	s1 := session.NewInstanceWithGroup("first", "/tmp/first", "work")

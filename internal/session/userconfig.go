@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -56,6 +57,13 @@ type UserConfig struct {
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps"`
+
+	// Plugins defines available Claude Code plugins for per-session attach
+	// (RFC docs/rfc/PLUGIN_ATTACH.md). Catalog-only in v1: every name passed
+	// via `--plugin <name>` must resolve to an entry here. Each entry maps a
+	// short catalog name (e.g. "octopus") to a Claude Code plugin id
+	// (`<name>@<source>`) plus per-plugin policy (auto-install, channel link).
+	Plugins map[string]PluginDef `toml:"plugins"`
 
 	// Claude defines Claude Code integration settings
 	Claude ClaudeSettings `toml:"claude"`
@@ -824,6 +832,10 @@ type OpenCodeSettings struct {
 
 // CodexSettings defines Codex CLI configuration
 type CodexSettings struct {
+	// Command overrides the default binary/invocation for Codex sessions.
+	// Supports flags (e.g., "codex --custom-flag"). Default: "codex"
+	Command string `toml:"command"`
+
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
@@ -832,10 +844,6 @@ type CodexSettings struct {
 	// Sourced AFTER global [shell].env_files
 	// Path can be absolute, ~ for home, $HOME/${VAR} for env vars, or relative to session working directory
 	EnvFile string `toml:"env_file"`
-
-	// Command overrides the default binary/invocation for Codex sessions.
-	// Supports flags (e.g., "codex --custom-flag"). Default: "codex"
-	Command string `toml:"command"`
 }
 
 // CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
@@ -1141,6 +1149,57 @@ func (m *MCPDef) GetTransport() string {
 // HasAutoStartServer returns true if this HTTP MCP has server auto-start configured
 func (m *MCPDef) HasAutoStartServer() bool {
 	return m.IsHTTP() && m.Server != nil && m.Server.Command != ""
+}
+
+// PluginDef defines a Claude Code plugin entry exposed via `agent-deck add
+// --plugin <name>` and `agent-deck session set <id> plugins <csv>`.
+//
+// Plugin id at runtime is constructed as "<Name>@<Source>" and written to
+// the per-session scratch settings.json under enabledPlugins (see
+// internal/session/worker_scratch.go). v1 is catalog-only: only short names
+// listed in [plugins.<name>] tables in ~/.agent-deck/config.toml are valid
+// values for the --plugin flag.
+//
+// RFC: docs/rfc/PLUGIN_ATTACH.md.
+type PluginDef struct {
+	// Name is the short plugin name as exposed by the upstream marketplace's
+	// plugin.json (e.g. "telegram", "octopus"). Required.
+	Name string `toml:"name"`
+
+	// Source is the marketplace identifier the plugin lives in. Either a
+	// curated marketplace name (e.g. "claude-plugins-official") or a github
+	// "owner/repo" pair (e.g. "nyldn/claude-octopus"). Required.
+	Source string `toml:"source"`
+
+	// EmitsChannel hints that this plugin participates in the inbound
+	// `notifications/claude/channel` protocol — when true, attaching the
+	// plugin via --plugin auto-populates Instance.Channels with
+	// "plugin:<Name>@<Source>" so the harness registers the inbound handler.
+	// Catalog hint only; agent-deck does not introspect the plugin source.
+	EmitsChannel bool `toml:"emits_channel"`
+
+	// AutoInstall enables shell-out to `claude plugin install <Name>@<Source>`
+	// at session spawn when the plugin code is not yet present under the
+	// source profile's plugins/ directory. Best-effort: install failure is
+	// logged but does not block session start.
+	AutoInstall bool `toml:"auto_install"`
+
+	// Description is optional help text shown in the Edit Session dialog
+	// pill list.
+	Description string `toml:"description"`
+}
+
+// ID returns the fully-qualified plugin identifier "<Name>@<Source>" used
+// both as the enabledPlugins key in settings.json and as the channel id
+// "plugin:<ID>" when EmitsChannel is true.
+func (p *PluginDef) ID() string {
+	return p.Name + "@" + p.Source
+}
+
+// ChannelID returns the channel id produced by the auto-link path when
+// EmitsChannel is true. Format: "plugin:<Name>@<Source>".
+func (p *PluginDef) ChannelID() string {
+	return "plugin:" + p.ID()
 }
 
 // TmuxSettings allows users to override tmux options applied to every session.
@@ -1563,8 +1622,9 @@ func (d DisplaySettings) GetFullRepaint() bool {
 
 // Default user config (empty maps)
 var defaultUserConfig = UserConfig{
-	Tools: make(map[string]ToolDef),
-	MCPs:  make(map[string]MCPDef),
+	Tools:   make(map[string]ToolDef),
+	MCPs:    make(map[string]MCPDef),
+	Plugins: make(map[string]PluginDef),
 }
 
 // cloneDefaultUserConfig returns a fresh shallow copy of defaultUserConfig with
@@ -1581,6 +1641,10 @@ func cloneDefaultUserConfig() UserConfig {
 	c.MCPs = make(map[string]MCPDef, len(defaultUserConfig.MCPs))
 	for k, v := range defaultUserConfig.MCPs {
 		c.MCPs[k] = v
+	}
+	c.Plugins = make(map[string]PluginDef, len(defaultUserConfig.Plugins))
+	for k, v := range defaultUserConfig.Plugins {
+		c.Plugins[k] = v
 	}
 	return c
 }
@@ -1667,6 +1731,9 @@ func LoadUserConfig() (*UserConfig, error) {
 	}
 	if config.MCPs == nil {
 		config.MCPs = make(map[string]MCPDef)
+	}
+	if config.Plugins == nil {
+		config.Plugins = make(map[string]PluginDef)
 	}
 
 	userConfigCache = &config
@@ -2496,6 +2563,8 @@ func CreateExampleConfig() error {
 
 # Codex CLI integration
 # [codex]
+# Codex CLI command or alias to use (default: "codex")
+# command = "codex"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
 
@@ -2821,6 +2890,98 @@ func GetManageMCPJson() bool {
 func GetMCPDef(name string) *MCPDef {
 	mcps := GetAvailableMCPs()
 	if def, ok := mcps[name]; ok {
+		return &def
+	}
+	return nil
+}
+
+// telegramOfficialRefusalSource is the marketplace id whose telegram entry
+// is rejected at catalog-load and CLI/mutator level in v1
+// (RFC docs/rfc/PLUGIN_ATTACH.md §6). Forks (different source) are allowed.
+const telegramOfficialRefusalSource = "claude-plugins-official"
+
+// pluginIdentifierRe is the strict charset for PluginDef.Name and
+// PluginDef.Source (RFC docs/rfc/PLUGIN_ATTACH.md, security finding S5/S6).
+// Closes the path-traversal / argv-injection class:
+//   - rejects ".." segments via the no-leading-dot anchor + rune set
+//   - rejects leading "-" so values can't be parsed as flags by claude
+//   - rejects "/" except as a single owner/repo separator (Source only)
+//   - rejects null bytes, whitespace, shell metacharacters
+//
+// Name: single segment, no slash. Source: single segment OR owner/repo.
+var (
+	pluginNameRe   = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*$`)
+	pluginSourceRe = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9._-]*(/[a-zA-Z0-9_][a-zA-Z0-9._-]*)?$`)
+)
+
+// validatePluginDef returns nil iff the def's Name and Source pass the
+// strict charset filter. Catalog accessors call this so unsafe values
+// never reach exec, filesystem ops, or settings.json mutations.
+func validatePluginDef(name string, def PluginDef) error {
+	if !pluginNameRe.MatchString(def.Name) {
+		return fmt.Errorf("plugin %q: invalid name %q (allowed: [a-zA-Z0-9._-], no leading dot/dash, no path separators)", name, def.Name)
+	}
+	if !pluginSourceRe.MatchString(def.Source) {
+		return fmt.Errorf("plugin %q: invalid source %q (allowed: <single-segment> or <owner>/<repo>, charset [a-zA-Z0-9._-])", name, def.Source)
+	}
+	return nil
+}
+
+// IsTelegramOfficialRefusal reports whether (name, source) pair is the
+// exact "telegram@claude-plugins-official" id refused in v1. The check is
+// case-sensitive — the upstream catalog uses these literal strings.
+func IsTelegramOfficialRefusal(name, source string) bool {
+	return name == "telegram" && source == telegramOfficialRefusalSource
+}
+
+// GetAvailablePlugins returns the plugin catalog from config.toml, never nil.
+// Filters out:
+//   - entries refused by IsTelegramOfficialRefusal (RFC §6)
+//   - entries failing validatePluginDef (RFC charset filter — security
+//     defense against path traversal, argv injection, lock-path escape)
+//
+// Invalid entries are logged once per LoadUserConfig cycle and silently
+// dropped — callers never see them, so unsafe values cannot reach exec,
+// filesystem ops, or settings.json mutations.
+func GetAvailablePlugins() map[string]PluginDef {
+	config, err := LoadUserConfig()
+	if err != nil || config == nil {
+		return make(map[string]PluginDef)
+	}
+	out := make(map[string]PluginDef, len(config.Plugins))
+	for k, v := range config.Plugins {
+		if IsTelegramOfficialRefusal(v.Name, v.Source) {
+			continue
+		}
+		if err := validatePluginDef(k, v); err != nil {
+			slog.Warn("plugin_catalog_entry_rejected",
+				slog.String("key", k),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// GetAvailablePluginNames returns sorted catalog keys of plugins.
+// Refused entries are excluded (consistent with GetAvailablePlugins).
+func GetAvailablePluginNames() []string {
+	plugins := GetAvailablePlugins()
+	names := make([]string, 0, len(plugins))
+	for name := range plugins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// GetPluginDef returns a specific plugin definition by catalog key.
+// Returns nil if not found OR if the entry matches the v1 refusal policy.
+func GetPluginDef(name string) *PluginDef {
+	plugins := GetAvailablePlugins()
+	if def, ok := plugins[name]; ok {
 		return &def
 	}
 	return nil

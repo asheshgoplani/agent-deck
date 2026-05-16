@@ -593,6 +593,84 @@ func TestGitHub_Normalize_Unknown(t *testing.T) {
 	<-listenErr
 }
 
+// TestGitHub_Normalize_MalformedPayload_DropsEvent asserts that a malformed
+// JSON body (e.g., a partial write or truncated upload) does NOT result in
+// a zero-valued Event being emitted to the channel. Before the fix, the
+// four normalizers all did `_ = json.Unmarshal(body, &p)` and then
+// constructed an Event with zero `Sender`/`Subject`/`Ref`, making the
+// downstream router silently misroute or dedup-drop the event.
+//
+// Source: critical-hunt audit #1 (P0).
+func TestGitHub_Normalize_MalformedPayload_DropsEvent(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+	}{
+		{"issues", "issues"},
+		{"pull_request", "pull_request"},
+		{"push", "push"},
+		{"unknown", "check_run"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &GitHubAdapter{}
+			err := a.Setup(context.Background(), AdapterConfig{
+				Type:     "github",
+				Name:     "test",
+				Settings: map[string]string{"secret": testGitHubSecret, "port": "0"},
+			})
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+
+			events := make(chan Event, 10)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			listenErr := make(chan error, 1)
+			go func() {
+				listenErr <- a.Listen(ctx, events)
+			}()
+
+			if !waitForGitHubServer(t, a, 2*time.Second) {
+				t.Fatal("server did not start in time")
+			}
+
+			// Truncated/garbage JSON — what a partial write or chunked-upload
+			// abort looks like in practice.
+			body := []byte(`{"action":"opened","issue":{"number":42,"title":"Bug`)
+			sig := signPayload(testGitHubSecret, body)
+
+			req, _ := http.NewRequest("POST", "http://"+a.Addr()+"/github", bytes.NewReader(body))
+			req.Header.Set("X-Hub-Signature-256", sig)
+			req.Header.Set("X-GitHub-Event", tc.eventType)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			resp.Body.Close()
+
+			// 202 Accepted is expected even on parse failure (server already
+			// committed to the protocol contract before parsing).
+			if resp.StatusCode != http.StatusAccepted {
+				t.Errorf("status: want 202, got %d", resp.StatusCode)
+			}
+
+			select {
+			case evt := <-events:
+				t.Fatalf("malformed payload must not emit event; got: subject=%q sender=%q body=%q",
+					evt.Subject, evt.Sender, evt.Body)
+			case <-time.After(300 * time.Millisecond):
+				// Expected: event was dropped, not emitted with zero fields.
+			}
+
+			cancel()
+			<-listenErr
+		})
+	}
+}
+
 func TestGitHub_HealthCheck_Running(t *testing.T) {
 	a := &GitHubAdapter{}
 	err := a.Setup(context.Background(), AdapterConfig{

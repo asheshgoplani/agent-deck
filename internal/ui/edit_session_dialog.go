@@ -80,6 +80,20 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 				kind:  editFieldText,
 				input: mkInput("--model opus --verbose", 512, strings.Join(inst.ExtraArgs, " "))},
 		)
+		// Plugins (RFC docs/rfc/PLUGIN_ATTACH.md §4.8). v1 ships a CSV
+		// text input matching the ExtraArgs shape; full multi-checkbox
+		// widget is a v1.1 follow-up. Validation runs in the mutator at
+		// save time — invalid catalog names produce a session-set error
+		// shown via validationErr.
+		if len(session.GetAvailablePluginNames()) > 0 {
+			placeholder := "octopus,discord  (catalog: " + strings.Join(session.GetAvailablePluginNames(), ", ") + ")"
+			d.fields = append(d.fields,
+				editField{key: session.FieldPlugins,
+					label: "Plugins (restart, claude) — comma-separated catalog names",
+					kind:  editFieldText,
+					input: mkInput(placeholder, 512, strings.Join(inst.Plugins, ","))},
+			)
+		}
 	}
 	d.updateFocus()
 }
@@ -232,6 +246,8 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 		return inst.Tool
 	case session.FieldExtraArgs:
 		return strings.Join(inst.ExtraArgs, " ")
+	case session.FieldPlugins:
+		return strings.Join(inst.Plugins, ",")
 	case session.FieldSkipPermissions:
 		skip, _ := readClaudeFlags(inst)
 		return strconv.FormatBool(skip)

@@ -185,6 +185,21 @@ var (
 	sessionCacheTime time.Time
 )
 
+// sessionCacheTTL is the single TTL governing both sessionExistsFromCache
+// and sessionActivityFromCache. 2 seconds = 4 ticks at 500ms. Both readers
+// MUST consult this constant — splitting the TTL between them produces the
+// "session is alive but has no activity" parity bug (#886 family).
+const sessionCacheTTL = 2 * time.Second
+
+// sessionCacheStale reports whether the shared session cache is past TTL
+// or empty. Caller must hold sessionCacheMu (read or write). Centralizing
+// the check ensures both existence and activity readers expire the cache
+// together — see arch-review S2 for why two divergent in-line checks
+// caused #886-class drift.
+func sessionCacheStale() bool {
+	return sessionCacheData == nil || time.Since(sessionCacheTime) > sessionCacheTTL
+}
+
 // RefreshSessionCache updates the cache of existing tmux sessions and their activity
 // Call this ONCE per tick, then use Session.Exists() and Session.GetWindowActivity()
 // which read from cache. This reduces 30+ subprocess spawns to just 1 per tick cycle.
@@ -314,9 +329,8 @@ func sessionExistsFromCache(name string) (bool, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return false, false // Cache invalid
+	if sessionCacheStale() {
+		return false, false
 	}
 
 	_, exists := sessionCacheData[name]
@@ -345,9 +359,8 @@ func sessionActivityFromCache(name string) (int64, bool) {
 	sessionCacheMu.RLock()
 	defer sessionCacheMu.RUnlock()
 
-	// Cache is valid for 2 seconds (4 ticks at 500ms)
-	if sessionCacheData == nil || time.Since(sessionCacheTime) > 2*time.Second {
-		return 0, false // Cache invalid
+	if sessionCacheStale() {
+		return 0, false
 	}
 
 	activity, exists := sessionCacheData[name]
@@ -775,6 +788,10 @@ type Session struct {
 
 	// Last status returned (for debugging)
 	lastStableStatus string
+
+	// hashFallbackOnce gates the one-time hash_fallback_used WARN landmark.
+	// See logging_additions.go and logging-review G8.
+	hashFallbackOnce sync.Once
 
 	// OptionOverrides are user-specified tmux set-option overrides from config.
 	// Applied AFTER all defaults in Start(), so they take precedence.
@@ -2507,8 +2524,10 @@ func (s *Session) CapturePane() (string, error) {
 					slog.Duration("elapsed", time.Since(pipeStart)))
 				return content, nil
 			}
-			// Pipe failed: log it so we can verify zero subprocess usage
-			statusLog.Debug("capture_pane_subprocess_fallback", slog.String("session", s.Name))
+			// Pipe failed: aggregate so today's 5,068/30min DEBUG storm
+			// becomes one event_summary INFO per flush window with a
+			// running count. See logging-review G14.
+			s.recordPipeDegraded()
 		}
 
 		// Subprocess fallback: 3s timeout
@@ -2538,7 +2557,14 @@ func (s *Session) CapturePane() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return v.(string), nil
+	// Defensive: the singleflight closure above unconditionally returns
+	// (string, nil), so this assertion cannot panic today. The comma-ok form
+	// guards against future closure refactors that might return a different
+	// type and silently introduce a nil-deref panic. (V1.9 §T6 / arch-review §5)
+	if s, ok := v.(string); ok {
+		return s, nil
+	}
+	return "", nil
 }
 
 // CapturePaneFresh captures pane content via a direct tmux subprocess call.
@@ -3179,6 +3205,9 @@ func (s *Session) GetStatus() (string, error) {
 // getStatusFallback uses content-hash based detection as fallback
 // when activity timestamp detection fails
 func (s *Session) getStatusFallback() (string, error) {
+	// Once-per-session WARN landmark; closes logging-review G8.
+	s.recordHashFallbackUsed()
+
 	shortName := s.DisplayName
 	if len(shortName) > 12 {
 		shortName = shortName[:12]

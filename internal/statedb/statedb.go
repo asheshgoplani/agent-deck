@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,8 +14,46 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	_ "modernc.org/sqlite"
 )
+
+var statedbLog = logging.ForComponent(logging.CompStorage)
+
+// withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
+// ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
+// immediately; the final BUSY error is returned if every attempt fails.
+//
+// WAL + busy_timeout=5000 handles most contention internally, but the
+// modernc.org/sqlite driver still surfaces transient BUSY at the application
+// level under heavy multi-writer load (multiple processes plus goroutines).
+// This helper acts as a belt-and-suspenders retry. Pulled out of
+// SaveWatcherEvent (the original site) so every short-lived writer can use
+// the same policy.
+//
+// op MUST be idempotent or otherwise safe to retry (e.g. idempotent UPDATEs,
+// INSERT OR IGNORE/REPLACE, DELETE).
+func withBusyRetry(op func() error) error {
+	const attempts = 5
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err = op()
+		if err == nil {
+			return nil
+		}
+		if !isSQLiteBusy(err) {
+			return err
+		}
+		if attempt == 1 {
+			slog.Warn("statedb: SQLITE_BUSY retry", slog.Int("attempt", attempt+1), slog.String("err", err.Error()))
+		}
+		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+	}
+	if err != nil {
+		slog.Error("statedb: SQLITE_BUSY exhausted retries", slog.Int("attempts", attempts), slog.String("err", err.Error()))
+	}
+	return err
+}
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
@@ -71,14 +110,32 @@ type WatcherRow struct {
 
 // WatcherEventRow represents a single event row from the watcher_events table.
 type WatcherEventRow struct {
-	ID        int64
-	WatcherID string
-	DedupKey  string
-	Sender    string
-	Subject   string
-	RoutedTo  string
-	SessionID string
-	CreatedAt time.Time
+	ID              int64
+	WatcherID       string
+	DedupKey        string
+	Sender          string
+	Subject         string
+	RoutedTo        string
+	SessionID       string
+	TriageSessionID string
+	CreatedAt       time.Time
+}
+
+// CostEventRow mirrors the cost_events table for raw round-trip operations
+// (e.g., cross-profile migration). The canonical CostEvent type lives in
+// internal/costs, but we keep this minimal struct here so the statedb package
+// can read/write rows without a circular import.
+type CostEventRow struct {
+	ID                  string
+	SessionID           string
+	Timestamp           string // RFC3339; preserve verbatim — cost_events stores TEXT
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     int64
+	CacheWriteTokens    int64
+	CostMicrodollars    int64
+	BudgetStopTriggered bool
 }
 
 // GroupRow represents a group row in the database.
@@ -88,6 +145,10 @@ type GroupRow struct {
 	Expanded    bool
 	Order       int
 	DefaultPath string
+	// MaxConcurrent caps simultaneous running sessions in this group (v1.9.1).
+	// 0 = unlimited (legacy default for groups predating this field); 1 = serial
+	// (default for newly-created groups); N>=2 = bounded parallelism.
+	MaxConcurrent int
 }
 
 // StatusRow holds status + acknowledgment for a session.
@@ -133,33 +194,30 @@ func GetGlobal() *StateDB {
 }
 
 // Open creates or opens a SQLite database at dbPath with WAL mode and busy timeout.
+//
+// busy_timeout and foreign_keys are PER-CONNECTION pragmas in SQLite, so they
+// MUST be passed via the DSN's `_pragma` parameter — setting them once via
+// db.Exec only affects whichever pool connection happened to run the PRAGMA.
+// Pre-fix, fresh connections in the pool defaulted to busy_timeout=0, which
+// turned every transient lock into an immediate SQLITE_BUSY at the application
+// level. journal_mode=WAL is persistent on the database file, so it can stay
+// as a one-shot Exec.
 func Open(dbPath string) (*StateDB, error) {
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
 		return nil, fmt.Errorf("statedb: mkdir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := dbPath + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("statedb: open: %w", err)
 	}
 
-	// WAL mode: allows concurrent readers while writing
+	// WAL mode: persistent on the file, not per-connection.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
-	}
-
-	// Busy timeout: wait up to 5s if another process holds a lock
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("statedb: busy timeout: %w", err)
-	}
-
-	// Foreign keys (for future use)
-	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("statedb: foreign keys: %w", err)
 	}
 
 	return &StateDB{db: db, pid: os.Getpid()}, nil
@@ -225,17 +283,29 @@ func (s *StateDB) Migrate() error {
 		return fmt.Errorf("statedb: create instances: %w", err)
 	}
 
-	// groups table
+	// groups table.
+	// max_concurrent (v1.9.1): caps simultaneous running sessions in the
+	// group. DEFAULT 0 preserves backward compat (legacy unlimited) for any
+	// row inserted before this column existed; newly-created groups set 1.
 	if _, err := tx.Exec(`
 		CREATE TABLE IF NOT EXISTS groups (
-			path         TEXT PRIMARY KEY,
-			name         TEXT NOT NULL,
-			expanded     INTEGER NOT NULL DEFAULT 1,
-			sort_order   INTEGER NOT NULL DEFAULT 0,
-			default_path TEXT NOT NULL DEFAULT ''
+			path           TEXT PRIMARY KEY,
+			name           TEXT NOT NULL,
+			expanded       INTEGER NOT NULL DEFAULT 1,
+			sort_order     INTEGER NOT NULL DEFAULT 0,
+			default_path   TEXT NOT NULL DEFAULT '',
+			max_concurrent INTEGER NOT NULL DEFAULT 0
 		)
 	`); err != nil {
 		return fmt.Errorf("statedb: create groups: %w", err)
+	}
+
+	// ALTER for pre-existing databases (idempotent: ignore "duplicate column").
+	if _, err := tx.Exec(`ALTER TABLE groups ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0`); err != nil {
+		// SQLite returns "duplicate column name" when the column already exists.
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("statedb: add groups.max_concurrent: %w", err)
+		}
 	}
 
 	// instance heartbeats
@@ -473,7 +543,18 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 // SaveInstances inserts or replaces multiple instances in a single transaction.
 // It also removes any rows from the database that are not in the provided list,
 // ensuring deleted sessions don't reappear on reload.
+//
+// Wrapped in withBusyRetry because parallel writers (CLI + TUI + heartbeat
+// daemons) contend on the WAL writer slot. The whole save is idempotent at
+// the row level (INSERT OR REPLACE + DELETE WHERE NOT IN), so retrying the
+// outer transaction on SQLITE_BUSY is safe. Part of the v1.9.1 #909 fix.
 func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
+	return withBusyRetry(func() error {
+		return s.saveInstancesOnce(insts)
+	})
+}
+
+func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// Pre-fetch existing tool_data per instance ID so we can preserve any
 	// keys not modeled by the typed schema (e.g., manually-set
 	// clear_on_compact). Without this merge, every INSERT OR REPLACE
@@ -631,9 +712,32 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 }
 
 // DeleteInstance removes an instance by ID.
+//
+// Wrapped in withBusyRetry because parallel `agent-deck rm` invocations
+// (e.g. xargs -P 14) all contend on the same WAL writer slot. Without
+// retry, transient SQLITE_BUSY silently drops the DELETE while the CLI
+// still reports success — the silent-loss half of issue #909.
 func (s *StateDB) DeleteInstance(id string) error {
-	_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
-	return err
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM instances WHERE id = ?", id)
+		return err
+	})
+}
+
+// InstanceExists returns true iff a row with the given id is present.
+// Used by the rm path's post-commit verify (issue #909) to detect
+// resurrection by a concurrent SaveInstances rewrite.
+func (s *StateDB) InstanceExists(id string) (bool, error) {
+	row := s.db.QueryRow("SELECT 1 FROM instances WHERE id = ? LIMIT 1", id)
+	var one int
+	err := row.Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // UpdateInstanceField updates a single column for a given instance.
@@ -660,8 +764,8 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 	}
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO groups (path, name, expanded, sort_order, default_path)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO groups (path, name, expanded, sort_order, default_path, max_concurrent)
+		VALUES (?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -673,7 +777,7 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 		if g.Expanded {
 			expanded = 1
 		}
-		if _, err := stmt.Exec(g.Path, g.Name, expanded, g.Order, g.DefaultPath); err != nil {
+		if _, err := stmt.Exec(g.Path, g.Name, expanded, g.Order, g.DefaultPath, g.MaxConcurrent); err != nil {
 			return err
 		}
 	}
@@ -684,7 +788,7 @@ func (s *StateDB) SaveGroups(groups []*GroupRow) error {
 // LoadGroups returns all groups ordered by sort_order.
 func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 	rows, err := s.db.Query(`
-		SELECT path, name, expanded, sort_order, default_path
+		SELECT path, name, expanded, sort_order, default_path, max_concurrent
 		FROM groups ORDER BY sort_order
 	`)
 	if err != nil {
@@ -696,7 +800,7 @@ func (s *StateDB) LoadGroups() ([]*GroupRow, error) {
 	for rows.Next() {
 		g := &GroupRow{}
 		var expanded int
-		if err := rows.Scan(&g.Path, &g.Name, &expanded, &g.Order, &g.DefaultPath); err != nil {
+		if err := rows.Scan(&g.Path, &g.Name, &expanded, &g.Order, &g.DefaultPath, &g.MaxConcurrent); err != nil {
 			return nil, err
 		}
 		g.Expanded = expanded != 0
@@ -714,15 +818,22 @@ func (s *StateDB) DeleteGroup(path string) error {
 // --- Status + Acknowledgment ---
 
 // WriteStatus updates the status and tool for an instance.
+//
+// Wrapped in withBusyRetry: the transition daemon (#755 family) calls this
+// under contention with other writers (heartbeat, status poller, hook
+// handler). Without retry, transient SQLITE_BUSY drops the user-visible
+// status update and the TUI shows stale state.
 func (s *StateDB) WriteStatus(id, status, tool string) error {
-	_, err := s.db.Exec(
-		`UPDATE instances
-		 SET status = ?, tool = ?,
-		     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
-		 WHERE id = ?`,
-		status, tool, status, id,
-	)
-	return err
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			 SET status = ?, tool = ?,
+			     acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			 WHERE id = ?`,
+			status, tool, status, id,
+		)
+		return err
+	})
 }
 
 // ReadAllStatuses returns status + acknowledged flag for every instance.
@@ -937,6 +1048,12 @@ func recentSessionDedupID(row *RecentSessionRow) string {
 }
 
 // SaveRecentSession inserts or replaces a recent session entry, then prunes to 20.
+//
+// The INSERT and the prune are bundled in a single transaction so a crash
+// between them cannot leave the table over-budget (the prune always sees the
+// just-inserted row). The whole transaction runs under withBusyRetry to
+// absorb transient SQLITE_BUSY from concurrent writers — pre-fix, these
+// caused user-visible "recent session lost" reports under contention.
 func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
 	id := recentSessionDedupID(row)
 
@@ -959,22 +1076,37 @@ func (s *StateDB) SaveRecentSession(row *RecentSessionRow) error {
 		geminiYolo = &v
 	}
 
-	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO recent_sessions (
-			id, title, project_path, group_path,
-			command, wrapper, tool, tool_options,
-			sandbox_enabled, gemini_yolo, deleted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		id, row.Title, row.ProjectPath, row.GroupPath,
-		row.Command, row.Wrapper, row.Tool, string(toolOpts),
-		sandbox, geminiYolo, time.Now().Unix(),
-	)
-	if err != nil {
-		return err
-	}
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
 
-	return s.pruneRecentSessions(20)
+		if _, err := tx.Exec(`
+			INSERT OR REPLACE INTO recent_sessions (
+				id, title, project_path, group_path,
+				command, wrapper, tool, tool_options,
+				sandbox_enabled, gemini_yolo, deleted_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			id, row.Title, row.ProjectPath, row.GroupPath,
+			row.Command, row.Wrapper, row.Tool, string(toolOpts),
+			sandbox, geminiYolo, time.Now().Unix(),
+		); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(`
+			DELETE FROM recent_sessions WHERE id NOT IN (
+				SELECT id FROM recent_sessions ORDER BY deleted_at DESC LIMIT ?
+			)
+		`, 20); err != nil {
+			return err
+		}
+
+		return tx.Commit()
+	})
 }
 
 // LoadRecentSessions returns all recent sessions ordered by most recently deleted.
@@ -1016,16 +1148,6 @@ func (s *StateDB) LoadRecentSessions() ([]*RecentSessionRow, error) {
 	return result, rows.Err()
 }
 
-// pruneRecentSessions keeps only the maxCount most recent entries.
-func (s *StateDB) pruneRecentSessions(maxCount int) error {
-	_, err := s.db.Exec(`
-		DELETE FROM recent_sessions WHERE id NOT IN (
-			SELECT id FROM recent_sessions ORDER BY deleted_at DESC LIMIT ?
-		)
-	`, maxCount)
-	return err
-}
-
 // --- Watcher CRUD ---
 
 // SaveWatcher inserts or replaces a watcher row.
@@ -1062,32 +1184,34 @@ func (s *StateDB) LoadWatchers() ([]*WatcherRow, error) {
 // SaveWatcherEvent inserts an event with dedup via INSERT OR IGNORE.
 // Returns true if the row was inserted (new event), false if it was a duplicate.
 // Prunes to maxEvents after successful insert.
+//
+// Retries on SQLITE_BUSY: concurrent INSERTs across connections can trip the
+// write lock even with WAL + busy_timeout if the driver surfaces BUSY before
+// the backoff completes. Retries are cheap because the operation is
+// idempotent (INSERT OR IGNORE).
 func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedTo, sessionID string, maxEvents int) (bool, error) {
-	// Retry on SQLITE_BUSY: concurrent INSERTs across connections can trip the
-	// write lock even with WAL + busy_timeout if the driver surfaces BUSY
-	// before the backoff completes. Retries are cheap because the operation
-	// is idempotent (INSERT OR IGNORE).
 	var result sql.Result
-	var err error
-	for attempt := 0; attempt < 5; attempt++ {
+	if err := withBusyRetry(func() error {
+		var err error
 		result, err = s.db.Exec(`
 			INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`, watcherID, dedupKey, sender, subject, routedTo, sessionID, time.Now().Unix())
-		if err == nil {
-			break
-		}
-		if !isSQLiteBusy(err) {
-			return false, err
-		}
-		time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
-	}
-	if err != nil {
+		return err
+	}); err != nil {
 		return false, err
 	}
 	n, _ := result.RowsAffected()
 	if n > 0 {
-		_ = s.pruneWatcherEvents(watcherID, maxEvents)
+		// Prune errors used to be silently dropped, which let the table grow
+		// unbounded under sustained BUSY. We log + retry so the next caller
+		// gets the intended bound.
+		if err := s.pruneWatcherEvents(watcherID, maxEvents); err != nil {
+			slog.Warn("statedb: pruneWatcherEvents failed",
+				slog.String("watcher_id", watcherID),
+				slog.Int("max_events", maxEvents),
+				slog.String("err", err.Error()))
+		}
 	}
 	return n > 0, nil
 }
@@ -1136,15 +1260,27 @@ func (s *StateDB) UpdateWatcherEventSessionID(watcherID, dedupKey, sessionID str
 // UpdateWatcherEventRoutedTo updates the routed_to and triage_session_id columns
 // for the row matching (watcher_id, dedup_key). Returns a wrapped error if no row matches
 // (0 rows affected), allowing the caller to distinguish "update OK" from "event not found".
+//
+// Wrapped in withBusyRetry to match its sister SaveWatcherEvent — both are
+// short idempotent writes against watcher_events called from concurrent
+// engine + triage_reaper paths. Without retry, SQLITE_BUSY from a sister
+// INSERT silently drops the routed_to update and the watcher event sticks
+// in "unrouted" forever.
 func (s *StateDB) UpdateWatcherEventRoutedTo(watcherID, dedupKey, routedTo, triageSessionID string) error {
-	res, err := s.db.Exec(
-		`UPDATE watcher_events SET routed_to = ?, triage_session_id = ? WHERE watcher_id = ? AND dedup_key = ?`,
-		routedTo, triageSessionID, watcherID, dedupKey,
-	)
-	if err != nil {
+	var n int64
+	if err := withBusyRetry(func() error {
+		res, err := s.db.Exec(
+			`UPDATE watcher_events SET routed_to = ?, triage_session_id = ? WHERE watcher_id = ? AND dedup_key = ?`,
+			routedTo, triageSessionID, watcherID, dedupKey,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	}); err != nil {
 		return fmt.Errorf("statedb: update routed_to: %w", err)
 	}
-	n, _ := res.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("statedb: update routed_to: no watcher_events row for watcher_id=%s dedup_key=%s", watcherID, dedupKey)
 	}
@@ -1152,14 +1288,21 @@ func (s *StateDB) UpdateWatcherEventRoutedTo(watcherID, dedupKey, routedTo, tria
 }
 
 // pruneWatcherEvents keeps only the newest maxCount events for a watcher.
+//
+// Wrapped in withBusyRetry: the DELETE ... NOT IN (SELECT ...) pattern takes
+// a stronger lock than a single-row UPDATE, so it is especially BUSY-prone
+// under concurrent inserts. If the prune is dropped, the watcher_events
+// table grows without bound.
 func (s *StateDB) pruneWatcherEvents(watcherID string, maxCount int) error {
-	_, err := s.db.Exec(`
-		DELETE FROM watcher_events WHERE watcher_id = ? AND id NOT IN (
-			SELECT id FROM watcher_events WHERE watcher_id = ?
-			ORDER BY id DESC LIMIT ?
-		)
-	`, watcherID, watcherID, maxCount)
-	return err
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(`
+			DELETE FROM watcher_events WHERE watcher_id = ? AND id NOT IN (
+				SELECT id FROM watcher_events WHERE watcher_id = ?
+				ORDER BY id DESC LIMIT ?
+			)
+		`, watcherID, watcherID, maxCount)
+		return err
+	})
 }
 
 // LoadWatcherByName returns the watcher with the given name, or nil if not found.

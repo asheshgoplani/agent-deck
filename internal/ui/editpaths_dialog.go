@@ -229,6 +229,16 @@ func (d *EditPathsDialog) Update(msg tea.Msg) (*EditPathsDialog, tea.Cmd) {
 			}
 			return d, nil
 
+		case "ctrl+w":
+			// Path-aware backward word delete; default bubbles behaviour
+			// wipes the whole field for spaceless paths. Issue #896.
+			deleteWordBackwardPath(&d.pathInput)
+			d.pathCycler.Reset()
+			d.suggestionNavigated = false
+			d.pathSuggestionCursor = 0
+			d.filterPathSuggestions()
+			return d, nil
+
 		default:
 			d.pathInput, _ = d.pathInput.Update(msg)
 			d.pathCycler.Reset()

@@ -121,7 +121,7 @@ func TestRecordOptOut(t *testing.T) {
 		ShownCount:       0,
 		MaxShows:         3,
 	}
-	feedback.RecordOptOut(st)
+	feedback.RecordOptOut(st, "1.5.1")
 	require.NoError(t, feedback.SaveState(st))
 
 	loaded, err := feedback.LoadState()
@@ -233,4 +233,92 @@ func TestSend_Headless(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, clipboardCalled, "clipboard must be called in headless mode")
 	require.False(t, browserCalled, "browser must NOT be called in headless mode")
+}
+
+// TestUpgradeFeedback_ShownPerMajorVersion_RegressionFor967 pins the fix for
+// issue #967: opting out of the upgrade feedback dialog at one major.minor
+// release ("1.9.5") must NOT silence the dialog forever. When the user upgrades
+// to the next release series ("1.10.0"), the dialog must show again so they get
+// the chance to comment on the new version's prompt.
+//
+// Pre-#967 behavior: RecordOptOut flipped FeedbackEnabled=false permanently,
+// gating every future ShouldShow call regardless of the version bump.
+// Post-#967 behavior: RecordOptOut records the major.minor at which the user
+// dismissed; ShouldShow only honors the opt-out while the current version is
+// still on that same series.
+func TestUpgradeFeedback_ShownPerMajorVersion_RegressionFor967(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Seed the state so pacing gates pass — the test is about version-scoped
+	// opt-out, not pacing.
+	st := oldShouldShowBypass(&feedback.State{
+		LastRatedVersion: "",
+		FeedbackEnabled:  true,
+		ShownCount:       0,
+		MaxShows:         3,
+	})
+
+	// Step 1: user is on v1.9.5 and dismisses the feedback prompt.
+	feedback.RecordOptOut(st, "1.9.5")
+	require.NoError(t, feedback.SaveState(st))
+
+	loaded, err := feedback.LoadState()
+	require.NoError(t, err)
+	require.False(t, feedback.ShouldShow(loaded, "1.9.5", time.Now()),
+		"on the same release series the opt-out must still suppress the dialog")
+
+	// Step 2: agent-deck is upgraded to v1.10.0 (new release series).
+	// The per-major-series opt-out should be cleared and the dialog should show.
+	require.True(t, feedback.ShouldShow(loaded, "1.10.0", time.Now()),
+		"after the release-series bump the opt-out must expire and the dialog must show again (#967)")
+}
+
+// TestUpgradeFeedback_LegacyForeverOptOut_MigratesGracefully pins the migration
+// requirement from #967: existing state files that have FeedbackEnabled=false
+// but no OptOutVersion (written before this fix) must be treated as
+// "dismissed at the current release series" — i.e. they continue to suppress
+// the dialog on the user's current version, but a future release-series bump
+// re-shows it. They must NOT be treated as forever-silent.
+//
+// Production wiring runs MigrateLegacyOptOut from the TUI launch path
+// (cmd/agent-deck/main.go) right after LoadState — this test mirrors that
+// shape so the contract is pinned at the package boundary.
+func TestUpgradeFeedback_LegacyForeverOptOut_MigratesGracefully(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Legacy state: FeedbackEnabled=false, no OptOutVersion. This is what a
+	// pre-#967 user has on disk after clicking "no thanks" once.
+	st := oldShouldShowBypass(&feedback.State{
+		LastRatedVersion: "",
+		FeedbackEnabled:  false,
+		ShownCount:       0,
+		MaxShows:         3,
+	})
+	require.NoError(t, feedback.SaveState(st))
+
+	// First TUI launch on a binary that ships #967. The migration anchors
+	// the opt-out at the currently-running release series.
+	loaded, err := feedback.LoadState()
+	require.NoError(t, err)
+	require.True(t, feedback.MigrateLegacyOptOut(loaded, "1.9.5"),
+		"first encounter with legacy state must migrate (and signal that state needs to be saved)")
+	require.NoError(t, feedback.SaveState(loaded))
+
+	// At the current version the migrated opt-out should still suppress the
+	// dialog — users must not be re-prompted immediately after upgrading the
+	// CLI itself.
+	require.False(t, feedback.ShouldShow(loaded, "1.9.5", time.Now()),
+		"migrated legacy opt-out must still suppress the dialog at the migration-anchor release series")
+
+	// But a release-series bump must re-show it — this is the whole point of #967.
+	require.True(t, feedback.ShouldShow(loaded, "1.10.0", time.Now()),
+		"migrated legacy opt-out must expire on the next release-series bump (#967)")
+
+	// Idempotence: re-running migration must be a no-op once OptOutVersion
+	// is set — otherwise a later launch would silently re-anchor the opt-out
+	// at a newer series and re-silence the user.
+	require.False(t, feedback.MigrateLegacyOptOut(loaded, "1.10.0"),
+		"migration must be idempotent once OptOutVersion is set")
 }

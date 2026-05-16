@@ -101,16 +101,22 @@ func handleSessionRemove(profile string, args []string) {
 		pruneSessionWorktree(inst)
 	}
 
-	if err := storage.DeleteInstance(inst.ID); err != nil {
+	// v1.9.1 (#909): RemoveSessionAndVerify replaces the
+	// DeleteInstance+saveSessionData pair. The old pair would silently
+	// resurrect the row when a concurrent rewriter loaded the instance
+	// list before our DELETE — exactly the "session remove --force
+	// reports success but row stays" failure noted in the bug report.
+	instances = dropInstance(instances, inst.ID)
+	groupTree := session.NewGroupTreeWithGroups(instances, groups)
+	if err := storage.RemoveSessionAndVerify(inst.ID, instances, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to remove session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
-	instances = dropInstance(instances, inst.ID)
-	if err := saveSessionData(storage, instances, groups); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
-	}
+	// Best-effort transition-notifier cleanup for issue #910 — see the
+	// matching block in handleRemove for rationale.
+	_, _ = session.SweepInboxesForChildSession(inst.ID)
+	_, _ = session.RemoveNotifyStateRecord(inst.ID)
 
 	out.Success(fmt.Sprintf("Removed session: %s", inst.Title), map[string]interface{}{
 		"success": true,
@@ -135,6 +141,7 @@ func removeAllErrored(
 ) {
 	var removed []map[string]interface{}
 	remaining := instances[:0]
+	var removedIDs []string
 	for _, inst := range instances {
 		if inst.Status == session.StatusError {
 			// Synchronously kill the tmux scope + pane processes before
@@ -150,14 +157,30 @@ func removeAllErrored(
 				out.Error(fmt.Sprintf("failed to remove session %s: %v", inst.ID, err), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
+			removedIDs = append(removedIDs, inst.ID)
 			removed = append(removed, map[string]interface{}{"id": inst.ID, "title": inst.Title})
 			continue
 		}
 		remaining = append(remaining, inst)
 	}
-	if err := saveSessionData(storage, remaining, groups); err != nil {
+	// v1.9.1 (#909): persist groups WITHOUT rewriting the instances table.
+	// Same rationale as RemoveSessionAndVerify — SaveWithGroups's INSERT OR
+	// REPLACE can resurrect a row that another writer (or our own earlier
+	// DeleteInstance call) just removed. Then verify each removed row is
+	// actually gone; on resurrection, re-issue the targeted DELETE.
+	groupTree := session.NewGroupTreeWithGroups(remaining, groups)
+	if err := storage.SaveGroupsOnly(groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+	for _, id := range removedIDs {
+		exists, _ := storage.InstanceExists(id)
+		if exists {
+			_ = storage.DeleteInstance(id)
+		}
+		// Best-effort transition-notifier cleanup (issue #910).
+		_, _ = session.SweepInboxesForChildSession(id)
+		_, _ = session.RemoveNotifyStateRecord(id)
 	}
 	out.Success(fmt.Sprintf("Removed %d errored session(s)", len(removed)), map[string]interface{}{
 		"success": true,

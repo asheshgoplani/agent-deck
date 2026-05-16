@@ -2,15 +2,20 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
+
+var hookStatusLog = logging.ForComponent(logging.CompWeb)
 
 const (
 	MenuItemTypeGroup   = "group"
@@ -168,6 +173,15 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 
 	entries, err := os.ReadDir(hooksDir)
 	if err != nil {
+		// ENOENT is benign — directory simply hasn't been created yet
+		// because no hook event has fired in this profile. Anything else
+		// (perm denied, IO error) is a real signal worth surfacing.
+		if !errors.Is(err, os.ErrNotExist) {
+			hookStatusLog.Warn("hook_status_dir_read_failed",
+				slog.String("dir", hooksDir),
+				slog.String("error", err.Error()),
+			)
+		}
 		return hooksByInstance
 	}
 
@@ -183,11 +197,21 @@ func defaultLoadHookStatuses() map[string]*session.HookStatus {
 
 		raw, err := os.ReadFile(filepath.Join(hooksDir, entry.Name()))
 		if err != nil {
+			hookStatusLog.Warn("hook_status_read_failed",
+				slog.String("file", entry.Name()),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 			continue
 		}
 
 		var parsed rawHookStatus
 		if err := json.Unmarshal(raw, &parsed); err != nil {
+			hookStatusLog.Warn("hook_status_unmarshal_failed",
+				slog.String("file", entry.Name()),
+				slog.String("instance", instanceID),
+				slog.String("error", err.Error()),
+			)
 			continue
 		}
 		if parsed.Status == "" {

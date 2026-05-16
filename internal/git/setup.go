@@ -102,6 +102,10 @@ func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, s
 		return nil, err
 	}
 
+	if inclErr := ProcessWorktreeInclude(repoDir, worktreePath, stderr); inclErr != nil {
+		fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
+	}
+
 	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
 	if scriptPath == "" {
 		return nil, nil

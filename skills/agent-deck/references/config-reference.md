@@ -13,6 +13,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[copilot] Section](#copilot-section)
 - [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
+- [[worktree] Section](#worktree-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
@@ -168,6 +169,7 @@ Codex CLI integration settings.
 
 ```toml
 [codex]
+command = "codex"  # Codex CLI command or alias
 yolo_mode = true   # Enable --yolo (bypass approvals and sandbox)
 env_file = "~/.codex.env"
 command = "codex"
@@ -175,6 +177,7 @@ command = "codex"
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `command` | string | `codex` | Codex CLI command or alias to launch built-in Codex sessions. Examples: `codex-v2`, `CODEX_HOME=~/.codex-work codex`. |
 | `yolo_mode` | bool | `false` | Maps to `codex --yolo` (`--dangerously-bypass-approvals-and-sandbox`). Can be overridden per-session. |
 | `env_file` | string | `""` | A .env file sourced for Codex sessions only. See [Path Resolution](#path-resolution). |
 | `command` | string | `"codex"` | Override the binary/invocation. |
@@ -213,6 +216,8 @@ yolo_mode = false
 
 Status detection: process-alive/dead only. Content-sniffing planned for future release.
 
+When using a different Codex home, prefer an inline command such as `CODEX_HOME=~/.codex-work codex` or export `CODEX_HOME` before starting agent-deck. Shell aliases are allowed, but agent-deck cannot infer `CODEX_HOME` hidden inside an alias for resume-file discovery.
+
 ## [docker] Section
 
 Docker sandbox settings. Run sessions inside isolated containers. Toggle per-session when creating, or set defaults here. Access in TUI via `S` (Settings).
@@ -239,6 +244,55 @@ volume_ignores = []            # Directories to exclude from project mount
 | `auto_cleanup` | bool | `true` | Remove sandbox containers when sessions are killed. |
 | `environment` | array | `[]` | Host environment variable names to forward into containers. |
 | `volume_ignores` | array | `[]` | Directories to exclude from the project bind mount (e.g. `["node_modules", ".git"]`). |
+
+## [worktree] Section
+
+Git worktree settings. Worktrees allow creating isolated working directories for branches, so each session gets its own checkout.
+
+```toml
+[worktree]
+default_enabled = false                              # Pre-check "Create in worktree" in dialogs
+default_location = "sibling"                         # "sibling", "subdirectory", or custom path
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"  # Custom path (overrides default_location)
+branch_prefix = "feature/"                           # Prefix for branch names ("" to disable)
+auto_cleanup = true                                  # Remove worktree when session is deleted
+setup_timeout_seconds = 60                           # Timeout for .agent-deck/worktree-setup.sh
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `default_enabled` | bool | `false` | Pre-check "Create in worktree" in new-session and fork dialogs. |
+| `default_location` | string | `"sibling"` | Where to create worktrees: `"sibling"` (next to repo), `"subdirectory"` (inside `.worktrees/`), or a custom path (e.g., `"~/worktrees"`) creating `<path>/<repo_name>/<branch>`. Ignored when `path_template` is set. |
+| `path_template` | string | none | Custom path template. Overrides `default_location`. Variables: `{repo-name}`, `{repo-root}`, `{session-id}`, `{branch}` (sanitized, human-friendly), `{branch-escaped}` (URL-escaped, collision-resistant). |
+| `branch_prefix` | string | `"feature/"` | Prefix prepended to branch names. Supports environment variable expansion (e.g., `"$USER/"`). Set to `""` to disable. Won't double-prepend if the branch already starts with the prefix. |
+| `auto_cleanup` | bool | `false` | Remove worktree directory when the session is deleted. |
+| `setup_timeout_seconds` | int | `60` | Max seconds for `.agent-deck/worktree-setup.sh` to run. Set to `0` for unlimited. |
+
+### Path template examples
+
+```toml
+# Sibling directories (default behavior)
+path_template = "../worktrees/{repo-name}/{branch}"
+
+# Central location under home
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch}"
+
+# Collision-resistant (useful with many similar branch names)
+path_template = "~/.agent-deck/worktrees/{repo-name}/{branch-escaped}"
+```
+
+### Branch prefix examples
+
+```toml
+# Default: prefix with "feature/"
+branch_prefix = "feature/"        # "my-session" -> "feature/my-session"
+
+# Username prefix (env var expansion)
+branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
+
+# No prefix (just the session name)
+branch_prefix = ""                # "my-session" -> "my-session"
+```
 
 ## [logs] Section
 
@@ -536,6 +590,7 @@ env_file = "~/.gemini.env"
 env_file = "~/.opencode.env"
 
 [codex]
+command = "codex"
 yolo_mode = false
 env_file = "~/.codex.env"
 
@@ -550,6 +605,11 @@ yolo_mode = false
 [docker]
 default_enabled = false
 mount_ssh = true
+
+[worktree]
+default_location = "sibling"
+auto_cleanup = true
+branch_prefix = "$USER/"
 
 [logs]
 max_size_mb = 10

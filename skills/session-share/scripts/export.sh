@@ -127,7 +127,12 @@ while IFS= read -r line || [ -n "$line" ]; do
 
         # Strip thinking blocks if needed
         if [ "$INCLUDE_THINKING" = "false" ]; then
-            filtered=$(echo "$processed_line" | jq -c 'if .message.content then .message.content = [.message.content[] | select(.type != "thinking")] else . end' 2>/dev/null)
+            # Real Claude Code JSONL has records where message.content is a
+            # plain string (slash-command output, local-command caveats, etc.).
+            # Only iterate `.message.content[]` when it's an array, otherwise
+            # pass the record through unchanged — there are no thinking blocks
+            # in a string payload to strip. (#895)
+            filtered=$(echo "$processed_line" | jq -c 'if (.message.content | type) == "array" then .message.content |= map(select(.type != "thinking")) else . end' 2>/dev/null)
             if [ -n "$filtered" ]; then
                 processed_line="$filtered"
             fi

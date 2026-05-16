@@ -239,21 +239,45 @@ func TestSendWithRetryTarget_StopsWhenActive(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryTarget_WaitingWithoutPasteMarkerReturnsSuccess(t *testing.T) {
+// TestSendWithRetryTarget_WaitingWithoutPasteMarker_ErrorsUnderVerifyDelivery
+// is the rewrite of the prior _WaitingWithoutPasteMarkerReturnsSuccess
+// canonization test. The legacy assertion (`err == nil` for waiting-only
+// pane with no marker, no active) encoded the exact silent-drop contract
+// that issue #876 fixed: the impl correctly errors now, but with that test
+// asserting nil any future fix that removes the bug would have broken the
+// suite. Under the post-#876 contract (defaultSendOptions has
+// verifyDelivery=true), absence of any positive evidence MUST surface as an
+// error. The behavioral state-machine assertion (4 aggressive nudges) is
+// preserved because the loop still runs to budget exhaustion before the
+// verifyDelivery check fires.
+func TestSendWithRetryTarget_WaitingWithoutPasteMarker_ErrorsUnderVerifyDelivery(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting", "waiting", "waiting", "waiting"},
 		panes:    []string{"", "", "", ""},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 4, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: expected delivery-verification error when " +
+			"the pane never showed any marker, the message body never " +
+			"surfaced, and the agent never transitioned to 'active'")
 	}
-	// With aggressive early retry (retry < 5), all 4 iterations nudge Enter.
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
+	}
+	// State-machine guard: with aggressive early retry (retry < 5), all 4
+	// iterations nudge Enter even though the run ultimately errors.
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
 		t.Fatalf("expected 4 aggressive early SendEnter calls for waiting-without-active state, got %d", got)
 	}
 }
 
+// TestSendWithRetryTarget_RetriesOnUnsentPasteMarker locks in the post-#876
+// contract for the unsent-paste-marker evidence axis: the marker IS positive
+// evidence the keystrokes reached the inner agent, so verifyDelivery must
+// accept it and return nil. The behavioral state-machine assertion (5
+// SendEnter retries) is preserved.
 func TestSendWithRetryTarget_RetriesOnUnsentPasteMarker(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting", "waiting", "waiting", "waiting", "waiting"},
@@ -265,15 +289,21 @@ func TestSendWithRetryTarget_RetriesOnUnsentPasteMarker(t *testing.T) {
 			"[Pasted text #1 +89 lines]",
 		},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 5, checkDelay: 0})
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("verifyDelivery must accept persistent unsent-marker as evidence: %v", err)
 	}
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 5 {
 		t.Fatalf("expected 5 SendEnter calls when unsent marker persists, got %d", got)
 	}
 }
 
+// TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting locks in the
+// post-#876 contract: an active-status transition (and a paste marker en
+// route) IS positive evidence, so verifyDelivery returns nil. State-machine
+// assertion preserved.
 func TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"waiting", "waiting", "active"},
@@ -283,9 +313,11 @@ func TestSendWithRetryTarget_DetectsPasteMarkerAfterInitialWaiting(t *testing.T)
 			"",
 		},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 5, checkDelay: 0})
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+	})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("verifyDelivery must accept paste-marker→active as evidence: %v", err)
 	}
 	// 2 calls: retry 0 fires early aggressive nudge (waiting, no active seen),
 	// retry 1 fires from paste marker detection.
@@ -329,16 +361,29 @@ func TestSendWithRetryTarget_RetriesWhenWrappedComposerPromptStillHasMessage(t *
 	}
 }
 
-func TestSendWithRetryTarget_AmbiguousStateUsesLimitedFallbackRetries(t *testing.T) {
+// TestSendWithRetryTarget_AmbiguousStateFallback_ErrorsUnderVerifyDelivery is
+// the rewrite of _AmbiguousStateUsesLimitedFallbackRetries. Ambiguous status
+// ("error" returned by tmux GetStatus, not the StatusError surfaced to UI)
+// with an empty pane is the canonical silent-drop shape: zero positive
+// evidence across all four axes (no active, no marker, no message-in-pane,
+// no successful resend). Under verifyDelivery this MUST error. State-machine
+// assertion (4 fallback nudges) preserved.
+func TestSendWithRetryTarget_AmbiguousStateFallback_ErrorsUnderVerifyDelivery(t *testing.T) {
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error"},
 		panes:    []string{"", "", "", ""},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 4, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 4, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: ambiguous-status loop with no evidence must surface an error")
 	}
-	// Ambiguous-state Enter budget increased from 2 to 4; all 4 retries send Enter.
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
+	}
+	// State-machine guard: ambiguous-state Enter budget is 4; all 4 retries
+	// nudge Enter even though the run errors at the end.
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
 		t.Fatalf("expected 4 fallback SendEnter calls (increased budget), got %d", got)
 	}
@@ -357,9 +402,11 @@ func TestSendWithRetryTarget_ReturnsErrorWhenInitialSendFails(t *testing.T) {
 	}
 }
 
+// TestSendWithRetryTarget_AggressiveEarlyEnterNudge guards the
+// retry-cadence state machine (5 early + every-2nd thereafter) AND the
+// post-#876 silent-drop contract. Status stays "waiting" with empty pane
+// throughout: verifyDelivery must error because nothing constitutes evidence.
 func TestSendWithRetryTarget_AggressiveEarlyEnterNudge(t *testing.T) {
-	// Verify that SendEnter is called on every iteration for the first 5
-	// retries when in waiting-without-active state, then every 2nd iteration.
 	mock := &mockSendRetryTarget{
 		statuses: []string{
 			"waiting", "waiting", "waiting", "waiting", "waiting", // retries 0-4: all nudge
@@ -367,30 +414,41 @@ func TestSendWithRetryTarget_AggressiveEarlyEnterNudge(t *testing.T) {
 		},
 		panes: []string{"", "", "", "", "", "", "", "", "", ""},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 10, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 10, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: 10 waiting-no-evidence checks must error under verifyDelivery")
+	}
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
 	// First 5 retries (0-4): all nudge = 5 calls
 	// Retries 5-9: retry%2==0 means retries 6, 8 nudge = 2 calls
 	// Total: 5 + 2 = 7
-	// But wait: retry 5 is not < 5 and 5%2 != 0, so no nudge.
-	// retry 6: 6%2 == 0, nudge. retry 7: no. retry 8: nudge. retry 9: no.
-	// Total: 5 (early) + 2 (even from 5-9) = 7
+	// (retry 5 is not < 5 and 5%2 != 0; retry 7, 9 likewise skip.)
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 7 {
 		t.Fatalf("expected 7 SendEnter calls (5 early + 2 even), got %d", got)
 	}
 }
 
+// TestSendWithRetryTarget_IncreasedAmbiguousBudget guards the
+// ambiguous-status Enter budget (4, up from 2) AND the post-#876 silent-drop
+// contract. With "error" GetStatus and empty panes, no evidence axis fires —
+// verifyDelivery must error.
 func TestSendWithRetryTarget_IncreasedAmbiguousBudget(t *testing.T) {
-	// Verify that ambiguous-state Enter budget is 4 (up from 2).
 	mock := &mockSendRetryTarget{
 		statuses: []string{"error", "error", "error", "error", "error"},
 		panes:    []string{"", "", "", "", ""},
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: 5, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: 5, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: ambiguous-only run with no evidence must error under verifyDelivery")
+	}
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
 	// Retries 0, 1, 2, 3 are < 4 so SendEnter is called 4 times; retry 4 is not.
 	if got := atomic.LoadInt32(&mock.sendEnterCalls); got != 4 {
@@ -431,10 +489,17 @@ func TestSendWithRetryTarget_FullResendAfterMessageLost(t *testing.T) {
 	}
 }
 
+// TestSendWithRetryTarget_FullResendMaxLimit guards the full-resend cap (3)
+// AND the post-#876 silent-drop contract. Note: the impl deliberately does
+// NOT count a successful Ctrl+C+resend attempt as positive evidence —
+// `sawDeliveryEvidence` is intentionally NOT set on a resend (session_cmd.go
+// "intentionally NOT setting sawDeliveryEvidence here" comment). So even
+// after 3 successful resends, if the agent never transitions to active and
+// no marker appears, verifyDelivery must error. State-machine assertions
+// (3 Ctrl+C, 4 SendKeysAndEnter) preserved.
 func TestSendWithRetryTarget_FullResendMaxLimit(t *testing.T) {
-	// Verify that full resends are capped at maxFullResends (3).
-	// With fullResendThreshold=8, we need at least 8*4=32 retries
-	// to trigger all 3 resends plus some trailing checks.
+	// With fullResendThreshold=8 we need at least 8*4=32 retries to trigger
+	// all 3 resends plus some trailing checks.
 	n := 40
 	statuses := make([]string, n)
 	panes := make([]string, n)
@@ -446,9 +511,15 @@ func TestSendWithRetryTarget_FullResendMaxLimit(t *testing.T) {
 		statuses: statuses,
 		panes:    panes,
 	}
-	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{maxRetries: n, checkDelay: 0})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	err := sendWithRetryTarget(mock, "hello", false, sendRetryOptions{
+		maxRetries: n, checkDelay: 0, verifyDelivery: true,
+	})
+	if err == nil {
+		t.Fatal("issue #876: 40 waiting checks with 3 unacknowledged resends and no " +
+			"evidence axis firing must error under verifyDelivery")
+	}
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
 	}
 	// Should have exactly 3 full resends (the cap)
 	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 3 {
@@ -591,11 +662,13 @@ func TestAwaitComposerReadyBestEffort_ImmediateReturnWhenAlreadyReady(t *testing
 	}
 }
 
+// TestSendWithRetryTarget_NoWaitDoesNotResend guards the #479 contract
+// (maxFullResends=-1 → never Ctrl+C + re-send, exactly one initial send) AND
+// the post-#876 silent-drop contract. With waiting-only state and no
+// evidence, verifyDelivery must error — note this is the same shape that
+// noWaitSendOptions() now uses in production (see
+// TestNoWaitSendOptions_EnablesVerifyDelivery for that contract).
 func TestSendWithRetryTarget_NoWaitDoesNotResend(t *testing.T) {
-	// Regression test for issue #479: --no-wait sends message twice.
-	// When maxFullResends is negative (disabled), the verification loop
-	// must never Ctrl+C + re-send even if the session stays in "waiting"
-	// past the fullResendThreshold window.
 	n := 12
 	statuses := make([]string, n)
 	panes := make([]string, n)
@@ -611,17 +684,55 @@ func TestSendWithRetryTarget_NoWaitDoesNotResend(t *testing.T) {
 		maxRetries:     n,
 		checkDelay:     0,
 		maxFullResends: -1, // disabled, as used by --no-wait
+		verifyDelivery: true,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("issue #876: --no-wait shape with no evidence must error under verifyDelivery")
 	}
+	if !strings.Contains(err.Error(), "876") {
+		t.Errorf("expected error to reference issue #876, got: %v", err)
+	}
+	// #479 regression guard: never Ctrl+C + resend on the --no-wait path.
 	if got := atomic.LoadInt32(&mock.sendCtrlCCalls); got != 0 {
 		t.Fatalf("expected 0 SendCtrlC calls (resend disabled), got %d", got)
 	}
-	// Only the initial send, no resends
 	if got := atomic.LoadInt32(&mock.sendKeysCalls); got != 1 {
 		t.Fatalf("expected 1 SendKeysAndEnter call (initial only), got %d", got)
 	}
+}
+
+// TestExecuteDraft_SendsKeysWithoutEnter verifies --draft calls SendKeysChunked
+// with the message and does not press Enter.
+func TestExecuteDraft_SendsKeysWithoutEnter(t *testing.T) {
+	mock := &mockDraftSender{}
+	err := executeDraft(mock, "my draft message")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mock.calledWith != "my draft message" {
+		t.Errorf("expected SendKeysChunked called with %q, got %q", "my draft message", mock.calledWith)
+	}
+}
+
+func TestExecuteDraft_PropagatesError(t *testing.T) {
+	mock := &mockDraftSender{err: fmt.Errorf("tmux send failed")}
+	err := executeDraft(mock, "hello")
+	if err == nil {
+		t.Fatal("expected error from SendKeysChunked, got nil")
+	}
+	if !strings.Contains(err.Error(), "tmux send failed") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+type mockDraftSender struct {
+	calledWith string
+	err        error
+}
+
+func (m *mockDraftSender) SendKeysChunked(keys string) error {
+	m.calledWith = keys
+	return m.err
 }
 
 // skipIfNoTmuxServer skips the test if tmux is not available or not running.

@@ -66,6 +66,17 @@ jobs:
         env:
           GOTOOLCHAIN: go1.24.0
 
+      - name: Build headless test server
+        # The main `agent-deck web` subcommand falls through to a Bubble Tea
+        # TUI launch, which under `&` background + no-TTY fails with
+        # "cancelreader: add reader to epoll interest list" and kills the
+        # process before /healthz can respond. `agent-deck-test-server` is
+        # the TUI-less entry point built for exactly this case.
+        # See cmd/agent-deck-test-server/main.go and issue #943.
+        run: go build -o ./build/agent-deck-test-server ./cmd/agent-deck-test-server
+        env:
+          GOTOOLCHAIN: go1.24.0
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -82,8 +93,11 @@ jobs:
 
       - name: Start test server
         run: |
-          env -i HOME=$HOME PATH=$PATH TERM=xterm-256color AGENTDECK_PROFILE=_ci_weekly \
-            ./build/agent-deck web --listen 127.0.0.1:18420 --token test &
+          # Use the dedicated TUI-less test-server binary. The previous
+          # `agent-deck web` invocation tripped Bubble Tea on a non-TTY
+          # stdin and killed the process before /healthz answered (#943).
+          AGENTDECK_PROFILE=_ci_weekly \
+            ./build/agent-deck-test-server -listen 127.0.0.1:18420 -profile _ci_weekly &
           SERVER_PID=$!
           echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
           # Wait for /healthz (up to 30 seconds)

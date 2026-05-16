@@ -83,6 +83,15 @@ type TransitionNotifier struct {
 	// inject a deterministic stub.
 	availability targetAvailabilityResolver
 
+	// childPresence reports whether the named child session still exists in
+	// the registry. Used by DrainRetryQueueWithResolver to drop queued
+	// events whose child has been rm'd between enqueue and drain — issue
+	// #962. Nil means no filter (preserved for tests that build the
+	// notifier via a bare struct literal); production sets it via
+	// NewTransitionNotifier so the daemon's drain loop never replays
+	// events for vanished children.
+	childPresence targetAvailabilityResolver
+
 	mu    sync.Mutex
 	state transitionNotifyState
 
@@ -149,6 +158,7 @@ func NewTransitionNotifier() *TransitionNotifier {
 		terminatedFingerprints: map[string]bool{},
 		stopCh:                 make(chan struct{}),
 	}
+	n.childPresence = n.liveChildPresence
 	n.loadState()
 	n.loadQueue()
 	return n
@@ -703,10 +713,22 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 	var keep []deferredQueueEntry
 	var toDispatch []deferredQueueEntry
 	var toExpire []deferredQueueEntry
+	var toDropRemoved []deferredQueueEntry
 
 	for _, entry := range snapshot {
 		if entry.Event.Profile != profile {
 			keep = append(keep, entry)
+			continue
+		}
+		// Issue #962: drop events whose child has been removed from the
+		// registry between enqueue and drain. The rm path (issue #910)
+		// sweeps the inbox and dedup ledger but not this queue file, so
+		// without this filter the daemon redispatches stale child events
+		// on every poll until the queue file is hand-edited. Done BEFORE
+		// the age-out check so we don't emit "expired" missed-log lines
+		// for sessions that simply no longer exist.
+		if n.childPresence != nil && !n.childPresence(profile, entry.Event.ChildSessionID) {
+			toDropRemoved = append(toDropRemoved, entry)
 			continue
 		}
 		expired := now.Sub(entry.FirstDeferredAt) > defaultQueueMaxAge ||
@@ -723,6 +745,9 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 		toDispatch = append(toDispatch, entry)
 	}
 
+	for _, entry := range toDropRemoved {
+		n.logMissed(entry.Event, "child_removed_from_registry")
+	}
 	for _, entry := range toExpire {
 		n.logMissed(entry.Event, "expired")
 	}
@@ -758,6 +783,37 @@ func (n *TransitionNotifier) liveTargetAvailability(profile, targetID string) bo
 		}
 		_ = inst.UpdateStatus()
 		return inst.GetStatusThreadSafe() != StatusRunning
+	}
+	return false
+}
+
+// liveChildPresence reports whether childID still exists in the registry for
+// the given profile. Issue #962: the drain loop filter that prevents the
+// notifier from replaying transition events for sessions removed via
+// `agent-deck rm` between the enqueue and the next drain pass.
+//
+// Fail-open on storage errors: if the SQLite file is missing, locked, or
+// the load returns an error, return true so a transient outage doesn't
+// silently drop legitimate events. The trade-off is that during a real
+// outage we may briefly replay events; the alternative (fail-closed) would
+// be a silent-loss path that's strictly worse than the bug we're fixing.
+func (n *TransitionNotifier) liveChildPresence(profile, childID string) bool {
+	if strings.TrimSpace(childID) == "" {
+		return false
+	}
+	storage, err := NewStorageWithProfile(profile)
+	if err != nil {
+		return true
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return true
+	}
+	for _, inst := range instances {
+		if inst.ID == childID {
+			return true
+		}
 	}
 	return false
 }

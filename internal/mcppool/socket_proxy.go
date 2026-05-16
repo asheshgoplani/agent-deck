@@ -204,6 +204,16 @@ func (p *SocketProxy) Start() error {
 		return nil
 	}
 
+	// Validate the inner MCP command exists before wrapping with
+	// systemd-run. When isolation is on, exec.Cmd.Start() runs
+	// systemd-run (which always exists) and the inner exec failure
+	// surfaces asynchronously inside the scope — Start() would
+	// otherwise return nil for a bogus command. (#902 regression;
+	// v1.9 release blocker.)
+	if _, err := exec.LookPath(p.command); err != nil {
+		return err
+	}
+
 	logDir := filepath.Join(os.Getenv("HOME"), ".agent-deck", "logs", "mcppool")
 	_ = os.MkdirAll(logDir, 0700)
 	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s_socket.log", p.name))
@@ -214,7 +224,26 @@ func (p *SocketProxy) Start() error {
 	}
 	p.logWriter = logWriter
 
-	p.mcpProcess = exec.CommandContext(p.ctx, p.command, p.args...)
+	// If Start() returns an error after this point, the caller has no
+	// Stop()-driven cleanup path, so logWriter would leak its FD on every
+	// failed start. Track success so the deferred fallback closes the
+	// writer only on the error paths. (V1.9 T5, critical-hunt #3.)
+	startOK := false
+	defer func() {
+		if !startOK {
+			_ = logWriter.Close()
+			p.logWriter = nil
+		}
+	}()
+
+	launchCmd, launchArgs, scopeWrapped, scopeUnit := wrapMCPCommand(
+		fmt.Sprintf("%d", os.Getpid()), p.name, p.command, p.args)
+	p.mcpProcess = exec.CommandContext(p.ctx, launchCmd, launchArgs...)
+	if scopeWrapped {
+		proxyLog.Info("mcp_isolation_scope",
+			slog.String("mcp", p.name),
+			slog.String("unit", scopeUnit))
+	}
 	cmdEnv := os.Environ()
 	for k, v := range p.env {
 		// Reject environment variables that could be used for code injection.
@@ -282,6 +311,7 @@ func (p *SocketProxy) Start() error {
 	p.statusMu.Lock()
 	p.successSince = time.Now()
 	p.statusMu.Unlock()
+	startOK = true
 	return nil
 }
 

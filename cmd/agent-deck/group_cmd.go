@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,34 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// groupVerbCanonical maps a user-supplied group subcommand verb to its
+// canonical form, accepting common aliases. Returns ok=false if unknown.
+//
+// Issue #974: users coming from filesystem/`rm` vocabulary expect
+// `group remove` to work alongside `group delete` / `group rm`. We accept
+// all three so the user doesn't burn a round-trip guessing the verb.
+func groupVerbCanonical(verb string) (canonical string, ok bool) {
+	switch verb {
+	case "list", "ls":
+		return "list", true
+	case "create", "new":
+		return "create", true
+	case "update", "set":
+		return "update", true
+	case "delete", "rm", "remove":
+		return "delete", true
+	case "move", "mv":
+		return "move", true
+	case "change", "reparent":
+		return "change", true
+	case "reorder", "sort":
+		return "reorder", true
+	case "help", "--help", "-h":
+		return "help", true
+	}
+	return "", false
+}
 
 // handleGroup dispatches group subcommands
 func handleGroup(profile string, args []string) {
@@ -17,29 +46,31 @@ func handleGroup(profile string, args []string) {
 		return
 	}
 
-	switch args[0] {
-	case "list", "ls":
-		handleGroupList(profile, args[1:])
-	case "create", "new":
-		handleGroupCreate(profile, args[1:])
-	case "update", "set":
-		handleGroupUpdate(profile, args[1:])
-	case "delete", "rm":
-		handleGroupDelete(profile, args[1:])
-	case "move", "mv":
-		handleGroupMove(profile, args[1:])
-	case "change", "reparent":
-		handleGroupChange(profile, args[1:])
-	case "reorder", "sort":
-		handleGroupReorder(profile, args[1:])
-	case "help", "--help", "-h":
-		printGroupHelp()
-		return
-	default:
+	canonical, ok := groupVerbCanonical(args[0])
+	if !ok {
 		fmt.Printf("Unknown group command: %s\n", args[0])
 		fmt.Println()
 		printGroupHelp()
 		os.Exit(1)
+	}
+
+	switch canonical {
+	case "list":
+		handleGroupList(profile, args[1:])
+	case "create":
+		handleGroupCreate(profile, args[1:])
+	case "update":
+		handleGroupUpdate(profile, args[1:])
+	case "delete":
+		handleGroupDelete(profile, args[1:])
+	case "move":
+		handleGroupMove(profile, args[1:])
+	case "change":
+		handleGroupChange(profile, args[1:])
+	case "reorder":
+		handleGroupReorder(profile, args[1:])
+	case "help":
+		printGroupHelp()
 	}
 }
 
@@ -51,7 +82,7 @@ func printGroupHelp() {
 	fmt.Println("  list              List all groups with session counts")
 	fmt.Println("  create <name>     Create a new group")
 	fmt.Println("  update <name>     Update group settings")
-	fmt.Println("  delete <name>     Delete a group")
+	fmt.Println("  delete <name>     Delete a group (aliases: rm, remove)")
 	fmt.Println("  move <id> <group> Move session to a different group")
 	fmt.Println("  change <group> [<dest>] Reparent a group (empty dest = move to root)")
 	fmt.Println("  reorder <name>    Reorder a group (--up, --down, --position N)")
@@ -315,6 +346,9 @@ func handleGroupCreate(profile string, args []string) {
 	fs := flag.NewFlagSet("group create", flag.ExitOnError)
 	parent := fs.String("parent", "", "Create as subgroup under this parent")
 	defaultPath := fs.String("default-path", "", "Default working directory for new sessions in this group")
+	// v1.9.1: -1 sentinel means "flag not set; use the GroupTree default of 1 (serial)".
+	// 0 = unlimited, 1 = serial, N>=2 = bounded.
+	maxConcurrent := fs.Int("max-concurrent", -1, "Cap on simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap; default 1)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -331,6 +365,7 @@ func handleGroupCreate(profile string, args []string) {
 		fmt.Println("  agent-deck group create mobile")
 		fmt.Println("  agent-deck group create ios --parent mobile")
 		fmt.Println("  agent-deck group create backend --default-path ~/src/backend")
+		fmt.Println("  agent-deck group create wide --max-concurrent 4")
 	}
 
 	// Reorder args: move name to end so flags are parsed correctly
@@ -388,6 +423,12 @@ func handleGroupCreate(profile string, args []string) {
 		groupTree.SetDefaultPathForGroup(fullPath, *defaultPath)
 	}
 
+	// v1.9.1: only override the GroupTree default (1) when the user passed
+	// --max-concurrent explicitly. Sentinel -1 means "flag not set".
+	if *maxConcurrent >= 0 {
+		newGroup.MaxConcurrent = *maxConcurrent
+	}
+
 	// Check if group already existed
 	existingGroup := false
 	for _, g := range groups {
@@ -405,18 +446,20 @@ func handleGroupCreate(profile string, args []string) {
 
 	if existingGroup {
 		out.Success(fmt.Sprintf("Group already exists: %s", fullPath), map[string]interface{}{
-			"success":      true,
-			"name":         newGroup.Name,
-			"path":         fullPath,
-			"default_path": groupTree.DefaultPathForGroup(fullPath),
-			"existed":      true,
+			"success":        true,
+			"name":           newGroup.Name,
+			"path":           fullPath,
+			"default_path":   groupTree.DefaultPathForGroup(fullPath),
+			"max_concurrent": newGroup.MaxConcurrent,
+			"existed":        true,
 		})
 	} else {
-		out.Success(fmt.Sprintf("Created group: %s", fullPath), map[string]interface{}{
-			"success":      true,
-			"name":         newGroup.Name,
-			"path":         fullPath,
-			"default_path": groupTree.DefaultPathForGroup(fullPath),
+		out.Success(fmt.Sprintf("Created group: %s (max_concurrent=%d)", fullPath, newGroup.MaxConcurrent), map[string]interface{}{
+			"success":        true,
+			"name":           newGroup.Name,
+			"path":           fullPath,
+			"default_path":   groupTree.DefaultPathForGroup(fullPath),
+			"max_concurrent": newGroup.MaxConcurrent,
 		})
 	}
 }
@@ -426,6 +469,9 @@ func handleGroupUpdate(profile string, args []string) {
 	fs := flag.NewFlagSet("group update", flag.ExitOnError)
 	defaultPath := fs.String("default-path", "", "Default working directory for new sessions in this group")
 	clearDefaultPath := fs.Bool("clear-default-path", false, "Clear group default working directory")
+	// v1.9.1: -1 sentinel means "flag not set; leave existing value alone".
+	// 0 = unlimited, 1 = serial, N>=2 = bounded cap.
+	maxConcurrent := fs.Int("max-concurrent", -1, "Cap simultaneous running sessions in this group (0=unlimited, 1=serial, N=cap)")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -441,6 +487,7 @@ func handleGroupUpdate(profile string, args []string) {
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck group update mobile --default-path /path/to/repo")
 		fmt.Println("  agent-deck group update mobile --clear-default-path")
+		fmt.Println("  agent-deck group update mobile --max-concurrent 2")
 	}
 
 	args = reorderGroupArgs(args)
@@ -454,12 +501,19 @@ func handleGroupUpdate(profile string, args []string) {
 	name := fs.Arg(0)
 	if name == "" {
 		out.Error("group name is required", ErrCodeNotFound)
-		fmt.Println("Usage: agent-deck group update <name> [--default-path <path>|--clear-default-path]")
+		fmt.Println("Usage: agent-deck group update <name> [--default-path <path>|--clear-default-path|--max-concurrent N]")
 		os.Exit(1)
 	}
 
-	if (*defaultPath == "" && !*clearDefaultPath) || (*defaultPath != "" && *clearDefaultPath) {
-		out.Error("specify exactly one of --default-path or --clear-default-path", ErrCodeInvalidOperation)
+	// At least one mutation must be requested.
+	pathFlagSet := *defaultPath != "" || *clearDefaultPath
+	maxFlagSet := *maxConcurrent >= 0
+	if !pathFlagSet && !maxFlagSet {
+		out.Error("specify at least one of --default-path, --clear-default-path, or --max-concurrent", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+	if *defaultPath != "" && *clearDefaultPath {
+		out.Error("--default-path and --clear-default-path are mutually exclusive", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
@@ -495,8 +549,14 @@ func handleGroupUpdate(profile string, args []string) {
 
 	if *clearDefaultPath {
 		groupTree.SetDefaultPathForGroup(groupPath, "")
-	} else {
+	} else if *defaultPath != "" {
 		groupTree.SetDefaultPathForGroup(groupPath, *defaultPath)
+	}
+
+	if maxFlagSet {
+		if g := groupTree.Groups[groupPath]; g != nil {
+			g.MaxConcurrent = *maxConcurrent
+		}
 	}
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
@@ -505,20 +565,26 @@ func handleGroupUpdate(profile string, args []string) {
 	}
 
 	currentDefaultPath := groupTree.DefaultPathForGroup(groupPath)
-	if *clearDefaultPath {
+	currentMax := 0
+	if g := groupTree.Groups[groupPath]; g != nil {
+		currentMax = g.MaxConcurrent
+	}
+	if *clearDefaultPath && !maxFlagSet {
 		out.Success(fmt.Sprintf("Cleared default path for group: %s", groupPath), map[string]interface{}{
-			"success":      true,
-			"path":         groupPath,
-			"default_path": currentDefaultPath,
-			"cleared":      true,
+			"success":        true,
+			"path":           groupPath,
+			"default_path":   currentDefaultPath,
+			"max_concurrent": currentMax,
+			"cleared":        true,
 		})
 		return
 	}
 
-	out.Success(fmt.Sprintf("Updated default path for group: %s", groupPath), map[string]interface{}{
-		"success":      true,
-		"path":         groupPath,
-		"default_path": currentDefaultPath,
+	out.Success(fmt.Sprintf("Updated group: %s", groupPath), map[string]interface{}{
+		"success":        true,
+		"path":           groupPath,
+		"default_path":   currentDefaultPath,
+		"max_concurrent": currentMax,
 	})
 }
 
@@ -646,21 +712,26 @@ func handleGroupDelete(profile string, args []string) {
 	})
 }
 
-// handleGroupMove moves a session to a different group
+// handleGroupMove moves a session to a different group, or (with --to-profile)
+// migrates every session in a group to another profile's DB (issue #928).
 func handleGroupMove(profile string, args []string) {
 	fs := flag.NewFlagSet("group move", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
+	toProfile := fs.String("to-profile", "", "Migrate every session in <group> to another profile's DB (issue #928)")
+	force := fs.Bool("force", false, "With --to-profile: migrate even if a session is running")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck group move <session-id> <group>")
+		fmt.Println("       agent-deck group move <group> --to-profile <name> [--force]")
 		fmt.Println()
-		fmt.Println("Move a session to a different group.")
+		fmt.Println("Move a session to a different group (default form), or migrate every")
+		fmt.Println("session in <group> to another profile's DB (with --to-profile).")
 		fmt.Println()
 		fmt.Println("Arguments:")
 		fmt.Println("  <session-id>   Session title, ID prefix, or path")
-		fmt.Println("  <group>        Target group path (use \"\" or root for ungrouped)")
+		fmt.Println("  <group>        Target group path (or, with --to-profile, the source group)")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -669,6 +740,7 @@ func handleGroupMove(profile string, args []string) {
 		fmt.Println("  agent-deck group move my-project work/frontend")
 		fmt.Println("  agent-deck group move my-project \"\"              # Move to root")
 		fmt.Println("  agent-deck group move my-project root            # Move to root")
+		fmt.Println("  agent-deck group move work/api --to-profile march")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -676,6 +748,22 @@ func handleGroupMove(profile string, args []string) {
 	}
 
 	out := NewCLIOutput(*jsonOutput, *quiet || *quietShort)
+
+	// Cross-profile group migration (issue #928): different argument shape.
+	if *toProfile != "" {
+		if fs.NArg() < 1 {
+			out.Error("group move --to-profile requires <group>", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		if fs.NArg() > 1 {
+			out.Error("--to-profile takes a single <group> argument", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		handleGroupMoveToProfile(profile, *toProfile, fs.Arg(0), *force, out)
+		return
+	}
 
 	sessionID := fs.Arg(0)
 	targetGroup := fs.Arg(1)
@@ -1164,4 +1252,45 @@ func handleGroupChange(profile string, args []string) {
 		"from": sourcePath,
 		"to":   newPath,
 	})
+}
+
+// handleGroupMoveToProfile implements `group move <group> --to-profile <name>`
+// (issue #928). Every session in <group> at the source profile is migrated to
+// the target profile. The group row itself is also created in the target.
+func handleGroupMoveToProfile(sourceProfile, targetProfile, groupPath string, force bool, out *CLIOutput) {
+	if groupPath == "root" || groupPath == "" {
+		groupPath = session.DefaultGroupPath
+	}
+
+	result, err := session.MigrateGroupToProfile(
+		groupPath, sourceProfile, targetProfile,
+		session.ProfileMigrateOptions{Force: force},
+	)
+	if err != nil {
+		exitCode := ErrCodeInvalidOperation
+		hint := ""
+		switch {
+		case errors.Is(err, session.ErrProfileMissing):
+			exitCode = ErrCodeNotFound
+		case errors.Is(err, session.ErrSessionRunning):
+			hint = " (stop the running session(s) first, or re-run with --force)"
+		}
+		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
+		os.Exit(1)
+	}
+
+	out.Success(
+		fmt.Sprintf("Migrated group %q: profile %s → %s (%d sessions)",
+			groupPath, sourceProfile, targetProfile, len(result.MovedSessionIDs)),
+		map[string]interface{}{
+			"success":        true,
+			"group":          groupPath,
+			"from_profile":   sourceProfile,
+			"to_profile":     targetProfile,
+			"sessions_moved": result.MovedSessionIDs,
+			"cost_events":    result.MovedCostEvents,
+			"watcher_events": result.MovedWatcherEvents,
+			"groups_created": result.CreatedGroups,
+		},
+	)
 }

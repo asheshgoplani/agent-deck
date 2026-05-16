@@ -356,8 +356,32 @@ func SaveConductorMeta(meta *ConductorMeta) error {
 	if len(meta.Env) > 0 || meta.EnvFile != "" {
 		perm = 0o600 // restrict access when env vars contain secrets
 	}
-	if err := os.WriteFile(metaPath, data, perm); err != nil {
-		return fmt.Errorf("failed to write meta.json: %w", err)
+	// Write atomically via unique temp-file + rename so a crash mid-write
+	// cannot truncate or corrupt meta.json. Same pattern used by
+	// event_writer.go, mcp_catalog.go, transition_notifier.go, and
+	// userconfig.go. We use a unique suffix (CreateTemp) so concurrent
+	// writers don't clobber each other's staging file.
+	tmpFile, err := os.CreateTemp(dir, "meta.json.tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create meta.json temp: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	if _, werr := tmpFile.Write(data); werr != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write meta.json temp: %w", werr)
+	}
+	if cerr := tmpFile.Close(); cerr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to close meta.json temp: %w", cerr)
+	}
+	if cerr := os.Chmod(tmpPath, perm); cerr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to chmod meta.json temp: %w", cerr)
+	}
+	if rerr := os.Rename(tmpPath, metaPath); rerr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename meta.json temp: %w", rerr)
 	}
 	return nil
 }

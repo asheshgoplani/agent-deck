@@ -156,7 +156,7 @@ func (d *FeedbackDialog) Update(msg tea.KeyMsg) (*FeedbackDialog, tea.Cmd) {
 			d.commentInput.SetValue("")
 			d.commentInput.Focus()
 		case "n":
-			feedback.RecordOptOut(d.state)
+			feedback.RecordOptOut(d.state, d.version)
 			_ = feedback.SaveState(d.state)
 			syncOptOutToConfig()
 			d.Hide()
@@ -195,7 +195,7 @@ func (d *FeedbackDialog) Update(msg tea.KeyMsg) (*FeedbackDialog, tea.Cmd) {
 			// Anything else — 'n', 'N', Esc, Enter, stray keys — declines.
 			// v1.7.38: decline at disclosure is a persistent opt-out, not a
 			// one-shot dismiss. Matches the CLI's "Post this? [y/N]" path.
-			feedback.RecordOptOut(d.state)
+			feedback.RecordOptOut(d.state, d.version)
 			_ = feedback.SaveState(d.state)
 			syncOptOutToConfig()
 			d.step = stepDismissed

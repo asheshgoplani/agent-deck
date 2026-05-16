@@ -1,8 +1,8 @@
 {
   "ci": {
     "collect": {
-      "startServerCommand": "AGENTDECK_PROFILE=_test ./build/agent-deck web --listen 127.0.0.1:19999 --token test",
-      "startServerReadyPattern": "Listening on",
+      "startServerCommand": "AGENTDECK_PROFILE=_test ./build/agent-deck-test-server -listen 127.0.0.1:19999 -profile _test",
+      "startServerReadyPattern": "listening on",
       "url": [
         "http://127.0.0.1:19999/"
       ],

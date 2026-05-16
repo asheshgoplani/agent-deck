@@ -135,6 +135,17 @@ const (
 	focusOptions               // tool-specific options panel (conditional).
 )
 
+// New session dialog: outer box and textinput widths stay in sync so long
+// project paths are not clipped in the path field.
+const (
+	newDialogPreferredOuterWidth = 84
+	newDialogMinOuterWidth       = 44
+	newDialogTerminalGutter      = 10 // margin when shrinking to terminal width
+	newDialogInputWidthPad       = 12 // outer width minus indent ≈ textinput width
+	newDialogInputMinWidth       = 28
+	newDialogInputMaxWidth       = 100
+)
+
 // settingDisplay pairs a label with a formatted value for read-only display.
 type settingDisplay struct {
 	label string
@@ -260,13 +271,11 @@ func NewNewDialog() *NewDialog {
 	nameInput.Placeholder = "session-name"
 	nameInput.Focus()
 	nameInput.CharLimit = MaxNameLength
-	nameInput.Width = 40
 
 	// Create path input
 	pathInput := textinput.New()
 	pathInput.Placeholder = "~/project/path"
 	pathInput.CharLimit = 256
-	pathInput.Width = 40
 	pathInput.ShowSuggestions = false // we use our own dropdown with filtering
 
 	// Get current working directory for default path
@@ -279,13 +288,11 @@ func NewNewDialog() *NewDialog {
 	commandInput := textinput.New()
 	commandInput.Placeholder = "custom command"
 	commandInput.CharLimit = 100
-	commandInput.Width = 40
 
 	// Create branch input for worktree
 	branchInput := textinput.New()
 	branchInput.Placeholder = "feature/branch-name"
 	branchInput.CharLimit = 100
-	branchInput.Width = 40
 
 	dlg := &NewDialog{
 		nameInput:       nameInput,
@@ -305,6 +312,7 @@ func NewNewDialog() *NewDialog {
 		worktreeEnabled: false,
 		branchPrefix:    "feature/",
 	}
+	dlg.syncInputWidths()
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
 	return dlg
 }
@@ -418,10 +426,36 @@ func (d *NewDialog) GetSelectedGroup() string {
 	return d.parentGroupPath
 }
 
+func (d *NewDialog) effectiveDialogWidth() int {
+	w := newDialogPreferredOuterWidth
+	if d.width > 0 && d.width < w+newDialogTerminalGutter {
+		w = d.width - newDialogTerminalGutter
+		if w < newDialogMinOuterWidth {
+			w = newDialogMinOuterWidth
+		}
+	}
+	return w
+}
+
+func (d *NewDialog) syncInputWidths() {
+	iw := d.effectiveDialogWidth() - newDialogInputWidthPad
+	if iw < newDialogInputMinWidth {
+		iw = newDialogInputMinWidth
+	}
+	if iw > newDialogInputMaxWidth {
+		iw = newDialogInputMaxWidth
+	}
+	d.nameInput.Width = iw
+	d.pathInput.Width = iw
+	d.commandInput.Width = iw
+	d.branchInput.Width = iw
+}
+
 // SetSize sets the dialog dimensions
 func (d *NewDialog) SetSize(width, height int) {
 	d.width = width
 	d.height = height
+	d.syncInputWidths()
 	if d.branchPicker != nil {
 		d.branchPicker.SetSize(width, height)
 	}
@@ -1084,6 +1118,25 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 		}
 
+		// Issue #896 sub-bug 4: when the path-suggestions popup is visible,
+		// arrow keys must navigate the popup from the very first press.
+		// Previously the user had to press Space or Ctrl+N first to enter
+		// "arrow-key mode"; arrows on a freshly-shown popup fell through to
+		// dialog focus advancement, leaving the popup feeling half-broken.
+		// Auto-activate on the first arrow press so the suggestionsActive
+		// handler below takes over and home.go's Enter handler can pick the
+		// highlighted suggestion (sub-bug 3).
+		if !d.suggestionsActive && d.currentTarget() == focusPath &&
+			len(d.pathSuggestions) > 0 && !d.suggestionsHidden {
+			if s := msg.String(); s == "down" || s == "up" {
+				d.suggestionsActive = true
+				d.pathSoftSelected = false
+				d.pathInput.Blur()
+				d.suggestionNavigated = true
+				// fall through to the suggestionsActive arrow handler below
+			}
+		}
+
 		// Suggestions dropdown active: arrow keys navigate, space/enter select,
 		// left/esc exit. The dropdown shows a synthetic "Type custom path..."
 		// entry at index 0, followed by real suggestions at indices 1..N.
@@ -1187,6 +1240,19 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			if d.multiRepoEditing {
 				return d, nil
 			}
+			// Issue #896 (problem 1): don't advance focus from a non-empty path
+			// that doesn't point to an existing directory. Tab should stick to
+			// the input until the user has a usable path; otherwise it silently
+			// jumps to the agent selector and the typed path is left dangling.
+			if isPathEditing {
+				v := strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
+				if v != "" {
+					expanded := session.ExpandPath(v)
+					if info, err := os.Stat(expanded); err != nil || !info.IsDir() {
+						return d, nil
+					}
+				}
+			}
 			// Move to next field.
 			if d.focusIndex < maxIdx {
 				d.focusIndex++
@@ -1223,6 +1289,28 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 					d.pathSuggestionCursor = len(d.pathSuggestions)
 				}
 				d.suggestionNavigated = true
+				return d, nil
+			}
+
+		case "ctrl+w":
+			// Path-aware backward word delete: stop at '/', not just whitespace.
+			// Default bubbles textinput behaviour wipes the entire field for
+			// path values that contain no spaces. Issue #896.
+			switch {
+			case cur == focusPath || (cur == focusMultiRepo && d.multiRepoEditing):
+				d.pathSoftSelected = false
+				d.pathInput.Focus()
+				deleteWordBackwardPath(&d.pathInput)
+				d.suggestionNavigated = false
+				d.suggestionsActive = false
+				d.suggestionsHidden = false
+				d.pathSuggestionCursor = 0
+				d.pathCycler.Reset()
+				d.filterPathSuggestions()
+				return d, nil
+			case cur == focusBranch:
+				deleteWordBackwardPath(&d.branchInput)
+				d.branchAutoSet = false
 				return d, nil
 			}
 
@@ -1536,14 +1624,7 @@ func (d *NewDialog) View() string {
 	labelStyle := lipgloss.NewStyle().
 		Foreground(ColorText)
 
-	// Responsive dialog width
-	dialogWidth := 60
-	if d.width > 0 && d.width < dialogWidth+10 {
-		dialogWidth = d.width - 10
-		if dialogWidth < 40 {
-			dialogWidth = 40
-		}
-	}
+	dialogWidth := d.effectiveDialogWidth()
 
 	dialogStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

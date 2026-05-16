@@ -219,12 +219,15 @@ func isFeedbackOptedOut(st *feedback.State, cfg *session.UserConfig) bool {
 // persistFeedbackOptOut writes the opt-out to BOTH stores and prints the
 // given message. Errors on either write are non-fatal — they log to stderr
 // but do not abort the CLI flow. v1.7.38.
+//
+// The opt-out is scoped to the running release series via the package-level
+// Version, so a future release-series bump can re-show the prompt (#967).
 func persistFeedbackOptOut(w io.Writer, userMessage string) {
 	st, _ := feedback.LoadState()
 	if st == nil {
 		st = &feedback.State{MaxShows: 3}
 	}
-	feedback.RecordOptOut(st)
+	feedback.RecordOptOut(st, Version)
 	if saveErr := feedback.SaveState(st); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "feedback: save state: %v\n", saveErr)
 	}

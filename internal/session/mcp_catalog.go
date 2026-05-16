@@ -152,6 +152,17 @@ func WriteMCPJsonFromConfig(projectPath string, enabledNames []string) error {
 	availableMCPs := GetAvailableMCPs()
 	pool := GetGlobalPool() // Get pool instance (may be nil)
 
+	// #960: refresh stale plugin-cache version pins in the file on disk before
+	// the merge reads it. Preserved (non-catalog) entries are reused verbatim
+	// (#146), so without this step a `claude plugin upgrade` leaves the old
+	// version path baked into .mcp.json forever and /mcp reconnect silently
+	// keeps loading the outdated plugin.
+	if profile := GetClaudeConfigDir(); profile != "" {
+		if _, err := RefreshStalePluginPins(mcpFile, []string{profile}); err != nil {
+			mcpCatLog.Warn("plugin_pin_refresh_failed", "path", mcpFile, "error", err)
+		}
+	}
+
 	// Read existing .mcp.json to preserve entries not managed by agent-deck (#146)
 	existingServers := readExistingLocalMCPServers(mcpFile)
 

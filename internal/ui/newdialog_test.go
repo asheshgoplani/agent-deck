@@ -52,6 +52,22 @@ func TestDialogSetSize(t *testing.T) {
 	}
 }
 
+func TestNewDialog_SetSize_syncsPathInputWidth(t *testing.T) {
+	d := NewNewDialog()
+
+	d.SetSize(120, 40)
+	// Preferred outer width 84 → text fields 84 − 12 = 72.
+	if got := d.pathInput.Width; got != 72 {
+		t.Fatalf("wide terminal: pathInput.Width = %d, want 72", got)
+	}
+
+	d.SetSize(55, 40)
+	// Outer shrinks to terminal−10 (45), above min 44 → inputs 45 − 12 = 33.
+	if got := d.pathInput.Width; got != 33 {
+		t.Fatalf("narrow terminal: pathInput.Width = %d, want 33", got)
+	}
+}
+
 func TestDialogPresetCommands(t *testing.T) {
 	d := NewNewDialog()
 
@@ -251,10 +267,14 @@ func TestNewDialog_TabDoesNotOverwriteCustomPath(t *testing.T) {
 	d.focusIndex = 2
 	d.updateFocus()
 
-	// User types a completely NEW path that doesn't match any suggestion
-	customPath := "/Users/test/brand-new-project"
+	// User types a completely NEW path that doesn't match any suggestion.
+	// Use a real existing directory so the issue #896 "stay on invalid path"
+	// guard doesn't kick in — this test is specifically about #22 (suggestion
+	// overwrite), not #896 (focus advancement on invalid paths).
+	customPath := t.TempDir()
 	d.pathInput.SetValue(customPath)
 
+	startIdx := d.focusIndex
 	// User presses Tab to move to command selection
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 
@@ -265,9 +285,9 @@ func TestNewDialog_TabDoesNotOverwriteCustomPath(t *testing.T) {
 		t.Errorf("Tab overwrote custom path!\nGot: %q\nWant: %q\nThis is the bug from Issue #22", path, customPath)
 	}
 
-	// Focus should have moved to command field
-	if d.focusIndex != 3 {
-		t.Errorf("focusIndex = %d, want 3 (command field)", d.focusIndex)
+	// Focus should have advanced (path is valid).
+	if d.focusIndex == startIdx {
+		t.Errorf("Tab on valid custom path did not advance focus from %d", startIdx)
 	}
 }
 
@@ -1272,8 +1292,9 @@ func TestNewDialog_SoftSelect_ReactivatesOnRefocus(t *testing.T) {
 		t.Fatal("should not be soft-selected after typing")
 	}
 
-	// Set a value back and Tab away
-	d.pathInput.SetValue("/some/path")
+	// Set a real value back and Tab away (real dir so the issue #896 invalid-path
+	// guard doesn't keep focus on the field).
+	d.pathInput.SetValue(t.TempDir())
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab}) // move to command
 
 	// Shift+Tab back to path
@@ -1655,5 +1676,128 @@ func TestNewDialog_StartQuery_ClearsBetweenOpenings(t *testing.T) {
 				"json:\"-\") and must not leak between dialog invocations.",
 			got,
 		)
+	}
+}
+
+// TestNewDialog_Tab_StaysOnInvalidPath verifies that Tab does not advance
+// focus away from the path field when the typed path is non-empty but does
+// not resolve to an existing directory. Issue #896 (problem 1): silently
+// jumping to the agent selector leaves the typed path dangling.
+func TestNewDialog_Tab_StaysOnInvalidPath(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable")
+		}
+	}
+	d.updateFocus()
+
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	// Path that is statistically guaranteed not to exist.
+	d.pathInput.SetValue("/this-path-should-not-exist-zzz-issue-896")
+	d.pathInput.SetCursor(len(d.pathInput.Value()))
+
+	startIdx := d.focusIndex
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if d.focusIndex != startIdx {
+		t.Errorf(
+			"Tab on non-existing path advanced focus from %d to %d; expected to stay on path field",
+			startIdx, d.focusIndex,
+		)
+	}
+	if d.currentTarget() != focusPath {
+		t.Errorf("currentTarget = %v, want focusPath", d.currentTarget())
+	}
+}
+
+// TestNewDialog_Tab_AdvancesOnValidPath ensures the invalid-path guard from
+// issue #896 (problem 1) does not regress the happy path: when the user has
+// typed a real directory, Tab still moves to the next field.
+func TestNewDialog_Tab_AdvancesOnValidPath(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable")
+		}
+	}
+	d.updateFocus()
+
+	tmp := t.TempDir()
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	d.pathInput.SetValue(tmp)
+	d.pathInput.SetCursor(len(tmp))
+
+	startIdx := d.focusIndex
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+
+	if d.focusIndex == startIdx {
+		t.Errorf("Tab on valid path %q did not advance focus (still %d)", tmp, startIdx)
+	}
+}
+
+// TestNewDialog_CtrlW_DeletesPathSegment verifies that ctrl+w on the path
+// input deletes the trailing path segment instead of the whole field. Issue
+// #896 (problem 4): default bubbles textinput treats ctrl+w as delete-word
+// with whitespace boundaries, which wipes spaceless paths like
+// "/Users/dmitry/code/foo".
+func TestNewDialog_CtrlW_DeletesPathSegment(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+
+	// Move focus to the path field.
+	for d.currentTarget() != focusPath {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusPath not reachable from default focus targets")
+		}
+	}
+	d.updateFocus()
+
+	d.pathSoftSelected = false
+	d.pathInput.Focus()
+	d.pathInput.SetValue("/Users/dmitry/code/foo")
+	d.pathInput.SetCursor(len("/Users/dmitry/code/foo"))
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	if got, want := d.pathInput.Value(), "/Users/dmitry/code/"; got != want {
+		t.Errorf("pathInput after ctrl+w = %q, want %q", got, want)
+	}
+}
+
+// TestNewDialog_CtrlW_BranchField verifies the same path-aware ctrl+w
+// behaviour applies to the worktree branch input, where slashes are
+// common (e.g. "feature/issue-896").
+func TestNewDialog_CtrlW_BranchField(t *testing.T) {
+	d := NewNewDialog()
+	d.Show()
+	d.worktreeEnabled = true
+	d.rebuildFocusTargets()
+
+	for d.currentTarget() != focusBranch {
+		d.focusIndex++
+		if d.focusIndex >= len(d.focusTargets) {
+			t.Fatal("focusBranch not reachable")
+		}
+	}
+	d.updateFocus()
+
+	d.branchInput.Focus()
+	d.branchInput.SetValue("feature/issue-896")
+	d.branchInput.SetCursor(len("feature/issue-896"))
+
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyCtrlW})
+
+	if got, want := d.branchInput.Value(), "feature/"; got != want {
+		t.Errorf("branchInput after ctrl+w = %q, want %q", got, want)
 	}
 }

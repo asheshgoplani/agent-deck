@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,9 +15,19 @@ import (
 //
 // v1.7.41 added LaunchCount, FirstSeenAt, LastPromptedAt to pace the first
 // prompt for new users. Serialized via RFC3339 through time.Time's MarshalJSON.
+//
+// #967 added OptOutVersion to scope the dismiss-feedback opt-out to a single
+// release series (MAJOR.MINOR). A user who declined at v1.9.5 is silenced
+// only while the running version is still on the 1.9.x line; the next
+// release-series bump re-shows the prompt. Pre-#967 state files stored a
+// permanent FeedbackEnabled=false with no OptOutVersion — those are
+// migrated in-memory in ShouldShow by treating them as "dismissed at the
+// current series" (suppresses the immediate launch but expires on the next
+// series bump).
 type State struct {
 	LastRatedVersion string    `json:"last_rated_version"`
 	FeedbackEnabled  bool      `json:"feedback_enabled"`
+	OptOutVersion    string    `json:"opt_out_version,omitempty"`
 	ShownCount       int       `json:"shown_count"`
 	MaxShows         int       `json:"max_shows"`
 	LaunchCount      int       `json:"launch_count,omitempty"`
@@ -150,8 +161,46 @@ func PromptCooldownDays() int {
 	return envInt(envCooldownDays, defaultPromptCooldownDays)
 }
 
+// majorSeries returns the "MAJOR.MINOR" prefix of a semver-ish version string
+// — e.g. "1.9.5" → "1.9", "1.10.0" → "1.10", "2" → "2". An empty input
+// returns "". Used as the granularity for the version-scoped opt-out (#967):
+// a user who dismisses at v1.9.5 is silenced for every 1.9.x build, but the
+// dialog reappears once the running version flips to 1.10.x.
+func majorSeries(version string) string {
+	if version == "" {
+		return ""
+	}
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) >= 2 {
+		return parts[0] + "." + parts[1]
+	}
+	return parts[0]
+}
+
+// MigrateLegacyOptOut rewrites a pre-#967 forever-opt-out (FeedbackEnabled
+// false with no OptOutVersion) into a per-series opt-out anchored at
+// currentVersion. Idempotent: a state that already records an OptOutVersion
+// or has feedback enabled is left untouched. Returns true if the caller
+// should persist the result via SaveState.
+//
+// Production wiring lives in cmd/agent-deck/main.go, which calls this from
+// the TUI launch path right next to RecordLaunch — so the legacy migration
+// happens exactly once per affected user, on their first TUI launch after
+// upgrading to a binary that ships #967.
+func MigrateLegacyOptOut(s *State, currentVersion string) bool {
+	if s.OptOutVersion != "" {
+		return false
+	}
+	if s.FeedbackEnabled {
+		return false
+	}
+	s.OptOutVersion = currentVersion
+	return true
+}
+
 // ShouldShow returns true only when every gate is clear:
-//  1. feedback_enabled is true
+//  1. the user is not opted out for the current release series (#967 —
+//     opt-out is scoped to MAJOR.MINOR, not forever)
 //  2. last_rated_version does not match currentVersion
 //  3. shown_count < max_shows
 //  4. user has been around for at least MinDaysBeforeFirstPrompt days
@@ -161,7 +210,18 @@ func PromptCooldownDays() int {
 // Pure: never mutates state. Callers that want to track first-seen should
 // call RecordLaunch at process start.
 func ShouldShow(s *State, currentVersion string, now time.Time) bool {
-	if !s.FeedbackEnabled {
+	if s.OptOutVersion != "" {
+		// Post-#967: opt-out is scoped to the MAJOR.MINOR series. Same
+		// series → block; release-series bump → fall through.
+		if majorSeries(s.OptOutVersion) == majorSeries(currentVersion) {
+			return false
+		}
+	} else if !s.FeedbackEnabled {
+		// Legacy un-migrated state. Block until MigrateLegacyOptOut runs at
+		// the next TUI launch and anchors the opt-out to a real version.
+		// Without that anchor we cannot tell which series the user dismissed,
+		// so we conservatively suppress here too — re-prompt only happens
+		// after migration + a real release-series bump.
 		return false
 	}
 	if s.LastRatedVersion == currentVersion {
@@ -222,10 +282,17 @@ func RecordRating(s *State, currentVersion string, rating int) {
 	_ = rating // rating is used by the caller for display/formatting; stored externally
 }
 
-// RecordOptOut sets feedback_enabled to false (permanent opt-out).
+// RecordOptOut records a feedback dismissal scoped to the running release
+// series. After #967 this is no longer a permanent kill-switch — the
+// opt-out only suppresses prompts while the running version stays on the
+// same MAJOR.MINOR line (e.g. "1.9.x"). The legacy FeedbackEnabled flag is
+// still toggled off so external readers (config.toml sync, the explicit
+// `agent-deck feedback` re-enable prompt) continue to see the user as
+// opted out until something explicitly clears it.
 // Does NOT save — caller must call SaveState.
-func RecordOptOut(s *State) {
+func RecordOptOut(s *State, currentVersion string) {
 	s.FeedbackEnabled = false
+	s.OptOutVersion = currentVersion
 }
 
 // RatingEmoji maps a numeric rating (1-5) to an emoji.

@@ -42,12 +42,16 @@ func TestEval_VersionFlag_ShowsUpdateAnnotationFromCache(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("mkdir .agent-deck: %v", err)
 	}
+	// 9.9.99 is an impossible-future sentinel; using a real near-future
+	// version (e.g., 1.8.99) silently flips this test once the binary
+	// crosses it — already happened once before v1.8.0 ship. See
+	// test-correctness audit #8/#9.
 	cache := map[string]any{
 		"checked_at":      time.Now().Format(time.RFC3339Nano),
-		"latest_version":  "1.8.99",
+		"latest_version":  "9.9.99",
 		"current_version": "1.7.20",
 		"download_url":    "https://example.invalid/download",
-		"release_url":     "https://example.invalid/releases/v1.8.99",
+		"release_url":     "https://example.invalid/releases/v9.9.99",
 		"releases_behind": 30,
 	}
 	data, err := json.MarshalIndent(cache, "", "  ")
@@ -72,13 +76,13 @@ func TestEval_VersionFlag_ShowsUpdateAnnotationFromCache(t *testing.T) {
 	if !strings.Contains(got, "Agent Deck v") {
 		t.Fatalf("missing version header; got: %q", got)
 	}
-	if !strings.Contains(got, "(update available: v1.8.99)") {
+	if !strings.Contains(got, "(update available: v9.9.99)") {
 		t.Fatalf("missing update annotation — did the flag dispatch bypass writeVersionOutput?\n"+
 			"got: %q\n"+
 			"wanted substring: %q\n"+
 			"Fix hint: check cmd/agent-deck/main.go line ~213 ('case \"version\", \"--version\", \"-v\":') "+
 			"still calls writeVersionOutput(os.Stdout, Version).",
-			got, "(update available: v1.8.99)")
+			got, "(update available: v9.9.99)")
 	}
 }
 
@@ -95,12 +99,28 @@ func TestEval_VersionFlag_EnvSkipSuppressesAnnotation(t *testing.T) {
 	}
 	cache := map[string]any{
 		"checked_at":      time.Now().Format(time.RFC3339Nano),
-		"latest_version":  "1.8.99",
+		"latest_version":  "9.9.99",
 		"current_version": "1.7.20",
 		"releases_behind": 30,
 	}
 	data, _ := json.MarshalIndent(cache, "", "  ")
 	_ = os.WriteFile(filepath.Join(cacheDir, "update-cache.json"), data, 0o644)
+
+	// Baseline: without the kill-switch the annotation MUST appear. If this
+	// fails, the test below would pass for the wrong reason (a deleted
+	// kill-switch or a globally-disabled annotation looks identical to a
+	// working kill-switch). See test-correctness audit #9.
+	baseCmd := exec.Command(sb.BinPath, "--version")
+	baseCmd.Env = sb.Env()
+	baseOut, baseErr := baseCmd.CombinedOutput()
+	if baseErr != nil {
+		t.Fatalf("baseline agent-deck --version failed: %v\noutput: %s", baseErr, string(baseOut))
+	}
+	if !strings.Contains(string(baseOut), "update available") {
+		t.Fatalf("baseline failed: annotation absent without kill-switch — "+
+			"the kill-switch test below would pass for the wrong reason.\ngot: %q",
+			string(baseOut))
+	}
 
 	cmd := exec.Command(sb.BinPath, "--version")
 	cmd.Env = append(sb.Env(), "AGENTDECK_SKIP_UPDATE_CHECK=1")

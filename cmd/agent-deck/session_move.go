@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -21,12 +23,18 @@ func handleSessionMove(profile string, args []string) {
 	group := fs.String("group", "", "Also move to this group path (optional)")
 	noRestart := fs.Bool("no-restart", false, "Skip automatic restart after migration")
 	copyHistory := fs.Bool("copy", false, "Copy Claude session history instead of moving (preserves old path data)")
+	toProfile := fs.String("to-profile", "", "Migrate the session to another profile's DB (issue #928); incompatible with <new-path>")
+	force := fs.Bool("force", false, "With --to-profile: migrate running sessions (tmux process keeps running)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session move <id|title> <new-path> [options]")
+		fmt.Println("       agent-deck session move <id|title> --to-profile <name> [--force]")
 		fmt.Println()
-		fmt.Println("Move a session to a new project path, migrating its Claude")
+		fmt.Println("Move a session to a new project path (default form), migrating its Claude")
 		fmt.Println("conversation history from ~/.claude/projects/<old>/ to <new>/.")
+		fmt.Println()
+		fmt.Println("With --to-profile, instead migrate the session row to another profile's DB,")
+		fmt.Println("preserving all metadata and associated rows (cost_events, watcher_events).")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -36,6 +44,7 @@ func handleSessionMove(profile string, args []string) {
 		fmt.Println("  agent-deck session move my-project /new/path --group work/frontend")
 		fmt.Println("  agent-deck session move my-project /new/path --no-restart")
 		fmt.Println("  agent-deck session move my-project /new/path --copy")
+		fmt.Println("  agent-deck session move my-project --to-profile march")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -44,6 +53,39 @@ func handleSessionMove(profile string, args []string) {
 
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
+
+	// Cross-profile migration mode (issue #928): different argument shape and
+	// completely different code path. Branch as early as possible so the
+	// existing path-move flow doesn't run.
+	if *toProfile != "" {
+		if fs.NArg() < 1 {
+			out.Error("session move --to-profile requires <id|title>", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		if fs.NArg() > 1 {
+			out.Error("--to-profile is incompatible with a <new-path> positional argument", ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		// Reject path-move flags that don't apply when migrating across
+		// profiles — silently ignoring them masks user mistakes. Detect via
+		// flag.Visit which only enumerates flags that were explicitly set.
+		var incompatible []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "group", "no-restart", "copy":
+				incompatible = append(incompatible, "--"+f.Name)
+			}
+		})
+		if len(incompatible) > 0 {
+			out.Error(fmt.Sprintf("--to-profile is incompatible with: %s", incompatible), ErrCodeInvalidOperation)
+			fs.Usage()
+			os.Exit(1)
+		}
+		handleSessionMoveToProfile(profile, *toProfile, fs.Arg(0), *force, out)
+		return
+	}
 
 	if fs.NArg() < 2 {
 		out.Error("session move requires <id|title> and <new-path>", ErrCodeInvalidOperation)
@@ -129,5 +171,79 @@ func handleSessionMove(profile string, args []string) {
 		"new_group": inst.GroupPath,
 		"restarted": restarted,
 		"copied":    *copyHistory,
+	})
+}
+
+// handleSessionMoveToProfile implements `session move <id> --to-profile <name>`
+// (issue #928). The identifier is resolved against the source profile (and,
+// if missing there, the target — preserving idempotency on re-runs), then
+// the session row + cost_events + watcher_events are transferred to the
+// target profile's state.db via session.MigrateSessionsToProfile.
+func handleSessionMoveToProfile(sourceProfile, targetProfile, identifier string, force bool, out *CLIOutput) {
+	// Resolve identifier → ID using the source profile's instance list. We do
+	// this in the CLI layer (not in MigrateSessionsToProfile) because
+	// ResolveSession lives in cmd/agent-deck and supports title/path lookup
+	// that the storage layer does not.
+	_, srcInstances, _, err := loadSessionData(sourceProfile)
+	if err != nil {
+		out.Error(err.Error(), ErrCodeNotFound)
+		os.Exit(1)
+	}
+	inst, errMsg, errCode := ResolveSession(identifier, srcInstances)
+	if inst == nil {
+		// Idempotent re-run: the session may already be at the target.
+		// Resolve there and let MigrateSessionsToProfile report it as a
+		// SkippedIdempotent success. Skip if the target doesn't exist yet —
+		// loadSessionData would auto-create it via NewStorageWithProfile and
+		// mask the cleaner "target profile does not exist" error from
+		// MigrateSessionsToProfile.
+		if dstDir, derr := session.GetProfileDir(targetProfile); derr == nil {
+			if _, statErr := os.Stat(filepath.Join(dstDir, "state.db")); statErr == nil {
+				if _, dstInstances, _, lerr := loadSessionData(targetProfile); lerr == nil {
+					if dstInst, _, _ := ResolveSession(identifier, dstInstances); dstInst != nil {
+						inst = dstInst
+					}
+				}
+			}
+		}
+	}
+	if inst == nil {
+		out.Error(errMsg, errCode)
+		if errCode == ErrCodeNotFound {
+			os.Exit(2)
+		}
+		os.Exit(1)
+		return
+	}
+
+	result, err := session.MigrateSessionsToProfile(
+		sourceProfile, targetProfile, []string{inst.ID},
+		session.ProfileMigrateOptions{Force: force},
+	)
+	if err != nil {
+		exitCode := ErrCodeInvalidOperation
+		hint := ""
+		switch {
+		case errors.Is(err, session.ErrProfileMissing):
+			exitCode = ErrCodeNotFound
+		case errors.Is(err, session.ErrSameProfile):
+			exitCode = ErrCodeInvalidOperation
+		case errors.Is(err, session.ErrSessionRunning):
+			hint = " (stop the session with `agent-deck session stop`, or re-run with --force)"
+		}
+		out.Error(fmt.Sprintf("%v%s", err, hint), exitCode)
+		os.Exit(1)
+	}
+
+	out.Success(fmt.Sprintf("Migrated %q: profile %s → %s", inst.Title, sourceProfile, targetProfile), map[string]interface{}{
+		"success":         true,
+		"id":              inst.ID,
+		"title":           inst.Title,
+		"from_profile":    sourceProfile,
+		"to_profile":      targetProfile,
+		"cost_events":     result.MovedCostEvents,
+		"watcher_events":  result.MovedWatcherEvents,
+		"groups_created":  result.CreatedGroups,
+		"already_at_dest": len(result.SkippedIdempotent) > 0,
 	})
 }

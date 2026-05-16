@@ -619,3 +619,33 @@ func TestWatcherEngine_StopCancelsAdapters(t *testing.T) {
 		t.Error("adapter2.Teardown() was not called")
 	}
 }
+
+// TestWatcherEngine_Stop_ClosesExportedChannels asserts that after Stop()
+// returns, the exported EventCh and HealthCh are closed so consumers receive
+// (_, false) instead of leaking forever (critical-hunt #9, V1.9 T5).
+func TestWatcherEngine_Stop_ClosesExportedChannels(t *testing.T) {
+	engine, _, _, _, _ := newTestEngineWithTriage(t, nil)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	engine.Stop()
+
+	select {
+	case _, ok := <-engine.EventCh():
+		if ok {
+			t.Errorf("EventCh: expected closed (ok=false), got ok=true")
+		}
+	case <-time.After(time.Second):
+		t.Errorf("EventCh: expected closed channel, got blocking read")
+	}
+
+	select {
+	case _, ok := <-engine.HealthCh():
+		if ok {
+			t.Errorf("HealthCh: expected closed (ok=false), got ok=true")
+		}
+	case <-time.After(time.Second):
+		t.Errorf("HealthCh: expected closed channel, got blocking read")
+	}
+}

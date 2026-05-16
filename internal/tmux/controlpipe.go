@@ -391,7 +391,12 @@ func (cp *ControlPipe) Close() {
 		// timeout, while still routing the underlying cmd.Wait() through
 		// the waitOnce gate that protects against a concurrent Wait from
 		// reader() (#677).
-		_ = reapWithEOFGrace(cp.reap, cp.cmd.Process, controlPipeEOFExitGrace, controlClientKillGrace)
+		usedFallback := reapWithEOFGrace(cp.reap, cp.cmd.Process, controlPipeEOFExitGrace, controlClientKillGrace)
+		if usedFallback {
+			pipeLog.Warn("eof_fallback_fired",
+				slog.String("session", cp.sessionName),
+				slog.Duration("eof_grace", controlPipeEOFExitGrace))
+		}
 
 		pipeLog.Debug("pipe_closed", slog.String("session", cp.sessionName))
 	})
