@@ -40,6 +40,24 @@ make dev        # Run with auto-reload (requires 'air')
 make run        # Run directly
 ```
 
+## Local-Only Files (Per-Developer)
+
+A few files are intentionally not tracked by this repo so each developer can keep their own copy:
+
+- `CLAUDE.md` — contributor-specific Claude Code guidance (untracked in #1002)
+- `.planning/` — local scratch directory for design docs, phase plans, RFC drafts
+
+These files are not listed in `.gitignore` so the project doesn't dictate per-developer file presence. If you use these locally, add them to your own per-clone exclude list:
+
+```bash
+cat >> .git/info/exclude <<'EOF'
+CLAUDE.md
+.planning/
+EOF
+```
+
+`.git/info/exclude` is local to your clone (never committed) and works exactly like `.gitignore` for ignore semantics.
+
 ## Making Changes
 
 ### Branch Naming
