@@ -1,4 +1,8 @@
-//go:build !windows
+//go:build hostsensitive && !windows
+
+// Host-sensitive web tests. Built and run only when the `hostsensitive`
+// build tag is supplied (e.g. nightly job: `go test -tags hostsensitive`).
+// See issue #969 for the categorization rationale.
 
 package web
 
