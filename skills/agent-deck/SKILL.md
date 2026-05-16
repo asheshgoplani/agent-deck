@@ -125,6 +125,34 @@ The script auto-detects current session/profile and creates a child session.
 | Code documentation | `context7` |
 | Complex reasoning | `sequential-thinking` |
 
+### Worker Prompt Conventions
+
+When the prompt asks the worker to `Edit` or `Write` any **existing** file, include an explicit **prelude-read** as the first step. Claude Code's tool guard rejects `Edit`/`Write` before `Read` of the same path, and conductor-spawned workers hit this mid-task (#968) when their prompt jumps straight into the change. The interruption forces the worker to backfill reads inside its main loop, breaking flow and burning cycles.
+
+**Template skeleton — bake this into every worker prompt that mutates code:**
+
+```
+## Step 0 — Prelude reads
+Read every file you intend to Edit/Write below. Read calls are cheap
+and do NOT count against scope discipline; they prevent tool-guard
+interruptions mid-task. Skip only for paths that will be created fresh.
+
+Files to read first:
+  - <path/to/file/you/will/edit>
+  - <path/to/other/file/you/will/edit>
+
+## Step 1 — Investigation
+…
+
+## Step 2 — Implementation
+…
+```
+
+**Rules:**
+- Any file the worker will modify: prelude `Read` it first, even if the worker "knows" the contents.
+- Brand-new files (`Write` to a path that does not yet exist): no prelude needed — the guard only applies to modifications.
+- For conductor nudges that re-fire the same prompt across cycles, keep Step 0 in the prompt. The second-cycle process may not have prior reads in context.
+
 ## Consult Another Agent (Codex, Gemini)
 
 **Use when:** User says "consult with codex", "ask gemini", "get codex's opinion", "what does codex think", "consult another agent", "brainstorm with codex/gemini", "get a second opinion"

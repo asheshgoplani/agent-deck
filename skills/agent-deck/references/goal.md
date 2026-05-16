@@ -147,6 +147,12 @@ DONE-CONDITION (external shell, run by the manager):
 
 PROTOCOL — execute exactly:
 
+  0. PRELUDE READS. Before any Edit/Write this cycle, Read every file
+     you intend to modify. Read calls do NOT count against scope; they
+     prevent Claude Code's "Read-before-Edit" tool guard from firing
+     mid-cycle (which costs a wake and corrupts the receipt). Skip only
+     for paths you will create fresh via Write to a new path. (#968)
+
   1. Check current state. Do NOT run the done-condition yourself; that's
      the manager's job. Read task-log.md to recall what you've already done.
 
