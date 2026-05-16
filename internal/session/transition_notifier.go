@@ -400,6 +400,12 @@ func (n *TransitionNotifier) dispatchAsync(targetID, message string, event Trans
 			e.DeliveryResult = transitionDeliveryFailed
 		} else {
 			e.DeliveryResult = transitionDeliverySent
+			// Issue #962 variant: clear any earlier persisted inbox
+			// entry for the same (child, from, to) now that the live
+			// delivery succeeded — see SweepInboxByTuple.
+			if targetID != "" {
+				_, _ = SweepInboxByTuple(targetID, event.ChildSessionID, event.FromStatus, event.ToStatus)
+			}
 		}
 		doneCh <- e
 		// Slot is only released once the send really returns, which prevents
@@ -1015,6 +1021,13 @@ func (n *TransitionNotifier) scheduleBusyRetry(event TransitionNotificationEvent
 				// event back in between the queue prune and the mark.
 				n.markTerminated(event)
 				n.removeFromQueue(event)
+				// Issue #962 variant: any earlier persisted inbox entry
+				// for the same (child, from, to) is now superseded by
+				// this live delivery — sweep it so the operator's next
+				// drain doesn't replay stale events.
+				if event.TargetSessionID != "" {
+					_, _ = SweepInboxByTuple(event.TargetSessionID, event.ChildSessionID, event.FromStatus, event.ToStatus)
+				}
 				return
 			}
 			// Send failed: try the next backoff entry.
