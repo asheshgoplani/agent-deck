@@ -494,7 +494,7 @@ The full spec is in [references/goal.md](references/goal.md). For early use, fol
 ### Future CLI surface (Phase 2)
 
 ```bash
-agent-deck pursue \
+agent-deck goal \
     --goal "Ship agent-deck v1.6.0" \
     --done 'gh release view v1.6.0 --json publishedAt | jq -e ".publishedAt != null"' \
     --check-every 5m \
@@ -502,11 +502,11 @@ agent-deck pursue \
     --escalate-after 3 \
     --max-cycles 24
 
-agent-deck pursue list           # active goals + state
-agent-deck pursue show <id>      # full JSON dump
-agent-deck pursue tail <id>      # tail the worker's task-log.md
-agent-deck pursue cancel <id>    # stop the worker
-agent-deck pursue resume <id> "<hint>"  # send context-rich hint, reset nudge counter
+agent-deck goal list           # active goals + state
+agent-deck goal show <id>      # full JSON dump
+agent-deck goal tail <id>      # tail the worker's task-log.md
+agent-deck goal cancel <id>    # stop the worker
+agent-deck goal resume <id> "<hint>"  # send context-rich hint, reset nudge counter
 ```
 
 ### Deep dive

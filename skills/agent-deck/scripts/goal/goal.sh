@@ -16,7 +16,7 @@
 #   goal.sh v160-release \
 #       "Ship agent-deck v1.6.0 to GitHub Releases" \
 #       'gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e ".publishedAt != null"' \
-#       pursue-v160 \
+#       my-v160-worker \
 #       /home/ashesh-goplani/agent-deck
 #
 # Writes to:
@@ -38,7 +38,7 @@ fi
 ID="$1"
 GOAL="$2"
 DONE_CMD="$3"
-WORKER_TITLE="${4:-pursue-$ID}"
+WORKER_TITLE="${4:-$ID}"
 WORKDIR="${5:-$HOME}"
 
 CHECK_INTERVAL_SECONDS="${CHECK_INTERVAL_SECONDS:-300}"     # manager polls every 5 min
@@ -48,13 +48,13 @@ ESCALATE_AFTER="${ESCALATE_AFTER:-3}"                      # nudges before pagin
 CONDUCTOR="${CONDUCTOR:-agent-deck}"
 PROFILE="${PROFILE:-personal}"
 
-[[ -f "$PROMPT_TEMPLATE" ]] || { echo "[pursue] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
+[[ -f "$PROMPT_TEMPLATE" ]] || { echo "[goal] missing prompt template: $PROMPT_TEMPLATE" >&2; exit 1; }
 mkdir -p "$GOALS_DIR"
 GOAL_PATH="$GOALS_DIR/${ID}.json"
 
 if [[ -f "$GOAL_PATH" ]]; then
-    echo "[pursue] goal already exists: $GOAL_PATH" >&2
-    echo "[pursue] cancel it first or pick a different id" >&2
+    echo "[goal] goal already exists: $GOAL_PATH" >&2
+    echo "[goal] cancel it first or pick a different id" >&2
     exit 1
 fi
 
@@ -71,7 +71,7 @@ PROMPT="${PROMPT//\{MAX_CYCLES\}/$MAX_CYCLES}"
 
 # Spawn the worker via agent-deck launch — we use add+start+send so we can
 # capture the session id reliably (launch -m sometimes races with prompts).
-echo "[pursue] spawning worker: $WORKER_TITLE in $WORKDIR" >&2
+echo "[goal] spawning worker: $WORKER_TITLE in $WORKDIR" >&2
 
 # Create the session
 if ! agent-deck -p "$PROFILE" add "$WORKDIR" -t "$WORKER_TITLE" -c claude -g goal 2>&1 | grep -E "(Created|exists)" >&2; then
@@ -86,15 +86,15 @@ SESSION_ID="$(agent-deck -p "$PROFILE" list --json 2>/dev/null \
     | python3 -c "import sys,json; print(next((s['id'] for s in json.load(sys.stdin) if s.get('title')=='$WORKER_TITLE'), ''))")"
 
 if [[ -z "$SESSION_ID" ]]; then
-    echo "[pursue] could not resolve worker session id for title '$WORKER_TITLE'" >&2
+    echo "[goal] could not resolve worker session id for title '$WORKER_TITLE'" >&2
     exit 1
 fi
 
 # Send the contract prompt (long, so write to a file and reference)
-PROMPT_FILE="$(mktemp -t pursue-prompt-XXXXXX.md)"
+PROMPT_FILE="$(mktemp -t goal-prompt-XXXXXX.md)"
 printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
 agent-deck -p "$PROFILE" session send "$WORKER_TITLE" "$(cat "$PROMPT_FILE")" --no-wait -q >&2 || {
-    echo "[pursue] failed to send contract prompt — worker session $SESSION_ID exists but is not yet driving" >&2
+    echo "[goal] failed to send contract prompt — worker session $SESSION_ID exists but is not yet driving" >&2
 }
 rm -f "$PROMPT_FILE"
 
@@ -138,10 +138,10 @@ data = {
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
-print(f"[pursue] wrote {path}")
+print(f"[goal] wrote {path}")
 PYEOF
 
-echo "[pursue] goal '$ID' is active." >&2
-echo "[pursue] worker session: $WORKER_TITLE (id: $SESSION_ID)" >&2
-echo "[pursue] watch progress with:  agent-deck session output $WORKER_TITLE -q" >&2
-echo "[pursue] advance the manager with:  python3 $SCRIPT_DIR/manager.py --verbose" >&2
+echo "[goal] goal '$ID' is active." >&2
+echo "[goal] worker session: $WORKER_TITLE (id: $SESSION_ID)" >&2
+echo "[goal] watch progress with:  agent-deck session output $WORKER_TITLE -q" >&2
+echo "[goal] advance the manager with:  python3 $SCRIPT_DIR/manager.py --verbose" >&2

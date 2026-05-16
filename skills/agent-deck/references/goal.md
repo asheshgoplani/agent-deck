@@ -98,7 +98,7 @@ A goal is a single JSON file at `~/.agent-deck/goals/<id>.json`. The registry is
   "goal": "Ship agent-deck v1.6.0 to GitHub Releases",
   "done_cmd": "gh release view v1.6.0 -R asheshgoplani/agent-deck --json publishedAt | jq -e '.publishedAt != null'",
   "worker_session_id": "8e86ce6c-...",
-  "worker_session_title": "pursue-v160-release",
+  "worker_session_title": "v160-release",
   "conductor": "agent-deck",
   "workdir": "/home/ashesh-goplani/agent-deck",
 
@@ -308,7 +308,7 @@ Worker output: agent-deck session output {worker_session_title} -q
 
 Options:
   - Resume: agent-deck session send {worker_session_title} "<your hint>"
-  - Kill:   agent-deck pursue cancel {id}
+  - Kill:   agent-deck goal cancel {id}
   - Take over manually
 ```
 
@@ -370,7 +370,7 @@ Done-conditions must be:
 The full command (proposed):
 
 ```bash
-agent-deck pursue \
+agent-deck goal \
     [--id <slug>] \                  # optional; auto-generated if omitted
     --goal "<one sentence>" \
     --done '<shell command>' \
@@ -387,11 +387,11 @@ agent-deck pursue \
 Companion commands:
 
 ```bash
-agent-deck pursue list                  # show active goals + their state
-agent-deck pursue show <id>             # full JSON dump of one goal
-agent-deck pursue tail <id>             # tail the worker's task-log.md
-agent-deck pursue cancel <id>           # stop the worker, mark stopped_by_user
-agent-deck pursue resume <id> "<msg>"   # send a hint and reset nudge counter
+agent-deck goal list                  # show active goals + their state
+agent-deck goal show <id>             # full JSON dump of one goal
+agent-deck goal tail <id>             # tail the worker's task-log.md
+agent-deck goal cancel <id>           # stop the worker, mark stopped_by_user
+agent-deck goal resume <id> "<msg>"   # send a hint and reset nudge counter
 ```
 
 ## Implementation phases
@@ -411,13 +411,13 @@ Goal: prove the manager + worker contract works end-to-end on one real goal.
 
 ### Phase 2: CLI wrapper
 
-Goal: `agent-deck pursue --goal X --done '<cmd>'` works.
+Goal: `agent-deck goal --goal X --done '<cmd>'` works.
 
 - Add a bash wrapper (`agent-deck-goal.sh`) that:
   - Writes the goal JSON
   - Spawns the worker via `agent-deck launch` with the templated contract
   - Starts/refreshes the cron job
-- Add `pursue list / show / cancel / resume` subcommands
+- Add `goal list / show / cancel / resume` subcommands
 
 **Done when:** one command starts a goal; another command cancels it.
 
@@ -446,8 +446,8 @@ Goal: each completed/failed goal produces a data point that the self-improvement
 
 - TUI panel for active goals
 - Web UI status page
-- `pursue retry <id>` to relaunch a failed goal with adjusted parameters
-- Goal templates: `agent-deck pursue --template release-merge --version v1.7.0`
+- `goal retry <id>` to relaunch a failed goal with adjusted parameters
+- Goal templates: `agent-deck goal --template release-merge --version v1.7.0`
 
 ## Open questions
 
@@ -492,7 +492,7 @@ Walk through the gsd-v160 release scenario with goal in place:
 
 | Hour | Today's behavior | Goal behavior |
 |---|---|---|
-| 0 | Worker spawned manually with vague prompt | `agent-deck pursue --goal "Ship v1.6.0" --done '<gh release check>' --max-idle 1h --escalate-after 3` |
+| 0 | Worker spawned manually with vague prompt | `agent-deck goal --goal "Ship v1.6.0" --done '<gh release check>' --max-idle 1h --escalate-after 3` |
 | 1 | Cron fires, conductor reports `[STATUS] running` | Manager runs `done_cmd` → not yet. Reads receipt from cycle 1 → "tagged locally, pushed origin". Quiet, all good. |
 | 2 | Cron fires, conductor reports same `[STATUS]` | Manager: receipt from cycle 2 → "goreleaser running, waiting". Quiet. |
 | 3 | Cron fires, same `[STATUS]` | Manager: receipt from cycle 3 → "goreleaser passed, release published". Manager runs `done_cmd` → **0**. ✅ Done. Worker stopped, user notified "Done: Ship v1.6.0". |
