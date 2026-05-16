@@ -1425,13 +1425,13 @@ tests:
 - id: v1728-watcher-event-dedup-busy-retry
   added: '2026-04-18'
   task: v1728-flake-fix
-  file: internal/statedb/statedb_test.go
+  file: internal/statedb/statedb_hostsensitive_test.go
   test_name: TestWatcherEventDedup
-  purpose: 'Pre-existing race flake on CI — SaveWatcherEvent now retries on SQLITE_BUSY with linear backoff. This pins the concurrent-insert dedup guarantee (exactly 1 row after 2 goroutines racing the same dedup key) while tolerating transient busy errors that previously failed release CI intermittently.'
+  purpose: 'Pre-existing race flake on CI — SaveWatcherEvent now retries on SQLITE_BUSY with linear backoff. This pins the concurrent-insert dedup guarantee (exactly 1 row after 2 goroutines racing the same dedup key) while tolerating transient busy errors that previously failed release CI intermittently. Moved behind the `hostsensitive` build tag in #969 because the SQLITE_BUSY race remained host-sensitive under -race; the nightly job runs it with `-tags hostsensitive`.'
   source: v1.7.28-release-prep
   manual: false
   run:
-    command: go test ./internal/statedb/ -run TestWatcherEventDedup -count=3 -race -v
+    command: go test -tags hostsensitive ./internal/statedb/ -run TestWatcherEventDedup -count=3 -race -v
     expected: pass
 - id: v1727-issue662-hidden-dir-encoding
   added: '2026-04-19'
