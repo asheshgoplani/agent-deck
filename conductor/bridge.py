@@ -743,6 +743,67 @@ def parse_conductor_prefix(text: str, conductor_names: list[str]) -> tuple[str |
 
 
 # ---------------------------------------------------------------------------
+# NEED-line retire (issue #971)
+# ---------------------------------------------------------------------------
+
+# Default: after this many *consecutive* identical NEED: lines, escalate
+# once with a distinct "STILL BLOCKED" tactic, then drop on later cycles.
+NEED_RETIRE_THRESHOLD = 3
+
+
+def filter_need_lines(
+    response: str,
+    prev_counts: dict,
+    threshold: int = NEED_RETIRE_THRESHOLD,
+) -> dict:
+    """De-duplicate consecutive identical heartbeat NEED: lines (issue #971).
+
+    Args:
+      response: full conductor reply text (may contain zero or more NEED: lines).
+      prev_counts: per-line consecutive-occurrence counts from the previous
+        heartbeat cycle, keyed by the trimmed NEED: line text.
+      threshold: how many consecutive cycles of an identical NEED: line trigger
+        a one-shot escalation. Subsequent cycles drop the line entirely.
+
+    Returns dict with:
+      "alerts":  list[str]  — NEED lines to forward as-is this cycle.
+      "retired": list[str]  — one-shot escalation notices for lines that just
+                              hit threshold (forwarded instead of the plain
+                              NEED line so the user sees the tactic change).
+      "counts":  dict[str,int] — updated counts for the next cycle. Lines no
+                              longer present are dropped (reset on return).
+
+    Rules (matches issue #971's expected table):
+      * Cycles 1 .. threshold-1: NEED line is forwarded as-is.
+      * Cycle threshold:         line moves to "retired" (escalation tactic
+                                  change, e.g. "STILL BLOCKED for 3h: ...").
+      * Cycle threshold+1..:    line is silently dropped (auto-retire).
+    """
+    counts: dict[str, int] = {}
+    alerts: list[str] = []
+    retired: list[str] = []
+
+    for raw_line in response.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("NEED:"):
+            continue
+
+        prior = prev_counts.get(line, 0)
+        new_count = prior + 1
+        counts[line] = new_count
+
+        if new_count < threshold:
+            alerts.append(line)
+        elif new_count == threshold:
+            retired.append(
+                f"STILL BLOCKED ({threshold} cycles, no reply): {line}"
+            )
+        # new_count > threshold: dropped — already retired previously.
+
+    return {"alerts": alerts, "retired": retired, "counts": counts}
+
+
+# ---------------------------------------------------------------------------
 # Telegram message splitting
 # ---------------------------------------------------------------------------
 
@@ -1536,6 +1597,11 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
     interval_seconds = global_interval * 60
     tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
 
+    # Per-conductor NEED: dedup state for issue #971 — tracks consecutive
+    # identical NEED lines so we can escalate-once-then-drop instead of
+    # firing the same alert verbatim for 12+ hours.
+    need_state_by_conductor: dict[str, dict] = {}
+
     log.info("Heartbeat loop started (global interval: %d minutes)", global_interval)
 
     while True:
@@ -1695,14 +1761,33 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                     name, response[:200],
                 )
 
-                # If conductor flagged items needing attention, notify via Telegram and Slack
-                has_alerts = "NEED:" in response
+                # Dedup repeating NEED: lines (issue #971). Forward only
+                # fresh + escalation lines; drop verbatim repeats past
+                # threshold so the user isn't trained to ignore heartbeats.
+                prev_counts = need_state_by_conductor.get(name, {})
+                need_filtered = filter_need_lines(response, prev_counts)
+                need_state_by_conductor[name] = need_filtered["counts"]
+
+                forwarded_need_lines = (
+                    need_filtered["alerts"] + need_filtered["retired"]
+                )
+                has_alerts = bool(forwarded_need_lines)
+                if need_filtered["retired"]:
+                    log.info(
+                        "Heartbeat [%s]: retiring %d stale NEED line(s) "
+                        "after >= %d cycles: %s",
+                        name,
+                        len(need_filtered["retired"]),
+                        NEED_RETIRE_THRESHOLD,
+                        need_filtered["retired"],
+                    )
                 if has_alerts:
                     all_conductors = discover_conductors()
                     prefix = (
                         f"[{name}] " if len(all_conductors) > 1 else ""
                     )
-                    alert_text = f"{prefix}Conductor alert:\n{response}"
+                    alert_body = "\n".join(forwarded_need_lines)
+                    alert_text = f"{prefix}Conductor alert:\n{alert_body}"
 
                     # Notify via Telegram (with HTML formatting)
                     if telegram_bot and tg_user_id:
