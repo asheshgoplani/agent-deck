@@ -83,14 +83,18 @@ type TransitionNotifier struct {
 	// inject a deterministic stub.
 	availability targetAvailabilityResolver
 
-	// childPresence reports whether the named child session still exists in
-	// the registry. Used by DrainRetryQueueWithResolver to drop queued
-	// events whose child has been rm'd between enqueue and drain — issue
-	// #962. Nil means no filter (preserved for tests that build the
-	// notifier via a bare struct literal); production sets it via
-	// NewTransitionNotifier so the daemon's drain loop never replays
-	// events for vanished children.
-	childPresence targetAvailabilityResolver
+	// eventDeliverable is the centralized "is this event still deliverable
+	// to this session?" gate at the replay-dispatch boundary. Returns
+	// (false, reason) when the child should be dropped from the queue; the
+	// reason string flows into notifier-missed.log so the operator can tell
+	// removed-vs-muted apart. Issue #962 variants 1 and 3:
+	//   - variant 1 (PR #992): child rm'd between enqueue and drain
+	//   - variant 3 (this PR): child marked NoTransitionNotify after enqueue
+	// Future per-session bypass conditions (session paused, conductor
+	// stopped, etc.) plug in here too. Nil means no filter (test
+	// struct-literal back-compat); production sets it via
+	// NewTransitionNotifier.
+	eventDeliverable eventDeliverabilityResolver
 
 	mu    sync.Mutex
 	state transitionNotifyState
@@ -158,7 +162,7 @@ func NewTransitionNotifier() *TransitionNotifier {
 		terminatedFingerprints: map[string]bool{},
 		stopCh:                 make(chan struct{}),
 	}
-	n.childPresence = n.liveChildPresence
+	n.eventDeliverable = n.liveEventDeliverable
 	n.loadState()
 	n.loadQueue()
 	return n
@@ -699,6 +703,14 @@ func deferredKey(event TransitionNotificationEvent) string {
 // live instance's status; tests pass a canned function.
 type targetAvailabilityResolver func(profile, targetID string) bool
 
+// eventDeliverabilityResolver is the centralized per-child gate used at the
+// replay-dispatch boundary (DrainRetryQueueWithResolver). It returns
+// (true, "") to let the queued event through, or (false, reason) to drop it
+// — the reason string is logged into notifier-missed.log so removed-vs-
+// muted-vs-future-bypass categories stay distinguishable in diagnostics.
+// Issue #962 v1 (removed) + v3 (muted) share this seam.
+type eventDeliverabilityResolver func(profile, childID string) (deliverable bool, reason string)
+
 // DrainRetryQueue is the production entry point used by the daemon's poll
 // loop. It resolves target availability by reading the live session state.
 func (n *TransitionNotifier) DrainRetryQueue(profile string) {
@@ -716,26 +728,34 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 	n.queue.Entries = nil
 	n.queueMu.Unlock()
 
+	type droppedEntry struct {
+		entry  deferredQueueEntry
+		reason string
+	}
 	var keep []deferredQueueEntry
 	var toDispatch []deferredQueueEntry
 	var toExpire []deferredQueueEntry
-	var toDropRemoved []deferredQueueEntry
+	var toDrop []droppedEntry
 
 	for _, entry := range snapshot {
 		if entry.Event.Profile != profile {
 			keep = append(keep, entry)
 			continue
 		}
-		// Issue #962: drop events whose child has been removed from the
-		// registry between enqueue and drain. The rm path (issue #910)
-		// sweeps the inbox and dedup ledger but not this queue file, so
-		// without this filter the daemon redispatches stale child events
-		// on every poll until the queue file is hand-edited. Done BEFORE
-		// the age-out check so we don't emit "expired" missed-log lines
-		// for sessions that simply no longer exist.
-		if n.childPresence != nil && !n.childPresence(profile, entry.Event.ChildSessionID) {
-			toDropRemoved = append(toDropRemoved, entry)
-			continue
+		// Issue #962 (v1 + v3): consult the centralized per-child gate
+		// before re-dispatch. Drops events whose child has been removed
+		// from the registry (v1, PR #992) OR has been muted via
+		// `set-transition-notify off` after the event was queued (v3, this
+		// PR). Done BEFORE the age-out check so we don't emit "expired"
+		// missed-log lines for sessions that are no longer valid delivery
+		// targets. The resolver returns a category string so
+		// notifier-missed.log stays diagnostic-friendly across both
+		// variants.
+		if n.eventDeliverable != nil {
+			if ok, reason := n.eventDeliverable(profile, entry.Event.ChildSessionID); !ok {
+				toDrop = append(toDrop, droppedEntry{entry: entry, reason: reason})
+				continue
+			}
 		}
 		expired := now.Sub(entry.FirstDeferredAt) > defaultQueueMaxAge ||
 			entry.Attempts >= defaultQueueMaxAttempts
@@ -751,8 +771,8 @@ func (n *TransitionNotifier) DrainRetryQueueWithResolver(profile string, isAvail
 		toDispatch = append(toDispatch, entry)
 	}
 
-	for _, entry := range toDropRemoved {
-		n.logMissed(entry.Event, "child_removed_from_registry")
+	for _, d := range toDrop {
+		n.logMissed(d.entry.Event, d.reason)
 	}
 	for _, entry := range toExpire {
 		n.logMissed(entry.Event, "expired")
@@ -793,35 +813,65 @@ func (n *TransitionNotifier) liveTargetAvailability(profile, targetID string) bo
 	return false
 }
 
-// liveChildPresence reports whether childID still exists in the registry for
-// the given profile. Issue #962: the drain loop filter that prevents the
-// notifier from replaying transition events for sessions removed via
-// `agent-deck rm` between the enqueue and the next drain pass.
+// liveEventDeliverable is the production wiring of eventDeliverable. It
+// answers "is this child currently a valid delivery target?" by reading the
+// live registry. Returns (false, reason) when the queued event should be
+// dropped on the next drain pass:
+//
+//   - "child_removed_from_registry" — child rm'd between enqueue and drain
+//     (issue #962 v1, PR #992). The rm path sweeps the inbox + dedup ledger
+//     but not this queue file, so consumer-side defense-in-depth catches
+//     stale entries surviving across upgrades or rm/drain races.
+//   - "child_muted" — child has NoTransitionNotify=true (issue #962 v3, this
+//     PR). The flag is checked at NEW emission (transition_daemon.go:210
+//     and :375) but pre-fix never on replay, so per-session mute toggled
+//     after enqueue had no effect on already-queued events.
 //
 // Fail-open on storage errors: if the SQLite file is missing, locked, or
-// the load returns an error, return true so a transient outage doesn't
-// silently drop legitimate events. The trade-off is that during a real
-// outage we may briefly replay events; the alternative (fail-closed) would
-// be a silent-loss path that's strictly worse than the bug we're fixing.
-func (n *TransitionNotifier) liveChildPresence(profile, childID string) bool {
+// the load returns an error, return (true, "") so a transient outage
+// doesn't silently drop legitimate events. The trade-off is that during a
+// real outage we may briefly replay events; the alternative (fail-closed)
+// would be a silent-loss path strictly worse than the bug being fixed.
+func (n *TransitionNotifier) liveEventDeliverable(profile, childID string) (bool, string) {
 	if strings.TrimSpace(childID) == "" {
-		return false
+		return false, "child_removed_from_registry"
 	}
 	storage, err := NewStorageWithProfile(profile)
 	if err != nil {
-		return true
+		return true, ""
 	}
 	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
-		return true
+		return true, ""
 	}
 	for _, inst := range instances {
 		if inst.ID == childID {
-			return true
+			if !instanceAcceptsTransitionEvents(inst) {
+				return false, "child_muted"
+			}
+			return true, ""
 		}
 	}
-	return false
+	return false, "child_removed_from_registry"
+}
+
+// instanceAcceptsTransitionEvents is the centralized per-session predicate
+// shared by NEW-emission (transition_daemon.go) and replay-dispatch
+// (DrainRetryQueueWithResolver via liveEventDeliverable). All "is this
+// session currently accepting transition events?" logic lives here so the
+// two code paths can't drift — the original bite path for issue #962 v3
+// was exactly that the emission site checked NoTransitionNotify and the
+// replay site did not. Future per-session bypass conditions (paused,
+// stopped, etc.) extend this predicate, not its callers.
+func instanceAcceptsTransitionEvents(inst *Instance) bool {
+	if inst == nil {
+		return false
+	}
+	if inst.NoTransitionNotify {
+		return false
+	}
+	return true
 }
 
 func (n *TransitionNotifier) snapshotQueueForTest() []deferredQueueEntry {

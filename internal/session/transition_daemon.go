@@ -204,10 +204,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			continue
 		}
 		inst := byID[id]
-		if inst == nil {
-			continue
-		}
-		if !notifyEnabled || inst.NoTransitionNotify {
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
 		event := TransitionNotificationEvent{
@@ -369,10 +366,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, candidate := range candidates {
 		inst := byID[id]
-		if inst == nil {
-			continue
-		}
-		if !notifyEnabled || inst.NoTransitionNotify {
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
 			continue
 		}
 
