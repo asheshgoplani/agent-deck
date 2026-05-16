@@ -296,6 +296,13 @@ type CopilotOptions struct {
 	// ResumeSessionID is the Copilot session ID for --resume (only used
 	// when SessionMode == "resume").
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	// Model overrides the default Copilot model (e.g., "claude-opus-4.6",
+	// "gpt-5.2"). Passed as --model <value>.
+	Model string `json:"model,omitempty"`
+	// AllowAll enables --allow-all (equivalent to --allow-all-tools
+	// --allow-all-paths --allow-all-urls). Required for non-interactive
+	// scripting scenarios.
+	AllowAll bool `json:"allow_all,omitempty"`
 }
 
 // ToolName returns "copilot"
@@ -312,15 +319,26 @@ func (o *CopilotOptions) ToArgs() []string {
 			args = append(args, o.ResumeSessionID)
 		}
 	}
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.AllowAll {
+		args = append(args, "--allow-all")
+	}
 	return args
 }
 
 // NewCopilotOptions creates CopilotOptions with defaults from config
 func NewCopilotOptions(config *UserConfig) *CopilotOptions {
 	opts := &CopilotOptions{SessionMode: "new"}
-	// No config-sourced defaults today; the struct exists so future
-	// settings (e.g., default model, auto-approve) have a home.
-	_ = config
+	if config != nil {
+		if config.Copilot.DefaultModel != "" {
+			opts.Model = config.Copilot.DefaultModel
+		}
+		if config.Copilot.AllowAll {
+			opts.AllowAll = true
+		}
+	}
 	return opts
 }
 

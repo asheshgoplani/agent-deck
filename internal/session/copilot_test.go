@@ -72,7 +72,11 @@ func TestNewCopilotOptions_Defaults(t *testing.T) {
 
 func TestNewCopilotOptions_WithConfig(t *testing.T) {
 	cfg := &UserConfig{
-		Copilot: CopilotSettings{EnvFile: "/tmp/copilot.env"},
+		Copilot: CopilotSettings{
+			EnvFile:      "/tmp/copilot.env",
+			DefaultModel: "gpt-5",
+			AllowAll:     true,
+		},
 	}
 	opts := NewCopilotOptions(cfg)
 	if opts == nil {
@@ -80,6 +84,12 @@ func TestNewCopilotOptions_WithConfig(t *testing.T) {
 	}
 	if opts.SessionMode != "new" {
 		t.Errorf("SessionMode = %q, want %q", opts.SessionMode, "new")
+	}
+	if opts.Model != "gpt-5" {
+		t.Errorf("Model = %q, want %q", opts.Model, "gpt-5")
+	}
+	if !opts.AllowAll {
+		t.Error("AllowAll = false, want true")
 	}
 }
 
