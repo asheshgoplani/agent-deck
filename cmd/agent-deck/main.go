@@ -225,6 +225,9 @@ func main() {
 
 	var webEnabled bool
 	var webArgs []string
+	// webHeadless: true when --no-tui is passed to the `web` subcommand.
+	// Skips bubbletea boot (the bulk of ~60 MB RSS) and runs HTTP-server only.
+	var webHeadless bool
 
 	// Handle subcommands
 	if len(args) > 0 {
@@ -304,8 +307,12 @@ func main() {
 			return
 		case "web":
 			webEnabled = true
-			webArgs = append(webArgs, args[1:]...)
-			// fall through to TUI launch below
+			// Extract --no-tui out of webArgs before buildWebServer's flag set
+			// sees it. The TUI-vs-headless decision is made at bootstrap (it
+			// controls whether bubbletea ever boots), so it lives outside the
+			// per-server flag set.
+			webHeadless, webArgs = extractNoTuiFlag(args[1:])
+			// fall through to TUI launch below (or headless server boot if --no-tui)
 		case "uninstall":
 			handleUninstall(args[1:])
 			return
@@ -347,7 +354,8 @@ func main() {
 
 	// Block TUI launch inside a managed session to prevent infinite nesting.
 	// CLI commands (add, session start/stop, mcp attach, etc.) still work fine.
-	if isNestedSession() {
+	// In headless web mode (--no-tui), no TUI launches, so this guard is skipped.
+	if !webHeadless && isNestedSession() {
 		fmt.Fprintln(os.Stderr, "Error: Cannot launch the agent-deck TUI inside an agent-deck session.")
 		fmt.Fprintln(os.Stderr, "This would create a recursive nested session.")
 		fmt.Fprintln(os.Stderr, "")
@@ -364,8 +372,9 @@ func main() {
 	// Block TUI launch inside a *generic* (non-agentdeck) tmux session (#560).
 	// Detach semantics get confusing when nested: Ctrl+Q returns to the outer
 	// tmux instead of a clean shell. CLI subcommands still work inside tmux —
-	// this guard only fires on the interactive TUI path.
-	if isOuterTmuxWithoutOptIn() {
+	// this guard only fires on the interactive TUI path. Headless web mode
+	// (--no-tui) skips it for the same reason: no TUI, no detach surprise.
+	if !webHeadless && isOuterTmuxWithoutOptIn() {
 		fmt.Fprintln(os.Stderr, "Error: The agent-deck TUI is designed to run OUTSIDE of tmux.")
 		fmt.Fprintln(os.Stderr, "You are inside a tmux session, so Ctrl+Q detach and nested")
 		fmt.Fprintln(os.Stderr, "tmux behavior will be surprising. agent-deck manages its own")
@@ -389,10 +398,14 @@ func main() {
 	theme := session.ResolveTheme()
 	ui.InitTheme(theme)
 
-	// Check for updates and prompt user before launching TUI
-	if promptForUpdate() {
-		// Update was performed, exit so user can restart with new version
-		return
+	// Check for updates and prompt user before launching TUI. Headless web
+	// mode (--no-tui) skips this — it's an interactive prompt that would
+	// hang a non-TTY process.
+	if !webHeadless {
+		if promptForUpdate() {
+			// Update was performed, exit so user can restart with new version
+			return
+		}
 	}
 
 	// Check if tmux is available (with fallback path search)
@@ -694,7 +707,9 @@ func main() {
 		}
 	}
 
-	// Start web server alongside TUI if "web" subcommand was used
+	// Start web server alongside TUI if "web" subcommand was used.
+	// When --no-tui is also set, run the HTTP server in the foreground and
+	// skip bubbletea entirely — the perf win that motivated this flag.
 	if webEnabled {
 		effectiveProfile := session.GetEffectiveProfile(profile)
 		fallbackMenuData := web.NewSessionDataService(effectiveProfile)
@@ -709,6 +724,28 @@ func main() {
 		if costStore != nil {
 			server.SetCostStore(costStore)
 		}
+
+		if webHeadless {
+			// Headless: block on server.Start() and skip bubbletea. The
+			// HTTP server uses SessionDataService (storage-backed) as a
+			// fallback when MemoryMenuData has no snapshot, so the web UI
+			// reads live data from storage on each request.
+			fmt.Println("Headless mode: TUI disabled")
+			fmt.Printf("Web server: http://%s\n", server.Addr())
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = server.Shutdown(ctx)
+			}()
+			if err := server.Start(); err != nil {
+				logging.ForComponent(logging.CompWeb).Error("web_server_error",
+					slog.String("error", err.Error()))
+				fmt.Fprintf(os.Stderr, "Error: web server: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		go func() {
 			if err := server.Start(); err != nil {
 				logging.ForComponent(logging.CompWeb).Error("web_server_error",
