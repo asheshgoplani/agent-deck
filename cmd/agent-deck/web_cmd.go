@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -33,6 +34,10 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
+		fmt.Println("  --no-tui")
+		fmt.Println("    \tRun in headless mode (HTTP server only, no bubbletea TUI).")
+		fmt.Println("    \tSkips ~60 MB of TUI RSS overhead. Sessions remain manageable")
+		fmt.Println("    \tvia the web UI; storage is the source of truth.")
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck web")
@@ -40,6 +45,8 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		fmt.Println("  agent-deck web --read-only")
 		fmt.Println("  agent-deck web --push")
 		fmt.Println("  agent-deck web --push --push-test-every 10s")
+		fmt.Println("  agent-deck web --no-tui                 # headless, perf win")
+		fmt.Println("  agent-deck web --no-tui --listen 127.0.0.1:9000")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -105,4 +112,28 @@ func resolveMutationsEnabled(readOnly bool) bool {
 		return false
 	}
 	return session.GetWebMutationsEnabled()
+}
+
+// extractNoTuiFlag pulls --no-tui out of args before buildWebServer's flag
+// set sees it. The TUI-vs-headless decision is made at the bootstrap layer
+// in main.go (it controls whether bubbletea ever boots), so it lives outside
+// the per-server flag set.
+//
+// Supports: --no-tui, --no-tui=true, --no-tui=false. Returns the parsed
+// boolean and args with all --no-tui tokens removed (always a non-nil slice).
+func extractNoTuiFlag(args []string) (bool, []string) {
+	noTui := false
+	remaining := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case a == "--no-tui":
+			noTui = true
+		case strings.HasPrefix(a, "--no-tui="):
+			v := strings.TrimPrefix(a, "--no-tui=")
+			noTui = v == "true" || v == "1"
+		default:
+			remaining = append(remaining, a)
+		}
+	}
+	return noTui, remaining
 }
