@@ -204,7 +204,7 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 }
 
 // CreateSession implements web.SessionMutator.
-func (s *fixtureStore) CreateSession(title, tool, projectPath, groupPath string) (string, error) {
+func (s *fixtureStore) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := fmt.Sprintf("sess-%03d", s.nextID)

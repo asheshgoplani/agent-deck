@@ -892,6 +892,9 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 
 	// Options-level flags
 	if opts != nil {
+		if opts.Model != "" {
+			flags = append(flags, "--model "+shellescape.Quote(opts.Model))
+		}
 		if opts.SkipPermissions {
 			flags = append(flags, "--dangerously-skip-permissions")
 		} else if opts.AutoMode {
@@ -1082,6 +1085,14 @@ func (i *Instance) resolveCodexYoloFlag() string {
 	return ""
 }
 
+func (i *Instance) resolveCodexModelFlag() string {
+	opts := i.GetCodexOptions()
+	if opts != nil && strings.TrimSpace(opts.Model) != "" {
+		return " --model " + shellescape.Quote(strings.TrimSpace(opts.Model))
+	}
+	return ""
+}
+
 func (i *Instance) resolveCodexCommand(baseCommand string) string {
 	command := strings.TrimSpace(baseCommand)
 	if i.Tool == "codex" && (command == "" || command == "codex") {
@@ -1190,6 +1201,7 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	envPrefix += agentdeckEnvPrefix
 
 	yoloFlag := i.resolveCodexYoloFlag()
+	modelFlag := i.resolveCodexModelFlag()
 	command := i.resolveCodexCommand(baseCommand)
 	codexHome := getCodexHomeDirForCommand(command)
 
@@ -1213,11 +1225,11 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	if i.CodexSessionID != "" {
-		return envPrefix + fmt.Sprintf("%s%s resume %s",
-			command, yoloFlag, i.CodexSessionID)
+		return envPrefix + fmt.Sprintf("%s%s%s resume %s",
+			command, yoloFlag, modelFlag, i.CodexSessionID)
 	}
 
-	return envPrefix + command + yoloFlag
+	return envPrefix + command + yoloFlag + modelFlag
 }
 
 // codexRolloutExists reports whether Codex has flushed a rollout JSONL for
@@ -5200,6 +5212,53 @@ func (i *Instance) SetGeminiModel(model string) error {
 		return i.Restart()
 	}
 	return nil
+}
+
+// SupportsLaunchModel reports whether a newly-created session can receive an
+// explicit model override through Agent Deck's generic session creation path.
+func SupportsLaunchModel(tool string) bool {
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool)
+}
+
+// ApplyLaunchModel stores a per-session model override in the tool-specific
+// field that the relevant command builder already reads on start/restart.
+func (i *Instance) ApplyLaunchModel(model string) error {
+	model = strings.TrimSpace(model)
+	if i == nil || model == "" {
+		return nil
+	}
+
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		opts := i.GetClaudeOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewClaudeOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetClaudeOptions(opts)
+	case i.Tool == "gemini":
+		i.GeminiModel = model
+		return nil
+	case i.Tool == "opencode":
+		opts := i.GetOpenCodeOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewOpenCodeOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetOpenCodeOptions(opts)
+	case IsCodexCompatible(i.Tool):
+		opts := i.GetCodexOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewCodexOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetCodexOptions(opts)
+	default:
+		return fmt.Errorf("model selection is not supported for tool %q", i.Tool)
+	}
 }
 
 // CanRestart returns true if the session can be restarted

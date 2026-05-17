@@ -39,6 +39,7 @@ func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
 	instBackend.GroupPath = "work/backend"
 	instBackend.Status = session.StatusWaiting
 	instBackend.Order = 0
+	instBackend.GeminiModel = "gemini-3.1-pro-preview"
 
 	instPersonal := session.NewInstanceWithGroupAndTool("personal", "/tmp/personal", "personal", "shell")
 	instPersonal.ID = "sess-personal"
@@ -116,6 +117,13 @@ func TestSessionDataService_LoadMenuSnapshot(t *testing.T) {
 
 	if snapshot.Items[3].Session.Status != session.StatusWaiting {
 		t.Fatalf("expected sess-backend waiting, got %s", snapshot.Items[3].Session.Status)
+	}
+	if snapshot.Items[3].Session.ModelID != "gemini-3.1-pro-preview" {
+		t.Fatalf("expected model id gemini-3.1-pro-preview, got %q", snapshot.Items[3].Session.ModelID)
+	}
+	if snapshot.Items[3].Session.Model != "Gemini Pro" || snapshot.Items[3].Session.ModelVersion != "3.1 Preview" {
+		t.Fatalf("unexpected model fields: model=%q version=%q",
+			snapshot.Items[3].Session.Model, snapshot.Items[3].Session.ModelVersion)
 	}
 }
 

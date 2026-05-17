@@ -136,6 +136,10 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9: // HT = Tab
+		if shiftHeld {
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyTab}
 		return &msg
 	case 27: // ESC
@@ -218,6 +222,10 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9:
+		if shiftHeld {
+			msg := tea.KeyMsg{Type: tea.KeyShiftTab}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyTab}
 		return &msg
 	case 27:
@@ -470,6 +478,8 @@ func (c *csiuReader) translate(final bool) []byte {
 						out = append(out, '\r')
 					case tea.KeyTab:
 						out = append(out, '\t')
+					case tea.KeyShiftTab:
+						out = append(out, []byte("\x1b[Z")...)
 					case tea.KeyEsc:
 						out = append(out, 0x1b)
 					case tea.KeyBackspace:
@@ -508,6 +518,8 @@ func (c *csiuReader) translate(final bool) []byte {
 			out = append(out, '\r')
 		case tea.KeyTab:
 			out = append(out, '\t')
+		case tea.KeyShiftTab:
+			out = append(out, []byte("\x1b[Z")...)
 		case tea.KeyEsc:
 			out = append(out, 0x1b)
 		case tea.KeyBackspace:

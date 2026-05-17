@@ -5231,32 +5231,21 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, cmd
 	}
 
-	// When the path suggestions dropdown is in active arrow-key mode, the
-	// dialog must consume navigation keys before the outer handlers run.
-	// Enter is special: apply the highlighted entry, dismiss the dropdown,
-	// then fall through to the form-submit handler below — unless "Type
-	// custom" is highlighted, in which case we just close the dropdown
-	// (the user wants to type a path, not submit).
 	if h.newDialog.IsSuggestionsActive() {
-		if msg.String() == "enter" {
-			if h.newDialog.IsTypeCustomHighlighted() {
-				h.newDialog.ApplyHighlightedSuggestion()
-				return h, nil
-			}
-			h.newDialog.ApplyHighlightedSuggestion()
-			h.newDialog.DismissSuggestions() // hide dropdown until user types
-			// fall through to the "enter" case below to validate + create.
-		} else {
-			var cmd tea.Cmd
-			h.newDialog, cmd = h.newDialog.Update(msg)
-			return h, cmd
-		}
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
+	}
+
+	if h.newDialog.IsModelSuggestionsActive() {
+		var cmd tea.Cmd
+		h.newDialog, cmd = h.newDialog.Update(msg)
+		return h, cmd
 	}
 
 	switch msg.String() {
 	case "enter":
-		// When multi-repo path list is focused, let the dialog handle enter (edit/save path).
-		if h.newDialog.IsMultiRepoEditing() {
+		if h.newDialog.shouldHandleEnterLocally() {
 			var cmd tea.Cmd
 			h.newDialog, cmd = h.newDialog.Update(msg)
 			return h, cmd
@@ -5272,6 +5261,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
+		launchModelID := h.newDialog.GetLaunchModelID()
 
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
@@ -5328,7 +5318,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !worktreeEnabled {
 			if _, err := os.Stat(path); os.IsNotExist(err) {
 				h.newDialog.Hide()
-				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, parentSessionID, parentProjectPath)
+				h.confirmDialog.ShowCreateDirectory(path, name, command, groupPath, toolOptionsJSON, claudeExtraArgs, claudeStartQuery, launchModelID, parentSessionID, parentProjectPath)
 				return h, nil
 			}
 		}
@@ -5381,6 +5371,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			toolOptionsJSON,
 			claudeExtraArgs,
 			claudeStartQuery,
+			launchModelID,
 			multiRepoEnabled,
 			additionalPaths,
 			parentSessionID,
@@ -7079,7 +7070,7 @@ func (h *Home) confirmAction() tea.Cmd {
 
 // confirmCreateDirectory handles the "yes" action for ConfirmCreateDirectory.
 func (h *Home) confirmCreateDirectory() tea.Cmd {
-	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
+	name, path, command, groupPath, pendingToolOpts, pendingExtraArgs, pendingStartQuery, pendingLaunchModelID, parentSessionID, parentProjectPath := h.confirmDialog.GetPendingSession()
 	h.confirmDialog.Hide()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		h.setError(fmt.Errorf("failed to create directory: %w", err))
@@ -7098,6 +7089,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		pendingToolOpts,
 		pendingExtraArgs,
 		pendingStartQuery,
+		pendingLaunchModelID,
 		false,
 		nil,
 		parentSessionID,
@@ -8141,6 +8133,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	toolOptionsJSON json.RawMessage,
 	claudeExtraArgs []string,
 	claudeStartQuery string,
+	launchModelID string,
 	multiRepoEnabled bool,
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
@@ -8197,6 +8190,12 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 		// Apply generic tool options (claude, codex, etc.)
 		if len(toolOptionsJSON) > 0 {
 			inst.ToolOptionsJSON = toolOptionsJSON
+		}
+
+		if launchModelID != "" {
+			if err := inst.ApplyLaunchModel(launchModelID); err != nil {
+				return sessionCreatedMsg{err: fmt.Errorf("failed to apply model override: %w", err), tempID: tempID}
+			}
 		}
 
 		// Apply claude extra CLI tokens (claude-only, ignored for other tools).
@@ -8502,6 +8501,7 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		geminiYoloMode, false, toolOptionsJSON,
 		nil,        // no extra claude args (recent-session path)
 		"",         // no claude startup query (recent-session path)
+		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
 		"", // no placeholder
@@ -8580,6 +8580,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, false, nil,
 		nil, // no extra claude args
 		"",  // no claude startup query
+		"",  // no explicit model override
 		false, nil,
 		"", "",
 		"",
@@ -10461,6 +10462,44 @@ func renderDetectedAtLine(b *strings.Builder, detectedAt time.Time) {
 	dimStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
 	b.WriteString(labelStyle.Render("Detected:"))
 	b.WriteString(dimStyle.Render(" " + formatRelativeTime(detectedAt)))
+	b.WriteString("\n")
+}
+
+// renderLaunchModelInfoLines renders the per-session model/version override,
+// or an explicit tool-default marker when the tool supports model selection.
+func renderLaunchModelInfoLines(b *strings.Builder, inst *session.Instance) {
+	if inst == nil || !session.SupportsLaunchModel(inst.Tool) {
+		return
+	}
+
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	valueStyle := lipgloss.NewStyle().Foreground(ColorAccent)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
+
+	info := inst.LaunchModelInfo()
+	if info.ModelID == "" {
+		b.WriteString(labelStyle.Render("Model:   "))
+		b.WriteString(dimStyle.Render("tool default"))
+		b.WriteString("\n")
+		return
+	}
+
+	model := info.Model
+	if model == "" {
+		model = info.ModelID
+	}
+	b.WriteString(labelStyle.Render("Model:   "))
+	b.WriteString(valueStyle.Render(model))
+	b.WriteString("\n")
+
+	if info.Version != "" {
+		b.WriteString(labelStyle.Render("Version: "))
+		b.WriteString(valueStyle.Render(info.Version))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(labelStyle.Render("Model ID:"))
+	b.WriteString(valueStyle.Render(" " + info.ModelID))
 	b.WriteString("\n")
 }
 
@@ -12560,6 +12599,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(statusStyle.Render("○ Not connected"))
 			b.WriteString("\n")
 		}
+		renderLaunchModelInfoLines(&b, selected)
 
 		// MCP servers - compact format with source indicators and sync status
 		mcpInfo := selected.GetMCPInfo()
@@ -12747,16 +12787,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(labelStyle.Render("Session: "))
 			b.WriteString(valueStyle.Render(selected.GeminiSessionID))
 			b.WriteString("\n")
-
-			// Display active model
-			modelDisplay := "auto"
-			if selected.GeminiModel != "" {
-				modelDisplay = selected.GeminiModel
-			}
-			accentStyle := lipgloss.NewStyle().Foreground(ColorAccent)
-			b.WriteString(labelStyle.Render("Model:   "))
-			b.WriteString(accentStyle.Render(modelDisplay))
-			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
 
 			// MCPs for Gemini (global only)
 			mcpInfo := selected.GetMCPInfo()
@@ -12766,6 +12797,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(labelStyle.Render("Status:  "))
 			b.WriteString(statusStyle.Render("○ Not connected"))
 			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
 		}
 	}
 
@@ -12794,6 +12826,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			b.WriteString(labelStyle.Render("Session: "))
 			b.WriteString(valueStyle.Render(selected.OpenCodeSessionID))
 			b.WriteString("\n")
+			renderLaunchModelInfoLines(&b, selected)
 
 			// Show when session was detected
 			if !selected.OpenCodeDetectedAt.IsZero() {
@@ -12816,12 +12849,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 				b.WriteString(labelStyle.Render("Status:  "))
 				b.WriteString(statusStyle.Render("◐ Detecting session..."))
 				b.WriteString("\n")
+				renderLaunchModelInfoLines(&b, selected)
 			} else {
 				// Detection completed but no session found
 				statusStyle := lipgloss.NewStyle().Foreground(ColorText)
 				b.WriteString(labelStyle.Render("Status:  "))
 				b.WriteString(statusStyle.Render("○ No session found"))
 				b.WriteString("\n")
+				renderLaunchModelInfoLines(&b, selected)
 			}
 		}
 	}
@@ -12833,6 +12868,7 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString("\n")
 
 		renderToolStatusLine(&b, selected.CodexSessionID, selected.CodexDetectedAt, true)
+		renderLaunchModelInfoLines(&b, selected)
 		if selected.CodexSessionID != "" {
 			renderDetectedAtLine(&b, selected.CodexDetectedAt)
 		}

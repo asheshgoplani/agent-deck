@@ -153,6 +153,41 @@ func TestIndexAppRoot(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
+	data, err := embeddedStaticFiles.ReadFile("static/app/CreateSessionDialog.js")
+	if err != nil {
+		t.Fatalf("read CreateSessionDialog.js: %v", err)
+	}
+	body := string(data)
+
+	for _, want := range []string{
+		"MODEL_ID_CATALOG",
+		"<label>MODEL ID</label>",
+		`<option value="">Tool default</option>`,
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"o3-pro",
+		"claude-sonnet-4-6",
+		"claude-opus-4-7",
+		"claude-haiku-4-5-20251001",
+		"gemini-3.1-pro-preview",
+		"gemini-3-flash-preview",
+		"gemini-2.5-flash-lite",
+		"openai/gpt-5.5",
+		"anthropic/claude-sonnet-4-6",
+		"Custom model ID",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("CreateSessionDialog.js missing %q", want)
+		}
+	}
+	if strings.Contains(body, "<label>VERSION</label>") {
+		t.Fatal("web session creation should use model IDs directly, not a separate version selector")
+	}
+}
+
 // TestNoTailwindPlayCDN is the regression gate for Phase 1 / Plan 03 (PERF-01).
 // The Tailwind Play CDN runtime (vendor/tailwind.js, 397 KB) was deleted in
 // favor of a build-time compiled /static/styles.css file (~8 KB gzipped).

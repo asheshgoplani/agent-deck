@@ -61,6 +61,13 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			expected: []string{"--dangerously-skip-permissions"},
 		},
 		{
+			name: "model only",
+			opts: ClaudeOptions{
+				Model: "claude-sonnet-4-6",
+			},
+			expected: []string{"--model", "claude-sonnet-4-6"},
+		},
+		{
 			name: "chrome only",
 			opts: ClaudeOptions{
 				UseChrome: true,
@@ -78,11 +85,12 @@ func TestClaudeOptions_ToArgs(t *testing.T) {
 			name: "all flags",
 			opts: ClaudeOptions{
 				SessionMode:     "continue",
+				Model:           "claude-sonnet-4-6",
 				SkipPermissions: true,
 				UseChrome:       true,
 				UseTeammateMode: true,
 			},
-			expected: []string{"-c", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
+			expected: []string{"-c", "--model", "claude-sonnet-4-6", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
 			name: "allow skip permissions only",
@@ -160,6 +168,13 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			expected: []string{"--dangerously-skip-permissions"},
 		},
 		{
+			name: "model",
+			opts: ClaudeOptions{
+				Model: "claude-sonnet-4-6",
+			},
+			expected: []string{"--model", "claude-sonnet-4-6"},
+		},
+		{
 			name: "chrome",
 			opts: ClaudeOptions{
 				UseChrome: true,
@@ -177,10 +192,11 @@ func TestClaudeOptions_ToArgsForFork(t *testing.T) {
 			name: "all flags",
 			opts: ClaudeOptions{
 				SkipPermissions: true,
+				Model:           "claude-sonnet-4-6",
 				UseChrome:       true,
 				UseTeammateMode: true,
 			},
-			expected: []string{"--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
+			expected: []string{"--model", "claude-sonnet-4-6", "--dangerously-skip-permissions", "--chrome", "--teammate-mode", "tmux"},
 		},
 		{
 			name: "allow skip permissions for fork",
@@ -319,6 +335,7 @@ func TestNewClaudeOptions_DefaultDangerousMode(t *testing.T) {
 func TestMarshalToolOptions(t *testing.T) {
 	opts := &ClaudeOptions{
 		SessionMode:     "continue",
+		Model:           "claude-sonnet-4-6",
 		SkipPermissions: true,
 		UseChrome:       false,
 	}
@@ -347,6 +364,9 @@ func TestMarshalToolOptions(t *testing.T) {
 	if innerOpts.SessionMode != "continue" {
 		t.Errorf("expected SessionMode='continue', got %q", innerOpts.SessionMode)
 	}
+	if innerOpts.Model != "claude-sonnet-4-6" {
+		t.Errorf("expected Model='claude-sonnet-4-6', got %q", innerOpts.Model)
+	}
 	if !innerOpts.SkipPermissions {
 		t.Error("expected SkipPermissions=true")
 	}
@@ -367,6 +387,7 @@ func TestUnmarshalClaudeOptions(t *testing.T) {
 	opts := &ClaudeOptions{
 		SessionMode:     "resume",
 		ResumeSessionID: "test-session-123",
+		Model:           "claude-sonnet-4-6",
 		SkipPermissions: true,
 		UseChrome:       true,
 		UseTeammateMode: true,
@@ -388,6 +409,9 @@ func TestUnmarshalClaudeOptions(t *testing.T) {
 	}
 	if result.ResumeSessionID != "test-session-123" {
 		t.Errorf("expected ResumeSessionID='test-session-123', got %q", result.ResumeSessionID)
+	}
+	if result.Model != "claude-sonnet-4-6" {
+		t.Errorf("expected Model='claude-sonnet-4-6', got %q", result.Model)
 	}
 	if !result.SkipPermissions {
 		t.Error("expected SkipPermissions=true")
@@ -465,6 +489,11 @@ func TestCodexOptions_ToArgs(t *testing.T) {
 			opts:     CodexOptions{YoloMode: boolPtr(false)},
 			expected: nil,
 		},
+		{
+			name:     "model",
+			opts:     CodexOptions{Model: "gpt-5"},
+			expected: []string{"--model", "gpt-5"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -505,7 +534,7 @@ func TestNewCodexOptions_NilConfig(t *testing.T) {
 }
 
 func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
-	original := &CodexOptions{YoloMode: boolPtr(true)}
+	original := &CodexOptions{Model: "gpt-5", YoloMode: boolPtr(true)}
 
 	data, err := MarshalToolOptions(original)
 	if err != nil {
@@ -519,6 +548,9 @@ func TestCodexOptions_MarshalUnmarshal(t *testing.T) {
 
 	if restored.YoloMode == nil || !*restored.YoloMode {
 		t.Error("expected YoloMode=true after roundtrip")
+	}
+	if restored.Model != "gpt-5" {
+		t.Errorf("expected Model=gpt-5 after roundtrip, got %q", restored.Model)
 	}
 }
 
@@ -567,6 +599,7 @@ func TestCodexOptions_RoundTrip_NilYolo(t *testing.T) {
 func TestClaudeOptions_RoundTrip_AllowSkipPermissions(t *testing.T) {
 	original := &ClaudeOptions{
 		SessionMode:          "new",
+		Model:                "claude-sonnet-4-6",
 		AllowSkipPermissions: true,
 	}
 
@@ -582,6 +615,9 @@ func TestClaudeOptions_RoundTrip_AllowSkipPermissions(t *testing.T) {
 
 	if !restored.AllowSkipPermissions {
 		t.Error("expected AllowSkipPermissions=true after roundtrip")
+	}
+	if restored.Model != "claude-sonnet-4-6" {
+		t.Errorf("expected Model=claude-sonnet-4-6 after roundtrip, got %q", restored.Model)
 	}
 	if restored.SkipPermissions {
 		t.Error("expected SkipPermissions=false after roundtrip")

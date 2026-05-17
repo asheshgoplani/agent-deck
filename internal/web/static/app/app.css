@@ -314,6 +314,10 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .work-head .status-chip.running .d { background: var(--status-running); box-shadow: 0 0 6px var(--status-running); }
 .work-head .status-chip.waiting .d { background: var(--status-waiting); box-shadow: 0 0 6px var(--status-waiting); }
 .work-head .status-chip.error .d   { background: var(--status-error);   box-shadow: 0 0 6px var(--status-error); }
+.work-head .status-chip.model {
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted);
+}
 
 .work-head .spacer { flex: 0 0 10px; }
 .work-head .actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }

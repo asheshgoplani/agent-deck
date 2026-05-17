@@ -14,7 +14,7 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn  func(title, tool, projectPath, groupPath string) (string, error)
+	createSessionFn  func(title, tool, projectPath, groupPath, modelID string) (string, error)
 	startSessionFn   func(id string) error
 	stopSessionFn    func(id string) error
 	restartSessionFn func(id string) error
@@ -25,11 +25,11 @@ type fakeMutator struct {
 	deleteGroupFn    func(groupPath string) error
 }
 
-func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath string) (string, error) {
+func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
 	if f.createSessionFn == nil {
 		return "", fmt.Errorf("createSession not configured")
 	}
-	return f.createSessionFn(title, tool, projectPath, groupPath)
+	return f.createSessionFn(title, tool, projectPath, groupPath, modelID)
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -142,7 +142,7 @@ func TestSessionsCollectionPOSTCreatesSession(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createSessionFn: func(title, tool, projectPath, groupPath string) (string, error) {
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
 			return "new-id", nil
 		},
 	}
@@ -158,6 +158,35 @@ func TestSessionsCollectionPOSTCreatesSession(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "new-id") {
 		t.Errorf("expected session id in response, got: %s", rr.Body.String())
+	}
+}
+
+func TestSessionsCollectionPOSTForwardsModelID(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotModel string
+	srv.mutator = &fakeMutator{
+		createSessionFn: func(title, tool, projectPath, groupPath, modelID string) (string, error) {
+			gotModel = modelID
+			return "new-id", nil
+		},
+	}
+
+	body := strings.NewReader(`{"title":"Test","tool":"claude","projectPath":"/tmp","modelId":"claude-sonnet-4-6"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if gotModel != "claude-sonnet-4-6" {
+		t.Fatalf("modelID = %q, want %q", gotModel, "claude-sonnet-4-6")
 	}
 }
 

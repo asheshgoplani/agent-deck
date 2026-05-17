@@ -954,6 +954,8 @@ func handleSessionShow(profile string, args []string) {
 		"tool":                 inst.Tool,
 		"created_at":           inst.CreatedAt.Format(time.RFC3339),
 	}
+	modelInfo := inst.LaunchModelInfo()
+	addModelInfoJSON(jsonData, modelInfo)
 
 	if inst.Command != "" {
 		jsonData["command"] = inst.Command
@@ -1012,6 +1014,17 @@ func handleSessionShow(profile string, args []string) {
 	}
 
 	sb.WriteString(fmt.Sprintf("Tool:    %s\n", inst.Tool))
+	if modelInfo.ModelID != "" {
+		if modelInfo.Model != "" {
+			sb.WriteString(fmt.Sprintf("Model:   %s\n", modelInfo.Model))
+		}
+		if modelInfo.Version != "" {
+			sb.WriteString(fmt.Sprintf("Version: %s\n", modelInfo.Version))
+		}
+		sb.WriteString(fmt.Sprintf("ModelID: %s\n", modelInfo.ModelID))
+	} else if session.SupportsLaunchModel(inst.Tool) {
+		sb.WriteString("Model:   tool default\n")
+	}
 
 	if inst.Command != "" {
 		sb.WriteString(fmt.Sprintf("Command: %s\n", inst.Command))

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -18,12 +19,21 @@ type WebMutator struct{ h *Home }
 func NewWebMutator(h *Home) *WebMutator { return &WebMutator{h: h} }
 
 // CreateSession creates and starts a new session, persisting it to storage.
-func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath string) (string, error) {
+func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
 	var inst *session.Instance
 	if groupPath != "" {
 		inst = session.NewInstanceWithGroupAndTool(title, projectPath, groupPath, tool)
 	} else {
 		inst = session.NewInstanceWithTool(title, projectPath, tool)
+	}
+	if tool != "" && tool != "shell" {
+		inst.Command = tool
+	}
+
+	if modelID = strings.TrimSpace(modelID); modelID != "" {
+		if err := inst.ApplyLaunchModel(modelID); err != nil {
+			return "", err
+		}
 	}
 
 	if err := inst.Start(); err != nil {

@@ -1459,6 +1459,94 @@ func TestBuildCodexCommand_UsesConfiguredCommandForBuiltinCodex(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_ModelOption(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("codex-model", "/tmp/codex-model", "codex")
+	if err := inst.SetCodexOptions(&CodexOptions{Model: "gpt-5"}); err != nil {
+		t.Fatalf("SetCodexOptions: %v", err)
+	}
+
+	cmd := inst.buildCodexCommand("codex")
+	if !strings.Contains(cmd, "--model gpt-5") {
+		t.Fatalf("buildCodexCommand should include selected model, got %q", cmd)
+	}
+}
+
+func TestApplyLaunchModel_SetsToolSpecificFields(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", originalHome)
+	ClearUserConfigCache()
+	defer ClearUserConfigCache()
+
+	tests := []struct {
+		name string
+		tool string
+		want func(t *testing.T, inst *Instance)
+	}{
+		{
+			name: "claude",
+			tool: "claude",
+			want: func(t *testing.T, inst *Instance) {
+				t.Helper()
+				opts := inst.GetClaudeOptions()
+				if opts == nil || opts.Model != "claude-sonnet-4-6" {
+					t.Fatalf("Claude model = %#v, want claude-sonnet-4-6", opts)
+				}
+			},
+		},
+		{
+			name: "gemini",
+			tool: "gemini",
+			want: func(t *testing.T, inst *Instance) {
+				t.Helper()
+				if inst.GeminiModel != "claude-sonnet-4-6" {
+					t.Fatalf("GeminiModel = %q, want claude-sonnet-4-6", inst.GeminiModel)
+				}
+			},
+		},
+		{
+			name: "codex",
+			tool: "codex",
+			want: func(t *testing.T, inst *Instance) {
+				t.Helper()
+				opts := inst.GetCodexOptions()
+				if opts == nil || opts.Model != "claude-sonnet-4-6" {
+					t.Fatalf("Codex model = %#v, want claude-sonnet-4-6", opts)
+				}
+			},
+		},
+		{
+			name: "opencode",
+			tool: "opencode",
+			want: func(t *testing.T, inst *Instance) {
+				t.Helper()
+				opts := inst.GetOpenCodeOptions()
+				if opts == nil || opts.Model != "claude-sonnet-4-6" {
+					t.Fatalf("OpenCode model = %#v, want claude-sonnet-4-6", opts)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := NewInstanceWithTool("model-"+tc.tool, "/tmp/model", tc.tool)
+			if err := inst.ApplyLaunchModel("claude-sonnet-4-6"); err != nil {
+				t.Fatalf("ApplyLaunchModel: %v", err)
+			}
+			tc.want(t, inst)
+		})
+	}
+}
+
 func TestBuildCodexCommand_ConfiguredCommandResume(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalHome := os.Getenv("HOME")
@@ -2893,6 +2981,15 @@ func TestBuildClaudeExtraFlags_NilOpts(t *testing.T) {
 	}
 	if strings.Contains(flags, "--allow-dangerously-skip-permissions") {
 		t.Errorf("nil opts should not add permission flags, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_Model(t *testing.T) {
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(&ClaudeOptions{Model: "claude-sonnet-4-6"})
+
+	if !strings.Contains(flags, "--model claude-sonnet-4-6") {
+		t.Fatalf("expected --model flag, got %q", flags)
 	}
 }
 

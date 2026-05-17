@@ -20,6 +20,10 @@ type ClaudeOptions struct {
 	SessionMode string `json:"session_mode,omitempty"`
 	// ResumeSessionID is the session ID for -r flag (only when SessionMode="resume")
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	// Model overrides the Claude model for this session. Aliases like "sonnet",
+	// "opus", and "haiku" let Claude Code resolve the latest version; full
+	// model IDs pin a specific version.
+	Model string `json:"model,omitempty"`
 	// SkipPermissions adds --dangerously-skip-permissions flag
 	SkipPermissions bool `json:"skip_permissions,omitempty"`
 	// AllowSkipPermissions adds --allow-dangerously-skip-permissions flag
@@ -61,6 +65,10 @@ func (o *ClaudeOptions) ToArgs() []string {
 	}
 	// "new" or empty = default behavior, no special flag
 
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+
 	// Permission flags (mutually exclusive, SkipPermissions takes precedence)
 	if o.SkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
@@ -84,6 +92,9 @@ func (o *ClaudeOptions) ToArgs() []string {
 func (o *ClaudeOptions) ToArgsForFork() []string {
 	var args []string
 
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
 	if o.SkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	} else if o.AutoMode {
@@ -118,6 +129,8 @@ func NewClaudeOptions(config *UserConfig) *ClaudeOptions {
 
 // CodexOptions holds launch options for Codex CLI sessions
 type CodexOptions struct {
+	// Model overrides the Codex model for this session (for example, "gpt-5").
+	Model string `json:"model,omitempty"`
 	// YoloMode enables --yolo flag (bypass approvals and sandbox)
 	// nil = inherit from global config, true/false = explicit override
 	YoloMode *bool `json:"yolo_mode,omitempty"`
@@ -131,6 +144,9 @@ func (o *CodexOptions) ToolName() string {
 // ToArgs returns command-line arguments based on options
 func (o *CodexOptions) ToArgs() []string {
 	var args []string
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
 	if o.YoloMode != nil && *o.YoloMode {
 		args = append(args, "--yolo")
 	}

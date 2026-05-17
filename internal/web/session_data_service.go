@@ -59,6 +59,9 @@ type MenuSession struct {
 	ID              string         `json:"id"`
 	Title           string         `json:"title"`
 	Tool            string         `json:"tool"`
+	ModelID         string         `json:"modelId,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	ModelVersion    string         `json:"modelVersion,omitempty"`
 	Status          session.Status `json:"status"`
 	GroupPath       string         `json:"groupPath"`
 	ProjectPath     string         `json:"projectPath"`
@@ -143,11 +146,15 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 		tmuxName = tmuxSess.Name
 	}
+	modelInfo := inst.LaunchModelInfo()
 
 	return &MenuSession{
 		ID:              inst.ID,
 		Title:           inst.Title,
 		Tool:            inst.GetToolThreadSafe(),
+		ModelID:         modelInfo.ModelID,
+		Model:           modelInfo.Model,
+		ModelVersion:    modelInfo.Version,
 		Status:          inst.GetStatusThreadSafe(),
 		GroupPath:       inst.GroupPath,
 		ProjectPath:     inst.ProjectPath,
