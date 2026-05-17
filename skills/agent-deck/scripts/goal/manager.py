@@ -32,9 +32,25 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Retry policy for nudge delivery (regression: issue #976).
+# An autonomous ScheduleWakeup loop went silent for ~5h when a burst of
+# upstream 5xx errors landed on the wake-up that nudges the worker. The
+# retry below absorbs transient failures and emits a log line per attempt
+# so a stalled loop is observable instead of silent.
+BACKOFF_SECONDS = (1, 5, 30)
+
+
+def log_attempt(attempt: int, total: int, *, reason: str) -> None:
+    """Emit one observability line per wake-up attempt (#976)."""
+    print(
+        f"[manager] wakeup attempt {attempt}/{total}: {reason}",
+        file=sys.stderr,
+    )
 
 GOALS_DIR = Path.home() / ".agent-deck" / "goals"
 ESCALATIONS_DIR = GOALS_DIR / "escalations"
@@ -127,20 +143,33 @@ def newer_than(ts_a: str, ts_b: str | None) -> bool:
 
 
 def agent_deck_send(session_id_or_title: str, message: str, dry_run: bool, verbose: bool) -> bool:
-    """Send a nudge to a worker. Returns True on success."""
+    """Send a nudge to a worker. Returns True on success.
+
+    Retries on transient failures with exponential backoff (BACKOFF_SECONDS).
+    Logs every attempt with the reason so a stalled autonomous loop is
+    observable instead of silent. Regression fix for issue #976.
+    """
     cmd = ["agent-deck", "session", "send", session_id_or_title, message, "--no-wait", "-q"]
     vlog(verbose, "nudge cmd: " + " ".join(shlex.quote(c) for c in cmd))
     if dry_run:
         return True
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            print(f"[manager] nudge failed: {r.stderr.strip()}", file=sys.stderr)
-            return False
-        return True
-    except Exception as e:  # noqa: BLE001
-        print(f"[manager] nudge error: {e}", file=sys.stderr)
-        return False
+
+    total = len(BACKOFF_SECONDS)
+    for i in range(total):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                log_attempt(i + 1, total, reason="ok")
+                return True
+            reason = (r.stderr or r.stdout or "non-zero exit").strip() or "non-zero exit"
+        except Exception as e:  # noqa: BLE001
+            reason = f"exception: {e}"
+
+        log_attempt(i + 1, total, reason=reason)
+        if i < total - 1:
+            time.sleep(BACKOFF_SECONDS[i])
+
+    return False
 
 
 def agent_deck_stop(session_id_or_title: str, dry_run: bool, verbose: bool) -> bool:
