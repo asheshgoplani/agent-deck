@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -424,6 +425,82 @@ class TestSkipInactive(unittest.TestCase):
         manager.walk_goal(path, dry_run=False, verbose=False)
         loaded = json.loads(path.read_text())
         self.assertEqual(loaded["state"]["status"], "done")
+
+
+class TestScheduleWakeup_RetryOn5xx_LogsAndBackoffs_RegressionFor976(unittest.TestCase):
+    """Regression for issue #976.
+
+    The autonomous ScheduleWakeup loop silently stalled for hours when a
+    transient upstream failure (Anthropic API 5xx) hit the wake-up that
+    drives the worker. agent_deck_send is the in-repo seam that delivers
+    that wake-up: if it can't reach the worker on the first try, the loop
+    needs to retry with exponential backoff and log every attempt so the
+    failure is observable instead of silent.
+
+    Contract under test:
+      - 3 attempts total before giving up
+      - exponential backoff between attempts: BACKOFF_SECONDS = (1, 5, 30)
+      - every attempt logged with the reason for that attempt
+      - returns True once a retry succeeds (no spurious failure surface)
+    """
+
+    def setUp(self):
+        self._sleeps: list[float] = []
+        self._sleep_patch = patch("manager.time.sleep", side_effect=self._sleeps.append)
+        self._sleep_patch.start()
+
+    def tearDown(self):
+        self._sleep_patch.stop()
+
+    @staticmethod
+    def _fail(stderr: str) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+    @staticmethod
+    def _ok() -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr="")
+
+    def test_retries_three_times_with_backoff_and_logs(self):
+        attempts = [
+            self._fail("upstream returned HTTP 503"),
+            self._fail("upstream returned HTTP 502"),
+            self._ok(),
+        ]
+        with patch("manager.subprocess.run", side_effect=attempts) as mock_run, \
+             patch("manager.log_attempt") as mock_log:
+            result = manager.agent_deck_send(
+                "worker-session", "wake up", dry_run=False, verbose=False
+            )
+
+        self.assertTrue(result, "third attempt succeeded; agent_deck_send must return True")
+        self.assertEqual(mock_run.call_count, 3, "should retry until success (max 3 attempts)")
+        # Backoff before retries — two sleeps total (after attempt 1 and after attempt 2)
+        self.assertEqual(
+            self._sleeps,
+            [manager.BACKOFF_SECONDS[0], manager.BACKOFF_SECONDS[1]],
+            "exponential backoff must use [1s, 5s] before retries",
+        )
+        self.assertEqual(manager.BACKOFF_SECONDS, (1, 5, 30),
+                         "backoff schedule must be the documented [1s, 5s, 30s]")
+        # Every attempt is logged with a reason — that's the observability fix.
+        self.assertEqual(mock_log.call_count, 3, "every attempt must be logged")
+        reasons = [c.kwargs.get("reason") or c.args[-1] for c in mock_log.call_args_list]
+        self.assertIn("HTTP 503", reasons[0])
+        self.assertIn("HTTP 502", reasons[1])
+
+    def test_gives_up_after_three_failures_and_logs_each(self):
+        attempts = [self._fail(f"HTTP 50{i}") for i in (0, 2, 3)]
+        with patch("manager.subprocess.run", side_effect=attempts) as mock_run, \
+             patch("manager.log_attempt") as mock_log:
+            result = manager.agent_deck_send(
+                "worker-session", "wake up", dry_run=False, verbose=False
+            )
+
+        self.assertFalse(result, "all 3 attempts failed; must surface failure")
+        self.assertEqual(mock_run.call_count, 3, "must not exceed 3 attempts")
+        self.assertEqual(mock_log.call_count, 3, "every attempt logged, even on terminal failure")
+        # Backoff applied between attempts 1->2 and 2->3, but not after the last fail.
+        self.assertEqual(self._sleeps, [manager.BACKOFF_SECONDS[0], manager.BACKOFF_SECONDS[1]])
 
 
 if __name__ == "__main__":
