@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/termreply"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type chunkedReader struct {
@@ -127,6 +128,16 @@ func TestParseCSIuCtrlA(t *testing.T) {
 	}
 }
 
+func TestParseCSIu_ShiftTab(t *testing.T) {
+	result := ParseCSIu([]byte("\x1b[9;2u"))
+	if result == nil {
+		t.Fatal("expected non-nil result for Shift+Tab")
+	}
+	if result.Type != tea.KeyShiftTab {
+		t.Fatalf("Shift+Tab type = %v, want %v", result.Type, tea.KeyShiftTab)
+	}
+}
+
 // TestDisableKittyKeyboard tests that DisableKittyKeyboard writes the correct escape sequence.
 func TestDisableKittyKeyboard(t *testing.T) {
 	var buf bytes.Buffer
@@ -183,6 +194,18 @@ func TestCSIuReaderPassesCSIuShiftM(t *testing.T) {
 	}
 	if string(out) != "M" {
 		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "M")
+	}
+}
+
+func TestCSIuReader_ShiftTab(t *testing.T) {
+	input := "\x1b[9;2u"
+	r := NewCSIuReader(bytes.NewReader([]byte(input)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "\x1b[Z" {
+		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "\x1b[Z")
 	}
 }
 
@@ -345,6 +368,16 @@ func TestParseModifyOtherKeys(t *testing.T) {
 	}
 }
 
+func TestParseModifyOtherKeys_ShiftTab(t *testing.T) {
+	result := ParseModifyOtherKeys([]byte("\x1b[27;2;9~"))
+	if result == nil {
+		t.Fatal("expected non-nil result for Shift+Tab")
+	}
+	if result.Type != tea.KeyShiftTab {
+		t.Fatalf("Shift+Tab type = %v, want %v", result.Type, tea.KeyShiftTab)
+	}
+}
+
 // TestCSIuReaderModifyOtherKeys verifies the reader translates modifyOtherKeys sequences.
 func TestCSIuReaderModifyOtherKeys(t *testing.T) {
 	// Shift+S via modifyOtherKeys: ESC[27;2;83~
@@ -356,6 +389,18 @@ func TestCSIuReaderModifyOtherKeys(t *testing.T) {
 	}
 	if string(out) != "S" {
 		t.Errorf("CSIuReader modifyOtherKeys: got %q, want %q", string(out), "S")
+	}
+}
+
+func TestCSIuReaderModifyOtherKeys_ShiftTab(t *testing.T) {
+	input := "\x1b[27;2;9~"
+	r := NewCSIuReader(bytes.NewReader([]byte(input)))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	if string(out) != "\x1b[Z" {
+		t.Errorf("CSIuReader translated %q to %q, want %q", input, string(out), "\x1b[Z")
 	}
 }
 

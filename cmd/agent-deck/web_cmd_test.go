@@ -14,7 +14,7 @@ import (
 // only used to verify that buildWebServer wires whatever is passed in.
 type noopMutator struct{}
 
-func (noopMutator) CreateSession(string, string, string, string) (string, error) {
+func (noopMutator) CreateSession(string, string, string, string, string) (string, error) {
 	return "", nil
 }
 func (noopMutator) StartSession(string) error          { return nil }

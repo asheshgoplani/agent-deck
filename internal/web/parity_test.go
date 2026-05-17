@@ -58,7 +58,7 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 				_ = json.NewDecoder(w.Body).Decode(&resp)
 
 				// Direct mutator path.
-				_, err := directFx.store.CreateSession("parity-create", "claude", "/srv/parity", "work")
+				_, err := directFx.store.CreateSession("parity-create", "claude", "/srv/parity", "work", "")
 				if err != nil {
 					t.Fatalf("direct CreateSession: %v", err)
 				}
@@ -68,8 +68,8 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 		{
 			name: "stop_session",
 			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
-				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
-				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
+				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
 				// Both stores generated the same id deterministically (sess-005).
 				const id = "sess-005"
 
@@ -89,8 +89,8 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 		{
 			name: "start_session",
 			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
-				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
-				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
+				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
 				const id = "sess-005"
 
 				req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/start", nil)
@@ -108,8 +108,8 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 		{
 			name: "delete_session",
 			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
-				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
-				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work")
+				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
 				const id = "sess-005"
 
 				req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+id, nil)
@@ -264,7 +264,7 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 func TestParity_TUIChangeVisibleViaWebAPI(t *testing.T) {
 	t.Parallel()
 	fx := newParityFixture()
-	_, _ = fx.store.CreateSession("ts", "claude", "/srv/ts", "work")
+	_, _ = fx.store.CreateSession("ts", "claude", "/srv/ts", "work", "")
 	const id = "sess-005"
 
 	// "TUI" path: mutate the store directly.
@@ -395,7 +395,7 @@ func (s *parityStore) LoadMenuSnapshot() (*MenuSnapshot, error) {
 
 // SessionMutator implementation.
 
-func (s *parityStore) CreateSession(title, tool, projectPath, groupPath string) (string, error) {
+func (s *parityStore) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := nextDeterministicID(&s.nextID)

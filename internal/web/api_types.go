@@ -21,6 +21,7 @@ type CreateSessionRequest struct {
 	Tool        string `json:"tool"`
 	ProjectPath string `json:"projectPath"`
 	GroupPath   string `json:"groupPath,omitempty"`
+	ModelID     string `json:"modelId,omitempty"`
 }
 
 // CreateGroupRequest is the body for POST /api/groups.

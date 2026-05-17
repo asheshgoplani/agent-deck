@@ -70,6 +70,12 @@ export function RightRail() {
           <${Card} title="OVERVIEW" badge=${session.status}>
             <div class="kv"><span class="k">kind</span><span class="v">${session.kind}</span></div>
             <div class="kv"><span class="k">tool</span><span class="v">${session.tool || '—'}</span></div>
+            ${session.model && html`
+              <div class="kv"><span class="k">model</span><span class="v">${session.model}</span></div>`}
+            ${session.modelVersion && html`
+              <div class="kv"><span class="k">version</span><span class="v">${session.modelVersion}</span></div>`}
+            ${session.modelId && html`
+              <div class="kv"><span class="k">model id</span><span class="v" title=${session.modelId}>${session.modelId}</span></div>`}
             <div class="kv"><span class="k">group</span><span class="v">${session.group || '—'}</span></div>
             ${session.branch && session.branch !== '—' && html`
               <div class="kv"><span class="k">branch</span><span class="v">${session.branch}</span></div>`}

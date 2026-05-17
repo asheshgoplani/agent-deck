@@ -237,6 +237,16 @@ func TestReorderArgsForFlagParsing_CmdAndGroup(t *testing.T) {
 			args:     []string{"-c=claude", "-g", "work", "."},
 			expected: []string{"-c=claude", "-g", "work", "."},
 		},
+		{
+			name:     "model flag keeps its value",
+			args:     []string{"-c", "codex", "--model", "gpt-5.5", "."},
+			expected: []string{"-c", "codex", "--model", "gpt-5.5", "."},
+		},
+		{
+			name:     "path before model flag gets moved to end",
+			args:     []string{".", "-c", "codex", "--model", "gpt-5.5"},
+			expected: []string{"-c", "codex", "--model", "gpt-5.5", "."},
+		},
 	}
 
 	for _, tt := range tests {

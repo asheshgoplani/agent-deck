@@ -83,6 +83,7 @@ func handleLaunch(profile string, args []string) {
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 
 	// Socket isolation (v1.7.50+, issue #687). Same semantics as
 	// `agent-deck add --tmux-socket`: overrides `[tmux].socket_name` for
@@ -103,6 +104,8 @@ func handleLaunch(profile string, args []string) {
 		fmt.Println()
 		fmt.Println("Examples:")
 		fmt.Println("  agent-deck launch . -c claude")
+		fmt.Println("  agent-deck launch . -c codex --model gpt-5.5")
+		fmt.Println("  agent-deck launch . -c gemini --model gemini-3.1-pro-preview")
 		fmt.Println("  agent-deck launch . -c claude -m \"Explain this codebase\"")
 		fmt.Println("  agent-deck launch /path/to/project -t \"My Agent\" -c claude -g work")
 		fmt.Println("  agent-deck launch . -c claude --mcp memory -m \"Research topic X\"")
@@ -381,6 +384,14 @@ func handleLaunch(profile string, args []string) {
 		newInstance.Wrapper = sessionWrapperResolved
 	}
 
+	selectedModelID := strings.TrimSpace(*modelID)
+	if selectedModelID != "" {
+		if err := applyCLIModelOverride(newInstance, selectedModelID); err != nil {
+			out.Error(err.Error(), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
 	if worktreePath != "" {
 		newInstance.WorktreePath = worktreePath
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
@@ -440,17 +451,16 @@ func handleLaunch(profile string, args []string) {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
-		out.Success(
-			fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC),
-			map[string]interface{}{
-				"success":        true,
-				"id":             newInstance.ID,
-				"title":          newInstance.Title,
-				"status":         "queued",
-				"group":          newInstance.GroupPath,
-				"max_concurrent": maxC,
-			},
-		)
+		queuedJSON := map[string]interface{}{
+			"success":        true,
+			"id":             newInstance.ID,
+			"title":          newInstance.Title,
+			"status":         "queued",
+			"group":          newInstance.GroupPath,
+			"max_concurrent": maxC,
+		}
+		addModelInfoJSON(queuedJSON, newInstance.LaunchModelInfo())
+		out.Success(fmt.Sprintf("Queued session: %s (group at cap %d)", newInstance.Title, maxC), queuedJSON)
 		return
 	}
 
@@ -557,6 +567,7 @@ func handleLaunch(profile string, args []string) {
 		jsonData["worktree_path"] = worktreePath
 		jsonData["worktree_branch"] = wtBranch
 	}
+	addModelInfoJSON(jsonData, newInstance.LaunchModelInfo())
 
 	msg := fmt.Sprintf("Launched session: %s", newInstance.Title)
 	if initialMessage != "" {

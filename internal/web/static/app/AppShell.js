@@ -48,6 +48,9 @@ function WorkHead() {
   const kindLabel = (session.kind || 'agent').toUpperCase()
   const profile = profileSignal.value || ''
   const canMutate = mutationsEnabledSignal.value
+  const modelLabel = session.model
+    ? `${session.model}${session.modelVersion ? ` ${session.modelVersion}` : ''}`
+    : ''
 
   const action = (verb) => {
     if (!canMutate) return
@@ -64,6 +67,7 @@ function WorkHead() {
         <span class="cur">${session.title}</span>
       </div>
       <span class=${`status-chip ${session.status}`}><span class="d"/>${session.status}</span>
+      ${modelLabel && html`<span class="status-chip model" title=${session.modelId || modelLabel}>${modelLabel}</span>`}
       <span class="spacer"/>
       ${canMutate && html`
         <div class="actions">

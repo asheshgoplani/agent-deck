@@ -922,6 +922,7 @@ func reorderArgsForFlagParsing(args []string) []string {
 		"plugin":         true,
 		"extra-arg":      true,
 		"wrapper":        true,
+		"model":          true,
 		"w":              true,
 		"worktree":       true,
 		"location":       true,
@@ -1158,6 +1159,7 @@ func handleAdd(profile string, args []string) {
 
 	// Resume session flag
 	resumeSession := fs.String("resume-session", "", "Claude session ID to resume (skips new session creation)")
+	modelID := fs.String("model", "", "Model ID/version to use for this session (claude, codex, gemini, opencode)")
 	yoloMode := fs.Bool("yolo", false, "Enable YOLO mode for Gemini or Codex sessions")
 	geminiYoloMode := fs.Bool("gemini-yolo", false, "Enable YOLO mode (alias for --yolo)")
 
@@ -1183,6 +1185,8 @@ func handleAdd(profile string, args []string) {
 		fmt.Println("  agent-deck add /path/to/project")
 		fmt.Println("  agent-deck add -t \"My Project\" -g \"work\"")
 		fmt.Println("  agent-deck add -c claude .")
+		fmt.Println("  agent-deck add -c codex --model gpt-5.5 .")
+		fmt.Println("  agent-deck add -c gemini --model gemini-3.1-pro-preview .")
 		fmt.Println("  agent-deck -p work add               # Add to 'work' profile")
 		fmt.Println("  agent-deck add -t \"Sub-task\" --parent \"Main Project\"  # Create sub-session")
 		fmt.Println("  agent-deck add -t \"Research\" -c claude --mcp memory --mcp sequential-thinking /tmp/x")
@@ -1531,6 +1535,16 @@ func handleAdd(profile string, args []string) {
 		newInstance.Wrapper = sessionWrapperResolved
 	}
 
+	// Apply per-session model override after command/tool resolution so the
+	// tool-specific option field is populated correctly.
+	selectedModelID := strings.TrimSpace(*modelID)
+	if selectedModelID != "" {
+		if err := applyCLIModelOverride(newInstance, selectedModelID); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Set worktree fields if created
 	if worktreePath != "" {
 		newInstance.WorktreePath = worktreePath
@@ -1650,6 +1664,11 @@ func handleAdd(profile string, args []string) {
 	if *resumeSession != "" {
 		humanLines = append(humanLines, fmt.Sprintf("  Resume:  %s", *resumeSession))
 	}
+	modelInfo := newInstance.LaunchModelInfo()
+	if modelInfo.ModelID != "" {
+		humanLines = append(humanLines, fmt.Sprintf("  Model:   %s", modelInfo.Display()))
+		humanLines = append(humanLines, fmt.Sprintf("  ModelID: %s", modelInfo.ModelID))
+	}
 	humanLines = append(humanLines, "")
 	humanLines = append(humanLines, "Next steps:")
 	humanLines = append(humanLines, fmt.Sprintf("  agent-deck session start %s   # Start the session", sessionTitle))
@@ -1690,6 +1709,7 @@ func handleAdd(profile string, args []string) {
 	if *resumeSession != "" {
 		jsonData["resume_session"] = *resumeSession
 	}
+	addModelInfoJSON(jsonData, modelInfo)
 	if *sandbox {
 		jsonData["sandbox"] = true
 		humanLines = append(humanLines[:len(humanLines)-3],
@@ -1764,6 +1784,9 @@ func handleList(profile string, args []string) {
 			Group         string    `json:"group"`
 			Tool          string    `json:"tool"`
 			Command       string    `json:"command,omitempty"`
+			ModelID       string    `json:"model_id,omitempty"`
+			Model         string    `json:"model,omitempty"`
+			ModelVersion  string    `json:"model_version,omitempty"`
 			Status        string    `json:"status"`
 			TmuxSession   string    `json:"tmux_session,omitempty"`
 			Profile       string    `json:"profile"`
@@ -1798,6 +1821,11 @@ func handleList(profile string, args []string) {
 			}
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				sj.TmuxSession = tmuxSess.Name
+			}
+			if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
+				sj.ModelID = modelInfo.ModelID
+				sj.Model = modelInfo.Model
+				sj.ModelVersion = modelInfo.Version
 			}
 			sessions[i] = sj
 		}
@@ -2238,22 +2266,54 @@ func handleStatus(profile string, args []string) {
 
 	// Output based on flags
 	if *jsonOutput {
-		type statusJSON struct {
-			Waiting int `json:"waiting"`
-			Running int `json:"running"`
-			Idle    int `json:"idle"`
-			Error   int `json:"error"`
-			Stopped int `json:"stopped"`
-			Total   int `json:"total"`
+		type statusSessionJSON struct {
+			ID           string `json:"id"`
+			Title        string `json:"title"`
+			Tool         string `json:"tool"`
+			ModelID      string `json:"model_id,omitempty"`
+			Model        string `json:"model,omitempty"`
+			ModelVersion string `json:"model_version,omitempty"`
+			Status       string `json:"status"`
+			Path         string `json:"path"`
 		}
-		output, _ := json.Marshal(statusJSON{
+		type statusJSON struct {
+			Waiting  int                 `json:"waiting"`
+			Running  int                 `json:"running"`
+			Idle     int                 `json:"idle"`
+			Error    int                 `json:"error"`
+			Stopped  int                 `json:"stopped"`
+			Total    int                 `json:"total"`
+			Sessions []statusSessionJSON `json:"sessions,omitempty"`
+		}
+		resp := statusJSON{
 			Waiting: counts.waiting,
 			Running: counts.running,
 			Idle:    counts.idle,
 			Error:   counts.err,
 			Stopped: counts.stopped,
 			Total:   counts.total,
-		})
+		}
+		if *verbose || *verboseShort {
+			session.RefreshInstancesForCLIStatus(instances)
+			resp.Sessions = make([]statusSessionJSON, 0, len(instances))
+			for _, inst := range instances {
+				_ = inst.UpdateStatus()
+				sj := statusSessionJSON{
+					ID:     inst.ID,
+					Title:  inst.Title,
+					Tool:   inst.Tool,
+					Status: StatusString(inst.Status),
+					Path:   inst.ProjectPath,
+				}
+				if modelInfo := inst.LaunchModelInfo(); modelInfo.ModelID != "" {
+					sj.ModelID = modelInfo.ModelID
+					sj.Model = modelInfo.Model
+					sj.ModelVersion = modelInfo.Version
+				}
+				resp.Sessions = append(resp.Sessions, sj)
+			}
+		}
+		output, _ := json.Marshal(resp)
 		fmt.Println(string(output))
 	} else if *quiet || *quietShort {
 		fmt.Println(counts.waiting)
@@ -2276,7 +2336,7 @@ func handleStatus(profile string, args []string) {
 				if strings.HasPrefix(path, home) {
 					path = "~" + path[len(home):]
 				}
-				fmt.Printf("  %s %-16s %-10s %s\n", symbol, inst.Title, inst.Tool, path)
+				fmt.Printf("  %s %-16s %-10s %-22s %s\n", symbol, inst.Title, inst.Tool, truncate(modelStatusDisplay(inst), 22), path)
 			}
 			fmt.Println()
 		}
