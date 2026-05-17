@@ -39,7 +39,7 @@ export function Topbar() {
     : { background: 'var(--tn-red)', boxShadow: '0 0 6px var(--tn-red)' }
 
   return html`
-    <div class="topbar">
+    <header class="topbar">
       <div class="top-brand">
         <${Logo}/>
         <div class="brand-text">agent-deck<span class="dim">web</span></div>
@@ -98,6 +98,6 @@ export function Topbar() {
           <${Icon} d=${ICONS.settings}/>
         </button>
       </div>
-    </div>
+    </header>
   `
 }
