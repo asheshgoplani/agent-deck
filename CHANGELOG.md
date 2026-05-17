@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **charmbracelet/crush as a first-class builtin agent** ([#940](https://github.com/asheshgoplani/agent-deck/issues/940)). Launch, attach, kill `crush` sessions (Charm's terminal-first AI coding assistant from [github.com/charmbracelet/crush](https://github.com/charmbracelet/crush)). Icon 💘, color magenta. Config via `[crush]` section with `command`, `env_file`, `yolo_mode`. Per-session resume via `--session <id>` / `--continue` flows through `CrushOptions` (ToolOptionsJSON). Detection wired across the CLI (`agent-deck add -c crush .`), tmux pane content patterns (`charm crush`, `crush>`), and the four UI surfaces (new-session dialog, setup wizard, settings panel, home preset). Adapter mirrors the existing copilot adapter — no shared infrastructure changes, no impact on other agents.
+
 ## [1.9.13] - 2026-05-17
 
 First release driven by findings from the **Weekly Regression cron**, which began producing actionable signal once the host-sensitive split landed in v1.9.12 ([#1019](https://github.com/asheshgoplani/agent-deck/pull/1019)). Two merged PRs, both closing the two halves of [#1022](https://github.com/asheshgoplani/agent-deck/issues/1022) (the cron's first real report): a visual-regression fix that restores the `<header>` landmark in the web shell, and a perf fix that code-splits Chart.js off the initial-paint payload to clear the Lighthouse budget overshoot. v1.9.13 is the **eighth release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.

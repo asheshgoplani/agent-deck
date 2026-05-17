@@ -54,7 +54,7 @@ func NewSetupWizard() *SetupWizard {
 		visible:             false,
 		complete:            false,
 		currentStep:         0,
-		toolOptions:         []string{"claude", "gemini", "opencode", "codex", "pi", "shell"},
+		toolOptions:         []string{"claude", "gemini", "opencode", "codex", "pi", "crush", "shell"},
 		selectedTool:        0, // Default to Claude
 		dangerousMode:       false,
 		useDefaultConfigDir: true,
@@ -392,6 +392,7 @@ func (w *SetupWizard) View() string {
 			"opencode": "OpenCode - Open source AI coding tool",
 			"codex":    "Codex CLI - OpenAI's coding assistant",
 			"pi":       "Pi CLI - lightweight coding assistant",
+			"crush":    "Crush - Charm's terminal-first AI coding assistant",
 			"shell":    "Shell - No AI tool (plain terminal)",
 		}
 

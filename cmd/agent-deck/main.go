@@ -3067,6 +3067,8 @@ func detectTool(cmd string) string {
 		return "pi"
 	case strings.Contains(cmd, "copilot"):
 		return "copilot"
+	case strings.Contains(cmd, "crush"):
+		return "crush"
 	case strings.Contains(cmd, "cursor"):
 		return "cursor"
 	default:

@@ -363,6 +363,75 @@ func UnmarshalCopilotOptions(data json.RawMessage) (*CopilotOptions, error) {
 	return &opts, nil
 }
 
+// CrushOptions holds launch options for charmbracelet/crush CLI sessions
+// (Issue #940). Binary: `crush` from github.com/charmbracelet/crush.
+type CrushOptions struct {
+	// YoloMode enables --yolo flag (auto-accept all permission prompts).
+	// nil = inherit from config, true/false = explicit override.
+	YoloMode *bool `json:"yolo_mode,omitempty"`
+	// ResumeSessionID is the crush session ID for --session/-s flag.
+	// Empty means start a fresh session.
+	ResumeSessionID string `json:"resume_session_id,omitempty"`
+	// ContinueLast maps to --continue/-C (resume the most recent session).
+	// Mutually exclusive with ResumeSessionID at the crush CLI level; if
+	// both are set, ResumeSessionID wins (it is the more specific signal).
+	ContinueLast bool `json:"continue_last,omitempty"`
+}
+
+// ToolName returns "crush"
+func (o *CrushOptions) ToolName() string {
+	return "crush"
+}
+
+// ToArgs returns command-line arguments based on options.
+// Ordering matches the crush CLI flag groups (session first, then yolo).
+func (o *CrushOptions) ToArgs() []string {
+	var args []string
+	switch {
+	case o.ResumeSessionID != "":
+		args = append(args, "--session", o.ResumeSessionID)
+	case o.ContinueLast:
+		args = append(args, "--continue")
+	}
+	if o.YoloMode != nil && *o.YoloMode {
+		args = append(args, "--yolo")
+	}
+	return args
+}
+
+// NewCrushOptions creates CrushOptions with defaults from global config.
+func NewCrushOptions(config *UserConfig) *CrushOptions {
+	opts := &CrushOptions{}
+	if config != nil && config.Crush.YoloMode {
+		yolo := true
+		opts.YoloMode = &yolo
+	}
+	return opts
+}
+
+// UnmarshalCrushOptions deserializes CrushOptions from JSON wrapper.
+func UnmarshalCrushOptions(data json.RawMessage) (*CrushOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Tool != "crush" {
+		return nil, nil
+	}
+
+	var opts CrushOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}
+
 // StripResumeFields removes session-specific fields (resume_session_id,
 // session_mode) from serialized ToolOptionsJSON so that a new session
 // inheriting another session's settings starts fresh instead of resuming

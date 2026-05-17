@@ -8368,6 +8368,8 @@ func createSessionTool(command string) (string, string) {
 		tool = "pi"
 	case "copilot":
 		tool = "copilot"
+	case "crush":
+		tool = "crush"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
