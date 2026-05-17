@@ -838,7 +838,28 @@ func (i *Instance) buildBashExportPrefix() string {
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
 		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
 	}
+	prefix += i.buildResolvedAccountHintExports()
 	return prefix
+}
+
+// buildResolvedAccountHintExports emits the three "intended account"
+// hint env vars introduced by issue #925 (reporter @bautrey): the
+// resolved config dir, group path, and source label from the priority
+// chain. These mirror the user's *intent* and intentionally bypass
+// the worker-scratch override applied to CLAUDE_CONFIG_DIR — consumer
+// scripts (statusline, custom prompts, telemetry, hooks) need a stable
+// label of which account this session belongs to, not agent-deck's
+// per-session scratch path. Always emitted for claude-compatible
+// instances (including when source resolves to "default") so consumers
+// can rely on the vars being present.
+func (i *Instance) buildResolvedAccountHintExports() string {
+	resolved, source := GetClaudeConfigDirSourceForInstance(i)
+	return fmt.Sprintf(
+		"export AGENTDECK_RESOLVED_CONFIG_DIR=%s; export AGENTDECK_RESOLVED_GROUP=%s; export AGENTDECK_RESOLVED_SOURCE=%s; ",
+		shellescape.Quote(resolved),
+		shellescape.Quote(i.GroupPath),
+		shellescape.Quote(source),
+	)
 }
 
 // logClaudeConfigResolution emits the CFG-07 observability line documenting
