@@ -570,6 +570,7 @@ func TestDetectToolFromCommand(t *testing.T) {
 		{name: "opencode", command: "open-code --continue", want: "opencode"},
 		{name: "codex", command: "codex --dangerously-bypass-approvals-and-sandbox", want: "codex"},
 		{name: "pi", command: "pi --model fast", want: "pi"},
+		{name: "cursor", command: "cursor agent", want: "cursor"},
 		{name: "shell command", command: "npm run dev", want: ""},
 		{name: "empty", command: "", want: ""},
 	}

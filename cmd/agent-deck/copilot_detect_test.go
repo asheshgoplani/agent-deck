@@ -25,6 +25,25 @@ func TestDetectTool_Copilot(t *testing.T) {
 	}
 }
 
+// Cursor CLI (`cursor agent`) must register as tool "cursor", not "shell".
+func TestDetectTool_Cursor(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"agent subcommand", "cursor agent", "cursor"},
+		{"bare binary", "cursor", "cursor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectTool(tt.cmd); got != tt.want {
+				t.Errorf("detectTool(%q) = %q, want %q", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
+
 // Pi must detect via token match (not strings.Contains) so short-name
 // false matches like "epic", "tapioca", "spider", "happiness" don't
 // hijack the tool identity. Co-credit @masta-g3 (PR #674).

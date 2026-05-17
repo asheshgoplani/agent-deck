@@ -104,6 +104,18 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?m)^\s*›\s`,
 			},
 		}
+	case "cursor":
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"ctrl+c to interrupt",
+				"esc to interrupt",
+				"thinking",
+			},
+			PromptPatterns: []string{
+				"How can I help",
+				`re:(?m)^\s*›\s`,
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},

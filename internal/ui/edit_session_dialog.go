@@ -428,8 +428,11 @@ func renderToolPills(presets []string, cursor int) string {
 		name := cmd
 		if name == "" {
 			name = "shell"
-		} else if def := session.GetToolDef(cmd); def != nil && def.Icon != "" {
-			name = def.Icon + " " + name
+		} else {
+			name = displayCommandPreset(cmd)
+			if def := session.GetToolDef(cmd); def != nil && def.Icon != "" {
+				name = def.Icon + " " + name
+			}
 		}
 		if i == cursor {
 			buttons[i] = selected.Render(name)
