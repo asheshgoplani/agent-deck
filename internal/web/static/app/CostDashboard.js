@@ -4,6 +4,35 @@ import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { apiFetch } from './api.js'
 
+// Lazy-loader for Chart.js UMD bundle (issue #1022 part 2). Chart.js is
+// ~206 KB and only the Costs route consumes it, so it must not ship in
+// the initial payload. The first call injects a <script> tag pointing at
+// the same /static/chart.umd.min.js asset the eager <script> used to
+// load; subsequent calls return the cached promise so concurrent mounts
+// don't race or re-fetch. Resolves with window.Chart once the global is
+// set, or rejects if the script tag errors.
+let chartLoaderPromise = null
+function loadChartJs() {
+  if (typeof window === 'undefined') return Promise.reject(new Error('no window'))
+  if (window.Chart) return Promise.resolve(window.Chart)
+  if (chartLoaderPromise) return chartLoaderPromise
+  chartLoaderPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script')
+    s.src = '/static/chart.umd.min.js'
+    s.async = true
+    s.onload = () => {
+      if (window.Chart) resolve(window.Chart)
+      else reject(new Error('chart.umd.min.js loaded but window.Chart missing'))
+    }
+    s.onerror = () => {
+      chartLoaderPromise = null
+      reject(new Error('failed to load chart.umd.min.js'))
+    }
+    document.head.appendChild(s)
+  })
+  return chartLoaderPromise
+}
+
 // POL-5 (Phase 9, plan 02): locale-aware currency formatting. Constructed
 // once at module load — Intl.NumberFormat is non-trivial to build (reads
 // ICU data) and the user's locale does not change during a session. Both
@@ -81,7 +110,8 @@ export function CostDashboard() {
 
     async function buildCharts() {
       try {
-        const [dailyData, modelsData] = await Promise.all([
+        const [Chart, dailyData, modelsData] = await Promise.all([
+          loadChartJs(),
           apiFetch('GET', '/api/costs/daily?days=30'),
           apiFetch('GET', '/api/costs/models'),
         ])
@@ -110,7 +140,7 @@ export function CostDashboard() {
         const labels = dates.map(d => d.date.slice(5))
         const costs = dates.map(d => d.cost_usd)
 
-        dailyChartRef.current = new window.Chart(dailyCanvasRef.current, {
+        dailyChartRef.current = new Chart(dailyCanvasRef.current, {
           type: 'line',
           data: {
             labels,
@@ -140,7 +170,7 @@ export function CostDashboard() {
         const mLabels = Object.keys(models)
         const mData = Object.values(models)
 
-        modelChartRef.current = new window.Chart(modelCanvasRef.current, {
+        modelChartRef.current = new Chart(modelCanvasRef.current, {
           type: 'doughnut',
           data: {
             labels: mLabels,
