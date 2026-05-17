@@ -1118,19 +1118,23 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 		}
 
-		// Issue #896 sub-bug 4: when the path-suggestions popup is visible,
-		// arrow keys must navigate the popup from the very first press.
-		// Previously the user had to press Space or Ctrl+N first to enter
-		// "arrow-key mode"; arrows on a freshly-shown popup fell through to
-		// dialog focus advancement, leaving the popup feeling half-broken.
-		// Auto-activate on the first arrow press so the suggestionsActive
-		// handler below takes over and home.go's Enter handler can pick the
-		// highlighted suggestion (sub-bug 3).
+		// Issue #896 sub-bug 4: when the path-suggestions popup is visible
+		// and the user is actively editing the path (pathInput focused,
+		// not soft-selected), arrow keys auto-activate the popup so the
+		// suggestionsActive handler below takes over and home.go's Enter
+		// handler can pick the highlighted suggestion (sub-bug 3).
+		//
+		// Issue #1020 (@JMBattista): in soft-select mode (Tab-landed on a
+		// path field with a pre-filled value, pathInput blurred), Up/Down
+		// must NOT auto-activate — they must fall through to form-field
+		// navigation so the user can escape the path section. Explicit
+		// entry into popup-nav stays available via Space or Right, handled
+		// in the soft-select block just below.
 		if !d.suggestionsActive && d.currentTarget() == focusPath &&
-			len(d.pathSuggestions) > 0 && !d.suggestionsHidden {
+			len(d.pathSuggestions) > 0 && !d.suggestionsHidden &&
+			!d.pathSoftSelected {
 			if s := msg.String(); s == "down" || s == "up" {
 				d.suggestionsActive = true
-				d.pathSoftSelected = false
 				d.pathInput.Blur()
 				d.suggestionNavigated = true
 				// fall through to the suggestionsActive arrow handler below
