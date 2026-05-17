@@ -272,6 +272,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Claude.EnvFile
 	case "gemini":
 		return config.Gemini.EnvFile
+	case "crush":
+		return config.Crush.EnvFile
 	default:
 		// Check custom tools
 		if def := GetToolDef(i.Tool); def != nil {

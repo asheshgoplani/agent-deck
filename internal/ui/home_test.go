@@ -158,6 +158,16 @@ func TestCreateSessionTool_Copilot(t *testing.T) {
 	}
 }
 
+// TUI session creation must produce Tool="crush" rather than
+// Tool="shell" with Command="crush", matching the tmux/userconfig
+// wiring for the charmbracelet/crush integration (Issue #940).
+func TestCreateSessionTool_Crush(t *testing.T) {
+	tool, command := createSessionTool("crush")
+	if tool != "crush" || command != "crush" {
+		t.Fatalf("createSessionTool(\"crush\") = (%q, %q), want (\"crush\", \"crush\")", tool, command)
+	}
+}
+
 func TestHomeInit(t *testing.T) {
 	home := NewHome()
 	cmd := home.Init()

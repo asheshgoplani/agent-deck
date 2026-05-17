@@ -526,6 +526,7 @@ func initStyles() {
 		"cursor":   lipgloss.NewStyle().Foreground(ColorAccent),
 		"shell":    lipgloss.NewStyle().Foreground(ColorText),
 		"opencode": lipgloss.NewStyle().Foreground(ColorText),
+		"crush":    lipgloss.NewStyle().Foreground(ColorPurple),
 	}
 
 	// DefaultToolStyle
@@ -599,6 +600,8 @@ func ToolIcon(tool string) string {
 		return IconOpenCode
 	case "codex":
 		return IconCodex
+	case "crush":
+		return "💘"
 	case "pi":
 		return IconPi
 	case "cursor":
@@ -620,6 +623,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorPurple // Google AI purple
 	case "codex":
 		return ColorCyan // Light blue for OpenAI
+	case "crush":
+		return ColorPurple // Pink/magenta for Charm Crush
 	case "pi":
 		return ColorAccent
 	case "aider":

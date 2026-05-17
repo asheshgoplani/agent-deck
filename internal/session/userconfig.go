@@ -102,6 +102,9 @@ type UserConfig struct {
 	// Copilot defines GitHub Copilot CLI integration settings (Issue #556)
 	Copilot CopilotSettings `toml:"copilot"`
 
+	// Crush defines charmbracelet/crush CLI integration settings (Issue #940)
+	Crush CrushSettings `toml:"crush"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -837,6 +840,23 @@ type CopilotSettings struct {
 	// EnvFile is a .env file specific to Copilot sessions (sourced before
 	// the `copilot` command runs, like [gemini].env_file). Optional.
 	EnvFile string `toml:"env_file"`
+}
+
+// CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
+// Binary: `crush` from github.com/charmbracelet/crush. Interactive TUI.
+// Key flags: --yolo, --session/-s <id>, --continue/-C, --cwd, --debug.
+type CrushSettings struct {
+	// Command overrides the default binary/invocation for Crush sessions.
+	// Supports flags (e.g., "crush --debug"). Default: "crush"
+	Command string `toml:"command"`
+
+	// EnvFile is a .env file specific to Crush sessions (sourced before
+	// the `crush` command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file"`
+
+	// YoloMode enables --yolo flag for Crush sessions (auto-accept all
+	// permission prompts). Default: false
+	YoloMode bool `toml:"yolo_mode"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -1930,7 +1950,7 @@ func GetCustomToolNames() []string {
 
 func isBuiltinToolName(toolName string) bool {
 	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "pi", "shell", "cursor", "aider":
+	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "pi", "shell", "cursor", "aider":
 		return true
 	default:
 		return false
@@ -1956,6 +1976,8 @@ func GetToolIcon(toolName string) string {
 		return "💻"
 	case "copilot":
 		return "🐙"
+	case "crush":
+		return "💘"
 	case "pi":
 		return "π"
 	case "cursor":
