@@ -33,7 +33,15 @@ func TestNewDialog_PopupEnter_SelectsHighlightedSuggestion_RegressionFor896(t *t
 	d.updateFocus()
 
 	// User has typed a prefix; the popup is visible (path focused, not hidden).
+	// In real use, the first keystroke on a soft-selected path clears the
+	// pre-fill, focuses pathInput, and unsets pathSoftSelected (see soft-select
+	// handler in newdialog.go). Mirror that post-typing state so the test
+	// reflects an actively-editing user — which is the only state where
+	// arrows should auto-activate the popup after the #1020 fix. See
+	// [[issue1020_path_selector_ux_test]].
 	d.pathInput.SetValue("/p/")
+	d.pathInput.Focus()
+	d.pathSoftSelected = false
 
 	// User presses Down twice — cursor should advance through:
 	//   0 ("Type custom") -> 1 (/p/alpha) -> 2 (/p/beta)
@@ -95,6 +103,13 @@ func TestNewDialog_PopupArrows_NavigateReliably_RegressionFor896(t *testing.T) {
 
 	d.focusIndex = 2 // focusPath
 	d.updateFocus()
+
+	// Simulate the user having typed in the path field (post soft-select).
+	// In real flow, the first keystroke flips pathSoftSelected=false and
+	// focuses pathInput; only then do arrows auto-activate the popup, per
+	// the #1020 fix in newdialog.go. See [[issue1020_path_selector_ux_test]].
+	d.pathInput.Focus()
+	d.pathSoftSelected = false
 
 	// Popup is visible because path is focused, suggestions are non-empty,
 	// and suggestionsHidden is false (default after Show + SetPathSuggestions).
