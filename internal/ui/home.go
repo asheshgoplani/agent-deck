@@ -5768,7 +5768,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.lastEscTime = time.Now()
 		return h, nil
 
-	case "up", "k":
+	case "up", "k", "ctrl+p":
 		if h.cursor > 0 {
 			h.cursor--
 			h.previewScrollOffset = 0
@@ -5780,7 +5780,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "down", "j":
+	case "down", "j", "ctrl+n":
 		if h.cursor < len(h.flatItems)-1 {
 			h.cursor++
 			h.previewScrollOffset = 0

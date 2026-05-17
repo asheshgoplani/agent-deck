@@ -1653,6 +1653,131 @@ func TestNewDialog_ShowInGroup_LoadsConfiguredClaudeExtraArgs(t *testing.T) {
 // pathInput, branchInput, etc. but never resets claudeOptions.startQueryInput.
 // This test opens the dialog, sets a query, closes, re-opens, and asserts
 // the field is empty.
+func TestNewDialog_CtrlN_CtrlP_FieldNavigation(t *testing.T) {
+	// ctrl+n / ctrl+p must move between form fields when not on a path field
+	// with active suggestions — same semantics as down / shift+tab+up.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.worktreeEnabled = false
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
+
+	if dialog.focusIndex != 0 {
+		t.Fatalf("precondition: focusIndex = %d, want 0", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.focusIndex != 1 {
+		t.Fatalf("ctrl+n: focusIndex = %d, want 1", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.focusIndex != 2 {
+		t.Fatalf("ctrl+n x2: focusIndex = %d, want 2", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != 1 {
+		t.Fatalf("ctrl+p: focusIndex = %d, want 1", dialog.focusIndex)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != 0 {
+		t.Fatalf("ctrl+p x2: focusIndex = %d, want 0", dialog.focusIndex)
+	}
+}
+
+func TestNewDialog_CtrlP_WrapsToLastField(t *testing.T) {
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.worktreeEnabled = false
+	dialog.sandboxEnabled = false
+	dialog.inheritedSettings = nil
+	dialog.rebuildFocusTargets()
+	maxIdx := len(dialog.focusTargets) - 1
+
+	// ctrl+p from first field should wrap to last.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.focusIndex != maxIdx {
+		t.Fatalf("ctrl+p at top: focusIndex = %d, want %d (last)", dialog.focusIndex, maxIdx)
+	}
+}
+
+func TestNewDialog_SuggestionsDropdown_CtrlN_CtrlP(t *testing.T) {
+	// ctrl+n / ctrl+p must navigate the path-suggestions dropdown when it is
+	// active, consistent with j / k.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.SetPathSuggestions([]string{"/a", "/b", "/c"})
+
+	// Force path field focus and open the dropdown.
+	dialog.focusIndex = dialog.indexOf(focusPath)
+	dialog.updateFocus()
+	dialog.suggestionsActive = true
+	dialog.pathSuggestionCursor = 0
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.pathSuggestionCursor != 1 {
+		t.Fatalf("ctrl+n: pathSuggestionCursor = %d, want 1", dialog.pathSuggestionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.pathSuggestionCursor != 2 {
+		t.Fatalf("ctrl+n x2: pathSuggestionCursor = %d, want 2", dialog.pathSuggestionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.pathSuggestionCursor != 1 {
+		t.Fatalf("ctrl+p: pathSuggestionCursor = %d, want 1", dialog.pathSuggestionCursor)
+	}
+
+	// Dropdown must remain open during navigation.
+	if !dialog.suggestionsActive {
+		t.Fatal("suggestionsActive should remain true during ctrl+n/ctrl+p navigation")
+	}
+}
+
+func TestNewDialog_RecentPicker_JK(t *testing.T) {
+	// j / k must navigate the recent-sessions picker, consistent with
+	// ctrl+n / ctrl+p and down / up.
+	dialog := NewNewDialog()
+	dialog.Show()
+	dialog.recentSessions = []*statedb.RecentSessionRow{
+		{Title: "alpha", ProjectPath: "/a", Tool: "claude"},
+		{Title: "beta", ProjectPath: "/b", Tool: "claude"},
+		{Title: "gamma", ProjectPath: "/c", Tool: "claude"},
+	}
+	dialog.showRecentPicker = true
+	dialog.recentSessionCursor = 0
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 1 {
+		t.Fatalf("j: recentSessionCursor = %d, want 1", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 2 {
+		t.Fatalf("j x2: recentSessionCursor = %d, want 2", dialog.recentSessionCursor)
+	}
+
+	// Wrap around.
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if dialog.recentSessionCursor != 0 {
+		t.Fatalf("j wrap: recentSessionCursor = %d, want 0", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if dialog.recentSessionCursor != 2 {
+		t.Fatalf("k from 0: recentSessionCursor = %d, want 2 (wrap)", dialog.recentSessionCursor)
+	}
+
+	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if dialog.recentSessionCursor != 1 {
+		t.Fatalf("k: recentSessionCursor = %d, want 1", dialog.recentSessionCursor)
+	}
+}
+
 func TestNewDialog_StartQuery_ClearsBetweenOpenings(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
