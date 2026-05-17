@@ -24,12 +24,11 @@
       })()
     </script>
 
-    <!-- 2. Chart.js UMD (sets window.Chart, must load before ES modules).
-         PERF-B: defer attribute so the 206 KB script is fetched in parallel
-         with HTML parsing and executed just before DOMContentLoaded, instead
-         of blocking the parser. window.Chart is still set before the Preact
-         app's first useEffect runs, so the cost dashboard still picks it up. -->
-    <script src="/static/chart.umd.min.js" defer></script>
+    <!-- 2. Chart.js UMD is lazy-loaded by CostDashboard on demand
+         (issue #1022 part 2). It is the ~206 KB Costs-route-only
+         dependency, so eagerly shipping it blew the initial-payload
+         budget. CostDashboard.js injects /static/chart.umd.min.js the
+         first time the Costs tab is rendered. -->
 
     <!-- 3. Import map: single Preact instance via bare specifiers -->
     <script type="importmap">
