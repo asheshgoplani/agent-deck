@@ -390,10 +390,10 @@ func (d *SkillDialog) Update(msg tea.KeyMsg) (*SkillDialog, tea.Cmd) {
 		d.column = SkillColumnAvailable
 		d.resetTypeJump()
 		d.normalizeSelectionAndScroll()
-	case "up", "k":
+	case "up", "k", "ctrl+p":
 		d.resetTypeJump()
 		d.moveBy(-1)
-	case "down", "j":
+	case "down", "j", "ctrl+n":
 		d.resetTypeJump()
 		d.moveBy(1)
 	case "pgup", "ctrl+b":

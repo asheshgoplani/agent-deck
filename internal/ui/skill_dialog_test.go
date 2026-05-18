@@ -359,6 +359,41 @@ func TestSkillDialog_ScrollWindowFollowsSelection(t *testing.T) {
 	}
 }
 
+func TestSkillDialog_CtrlN_CtrlP_Navigation(t *testing.T) {
+	dialog := NewSkillDialog()
+	dialog.visible = true
+	dialog.tool = "claude"
+	dialog.column = SkillColumnAvailable
+	dialog.available = []SkillDialogItem{
+		{Candidate: session.SkillCandidate{Name: "a", ID: "pool/a"}},
+		{Candidate: session.SkillCandidate{Name: "b", ID: "pool/b"}},
+		{Candidate: session.SkillCandidate{Name: "c", ID: "pool/c"}},
+	}
+	dialog.availableIdx = 0
+
+	// ctrl+n moves down.
+	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.availableIdx != 1 {
+		t.Fatalf("ctrl+n: availableIdx = %d, want 1", dialog.availableIdx)
+	}
+
+	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if dialog.availableIdx != 2 {
+		t.Fatalf("ctrl+n x2: availableIdx = %d, want 2", dialog.availableIdx)
+	}
+
+	// ctrl+p moves up.
+	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.availableIdx != 1 {
+		t.Fatalf("ctrl+p: availableIdx = %d, want 1", dialog.availableIdx)
+	}
+
+	_, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if dialog.availableIdx != 0 {
+		t.Fatalf("ctrl+p x2: availableIdx = %d, want 0", dialog.availableIdx)
+	}
+}
+
 func TestSkillDialog_ViewShowsCounts(t *testing.T) {
 	dialog := NewSkillDialog()
 	dialog.visible = true

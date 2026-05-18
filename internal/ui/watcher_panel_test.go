@@ -241,6 +241,42 @@ func TestWatcherPanelTruncate(t *testing.T) {
 }
 
 // TestWatcherPanelNoActionOnEmptyList verifies no panic or cmd when list is empty.
+func TestWatcherPanel_CtrlN_CtrlP_Navigation(t *testing.T) {
+	wp := NewWatcherPanel()
+	wp.SetWatchers(sampleWatchers())
+	wp.Show()
+
+	// ctrl+n moves down.
+	wp, _ = wp.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if wp.cursor != 1 {
+		t.Errorf("ctrl+n: cursor = %d, want 1", wp.cursor)
+	}
+
+	wp, _ = wp.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if wp.cursor != 2 {
+		t.Errorf("ctrl+n x2: cursor = %d, want 2", wp.cursor)
+	}
+
+	// Clamps at last item.
+	wp, _ = wp.Update(tea.KeyMsg{Type: tea.KeyCtrlN})
+	if wp.cursor != 2 {
+		t.Errorf("ctrl+n past end: cursor = %d, want 2 (clamped)", wp.cursor)
+	}
+
+	// ctrl+p moves up.
+	wp, _ = wp.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if wp.cursor != 1 {
+		t.Errorf("ctrl+p: cursor = %d, want 1", wp.cursor)
+	}
+
+	// Clamps at first item.
+	wp.cursor = 0
+	wp, _ = wp.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if wp.cursor != 0 {
+		t.Errorf("ctrl+p at top: cursor = %d, want 0 (clamped)", wp.cursor)
+	}
+}
+
 func TestWatcherPanelNoActionOnEmptyList(t *testing.T) {
 	wp := NewWatcherPanel()
 	wp.Show()

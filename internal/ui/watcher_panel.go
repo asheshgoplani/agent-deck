@@ -129,7 +129,7 @@ func (wp *WatcherPanel) Update(msg tea.Msg) (*WatcherPanel, tea.Cmd) {
 			wp.Hide()
 		}
 
-	case "j", "down":
+	case "j", "down", "ctrl+n":
 		if wp.detailMode {
 			wp.detailCursor++
 		} else {
@@ -138,7 +138,7 @@ func (wp *WatcherPanel) Update(msg tea.Msg) (*WatcherPanel, tea.Cmd) {
 			}
 		}
 
-	case "k", "up":
+	case "k", "up", "ctrl+p":
 		if wp.detailMode {
 			if wp.detailCursor > 0 {
 				wp.detailCursor--
