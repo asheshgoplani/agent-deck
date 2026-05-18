@@ -1,0 +1,202 @@
+# Lighthouse CI: enforces performance budgets on every PR touching web code.
+#
+# Two layers:
+#   1. Absolute thresholds (`.lighthouserc.json` ci.assert.assertions) — coarse
+#      upper bound. Hard gates: total-byte-weight, resource-summary:script:size,
+#      cumulative-layout-shift. Soft warnings: FCP, LCP, TBT, Speed Index.
+#   2. Delta gate (`tests/lighthouse/compare-deltas.mjs`) — block any single PR
+#      that grows `total-byte-weight` or `script:size` by more than
+#      MAX_*_DELTA_PCT (default 5%) vs the base ref. This is the answer to the
+#      v1.7.42 audit pattern where absolute thresholds went stale and the gate
+#      was disabled rather than recalibrated.
+#
+# Maintainer override: a delta-gate failure is overridable by applying the
+# `lighthouse-regression-acknowledged` label to the PR. The workflow re-runs
+# on `labeled` / `unlabeled` events, the override step sees the label, and
+# the check turns green with the override logged in the workflow output. The
+# absolute lhci assert step does NOT participate in the override — a hard
+# absolute breach still blocks merge unconditionally. Removing the label
+# re-fails the check on the next workflow trigger.
+#
+# Bootstrap note: the PR that first introduces this workflow is also the PR
+# that adds `--no-tui` to `agent-deck web`. The base ref does not have the
+# flag yet, so the base lhci collect is `continue-on-error: true` and
+# compare-deltas.mjs skips the delta check (with a logged warning) when no
+# base data is present. Every subsequent PR exercises the full gate.
+
+name: Lighthouse CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - 'internal/web/**'
+      - '.lighthouserc.json'
+      - 'tests/lighthouse/**'
+      - '.github/workflows/lighthouse-ci.yml'
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+concurrency:
+  group: lighthouse-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACK_LABEL: lighthouse-regression-acknowledged
+
+jobs:
+  lighthouse:
+    name: Performance Budget
+    runs-on: ubuntu-latest
+    env:
+      MAX_BYTE_WEIGHT_DELTA_PCT: 5
+      MAX_SCRIPT_SIZE_DELTA_PCT: 5
+      GOTOOLCHAIN: go1.24.0
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          path: pr
+          fetch-depth: 0
+
+      - name: Checkout base ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          fetch-depth: 1
+
+      - name: Ensure ack label exists in repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Idempotent: try to create; treat "already exists" as success.
+          # On fork PRs the GITHUB_TOKEN is read-only on the upstream repo
+          # regardless of declared `issues: write` permission, so a label-
+          # bootstrap attempt 403s. Soft-fail with a warning in that case —
+          # a one-time maintainer-side `gh label create` (or any non-fork
+          # run of this workflow) seeds the label, after which every fork
+          # PR hits the "already exists" branch and the override step just
+          # reads the label, which works on read-only tokens.
+          # Other failures (network, malformed args) still hard-fail.
+          set +e
+          output=$(gh label create "$ACK_LABEL" \
+            --repo "$GITHUB_REPOSITORY" \
+            --color "fbca04" \
+            --description "Maintainer ack: lighthouse-ci delta gate regression is intentional. Removing the label re-fails the check." 2>&1)
+          rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "Label '$ACK_LABEL' created."
+            exit 0
+          fi
+          if echo "$output" | grep -qiE "already exists|already_exists"; then
+            echo "Label '$ACK_LABEL' already exists; nothing to do."
+            exit 0
+          fi
+          if echo "$output" | grep -qiE "HTTP 403|Resource not accessible by integration"; then
+            echo "::warning title=Skipped ack-label bootstrap::GITHUB_TOKEN is read-only on '$GITHUB_REPOSITORY' (typical for fork PRs). The override step will still read the label if a maintainer has seeded it. To seed once: gh label create '$ACK_LABEL' --repo '$GITHUB_REPOSITORY' --color fbca04"
+            exit 0
+          fi
+          echo "::error title=Failed to ensure ack label::gh label create exited $rc"
+          echo "$output"
+          exit 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli@0.15.1
+
+      - name: Build PR head
+        working-directory: pr
+        run: make build
+
+      - name: Build base
+        working-directory: base
+        run: make build
+
+      - name: Collect Lighthouse on PR head
+        working-directory: pr
+        run: lhci collect --config=.lighthouserc.json
+
+      - name: Stash PR results
+        run: |
+          mkdir -p lhci-results/pr
+          cp -r pr/.lighthouseci/* lhci-results/pr/
+
+      - name: Stop any lingering test server
+        if: always()
+        run: pkill -TERM -f 'agent-deck.*web' || true
+
+      - name: Collect Lighthouse on base (best-effort)
+        id: base_collect
+        continue-on-error: true
+        working-directory: base
+        # The base ref may predate the --no-tui flag (bootstrap case). We copy
+        # the PR's .lighthouserc.json into the base checkout so the lhci config
+        # itself is consistent across the two collects; only the binary differs.
+        run: |
+          cp ../pr/.lighthouserc.json .lighthouserc.json
+          lhci collect --config=.lighthouserc.json
+
+      - name: Stash base results
+        if: steps.base_collect.outcome == 'success'
+        run: |
+          mkdir -p lhci-results/base
+          cp -r base/.lighthouseci/* lhci-results/base/ || true
+
+      - name: Stop any lingering test server
+        if: always()
+        run: pkill -TERM -f 'agent-deck.*web' || true
+
+      - name: Assert absolute thresholds (PR head)
+        working-directory: pr
+        run: lhci assert --config=.lighthouserc.json
+
+      - name: Compare PR vs base bundle deltas
+        id: delta_gate
+        continue-on-error: true
+        run: node pr/tests/lighthouse/compare-deltas.mjs lhci-results/base lhci-results/pr
+
+      - name: Apply ack-label override to delta gate
+        if: steps.delta_gate.outcome == 'failure'
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if echo ",${PR_LABELS}," | grep -q ",${ACK_LABEL},"; then
+            echo "::notice title=Lighthouse delta override::Regression acknowledged via '${ACK_LABEL}' label by ${{ github.event.pull_request.user.login }} or a maintainer. Check is intentionally green."
+            echo ""
+            echo "Override active. The bundle delta exceeded MAX_*_DELTA_PCT but the maintainer"
+            echo "applied the '${ACK_LABEL}' label to acknowledge this is intentional."
+            echo "Removing the label will re-fail the check on the next workflow trigger."
+            exit 0
+          fi
+          echo "::error title=Lighthouse delta gate failed::PR exceeded the bundle-delta threshold (see previous step). To override, apply the '${ACK_LABEL}' label to the PR; the workflow will re-run on the labeled event."
+          echo ""
+          echo "Bundle delta exceeded threshold and no override label is present."
+          echo ""
+          echo "If the regression is intentional, apply the '${ACK_LABEL}' label to the PR"
+          echo "(Labels sidebar on the right → click the label). The workflow will re-run"
+          echo "on the labeled event and this check will turn green."
+          echo ""
+          echo "If the regression is NOT intentional, recalibrate or split the change."
+          echo "Local debugging: ./tests/lighthouse/budget-check.sh + diff against main."
+          exit 1
+
+      - name: Upload Lighthouse results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-results-${{ github.run_id }}
+          retention-days: 14
+          path: lhci-results/

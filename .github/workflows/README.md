@@ -13,6 +13,7 @@ These run on pull requests and **must go green** before merge.
 | Workflow | Trigger | What it gates |
 |---|---|---|
 | `session-persistence.yml` | PR touching tmux/session lifecycle paths, or `workflow_dispatch` | The eight `TestPersistence_*` tests (race-detector on) plus `scripts/verify-session-persistence.sh` end-to-end. Covers the class of bug where a single SSH logout destroys every managed tmux session on Linux+systemd. See the "Session persistence: mandatory test coverage" section in the root `CLAUDE.md`. |
+| `lighthouse-ci.yml` | PR touching `internal/web/**`, `.lighthouserc.json`, `tests/lighthouse/**`, or the workflow itself; also re-runs on `labeled` / `unlabeled` so the override below is reactive | Two-layer Lighthouse gate against `agent-deck web --no-tui`: (1) absolute thresholds in `.lighthouserc.json` (`total-byte-weight`, `resource-summary:script:size`, `cumulative-layout-shift` as hard error; FCP/LCP/TBT/Speed Index as soft warn); (2) bundle-delta gate (`tests/lighthouse/compare-deltas.mjs`) that fails if a single PR grows `total-byte-weight` or `script:size` by more than 5% vs the base ref. Reinstated in v1.7.70 after the `--no-tui` flag fixed the bubbletea/headless-CI start failure that disabled the gate in v1.7.42. **Maintainer override on the delta gate**: apply the `lighthouse-regression-acknowledged` label (auto-created by the workflow) to acknowledge an intentional regression — the workflow re-runs on the `labeled` event and the check turns green. The absolute thresholds in layer (1) do not participate in the override. |
 
 Any other red on a PR is either a pre-release workflow (see below) or a bug —
 file an issue and fix it, don't merge through it.
@@ -40,33 +41,33 @@ anything — they can fail silently without affecting merges.
 |---|---|---|
 | `weekly-regression.yml` | Sunday 00:00 UTC cron, or `workflow_dispatch` | Runs the Playwright visual-regression suite (`tests/e2e/pw-visual-regression.config.ts`) and Lighthouse CI (`.lighthouserc.json`) against a freshly built `agent-deck web` server. On failure, opens or appends to a single `Weekly regression check: … [date]` issue labelled `regression,automated` (idempotent — no duplicate issues on back-to-back failures). **Alert-only** — does not block any PR. |
 
-> **Note on weekly-regression reliability (as of v1.7.42):** the underlying
-> `agent-deck web` test server currently fails to start in fully headless CI
-> because a transitive bubbletea import tries to open a cancel-reader on a
-> non-existent TTY (`error creating cancelreader: bubbletea: error creating
-> cancel reader: add reader to epoll interest list`). Both the visual and
-> Lighthouse steps therefore fail with `ERR_CONNECTION_REFUSED`. Because
-> `weekly-regression.yml` is alert-only and idempotent, this produces at most
-> one open issue per week, not a flood. Fixing the server-start path (PTY
-> wrapper or a `--no-tui` startup flag) is tracked as a stability-ledger
-> follow-up; until then, the weekly issue is a known false positive.
+> **Note on the v1.7.70 fix:** the bubbletea cancel-reader failure that broke
+> `agent-deck web` on headless CI (`error creating cancelreader: bubbletea:
+> error creating cancel reader: add reader to epoll interest list`) is fixed
+> by the `--no-tui` flag added in v1.7.70. Both `lighthouse-ci.yml` (PR-time)
+> and `weekly-regression.yml` now invoke the binary with `--no-tui`, which
+> skips the TUI init while keeping the HTTP server. The Playwright
+> visual-regression step in `weekly-regression.yml` benefits from the same
+> flag — the test server now binds reliably on every Sunday run.
 
-## Deliberately removed in v1.7.42 (#682)
+## Deliberately removed in v1.7.42 (#682), partially reinstated in v1.7.70
 
-These PR gates were deleted in v1.7.42 because they were red on every run and
-were teaching the team to ignore red checks (the worst possible CI
-behaviour). Reach the repo at a commit before v1.7.42 if you want the
-original files:
+In v1.7.42 these PR gates were deleted because they were red on every run and
+were teaching the team to ignore red checks. The shared root cause — the
+bubbletea cancel-reader failing on headless CI — was fixed in v1.7.70 by the
+`--no-tui` flag on `agent-deck web`. The Lighthouse gate has been reinstated;
+visual-regression is still pending its own re-baseline of screenshot
+fixtures.
 
-| Workflow | Why it was removed |
+| Workflow | Status |
 |---|---|
-| `visual-regression.yml` | Ran on every PR. Broken since the bubbletea/TTY regression — `agent-deck web` never binds, every Playwright spec fails with `ERR_CONNECTION_REFUSED`. Same test matrix still runs weekly via `weekly-regression.yml`. Developers can re-run locally with `cd tests/e2e && npx playwright test --config=pw-visual-regression.config.ts` against a local `agent-deck web`. |
-| `lighthouse-ci.yml` | Ran on PRs touching `internal/web/**` or `.lighthouserc.json`. Has never passed since 2026-04-10 — same bubbletea server-start failure as above, plus the performance budget in `.lighthouserc.json` was never re-baselined against current webui bundle size. Same Lighthouse suite still runs weekly via `weekly-regression.yml`. Local run: `./tests/lighthouse/calibrate.sh` to re-baseline, then `npx lhci autorun --config=.lighthouserc.json`. |
+| `lighthouse-ci.yml` | **Reinstated in v1.7.70.** Listed under "Active PR gates" above. Thresholds re-baselined against the current webui bundle (`./tests/lighthouse/calibrate.sh` output) and the `--no-tui` flag is wired through `.lighthouserc.json`, `tests/lighthouse/*.sh`, and `weekly-regression.yml`. |
+| `visual-regression.yml` | **Still removed.** The server-start issue is fixed by `--no-tui`, but the screenshot baselines under `tests/e2e/visual/__screenshots__/` were never re-baselined and the suite still flakes on shared runners. The same matrix continues to run weekly via `weekly-regression.yml` (now reliably, since `--no-tui` lets the server bind). |
 
-If you want to reinstate either one as a PR gate, first fix the underlying
-`agent-deck web` headless-startup issue, re-baseline the relevant budget
-file, and land the change in the same PR so it stays green from run #1. Red
-gates worse than no gates.
+Reach the repo at commits before v1.7.42 (`a4b7079^`) if you need the
+original `visual-regression.yml` file. To reinstate it: re-baseline the
+screenshots with `cd tests/e2e && npx playwright test --config=pw-visual-regression.config.ts --update-snapshots`,
+then bring the workflow file back in the same PR.
 
 ## Adding a new workflow
 
