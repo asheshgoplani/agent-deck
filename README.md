@@ -54,6 +54,32 @@ and answer: How do I fork a session?
 
 https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
 
+## Quickstart: orchestrate a fleet of AI agents
+
+Five minutes from zero to a Telegram bot that watches every Claude session you have running.
+
+```bash
+# 1. Create a Telegram bot via @BotFather, grab the token + your user ID from @userinfobot.
+# 2. Run the wizard — it sets up the conductor, bridge daemon, and heartbeat in one shot.
+agent-deck conductor setup work --description "Work fleet"
+agent-deck session start conductor-work
+# 3. Message your bot:  /status
+```
+
+That's it. From now on every other agent-deck session you run is supervised by a single
+"conductor" session that answers routine questions, escalates the interesting ones to your
+phone, and never lets a `waiting` worker rot.
+
+Two short guides to read next:
+
+- [**`docs/CONDUCTOR-SETUP.md`**](docs/CONDUCTOR-SETUP.md) — five-minute walkthrough,
+  Telegram/Slack/Discord wiring, the gotchas (why the plugin auto-disables globally, channel
+  topology, multi-conductor patterns).
+- [**`docs/WATCHER-SETUP.md`**](docs/WATCHER-SETUP.md) — add "doorbells" so the outside world
+  (GitHub events, gmail, ntfy pushes, meetings) can wake the conductor up.
+
+![Fleet topology: phone → conductor → child sessions, with watchers on the side](docs/images/fleet-topology.png)
+
 ## The Problem
 
 Running Claude Code on 10 projects? OpenCode on 5 more? Another agent somewhere in the background?
@@ -784,11 +810,18 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 
 ## Documentation
 
-**User guides** — start here if you are new:
+**Onboarding** — five-minute walkthroughs for new users:
 
 | Guide | What's Inside |
 |-------|---------------|
-| [Conductor](documentation/CONDUCTOR.md) | What a conductor is, quickstart, channel pairing, state files, multi-conductor setups |
+| [Conductor Setup](docs/CONDUCTOR-SETUP.md) | Zero to a Telegram-controlled conductor in five minutes, with diagrams and gotchas |
+| [Watcher Setup](docs/WATCHER-SETUP.md) | Give your fleet ears: GitHub / Gmail / ntfy / Slack / calendar event forwarding |
+
+**User guides** — reference material for going deeper:
+
+| Guide | What's Inside |
+|-------|---------------|
+| [Conductor](documentation/CONDUCTOR.md) | What a conductor is, channel pairing, state files, multi-conductor setups |
 | [Skills](documentation/SKILLS.md) | User-level vs pool skills, authoring, attach/detach, when to use which tier |
 | [Watchdog](documentation/WATCHDOG.md) | Optional Python daemon that auto-restarts critical sessions and nudges stuck children |
 | [Watchers](documentation/WATCHERS.md) | Event-forwarding framework: doorbell model, built-in adapters, custom watchers, gotchas |
