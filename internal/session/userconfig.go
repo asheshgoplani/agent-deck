@@ -717,28 +717,37 @@ func (c *UserConfig) GetProfileClaudeConfigDir(profile string) string {
 	return ExpandPath(profileCfg.Claude.ConfigDir)
 }
 
-// GetGroupClaudeConfigDir returns the group-specific Claude config directory, if configured.
+// GetGroupClaudeConfigDir returns the group-specific Claude config directory,
+// walking ancestor groups when the exact path has no override. A child group
+// like "personal/foo" inherits the [groups."personal".claude].config_dir
+// setting from its parent so per-group account isolation propagates through
+// nested groups.
 func (c *UserConfig) GetGroupClaudeConfigDir(groupPath string) string {
 	if c == nil || groupPath == "" || c.Groups == nil {
 		return ""
 	}
-	groupCfg, ok := c.Groups[groupPath]
-	if !ok || groupCfg.Claude.ConfigDir == "" {
-		return ""
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.Claude.ConfigDir != "" {
+			return ExpandPath(groupCfg.Claude.ConfigDir)
+		}
 	}
-	return ExpandPath(groupCfg.Claude.ConfigDir)
+	return ""
 }
 
-// GetGroupClaudeEnvFile returns the group-specific Claude env file, if configured.
+// GetGroupClaudeEnvFile returns the group-specific Claude env file, walking
+// ancestor groups when the exact path has no override. Mirrors
+// GetGroupClaudeConfigDir's inheritance semantics so nested groups don't
+// silently drop the parent's env_file.
 func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 	if c == nil || groupPath == "" || c.Groups == nil {
 		return ""
 	}
-	groupCfg, ok := c.Groups[groupPath]
-	if !ok || groupCfg.Claude.EnvFile == "" {
-		return ""
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.Claude.EnvFile != "" {
+			return groupCfg.Claude.EnvFile
+		}
 	}
-	return groupCfg.Claude.EnvFile
+	return ""
 }
 
 // GetConductorClaudeConfigDir returns the conductor-specific Claude config
