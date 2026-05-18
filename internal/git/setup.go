@@ -98,8 +98,34 @@ func buildSetupCmd(ctx context.Context, scriptPath string, mode os.FileMode) *ex
 // users couldn't tell whether the script had run, finished, or finished
 // cleanly before claude started.
 func CreateWorktreeWithSetup(repoDir, worktreePath, branchName string, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	return CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName, WorktreeStateOptions{}, stdout, stderr, setupTimeout)
+}
+
+// WorktreeStateOptions controls the issue #1029 with-state behavior of
+// CreateWorktreeWithStateAndSetup. When WithState is false, the worktree is
+// created clean from branch tip — the legacy behavior.
+type WorktreeStateOptions struct {
+	// WithState copies parent's staged/unstaged/untracked files into the
+	// new worktree before the setup hook runs.
+	WithState bool
+	// WithIgnored, when WithState is true, also copies parent's gitignored
+	// files (e.g., .env, .mcp.json). Implies WithState.
+	WithIgnored bool
+}
+
+// CreateWorktreeWithStateAndSetup is CreateWorktreeWithSetup plus optional
+// materialization of the parent session's working-tree state (#1029).
+// Materialization happens BEFORE worktreeinclude processing and the setup
+// script so both observe the realized state, per @smorin's spec.
+func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
+	}
+
+	if state.WithState {
+		if matErr := MaterializeWipFromParent(repoDir, worktreePath, state.WithIgnored); matErr != nil {
+			return nil, fmt.Errorf("materialize parent state: %w", matErr)
+		}
 	}
 
 	if inclErr := ProcessWorktreeInclude(repoDir, worktreePath, stderr); inclErr != nil {

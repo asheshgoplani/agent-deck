@@ -605,6 +605,8 @@ func handleSessionFork(profile string, args []string) {
 	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
 	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
 	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
+	withState := fs.Bool("with-state", false, "Copy parent's staged+unstaged+untracked files into the new worktree (#1029, requires -w)")
+	withStateGitignored := fs.Bool("with-state-and-gitignored", false, "Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
 
@@ -622,6 +624,8 @@ func handleSessionFork(profile string, args []string) {
 		fmt.Println("  agent-deck session fork my-project -t \"my-fork\" -g \"experiments\"")
 		fmt.Println("  agent-deck session fork my-project -w fork/experiment")
 		fmt.Println("  agent-deck session fork my-project -w fork/new-idea -b")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -694,6 +698,13 @@ func handleSessionFork(profile string, args []string) {
 	}
 	createNewBranch := *newBranch || *newBranchLong
 
+	// #1029: --with-state-and-gitignored implies --with-state.
+	wantState := *withState || *withStateGitignored
+	if wantState && wtBranch == "" {
+		out.Error("--with-state requires an explicit worktree branch (-w/--worktree)", ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
+
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
 	if wtBranch != "" {
@@ -739,7 +750,10 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			setupErr, err := git.CreateWorktreeWithStateAndSetup(
+				repoRoot, worktreePath, wtBranch,
+				git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
+				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
