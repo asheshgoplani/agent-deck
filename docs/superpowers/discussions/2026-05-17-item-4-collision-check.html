@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Item 4: Redundant existing-worktree check in Task 13</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #555;
+    --border: #d0d7de;
+    --code-bg: #f6f8fa;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --success: #16a34a;
+    --warn-bg: #fff8e1;
+    --warn-border: #f9c74f;
+    --rec: #2a9d8f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1.25rem 4rem;
+    line-height: 1.6;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  h1 { font-size: 1.8rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.5rem; font-size: 0.95rem; }
+  h2 { font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; margin-top: 2.5rem; }
+  h3 { font-size: 1.05rem; margin-top: 1.5rem; }
+  p { margin: 0.7rem 0; }
+  pre {
+    background: var(--code-bg);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.45;
+    border: 1px solid var(--border);
+  }
+  code {
+    background: #eef0f2;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  pre code { background: none; padding: 0; }
+  .ascii { white-space: pre; line-height: 1.25; font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { border: 1px solid var(--border); padding: 0.55rem 0.7rem; text-align: left; vertical-align: top; font-size: 0.95em; }
+  th { background: var(--code-bg); }
+  .toc {
+    background: #f0f4f8;
+    padding: 0.9rem 1rem;
+    border-radius: 6px;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.95em;
+  }
+  .toc strong { display: block; margin-bottom: 0.3rem; }
+  .toc ul { margin: 0; padding-left: 1.25rem; }
+  .toc li { margin: 0.2rem 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  .decision {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    padding: 1.25rem 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+  }
+  .decision h2 { border: none; margin-top: 0; padding-bottom: 0; }
+  .options { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 1rem; }
+  .option-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    align-items: center;
+    padding: 0.9rem 1rem;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .option-row.recommended {
+    border-color: var(--rec);
+    box-shadow: 0 0 0 2px rgba(42, 157, 143, 0.15);
+  }
+  .option-label { font-weight: 600; }
+  .recommended-badge {
+    display: inline-block;
+    font-size: 0.7em;
+    background: var(--rec);
+    color: white;
+    padding: 0.12rem 0.55rem;
+    border-radius: 999px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+  }
+  .option-summary {
+    color: var(--muted);
+    font-size: 0.9em;
+    margin-top: 0.2rem;
+  }
+  button.copy {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    min-width: 130px;
+    font-size: 0.9em;
+    transition: background-color 0.15s;
+  }
+  button.copy:hover { background: var(--accent-hover); }
+  button.copy.copied { background: var(--success); }
+  .toast {
+    position: fixed;
+    bottom: 2rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #111;
+    color: white;
+    padding: 0.75rem 1.25rem;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+    z-index: 10;
+    font-size: 0.9em;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  }
+  .toast.visible { opacity: 1; }
+  .note { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.7rem 1rem; margin: 1rem 0; font-size: 0.92em; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Item 4: Redundant existing-worktree check in Task 13</h1>
+<p class="subtitle">Decision document · fork-with-state · 2026-05-17</p>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#background">Background: existing worktrees in git</a></li>
+    <li><a href="#today">Today&rsquo;s behavior (pre-feature)</a></li>
+    <li><a href="#feature">What this feature adds, and where collision matters</a></li>
+    <li><a href="#workflows">Workflow walkthroughs</a></li>
+    <li><a href="#cli-vs-tui">CLI vs TUI architectural comparison</a></li>
+    <li><a href="#decision">Decision &mdash; four options</a></li>
+  </ul>
+</div>
+
+<h2 id="background">Background: existing worktrees in git</h2>
+<p>
+  <code>git worktree add &lt;path&gt; &lt;branch&gt;</code> creates a directory checked out to <code>&lt;branch&gt;</code>.
+  Once created, git refuses any future <code>git worktree add</code> for that same branch (the
+  one-branch-one-worktree rule). The branch is &ldquo;claimed&rdquo; by the worktree.
+</p>
+<p>
+  <code>git worktree list --porcelain</code> reports each branch and the path of its worktree.
+  The helper <code>git.GetWorktreeForBranch(repoRoot, branch)</code> wraps this &mdash; returns the path if a
+  worktree exists for that branch, empty string otherwise.
+</p>
+
+<h2 id="today">Today&rsquo;s behavior (pre-feature)</h2>
+<p>
+  Today, <code>session fork -w &lt;branch&gt;</code> has a <strong>reuse-on-collision</strong>
+  behavior at <code>session_cmd.go:721-723</code>:
+</p>
+<pre><code>// Check for an existing worktree for this branch before creating a new one
+if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil &amp;&amp; existingPath != "" {
+    fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
+    worktreePath = existingPath
+} else {
+    // create new worktree...
+}</code></pre>
+<p>
+  This is intentional: if you keep forking sessions for the same experiment branch, you want them all
+  to land in the same workspace, not stamp out N copies.
+</p>
+
+<div class="ascii">
+USER: agent-deck session fork my-session -w fork/exp
+                                            │
+                                            ▼
+                                  ┌─────────────────────────────┐
+                                  │ Does branch fork/exp exist? │
+                                  └─────────────────────────────┘
+                                  no, no -b  │      │ yes
+                                             ▼      ▼
+                                          ERROR    Continue
+                                             │
+                                             ▼
+                            ┌────────────────────────────────────────┐
+                            │ Does fork/exp already have a worktree? │
+                            └────────────────────────────────────────┘
+                                  yes  │             │ no
+                                       ▼             ▼
+                              REUSE that worktree   Create new worktree
+                                       │             │
+                                       └──────┬──────┘
+                                              ▼
+                                  Fork Claude into worktree
+</div>
+
+<h2 id="feature">What this feature adds, and where collision matters</h2>
+<p>
+  Fork-with-state <strong>must not reuse</strong> an existing worktree: materialization would overwrite or
+  interleave with whatever state is already there. A user who runs
+  <code>session fork --with-state -w fork/exp</code> and finds an existing <code>fork/exp</code> worktree
+  must get an error, not a silent reuse.
+</p>
+<p>
+  So the new with-state path needs a refusal that today&rsquo;s path doesn&rsquo;t have. Where to put that
+  refusal is the architectural question.
+</p>
+
+<h2 id="workflows">Workflow walkthroughs</h2>
+
+<h3>Workflow A &mdash; Happy path: <code>--with-state -w fork/new</code>, no conflicts</h3>
+<div class="ascii">
+1. resolveForkStateFlags → stateFlags.WithState=true, Branch="fork/new"
+2. Refuse if --with-state but no -w (passes)
+3. Enter `if stateFlags.WithState {...}` early gate (plan line 1742):
+     ├── GetWorktreeForBranch("fork/new")          → empty   ✓ (Check #1a)
+     ├── BranchExists("fork/new")                  → false   ✓ (Check #1b)
+     └── PreflightForkWithState(parent)            → ok      ✓
+4. Exit early gate; compute worktreePath
+5. Enter existing-worktree reuse block (plan line 1785):
+     └── GetWorktreeForBranch("fork/new")          → empty   ✓ (Check #2)
+        → fall into the "create new" branch
+6. CreateWorktreeAtStartPoint → ok
+7. MaterializeParentState → ok
+8. RunWorktreeSetup → ok
+9. Start fork
+</div>
+<p>
+  Note that <strong>GetWorktreeForBranch is called twice</strong> at steps 3a and 5. Both return empty.
+  Step 5&rsquo;s redundancy is benign here.
+</p>
+
+<h3>Workflow B &mdash; <code>--with-state -w fork/exp</code> where <code>fork/exp</code> already has a worktree</h3>
+<div class="ascii">
+1. resolveForkStateFlags → stateFlags.WithState=true, Branch="fork/exp"
+2. Refuse if --with-state but no -w (passes)
+3. Enter early gate:
+     ├── GetWorktreeForBranch("fork/exp") → "/x/fork-exp" (non-empty)
+     │    → out.Error("branch 'fork/exp' already has a worktree at /x/fork-exp; ...")
+     │    → os.Exit(1)                                                        ← EXIT HERE
+     ...
+   (Check #2 in the reuse block is never reached)
+</div>
+
+<h3>Workflow C &mdash; The imagined &ldquo;the early gate got refactored&rdquo; scenario</h3>
+<p>The plan author&rsquo;s defensive justification: imagine a future refactor that moves preflight elsewhere and accidentally drops Check #1a:</p>
+<div class="ascii">
+1-3. (modified) early gate runs preflight only, no GetWorktreeForBranch
+4. Compute worktreePath
+5. Enter reuse block:
+     └── GetWorktreeForBranch("fork/exp") → "/x/fork-exp"
+        ├── (with the redundant guard): if stateFlags.WithState → out.Error → os.Exit
+        └── (without the redundant guard): print "Reusing existing worktree..."
+                                            → worktreePath = "/x/fork-exp"  ← would be a BUG
+6. CreateWorktreeAtStartPoint runs against the existing branch
+   → CreateWorktreeAtStartPoint refuses (BranchExists check inside it)
+   → out.Error("worktree creation failed...") → os.Exit
+</div>
+<div class="note">
+  <strong>Important:</strong> even in the &ldquo;refactored-away&rdquo; scenario,
+  <code>CreateWorktreeAtStartPoint</code> at step 6 itself rejects the existing branch (per Task 4A line 564:
+  <code>if BranchExists(...) { return false, fmt.Errorf("branch %q already exists", ...) }</code>).
+  The defense isn&rsquo;t doing what the plan author thought &mdash; the bottom-of-stack check catches the slip.
+</div>
+
+<h2 id="cli-vs-tui">CLI vs TUI architectural comparison</h2>
+<p>Here are the two handlers side by side, schematically:</p>
+
+<pre class="ascii">                 CLI: handleSessionFork                   TUI: forkSessionCmdWithOptions
+                 ─────────────────────                    ──────────────────────────────
+                                                          (dialog has already validated
+                                                           user input via ForkDialog.Validate
+                                                           before this cmd is dispatched)
+
+  ┌─ Parse flags ─────────────────────────┐               ┌─ Receive pre-built opts ─────┐
+  │   wtBranch, withState, etc.           │               │   from dialog submit         │
+  └───────────────────────────────────────┘               └──────────────────────────────┘
+                  │                                                       │
+                  ▼                                                       ▼
+  ┌─ All-validation block ────────────────┐               ┌─ Existing-worktree reuse ────┐
+  │   refuse --with-state without -w      │               │   if GetWorktreeForBranch:   │
+  │   if WithState {                      │               │     if opts.WithState:       │
+  │     Check #1a: GetWorktreeForBranch ──┼──┐            │       return error           │ ← (only collision check)
+  │     Check #1b: BranchExists           │  │            │     else: reuse it           │
+  │     Preflight                         │  │            │   else: continue             │
+  │   } else if !createNewBranch:         │  │            └──────────────────────────────┘
+  │     BranchExists                      │  │                            │
+  └───────────────────────────────────────┘  │                            ▼
+                  │                          │            ┌─ Git-ops block ──────────────┐
+                  ▼                          │            │   if WithState:              │
+  ┌─ Compute worktree path ───────────────┐  │            │     Preflight                │
+  └───────────────────────────────────────┘  │            │     CreateWorktreeAtStartPoint
+                  │                          │            │   else:                      │
+                  ▼                          │            │     CreateWorktree           │
+  ┌─ Existing-worktree reuse ─────────────┐  │            │   if WithState:              │
+  │   if GetWorktreeForBranch:            │  │            │     MaterializeParentState   │
+  │     if WithState: error  ─────────────┼──┤            │   RunWorktreeSetup           │
+  │     else: reuse                       │  │ redundant  └──────────────────────────────┘
+  │   else: continue                      │  │            │
+  └───────────────────────────────────────┘  │            │
+                  │                          │            ▼
+                  ▼                          │        (return msg)
+  ┌─ Create / Materialize / Setup ────────┐  │
+  │   ...                                 │  │
+  └───────────────────────────────────────┘  │
+                                             │
+                                             └─ This is the redundant pair (CLI only)</pre>
+
+<h3>Key structural differences</h3>
+<table>
+  <thead>
+    <tr><th>Aspect</th><th>CLI</th><th>TUI</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Where validation lives</td>
+      <td>One big &ldquo;all-validation&rdquo; block early (plan line 1742-1779); flags and validation tightly coupled in one function.</td>
+      <td>Input validation in the dialog (<code>ForkDialog.Validate()</code>); the cmd handler does git work.</td>
+    </tr>
+    <tr>
+      <td>Error idiom</td>
+      <td><code>os.Exit(1)</code> after <code>out.Error(...)</code>.</td>
+      <td>Return <code>sessionForkedMsg{err, sourceID}</code> for the update loop to display.</td>
+    </tr>
+    <tr>
+      <td>Reuse-block ancestry</td>
+      <td>Inherited from today&rsquo;s code at <code>session_cmd.go:721</code> → plan line 1785-1796.</td>
+      <td>Inherited from today&rsquo;s code at <code>home.go:8499-8501</code> → plan line 2960-2968.</td>
+    </tr>
+    <tr>
+      <td>Where the new with-state collision check was added</td>
+      <td>In <em>both</em> the early validation block (Check #1a) <em>and</em> the reuse block (Check #2).</td>
+      <td>Only in the reuse block (line 2960-2968), the sole collision check.</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  The asymmetry happened because the CLI plan author wrote the gate first and then &ldquo;defensively&rdquo;
+  mirrored into the reuse block, while the TUI plan author saw the existing reuse block as the
+  natural insertion point and stopped there.
+</p>
+
+<h2 id="decision">Decision &mdash; four options</h2>
+
+<div class="decision">
+  <h2>Choose how to resolve the redundancy</h2>
+  <p>Pick an option to copy a decision string back to chat.</p>
+
+  <div class="options">
+
+    <div class="option-row">
+      <div>
+        <span class="option-label">Option A &mdash; Remove CLI Check #2&rsquo;s with-state branch</span>
+        <div class="option-summary">
+          Surfaces stay asymmetric (CLI checks early; TUI in reuse block); each has a single source of truth.
+          Simplest change. ~10 plan lines.
+        </div>
+      </div>
+      <button class="copy" data-decision="Option A: Remove CLI Check #2's with-state branch. Restore CLI's existing-worktree reuse block to today's exact behavior (no with-state awareness). CLI Check #1a in the early gate is the sole with-state collision check. TUI plan unchanged. ~10 plan lines.">Copy decision</button>
+    </div>
+
+    <div class="option-row">
+      <div>
+        <span class="option-label">Option B &mdash; Make TUI symmetric to CLI</span>
+        <div class="option-summary">
+          Add an early collision check to TUI; remove TUI&rsquo;s reuse-block with-state branch. Imposes
+          symmetry where the surfaces have legitimately different shapes. Not recommended.
+        </div>
+      </div>
+      <button class="copy" data-decision="Option B: Add an early collision check to TUI's forkSessionCmdWithOptions (before the existing reuse block). Remove TUI's reuse-block with-state branch. Surfaces become symmetric: both validate collision early, both have unchanged reuse blocks.">Copy decision</button>
+    </div>
+
+    <div class="option-row">
+      <div>
+        <span class="option-label">Option C &mdash; Keep the redundancy (status quo)</span>
+        <div class="option-summary">
+          Defense-in-depth that doesn&rsquo;t actually defend (the <code>CreateWorktreeAtStartPoint</code>
+          internal check already catches the slip). Adds reader confusion. Not recommended.
+        </div>
+      </div>
+      <button class="copy" data-decision="Option C: Leave the plan as-is. Keep CLI's redundant Check #2 with-state branch and the &quot;defensive if refactored&quot; comment. No changes to either CLI or TUI plan.">Copy decision</button>
+    </div>
+
+    <div class="option-row recommended">
+      <div>
+        <span class="option-label">
+          Option D &mdash; Extract shared <code>git.ValidateForkWithStateDestination</code> helper
+          <span class="recommended-badge">Recommended</span>
+        </span>
+        <div class="option-summary">
+          Mirrors the FWS-009 <code>PreflightForkWithState</code> pattern: git-fact validation lives in
+          <code>internal/git</code>, CLI and TUI both call it. Eliminates CLI redundancy, removes the
+          inline with-state branch from TUI&rsquo;s reuse block, gives one source of truth.
+          ~30 plan lines + 2-3 helper tests.
+        </div>
+      </div>
+      <button class="copy" data-decision="Option D: Extract a shared helper git.ValidateForkWithStateDestination(repoRoot, branch) in internal/git/worktree_with_state.go that wraps GetWorktreeForBranch and BranchExists with a typed DestinationCollisionError. CLI calls it before PreflightForkWithState in the early gate; restore CLI's reuse block to today's exact behavior. TUI calls it before its reuse block; restore TUI's reuse block to today's exact behavior. Add 2-3 helper unit tests. Mirrors the FWS-009 PreflightForkWithState architectural pattern.">Copy decision</button>
+    </div>
+
+  </div>
+</div>
+
+<h2>Why D is best for maintainability</h2>
+<ul>
+  <li><strong>Single source of truth</strong> for git-fact validation. Both surfaces call the same helper. If validation needs to add another check (e.g., branch name length, reserved-prefix policy), one place to edit.</li>
+  <li><strong>Mirrors the existing FWS-009 architecture pattern.</strong> The codebase already established that &ldquo;git facts shared by CLI and TUI live in <code>internal/git</code>.&rdquo; Adding a second helper (collision) alongside the first (preflight) is consistent.</li>
+  <li><strong>Spec line 174 is honored literally</strong>: both surfaces&rsquo; reuse blocks revert to today&rsquo;s unchanged behavior. The with-state refusal lives in the shared helper, not interleaved into legacy code paths.</li>
+  <li><strong>Eliminates the CLI redundancy</strong> without imposing symmetry on TUI&rsquo;s cmd shape.</li>
+  <li><strong>Removes reader confusion</strong>: no dead-code branches, no &ldquo;why is this check here twice?&rdquo; moments.</li>
+  <li><strong>Testable in isolation</strong>: unit tests for <code>ValidateForkWithStateDestination</code> cover the validation logic once.</li>
+</ul>
+
+<h2>Why D is best for user experience</h2>
+<p>
+  UX is unaffected by any of these options &mdash; the user gets the same error messages regardless.
+  CLI prints via <code>out.Error</code>, TUI returns the error from the cmd handler.
+  The shared helper returns a typed error; each surface formats it appropriately.
+</p>
+
+<h2>Argument against D</h2>
+<p>
+  D is the biggest change: touches <code>internal/git/worktree_with_state.go</code> (add helper + new error
+  type + 2-3 tests), <code>cmd/agent-deck/session_cmd.go</code> (replace 2 inline checks with 1 helper call),
+  <code>internal/ui/home.go</code> (replace inline check with 1 helper call), and the spec
+  (update test inventory + architecture description).
+</p>
+<p>
+  Extracting helpers prematurely is a real anti-pattern. Two callers is the minimum threshold for DRY;
+  if a third use case never materializes, the indirection added cost without payoff. Here we have
+  exactly two callers (CLI and TUI), and the FWS-009 precedent says this is the time to extract.
+</p>
+
+<div class="toast" id="toast">Decision copied to clipboard</div>
+
+<script>
+(function () {
+  const toast = document.getElementById('toast');
+  let toastTimer;
+
+  document.querySelectorAll('button.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const decision = btn.getAttribute('data-decision') || '';
+      const originalLabel = btn.textContent;
+
+      const showCopied = function () {
+        btn.classList.add('copied');
+        btn.textContent = 'Copied!';
+        toast.classList.add('visible');
+        if (toastTimer) { clearTimeout(toastTimer); }
+        toastTimer = setTimeout(function () {
+          btn.classList.remove('copied');
+          btn.textContent = originalLabel;
+          toast.classList.remove('visible');
+        }, 2000);
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(decision).then(showCopied, function () {
+          fallbackCopy(decision, showCopied);
+        });
+      } else {
+        fallbackCopy(decision, showCopied);
+      }
+    });
+  });
+
+  function fallbackCopy(text, onDone) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      onDone();
+    } catch (e) {
+      // no-op
+    } finally {
+      document.body.removeChild(ta);
+    }
+  }
+})();
+</script>
+
+</body>
+</html>
