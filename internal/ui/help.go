@@ -166,8 +166,8 @@ func (h *HelpOverlay) View() string {
 	// Define help sections
 	newKeys := h.keyPair(hotkeyNewSession, hotkeyQuickCreate, "n/N")
 	forkKeys := h.keyPair(hotkeyQuickFork, hotkeyForkWithOptions, "f/F")
-	reorderUpKeys := "K / Shift+↑"
-	reorderDownKeys := "J / Shift+↓"
+	reorderUpKeys := "+ / K / Shift+↑"
+	reorderDownKeys := "- / J / Shift+↓"
 	indentKeys := "Shift+→/←"
 	searchKey := h.key(hotkeySearch, "/")
 	settingsKey := h.key(hotkeySettings, "S")

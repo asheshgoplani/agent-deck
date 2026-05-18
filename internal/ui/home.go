@@ -6060,7 +6060,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "shift+up", "K":
+	case "shift+up", "ctrl+up", "+", "K":
 		// Move item up
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
@@ -6087,7 +6087,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case "shift+down", "J":
+	case "shift+down", "ctrl+down", "-", "J":
 		// Move item down
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
@@ -11099,6 +11099,7 @@ func (h *Home) renderHelpBarFull() string {
 	// Global shortcuts (right side) - more compact with separators
 	globalStyle := lipgloss.NewStyle().Foreground(ColorComment)
 	globalParts := []string{globalStyle.Render("↑↓ Nav")}
+	globalParts = append(globalParts, globalStyle.Render("+/- Move"))
 	if key := h.actionKey(hotkeySearch); key != "" {
 		globalParts = append(globalParts, globalStyle.Render(key+" Search"))
 	}
