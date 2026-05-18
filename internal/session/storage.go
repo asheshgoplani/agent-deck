@@ -303,86 +303,11 @@ func (s *Storage) SaveWithGroups(instances []*Instance, groupTree *GroupTree) er
 	// Convert instances to database rows
 	rows := make([]*statedb.InstanceRow, len(instances))
 	for i, inst := range instances {
-		// Issue #666: belt-and-braces guard. Empty GroupPath should never
-		// reach SQLite — the load-time fallback at convertToInstances already
-		// covers legacy rows, but a regression in a write path (fork, move,
-		// direct mutation) could still slip through. Normalize here so the
-		// next load doesn't need to defend.
-		if inst.GroupPath == "" {
-			storageLog.Warn(
-				"empty_group_path_normalized_on_save",
-				slog.String("instance_id", inst.ID),
-				slog.String("title", inst.Title),
-				slog.String("project_path", inst.ProjectPath),
-				slog.String("normalized_to", DefaultGroupPath),
-			)
-			inst.GroupPath = DefaultGroupPath
+		row, err := instanceToRow(inst)
+		if err != nil {
+			return err
 		}
-		tmuxName := ""
-		if inst.tmuxSession != nil {
-			tmuxName = inst.tmuxSession.Name
-		}
-		var sandboxJSON json.RawMessage
-		if inst.Sandbox != nil {
-			data, err := json.Marshal(inst.Sandbox)
-			if err != nil {
-				return fmt.Errorf("failed to marshal sandbox for %s: %w", inst.ID, err)
-			}
-			sandboxJSON = data
-		}
-
-		var mrWorktrees []statedb.MultiRepoWorktreeData
-		for _, wt := range inst.MultiRepoWorktrees {
-			mrWorktrees = append(mrWorktrees, statedb.MultiRepoWorktreeData{
-				OriginalPath: wt.OriginalPath,
-				WorktreePath: wt.WorktreePath,
-				RepoRoot:     wt.RepoRoot,
-				Branch:       wt.Branch,
-			})
-		}
-		toolData := statedb.MarshalToolData(
-			inst.ClaudeSessionID, inst.ClaudeDetectedAt,
-			inst.GeminiSessionID, inst.GeminiDetectedAt,
-			inst.GeminiYoloMode, inst.GeminiModel,
-			inst.OpenCodeSessionID, inst.OpenCodeDetectedAt,
-			inst.CodexSessionID, inst.CodexDetectedAt,
-			inst.LatestPrompt, inst.Notes, inst.LoadedMCPNames,
-			inst.ToolOptionsJSON,
-			sandboxJSON, inst.SandboxContainer,
-			inst.SSHHost, inst.SSHRemotePath,
-			inst.MultiRepoEnabled, inst.AdditionalPaths,
-			inst.MultiRepoTempDir, mrWorktrees,
-			inst.Channels,
-			inst.ExtraArgs,
-			inst.Plugins,                   // RFC docs/rfc/PLUGIN_ATTACH.md
-			inst.PluginChannelLinkDisabled, // RFC §4.7
-			inst.AutoLinkedChannels,        // RFC §4.7 (G4/C2 fix)
-			inst.Color,                     // issue #391
-		)
-
-		rows[i] = &statedb.InstanceRow{
-			ID:                 inst.ID,
-			Title:              inst.Title,
-			ProjectPath:        inst.ProjectPath,
-			GroupPath:          inst.GroupPath,
-			Order:              inst.Order,
-			Command:            inst.Command,
-			Wrapper:            inst.Wrapper,
-			Tool:               inst.Tool,
-			Status:             string(inst.Status),
-			TmuxSession:        tmuxName,
-			TmuxSocketName:     inst.TmuxSocketName,
-			CreatedAt:          inst.CreatedAt,
-			LastAccessed:       inst.LastAccessedAt,
-			ParentSessionID:    inst.ParentSessionID,
-			IsConductor:        inst.IsConductor,
-			NoTransitionNotify: inst.NoTransitionNotify,
-			TitleLocked:        inst.TitleLocked,
-			WorktreePath:       inst.WorktreePath,
-			WorktreeRepo:       inst.WorktreeRepoRoot,
-			WorktreeBranch:     inst.WorktreeBranch,
-			ToolData:           toolData,
-		}
+		rows[i] = row
 	}
 
 	if err := s.db.SaveInstances(rows); err != nil {
@@ -525,6 +450,211 @@ func (s *Storage) RemoveSessionAndVerify(id string, remainingInstances []*Instan
 		return fmt.Errorf("%w: %s", ErrRemovalNotPersistent, id)
 	}
 	return nil
+}
+
+// ErrInsertNotPersistent is returned by InsertSessionAndVerify when, after
+// retries, the row is still missing from the database. The most likely cause
+// is a concurrent SaveInstances rewrite from another agent-deck process
+// that loaded the instances slice before this INSERT landed and then
+// DELETE'd the row via the `DELETE FROM instances WHERE id NOT IN (...)`
+// step inside SaveInstances.
+//
+// Surfacing this as a real error (rather than silently returning success)
+// is the user-facing half of the issue #1031 fix.
+var ErrInsertNotPersistent = errors.New("insert not persistent: row dropped by concurrent writer")
+
+// insertVerifyAttempts and insertVerifyBackoff control the post-commit
+// verify loop inside InsertSessionAndVerify. The defaults absorb the
+// bounded window in which a competing rewriter can DELETE this row
+// before its own SaveInstances commits (parallel xargs -P N launches).
+// Tests override via the package-private setters so they don't sit
+// through the production backoff schedule.
+var (
+	insertVerifyAttempts = 6
+	insertVerifyBackoff  = []time.Duration{
+		20 * time.Millisecond,
+		40 * time.Millisecond,
+		80 * time.Millisecond,
+		160 * time.Millisecond,
+		320 * time.Millisecond,
+	}
+)
+
+// InsertSessionAndVerify performs a durable single-row session insert.
+//
+// Flow (v1.9.x issue #1031 fix, parallel to #909's RemoveSessionAndVerify):
+//
+//  1. SaveInstance(row) — targeted INSERT OR REPLACE on the single new
+//     row only, NOT a full-table rewrite. This sidesteps the
+//     load-modify-write race where a sibling launch's
+//     `DELETE FROM instances WHERE id NOT IN (...)` inside
+//     SaveInstances would silently delete this row.
+//  2. SaveGroupsOnly(groupTree) — persist any group structure changes
+//     WITHOUT rewriting the instances table. Rewriting (SaveWithGroups)
+//     is the load-modify-write pattern that lets a concurrent launch
+//     drop this row; skipping it eliminates the structural race for
+//     our own write.
+//  3. Verify InstanceExists(id) is true. If not (some other process
+//     issued a SaveInstances rewrite that excluded this row because it
+//     loaded the instances slice pre-INSERT), re-issue the targeted
+//     INSERT and loop with linear backoff.
+//  4. After exhausting attempts, return ErrInsertNotPersistent so the
+//     caller can fail loudly instead of returning success on a row
+//     that's not actually there.
+//
+// instances is the post-insert session list, used only to compute group
+// sort_order / membership for SaveGroupsOnly. groupTree may be nil if
+// the caller doesn't care to persist groups.
+func (s *Storage) InsertSessionAndVerify(newInstance *Instance, groupTree *GroupTree) error {
+	if newInstance == nil {
+		return fmt.Errorf("nil instance")
+	}
+	row, err := instanceToRow(newInstance)
+	if err != nil {
+		return err
+	}
+
+	if err := s.saveSingleInstance(row); err != nil {
+		return err
+	}
+
+	if groupTree != nil {
+		if err := s.SaveGroupsOnly(groupTree); err != nil {
+			return fmt.Errorf("failed to save groups during insert: %w", err)
+		}
+	}
+
+	for attempt := 0; attempt < insertVerifyAttempts; attempt++ {
+		exists, err := s.InstanceExists(newInstance.ID)
+		if err != nil {
+			return fmt.Errorf("verify insert of %s: %w", newInstance.ID, err)
+		}
+		if exists {
+			return nil
+		}
+		if attempt < len(insertVerifyBackoff) {
+			time.Sleep(insertVerifyBackoff[attempt])
+		}
+		// Re-issue the targeted INSERT; races against the concurrent
+		// rewriter but eventually wins because every retry shrinks the
+		// window.
+		if err := s.saveSingleInstance(row); err != nil {
+			return err
+		}
+	}
+
+	exists, err := s.InstanceExists(newInstance.ID)
+	if err != nil {
+		return fmt.Errorf("verify insert of %s: %w", newInstance.ID, err)
+	}
+	if exists {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", ErrInsertNotPersistent, newInstance.ID)
+}
+
+// saveSingleInstance writes one row via the targeted SaveInstance path
+// (single-row INSERT OR REPLACE — no DELETE-NOT-IN sweep). Wraps the
+// statedb call in the storage mutex and the nil-db guard so callers
+// stay symmetric with DeleteInstance.
+func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+	if err := s.db.SaveInstance(row); err != nil {
+		return fmt.Errorf("failed to save instance %s: %w", row.ID, err)
+	}
+	_ = s.db.Touch()
+	return nil
+}
+
+// instanceToRow converts a session.Instance into the statedb row shape.
+// Shared by SaveWithGroups (bulk path) and InsertSessionAndVerify
+// (targeted single-row path) so the marshal/normalize logic stays in
+// one place.
+func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
+	// Issue #666: belt-and-braces guard. Empty GroupPath should never
+	// reach SQLite — the load-time fallback at convertToInstances already
+	// covers legacy rows, but a regression in a write path (fork, move,
+	// direct mutation) could still slip through. Normalize here so the
+	// next load doesn't need to defend.
+	if inst.GroupPath == "" {
+		storageLog.Warn(
+			"empty_group_path_normalized_on_save",
+			slog.String("instance_id", inst.ID),
+			slog.String("title", inst.Title),
+			slog.String("project_path", inst.ProjectPath),
+			slog.String("normalized_to", DefaultGroupPath),
+		)
+		inst.GroupPath = DefaultGroupPath
+	}
+	tmuxName := ""
+	if inst.tmuxSession != nil {
+		tmuxName = inst.tmuxSession.Name
+	}
+	var sandboxJSON json.RawMessage
+	if inst.Sandbox != nil {
+		data, err := json.Marshal(inst.Sandbox)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal sandbox for %s: %w", inst.ID, err)
+		}
+		sandboxJSON = data
+	}
+
+	var mrWorktrees []statedb.MultiRepoWorktreeData
+	for _, wt := range inst.MultiRepoWorktrees {
+		mrWorktrees = append(mrWorktrees, statedb.MultiRepoWorktreeData{
+			OriginalPath: wt.OriginalPath,
+			WorktreePath: wt.WorktreePath,
+			RepoRoot:     wt.RepoRoot,
+			Branch:       wt.Branch,
+		})
+	}
+	toolData := statedb.MarshalToolData(
+		inst.ClaudeSessionID, inst.ClaudeDetectedAt,
+		inst.GeminiSessionID, inst.GeminiDetectedAt,
+		inst.GeminiYoloMode, inst.GeminiModel,
+		inst.OpenCodeSessionID, inst.OpenCodeDetectedAt,
+		inst.CodexSessionID, inst.CodexDetectedAt,
+		inst.LatestPrompt, inst.Notes, inst.LoadedMCPNames,
+		inst.ToolOptionsJSON,
+		sandboxJSON, inst.SandboxContainer,
+		inst.SSHHost, inst.SSHRemotePath,
+		inst.MultiRepoEnabled, inst.AdditionalPaths,
+		inst.MultiRepoTempDir, mrWorktrees,
+		inst.Channels,
+		inst.ExtraArgs,
+		inst.Plugins,                   // RFC docs/rfc/PLUGIN_ATTACH.md
+		inst.PluginChannelLinkDisabled, // RFC §4.7
+		inst.AutoLinkedChannels,        // RFC §4.7 (G4/C2 fix)
+		inst.Color,                     // issue #391
+	)
+
+	return &statedb.InstanceRow{
+		ID:                 inst.ID,
+		Title:              inst.Title,
+		ProjectPath:        inst.ProjectPath,
+		GroupPath:          inst.GroupPath,
+		Order:              inst.Order,
+		Command:            inst.Command,
+		Wrapper:            inst.Wrapper,
+		Tool:               inst.Tool,
+		Status:             string(inst.Status),
+		TmuxSession:        tmuxName,
+		TmuxSocketName:     inst.TmuxSocketName,
+		CreatedAt:          inst.CreatedAt,
+		LastAccessed:       inst.LastAccessedAt,
+		ParentSessionID:    inst.ParentSessionID,
+		IsConductor:        inst.IsConductor,
+		NoTransitionNotify: inst.NoTransitionNotify,
+		TitleLocked:        inst.TitleLocked,
+		WorktreePath:       inst.WorktreePath,
+		WorktreeRepo:       inst.WorktreeRepoRoot,
+		WorktreeBranch:     inst.WorktreeBranch,
+		ToolData:           toolData,
+	}, nil
 }
 
 // SaveGroupsOnly persists only the groups table to SQLite.

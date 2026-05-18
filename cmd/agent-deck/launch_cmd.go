@@ -412,7 +412,8 @@ func handleLaunch(profile string, args []string) {
 		_ = newInstance.SetClaudeOptions(opts)
 	}
 
-	// Add to instances and save
+	// Add to instances list (in-memory only — used for downstream
+	// group cap math and the second SaveWithGroups after PostStartSync).
 	instances = append(instances, newInstance)
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
@@ -420,7 +421,13 @@ func handleLaunch(profile string, args []string) {
 		groupTree.CreateGroup(newInstance.GroupPath)
 	}
 
-	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
+	// v1.9.x issue #1031: targeted single-row insert + verify, NOT the
+	// load-modify-write SaveWithGroups rewrite. SaveWithGroups under
+	// concurrent launches loses sibling rows via the DELETE-NOT-IN
+	// sweep inside SaveInstances; InsertSessionAndVerify uses
+	// SaveInstance (single-row INSERT OR REPLACE) + verify-with-backoff
+	// to guarantee persistence. Mirror of RemoveSessionAndVerify (#909).
+	if err := storage.InsertSessionAndVerify(newInstance, groupTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -447,7 +454,11 @@ func handleLaunch(profile string, args []string) {
 	maxC := session.GroupMaxConcurrent(tree, newInstance.GroupPath)
 	if session.ShouldQueue(instances, newInstance.GroupPath, maxC) {
 		newInstance.Status = session.StatusQueued
-		if err := saveSessionData(storage, instances, groups); err != nil {
+		// v1.9.x issue #1031: same targeted single-row pattern as the
+		// initial insert above — saveSessionData → SaveWithGroups is
+		// the load-modify-write rewrite that loses sibling launches'
+		// rows under concurrency.
+		if err := storage.InsertSessionAndVerify(newInstance, tree); err != nil {
 			out.Error(fmt.Sprintf("failed to save queued state: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -500,8 +511,18 @@ func handleLaunch(profile string, args []string) {
 	// Capture session ID from tmux
 	newInstance.PostStartSync(3 * time.Second)
 
-	// Save again with updated state (session ID, tmux name)
-	if err := saveSessionData(storage, instances, groups); err != nil {
+	// v1.9.x issue #1031: third save point — fields populated by
+	// PostStartSync (tmux session name, ClaudeSessionID once detected)
+	// land on `newInstance`. Same targeted single-row insert/upsert
+	// pattern as the two saves above; the load-modify-write
+	// saveSessionData → SaveWithGroups path would let a sibling
+	// launch's row be silently DELETE'd by this rewrite's
+	// `DELETE FROM instances WHERE id NOT IN (...)` step.
+	postStartTree := session.NewGroupTreeWithGroups(instances, groups)
+	if newInstance.GroupPath != "" {
+		postStartTree.CreateGroup(newInstance.GroupPath)
+	}
+	if err := storage.InsertSessionAndVerify(newInstance, postStartTree); err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -533,15 +554,21 @@ func handleLaunch(profile string, args []string) {
 		}
 	}
 
-	// Build output
+	// Build output. v1.9.x issue #1031: surface the new session ID
+	// under an explicit `session_id` key so callers (conductor fleet
+	// spawn loops, shell scripts) don't have to fall back to diffing
+	// `agent-deck list --json` before/after — that diff was unsafe
+	// under the launch-race the structural fix above also closes.
+	// The legacy `id` key is kept for backward compatibility.
 	jsonData := map[string]interface{}{
-		"success": true,
-		"id":      newInstance.ID,
-		"title":   newInstance.Title,
-		"path":    path,
-		"tool":    newInstance.Tool,
-		"group":   newInstance.GroupPath,
-		"profile": storage.Profile(),
+		"success":    true,
+		"id":         newInstance.ID,
+		"session_id": newInstance.ID,
+		"title":      newInstance.Title,
+		"path":       path,
+		"tool":       newInstance.Tool,
+		"group":      newInstance.GroupPath,
+		"profile":    storage.Profile(),
 	}
 	if sessionCommandInput != "" {
 		jsonData["command"] = sessionCommandInput
