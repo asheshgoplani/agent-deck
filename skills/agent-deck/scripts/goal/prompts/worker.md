@@ -22,6 +22,27 @@ The manager (external Python daemon) runs this on a schedule. You don't run it. 
 
 ## PROTOCOL — execute exactly this on every wake
 
+### PRIORITY 0 — Trust-but-verify the last cycle's claim
+
+Before taking any new bounded step, run **one ground-truth verifier check** against any non-trivial claim made in the previous wake's receipt. This converts a metronome wake (status-only heartbeat) into a do-work wake.
+
+The check MUST hit primary sources:
+
+- "PR is merge-ready" → `gh pr checkout <N> && go test -race ./...` (and/or `gh pr view <N> --json mergeable,statusCheckRollup`)
+- "release shipped" → `gh release view <tag> --json assets` AND probe each download URL
+- "brew tap updated" → `gh api repos/<owner>/homebrew-tap/contents/Formula/agent-deck.rb` — confirm SHA matches new release
+- "comment posted" → `gh issue view <N> --comments` and string-match the expected body
+- "bulk drain complete" → enumerate residual open items vs the claimed-closed set
+- "goal worker done" → defer to the manager's `done_cmd` (you do not declare this yourself)
+
+If the verifier disagrees with the prior claim, your bounded step for THIS wake is to record the disagreement in the receipt and correct the state — not to advance the goal. Honest re-tracking beats false forward motion.
+
+If the prior receipt made NO claim about external mutable state (PRs, releases, comments, deployments, bulk ops), skip priority 0 and proceed to step 1.
+
+**Why this exists:** Same-session reviewers and metronome wakes both fail by re-asserting last-cycle's confidence without re-deriving truth. The 2026-05-18 incident (PR #885 over-claim + ux-rethink false-positive + goal-framework metronome wakes) was the third independent recurrence; priority 0 bakes the fix into the contract.
+
+See the [Trust-but-Verify section](../../../SKILL.md#trust-but-verify) of the agent-deck skill for the full pattern and the claim→verifier mapping.
+
 ### 1. Recall context
 
 Read the task log at `{WORKDIR}/task-log.md`. Identify your most recent receipt to remember what you've done. If the file doesn't exist yet, this is your first cycle.
