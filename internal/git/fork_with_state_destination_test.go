@@ -78,3 +78,102 @@ func TestHasSubmodules_Present(t *testing.T) {
 		t.Fatal("dir with .gitmodules should report HasSubmodules=true")
 	}
 }
+
+// TestDetectInProgressOperation_Clean — a freshly-initialized repo with no
+// in-flight state files must return "" and no error.
+func TestDetectInProgressOperation_Clean(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("clean repo: unexpected error %v", err)
+	}
+	if kind != "" {
+		t.Fatalf("clean repo: expected empty kind, got %q", kind)
+	}
+}
+
+// TestDetectInProgressOperation_Rebase — .git/rebase-merge is a directory git
+// creates during an interactive rebase; presence must return "rebase".
+func TestDetectInProgressOperation_Rebase(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".git", "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kind != "rebase" {
+		t.Fatalf("expected kind=rebase, got %q", kind)
+	}
+}
+
+// TestDetectInProgressOperation_Merge — .git/MERGE_HEAD is a file containing
+// the SHA of the commit being merged; presence must return "merge".
+func TestDetectInProgressOperation_Merge(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "MERGE_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kind != "merge" {
+		t.Fatalf("expected kind=merge, got %q", kind)
+	}
+}
+
+// TestDetectInProgressOperation_CherryPick — .git/CHERRY_PICK_HEAD is a file
+// containing the SHA being cherry-picked; presence must return "cherry-pick".
+func TestDetectInProgressOperation_CherryPick(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "CHERRY_PICK_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kind != "cherry-pick" {
+		t.Fatalf("expected kind=cherry-pick, got %q", kind)
+	}
+}
+
+// TestDetectInProgressOperation_Revert — .git/REVERT_HEAD is a file containing
+// the SHA being reverted; presence must return "revert".
+func TestDetectInProgressOperation_Revert(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "REVERT_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kind != "revert" {
+		t.Fatalf("expected kind=revert, got %q", kind)
+	}
+}
+
+// TestDetectInProgressOperation_Bisect — .git/BISECT_LOG is the bisect log
+// file; presence must return "bisect".
+func TestDetectInProgressOperation_Bisect(t *testing.T) {
+	dir := t.TempDir()
+	createTestRepo(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "BISECT_LOG"), []byte("git bisect start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kind, err := DetectInProgressOperation(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kind != "bisect" {
+		t.Fatalf("expected kind=bisect, got %q", kind)
+	}
+}

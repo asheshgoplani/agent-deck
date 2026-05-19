@@ -204,6 +204,30 @@ func TestSessionFork_WithStateOptionsPropagatedBeforeStart(t *testing.T) {
 	}
 }
 
+// TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard
+// pins the gap 6 flow: handler must call git.DetectInProgressOperation on the
+// parent's ProjectPath, build a map of abort commands covering all 5 in-flight
+// operation kinds, and emit the actionable "finish or abort" message before
+// worktree creation. If a future contributor drops a kind from the abortCmd
+// map, this test fails so the regression cannot land silently.
+func TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard(t *testing.T) {
+	body := mustExtractHandleSessionFork(t)
+	for _, marker := range []string{
+		"git.DetectInProgressOperation(inst.ProjectPath)",
+		`abortCmd := map[string]string`,
+		"git rebase --abort",
+		"git merge --abort",
+		"git cherry-pick --abort",
+		"git revert --abort",
+		"git bisect reset",
+		"parent session is mid-%s; finish or abort the %s before forking with state",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("handleSessionFork missing required marker: %q", marker)
+		}
+	}
+}
+
 // TestSessionForkBeforeStartHook_NilInProduction is a belt-and-braces check:
 // the production binary must leave the hook nil so accidental test imports
 // can't inject behavior into a real fork. Tests that need the hook assign

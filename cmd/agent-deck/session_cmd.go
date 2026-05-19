@@ -778,6 +778,25 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 
+				// Mid-op refusal: surface an actionable error BEFORE creating the
+				// worktree, so the user sees the exact abort command for their parent
+				// instead of MaterializeWipFromParent's terse backstop wording (which
+				// fires AFTER worktree creation and triggers cleanup-on-error). The
+				// backstop in materialize_wip.go's refuseUnsafeParentState still
+				// covers detectErr != nil cases — we fall through silently there.
+				if kind, detectErr := git.DetectInProgressOperation(inst.ProjectPath); detectErr == nil && kind != "" {
+					abortCmd := map[string]string{
+						"rebase":      "git rebase --abort",
+						"merge":       "git merge --abort",
+						"cherry-pick": "git cherry-pick --abort",
+						"revert":      "git revert --abort",
+						"bisect":      "git bisect reset",
+					}[kind]
+					out.Error(fmt.Sprintf("parent session is mid-%s; finish or abort the %s before forking with state (cd %s && %s)",
+						kind, kind, inst.ProjectPath, abortCmd), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
 				if git.HasSubmodules(inst.ProjectPath) {
 					fmt.Fprintln(os.Stderr, "Warning: submodules detected — copied as files, not recursed (parent's submodule states preserved)")
 				}

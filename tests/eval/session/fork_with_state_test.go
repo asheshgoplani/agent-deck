@@ -33,6 +33,7 @@
 package session_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,13 +235,14 @@ default_location = "sibling"
 }
 
 // TestEval_SessionForkWithState_RefusesMidRebaseParent drives the real binary
-// against a parent in mid-rebase state and asserts the error mentions
-// mid-rebase. The exact wording is currently terse (closing gap 6 will improve
-// this to include an actionable "cd && git rebase --abort" hint); this test
-// pins current behavior so the followup change consciously updates it.
-//
-// Also pins cleanup-on-error: after the materialize step refuses, the
-// destination branch must not exist and no orphan worktree must remain.
+// against a parent in mid-rebase state and asserts the actionable error
+// wording from gap 6: "parent session is mid-rebase; finish or abort the
+// rebase before forking with state (cd <parent> && git rebase --abort)".
+// This refusal now happens BEFORE worktree creation (via the exported
+// git.DetectInProgressOperation helper), so there is no worktree to clean up
+// on this code path. The cleanup-on-error assertions below additionally
+// guard against regressions where a future contributor moves the detection
+// AFTER CreateWorktreeAtStartPoint.
 func TestEval_SessionForkWithState_RefusesMidRebaseParent(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -291,8 +293,11 @@ default_location = "sibling"
 	if err == nil {
 		t.Fatalf("expected non-zero exit when parent is mid-rebase, got success.\noutput:\n%s", out)
 	}
-	if !strings.Contains(out, "mid-rebase") {
-		t.Fatalf("mid-rebase error must mention 'mid-rebase'.\ngot stderr+stdout:\n%s", out)
+	// Gap 6: handler must surface the full actionable wording with the parent
+	// path and exact abort command, not just a "mid-rebase" substring.
+	expected := fmt.Sprintf("parent session is mid-rebase; finish or abort the rebase before forking with state (cd %s && git rebase --abort)", repoDir)
+	if !strings.Contains(out, expected) {
+		t.Fatalf("expected actionable mid-rebase error %q, got:\n%s", expected, out)
 	}
 
 	// Cleanup-on-error: the destination branch must not have been left
