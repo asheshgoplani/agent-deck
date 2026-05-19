@@ -1,20 +1,34 @@
-run:
-  timeout: 5m
+version: "2"
 linters:
   enable:
     - gosec
-    - staticcheck
-    - errcheck
-    - ineffassign
-    - govet
-    - unused
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters: [gosec, errcheck]
-    - path: docs/
-      linters: [gosec]
-linters-settings:
-  gosec:
-    excludes:
-      - G104  # too noisy for now; revisit
+  settings:
+    gosec:
+      excludes:
+        - G104
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+      - linters:
+          - gosec
+        path: docs/
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
