@@ -22,6 +22,13 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/ui"
 )
 
+// sessionForkBeforeStartHook is nil in production. Tests assign it to inspect
+// the fully-prepared fork before tmux Start() mutates the environment. When
+// the hook is set, handleSessionFork invokes it and returns immediately —
+// no tmux session, no persistence, no Start(). This lets contract tests
+// assert option propagation without spawning real sessions.
+var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, opts *session.ClaudeOptions)
+
 // handleSession dispatches session subcommands
 func handleSession(profile string, args []string) {
 	if len(args) == 0 {
@@ -834,6 +841,14 @@ func handleSessionFork(profile string, args []string) {
 	// Apply sandbox config if requested.
 	if *sandbox {
 		forkedInst.Sandbox = session.NewSandboxConfig(*sandboxImage)
+	}
+
+	// Test seam: when set, capture the fully-prepared fork before tmux Start()
+	// mutates the environment and return early. Production runs leave the hook
+	// nil, so this is a no-op outside of tests.
+	if sessionForkBeforeStartHook != nil {
+		sessionForkBeforeStartHook(inst, forkedInst, opts)
+		return
 	}
 
 	// Start the forked session

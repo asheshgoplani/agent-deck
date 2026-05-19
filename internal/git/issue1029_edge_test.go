@@ -197,6 +197,107 @@ func TestMaterializeWipFromParent_RefusesMidMerge_RegressionFor1029(t *testing.T
 	}
 }
 
+// TestRefuseUnsafeParentState_Rebase_RegressionForFollowup — mid-rebase must
+// be refused. refuseUnsafeParentState checks for BOTH rebase-merge and
+// rebase-apply directories (not files — git creates them as directories
+// during interactive and apply-style rebases respectively). We exercise the
+// rebase-merge form here; rebase-apply uses the same code path.
+func TestRefuseUnsafeParentState_Rebase_RegressionForFollowup(t *testing.T) {
+	parent := t.TempDir()
+	createTestRepo(t, parent)
+
+	gitDir := filepath.Join(parent, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	child := filepath.Join(t.TempDir(), "child")
+	if err := CreateWorktree(parent, child, "fork-followup-rebase"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	err := MaterializeWipFromParent(parent, child, false)
+	if err == nil {
+		t.Fatal("expected refusal during mid-rebase, got nil")
+	}
+	if !strings.Contains(err.Error(), "rebase") {
+		t.Fatalf("expected error to mention 'rebase'; got: %v", err)
+	}
+}
+
+// TestRefuseUnsafeParentState_CherryPick_RegressionForFollowup — mid
+// cherry-pick must be refused. CHERRY_PICK_HEAD is a file containing the
+// commit SHA being cherry-picked.
+func TestRefuseUnsafeParentState_CherryPick_RegressionForFollowup(t *testing.T) {
+	parent := t.TempDir()
+	createTestRepo(t, parent)
+
+	gitDir := filepath.Join(parent, ".git")
+	if err := os.WriteFile(filepath.Join(gitDir, "CHERRY_PICK_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	child := filepath.Join(t.TempDir(), "child")
+	if err := CreateWorktree(parent, child, "fork-followup-cherry"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	err := MaterializeWipFromParent(parent, child, false)
+	if err == nil {
+		t.Fatal("expected refusal during mid-cherry-pick, got nil")
+	}
+	if !strings.Contains(err.Error(), "cherry-pick") {
+		t.Fatalf("expected error to mention 'cherry-pick'; got: %v", err)
+	}
+}
+
+// TestRefuseUnsafeParentState_Revert_RegressionForFollowup — mid-revert must
+// be refused. REVERT_HEAD is a file containing the commit SHA being reverted.
+func TestRefuseUnsafeParentState_Revert_RegressionForFollowup(t *testing.T) {
+	parent := t.TempDir()
+	createTestRepo(t, parent)
+
+	gitDir := filepath.Join(parent, ".git")
+	if err := os.WriteFile(filepath.Join(gitDir, "REVERT_HEAD"), []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	child := filepath.Join(t.TempDir(), "child")
+	if err := CreateWorktree(parent, child, "fork-followup-revert"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	err := MaterializeWipFromParent(parent, child, false)
+	if err == nil {
+		t.Fatal("expected refusal during mid-revert, got nil")
+	}
+	if !strings.Contains(err.Error(), "revert") {
+		t.Fatalf("expected error to mention 'revert'; got: %v", err)
+	}
+}
+
+// TestRefuseUnsafeParentState_Bisect_RegressionForFollowup — active bisect
+// must be refused. BISECT_LOG is a file that git creates and appends to for
+// the duration of a `git bisect` run.
+func TestRefuseUnsafeParentState_Bisect_RegressionForFollowup(t *testing.T) {
+	parent := t.TempDir()
+	createTestRepo(t, parent)
+
+	gitDir := filepath.Join(parent, ".git")
+	if err := os.WriteFile(filepath.Join(gitDir, "BISECT_LOG"), []byte("git bisect start\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	child := filepath.Join(t.TempDir(), "child")
+	if err := CreateWorktree(parent, child, "fork-followup-bisect"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	err := MaterializeWipFromParent(parent, child, false)
+	if err == nil {
+		t.Fatal("expected refusal during active bisect, got nil")
+	}
+	if !strings.Contains(err.Error(), "bisect") {
+		t.Fatalf("expected error to mention 'bisect'; got: %v", err)
+	}
+}
+
 // TestMaterializeWipFromParent_DeletedFile_RegressionFor1029 — a tracked file
 // removed in parent's working tree must also be absent (in the same state)
 // in the child.
