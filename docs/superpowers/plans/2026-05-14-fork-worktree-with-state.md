@@ -1,5 +1,14 @@
 # Fork-with-State Implementation Plan
 
+> **⚠ DEPRECATED — superseded by [`2026-05-18-fork-with-state-followup.md`](2026-05-18-fork-with-state-followup.md)**
+>
+> This plan was written as a ground-up implementation roadmap before upstream
+> merged #1029 (commit 6a1645eb). It remains as historical reference for the
+> 21-task TDD breakdown and the FWS-001 through FWS-018 review log. The active
+> plan (scoped to closing the 11 gaps identified after the upstream merge) is
+> in the followup file. See also the post-merge gap analysis at
+> [`../discussions/2026-05-18-post-merge-gap-analysis.md`](../discussions/2026-05-18-post-merge-gap-analysis.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `--with-state` and `--with-state-and-gitignored` opt-in flags to `agent-deck session fork` (CLI and TUI) that materialize the parent session's working-tree state into a freshly-created destination branch and worktree branched off the parent's HEAD.

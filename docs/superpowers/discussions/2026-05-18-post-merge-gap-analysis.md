@@ -1,8 +1,9 @@
 # Post-Merge Gap Analysis vs Our Spec
 
 **Date:** 2026-05-18
-**Compared:** upstream/main commit `6a1645eb` (PR #1030, closes #1029) ↔ `docs/superpowers/specs/2026-05-14-fork-worktree-with-state-design.md`
+**Compared:** upstream/main commit `6a1645eb` (PR #1030, closes #1029) ↔ `docs/superpowers/specs/2026-05-14-fork-worktree-with-state-design.md` (now deprecated)
 **Author:** Track A session (post-FWS-017 + FWS-018)
+**Now planned in:** [`../plans/2026-05-18-fork-with-state-followup.md`](../plans/2026-05-18-fork-with-state-followup.md) — the 11 gaps are mapped to PR-A (correctness + CLI test hardening) and PR-B (TUI integration). Active spec is [`../specs/2026-05-18-fork-with-state-followup-design.md`](../specs/2026-05-18-fork-with-state-followup-design.md).
 
 ## Sanity check first
 

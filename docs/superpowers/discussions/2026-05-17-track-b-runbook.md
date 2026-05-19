@@ -292,6 +292,8 @@ While Track B's session runs:
 - When Track B's analysis doc is ready, copy it back into Track A's clone (or just reference it via the shared `.git` — the branch is in the same repo, just check out the file from the analysis branch).
 - Use Track A's session to draft and refine the GitHub comment using Track B's findings.
 
+**Status update (2026-05-18):** Track B's analysis landed as [`2026-05-18-post-merge-gap-analysis.md`](2026-05-18-post-merge-gap-analysis.md) (committed to the feature branch). Upstream PR #1030 has since been merged at commit `6a1645eb`. The next move is now: execute the followup plan at [`../plans/2026-05-18-fork-with-state-followup.md`](../plans/2026-05-18-fork-with-state-followup.md), which scopes the gaps into PR-A (correctness + CLI tests) and PR-B (TUI). The active spec is [`../specs/2026-05-18-fork-with-state-followup-design.md`](../specs/2026-05-18-fork-with-state-followup-design.md). The GitHub comment template in Section 3 of this runbook stays valid; post it after PR-A is ready to push.
+
 ---
 
 ## Recovery scenarios

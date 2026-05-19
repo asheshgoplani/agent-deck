@@ -1,6 +1,14 @@
 # Fork-with-State: Carry Parent Working-Tree Contents into a New Worktree
 
-**Status:** Draft — pending implementation plan
+> **⚠ DEPRECATED — superseded by [`2026-05-18-fork-with-state-followup-design.md`](2026-05-18-fork-with-state-followup-design.md)**
+>
+> This document was written as a ground-up design before upstream merged #1029
+> (commit 6a1645eb). It remains as historical reference for the design
+> reasoning, decision log, and FWS-001 through FWS-018 entries. The active
+> design is now in the followup file. See also the post-merge gap analysis at
+> [`../discussions/2026-05-18-post-merge-gap-analysis.md`](../discussions/2026-05-18-post-merge-gap-analysis.md).
+
+**Status:** Deprecated 2026-05-18 — historical reference only
 **Date:** 2026-05-14
 **Author:** Steve Morin (steve.morin@gmail.com)
 **Related code:**
