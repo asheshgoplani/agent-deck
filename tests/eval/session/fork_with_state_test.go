@@ -127,11 +127,11 @@ default_location = "sibling"
 			parentStatusBefore, parentStatusAfter)
 	}
 
-	// Destination worktree path. With default_location=subdirectory and
-	// branch sanitization (/ -> -), `fork/eval-state` lands at
-	// <repo>/.worktrees/fork-eval-state. We verify via `git worktree list`
-	// instead of recomputing the template so the assertion stays robust to
-	// future template changes.
+	// Destination worktree path. With default_location="sibling" and branch
+	// sanitization (/ -> -), `fork/eval-state` lands at
+	// `<repo>-fork-eval-state` alongside the parent repo. We verify via
+	// `git worktree list` instead of recomputing the template so the
+	// assertion stays robust to future template changes.
 	forkPath := worktreePathForBranch(t, repoDir, "fork/eval-state")
 	if forkPath == "" {
 		// Surface the fork's combined output to make triage easy when the
@@ -169,6 +169,145 @@ default_location = "sibling"
 	// --with-state: the gitignored file MUST be present. Without the
 	// includeIgnored=true wiring, secrets.env would not be copied.
 	mustHaveFile(t, forkPath, "secrets.env", "API_KEY=parent-secret\n")
+}
+
+// TestEval_SessionForkWithState_RejectsExistingBranch drives the real binary
+// against a pre-existing destination branch and asserts the user-facing error
+// text matches the spec's wording from ValidateForkWithStateDestination.
+//
+// This is the subprocess counterpart to
+// TestSessionFork_WithState_RejectsExistingDestinationBranch in
+// cmd/agent-deck/session_cmd_fork_state_test.go (source-introspection-based).
+// Pinning the exact wording here guarantees the validator's user-facing
+// message survives binary-level wiring (out.Error formatting, stderr routing).
+func TestEval_SessionForkWithState_RejectsExistingBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	sb := harness.NewSandbox(t)
+
+	// Pin worktree settings so `-w fork/collision-test` is used verbatim and
+	// destination resolution matches what the validator will check.
+	cfgDir := filepath.Join(sb.Home, ".agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent-deck config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[worktree]
+branch_prefix = ""
+default_location = "sibling"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repoDir := filepath.Join(sb.Home, "proj")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	gitInit(t, repoDir)
+	writeFile(t, repoDir, "README.md", "seed\n")
+	gitMust(t, repoDir, "add", ".")
+	gitMust(t, repoDir, "commit", "-m", "seed")
+
+	// Pre-create the destination branch in the seed repo BEFORE running the
+	// fork. The validator must trip on this and refuse.
+	gitMust(t, repoDir, "branch", "fork/collision-test")
+
+	// Register parent session and inject fake claude session id so CanFork()
+	// is satisfied (same trick as the happy-path test).
+	runBin(t, sb, "add", "-c", "claude", "-t", "parent", "-g", "evalgrp", repoDir)
+	runBin(t, sb, "session", "set", "parent", "claude-session-id",
+		"00000000-0000-4000-8000-000000000001")
+
+	out, err := runBinTry(sb, "session", "fork", "parent",
+		"--with-state", "-w", "fork/collision-test", "-b",
+		"-t", "fork-collision")
+	if err == nil {
+		t.Fatalf("expected non-zero exit on destination-branch collision, got success.\noutput:\n%s", out)
+	}
+
+	wantMsg := "branch 'fork/collision-test' already exists; choose a new destination branch for --with-state"
+	if !strings.Contains(out, wantMsg) {
+		t.Fatalf("collision error wording mismatch.\nwant substring: %q\ngot stderr+stdout:\n%s", wantMsg, out)
+	}
+}
+
+// TestEval_SessionForkWithState_RefusesMidRebaseParent drives the real binary
+// against a parent in mid-rebase state and asserts the error mentions
+// mid-rebase. The exact wording is currently terse (closing gap 6 will improve
+// this to include an actionable "cd && git rebase --abort" hint); this test
+// pins current behavior so the followup change consciously updates it.
+//
+// Also pins cleanup-on-error: after the materialize step refuses, the
+// destination branch must not exist and no orphan worktree must remain.
+func TestEval_SessionForkWithState_RefusesMidRebaseParent(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	sb := harness.NewSandbox(t)
+
+	cfgDir := filepath.Join(sb.Home, ".agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent-deck config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[worktree]
+branch_prefix = ""
+default_location = "sibling"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repoDir := filepath.Join(sb.Home, "proj")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	gitInit(t, repoDir)
+	writeFile(t, repoDir, "README.md", "seed\n")
+	gitMust(t, repoDir, "add", ".")
+	gitMust(t, repoDir, "commit", "-m", "seed")
+
+	// Force the parent's working tree into mid-rebase state. The plain-file
+	// `mkdir .git/rebase-merge` trick exercises the same refuseUnsafeParentState
+	// path that a real conflicted rebase would (see
+	// TestRefuseUnsafeParentState_Rebase_RegressionForFollowup in
+	// internal/git/issue1029_edge_test.go for the same trick). We pick this
+	// over a real conflict because real rebases are flaky across git versions
+	// (conflict marker variance, interactive editor prompts).
+	gitDir := filepath.Join(repoDir, ".git")
+	if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatalf("mkdir rebase-merge: %v", err)
+	}
+
+	runBin(t, sb, "add", "-c", "claude", "-t", "parent", "-g", "evalgrp", repoDir)
+	runBin(t, sb, "session", "set", "parent", "claude-session-id",
+		"00000000-0000-4000-8000-000000000001")
+
+	out, err := runBinTry(sb, "session", "fork", "parent",
+		"--with-state", "-w", "fork/midrebase", "-b",
+		"-t", "fork-midrebase")
+	if err == nil {
+		t.Fatalf("expected non-zero exit when parent is mid-rebase, got success.\noutput:\n%s", out)
+	}
+	if !strings.Contains(out, "mid-rebase") {
+		t.Fatalf("mid-rebase error must mention 'mid-rebase'.\ngot stderr+stdout:\n%s", out)
+	}
+
+	// Cleanup-on-error: the destination branch must not have been left
+	// behind. CreateWorktreeAtStartPoint creates the branch as a side-effect
+	// of `git worktree add -b`, and the followup MaterializeWipFromParent
+	// failure triggers `branch -D` cleanup at session_cmd.go:801.
+	branchList := strings.TrimSpace(gitOut(t, repoDir, "branch", "--list", "fork/midrebase"))
+	if branchList != "" {
+		t.Errorf("destination branch must be cleaned up after mid-rebase refusal; git branch --list returned: %q", branchList)
+	}
+
+	// Cleanup-on-error: no linked worktree for fork/midrebase must remain.
+	if leakedPath := worktreePathForBranch(t, repoDir, "fork/midrebase"); leakedPath != "" {
+		t.Errorf("destination worktree must be cleaned up after mid-rebase refusal; found leaked worktree at: %s", leakedPath)
+	}
 }
 
 // ---- file/git helpers (local to keep the eval package self-contained) ----
