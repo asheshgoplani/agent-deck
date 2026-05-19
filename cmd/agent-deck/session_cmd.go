@@ -793,11 +793,25 @@ func handleSessionFork(profile string, args []string) {
 
 				// Materialize parent state, with cleanup-on-error.
 				if matErr := git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
-					_ = exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run()
-					if createdBranch {
-						_ = exec.Command("git", "-C", repoRoot, "branch", "-D", wtBranch).Run()
+					var cleanupErrs []string
+					if rmErr := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run(); rmErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
 					}
-					out.Error(fmt.Sprintf("failed to materialize parent state: %v; new worktree cleaned up", matErr), ErrCodeInvalidOperation)
+					if createdBranch {
+						if brErr := exec.Command("git", "-C", repoRoot, "branch", "-D", wtBranch).Run(); brErr != nil {
+							cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+						}
+					}
+					if len(cleanupErrs) == 0 {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; new worktree cleaned up", matErr), ErrCodeInvalidOperation)
+					} else {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s%s",
+							matErr,
+							strings.Join(cleanupErrs, "; "),
+							worktreePath,
+							branchCleanupHint(createdBranch, repoRoot, wtBranch),
+						), ErrCodeInvalidOperation)
+					}
 					os.Exit(1)
 				}
 
@@ -3210,4 +3224,14 @@ func handleSessionSearch(profile string, args []string) {
 			fmt.Printf("   %s\n", h.Snippet)
 		}
 	}
+}
+
+// branchCleanupHint returns a suggested branch-delete command appendage for
+// the manual-cleanup hint shown when fork-with-state cleanup partially fails.
+// Returns empty string when the branch wasn't created by this operation.
+func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
+	if !createdBranch {
+		return ""
+	}
+	return fmt.Sprintf(" && git -C %s branch -D %s", repoRoot, branchName)
 }
