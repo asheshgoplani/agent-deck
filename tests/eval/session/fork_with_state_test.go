@@ -310,6 +310,61 @@ default_location = "sibling"
 	}
 }
 
+// TestEval_SessionForkWithState_SubmoduleWarning drives the real binary
+// against a parent repo that has .gitmodules and asserts the stderr warning
+// is emitted. Pins gap 7's user-visible signal: callers must know that
+// submodules under the parent's ProjectPath will be copied as files (not
+// recursed into) by MaterializeWipFromParent.
+//
+// The fork itself may or may not fully succeed (downstream Start() needs a
+// real claude binary), but the warning is emitted BEFORE worktree creation,
+// so it is independent of exit code. We assert only on the warning text.
+func TestEval_SessionForkWithState_SubmoduleWarning(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	sb := harness.NewSandbox(t)
+
+	cfgDir := filepath.Join(sb.Home, ".agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent-deck config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[worktree]
+branch_prefix = ""
+default_location = "sibling"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repoDir := filepath.Join(sb.Home, "proj")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	gitInit(t, repoDir)
+	writeFile(t, repoDir, "README.md", "seed\n")
+	// .gitmodules at repo root is the canonical signal HasSubmodules looks for.
+	// We don't actually init a submodule — the warning fires purely on file
+	// presence, matching the helper's intentional minimalism.
+	writeFile(t, repoDir, ".gitmodules", "[submodule \"lib\"]\n\tpath = lib\n\turl = https://example.invalid/lib.git\n")
+	gitMust(t, repoDir, "add", ".")
+	gitMust(t, repoDir, "commit", "-m", "seed")
+
+	runBin(t, sb, "add", "-c", "claude", "-t", "parent", "-g", "evalgrp", repoDir)
+	runBin(t, sb, "session", "set", "parent", "claude-session-id",
+		"00000000-0000-4000-8000-000000000001")
+
+	out, _ := runBinTry(sb, "session", "fork", "parent",
+		"--with-state", "-w", "fork/submodule-test", "-b",
+		"-t", "fork-submodule")
+
+	wantMsg := "submodules detected — copied as files, not recursed"
+	if !strings.Contains(out, wantMsg) {
+		t.Fatalf("submodule warning missing.\nwant substring: %q\ngot stderr+stdout:\n%s", wantMsg, out)
+	}
+}
+
 // ---- file/git helpers (local to keep the eval package self-contained) ----
 
 func gitInit(t *testing.T, dir string) {

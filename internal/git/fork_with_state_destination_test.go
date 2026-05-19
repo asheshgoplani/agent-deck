@@ -61,3 +61,20 @@ func TestValidateForkWithStateDestination_WorktreeExists_TakesPrecedence(t *test
 		t.Fatalf("unexpected error: %+v", collErr)
 	}
 }
+
+func TestHasSubmodules_None(t *testing.T) {
+	dir := t.TempDir()
+	if HasSubmodules(dir) {
+		t.Fatal("empty dir should report HasSubmodules=false")
+	}
+}
+
+func TestHasSubmodules_Present(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitmodules"), []byte("[submodule \"lib\"]\n\tpath = lib\n\turl = https://example.invalid/lib.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !HasSubmodules(dir) {
+		t.Fatal("dir with .gitmodules should report HasSubmodules=true")
+	}
+}

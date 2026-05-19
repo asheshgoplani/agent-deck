@@ -1,6 +1,10 @@
 package git
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 // Recognized values for DestinationCollisionError.Kind.
 const (
@@ -39,4 +43,14 @@ func ValidateForkWithStateDestination(repoRoot, branch string) error {
 		return &DestinationCollisionError{Kind: CollisionBranchExists, Branch: branch}
 	}
 	return nil
+}
+
+// HasSubmodules returns true if repoDir contains a .gitmodules file (regular
+// file, not directory). Used by fork-with-state callers to emit a warning
+// that submodules will be copied as files, not recursed into. Submodule
+// detection is intentionally minimal — just checks for the canonical
+// .gitmodules file at the repo root. No parsing.
+func HasSubmodules(repoDir string) bool {
+	info, err := os.Stat(filepath.Join(repoDir, ".gitmodules"))
+	return err == nil && !info.IsDir()
 }

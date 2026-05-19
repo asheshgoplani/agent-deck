@@ -778,6 +778,10 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 
+				if git.HasSubmodules(inst.ProjectPath) {
+					fmt.Fprintln(os.Stderr, "Warning: submodules detected — copied as files, not recursed (parent's submodule states preserved)")
+				}
+
 				// Capture parent's HEAD so linked-worktree parents anchor correctly.
 				parentHead, hcErr := git.HeadCommit(inst.ProjectPath)
 				if hcErr != nil {
