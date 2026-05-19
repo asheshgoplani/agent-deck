@@ -20,7 +20,9 @@ For active development sessions, the second mode misses what users usually want:
 
 ## Goal
 
-Add an opt-in mode that creates a new destination branch/worktree whose working tree exactly mirrors the parent's at the moment of fork — preserving the staged/unstaged split, untracked files, and (optionally) gitignored files. The parent repo must be left byte-identical after the operation.
+Add an opt-in mode that creates a **complete parallel agent environment**: a new destination branch/worktree whose working tree exactly mirrors the parent's at the moment of fork — preserving the staged/unstaged split, untracked files, and (optionally) gitignored files — AND a forked Claude Code session whose conversation history continues from the parent session via the existing `agent-deck session fork` mechanism. The parent repo must be left byte-identical after the operation.
+
+The two pieces compose: file materialization (this feature's new code) sits on top of session forking (the existing `agent-deck session fork` flow that calls `claude --resume <parent-id> --fork-session`). Together they let a user reach an interesting point in a task, then explore multiple agent paths in parallel from the exact same WIP baseline with full conversation continuity — not just file copies started from a blank session.
 
 ## Non-goals
 
@@ -386,38 +388,47 @@ These cases satisfy the existing evaluator-harness mandate for user-observable b
 | `tests/eval/session/fork_with_state_test.go` | `TestEval_SessionForkWithState_CreatesMaterializedWorktree` | Real `agent-deck` binary, scratch HOME, fake `claude`, and real git repo: `session fork --with-state-and-gitignored -w <new-branch>` creates a new destination worktree whose files on disk mirror the parent's staged/unstaged/untracked/gitignored state and starts the forked session in that destination cwd. |
 | `internal/ui/forkdialog_eval_test.go` | `TestEval_ForkDialog_WithStateVisibleInteraction` | Colocated eval for the TUI-only surface: rendered `ForkDialog` shows the nested with-state and gitignored controls only after the user-visible `w -> y -> i` interaction path, and the getters report the submitted values. |
 
-### CLAUDE.md mandate (new section to add)
+## Mandatory test coverage
 
-```
-## Fork-with-state: mandatory test coverage
+This is the authoritative mandate for fork-with-state. Per CONTRIBUTING.md, `CLAUDE.md` is per-developer and not tracked in the repo, so the mandate is housed here (the tracked spec) and referenced by CI workflows. Test names are stable contracts; any PR that changes a path under the mandate MUST run and pass all four commands below.
 
-Any PR modifying fork-with-state paths MUST pass:
-
+```bash
 go test ./internal/git/... -run "Materialize|DetectInProgress|HasSubmodules|PreflightForkWithState|ValidateForkWithStateDestination|CreateWorktreeAtStartPoint|HeadCommit|ForkWithStateGitSequence" -race -count=1
 go test ./cmd/agent-deck/... -run "SessionFork_WithState|ResolveForkStateFlags" -race -count=1
 go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|GitignoredRequires|Toggling|FocusOrder)|ForkSessionCmdWithOptions_WithStateUsesSharedPreflight" -race -count=1
 go test -tags eval_smoke ./tests/eval/session/... ./internal/ui/... -run "TestEval_SessionForkWithState|TestEval_ForkDialog_WithState" -race -count=1
-
-Paths under the mandate:
-- internal/git/worktree_with_state.go (+ _test.go)
-- internal/git/worktree_with_state_integration_test.go
-- internal/git/git.go (parent-HEAD start-point helper)
-- internal/git/setup.go (split of CreateWorktreeWithSetup)
-- cmd/agent-deck/session_cmd.go fork handler
-- internal/ui/forkdialog.go
-- internal/ui/home.go fork submit handler
-- internal/ui/home_fork_state_test.go shared-preflight structural guard
-- tests/eval/session/fork_with_state_test.go real-binary CLI behavioral eval
-- internal/ui/forkdialog_eval_test.go TUI ForkDialog behavioral eval
-- internal/session/instance.go fork wiring
 ```
+
+### Paths under the mandate
+
+- `internal/git/worktree_with_state.go` (+ `_test.go`)
+- `internal/git/worktree_with_state_integration_test.go`
+- `internal/git/git.go` — `HeadCommit` and `CreateWorktreeAtStartPoint`
+- `internal/git/setup.go` — the `CreateWorktree` / `RunWorktreeSetup` / `CreateWorktreeWithSetup` split
+- `cmd/agent-deck/session_cmd.go` — fork handler, `resolveForkStateFlags`
+- `internal/ui/forkdialog.go` — with-state sub-checkboxes
+- `internal/ui/home.go` — TUI fork submit handler
+- `internal/ui/home_fork_state_test.go` — structural guard for shared TUI preflight
+- `tests/eval/session/fork_with_state_test.go` — real-binary CLI behavioral eval
+- `internal/ui/forkdialog_eval_test.go` — visible TUI ForkDialog behavioral eval
+- `internal/session/tooloptions.go` — `WithState` / `IncludeGitignored` fields
+
+### Structural changes requiring RFC
+
+- Re-collapsing `CreateWorktree` + `RunWorktreeSetup` back into the old monolithic `CreateWorktreeWithSetup` (breaks materialization-before-setup ordering)
+- Replacing shared `git.PreflightForkWithState` with separate CLI/TUI preflight implementations
+- Replacing shared `git.ValidateForkWithStateDestination` with inline CLI/TUI collision checks, or reintroducing a with-state branch into the existing-worktree reuse blocks in `session_cmd.go` / `home.go`
+- Mutating parent's index, working tree, or stash list as part of materialization (`git stash`, `git add`, etc.)
+- Changing `--with-state-and-gitignored` so it no longer automatically enables `--with-state`
+- Making CLI `--with-state` or `--with-state-and-gitignored` automatically create or name a worktree without explicit `-w/--worktree <new-branch>`
+- Adding silent fallbacks when materialization fails (must always cleanup + error)
+- Decoupling the Claude session fork from file materialization, or shipping `--with-state` without `--fork-session` semantics
 
 ## Documentation impact
 
 - `README.md` — expand the `### Fork Sessions` section with the new CLI examples and add a short cross-reference in `### Git Worktrees`
 - `cmd/agent-deck/session_cmd.go` fork usage block — add examples and document that CLI `--with-state` requires explicit `-w/--worktree <new-branch>`
 - `CHANGELOG.md` — add a `### Added` entry under `## [Unreleased]` using the repo's Keep a Changelog prose style
-- `CLAUDE.md` — add the new test mandate section
 
 ## Out of scope (for follow-up tickets)
 
@@ -451,3 +462,4 @@ Paths under the mandate:
 - 2026-05-17: Accepted FWS-015 after clean-context verification. Removed the three drift-only TUI test names (`TestForkDialog_WithStateCheckbox_VisibleWhenWorktreeEnabled`, `..._HiddenWhenWorktreeOff`, `TestForkDialog_GitignoredSubCheckbox_NestedUnderWithState`) from the state-machine test inventory and added a pointer to the existing `TestEval_ForkDialog_WithStateVisibleInteraction` eval test that already covers all three render conditions. Local TDD requires `-tags eval_smoke`; the eval suite runs on every PR via the existing eval-smoke workflow.
 - 2026-05-17: Accepted FWS-016 after clean-context verification, asymmetry analysis, and option comparison via the Item 4 discussion document. Extracted a shared `git.ValidateForkWithStateDestination(repoRoot, branch)` helper with a typed `DestinationCollisionError` so CLI and TUI both call one validator for destination-collision facts (worktree-exists, branch-exists). Removes CLI's redundant inline collision check from the existing-worktree reuse block, removes TUI's inline `if opts.WithState` branch from its reuse block, and restores both reuse blocks to today's exact behavior. Mirrors the FWS-009 `PreflightForkWithState` architectural pattern: git facts live in `internal/git`; CLI and TUI own surface-appropriate error rendering. Added three helper unit tests (`TestValidateForkWithStateDestination_Clean`, `_BranchExists`, `_WorktreeExists`) and extended the mandate regex to include the new helper.
 - 2026-05-18: Accepted FWS-017 after Track B comparative analysis vs upstream's fork-carry-wip branch (commit 02b6e5c4). Four corrections folded back from upstream's implementation: (1) Added revert to the in-progress-ops refusal list — REVERT_HEAD leaves the same half-done state as MERGE_HEAD; updated DetectInProgressOperation docstring, InProgressOperationError docstring, data flow Step 3, Decisions table, error catalog, and added TestDetect_Revert. (2) Data flow Step 5c now uses `git ls-files --others -z` so paths with embedded newlines are handled safely. (3) Data flow Step 5d now does a SECOND pass with `--ignored --exclude-standard` and unions with the first — `--ignored` is a filter, not additive; the prior single-pass version was a latent bug that would have copied only ignored files. (4) Added Step 5.5 for ProcessWorktreeInclude (PR #890) so the materialize → worktreeinclude → setup ordering is documented as a contract. Full analysis at `docs/superpowers/discussions/2026-05-18-upstream-comparison.md` on review/feat-v1.9.x-1029-fork-carry-wip.
+- 2026-05-18: Accepted FWS-018 after CONTRIBUTING.md re-read and confirmation that `CLAUDE.md` is intentionally untracked per PR #1002. Promoted the previously-collapsed "CLAUDE.md mandate (new section to add)" subsection into a top-level `## Mandatory test coverage` section in the spec itself (Option B from the post-plan review). Removed the literal text-to-copy-into-CLAUDE.md fence. Updated "Documentation impact" to drop the CLAUDE.md target. Added a new RFC-required structural-change item that protects the coupling between `--with-state` and the Claude session fork. Goal section rewritten to make explicit that `--with-state` delivers a complete parallel agent environment — the Claude Code session conversation history forked via the existing `agent-deck session fork` flow (which invokes `claude --resume <parent-id> --fork-session`) PLUS the materialized working-tree files. The two pieces compose; the new code in this feature is the file half, but the user-visible value is the combined parallel environment.

@@ -3572,24 +3572,26 @@ git commit -m "test(eval): cover fork-with-state user-visible flows"
 
 ---
 
-## Task 18: Add Fork-with-state mandate to CLAUDE.md
+## Task 18: Verify the mandate lives in the tracked spec (no CLAUDE.md edit)
 
 **Files:**
-- Modify: `CLAUDE.md` (append a new section before the "## --no-verify mandate" section)
+- Verify: `docs/superpowers/specs/2026-05-14-fork-worktree-with-state-design.md` (`## Mandatory test coverage` section)
 
-- [ ] **Step 1: Insert the new section**
+Per CONTRIBUTING.md (and PR #1002), `CLAUDE.md` is intentionally untracked and per-developer. The mandate is housed in the tracked spec instead — `## Mandatory test coverage` section. This task is a verification step that the section is current and the regexes haven't drifted from the actual test names.
 
-In `CLAUDE.md`, find the line `## --no-verify mandate` (toward the end of the file). Immediately before that line, insert:
+- [ ] **Step 1: Verify the spec section exists and is current**
 
-```markdown
-## Fork-with-state: mandatory test coverage
+Run:
 
-Fork-with-state copies parent's working-tree contents (staged + unstaged +
-untracked, optionally gitignored) into a freshly-created destination
-branch/worktree branched off parent's HEAD. Read-only on parent. Class of bugs: a unit test passes
-but the resulting worktree silently diverges from parent's actual state.
+```bash
+grep -A2 "^## Mandatory test coverage" docs/superpowers/specs/2026-05-14-fork-worktree-with-state-design.md | head
+```
 
-Any PR modifying fork-with-state paths MUST pass:
+Expected: shows the heading and the first lines of the section.
+
+- [ ] **Step 2: Verify the regexes match the actual test names**
+
+Run (after Tasks 2-17 have landed their tests):
 
 ```bash
 go test ./internal/git/... -run "Materialize|DetectInProgress|HasSubmodules|PreflightForkWithState|ValidateForkWithStateDestination|CreateWorktreeAtStartPoint|HeadCommit|ForkWithStateGitSequence" -race -count=1
@@ -3598,43 +3600,20 @@ go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|Gitignored
 go test -tags eval_smoke ./tests/eval/session/... ./internal/ui/... -run "TestEval_SessionForkWithState|TestEval_ForkDialog_WithState" -race -count=1
 ```
 
-### Paths under the mandate
+Expected: every command matches at least one test (no "warning: no tests to run" output). If a regex matches zero tests, the spec's regex is stale — fix the spec, not the test names.
 
-- `internal/git/worktree_with_state.go` (+ `_test.go`)
-- `internal/git/worktree_with_state_integration_test.go`
-- `internal/git/git.go` — `HeadCommit` and `CreateWorktreeAtStartPoint`
-- `internal/git/setup.go` — the `CreateWorktree` / `RunWorktreeSetup` / `CreateWorktreeWithSetup` split
-- `cmd/agent-deck/session_cmd.go` — fork handler, `resolveForkStateFlags`
-- `internal/ui/forkdialog.go` — with-state sub-checkboxes
-- `internal/ui/home.go` — TUI fork submit handler
-- `internal/ui/home_fork_state_test.go` — structural guard for shared TUI preflight
-- `tests/eval/session/fork_with_state_test.go` — real-binary CLI behavioral eval
-- `internal/ui/forkdialog_eval_test.go` — visible TUI ForkDialog behavioral eval
-- `internal/session/tooloptions.go` — `WithState` / `IncludeGitignored` fields
+- [ ] **Step 3: No commit unless Step 2 surfaced a regex fix**
 
-### Structural changes requiring RFC
-
-- Re-collapsing `CreateWorktree` + `RunWorktreeSetup` back into the old monolithic `CreateWorktreeWithSetup` (breaks materialization-before-setup ordering)
-- Replacing shared `git.PreflightForkWithState` with separate CLI/TUI preflight implementations
-- Replacing shared `git.ValidateForkWithStateDestination` with inline CLI/TUI collision checks, or reintroducing a with-state branch into the existing-worktree reuse blocks in `session_cmd.go` / `home.go`
-- Mutating parent's index, working tree, or stash list as part of materialization (`git stash`, `git add`, etc.)
-- Changing `--with-state-and-gitignored` so it no longer automatically enables `--with-state`
-- Making CLI `--with-state` or `--with-state-and-gitignored` automatically create or name a worktree without explicit `-w/--worktree <new-branch>`
-- Adding silent fallbacks when materialization fails (must always cleanup + error)
-
-```
-
-- [ ] **Step 2: Verify the file still parses (just an open)**
-
-Run: `head -1 CLAUDE.md && wc -l CLAUDE.md`
-Expected: shows top of file + a sensible line count larger than before.
-
-- [ ] **Step 3: Commit**
+If Step 2 was clean, no action. If the spec needed a regex update to match actual test names, commit just the spec change:
 
 ```bash
-git add CLAUDE.md
-git commit -m "docs(claude): add Fork-with-state mandatory test coverage section"
+git add docs/superpowers/specs/2026-05-14-fork-worktree-with-state-design.md
+git commit -m "docs(spec): align mandate regex with actual test names"
 ```
+
+### Why this changed from "edit CLAUDE.md"
+
+The original plan added a section to `CLAUDE.md`. After CONTRIBUTING.md was re-read during the post-plan review (Item 4 of the review pass), the team confirmed that PR #1002 intentionally made `CLAUDE.md` per-developer / untracked. The mandate therefore must live in a tracked file. The tracked spec already houses the full test inventory in its `## Testing` section; promoting the mandate text alongside it (in `## Mandatory test coverage`) keeps the mandate enforceable by CI without depending on a per-developer file. See spec review log entry FWS-018.
 
 ---
 
@@ -4065,3 +4044,4 @@ No spec requirements without a task; no orphan tasks.
 - 2026-05-17: Accepted ADP-010 codebase-pattern audit recommendation. Added Task 17A with bounded behavioral eval smoke coverage: a real-binary CLI fork-with-state eval under `tests/eval/session` and a colocated `internal/ui` ForkDialog eval for the visible `w -> y -> i` interaction path. Added the eval command and paths to the mandate, full verification, PR test plan, spec coverage check, and author-review proposal.
 - 2026-05-17: Accepted ADP-011 codebase-pattern audit recommendation with Option 2. Task 19 now expands the README's dedicated `### Fork Sessions` section with fork-with-state examples and contract text, adds a short `### Git Worktrees` cross-reference, and changes the CHANGELOG instructions to the repo's Keep a Changelog prose style under `## [Unreleased]`.
 - 2026-05-17: Accepted FWS-016 after the Item 4 discussion document and option comparison. Added new Task 4C to extract a shared `git.ValidateForkWithStateDestination(repoRoot, branch)` helper with a typed `DestinationCollisionError` (worktree_exists / branch_exists). Rewrote Task 13 Step 3 (CLI) to call the helper before `PreflightForkWithState` and leave the existing-worktree reuse block exactly as today's code. Rewrote Task 17 Step 3 (TUI) to call the helper before the reuse block and leave the reuse block exactly as today's code. Updated mandate regexes (Task 18, Task 20, Task 21 test plan) to include `ValidateForkWithStateDestination`. Added structural-change RFC requirement for the new helper. Added three helper unit tests in Task 4C. Eliminates the CLI redundancy without imposing symmetry on TUI; mirrors the FWS-009 architectural pattern.
+- 2026-05-18: Accepted FWS-018 plan-side. Rewrote Task 18 to verify the spec's `## Mandatory test coverage` section is current with the actual test names (regex sanity check), instead of editing the now-untracked `CLAUDE.md`. Per CONTRIBUTING.md and PR #1002, `CLAUDE.md` is intentionally per-developer; the mandate must live in a tracked file. The spec is that file. Task 18 no longer creates a commit unless the regex drifted.

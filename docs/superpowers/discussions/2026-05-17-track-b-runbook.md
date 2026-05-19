@@ -70,24 +70,87 @@ git worktree list
 
 ---
 
-## Section 2 — Launch a new Claude Code session in Track B
+## Section 2 — Launch the parallel Claude Code session in Track B
 
 Open a fresh terminal tab/window so the existing session in `/Users/stevemorin/c/agent-deck` keeps running independently.
+
+Pick one option below. **Option A is the preferred default** because it gives you a complete parallel environment (conversation + files), not just files. Option B is the alternative if you want a clean session.
+
+### Option A — Fork the parent Claude Code session into the worktree (preferred default)
+
+Dogfood the now-merged `--with-state-and-gitignored` flag to fork BOTH the Claude conversation AND the working-tree state into the parallel worktree. The new session inherits the full conversation history from the parent (so you don't need a long bootstrap prompt), plus all of the parent's tracked + staged + untracked + gitignored files (so `CLAUDE.local.md`, `AGENTS.md`, `.env`, etc. carry over automatically).
+
+**Caveat:** `--with-state` creates the destination worktree branched off the *parent session's HEAD* (i.e., your `feature/fork-worktree-with-state`), not off upstream's `feat/v1.9.x-1029-fork-carry-wip`. For the analysis task, this doesn't matter — the analyzer reads upstream's code via `git show 6a1645eb` or `git diff upstream/main~1..upstream/main` rather than relying on a checkout of upstream's branch.
+
+If you do want upstream's code checked out instead, use Option B.
+
+**From this clone**, find the current session's ID/title and fork it:
+
+```bash
+cd /Users/stevemorin/c/agent-deck
+
+# Find the current session — look for the one running this Claude Code instance
+agent-deck session list
+
+# Replace <SESSION> with the matching id or title:
+agent-deck session fork <SESSION> \
+    --with-state-and-gitignored \
+    -w review/feat-v1.9.x-1029-fork-carry-wip \
+    -t track-b-analysis \
+    -g experiments
+```
+
+This will:
+- Refuse early if parent is mid-rebase/merge/cherry-pick/revert/bisect (shared preflight from upstream's commit)
+- Create a new branch `review/feat-v1.9.x-1029-fork-carry-wip` from your current HEAD
+- Compute a destination worktree path per your worktree settings (typically a sibling dir; the exact path is logged on success)
+- Materialize parent's staged + unstaged + untracked + gitignored files into the new worktree
+- Run any setup hook
+- Start the forked Claude Code session in the new worktree with the parent's session as resume context
+
+**After the fork succeeds**, switch your terminal to the new worktree, attach to the new session, and paste this short focus prompt (much shorter than the clean-session bootstrap because the new session already has full context):
+
+```
+We just forked this session into a parallel worktree to do a comparative
+analysis of upstream's #1029 implementation vs my spec/plan.
+
+Your task: produce the comparative analysis described in
+docs/superpowers/discussions/2026-05-17-track-b-runbook.md and save it to
+docs/superpowers/discussions/2026-05-18-upstream-comparison.md.
+
+Read upstream's commit 6a1645eb files first (now in upstream/main):
+    git show 6a1645eb -- cmd/agent-deck/session_cmd.go
+    git show 6a1645eb -- internal/git/materialize_wip.go
+    git show 6a1645eb -- internal/git/issue1029_with_state_test.go
+    git show 6a1645eb -- internal/git/issue1029_edge_test.go
+    git show 6a1645eb -- internal/git/setup.go
+
+Then compare against the spec and plan you already know from this
+conversation. Cite file:line for every claim. Don't push or open a PR
+when done; just commit the analysis doc.
+```
+
+### Option B — Clean Claude Code session with full bootstrap prompt (alternative)
+
+Use this if you want upstream's code physically checked out in the worktree (better for IDE-style exploration), or if you don't want to fork the conversation (for a fresh independent context).
+
+This option uses the manual worktree from Section 1.
 
 ```bash
 cd /Users/stevemorin/c/agent-deck-1029
 claude    # or however you launch Claude Code locally
 ```
 
-### Bootstrap prompt (paste verbatim into the new session)
+### Bootstrap prompt for Option B (paste verbatim into the new session)
 
 ```
-I'm forking a previous Claude Code session into this new worktree to do a comparative analysis.
+I'm starting a new Claude Code session in this worktree to do a comparative analysis.
 
 CONTEXT:
 - This worktree is /Users/stevemorin/c/agent-deck-1029, checked out to branch
   review/feat-v1.9.x-1029-fork-carry-wip, which is based on upstream's branch
-  feat/v1.9.x-1029-fork-carry-wip (commit 02b6e5c4 by @asheshgoplani).
+  feat/v1.9.x-1029-fork-carry-wip (commit 02b6e5c4, now merged to upstream/main
+  as 6a1645eb in PR #1030 by @asheshgoplani).
 - Ashesh has implemented Issue #1029 (fork session with WIP state) with these files:
     cmd/agent-deck/session_cmd.go             |  16 +-
     internal/git/issue1029_edge_test.go       | 233 +
@@ -148,7 +211,17 @@ will be referenced from a GitHub comment posted by me (smorin) after you're
 done.
 ```
 
-The new session has no memory of this conversation — the bootstrap is self-contained.
+The Option B session has no memory of this conversation — the bootstrap is self-contained.
+
+### Which to pick
+
+| Use case | Pick |
+|---|---|
+| You want the new session to "feel like" the same conversation continuing in a parallel place | **Option A** |
+| Per-developer files (`CLAUDE.local.md`, `AGENTS.md`, `.env`) should auto-carry over | **Option A** (the gitignored flag handles it) |
+| You want upstream's branch physically checked out in the worktree | **Option B** |
+| You want a clean independent context (e.g., the new session shouldn't be biased by prior reasoning) | **Option B** |
+| You want to dogfood the merged feature on a real workflow | **Option A** |
 
 ---
 
