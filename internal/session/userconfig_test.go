@@ -166,6 +166,43 @@ config_dir = "~/.claude-personal"
 	}
 }
 
+func TestUserConfig_ProfileCodexConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[codex]
+config_dir = "~/.codex-global"
+
+[profiles.work.codex]
+config_dir = "~/.codex-work"
+
+[profiles.personal.codex]
+config_dir = "~/.codex-personal"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	if _, err := toml.DecodeFile(configPath, &config); err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if got := config.GetProfileCodexConfigDir("work"); got == "" {
+		t.Fatal("GetProfileCodexConfigDir(work) returned empty string")
+	}
+
+	if got, want := config.Profiles["work"].Codex.ConfigDir, "~/.codex-work"; got != want {
+		t.Errorf("Profiles[work].Codex.ConfigDir = %q, want %q", got, want)
+	}
+	if got, want := config.Profiles["personal"].Codex.ConfigDir, "~/.codex-personal"; got != want {
+		t.Errorf("Profiles[personal].Codex.ConfigDir = %q, want %q", got, want)
+	}
+	if got, want := config.Codex.ConfigDir, "~/.codex-global"; got != want {
+		t.Errorf("Codex.ConfigDir = %q, want %q", got, want)
+	}
+}
+
 func TestUserConfig_ClaudeConfigDirEmpty(t *testing.T) {
 	// Test with no Claude section
 	tmpDir := t.TempDir()

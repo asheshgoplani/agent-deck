@@ -1220,6 +1220,17 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
 		i.ID, i.Title, i.Tool)
 	envPrefix += agentdeckEnvPrefix
+	if isCodexHomeExplicit() {
+		codexHome := strings.TrimSpace(getCodexHomeDir())
+		if codexHome != "" {
+			if err := os.MkdirAll(codexHome, 0o755); err != nil {
+				sessionLog.Warn("codex_home_mkdir_failed",
+					slog.String("path", codexHome),
+					slog.String("error", err.Error()))
+			}
+		}
+		envPrefix += "CODEX_HOME=" + codexHome + " "
+	}
 
 	yoloFlag := i.resolveCodexYoloFlag()
 	modelFlag := i.resolveCodexModelFlag()
@@ -1607,11 +1618,36 @@ func getCodexHomeDir() string {
 		return ExpandPath(codexHome)
 	}
 
+	if cfg, err := LoadUserConfig(); err == nil && cfg != nil {
+		profile := GetEffectiveProfile("")
+		if profileDir := cfg.GetProfileCodexConfigDir(profile); profileDir != "" {
+			return profileDir
+		}
+		if cfg.Codex.ConfigDir != "" {
+			return ExpandPath(cfg.Codex.ConfigDir)
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".codex")
 	}
 	return filepath.Join(home, ".codex")
+}
+
+func isCodexHomeExplicit() bool {
+	if strings.TrimSpace(os.Getenv("CODEX_HOME")) != "" {
+		return true
+	}
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return false
+	}
+	profile := GetEffectiveProfile("")
+	if cfg.GetProfileCodexConfigDir(profile) != "" {
+		return true
+	}
+	return strings.TrimSpace(cfg.Codex.ConfigDir) != ""
 }
 
 // runWithTimeout runs op in a goroutine and waits up to timeout for it to

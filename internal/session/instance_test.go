@@ -1896,6 +1896,109 @@ func TestBuildCodexCommand_RespectsCodexHomeForRolloutCheck(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommand_UsesProfileCodexConfigDirAsCodexHome(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	_ = os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	originalProfile := os.Getenv("AGENTDECK_PROFILE")
+	_ = os.Setenv("AGENTDECK_PROFILE", "work")
+	defer func() {
+		if originalProfile != "" {
+			_ = os.Setenv("AGENTDECK_PROFILE", originalProfile)
+		} else {
+			_ = os.Unsetenv("AGENTDECK_PROFILE")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	cfg := &UserConfig{
+		Profiles: map[string]ProfileSettings{
+			"work": {Codex: ProfileCodexSettings{ConfigDir: "~/.codex-work"}},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	inst := NewInstanceWithTool("work-codex", "/tmp/work-codex", "codex")
+	cmd := inst.buildCodexCommand(inst.Command)
+	want := "CODEX_HOME=" + filepath.Join(tmpDir, ".codex-work")
+	if !strings.Contains(cmd, want) {
+		t.Fatalf("expected command to include %q, got %q", want, cmd)
+	}
+}
+
+func TestBuildCodexCommand_CreatesMissingExplicitCodexHomeDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	_ = os.Setenv("HOME", tmpDir)
+	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	originalCodexHome := os.Getenv("CODEX_HOME")
+	_ = os.Unsetenv("CODEX_HOME")
+	defer func() {
+		if originalCodexHome != "" {
+			_ = os.Setenv("CODEX_HOME", originalCodexHome)
+		} else {
+			_ = os.Unsetenv("CODEX_HOME")
+		}
+	}()
+	originalProfile := os.Getenv("AGENTDECK_PROFILE")
+	_ = os.Setenv("AGENTDECK_PROFILE", "personal")
+	defer func() {
+		if originalProfile != "" {
+			_ = os.Setenv("AGENTDECK_PROFILE", originalProfile)
+		} else {
+			_ = os.Unsetenv("AGENTDECK_PROFILE")
+		}
+	}()
+	ClearUserConfigCache()
+
+	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
+	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", agentDeckDir, err)
+	}
+	cfg := &UserConfig{
+		Profiles: map[string]ProfileSettings{
+			"personal": {Codex: ProfileCodexSettings{ConfigDir: "~/.codex-personal"}},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	ClearUserConfigCache()
+
+	codexHome := filepath.Join(tmpDir, ".codex-personal")
+	if _, err := os.Stat(codexHome); !os.IsNotExist(err) {
+		t.Fatalf("precondition failed: %s should not exist yet", codexHome)
+	}
+
+	inst := NewInstanceWithTool("personal-codex", "/tmp/personal-codex", "codex")
+	_ = inst.buildCodexCommand(inst.Command)
+
+	info, err := os.Stat(codexHome)
+	if err != nil {
+		t.Fatalf("expected codex home to be created, stat err: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected %s to be a directory", codexHome)
+	}
+}
+
 func TestCanRestart_CustomCodexWrapperWithKnownID(t *testing.T) {
 	tmpDir := t.TempDir()
 	originalHome := os.Getenv("HOME")

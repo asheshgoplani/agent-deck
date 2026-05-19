@@ -248,6 +248,8 @@ func (rc RemoteConfig) GetProfile() string {
 type ProfileSettings struct {
 	// Claude defines Claude Code overrides for a specific profile.
 	Claude ProfileClaudeSettings `toml:"claude"`
+	// Codex defines Codex CLI overrides for a specific profile.
+	Codex ProfileCodexSettings `toml:"codex"`
 	// Costs defines profile-specific cost-tracking overrides.
 	// Nil pointer means "no [profiles.<name>.costs] block in TOML"; the
 	// resolver falls through to global [costs] settings.
@@ -257,6 +259,12 @@ type ProfileSettings struct {
 // ProfileClaudeSettings defines profile-specific Claude overrides.
 type ProfileClaudeSettings struct {
 	// ConfigDir overrides [claude].config_dir for this profile only.
+	ConfigDir string `toml:"config_dir"`
+}
+
+// ProfileCodexSettings defines profile-specific Codex overrides.
+type ProfileCodexSettings struct {
+	// ConfigDir overrides [codex].config_dir for this profile only.
 	ConfigDir string `toml:"config_dir"`
 }
 
@@ -837,9 +845,25 @@ type CodexSettings struct {
 	// Default: "codex"
 	Command string `toml:"command"`
 
+	// ConfigDir is the path to Codex home directory.
+	// Default: ~/.codex (or CODEX_HOME env var)
+	ConfigDir string `toml:"config_dir"`
+
 	// YoloMode enables --yolo flag for Codex sessions (bypass approvals and sandbox)
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+}
+
+// GetProfileCodexConfigDir returns the profile-specific Codex config directory, if configured.
+func (c *UserConfig) GetProfileCodexConfigDir(profile string) string {
+	if c == nil || profile == "" || c.Profiles == nil {
+		return ""
+	}
+	profileCfg, ok := c.Profiles[profile]
+	if !ok || profileCfg.Codex.ConfigDir == "" {
+		return ""
+	}
+	return ExpandPath(profileCfg.Codex.ConfigDir)
 }
 
 // CopilotSettings defines GitHub Copilot CLI configuration (Issue #556).
@@ -2531,6 +2555,12 @@ func CreateExampleConfig() error {
 # [codex]
 # Codex CLI command or alias to use (default: "codex")
 # command = "codex"
+# Custom config directory/home for Codex sessions
+# Default: ~/.codex (or CODEX_HOME env var takes priority)
+# config_dir = "~/.codex-work"
+# Optional per-profile override (takes precedence over [codex] when profile matches)
+# [profiles.work.codex]
+# config_dir = "~/.codex-work"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
 # yolo_mode = true
 
