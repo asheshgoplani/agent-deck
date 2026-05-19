@@ -912,6 +912,15 @@ type CopilotSettings struct {
 	// Command overrides the default binary/invocation for Copilot sessions.
 	// Supports flags (e.g., "copilot --custom-flag"). Default: "copilot"
 	Command string `toml:"command"`
+
+	// DefaultModel sets the Copilot model for new sessions (e.g., "claude-opus-4.6",
+	// "gpt-5.2"). Passed as --model <value>. Can be overridden per-session.
+	DefaultModel string `toml:"default_model"`
+
+	// AllowAll enables --allow-all by default for new sessions (equivalent to
+	// --allow-all-tools --allow-all-paths --allow-all-urls). Can be overridden
+	// per-session.
+	AllowAll bool `toml:"allow_all"`
 }
 
 // HermesSettings defines Hermes Agent CLI configuration.
