@@ -148,3 +148,25 @@ func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, s
 	}
 	return setupErr, nil
 }
+
+// RunWorktreeSetupAfterCreate runs the worktree setup script for an
+// already-created worktree. Extracted from CreateWorktreeWithStateAndSetup
+// so the fork-with-state path can sequence Create → Materialize → Setup
+// with per-step error handling. Returns the script's exit error; nil if no
+// script. Caller is responsible for ProcessWorktreeInclude if desired.
+func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io.Writer, setupTimeout time.Duration) error {
+	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
+	if scriptPath == "" {
+		return nil
+	}
+	fmt.Fprintln(stderr, "Running worktree setup script...")
+	start := time.Now()
+	setupErr := RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
+	elapsed := time.Since(start).Round(100 * time.Millisecond)
+	if setupErr != nil {
+		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
+	} else {
+		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
+	}
+	return setupErr
+}

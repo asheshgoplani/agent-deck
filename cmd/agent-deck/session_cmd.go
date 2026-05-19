@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -750,13 +751,65 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithStateAndSetup(
-				repoRoot, worktreePath, wtBranch,
-				git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
-				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
-			if err != nil {
-				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
+			var setupErr error
+			if wantState {
+				// Pre-flight: destination collision check using the shared validator.
+				if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
+					var collErr *git.DestinationCollisionError
+					if errors.As(err, &collErr) {
+						switch collErr.Kind {
+						case git.CollisionWorktreeExists:
+							out.Error(fmt.Sprintf("branch '%s' already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path), ErrCodeInvalidOperation)
+						case git.CollisionBranchExists:
+							out.Error(fmt.Sprintf("branch '%s' already exists; choose a new destination branch for --with-state", collErr.Branch), ErrCodeInvalidOperation)
+						default:
+							out.Error(collErr.Error(), ErrCodeInvalidOperation)
+						}
+						os.Exit(1)
+					}
+					out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				// Capture parent's HEAD so linked-worktree parents anchor correctly.
+				parentHead, hcErr := git.HeadCommit(inst.ProjectPath)
+				if hcErr != nil {
+					out.Error(fmt.Sprintf("failed to resolve parent session HEAD: %v", hcErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				createdBranch, cwErr := git.CreateWorktreeAtStartPoint(repoRoot, worktreePath, wtBranch, parentHead)
+				if cwErr != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				// Materialize parent state, with cleanup-on-error.
+				if matErr := git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
+					_ = exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run()
+					if createdBranch {
+						_ = exec.Command("git", "-C", repoRoot, "branch", "-D", wtBranch).Run()
+					}
+					out.Error(fmt.Sprintf("failed to materialize parent state: %v; new worktree cleaned up", matErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				// Continue the upstream wrapper's tail: worktreeinclude + setup hook.
+				if inclErr := git.ProcessWorktreeInclude(repoRoot, worktreePath, os.Stderr); inclErr != nil {
+					fmt.Fprintf(os.Stderr, "worktreeinclude: %v\n", inclErr)
+				}
+				setupErr = git.RunWorktreeSetupAfterCreate(repoRoot, worktreePath, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			} else {
+				// Legacy path: no with-state. Delegate to upstream's wrapper unchanged.
+				var cwErr error
+				setupErr, cwErr = git.CreateWorktreeWithStateAndSetup(
+					repoRoot, worktreePath, wtBranch,
+					git.WorktreeStateOptions{},
+					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+				if cwErr != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
 			}
 			if setupErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
