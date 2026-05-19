@@ -17,11 +17,11 @@ import (
 // juggling or shared-path races.
 //
 // The hard contract from the issue:
-//   1. Parent checkout MUST remain read-only (no stash push, no add, no index
-//      mutation) — verified separately below.
-//   2. Child's `git status --porcelain` must match parent's at materialization
-//      time, with staged/unstaged/untracked faithfully reproduced.
-//   3. Gitignored files only with explicit opt-in (separate test).
+//  1. Parent checkout MUST remain read-only (no stash push, no add, no index
+//     mutation) — verified separately below.
+//  2. Child's `git status --porcelain` must match parent's at materialization
+//     time, with staged/unstaged/untracked faithfully reproduced.
+//  3. Gitignored files only with explicit opt-in (separate test).
 //
 // The minimum failing assertion: a parent repo with one staged file, one
 // unstaged edit, and one untracked file produces a child worktree whose
