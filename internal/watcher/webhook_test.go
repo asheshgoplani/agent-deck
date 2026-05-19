@@ -9,9 +9,76 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.uber.org/goleak"
 )
+
+func TestFirstLine_UTF8Boundary(t *testing.T) {
+	// Cases where the byte cap falls inside a multi-byte UTF-8 sequence.
+	// Each input is longer than maxLen bytes and the byte-cap position
+	// lands inside a Cyrillic (2-byte), em-dash (3-byte), or emoji (4-byte)
+	// codepoint. firstLine must return valid UTF-8 by trimming back to a
+	// codepoint boundary.
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+	}{
+		{
+			name:   "cyrillic mid-codepoint at cap",
+			input:  strings.Repeat("сессии. ", 30), // ~480 bytes of 2-byte runes
+			maxLen: 199,                            // odd byte cap -> guaranteed mid-rune cut
+		},
+		{
+			name:   "em-dash mid-codepoint",
+			input:  strings.Repeat("a—", 80), // — is 3 bytes
+			maxLen: 100,
+		},
+		{
+			name:   "emoji mid-codepoint",
+			input:  strings.Repeat("ab😀", 30), // 😀 is 4 bytes
+			maxLen: 50,
+		},
+		{
+			name:   "ascii baseline",
+			input:  strings.Repeat("a", 500),
+			maxLen: 200,
+		},
+		{
+			name:   "exact boundary fit",
+			input:  strings.Repeat("ы", 100), // each ы is 2 bytes -> exactly 200 bytes
+			maxLen: 200,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstLine(tc.input, tc.maxLen)
+			if !utf8.ValidString(got) {
+				t.Errorf("firstLine produced invalid UTF-8 (len=%d, bytes=% x)", len(got), []byte(got))
+			}
+			if len(got) > tc.maxLen {
+				t.Errorf("firstLine exceeded maxLen: got %d bytes, max %d", len(got), tc.maxLen)
+			}
+			// Trim should remove at most 3 bytes (UTF-8 max sequence is 4 bytes).
+			if untrimmedLen := tc.maxLen; len(got) > 0 && untrimmedLen-len(got) > 3 {
+				t.Errorf("trim removed more than 3 bytes: cap=%d, got=%d", untrimmedLen, len(got))
+			}
+		})
+	}
+}
+
+func TestFirstLine_NewlineBeforeCap(t *testing.T) {
+	// When a newline exists before maxLen, firstLine truncates at the newline
+	// regardless of UTF-8 boundaries (newline is ASCII so always safe).
+	in := "сессии\nrest of message"
+	got := firstLine(in, 200)
+	want := "сессии"
+	if got != want {
+		t.Errorf("firstLine(%q, 200) = %q, want %q", in, got, want)
+	}
+}
 
 func TestWebhook_Setup_DefaultPort(t *testing.T) {
 	a := &WebhookAdapter{}

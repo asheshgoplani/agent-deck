@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // WebhookAdapter implements WatcherAdapter by running an HTTP server that accepts
@@ -181,7 +182,12 @@ func (a *WebhookAdapter) HealthCheck() error {
 	return nil
 }
 
-// firstLine returns the first line of s, truncated to maxLen characters.
+// firstLine returns the first line of s, truncated to maxLen bytes.
+// When the cap lands inside a multi-byte UTF-8 sequence, the partial
+// codepoint is trimmed off so the result is always valid UTF-8. This
+// prevents downstream consumers (SQLite readers, JSON encoders, logs)
+// from choking on bytes stored to watcher_events.subject — a single
+// poisoned row can wedge an entire watcher pipeline.
 func firstLine(s string, maxLen int) string {
 	line := s
 	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
@@ -189,6 +195,13 @@ func firstLine(s string, maxLen int) string {
 	}
 	if len(line) > maxLen {
 		line = line[:maxLen]
+		// UTF-8 sequences are at most 4 bytes, so at most 3 trailing
+		// bytes are stripped here. ValidString runs in O(len(line))
+		// but only on suffix bytes after the first valid read; in
+		// practice this is a handful of iterations.
+		for len(line) > 0 && !utf8.ValidString(line) {
+			line = line[:len(line)-1]
+		}
 	}
 	return line
 }
