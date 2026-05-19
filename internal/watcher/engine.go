@@ -432,6 +432,7 @@ func (e *Engine) writerLoop() {
 				}
 
 				// Non-blocking send to routedEventCh for TUI consumption.
+				env.event.RoutedTo = routedTo
 				select {
 				case e.routedEventCh <- env.event:
 				default:
