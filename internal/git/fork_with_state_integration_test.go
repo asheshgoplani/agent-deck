@@ -1,8 +1,10 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -124,5 +126,72 @@ func TestForkWithState_BareRepoLayoutLinkedParentWorktree(t *testing.T) {
 	}
 	if string(wipBytes) != "parent-wip\n" {
 		t.Fatalf("fork WIP content mismatch: got %q, want %q", string(wipBytes), "parent-wip\n")
+	}
+}
+
+// TestForkWithState_SetupHookObservesMaterializedState verifies the
+// orchestration order: setup hook runs AFTER MaterializeWipFromParent, so the
+// hook sees the realized working tree (parent's WIP). Catches regressions
+// where someone re-orders the helpers and the hook ends up running on the
+// pre-materialization (empty) worktree.
+//
+// Closes gap 7 from the post-merge gap analysis.
+func TestForkWithState_SetupHookObservesMaterializedState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("setup hook test uses /bin/sh")
+	}
+
+	projectRoot, parentDir, _, parentHead := bareLayoutWithDivergentParent(t, true /* withWIP */)
+
+	// Install a setup hook at <projectRoot>/.agent-deck/worktree-setup.sh —
+	// the canonical location FindWorktreeSetupScript looks at when repoDir
+	// is the project root (mirrors what handleSessionFork passes).
+	scriptDir := filepath.Join(projectRoot, ".agent-deck")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("mkdir setup-script dir: %v", err)
+	}
+
+	// Marker lives outside the worktree so materialization can't accidentally
+	// create or clobber it.
+	marker := filepath.Join(t.TempDir(), "setup-observed.txt")
+
+	// Setup script (cwd = worktree per RunWorktreeSetupScript) reads parent's
+	// WIP file from the materialized tree and writes its content to the marker.
+	// If the hook ran BEFORE materialization, wip.txt would not exist yet and
+	// the script would write NO_WIP_OBSERVED instead.
+	script := fmt.Sprintf("#!/bin/sh\nset -e\nif [ -f wip.txt ]; then\n  cat wip.txt > %q\nelse\n  echo NO_WIP_OBSERVED > %q\nfi\n", marker, marker)
+	scriptPath := filepath.Join(scriptDir, "worktree-setup.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write setup script: %v", err)
+	}
+
+	// Run the full fork-with-state sequence in handleSessionFork's order:
+	// CreateWorktreeAtStartPoint → MaterializeWipFromParent →
+	// ProcessWorktreeInclude → RunWorktreeSetupAfterCreate.
+	forkDir := filepath.Join(projectRoot, "fork-observation-wt")
+
+	if _, err := CreateWorktreeAtStartPoint(projectRoot, forkDir, "fork/observation", parentHead); err != nil {
+		t.Fatalf("CreateWorktreeAtStartPoint: %v", err)
+	}
+	if err := MaterializeWipFromParent(parentDir, forkDir, false); err != nil {
+		t.Fatalf("MaterializeWipFromParent: %v", err)
+	}
+	if err := ProcessWorktreeInclude(projectRoot, forkDir, os.Stderr); err != nil {
+		t.Logf("ProcessWorktreeInclude (non-fatal): %v", err)
+	}
+	if err := RunWorktreeSetupAfterCreate(projectRoot, forkDir, os.Stdout, os.Stderr, 0 /* unlimited */); err != nil {
+		t.Fatalf("RunWorktreeSetupAfterCreate: %v", err)
+	}
+
+	// The marker must contain the materialized WIP content. If the hook ran
+	// before materialization, the marker would be missing, empty, or contain
+	// NO_WIP_OBSERVED.
+	observed, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("marker missing: %v (setup hook may not have run)", err)
+	}
+	wantContent := "parent-wip\n" // from bareLayoutWithDivergentParent(withWIP=true)
+	if string(observed) != wantContent {
+		t.Fatalf("setup hook observed wrong content:\ngot:  %q\nwant: %q\n(this means the hook ran before MaterializeWipFromParent)", observed, wantContent)
 	}
 }
