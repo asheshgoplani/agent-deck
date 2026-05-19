@@ -1,0 +1,21 @@
+name: govulncheck
+on:
+  pull_request: { branches: [main] }
+  schedule: [{ cron: '0 7 * * 1' }]
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.23'
+          output-format: sarif
+          output-file: vuln.sarif
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: vuln.sarif

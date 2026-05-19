@@ -1,0 +1,10 @@
+# Hot paths — Ashesh must review
+go.mod              @asheshgoplani
+go.sum              @asheshgoplani
+.github/            @asheshgoplani
+.golangci.yml       @asheshgoplani
+SECURITY.md         @asheshgoplani
+CODEOWNERS          @asheshgoplani
+internal/auth/      @asheshgoplani
+internal/tmux/      @asheshgoplani
+internal/session/   @asheshgoplani
