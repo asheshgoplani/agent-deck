@@ -1222,6 +1222,15 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 
 	envPrefix := i.buildEnvSourceCommand()
 
+	// AGENTDECK_* env injection is required for the hook subprocesses spawned
+	// by tools in the codex family to find this session's state, so it is
+	// injected BEFORE the custom-command passthrough early-return below.
+	// Dropping it on custom-command sessions was the design regression flagged
+	// on #951 review — keep AGENTDECK_* on every codex-flavoured launch.
+	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
+		i.ID, i.Title, i.Tool)
+	envPrefix += agentdeckEnvPrefix
+
 	// Passthrough: if the tool is literally "codex" and user gave a custom command
 	// (not the bare "codex" name), return as-is without flag injection.
 	// Codex-compatible tools (e.g., "my-codex" with CompatibleWith="codex") always
@@ -1230,10 +1239,6 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	if i.Tool == "codex" && trimmed != "codex" && trimmed != "" {
 		return envPrefix + trimmed
 	}
-
-	agentdeckEnvPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
-		i.ID, i.Title, i.Tool)
-	envPrefix += agentdeckEnvPrefix
 	if isCodexHomeExplicit() {
 		codexHome := strings.TrimSpace(getCodexHomeDir())
 		if codexHome != "" {

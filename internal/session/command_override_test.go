@@ -210,6 +210,39 @@ func TestBuildCodexCommand_Passthrough(t *testing.T) {
 	}
 }
 
+// TestBuildCodexCommand_PassthroughKeepsAgentdeckEnv asserts that the
+// AGENTDECK_INSTANCE_ID / AGENTDECK_TITLE / AGENTDECK_TOOL env injection is
+// preserved on the codex custom-command passthrough path. The uniform-command
+// rework on #951 originally introduced an early-return that dropped this
+// prefix; review flagged it as a behaviour regression (Claude/Codex hook
+// subprocesses use AGENTDECK_INSTANCE_ID to find the spawning session), so
+// the takeover restores the inline injection ahead of the passthrough
+// early-return. Regression-pin so this never silently regresses again.
+func TestBuildCodexCommand_PassthroughKeepsAgentdeckEnv(t *testing.T) {
+	cfg := &UserConfig{
+		Codex: CodexSettings{Command: "codex-nightly"},
+	}
+	restore := resetUserConfigCache(t, cfg)
+	defer restore()
+
+	inst := &Instance{
+		ID:    "test-instance-id",
+		Title: "test session",
+		Tool:  "codex",
+	}
+	got := inst.buildCodexCommand("codex-custom --flag")
+
+	if !strings.Contains(got, "AGENTDECK_INSTANCE_ID=test-instance-id") {
+		t.Errorf("custom-command codex passthrough must include AGENTDECK_INSTANCE_ID, got %q", got)
+	}
+	if !strings.Contains(got, "AGENTDECK_TOOL=codex") {
+		t.Errorf("custom-command codex passthrough must include AGENTDECK_TOOL=codex, got %q", got)
+	}
+	if !strings.Contains(got, `AGENTDECK_TITLE="test session"`) {
+		t.Errorf("custom-command codex passthrough must include AGENTDECK_TITLE, got %q", got)
+	}
+}
+
 func TestBuildCodexCommand_BareNameUsesOverride(t *testing.T) {
 	cfg := &UserConfig{
 		Codex: CodexSettings{Command: "codex-nightly", YoloMode: true},
