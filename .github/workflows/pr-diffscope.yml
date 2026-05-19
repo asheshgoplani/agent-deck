@@ -1,0 +1,20 @@
+name: PR diff-scope guard
+on:
+  pull_request: { branches: [main] }
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  diffscope:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Count changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --name-only | wc -l)
+          echo "Changed files: $n"
+          if [ "$n" -gt 200 ]; then
+            echo "::error::PR touches $n files (>200). Likely stale base or generated-code dump. Inspect before merge."
+            exit 1
+          fi
