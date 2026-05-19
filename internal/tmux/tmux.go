@@ -1485,6 +1485,42 @@ func (s *Session) IsConfigured() bool {
 	return s.configured
 }
 
+// AnyAgentDeckSessionWithEnvValue reports whether any agentdeck-prefixed
+// tmux session carries envKey=envValue. Returns the matching session name
+// (or "") and a bool. Issue #1040: the spawn-guard's in-lock "already
+// alive" gate uses this to detect that a sibling Restart has already
+// produced a live session before this caller does so again. The probe is
+// read-only — no kill. envValue == "" short-circuits to false because
+// matching every session with an unset variable is never the intent.
+func AnyAgentDeckSessionWithEnvValue(envKey, envValue string) (string, bool) {
+	if envValue == "" {
+		return "", false
+	}
+
+	socket := DefaultSocketName()
+	out, err := tmuxExec(socket, "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return "", false
+	}
+
+	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if name == "" || !strings.HasPrefix(name, SessionPrefix) {
+			continue
+		}
+		val, err := tmuxExec(socket, "show-environment", "-t", name, envKey).Output()
+		if err != nil {
+			continue
+		}
+		line := strings.TrimSpace(string(val))
+		if idx := strings.IndexByte(line, '='); idx >= 0 {
+			if line[idx+1:] == envValue {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // KillSessionsWithEnvValue kills agentdeck tmux sessions that have the given
 // environment variable set to the given value, excluding the session named
 // `excludeName`. This prevents duplicate tmux sessions running the same Claude

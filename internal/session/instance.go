@@ -2565,8 +2565,27 @@ func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
 		slog.String("reason", "jsonl_discovery_restart"))
 }
 
-// Start starts the session in tmux
+// Start starts the session in tmux.
+//
+// Issue #1040: gated by acquireInstanceSpawnLock plus a "spawned-while-
+// we-waited" stamp so concurrent `agent-deck session start <id>`
+// invocations after a Claude exit don't each fall through the "tmux
+// session does not exist" gate and spawn parallel sessions. The lock
+// and gate are inlined here (rather than wrapping the whole body in a
+// SpawnAttempt helper) to preserve the structural-grep contract that
+// checks Start()'s body for the #745 IsForkAwaitingStart guard.
 func (i *Instance) Start() error {
+	beforeLock := nowFn()
+	release, lockErr := acquireInstanceSpawnLock(i.ID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer release()
+	if spawnedSince(i.ID, beforeLock) {
+		return nil
+	}
+	defer recordInstanceSpawn(i.ID)
+
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
@@ -2746,7 +2765,22 @@ func (i *Instance) Start() error {
 // The message is sent synchronously after detecting the agent's prompt
 // This approach is more reliable than embedding send logic in the tmux command
 // Works for Claude, Gemini, OpenCode, and other agents
+//
+// Issue #1040: same per-instance spawn lock as Start() — a concurrent
+// `launch -m "..."` racing with a poller-triggered Start() must not
+// produce two parallel tmux sessions.
 func (i *Instance) StartWithMessage(message string) error {
+	beforeLock := nowFn()
+	release, lockErr := acquireInstanceSpawnLock(i.ID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer release()
+	if spawnedSince(i.ID, beforeLock) {
+		return nil
+	}
+	defer recordInstanceSpawn(i.ID)
+
 	if i.tmuxSession == nil {
 		return fmt.Errorf("tmux session not initialized")
 	}
@@ -4762,7 +4796,25 @@ func (i *Instance) killInternal(sync bool) error {
 // Restart restarts the Claude session
 // For Claude sessions with known ID: sends Ctrl+C twice and resume command to existing session
 // For dead sessions or unknown ID: recreates the tmux session
+//
+// Issue #1040: gated by acquireInstanceSpawnLock plus a "spawned-while-
+// we-waited" stamp so concurrent callers (TUI poller + RC-exit handler
+// in-process; multiple `agent-deck session start` CLI invocations
+// cross-process) cannot each race to recreate a tmux session for the
+// same instance. A legitimate manual restart still proceeds because the
+// stamp from any prior spawn pre-dates the new caller's beforeLock.
 func (i *Instance) Restart() error {
+	beforeLock := nowFn()
+	release, lockErr := acquireInstanceSpawnLock(i.ID)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer release()
+	if spawnedSince(i.ID, beforeLock) {
+		return nil
+	}
+	defer recordInstanceSpawn(i.ID)
+
 	mcpLog.Debug(
 		"restart_called",
 		slog.String("tool", i.Tool),
