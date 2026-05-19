@@ -10,7 +10,7 @@ TAILWIND_VERSION=v4.2.2
 TAILWIND_BIN=$(HOME)/.local/bin/tailwindcss
 
 # Pin Go toolchain to 1.24.0 to prevent Go 1.25+ runtime regression on macOS
-export GOTOOLCHAIN=go1.24.0
+export GOTOOLCHAIN=go1.25.10
 
 # Build the binary (requires compiled CSS via `make css`)
 build: css

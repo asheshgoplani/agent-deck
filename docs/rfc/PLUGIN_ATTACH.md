@@ -301,7 +301,7 @@ Per CLAUDE.md, the following mandates fire on this work:
 `internal/session/instance.go` and `internal/session/userconfig.go` are in the touch-list. Required pass:
 
 ```bash
-GOTOOLCHAIN=go1.24.0 go test -run TestPersistence_ ./internal/session/... -race -count=1
+GOTOOLCHAIN=go1.25.10 go test -run TestPersistence_ ./internal/session/... -race -count=1
 bash scripts/verify-session-persistence.sh   # Linux+systemd, final merge gate
 ```
 
@@ -339,7 +339,7 @@ Plus the in-package `internal/ui/edit_session_dialog_eval_test.go` case (§4.8).
 Required pass:
 
 ```bash
-GOTOOLCHAIN=go1.24.0 go test -tags eval_smoke ./tests/eval/... ./internal/ui/...
+GOTOOLCHAIN=go1.25.10 go test -tags eval_smoke ./tests/eval/... ./internal/ui/...
 ```
 
 ### 8.5 `--no-verify` mandate (CLAUDE.md:110-112)

@@ -158,7 +158,7 @@ These thresholds were calibrated so that:
 
 The `.github/workflows/visual-regression.yml` workflow:
 
-1. Builds the Go binary (`make build` with `GOTOOLCHAIN=go1.24.0`)
+1. Builds the Go binary (`make build` with `GOTOOLCHAIN=go1.25.10`)
 2. Starts the test server on `127.0.0.1:18420`
 3. Runs Playwright inside `mcr.microsoft.com/playwright:v1.59.1-jammy` Docker container
 4. On failure: uploads `test-results/` as an artifact containing actual/expected/diff PNGs

@@ -63,7 +63,7 @@ jobs:
 
       - name: Run eval_smoke suite
         env:
-          GOTOOLCHAIN: go1.24.0
+          GOTOOLCHAIN: go1.25.10
         run: |
           go test -tags eval_smoke -race -count=1 -timeout 3m \
             ./tests/eval/... ./internal/ui/...

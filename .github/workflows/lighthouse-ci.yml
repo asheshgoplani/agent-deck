@@ -54,7 +54,7 @@ jobs:
     env:
       MAX_BYTE_WEIGHT_DELTA_PCT: 5
       MAX_SCRIPT_SIZE_DELTA_PCT: 5
-      GOTOOLCHAIN: go1.24.0
+      GOTOOLCHAIN: go1.25.10
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
@@ -107,7 +107,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version: '1.25.10'
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
