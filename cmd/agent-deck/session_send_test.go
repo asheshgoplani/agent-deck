@@ -48,6 +48,192 @@ func TestWaitForCompletion_ImmediateWaiting(t *testing.T) {
 	}
 }
 
+func TestShouldSkipConductorHeartbeatSend_UsesHeartbeatPrefixOnlyForConductors(t *testing.T) {
+	conductor := &session.Instance{Title: "conductor-ops"}
+	regular := &session.Instance{Title: "ops"}
+
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("regular sessions must not be treated as conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(regular, session.ConductorBridgeHeartbeatPrefix+" check") {
+		t.Fatal("regular sessions must not be treated as bridge conductor heartbeats")
+	}
+	if shouldSkipConductorHeartbeatSend(conductor, "hello") {
+		t.Fatal("non-heartbeat messages must not be treated as conductor heartbeats")
+	}
+}
+
+func TestShouldSkipConductorHeartbeatSend_ZeroLastActivitySends(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := session.SaveConductorMeta(&session.ConductorMeta{
+		Name:                 "ops",
+		Profile:              "default",
+		Agent:                session.ConductorAgentClaude,
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 10,
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("save conductor meta: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+	conductor := session.NewInstance("conductor-ops", "/tmp")
+	conductor.IsConductor = true
+	if err := storage.Save([]*session.Instance{conductor}); err != nil {
+		t.Fatalf("save conductor instance: %v", err)
+	}
+
+	if shouldSkipConductorHeartbeatSend(conductor, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("zero last activity must not suppress conductor heartbeats")
+	}
+}
+
+// writeHookStatusForTest writes a hook-status JSON file for the given instance
+// with the timestamp set to `age` ago. Used by the inactivity-pause tests to
+// simulate sessions that last produced activity at a known point in the past.
+func writeHookStatusForTest(t *testing.T, instanceID string, age time.Duration) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("home dir: %v", err)
+	}
+	hooksDir := filepath.Join(home, ".agent-deck", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	ts := time.Now().Add(-age).Unix()
+	body := fmt.Sprintf(`{"status":"waiting","session_id":%q,"event":"Stop","ts":%d}`, instanceID, ts)
+	if err := os.WriteFile(filepath.Join(hooksDir, instanceID+".json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write hook status: %v", err)
+	}
+}
+
+// TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded is the
+// positive-case regression for @yaroshevych's #839: when the most recent
+// managed-session activity is older than HeartbeatIdleMinutes, the conductor's
+// heartbeat MUST be suppressed.
+func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := session.SaveConductorMeta(&session.ConductorMeta{
+		Name:                 "ops",
+		Profile:              "default",
+		Agent:                session.ConductorAgentClaude,
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 10,
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("save conductor meta: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductor := session.NewInstance("conductor-ops", "/tmp")
+	conductor.IsConductor = true
+	worker := session.NewInstance("worker-1", "/tmp/work")
+	worker.ParentSessionID = conductor.ID
+	if err := storage.Save([]*session.Instance{conductor, worker}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	// Worker last produced activity 11 minutes ago — past the 10-minute gate.
+	writeHookStatusForTest(t, worker.ID, 11*time.Minute)
+
+	if !shouldSkipConductorHeartbeatSend(conductor, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("heartbeat should be skipped when last activity exceeds idle threshold")
+	}
+	if !shouldSkipConductorHeartbeatSend(conductor, session.ConductorBridgeHeartbeatPrefix+" check") {
+		t.Fatal("heartbeat should also be skipped for bridge-prefix heartbeat messages")
+	}
+}
+
+// TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow ensures
+// that activity newer than HeartbeatIdleMinutes leaves the heartbeat enabled.
+// This is the boundary case that proves the gate isn't simply "fire always" or
+// "fire never".
+func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := session.SaveConductorMeta(&session.ConductorMeta{
+		Name:                 "ops",
+		Profile:              "default",
+		Agent:                session.ConductorAgentClaude,
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 10,
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("save conductor meta: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductor := session.NewInstance("conductor-ops", "/tmp")
+	conductor.IsConductor = true
+	worker := session.NewInstance("worker-1", "/tmp/work")
+	worker.ParentSessionID = conductor.ID
+	if err := storage.Save([]*session.Instance{conductor, worker}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	// Worker last produced activity 5 minutes ago — well within the 10-minute gate.
+	writeHookStatusForTest(t, worker.ID, 5*time.Minute)
+
+	if shouldSkipConductorHeartbeatSend(conductor, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("heartbeat must not be skipped while activity is within the idle window")
+	}
+}
+
+// TestShouldSkipConductorHeartbeatSend_DisabledThresholdNeverSkips proves the
+// feature is opt-in: HeartbeatIdleMinutes=0 disables the gate even when the
+// last activity is far older than any plausible threshold.
+func TestShouldSkipConductorHeartbeatSend_DisabledThresholdNeverSkips(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	if err := session.SaveConductorMeta(&session.ConductorMeta{
+		Name:                 "ops",
+		Profile:              "default",
+		Agent:                session.ConductorAgentClaude,
+		HeartbeatEnabled:     true,
+		HeartbeatIdleMinutes: 0, // disabled
+		CreatedAt:            "2026-01-01T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("save conductor meta: %v", err)
+	}
+
+	storage, err := session.NewStorageWithProfile("default")
+	if err != nil {
+		t.Fatalf("setup storage: %v", err)
+	}
+
+	conductor := session.NewInstance("conductor-ops", "/tmp")
+	conductor.IsConductor = true
+	worker := session.NewInstance("worker-1", "/tmp/work")
+	worker.ParentSessionID = conductor.ID
+	if err := storage.Save([]*session.Instance{conductor, worker}); err != nil {
+		t.Fatalf("save instances: %v", err)
+	}
+
+	writeHookStatusForTest(t, worker.ID, 24*time.Hour)
+
+	if shouldSkipConductorHeartbeatSend(conductor, session.ConductorHeartbeatMessagePrefix+" check") {
+		t.Fatal("heartbeat must not be skipped when HeartbeatIdleMinutes is 0")
+	}
+}
+
 func TestWaitForCompletion_ActiveThenWaiting(t *testing.T) {
 	mock := &mockStatusChecker{
 		statuses: []string{"active", "active", "waiting"},
