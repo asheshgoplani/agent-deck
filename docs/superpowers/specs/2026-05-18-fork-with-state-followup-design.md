@@ -95,7 +95,7 @@ Tests in upstream: canonical staged+unstaged+untracked, empty WIP, binary file, 
 | G6 | `TestForkWithState_BareRepoLayoutLinkedParentWorktree` — bare-repo project root with linked parent worktree as source; assert the fork is created at the parent's HEAD, not main's HEAD | **PR-A** |
 | G7 | `TestForkWithState_SetupHookObservesMaterializedState` — setup script writes a fingerprint of a parent-WIP file; assert the fingerprint is in the marker file (proves materialize ran before setup) | **PR-A** |
 | G8 | `TestRefuseUnsafeParentState_Rebase`, `_CherryPick`, `_Revert`, `_Bisect` — upstream only has `_Merge` for the refusal path; add the four missing kinds | **PR-A** |
-| G9 | `TestSessionFork_WithStateOptionsPropagatedBeforeStart` — CLI before-start hook captures `ClaudeOptions.WithState` / `IncludeGitignored` and verifies they're true before `Start()` | **PR-A** |
+| G9 | `TestSessionFork_WithStateOptionsPropagatedBeforeStart` — CLI before-start hook captures the prepared fork instance and verifies the with-state flags resolved by the handler match the user's request before `Start()` (the flags flow through `git.WorktreeStateOptions`, not `session.ClaudeOptions` — upstream did not extend `ClaudeOptions`) | **PR-A** |
 | G10 CLI | `TestEval_SessionForkWithState_RealBinary` — eval-tagged smoke test: real `agent-deck` binary, scratch HOME, fake `claude`, real git repo; `session fork --with-state-and-gitignored -w <new-branch>` creates a new destination worktree whose files mirror the parent's WIP | **PR-A** |
 | G10 TUI | `TestEval_ForkDialog_WithStateVisibleInteraction` — eval-tagged: render `ForkDialog`, drive `w → y → i`, assert visible checkbox text appears; assert getters report submitted values | **PR-B** |
 
@@ -117,7 +117,7 @@ Tests in upstream: canonical staged+unstaged+untracked, empty WIP, binary file, 
 | `internal/ui/forkdialog_test.go` | Modify — state-machine tests | PR-B |
 | `internal/ui/forkdialog_eval_test.go` | Create — TUI behavioral eval | PR-B |
 | `internal/ui/home.go` | Modify — TUI submit wires `CreateWorktreeWithStateAndSetup` with collision check + cleanup | PR-B |
-| `internal/session/tooloptions.go` | Modify — add `WithState`, `IncludeGitignored` transient fields if not already present from PR-A wiring | PR-A or PR-B depending on order |
+| Session options (`session.ClaudeOptions`) | Not modified — upstream wired the with-state flags directly through `git.WorktreeStateOptions`, not via `ClaudeOptions`. PR-A's CLI handler builds the `WorktreeStateOptions` from the flag values and passes it straight to the git layer. | n/a |
 
 ## Mandatory test coverage
 
@@ -173,3 +173,4 @@ go test -tags eval_smoke ./tests/eval/session/... ./internal/ui/... -run "TestEv
 ## Review change log
 
 - 2026-05-18: FUS-001 — Spec drafted as followup to the deprecated 2026-05-14 design. Premise: upstream's #1030 is merged; scope this work to closing the 11 gaps identified in the post-merge gap analysis. Two-PR split (PR-A correctness + CLI tests; PR-B TUI). `ValidateForkWithStateDestination` extracted as a shared `internal/git` helper (avoiding upstream's `materialize_wip.go` file). Gap 11 (shared `PreflightForkWithState` extraction) explicitly deferred to PR-C with RFC.
+- 2026-05-19: FUS-002 — Removed stale references to ClaudeOptions.WithState/IncludeGitignored fields. Upstream's #1030 chose a different architecture (flags flow through git.WorktreeStateOptions, not ClaudeOptions). Spec corrected to reflect upstream's actual wiring; A4's CLI contract tests already adapted to the real shape.

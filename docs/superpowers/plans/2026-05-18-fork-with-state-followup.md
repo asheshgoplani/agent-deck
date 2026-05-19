@@ -43,7 +43,6 @@ Per `CONTRIBUTING.md`, PR-A branches from `main` and is pushed to `smorin/agent-
 | `cmd/agent-deck/session_cmd.go` | Modify — parent-HEAD + destination validation + cleanup-on-error + before-start hook | A |
 | `cmd/agent-deck/session_cmd_fork_state_test.go` | Create — CLI contract tests | A |
 | `tests/eval/session/fork_with_state_test.go` | Create — eval smoke for CLI | A |
-| `internal/session/tooloptions.go` | Modify (if not done by upstream) — confirm `WithState`/`IncludeGitignored` are on `ClaudeOptions` | A |
 | `internal/ui/forkdialog.go` | Modify — sub-checkboxes, focus order, getters | B |
 | `internal/ui/forkdialog_test.go` | Modify — state-machine tests | B |
 | `internal/ui/forkdialog_eval_test.go` | Create — TUI behavioral eval | B |
@@ -426,21 +425,23 @@ git commit -m "feat(cli): parent-HEAD + destination collision + cleanup-on-error
 - Modify: `cmd/agent-deck/session_cmd.go` (add `sessionForkBeforeStartHook` test seam)
 - Create: `cmd/agent-deck/session_cmd_fork_state_test.go`
 
-Add a test-only `sessionForkBeforeStartHook` variable that lets contract tests inspect the prepared `Instance` and `ClaudeOptions` before `Start()` is called. Then write contract tests for the explicit-destination refusal, collision refusal, and option propagation.
+Add a test-only `sessionForkBeforeStartHook` variable that lets contract tests inspect the prepared `Instance` and the resolved `git.WorktreeStateOptions` before `Start()` is called. (Upstream's #1030 did **not** add with-state fields to `session.ClaudeOptions`; the flags flow through the git layer, so the hook surfaces them directly.) Then write contract tests for the explicit-destination refusal, collision refusal, and option propagation.
 
 - [ ] **Step 1: Add the hook variable in `cmd/agent-deck/session_cmd.go`**
 
 ```go
 // sessionForkBeforeStartHook is nil in production. Tests assign it to inspect
-// the fully-prepared fork before tmux Start() mutates the environment.
-var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, opts *session.ClaudeOptions)
+// the fully-prepared fork before tmux Start() mutates the environment. The
+// with-state flag values are captured separately because upstream's #1030
+// wired them through git.WorktreeStateOptions, not session.ClaudeOptions.
+var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, state git.WorktreeStateOptions)
 ```
 
 In `handleSessionFork`, immediately before `forkedInst.Start()`, add:
 
 ```go
 if sessionForkBeforeStartHook != nil {
-    sessionForkBeforeStartHook(inst, forkedInst, opts)
+    sessionForkBeforeStartHook(inst, forkedInst, git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored})
     return
 }
 ```
@@ -452,7 +453,7 @@ if sessionForkBeforeStartHook != nil {
 - `TestSessionFork_WithStateAndGitignoredRequiresExplicitDestinationBranch` — same for `--with-state-and-gitignored`
 - `TestSessionFork_WithState_RejectsExistingDestinationBranch` — `-w fork/existing --with-state` → error mentions "already exists"
 - `TestSessionFork_WithState_RejectsExistingDestinationWorktree` — pre-create worktree, then `-w fork/used --with-state` → error mentions "already has a worktree"
-- `TestSessionFork_WithStateOptionsPropagatedBeforeStart` — uses `sessionForkBeforeStartHook` to capture `opts`, asserts `opts.WithState && opts.IncludeGitignored && opts.WorktreeBranch == "fork/with-env"`
+- `TestSessionFork_WithStateOptionsPropagatedBeforeStart` — uses `sessionForkBeforeStartHook` to capture the resolved `git.WorktreeStateOptions` plus the forked `*session.Instance`, asserts `state.WithState && state.WithIgnored` and that the forked instance was created on the requested worktree branch (e.g. `fork/with-env`). The flags do **not** live on `session.ClaudeOptions` — upstream's #1030 routes them through the git layer.
 
 - [ ] **Step 3: Add 4 missing mid-op refusal tests in `internal/git/issue1029_edge_test.go`**
 
@@ -644,7 +645,7 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 **Files:**
 - Modify: `internal/ui/home.go`
 
-In `forkSessionCmdWithOptions`, propagate `opts.WithState` / `opts.IncludeGitignored` from the dialog getters. Replace the existing `CreateWorktreeWithSetup` call with a flow that:
+In `forkSessionCmdWithOptions`, read the with-state booleans from the dialog getters (`IsWithStateEnabled`, `IsWithStateAndGitignoredEnabled`) and build a local `git.WorktreeStateOptions{WithState: ..., WithIgnored: ...}`. (These flags are **not** carried on `session.ClaudeOptions` — upstream wired them through the git layer in #1030.) Replace the existing `CreateWorktreeWithSetup` call with a flow that:
 1. Calls `ValidateForkWithStateDestination` first (if `opts.WithState`)
 2. Calls `HeadCommit(source.ProjectPath)` for parent-HEAD anchoring (if `opts.WithState`)
 3. Calls `CreateWorktreeAtStartPoint` (with-state) or `CreateWorktree` (legacy)
@@ -716,3 +717,9 @@ No gap without a task (except gap 11 by explicit design).
 ## Out of scope (deferred PR-C)
 
 **Gap 11 — Shared `PreflightForkWithState` extraction.** Upstream's `refuseUnsafeParentState` is internal/lowercase and returns a plain formatted `error`. Promoting it to an exported helper that returns typed `InProgressOperationError` is a structural change to upstream's just-merged code; it deserves an RFC discussion with @asheshgoplani before implementation. PR-A and PR-B leave `refuseUnsafeParentState` alone — they call into `MaterializeWipFromParent` which has the refusal baked in. The price is that the CLI and TUI can't share a single explicit preflight gate with surface-specific error rendering; the refusal happens inside materialize. Acceptable for the user-visible behavior of PR-A and PR-B.
+
+---
+
+## Review change log
+
+- 2026-05-19: FUS-002 — Removed stale references to ClaudeOptions.WithState/IncludeGitignored fields. Upstream's #1030 chose a different architecture (flags flow through git.WorktreeStateOptions, not ClaudeOptions). Plan corrected to reflect upstream's actual wiring; A4's CLI contract tests already adapted to the real shape. Dropped the `internal/session/tooloptions.go` file-map row and rewrote the A4 before-start hook signature + the propagation assertion to use `git.WorktreeStateOptions` instead of `*session.ClaudeOptions`.
