@@ -28,12 +28,12 @@ func TestValidateForkWithStateDestination_BranchExists(t *testing.T) {
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %T %v, want *DestinationCollisionError", err, err)
 	}
-	if collErr.Kind != "branch_exists" || collErr.Branch != "fork/existing" {
+	if collErr.Kind != CollisionBranchExists || collErr.Branch != "fork/existing" {
 		t.Fatalf("unexpected error: %+v", collErr)
 	}
 }
 
-func TestValidateForkWithStateDestination_WorktreeExists(t *testing.T) {
+func TestValidateForkWithStateDestination_WorktreeExists_TakesPrecedence(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "base")
 	if err := os.MkdirAll(base, 0o755); err != nil {
@@ -45,6 +45,10 @@ func TestValidateForkWithStateDestination_WorktreeExists(t *testing.T) {
 		t.Fatalf("CreateWorktree: %v", err)
 	}
 
+	if !BranchExists(base, "fork/used") {
+		t.Fatal("setup invariant: branch should also exist (CreateWorktree creates it); test cannot prove precedence otherwise")
+	}
+
 	err := ValidateForkWithStateDestination(base, "fork/used")
 	if err == nil {
 		t.Fatal("expected DestinationCollisionError")
@@ -53,7 +57,7 @@ func TestValidateForkWithStateDestination_WorktreeExists(t *testing.T) {
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %T %v, want *DestinationCollisionError", err, err)
 	}
-	if collErr.Kind != "worktree_exists" || collErr.Path == "" {
+	if collErr.Kind != CollisionWorktreeExists || collErr.Path == "" {
 		t.Fatalf("unexpected error: %+v", collErr)
 	}
 }
