@@ -132,21 +132,7 @@ func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, s
 		fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
 	}
 
-	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
-	if scriptPath == "" {
-		return nil, nil
-	}
-
-	fmt.Fprintln(stderr, "Running worktree setup script...")
-	start := time.Now()
-	setupErr = RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
-	elapsed := time.Since(start).Round(100 * time.Millisecond)
-	if setupErr != nil {
-		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
-	} else {
-		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
-	}
-	return setupErr, nil
+	return RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
 }
 
 // RunWorktreeSetupAfterCreate runs the worktree setup script for an
