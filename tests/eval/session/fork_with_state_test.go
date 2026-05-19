@@ -45,8 +45,8 @@ import (
 
 // TestEval_SessionForkWithState_RealBinary is the gap-10 CLI eval. Drives the
 // compiled agent-deck binary against a scratch HOME and a real seeded git
-// repo, runs `session fork ... --with-state-and-gitignored -w fork/eval-state
-// -b`, and asserts the destination worktree exists with parent's full WIP
+// repo, runs `session fork ... --with-state-and-gitignored -w fork/eval-state`,
+// and asserts the destination worktree exists with parent's full WIP
 // (staged + unstaged + untracked + gitignored) materialized.
 func TestEval_SessionForkWithState_RealBinary(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -111,13 +111,13 @@ default_location = "sibling"
 	runBin(t, sb, "session", "set", "parent", "claude-session-id",
 		"00000000-0000-4000-8000-000000000001")
 
-	// Run the fork. `-b` so the new branch is created (validator requires
-	// the branch not to pre-exist for --with-state-and-gitignored). We
+	// Run the fork. Per the fork-with-state contract, `-w` names the fresh
+	// destination branch; `-b` is not required for with-state mode. We
 	// tolerate non-zero exit because forkedInst.Start() at session_cmd.go:855
 	// will try to spawn `claude` in tmux — that's downstream of gap 10's
 	// contract (worktree creation + materialize, which run at 762-823).
 	forkOut, forkErr := runBinTry(sb, "session", "fork", "parent",
-		"--with-state-and-gitignored", "-w", "fork/eval-state", "-b",
+		"--with-state-and-gitignored", "-w", "fork/eval-state",
 		"-t", "fork-eval")
 
 	// Parent invariant: read-only. MaterializeWipFromParent must not mutate
@@ -222,7 +222,7 @@ default_location = "sibling"
 		"00000000-0000-4000-8000-000000000001")
 
 	out, err := runBinTry(sb, "session", "fork", "parent",
-		"--with-state", "-w", "fork/collision-test", "-b",
+		"--with-state", "-w", "fork/collision-test",
 		"-t", "fork-collision")
 	if err == nil {
 		t.Fatalf("expected non-zero exit on destination-branch collision, got success.\noutput:\n%s", out)
@@ -231,6 +231,62 @@ default_location = "sibling"
 	wantMsg := "branch 'fork/collision-test' already exists; choose a new destination branch for --with-state"
 	if !strings.Contains(out, wantMsg) {
 		t.Fatalf("collision error wording mismatch.\nwant substring: %q\ngot stderr+stdout:\n%s", wantMsg, out)
+	}
+}
+
+// TestEval_SessionForkWithState_RejectsExistingWorktree drives the real binary
+// against a branch that already has a linked worktree. With-state must refuse
+// this destination before the legacy reuse path; otherwise materialization is
+// skipped and the fork may point at an unrelated existing worktree.
+func TestEval_SessionForkWithState_RejectsExistingWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	sb := harness.NewSandbox(t)
+
+	cfgDir := filepath.Join(sb.Home, ".agent-deck")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir agent-deck config dir: %v", err)
+	}
+	cfgPath := filepath.Join(cfgDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`[worktree]
+branch_prefix = ""
+default_location = "sibling"
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	repoDir := filepath.Join(sb.Home, "proj")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	gitInit(t, repoDir)
+	writeFile(t, repoDir, "README.md", "seed\n")
+	gitMust(t, repoDir, "add", ".")
+	gitMust(t, repoDir, "commit", "-m", "seed")
+
+	existingWT := filepath.Join(sb.Home, "existing-wt")
+	gitMust(t, repoDir, "worktree", "add", "-b", "fork/used", existingWT)
+	existingWT = worktreePathForBranch(t, repoDir, "fork/used")
+	if existingWT == "" {
+		t.Fatal("setup invariant: expected pre-created worktree for fork/used")
+	}
+
+	runBin(t, sb, "add", "-c", "claude", "-t", "parent", "-g", "evalgrp", repoDir)
+	runBin(t, sb, "session", "set", "parent", "claude-session-id",
+		"00000000-0000-4000-8000-000000000001")
+
+	out, err := runBinTry(sb, "session", "fork", "parent",
+		"--with-state", "-w", "fork/used",
+		"-t", "fork-used")
+	if err == nil {
+		t.Fatalf("expected non-zero exit on destination-worktree collision, got success.\noutput:\n%s", out)
+	}
+
+	wantMsg := fmt.Sprintf("branch 'fork/used' already has a worktree at %s; choose a new destination branch for --with-state", existingWT)
+	if !strings.Contains(out, wantMsg) {
+		t.Fatalf("worktree collision error wording mismatch.\nwant substring: %q\ngot stderr+stdout:\n%s", wantMsg, out)
 	}
 }
 

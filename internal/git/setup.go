@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -118,12 +119,25 @@ type WorktreeStateOptions struct {
 // Materialization happens BEFORE worktreeinclude processing and the setup
 // script so both observe the realized state, per @smorin's spec.
 func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	createdBranch := !BranchExists(repoDir, branchName)
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
 	}
 
 	if state.WithState {
 		if matErr := MaterializeWipFromParent(repoDir, worktreePath, state.WithIgnored); matErr != nil {
+			var cleanupErrs []string
+			if rmErr := RemoveWorktree(repoDir, worktreePath, true); rmErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+			}
+			if createdBranch {
+				if brErr := DeleteBranch(resolveGitInvocationDir(repoDir), branchName, true); brErr != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+				}
+			}
+			if len(cleanupErrs) > 0 {
+				return nil, fmt.Errorf("materialize parent state: %w; cleanup failed: %s", matErr, strings.Join(cleanupErrs, "; "))
+			}
 			return nil, fmt.Errorf("materialize parent state: %w", matErr)
 		}
 	}

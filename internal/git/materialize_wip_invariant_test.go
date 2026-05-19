@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,6 +44,14 @@ func TestMaterializeWipFromParent_ParentUntouched(t *testing.T) {
 	diffCachedBefore := runGit(t, parent, "diff", "--cached")
 	diffBefore := runGit(t, parent, "diff")
 	stashBefore := runGit(t, parent, "stash", "list")
+	gitDir := runGit(t, parent, "rev-parse", "--git-dir")
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(parent, gitDir)
+	}
+	indexBefore, err := os.ReadFile(filepath.Join(gitDir, "index"))
+	if err != nil {
+		t.Fatalf("read parent index before materialize: %v", err)
+	}
 
 	parentHead, err := HeadCommit(parent)
 	if err != nil {
@@ -69,5 +78,12 @@ func TestMaterializeWipFromParent_ParentUntouched(t *testing.T) {
 	}
 	if got := runGit(t, parent, "stash", "list"); got != stashBefore {
 		t.Fatalf("parent stash list changed:\nbefore:\n%s\nafter:\n%s", stashBefore, got)
+	}
+	indexAfter, err := os.ReadFile(filepath.Join(gitDir, "index"))
+	if err != nil {
+		t.Fatalf("read parent index after materialize: %v", err)
+	}
+	if !bytes.Equal(indexBefore, indexAfter) {
+		t.Fatal("parent .git/index bytes changed")
 	}
 }

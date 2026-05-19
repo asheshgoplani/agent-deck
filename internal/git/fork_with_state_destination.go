@@ -38,7 +38,11 @@ func (e *DestinationCollisionError) Error() string {
 // gate for fork-with-state. Worktree-collision is checked first so the more
 // specific error (with path) is surfaced when both conditions are true.
 func ValidateForkWithStateDestination(repoRoot, branch string) error {
-	if path, err := GetWorktreeForBranch(repoRoot, branch); err == nil && path != "" {
+	path, err := GetWorktreeForBranch(repoRoot, branch)
+	if err != nil {
+		return fmt.Errorf("checking existing worktrees: %w", err)
+	}
+	if path != "" {
 		return &DestinationCollisionError{Kind: CollisionWorktreeExists, Branch: branch, Path: path}
 	}
 	if BranchExists(repoRoot, branch) {

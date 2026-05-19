@@ -27,7 +27,7 @@ Big thanks to @asheshgoplani for landing #1030 quickly. The diff-based, parent-r
 
 **User experience pre-PR:** You're in `~/myproject-worktrees/feature-x` with WIP, run `session fork --with-state -w fork/explore`. Spec promised the new worktree forks from `feature-x`'s HEAD. **Actually got:** the new worktree forks from the main repo's HEAD (probably `main`, not `feature-x`) and carries the main worktree's WIP, not yours. The fork looks plausibly successful — no error — but you're now in a parallel agent against the wrong baseline.
 
-**Fix:** New `git.HeadCommit(repoDir)` resolves the parent session's HEAD; new `git.CreateWorktreeAtStartPoint(repoDir, worktreePath, branch, startPoint)` creates the new worktree branched off that explicit start point. The CLI handler captures parent's HEAD and threads it through. Integration test (bare-repo layout with a linked parent worktree diverged from `main`) pins the contract.
+**Fix:** New `git.HeadCommit(repoDir)` resolves the parent session's HEAD; new `git.CreateWorktreeAtStartPoint(repoDir, worktreePath, branch, startPoint)` creates the new worktree branched off that explicit start point. The CLI handler captures parent's HEAD and threads it through. `HeadCommit` captures stdout only and includes stderr only on the error path, so ambient Git warnings cannot be prepended to the commit hash. Integration tests pin the linked-worktree contract, and a focused unit regression pins the stdout-only behavior.
 
 **Files:** `internal/git/git.go`, `internal/git/git_test.go`, `internal/git/fork_with_state_integration_test.go`, `cmd/agent-deck/session_cmd.go`.
 
@@ -35,7 +35,7 @@ Big thanks to @asheshgoplani for landing #1030 quickly. The diff-based, parent-r
 
 **User experience pre-PR:** Run `--with-state -w fork/explore` after a previous fork with the same name, or against a branch a teammate already has a worktree for. Spec promised a refusal. **Actually got:** a "Reusing existing worktree at …" log line, materialization **doesn't run at all**, and the forked session starts in the pre-existing worktree — sharing disk with whatever was already there. Strictly worse than the silent-shared-worktree footgun this feature was supposed to fix.
 
-**Fix:** New shared helper `git.ValidateForkWithStateDestination(repoRoot, branch)` returns a typed `*DestinationCollisionError` with exported `Kind` constants (`CollisionWorktreeExists` / `CollisionBranchExists`). The CLI handler calls it before invoking upstream's wrapper. Refusal messages include the conflicting path so the user can `cd` to it. A precedence test pins that worktree-existence wins over branch-existence when both conditions are true.
+**Fix:** New shared helper `git.ValidateForkWithStateDestination(repoRoot, branch)` returns a typed `*DestinationCollisionError` with exported `Kind` constants (`CollisionWorktreeExists` / `CollisionBranchExists`). The CLI handler calls it immediately after branch-prefix resolution, before the legacy branch-existence gate, existing-worktree reuse, or destination-directory creation. In `--with-state` mode, `-w` is the fresh destination branch and `-b` is not required; existing branches/worktrees are always refused rather than reused. Refusal messages include the conflicting path so the user can `cd` to it. A precedence test pins that worktree-existence wins over branch-existence when both conditions are true, and eval coverage drives both the no-`-b` happy path and the existing-worktree refusal through the real binary.
 
 **Files:** `internal/git/fork_with_state_destination.go` (new), `internal/git/fork_with_state_destination_test.go` (new), `cmd/agent-deck/session_cmd.go`.
 
@@ -103,9 +103,9 @@ PR-B (TUI) will reuse the same helper for the TUI submit path. Pinned by an eval
 
 Beyond the user-feature gaps above, this PR adds five test-coverage gaps from the gap analysis:
 
-- **`TestMaterializeWipFromParent_ParentUntouched`** — asserts parent's `git status`, both diffs, and stash list are byte-identical after materialization. Catches future regressions where someone changes materialization to use `git stash`, `git add`, or other parent-mutating operations.
+- **`TestMaterializeWipFromParent_ParentUntouched`** — asserts parent's `git status`, both diffs, stash list, and raw `.git/index` bytes are identical after materialization. Catches future regressions where someone changes materialization to use `git stash`, `git add`, `git update-index`, or other parent-mutating operations.
 - **Four mid-op refusal regressions** — upstream only tested mid-merge. Added `_Rebase`, `_CherryPick`, `_Revert`, `_Bisect` mirroring the same pattern; these will fail if any of the five `refuseUnsafeParentState` sentinels stops being checked.
-- **CLI contract tests** via a new `sessionForkBeforeStartHook` test seam — verifies explicit-destination refusal, both collision error messages, and that the prepared `opts.WorktreeBranch` + `MaterializeWipFromParent(..., *withStateGitignored)` wiring fires in the right order before `forkedInst.Start()`.
+- **CLI contract tests** via a new `sessionForkBeforeStartHook` test seam — verifies explicit-destination refusal, both collision error messages, and that the resolved `git.WorktreeStateOptions` + `MaterializeWipFromParent(..., *withStateGitignored)` wiring fires in the right order before `forkedInst.Start()`. The real-binary eval suite also covers the contracts source-grep tests previously missed: `--with-state -w <fresh-branch>` does not require `-b`, existing branches are refused, and existing worktrees are refused before session start.
 - **`TestForkWithState_BareRepoLayoutLinkedParentWorktree`** — the bare-repo + linked-parent layout integration test (also pins gap 1).
 - **`TestForkWithState_SetupHookObservesMaterializedState`** — the setup-hook ordering test (gap 8).
 
@@ -175,6 +175,23 @@ GOTOOLCHAIN=go1.24.0 go test ./internal/git/... -run "RegressionFor1029|Issue102
 - [x] Mandate suite: 19 + 5 + 1 tests matched, all pass
 - [x] Regression suite: 8 tests pass
 - [x] Full `go test ./...` — PR-A-touched packages clean; remaining failures are environmental (tmux/zoxide/Linux-systemd suites; pre-existing)
+- [x] Review-fix focused checks:
+  - `GOTOOLCHAIN=go1.24.0 go test ./internal/git -run TestHeadCommit_IgnoresGitWarningsOnStderr -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionForkWithState_(RealBinary|RejectsExistingWorktree|RejectsExistingBranch)' -count=1 -timeout 120s`
+  - `GOTOOLCHAIN=go1.24.0 go test ./cmd/agent-deck -run 'TestSessionFork_WithState(HookCapturesResolvedStateBeforeStart|OptionsPropagatedBeforeStart)|TestSessionForkBeforeStartHook_NilInProduction' -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test ./internal/git -run 'TestValidateForkWithStateDestination_(PropagatesWorktreeCheckError|Clean|BranchExists|WorktreeExists_TakesPrecedence)' -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test ./internal/git -run 'TestCreateWorktreeWithStateAndSetup_(CleansUpOnMaterializeFailure|WiresMaterialization_RegressionFor1029)' -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test ./internal/git -run TestMaterializeWipFromParent_ParentUntouched -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test ./internal/git/... -run 'Materialize|RefuseUnsafeParentState|ValidateForkWithStateDestination|HasSubmodules|DetectInProgressOperation|CreateWorktreeAtStartPoint|HeadCommit|ForkWithState|Issue1029' -race -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test ./cmd/agent-deck/... -run 'SessionFork_WithState' -race -count=1`
+  - `GOTOOLCHAIN=go1.24.0 go test -tags eval_smoke ./tests/eval/session/... -run 'TestEval_SessionForkWithState' -race -count=1 -timeout 180s`
+- [x] Full eval-smoke attempted:
+  - `GOTOOLCHAIN=go1.24.0 go test -tags eval_smoke ./tests/eval/... ./internal/ui/... -count=1 -timeout 15m`
+  - Result: fails outside the fork-with-state path. I reproduced the failing subsets from a detached `main` worktree at `a02a30f3db27d1142b45222a827d0a59ab7dad99`, so these are not introduced by this branch's `handleSessionFork` changes.
+  - Real-tmux evals (`TestEval_Session_AttachRestart_SocketIsolation_RealTmux`, `_ITermBadge_RealAttach`, `_InjectStatusLine_RealTmux`) fail before any fork code. With the default macOS temp dir, the harness socket path can exceed the Unix socket path limit (`File name too long`). With `TMPDIR=/private/tmp`, that symptom goes away, but local `tmux 3.6a` still fails during `session start` at the send-keys step (`failed to send command`). Track as tmux/harness environment work, not fork-with-state.
+  - `TestEval_Session_StatusUnderBridgedStdio_NoHang` fails on `main` too. The unit WaitDelay contracts pass, but the real-binary eval's lingering-child shim also affects startup tmux probes such as `tmux -V`; those use raw `exec.Command(...).CombinedOutput()` and can consume the test's 10s budget before the status path under test finishes. Track separately as eval/shim coverage drift.
+  - `TestEval_SelectFlag_GroupScopeWarning` hangs on `main` too. Re-running with `-timeout 30m -v` confirms the test blocks in `runBinStderrShort` at `cmd.CombinedOutput()` after printing only `=== RUN`; the helper assumes the no-PTY TUI exits on its own, but the current binary stays alive. Track as a select-flag eval harness bug.
+  - The three `internal/ui` zoxide picker failures reproduce on `main`. Root cause in this environment: `zoxide` is not installed, and `Show()` checks real availability before using the injected query function, so the tests never populate results. Track as zoxide test-seam/env drift.
 - [ ] Manual TUI walkthrough — NOT applicable, no TUI changes in PR-A (gap 4 → PR-B)
 - [ ] Manual CLI walkthroughs — see [`fork-worktree-with-state-testing.md`](fork-worktree-with-state-testing.md) for scenario-by-scenario steps mapping to each of the 8 capability gaps
 
@@ -190,13 +207,15 @@ Cherry-pick scenarios from the testing doc; each closes-by-PR-A scenario is a se
 
 1. **Cleanup-error logging now honest.** `_ = exec.Command(...).Run()` replaced with captured errors. When cleanup actually fails (concurrent process holds the path, etc.), the user gets a precise "cleanup also failed (…); manual cleanup required: rm -rf <path> && git -C <repo> branch -D <branch>" message instead of the false "new worktree cleaned up." Commit `a7837cf6`.
 2. **Setup-hook tail deduped.** `CreateWorktreeWithStateAndSetup` now delegates to `RunWorktreeSetupAfterCreate` for its setup-hook portion — eliminates the 15-line duplication. Wrapper signature unchanged; upstream's progress-message tests confirm byte-identical stderr output. Commit `9100ef23`.
-3. **Subprocess error-path tests added.** Two new eval-tagged tests (`TestEval_SessionForkWithState_RejectsExistingBranch`, `_RefusesMidRebaseParent`) drive the real binary against destination-collision and mid-rebase parent states, asserting exact user-facing wording. Augments the source-introspection contract tests; doesn't replace them. Commit `8646d2a2`.
+3. **Subprocess error-path tests added.** Eval-tagged tests drive the real binary against destination-collision, existing-worktree, and mid-rebase parent states, asserting exact user-facing wording. The happy-path eval now intentionally omits `-b` to pin the CLI contract that `--with-state` requires `-w`, not `-b`. Augments the source-introspection contract tests; doesn't replace them. Commit `8646d2a2` plus the latest review-fix commit.
+4. **Follow-up bug batch triaged and fixed where narrow.** BUG-01/BUG-08 were already covered by the hoisted destination validator. BUG-02/BUG-05 changed the before-start hook to pass `git.WorktreeStateOptions` by value and added a runtime handler-path test for resolved state propagation. BUG-03 now propagates `GetWorktreeForBranch` failures instead of treating them as "no collision." BUG-06 now cleans up the shared helper's created worktree and branch when materialization fails. BUG-07 extends the parent-read-only invariant to raw index bytes. BUG-09 trims the setup-hook test comment to the scope the test actually proves.
 
 ### Design decisions worth a second look
 
 - **`CreateWorktreeAtStartPoint` is a new helper, not an extension of `CreateWorktreeWithStateAndSetup`.** The followup spec discusses two options for anchoring parent's HEAD: (a) new helper + the CLI handler orchestrates Create → Materialize → ProcessWorktreeInclude → Setup manually, or (b) extend the wrapper to accept an optional start point. Picked (a) to avoid touching upstream's just-merged wrapper. Open to revisiting if (b) is preferred.
 - **`ValidateForkWithStateDestination` is a shared `internal/git` helper rather than inline checks.** Both CLI and TUI need to call it (TUI is PR-B). Extracting now prevents drift between the two surfaces.
 - **`DestinationCollisionError.Kind` is a string with exported constants** (`CollisionWorktreeExists`, `CollisionBranchExists`). Considered using `iota` typed enum; chose strings for `errors.As`-friendliness and zero-ceremony switch arms. Two values today; constants reserved for future expansion.
+- **Post-start cleanup remains a product/behavior decision (BUG-04), not a narrow correctness fix in this PR.** The current cleanup guarantee is scoped to materialization failure before the session starts. Extending cleanup across `forkedInst.Start()` or `storage.SaveWithGroups()` failures would change observable behavior and needs a separate design call: after `Start()` succeeds, a tmux process may already be running in the new worktree, so safe cleanup would also need session termination semantics. Current eval coverage intentionally inspects the materialized worktree after a downstream start failure; changing that contract should be done deliberately, with a new test shape.
 
 ### Hot takes I'd appreciate guidance on
 

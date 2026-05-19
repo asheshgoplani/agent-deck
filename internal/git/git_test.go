@@ -1311,6 +1311,39 @@ func TestCreateWorktreeAtStartPoint_UsesExplicitParentHead(t *testing.T) {
 	}
 }
 
+func TestHeadCommit_IgnoresGitWarningsOnStderr(t *testing.T) {
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	const want = "0123456789abcdef0123456789abcdef01234567"
+	script := `#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--git-dir" ]; then
+  printf '.git\n'
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--verify" ]; then
+  printf '` + want + `\n'
+  printf 'git: warning: confstr() failed; using /tmp instead\n' >&2
+  exit 0
+fi
+printf 'unexpected git invocation: %s\n' "$*" >&2
+exit 1
+`
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+
+	got, err := HeadCommit(t.TempDir())
+	if err != nil {
+		t.Fatalf("HeadCommit returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("HeadCommit returned %q, want stdout-only commit %q", got, want)
+	}
+}
+
 func TestCreateWorktreeAtStartPoint_RejectsExistingBranch(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "base")

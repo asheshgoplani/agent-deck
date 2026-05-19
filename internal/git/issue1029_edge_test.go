@@ -40,6 +40,38 @@ func TestCreateWorktreeWithStateAndSetup_WiresMaterialization_RegressionFor1029(
 	}
 }
 
+func TestCreateWorktreeWithStateAndSetup_CleansUpOnMaterializeFailure(t *testing.T) {
+	parent := t.TempDir()
+	createTestRepo(t, parent)
+	gitDir := strings.TrimSpace(runGit(t, parent, "rev-parse", "--git-dir"))
+	if err := os.MkdirAll(filepath.Join(parent, gitDir, "rebase-merge"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	child := filepath.Join(t.TempDir(), "child-cleanup")
+	branch := "fork-1029-cleanup"
+	var stdout, stderr bytes.Buffer
+	_, err := CreateWorktreeWithStateAndSetup(
+		parent, child, branch,
+		WorktreeStateOptions{WithState: true},
+		&stdout, &stderr, 0,
+	)
+	if err == nil {
+		t.Fatal("expected materialization failure from mid-rebase parent, got nil")
+	}
+	if _, statErr := os.Stat(child); !os.IsNotExist(statErr) {
+		t.Fatalf("child worktree still exists after materialize failure: stat err=%v", statErr)
+	}
+	if path, wtErr := GetWorktreeForBranch(parent, branch); wtErr != nil {
+		t.Fatalf("GetWorktreeForBranch: %v", wtErr)
+	} else if path != "" {
+		t.Fatalf("worktree registration still exists after cleanup: %s", path)
+	}
+	if BranchExists(parent, branch) {
+		t.Fatalf("branch %q still exists after cleanup", branch)
+	}
+}
+
 // TestMaterializeWipFromParent_Empty_NoOp_RegressionFor1029 ensures a clean
 // parent (no WIP) produces a clean child with no error — the boundary case
 // where every diff is empty and ls-files returns nothing.

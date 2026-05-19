@@ -15,9 +15,9 @@
 //  2. The propagation contract — opts.WorktreeBranch carries the resolved
 //     branch into ClaudeOptions, MaterializeWipFromParent is called with
 //     the gitignored flag wired through, and the
-//     sessionForkBeforeStartHook is invoked before forkedInst.Start() so
-//     tests can capture the prepared fork without spawning a real tmux
-//     session.
+//     sessionForkBeforeStartHook is invoked with the resolved
+//     git.WorktreeStateOptions before forkedInst.Start() so tests can capture
+//     the prepared fork without spawning a real tmux session.
 //
 // Why structural assertions instead of end-to-end handler invocation:
 // handleSessionFork calls os.Exit on every error path, and there is no
@@ -25,16 +25,22 @@
 // existing precedent for cmd-level invariant assertions is
 // session_remove_kill_test.go's extractFuncBody approach — we follow it.
 // session.ClaudeOptions also doesn't carry WithState / IncludeGitignored
-// fields (those live as local vars in the handler and flow into
-// MaterializeWipFromParent's last argument), so the propagation test
-// asserts the actual wiring rather than nonexistent struct fields.
+// fields (upstream routes those through git.WorktreeStateOptions), so the
+// hook exposes the resolved git-layer state directly.
 
 package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // foldSpaces collapses runs of whitespace so multi-line source can be matched
@@ -54,6 +60,29 @@ func mustExtractHandleSessionFork(t *testing.T) string {
 		t.Fatalf("could not extract handleSessionFork body — file layout changed?")
 	}
 	return body
+}
+
+func initGitRepoForForkStateTest(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(testutil.CleanGitEnv(os.Environ()),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, string(out))
+		}
+	}
 }
 
 // TestSessionFork_WithStateRequiresExplicitDestinationBranch locks in the
@@ -142,16 +171,17 @@ func TestSessionFork_WithState_RejectsExistingDestinationWorktree(t *testing.T) 
 }
 
 // TestSessionFork_WithStateOptionsPropagatedBeforeStart locks in three
-// invariants of the with-state path's wiring into ClaudeOptions and the
-// MaterializeWipFromParent call site:
+// invariants of the with-state path's wiring into ClaudeOptions,
+// git.WorktreeStateOptions, and the MaterializeWipFromParent call site:
 //
 //  1. opts.WorktreeBranch is set to the resolved wtBranch so the forked
 //     session knows which branch it lives on.
 //  2. MaterializeWipFromParent is called with *withStateGitignored as the
 //     includeIgnored argument, so --with-state-and-gitignored actually
 //     flips on ignored-file inclusion.
-//  3. The sessionForkBeforeStartHook is invoked before forkedInst.Start(),
-//     so contract tests can short-circuit before tmux mutation.
+//  3. The sessionForkBeforeStartHook is invoked with the resolved
+//     git.WorktreeStateOptions before forkedInst.Start(), so contract tests can
+//     short-circuit before tmux mutation.
 //
 // (ClaudeOptions has no WithState / IncludeGitignored fields; the with-state
 // behavior is expressed at the call site of MaterializeWipFromParent.)
@@ -174,10 +204,11 @@ func TestSessionFork_WithStateOptionsPropagatedBeforeStart(t *testing.T) {
 
 	// The hook must fire BEFORE forkedInst.Start() so tests can capture the
 	// prepared fork without spawning a real tmux session.
-	hookIdx := strings.Index(folded, "sessionForkBeforeStartHook(inst, forkedInst, opts)")
+	hookIdx := strings.Index(folded, "sessionForkBeforeStartHook(inst, forkedInst, git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored})")
 	if hookIdx < 0 {
 		t.Fatalf("handleSessionFork must invoke sessionForkBeforeStartHook(inst, "+
-			"forkedInst, opts); folded body:\n%s", folded)
+			"forkedInst, git.WorktreeStateOptions{WithState: wantState, "+
+			"WithIgnored: *withStateGitignored}); folded body:\n%s", folded)
 	}
 	startIdx := strings.Index(folded, "forkedInst.Start()")
 	if startIdx < 0 {
@@ -201,6 +232,69 @@ func TestSessionFork_WithStateOptionsPropagatedBeforeStart(t *testing.T) {
 		t.Errorf("handleSessionFork must return immediately after invoking "+
 			"sessionForkBeforeStartHook to short-circuit the Start() path; "+
 			"folded segment:\n%s", hookBlock[:cutEnd])
+	}
+}
+
+func TestSessionFork_WithStateHookCapturesResolvedStateBeforeStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[worktree]\nbranch_prefix = \"\"\ndefault_location = \"sibling\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	repo := filepath.Join(home, "repo")
+	initGitRepoForForkStateTest(t, repo)
+
+	parent := session.NewInstanceWithGroupAndTool("parent", repo, "evalgrp", "claude")
+	parent.ClaudeSessionID = "00000000-0000-4000-8000-000000000001"
+	parent.ClaudeDetectedAt = time.Now()
+
+	profile := "fork_state_hook"
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	if err := storage.SaveWithGroups([]*session.Instance{parent}, session.NewGroupTreeWithGroups([]*session.Instance{parent}, nil)); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	var capturedParent *session.Instance
+	var capturedFork *session.Instance
+	var capturedState git.WorktreeStateOptions
+	oldHook := sessionForkBeforeStartHook
+	sessionForkBeforeStartHook = func(parent *session.Instance, forked *session.Instance, state git.WorktreeStateOptions) {
+		capturedParent = parent
+		capturedFork = forked
+		capturedState = state
+	}
+	t.Cleanup(func() { sessionForkBeforeStartHook = oldHook })
+
+	handleSessionFork(profile, []string{
+		"parent",
+		"--with-state-and-gitignored",
+		"-w", "fork/hook-state",
+		"-t", "forked",
+	})
+
+	if capturedParent == nil || capturedParent.ID != parent.ID {
+		t.Fatalf("hook captured parent = %+v, want parent %s", capturedParent, parent.ID)
+	}
+	if capturedFork == nil {
+		t.Fatal("hook did not capture forked instance")
+	}
+	if capturedFork.WorktreeBranch != "fork/hook-state" {
+		t.Fatalf("forked WorktreeBranch = %q, want fork/hook-state", capturedFork.WorktreeBranch)
+	}
+	if !capturedState.WithState || !capturedState.WithIgnored {
+		t.Fatalf("captured state = %+v, want WithState and WithIgnored true", capturedState)
 	}
 }
 

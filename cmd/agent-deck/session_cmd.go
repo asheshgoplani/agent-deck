@@ -27,7 +27,7 @@ import (
 // the hook is set, handleSessionFork invokes it and returns immediately —
 // no tmux session, no persistence, no Start(). This lets contract tests
 // assert option propagation without spawning real sessions.
-var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, opts *session.ClaudeOptions)
+var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, state git.WorktreeStateOptions)
 
 // handleSession dispatches session subcommands
 func handleSession(profile string, args []string) {
@@ -632,8 +632,8 @@ func handleSessionFork(profile string, args []string) {
 		fmt.Println("  agent-deck session fork my-project -t \"my-fork\" -g \"experiments\"")
 		fmt.Println("  agent-deck session fork my-project -w fork/experiment")
 		fmt.Println("  agent-deck session fork my-project -w fork/new-idea -b")
-		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state")
-		fmt.Println("  agent-deck session fork my-project -w fork/wip -b --with-state-and-gitignored")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip --with-state")
+		fmt.Println("  agent-deck session fork my-project -w fork/wip --with-state-and-gitignored")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -730,7 +730,24 @@ func handleSessionFork(profile string, args []string) {
 		wtSettings := session.GetWorktreeSettings()
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
+		if wantState {
+			if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
+				var collErr *git.DestinationCollisionError
+				if errors.As(err, &collErr) {
+					switch collErr.Kind {
+					case git.CollisionWorktreeExists:
+						out.Error(fmt.Sprintf("branch '%s' already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path), ErrCodeInvalidOperation)
+					case git.CollisionBranchExists:
+						out.Error(fmt.Sprintf("branch '%s' already exists; choose a new destination branch for --with-state", collErr.Branch), ErrCodeInvalidOperation)
+					default:
+						out.Error(collErr.Error(), ErrCodeInvalidOperation)
+					}
+					os.Exit(1)
+				}
+				out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		} else if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -743,11 +760,17 @@ func handleSessionFork(profile string, args []string) {
 			Template:  wtSettings.Template(),
 		})
 
-		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
-			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
-			worktreePath = existingPath
-		} else {
+		// Check for an existing worktree for this branch before creating a new one.
+		// The with-state path is validated above and must never reuse a worktree.
+		reuseExistingWorktree := false
+		if !wantState {
+			if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
+				fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
+				worktreePath = existingPath
+				reuseExistingWorktree = true
+			}
+		}
+		if !reuseExistingWorktree {
 			if _, statErr := os.Stat(worktreePath); statErr == nil {
 				out.Error(fmt.Sprintf("worktree path already exists: %s", worktreePath), ErrCodeInvalidOperation)
 				os.Exit(1)
@@ -760,24 +783,6 @@ func handleSessionFork(profile string, args []string) {
 
 			var setupErr error
 			if wantState {
-				// Pre-flight: destination collision check using the shared validator.
-				if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
-					var collErr *git.DestinationCollisionError
-					if errors.As(err, &collErr) {
-						switch collErr.Kind {
-						case git.CollisionWorktreeExists:
-							out.Error(fmt.Sprintf("branch '%s' already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path), ErrCodeInvalidOperation)
-						case git.CollisionBranchExists:
-							out.Error(fmt.Sprintf("branch '%s' already exists; choose a new destination branch for --with-state", collErr.Branch), ErrCodeInvalidOperation)
-						default:
-							out.Error(collErr.Error(), ErrCodeInvalidOperation)
-						}
-						os.Exit(1)
-					}
-					out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
-					os.Exit(1)
-				}
-
 				// Mid-op refusal: surface an actionable error BEFORE creating the
 				// worktree, so the user sees the exact abort command for their parent
 				// instead of MaterializeWipFromParent's terse backstop wording (which
@@ -884,7 +889,7 @@ func handleSessionFork(profile string, args []string) {
 	// mutates the environment and return early. Production runs leave the hook
 	// nil, so this is a no-op outside of tests.
 	if sessionForkBeforeStartHook != nil {
-		sessionForkBeforeStartHook(inst, forkedInst, opts)
+		sessionForkBeforeStartHook(inst, forkedInst, git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored})
 		return
 	}
 

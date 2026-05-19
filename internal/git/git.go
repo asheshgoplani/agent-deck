@@ -430,9 +430,11 @@ func CreateWorktree(repoDir, worktreePath, branchName string) error {
 func HeadCommit(repoDir string) (string, error) {
 	repoDir = resolveGitInvocationDir(repoDir)
 	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "HEAD^{commit}")
-	output, err := cmd.CombinedOutput()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve HEAD commit: %s: %w", strings.TrimSpace(string(output)), err)
+		return "", fmt.Errorf("failed to resolve HEAD commit: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }

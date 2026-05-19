@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,22 @@ func TestValidateForkWithStateDestination_WorktreeExists_TakesPrecedence(t *test
 	}
 	if collErr.Kind != CollisionWorktreeExists || collErr.Path == "" {
 		t.Fatalf("unexpected error: %+v", collErr)
+	}
+}
+
+func TestValidateForkWithStateDestination_PropagatesWorktreeCheckError(t *testing.T) {
+	dir := t.TempDir()
+
+	err := ValidateForkWithStateDestination(dir, "fork/new")
+	if err == nil {
+		t.Fatal("expected worktree check error for non-git repo, got nil")
+	}
+	var collErr *DestinationCollisionError
+	if errors.As(err, &collErr) {
+		t.Fatalf("error = %+v, want underlying worktree check error", collErr)
+	}
+	if !strings.Contains(err.Error(), "checking existing worktrees") {
+		t.Fatalf("error = %q, want checking existing worktrees context", err.Error())
 	}
 }
 

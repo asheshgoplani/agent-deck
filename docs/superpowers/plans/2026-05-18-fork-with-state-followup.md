@@ -645,11 +645,11 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 **Files:**
 - Modify: `internal/ui/home.go`
 
-In `forkSessionCmdWithOptions`, read the with-state booleans from the dialog getters (`IsWithStateEnabled`, `IsWithStateAndGitignoredEnabled`) and build a local `git.WorktreeStateOptions{WithState: ..., WithIgnored: ...}`. (These flags are **not** carried on `session.ClaudeOptions` — upstream wired them through the git layer in #1030.) Replace the existing `CreateWorktreeWithSetup` call with a flow that:
-1. Calls `ValidateForkWithStateDestination` first (if `opts.WithState`)
-2. Calls `HeadCommit(source.ProjectPath)` for parent-HEAD anchoring (if `opts.WithState`)
+In `forkSessionCmdWithOptions`, read the with-state booleans from the dialog getters (`IsWithStateEnabled`, `IsWithStateAndGitignoredEnabled`) and build a local `stateOpts := git.WorktreeStateOptions{WithState: ..., WithIgnored: ...}`. (Named `stateOpts` rather than `opts` to avoid collision with the `opts *session.ClaudeOptions` convention used throughout this package; these flags are **not** carried on `session.ClaudeOptions` — upstream wired them through the git layer in #1030.) Replace the existing `CreateWorktreeWithSetup` call with a flow that:
+1. Calls `ValidateForkWithStateDestination` first (if `stateOpts.WithState`)
+2. Calls `HeadCommit(source.ProjectPath)` for parent-HEAD anchoring (if `stateOpts.WithState`)
 3. Calls `CreateWorktreeAtStartPoint` (with-state) or `CreateWorktree` (legacy)
-4. Calls `MaterializeWipFromParent` (with-state) with cleanup-on-error
+4. Calls `MaterializeWipFromParent(source.ProjectPath, worktreePath, stateOpts.WithIgnored)` (with-state) with cleanup-on-error
 5. Calls `ProcessWorktreeInclude` + setup hook
 
 Returns `sessionForkedMsg{err: ..., sourceID: ...}` on error.

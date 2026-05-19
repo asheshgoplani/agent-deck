@@ -131,9 +131,9 @@ func TestForkWithState_BareRepoLayoutLinkedParentWorktree(t *testing.T) {
 
 // TestForkWithState_SetupHookObservesMaterializedState verifies the
 // orchestration order: setup hook runs AFTER MaterializeWipFromParent, so the
-// hook sees the realized working tree (parent's WIP). Catches regressions
-// where someone re-orders the helpers and the hook ends up running on the
-// pre-materialization (empty) worktree.
+// hook sees the realized working tree (parent's WIP). This pins the git-layer
+// helper sequence used by the CLI handler; command-layer ordering is covered by
+// the eval tests in tests/eval/session/fork_with_state_test.go.
 //
 // Closes gap 7 from the post-merge gap analysis.
 func TestForkWithState_SetupHookObservesMaterializedState(t *testing.T) {
