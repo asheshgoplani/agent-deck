@@ -218,7 +218,7 @@ func TestIssue1069_SpaceForwardedAsLiteral(t *testing.T) {
 	home = model.(*Home)
 
 	model, _ = home.Update(tea.KeyMsg{Type: tea.KeySpace})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type, value unused for remaining assertions
 
 	if len(capture.calls) != 1 {
 		t.Fatalf("Space should produce 1 sink call, got %d", len(capture.calls))
