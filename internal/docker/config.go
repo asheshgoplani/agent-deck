@@ -79,10 +79,9 @@ var agentConfigMounts = []AgentConfigMount{
 		skipEntries:     []string{"sandbox"},
 	},
 	{
-		hostRel:         ".aws",
-		containerSuffix: ".aws",
+		hostRel:         ".aws/sso",
+		containerSuffix: ".aws/sso",
 		skipEntries:     []string{"sandbox"},
-		copyDirs:        []string{"sso"},
 	},
 }
 

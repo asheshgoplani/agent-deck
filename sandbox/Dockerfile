@@ -60,6 +60,8 @@ RUN npm install -g @openai/codex@0
 RUN npm install -g @google/gemini-cli@0
 
 # ── Kiro CLI (AWS) ──────────────────────────────────────────────────
+# Pin to 2.x series; update periodically.
+# NOTE: kiro's installer does not support version pinning — it always pulls latest.
 RUN curl -fsSL https://cli.kiro.dev/install | bash
 
 # Pre-create credential directories for auth volume mounts.

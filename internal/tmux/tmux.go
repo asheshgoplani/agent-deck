@@ -3687,9 +3687,9 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	// briefly disappears. If it was visible recently, stay busy.
 	if tracker.InGracePeriod() {
 		// Override grace period if a prompt pattern is explicitly present.
-		// This handles tools like kiro where a permission prompt replaces
-		// the busy indicator but the grace window hasn't expired yet.
-		if patterns != nil && len(patterns.PromptStrings) > 0 {
+		// This handles kiro where a permission prompt replaces the busy
+		// indicator but the grace window hasn't expired yet.
+		if tool == "kiro" && patterns != nil && len(patterns.PromptStrings) > 0 {
 			recentLines := lastNLines(content, 15)
 			recentContent := strings.Join(recentLines, "\n")
 			lowerRecent := strings.ToLower(recentContent)

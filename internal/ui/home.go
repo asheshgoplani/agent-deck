@@ -12665,7 +12665,6 @@ func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime
 			toolDesc = "Starting Cursor Agent..."
 		}
 	default:
-		// Check for kiro before falling through to shell
 		if inst.Tool == "kiro" {
 			toolName = "Kiro"
 			if isResuming {

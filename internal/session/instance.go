@@ -166,9 +166,8 @@ type Instance struct {
 	CopilotAllowAll   bool      `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
 
 	// Kiro CLI integration
-	KiroSessionID         string    `json:"kiro_session_id,omitempty"`
-	KiroDetectedAt        time.Time `json:"kiro_detected_at,omitempty"`
-	lastKiroCostTurnCount int       `json:"-"` // tracks emitted cost turns
+	KiroSessionID  string    `json:"kiro_session_id,omitempty"`
+	KiroDetectedAt time.Time `json:"kiro_detected_at,omitempty"`
 
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
@@ -1340,8 +1339,8 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 	}
 
 	// Apply config-level trust-all-tools if no explicit option set
+	userConfig, _ := LoadUserConfig()
 	if opts == nil || !opts.TrustAllTools {
-		userConfig, _ := LoadUserConfig()
 		if userConfig != nil && userConfig.Kiro.TrustAllTools {
 			args += " --trust-all-tools"
 		}
@@ -1349,7 +1348,6 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 
 	// Apply config-level default agent if no explicit option set
 	if opts == nil || opts.Agent == "" {
-		userConfig, _ := LoadUserConfig()
 		if userConfig != nil && userConfig.Kiro.DefaultAgent != "" {
 			args += " --agent " + shellescape.Quote(userConfig.Kiro.DefaultAgent)
 		}
@@ -1445,12 +1443,13 @@ func (i *Instance) updateKiroFilesystemStatus() {
 	if json.Unmarshal(lockData, &lock) != nil {
 		return
 	}
-	// Check PID liveness
-	if err := syscall.Kill(lock.PID, 0); err != nil {
-		// PID dead - session ended
-		i.hookStatus = "dead"
-		i.hookLastUpdate = time.Now()
-		return
+	// Check PID liveness (skip when sandboxed — PID is inside the container)
+	if !i.IsSandboxed() {
+		if err := syscall.Kill(lock.PID, 0); err != nil {
+			i.hookStatus = "dead"
+			i.hookLastUpdate = time.Now()
+			return
+		}
 	}
 
 	// Check JSONL mtime
@@ -1469,45 +1468,6 @@ func (i *Instance) updateKiroFilesystemStatus() {
 	// Not recently modified = waiting (idle)
 	i.hookStatus = "waiting"
 	i.hookLastUpdate = time.Now()
-}
-
-// emitKiroCostEvents processes new cost turns from kiro session data.
-func (i *Instance) emitKiroCostEvents() {
-	if i.Tool != "kiro" || i.KiroSessionID == "" {
-		return
-	}
-	homeDir, _ := os.UserHomeDir()
-	sessionFile := filepath.Join(homeDir, ".kiro", "sessions", "cli", i.KiroSessionID+".json")
-	data, err := os.ReadFile(sessionFile)
-	if err != nil {
-		return
-	}
-	var sess struct {
-		SessionState struct {
-			ConversationMetadata struct {
-				UserTurnMetadatas []struct {
-					MeteringUsage []struct {
-						Value float64 `json:"value"`
-						Unit  string  `json:"unit"`
-					} `json:"metering_usage"`
-				} `json:"user_turn_metadatas"`
-			} `json:"conversation_metadata"`
-		} `json:"session_state"`
-	}
-	if json.Unmarshal(data, &sess) != nil {
-		return
-	}
-	turns := sess.SessionState.ConversationMetadata.UserTurnMetadatas
-	if len(turns) <= i.lastKiroCostTurnCount {
-		return // No new turns
-	}
-	// Process new turns only
-	for idx := i.lastKiroCostTurnCount; idx < len(turns); idx++ {
-		for _, usage := range turns[idx].MeteringUsage {
-			_ = usage.Value // Cost event emission would go here
-		}
-	}
-	i.lastKiroCostTurnCount = len(turns)
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -3476,11 +3436,6 @@ func (i *Instance) UpdateStatus() error {
 	// Session exists - clear error check timestamp
 	i.lastErrorCheck = time.Time{}
 
-	// Kiro session ID discovery — runs early, before idle skip, since it's lightweight.
-	if i.Tool == "kiro" && i.KiroSessionID == "" {
-		i.detectKiroSessionFromDisk()
-	}
-
 	// Tiered polling: skip expensive checks for idle sessions with no new activity
 	if i.Status == StatusIdle {
 		currentTS := i.tmuxSession.GetCachedWindowActivity()
@@ -3690,7 +3645,6 @@ func (i *Instance) UpdateStatus() error {
 			if i.Tool == "kiro" {
 				i.detectKiroSessionFromDisk()
 				i.updateKiroFilesystemStatus()
-				i.emitKiroCostEvents()
 			}
 		}
 	}

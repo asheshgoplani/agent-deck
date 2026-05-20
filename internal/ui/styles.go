@@ -523,7 +523,7 @@ func initStyles() {
 		"codex":    lipgloss.NewStyle().Foreground(ColorCyan),
 		"copilot":  lipgloss.NewStyle().Foreground(ColorAccent),
 		"hermes":   lipgloss.NewStyle().Foreground(ColorYellow),
-		"kiro":     lipgloss.NewStyle().Foreground(ColorGreen),
+		"kiro":     lipgloss.NewStyle().Foreground(ColorPurple),
 		"pi":       lipgloss.NewStyle().Foreground(ColorAccent),
 		"aider":    lipgloss.NewStyle().Foreground(ColorRed),
 		"cursor":   lipgloss.NewStyle().Foreground(ColorAccent),
@@ -641,7 +641,7 @@ func ToolColor(tool string) lipgloss.Color {
 	case "hermes":
 		return ColorYellow // Gold for Hermes Agent
 	case "kiro":
-		return ColorGreen // Green for Kiro/AWS
+		return ColorPurple // Purple for Kiro/AWS
 	case "pi":
 		return ColorAccent
 	case "aider":
