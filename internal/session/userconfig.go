@@ -183,6 +183,46 @@ type UserConfig struct {
 
 	// Web defines `agent-deck web` HTTP server settings.
 	Web WebSettings `toml:"web"`
+
+	// UI defines TUI layout settings (split ratios, etc).
+	UI UISettings `toml:"ui"`
+}
+
+// UISettings controls TUI layout proportions.
+// See issue #1092.
+type UISettings struct {
+	// PreviewPct is the percentage of horizontal width allocated to the
+	// preview pane (sessions list gets the remainder). Valid range: 10-90.
+	// Default: 65 (current behavior — sessions 35 / preview 65).
+	// Adjustable at runtime via < and > keybindings (5% step).
+	PreviewPct int `toml:"preview_pct"`
+}
+
+// DefaultPreviewPct is the default preview-pane width percentage.
+// Matches the historical hardcoded 0.35 sessions / 0.65 preview split.
+const DefaultPreviewPct = 65
+
+// MinPreviewPct and MaxPreviewPct bound the preview width to keep both
+// panes usable.
+const (
+	MinPreviewPct = 10
+	MaxPreviewPct = 90
+)
+
+// GetPreviewPct returns the configured preview percentage, clamped to
+// [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when
+// unset or out of range.
+func (u UISettings) GetPreviewPct() int {
+	if u.PreviewPct <= 0 {
+		return DefaultPreviewPct
+	}
+	if u.PreviewPct < MinPreviewPct {
+		return MinPreviewPct
+	}
+	if u.PreviewPct > MaxPreviewPct {
+		return MaxPreviewPct
+	}
+	return u.PreviewPct
 }
 
 // WebSettings configures the `agent-deck web` HTTP server.

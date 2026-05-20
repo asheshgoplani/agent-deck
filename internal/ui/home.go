@@ -404,6 +404,12 @@ type Home struct {
 	activeFilterLabel    string                  // from config.toml [display] active_filter_label
 	activeFilterExcludes map[session.Status]bool // from config.toml [display] active_filter_excludes; default {error}
 
+	// Sessions/Preview split (issue #1092): percentage of width allocated to
+	// preview pane. Loaded from config.toml [ui] preview_pct, adjustable
+	// live via < and > keybindings, persisted back to config on adjustment.
+	previewPct          int       // 10-90, default 65
+	previewPctOverlayAt time.Time // when to hide the split overlay (zero = hidden)
+
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
 	lastRenderDuration atomic.Int64 // microseconds, for debug status bar
@@ -843,10 +849,12 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
+		h.previewPct = cfg.UI.GetPreviewPct()
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
+		h.previewPct = session.DefaultPreviewPct
 	}
 
 	// Initialize system stats collector if enabled
@@ -3555,7 +3563,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// width column where Y-based routing is ambiguous enough to
 			// leave as list-scroll).
 			if h.getLayoutMode() == LayoutModeDual {
-				leftWidth := int(float64(h.width) * 0.35)
+				leftWidth := h.sessionsPaneWidth()
 				if msg.X >= leftWidth {
 					if msg.Button == tea.MouseButtonWheelUp {
 						h.previewScrollOffset++
@@ -5683,7 +5691,7 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		// Check if click is in the session list panel
 		if h.getLayoutMode() == LayoutModeDual {
-			leftWidth := int(float64(h.width) * 0.35)
+			leftWidth := h.sessionsPaneWidth()
 			if msg.X >= leftWidth {
 				return h, nil
 			}
@@ -6483,6 +6491,22 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		h.helpOverlay.SetSize(h.width, h.height)
 		h.helpOverlay.Show()
+		return h, nil
+
+	case "<":
+		// Sessions/Preview split: shrink preview by previewPctStep (#1092).
+		// Bound to dual layout — single/stacked layouts have no horizontal
+		// split to adjust.
+		if h.getLayoutMode() == LayoutModeDual {
+			h.adjustPreviewPct(-previewPctStep)
+		}
+		return h, nil
+
+	case ">":
+		// Sessions/Preview split: grow preview by previewPctStep (#1092).
+		if h.getLayoutMode() == LayoutModeDual {
+			h.adjustPreviewPct(previewPctStep)
+		}
 		return h, nil
 
 	case "S":
@@ -10471,8 +10495,8 @@ func ensureExactWidth(content string, width int) string {
 func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
 
-	// Calculate panel widths (35% left, 65% right for more preview space)
-	leftWidth := int(float64(h.width) * 0.35)
+	// Calculate panel widths from configurable split (issue #1092 — [ui] preview_pct)
+	leftWidth := h.sessionsPaneWidth()
 	rightWidth := h.width - leftWidth - 3 // -3 for separator
 
 	// Panel title is exactly 2 lines (title + underline)
@@ -10480,15 +10504,24 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	panelTitleLines := 2
 	panelContentHeight := contentHeight - panelTitleLines
 
-	// Build left panel (session list) with styled title
-	leftTitle := h.renderPanelTitle("SESSIONS", leftWidth)
+	// Build left panel (session list) with styled title.
+	// Issue #1092: when the user just adjusted the split, briefly append
+	// the new ratio to both titles so the change is visible.
+	sessionsTitle := "SESSIONS"
+	previewTitle := "PREVIEW"
+	if !h.previewPctOverlayAt.IsZero() && time.Now().Before(h.previewPctOverlayAt) {
+		pct := h.getPreviewPct()
+		sessionsTitle = fmt.Sprintf("SESSIONS %d%%", 100-pct)
+		previewTitle = fmt.Sprintf("PREVIEW %d%%", pct)
+	}
+	leftTitle := h.renderPanelTitle(sessionsTitle, leftWidth)
 	leftContent := h.renderSessionList(leftWidth, panelContentHeight)
 	// CRITICAL: Ensure left content has exactly panelContentHeight lines
 	leftContent = ensureExactHeight(leftContent, panelContentHeight)
 	leftPanel := leftTitle + "\n" + leftContent
 
 	// Build right panel (preview) with styled title
-	rightTitle := h.renderPanelTitle("PREVIEW", rightWidth)
+	rightTitle := h.renderPanelTitle(previewTitle, rightWidth)
 	rightContent := h.renderPreviewPane(rightWidth, panelContentHeight)
 	// CRITICAL: Ensure right content has exactly panelContentHeight lines
 	rightContent = ensureExactHeight(rightContent, panelContentHeight)

@@ -247,6 +247,7 @@ func (h *HelpOverlay) View() string {
 				{skillsKey, "Skills Manager"},
 				{"$", "Cost Dashboard"},
 				{previewKey, "Toggle preview mode (output/stats/both)"},
+				{"< / >", "Shrink / grow preview pane by 5% (issue #1092)"},
 				{unreadKey, "Mark unread"},
 				{quickApproveKey, "Quick approve (send '1' to Claude)"},
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
