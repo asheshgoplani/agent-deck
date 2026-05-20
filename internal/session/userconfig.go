@@ -253,6 +253,8 @@ func (u UISettings) GetITermOpenAs() string {
 		return ITermOpenAsTab
 	}
 	return DefaultITermOpenAs
+}
+
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval
 // in seconds, clamped to [2, 300]. When the user has not set this value
 // it falls back to fallbackSecs (typically the system_stats refresh
