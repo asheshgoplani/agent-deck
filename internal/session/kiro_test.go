@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestKiroOptions_ToolName(t *testing.T) {
@@ -94,13 +95,13 @@ func TestBuildKiroCommand(t *testing.T) {
 	}
 }
 
-func TestBuildKiroCommand_WithSessionID(t *testing.T) {
+func TestBuildKiroCommand_WithResumeOnRestart(t *testing.T) {
 	inst := NewInstanceWithTool("test-kiro", "/tmp/project", "kiro")
-	inst.KiroSessionID = "abc-def-123"
+	inst.LastStartedAt = time.Now().Add(-time.Minute)
 
 	cmd := inst.buildKiroCommand("kiro-cli")
-	if !strings.Contains(cmd, "--resume-id abc-def-123") {
-		t.Errorf("buildKiroCommand should contain '--resume-id abc-def-123', got %q", cmd)
+	if !strings.Contains(cmd, "--resume") {
+		t.Errorf("buildKiroCommand should contain '--resume' on restart, got %q", cmd)
 	}
 }
 

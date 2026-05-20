@@ -1318,11 +1318,6 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 
 	args := cmd + " chat"
 
-	// Discover session ID from disk if not already known
-	if i.KiroSessionID == "" {
-		i.detectKiroSessionFromDisk()
-	}
-
 	// Apply tool options if set
 	opts := i.GetKiroOptions()
 	hasResume := false
@@ -1334,8 +1329,9 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 			}
 		}
 	}
-	if !hasResume && i.KiroSessionID != "" {
-		args += " --resume-id " + i.KiroSessionID
+	// Resume most recent session for this directory on restart
+	if !hasResume && !i.LastStartedAt.IsZero() {
+		args += " --resume"
 	}
 
 	// Apply config-level trust-all-tools if no explicit option set
@@ -1409,6 +1405,11 @@ func (i *Instance) detectKiroSessionFromDisk() {
 			continue
 		}
 		if sess.Cwd != projectPath && sess.Cwd != effectiveDir {
+			continue
+		}
+		// Skip sessions locked by another process
+		lockFile := filepath.Join(sessionsDir, sess.SessionID+".lock")
+		if _, err := os.Stat(lockFile); err == nil {
 			continue
 		}
 		t, _ := time.Parse(time.RFC3339Nano, sess.UpdatedAt)
