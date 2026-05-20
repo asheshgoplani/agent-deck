@@ -510,3 +510,36 @@ type RemoteSessionInfo struct {
 	// Set locally, not from JSON
 	RemoteName string `json:"-"`
 }
+
+// RemoteLatency is a live round-trip-time sample for a configured remote.
+// Tracked per remote host (not per session) — multiple sessions on the same
+// host share the same connection, so latency is a host-level metric. See
+// issue #1103.
+type RemoteLatency struct {
+	// MS is the round-trip time in milliseconds. Meaningful only when
+	// Offline is false.
+	MS int
+	// Offline is true when the most recent measurement attempt failed
+	// (network error, SSH dead, remote agent-deck binary missing, etc).
+	Offline bool
+	// MeasuredAt is when the sample was taken; zero value means never measured.
+	MeasuredAt time.Time
+}
+
+// MeasureLatency measures the round-trip time of a lightweight noop call
+// to the remote agent-deck binary. Returns the elapsed duration on success.
+//
+// Implementation note: we run `agent-deck --version` because it is the
+// cheapest possible call (no DB read, no tmux probe, no network back to
+// services). The ControlMaster socket is persisted across calls so we
+// measure mostly network RTT after the first hit, which is exactly what
+// the user wants to see in the header per #1103.
+func (r *SSHRunner) MeasureLatency(ctx context.Context) (time.Duration, error) {
+	timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := r.run(timeoutCtx, "--version"); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
+}

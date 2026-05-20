@@ -459,6 +459,14 @@ type Home struct {
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
 
+	// Remote latency (issue #1103) — measured per remote host on the same
+	// cadence as CPU/RAM (see UISettings.GetRemoteLatencyRefreshSecs).
+	remoteLatency           map[string]session.RemoteLatency
+	remoteLatencyMu         sync.RWMutex
+	lastRemoteLatencyFetch  time.Time
+	remoteLatencyFetchBusy  bool
+	remoteLatencyRefreshSec int // resolved once at construction
+
 	// Cost tracking
 	costStore            *costs.Store
 	costPricer           *costs.Pricer
@@ -758,6 +766,12 @@ type remoteSessionsFetchedMsg struct {
 	sessions map[string][]session.RemoteSessionInfo
 }
 
+// remoteLatenciesFetchedMsg is sent when an async batch of latency
+// measurements completes. Keyed by remote name. See issue #1103.
+type remoteLatenciesFetchedMsg struct {
+	latencies map[string]session.RemoteLatency
+}
+
 // systemThemeMsg is sent when the OS dark mode setting changes.
 type systemThemeMsg struct {
 	dark bool
@@ -919,12 +933,15 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
+		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 		h.previewPct = session.DefaultPreviewPct
+		h.remoteLatencyRefreshSec = (session.UISettings{}).GetRemoteLatencyRefreshSecs(0)
 	}
+	h.remoteLatency = make(map[string]session.RemoteLatency)
 
 	// Initialize system stats collector if enabled
 	if h.sysStatsConfig.GetEnabled() {
@@ -2191,6 +2208,52 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	}
 
 	return remoteSessionsFetchedMsg{sessions: results}
+}
+
+// measureRemoteLatencies measures round-trip latency to every configured
+// remote in parallel, returning a map keyed by remote name. Failed
+// measurements are recorded as Offline=true so the header can show
+// `— offline` instead of a misleading stale ms value. Issue #1103.
+func (h *Home) measureRemoteLatencies() tea.Msg {
+	config, err := session.LoadUserConfig()
+	if err != nil || config == nil || len(config.Remotes) == 0 {
+		return remoteLatenciesFetchedMsg{latencies: nil}
+	}
+
+	results := make(map[string]session.RemoteLatency, len(config.Remotes))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Bound total budget: each individual MeasureLatency has its own 5s
+	// timeout, but we also cap the outer batch so we never starve the
+	// tick that triggered us.
+	ctx, cancel := context.WithTimeout(h.ctx, 8*time.Second)
+	defer cancel()
+
+	for name, rc := range config.Remotes {
+		wg.Add(1)
+		go func(name string, rc session.RemoteConfig) {
+			defer wg.Done()
+			runner := session.NewSSHRunner(name, rc)
+			d, err := runner.MeasureLatency(ctx)
+			lat := session.RemoteLatency{MeasuredAt: time.Now()}
+			if err != nil {
+				lat.Offline = true
+			} else {
+				ms := int(d.Milliseconds())
+				if ms < 0 {
+					ms = 0
+				}
+				lat.MS = ms
+			}
+			mu.Lock()
+			results[name] = lat
+			mu.Unlock()
+		}(name, rc)
+	}
+	wg.Wait()
+
+	return remoteLatenciesFetchedMsg{latencies: results}
 }
 
 // loadSessions loads sessions from storage and initializes the pool
@@ -4272,6 +4335,19 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
+	case remoteLatenciesFetchedMsg:
+		h.remoteLatencyMu.Lock()
+		if h.remoteLatency == nil {
+			h.remoteLatency = make(map[string]session.RemoteLatency)
+		}
+		for name, lat := range msg.latencies {
+			h.remoteLatency[name] = lat
+		}
+		h.lastRemoteLatencyFetch = time.Now()
+		h.remoteLatencyFetchBusy = false
+		h.remoteLatencyMu.Unlock()
+		return h, nil
+
 	case remoteSessionDeletedMsg:
 		if msg.err != nil {
 			h.setError(fmt.Errorf("failed to delete remote session: %w", msg.err))
@@ -4837,6 +4913,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		var remoteFetchCmd tea.Cmd
+		var remoteLatencyCmd tea.Cmd
 
 		// Auto-dismiss errors after 5 seconds
 		if h.err != nil && !h.errTime.IsZero() && time.Since(h.errTime) > 5*time.Second {
@@ -4888,6 +4965,26 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.remotesFetchActive = true
 			h.remoteSessionsMu.Unlock()
 			remoteFetchCmd = h.fetchRemoteSessions
+		}
+
+		// Periodic remote latency measurement (issue #1103). Cadence is
+		// configurable via [ui] remote_latency_refresh_secs, defaulting
+		// to system_stats.refresh_seconds so the marker ticks alongside
+		// CPU/RAM. Fast/non-blocking — each remote runs in its own
+		// goroutine inside the Cmd.
+		refresh := h.remoteLatencyRefreshSec
+		if refresh < 2 {
+			refresh = 5
+		}
+		h.remoteLatencyMu.RLock()
+		shouldLatency := !h.remoteLatencyFetchBusy &&
+			time.Since(h.lastRemoteLatencyFetch) >= time.Duration(refresh)*time.Second
+		h.remoteLatencyMu.RUnlock()
+		if shouldLatency {
+			h.remoteLatencyMu.Lock()
+			h.remoteLatencyFetchBusy = true
+			h.remoteLatencyMu.Unlock()
+			remoteLatencyCmd = h.measureRemoteLatencies
 		}
 
 		// Fast log size check every 10 seconds (catches runaway logs before they cause issues)
@@ -4985,7 +5082,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.previewCacheMu.Unlock()
 			}
 		}
-		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd}
+		cmds := []tea.Cmd{h.tick(), previewCmd, remoteFetchCmd, remoteLatencyCmd}
 		if h.fullRepaint {
 			cmds = append(cmds, tea.ClearScreen)
 		}
@@ -12279,12 +12376,55 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
 		selPrefix,
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
+		h.renderRemoteLatencyMarker(item.RemoteName, selected),
 	))
+}
+
+// renderRemoteLatencyMarker returns the colored ` — Xms` (or ` — offline`)
+// suffix for a remote group header. Empty string when no measurement has
+// been taken yet so the header doesn't jitter on first paint. See #1103.
+//
+// Color thresholds:
+//   - green:  <  50ms        (lipgloss color 2)
+//   - yellow: 50-200ms       (color 3)
+//   - red:    > 200ms or offline (color 1)
+func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) string {
+	h.remoteLatencyMu.RLock()
+	lat, ok := h.remoteLatency[remoteName]
+	h.remoteLatencyMu.RUnlock()
+	if !ok || lat.MeasuredAt.IsZero() {
+		return ""
+	}
+
+	var text string
+	var color lipgloss.Color
+	switch {
+	case lat.Offline:
+		text = " — offline"
+		color = lipgloss.Color("1") // red
+	case lat.MS < 50:
+		text = fmt.Sprintf(" — %dms", lat.MS)
+		color = lipgloss.Color("2") // green
+	case lat.MS <= 200:
+		text = fmt.Sprintf(" — %dms", lat.MS)
+		color = lipgloss.Color("3") // yellow
+	default:
+		text = fmt.Sprintf(" — %dms", lat.MS)
+		color = lipgloss.Color("1") // red
+	}
+
+	style := lipgloss.NewStyle().Foreground(color)
+	if selected {
+		// On the selected row, preserve color so the threshold signal
+		// stays readable against the highlight background.
+		style = style.Bold(true)
+	}
+	return style.Render(text)
 }
 
 // renderRemoteSessionItem renders a single remote session row
