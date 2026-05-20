@@ -54,7 +54,7 @@ jobs:
           zoxide --version
 
       - name: Run tests
-        run: go test -race ./...
+        run: go test -race -timeout 10m ./...
 
       # Evaluator harness full tier. Blocking — a release that fails eval
       # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).
