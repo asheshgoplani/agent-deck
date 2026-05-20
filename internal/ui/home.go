@@ -35,6 +35,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
+	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
@@ -5944,6 +5945,27 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "alt+/": // In-group filter search
 		h.search.SetSize(h.width, h.height)
 		h.openInGroupSearch()
+		return h, nil
+
+	case "shift+enter":
+		// Open the focused session in a new native terminal window (e.g. a
+		// fresh iTerm2 window on macOS), leaving agent-deck running here.
+		// Issue #1069 feature 2, credit @ddorman-dn.
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Exists() {
+				tmuxSess := item.Session.GetTmuxSession()
+				if tmuxSess != nil {
+					err := terminal.OpenSessionInNewWindow(terminal.AttachRequest{
+						Name:       tmuxSess.Name,
+						SocketName: tmuxSess.SocketName,
+					})
+					if err != nil {
+						h.setError(fmt.Errorf("open in new window: %w", err))
+					}
+				}
+			}
+		}
 		return h, nil
 
 	case "enter":
