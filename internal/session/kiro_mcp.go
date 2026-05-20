@@ -4,11 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // GetKiroMCPInfo returns MCP server information for a kiro session.
 func GetKiroMCPInfo(projectPath string) *MCPInfo {
 	info := &MCPInfo{}
+
+	// Expand ~/
+	homeDir, _ := os.UserHomeDir()
+	if strings.HasPrefix(projectPath, "~/") && homeDir != "" {
+		projectPath = filepath.Join(homeDir, projectPath[2:])
+	}
 
 	// Read workspace mcp.json
 	workspacePath := filepath.Join(projectPath, ".kiro", "settings", "mcp.json")
@@ -19,7 +26,6 @@ func GetKiroMCPInfo(projectPath string) *MCPInfo {
 	}
 
 	// Read global mcp.json
-	homeDir, _ := os.UserHomeDir()
 	globalPath := filepath.Join(homeDir, ".kiro", "settings", "mcp.json")
 	if names := readKiroMCPNames(globalPath); len(names) > 0 {
 		info.Global = names

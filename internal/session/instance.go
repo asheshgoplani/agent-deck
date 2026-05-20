@@ -1407,11 +1407,6 @@ func (i *Instance) detectKiroSessionFromDisk() {
 		if sess.Cwd != projectPath && sess.Cwd != effectiveDir {
 			continue
 		}
-		// Skip sessions locked by another process
-		lockFile := filepath.Join(sessionsDir, sess.SessionID+".lock")
-		if _, err := os.Stat(lockFile); err == nil {
-			continue
-		}
 		t, _ := time.Parse(time.RFC3339Nano, sess.UpdatedAt)
 		if t.After(bestTime) {
 			bestTime = t
@@ -3470,7 +3465,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "kiro") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {

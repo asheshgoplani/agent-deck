@@ -83,13 +83,13 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 
 	case "kiro":
 		lower := strings.ToLower(content)
-		if strings.Contains(content, "type to queue") ||
-			strings.Contains(content, "Kiro is working") ||
+		if strings.Contains(lower, "type to queue") ||
+			strings.Contains(lower, "kiro is working") ||
 			strings.Contains(lower, "esc to cancel") {
 			return false
 		}
-		return strings.Contains(content, "requires approval") ||
-			strings.Contains(content, "Enter to send")
+		return strings.Contains(lower, "requires approval") ||
+			strings.Contains(lower, "enter to send")
 
 	default:
 		// Generic shell - check for common prompts
