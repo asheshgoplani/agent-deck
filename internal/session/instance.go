@@ -3461,6 +3461,11 @@ func (i *Instance) UpdateStatus() error {
 		}
 	}
 
+	// Refresh kiro filesystem status before the fast path so hookStatus is current.
+	if i.Tool == "kiro" && i.KiroSessionID != "" {
+		i.updateKiroFilesystemStatus()
+	}
+
 	// HOOK FAST PATH: hook-based status for tools that emit lifecycle events.
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
