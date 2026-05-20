@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with: { go-version: '1.25.10' }
       # Bumped v6 → v9 in #1054 alongside the Go 1.25.10 toolchain bump: the
       # v6-era cached golangci-lint binary (v1.64.8) was built with Go 1.24,
