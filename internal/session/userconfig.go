@@ -196,6 +196,12 @@ type UISettings struct {
 	// Default: 65 (current behavior — sessions 35 / preview 65).
 	// Adjustable at runtime via < and > keybindings (5% step).
 	PreviewPct int `toml:"preview_pct"`
+
+	// ITermOpenAs controls whether Shift+Enter pops the focused session
+	// into a new iTerm2 *tab* or a new iTerm2 *window* on macOS. Valid
+	// values: "tab", "window". Empty defaults to "tab" (iTerm's natural
+	// UX). Issue #1100, follow-up to #1098 — credit @ddorman-dn.
+	ITermOpenAs string `toml:"iterm_open_as"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -207,6 +213,13 @@ const DefaultPreviewPct = 65
 const (
 	MinPreviewPct = 10
 	MaxPreviewPct = 90
+)
+
+// iTerm "open as" modes for Shift+Enter dispatch.
+const (
+	ITermOpenAsTab     = "tab"
+	ITermOpenAsWindow  = "window"
+	DefaultITermOpenAs = ITermOpenAsTab
 )
 
 // GetPreviewPct returns the configured preview percentage, clamped to
@@ -223,6 +236,19 @@ func (u UISettings) GetPreviewPct() int {
 		return MaxPreviewPct
 	}
 	return u.PreviewPct
+}
+
+// GetITermOpenAs returns the configured iTerm open mode. Unknown or
+// empty values fall through to the default ("tab"). Matching is
+// case-insensitive so users can write "Tab" or "WINDOW" in TOML.
+func (u UISettings) GetITermOpenAs() string {
+	switch strings.ToLower(strings.TrimSpace(u.ITermOpenAs)) {
+	case ITermOpenAsWindow:
+		return ITermOpenAsWindow
+	case ITermOpenAsTab:
+		return ITermOpenAsTab
+	}
+	return DefaultITermOpenAs
 }
 
 // WebSettings configures the `agent-deck web` HTTP server.

@@ -570,6 +570,44 @@ func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) e
 	return terminal.OpenSessionInNewWindow(req)
 }
 
+// resolveITermOpenAs reads the [ui] iterm_open_as setting from the user
+// config, returning "tab" by default if the config can't be loaded or
+// the value is unset/unknown. Issue #1100.
+func resolveITermOpenAs() string {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		return session.DefaultITermOpenAs
+	}
+	return cfg.UI.GetITermOpenAs()
+}
+
+// buildRemoteAttachRequest constructs a terminal.AttachRequest that
+// runs `agent-deck session attach <id>` over SSH on the named remote.
+// Returns ok=false when the remote can't be resolved from user config or
+// is missing a host. Issue #1100.
+func buildRemoteAttachRequest(remoteName, sessionID, openAs string) (terminal.AttachRequest, bool) {
+	if remoteName == "" || sessionID == "" {
+		return terminal.AttachRequest{}, false
+	}
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil || cfg.Remotes == nil {
+		return terminal.AttachRequest{}, false
+	}
+	rc, ok := cfg.Remotes[remoteName]
+	if !ok || rc.Host == "" {
+		return terminal.AttachRequest{}, false
+	}
+	return terminal.AttachRequest{
+		Name:   sessionID,
+		OpenAs: openAs,
+		Remote: &terminal.RemoteAttach{
+			Host:          rc.Host,
+			AgentDeckPath: rc.GetAgentDeckPath(),
+			Profile:       rc.GetProfile(),
+		},
+	}, true
+}
+
 func (h *Home) normalizeMainKey(pressed string) string {
 	// Shift+Enter relay: csiuReader emits the Private-Use rune
 	// shiftEnterMarker (U+E5E5) when it sees a Shift+Enter CSI u or
@@ -6044,9 +6082,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "shift+enter":
-		// Open the focused session in a new native terminal window (e.g. a
-		// fresh iTerm2 window on macOS), leaving agent-deck running here.
-		// Issue #1069 feature 2, credit @ddorman-dn.
+		// Open the focused session in a new native terminal tab (or
+		// window, per [ui] iterm_open_as), leaving agent-deck running
+		// here. Issue #1069 feature 2 + #1100 remote-session support,
+		// credit @ddorman-dn.
 		//
 		// Reaching this arm at all required the #1093 fix to keyboard_compat.go
 		// + normalizeMainKey: Bubble Tea v1.3.10 has no shift+enter string,
@@ -6054,15 +6093,24 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// reader and rewrite it to "shift+enter" before this switch sees it.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil {
+			openAs := resolveITermOpenAs()
+			switch {
+			case item.Type == session.ItemTypeSession && item.Session != nil:
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
 					req := terminal.AttachRequest{
 						Name:       tmuxSess.Name,
 						SocketName: tmuxSess.SocketName,
+						OpenAs:     openAs,
 					}
 					if err := h.openInNewWindow(req, item.Session.Exists()); err != nil {
 						h.setError(fmt.Errorf("open in new window: %w", err))
+					}
+				}
+			case item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil:
+				if req, ok := buildRemoteAttachRequest(item.RemoteName, item.RemoteSession.ID, openAs); ok {
+					if err := h.openInNewWindow(req, true); err != nil {
+						h.setError(fmt.Errorf("open remote in new window: %w", err))
 					}
 				}
 			}
