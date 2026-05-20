@@ -484,6 +484,20 @@ type Home struct {
 	// without running real tmux. When nil, keys are sent via the session's
 	// tmux pane (SendKeys / SendEnter).
 	insertKeySink func(inst *session.Instance, text string, sendEnter bool) error
+	// insertNamedKeySink is the test override for forwarded named keys
+	// (Backspace, arrows, Tab, Ctrl-C, Ctrl-D — #1094). When nil, named keys
+	// are sent via the session's tmux pane (SendNamedKey).
+	insertNamedKeySink func(inst *session.Instance, key string) error
+
+	// Insert-mode keystroke batching (#1094). Per-keystroke tmux send-keys
+	// invocations are too slow when typing fast. Runes are accumulated in
+	// insertBuf and flushed together after insertBatchDuration, or
+	// immediately on Enter / Esc / a named key. insertBatchDuration <= 0
+	// disables batching (each rune flushes synchronously) and is used by
+	// tests that want to assert call counts deterministically.
+	insertBuf           strings.Builder
+	insertFlushPending  bool
+	insertBatchDuration time.Duration
 }
 
 // reloadState preserves UI state during storage reload
@@ -777,6 +791,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		zoxidePicker:         NewZoxidePicker(),
 		feedbackSender:       feedback.NewSender(),
 		watcherPanel:         NewWatcherPanel(),
+		insertBatchDuration:  defaultInsertBatchDuration,
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
@@ -3573,6 +3588,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			return h.handleMouse(msg)
 		}
+
+	case insertFlushMsg:
+		// Drain any buffered runes from the insert-mode batch (#1094). The
+		// flag is cleared inside flushInsertBuf so a new batch can be
+		// scheduled. If the user already left insert mode we silently drop.
+		if h.insertMode {
+			h.flushInsertBuf()
+		} else {
+			h.insertFlushPending = false
+			h.insertBuf.Reset()
+		}
+		return h, nil
 
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection

@@ -3970,6 +3970,17 @@ func (s *Session) SendEnter() error {
 	return cmd.Run()
 }
 
+// SendNamedKey sends a single tmux named key (e.g. "BSpace", "Up", "Down",
+// "Left", "Right", "Tab", "BTab", "C-c", "C-d") to the session. Unlike
+// SendKeys it does NOT use the -l flag, so tmux interprets the argument as a
+// key name rather than literal text. Used by insert mode (#1094) to forward
+// Backspace, arrow keys, Tab, and Ctrl-{C,D} from the TUI to the focused pane.
+func (s *Session) SendNamedKey(key string) error {
+	s.invalidateCache()
+	cmd := s.tmuxCmd("send-keys", "-t", s.Name, key)
+	return cmd.Run()
+}
+
 // SendKeysAndEnter sends literal text followed by Enter as two separate tmux
 // calls with a short delay between them. The delay is necessary because tmux
 // 3.2+ wraps send-keys -l in bracketed paste sequences (\e[200~...\e[201~).

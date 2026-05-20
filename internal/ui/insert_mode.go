@@ -2,12 +2,24 @@ package ui
 
 import (
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// defaultInsertBatchDuration is the production debounce window for coalescing
+// rune-by-rune typing into a single tmux send-keys call (#1094). Picked to
+// be small enough that the user can't feel it (~one frame at 60Hz) but large
+// enough that bursts of typing collapse into a single fork+exec.
+const defaultInsertBatchDuration = 15 * time.Millisecond
+
+// insertFlushMsg is dispatched by the tea.Tick scheduled when the first rune
+// of a batch is buffered. When it arrives the buffered text is flushed to
+// the focused session.
+type insertFlushMsg struct{}
 
 // Insert mode (#1069 feature 1, by @ddorman-dn): vim-style modal type-through
 // for the TUI. After pressing `I` on a focused session, subsequent keystrokes
@@ -32,39 +44,115 @@ func (h *Home) enterInsertMode() bool {
 	return true
 }
 
-// exitInsertMode returns the TUI to normal navigation mode.
+// exitInsertMode returns the TUI to normal navigation mode. Any pending
+// keystrokes in the batch buffer are dropped — they should have been flushed
+// by the caller via flushInsertBuf() if the user wanted them preserved.
 func (h *Home) exitInsertMode() {
 	h.insertMode = false
 	h.insertModeSessionID = ""
+	h.insertBuf.Reset()
+	h.insertFlushPending = false
 }
 
 // handleInsertModeKey is the keyboard handler used while insert mode is
-// active. Esc exits, Enter sends a newline to the target session, and
-// printable runes (and the space key) are forwarded literally. Other
-// meta-keys (arrows, ctrl combos, Tab, Backspace, function keys) are
-// intentionally ignored in v1 — they remain reserved for future expansion
-// and shouldn't accidentally leak into the session's input stream.
+// active. Esc exits, Enter sends a newline, and printable runes (and the
+// space key) are buffered then flushed in batches to amortize the fork+exec
+// cost of tmux send-keys (#1094 latency). Backspace, arrow keys, Tab,
+// ShiftTab, Ctrl-C, and Ctrl-D are forwarded as tmux named keys so users can
+// edit input and navigate menus inside the focused session (claude often
+// shows arrow-driven pickers).
 func (h *Home) handleInsertModeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
+		h.flushInsertBuf()
 		h.exitInsertMode()
 		return h, nil
 	case tea.KeyEnter:
+		h.flushInsertBuf()
 		h.dispatchInsertKey("", true)
 		return h, nil
 	case tea.KeySpace:
-		h.dispatchInsertKey(" ", false)
-		return h, nil
+		h.insertBuf.WriteString(" ")
+		return h, h.scheduleInsertFlush()
 	case tea.KeyRunes:
 		if len(msg.Runes) == 0 {
 			return h, nil
 		}
-		h.dispatchInsertKey(string(msg.Runes), false)
+		h.insertBuf.WriteString(string(msg.Runes))
+		return h, h.scheduleInsertFlush()
+	case tea.KeyBackspace:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("BSpace")
+		return h, nil
+	case tea.KeyUp:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("Up")
+		return h, nil
+	case tea.KeyDown:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("Down")
+		return h, nil
+	case tea.KeyLeft:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("Left")
+		return h, nil
+	case tea.KeyRight:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("Right")
+		return h, nil
+	case tea.KeyTab:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("Tab")
+		return h, nil
+	case tea.KeyShiftTab:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("BTab")
+		return h, nil
+	case tea.KeyCtrlC:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("C-c")
+		return h, nil
+	case tea.KeyCtrlD:
+		h.flushInsertBuf()
+		h.dispatchInsertNamedKey("C-d")
 		return h, nil
 	default:
-		// Drop arrows, ctrl combos, Tab, Backspace, function keys etc. for v1.
+		// Other keys (function keys, more exotic ctrl combos) intentionally
+		// dropped — surface them only if a user actually reports needing them.
 		return h, nil
 	}
+}
+
+// scheduleInsertFlush returns a tea.Cmd that will deliver insertFlushMsg
+// after the batching window, unless one is already pending or batching is
+// disabled (insertBatchDuration <= 0, in which case the buffer flushes
+// synchronously and no Cmd is returned).
+func (h *Home) scheduleInsertFlush() tea.Cmd {
+	if h.insertBatchDuration <= 0 {
+		h.flushInsertBuf()
+		return nil
+	}
+	if h.insertFlushPending {
+		return nil
+	}
+	h.insertFlushPending = true
+	d := h.insertBatchDuration
+	return tea.Tick(d, func(time.Time) tea.Msg { return insertFlushMsg{} })
+}
+
+// flushInsertBuf dispatches any buffered runes to the focused session as a
+// single send-keys call, then clears the buffer. Called from the periodic
+// timer (insertFlushMsg) and synchronously before any non-rune key (Enter,
+// Esc, Backspace, arrows, ...) so the keystroke ordering observed by the
+// target pane matches the order in which the user pressed them.
+func (h *Home) flushInsertBuf() {
+	h.insertFlushPending = false
+	if h.insertBuf.Len() == 0 {
+		return
+	}
+	text := h.insertBuf.String()
+	h.insertBuf.Reset()
+	h.dispatchInsertKey(text, false)
 }
 
 // dispatchInsertKey forwards literal text (optionally followed by Enter) to
@@ -97,6 +185,31 @@ func (h *Home) dispatchInsertKey(text string, sendEnter bool) {
 		if err := tmuxSess.SendEnter(); err != nil {
 			h.setError(fmt.Errorf("insert mode send-enter failed: %w", err))
 		}
+	}
+}
+
+// dispatchInsertNamedKey forwards a tmux named key (Up/Down/Left/Right/Tab/
+// BTab/BSpace/C-c/C-d) to the focused session. In tests an override sink
+// captures the key instead of running tmux.
+func (h *Home) dispatchInsertNamedKey(key string) {
+	inst := h.resolveInsertTarget()
+	if inst == nil {
+		return
+	}
+	if h.insertNamedKeySink != nil {
+		if err := h.insertNamedKeySink(inst, key); err != nil {
+			h.setError(fmt.Errorf("insert mode send named key failed: %w", err))
+		}
+		return
+	}
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		h.exitInsertMode()
+		h.setError(fmt.Errorf("insert mode: tmux session vanished"))
+		return
+	}
+	if err := tmuxSess.SendNamedKey(key); err != nil {
+		h.setError(fmt.Errorf("insert mode send-named-key failed: %w", err))
 	}
 }
 

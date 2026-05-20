@@ -68,6 +68,11 @@ func armHomeWithOneSession(t *testing.T) (*Home, *session.Instance, *insertSinkC
 	capture := &insertSinkCapture{}
 	home.insertKeySink = capture.sink
 
+	// Disable insert-mode batching (#1094) so per-rune assertions in this
+	// file stay deterministic. Batching is exercised separately in
+	// issue1094_insert_mode_ux_test.go.
+	home.insertBatchDuration = -1
+
 	return home, inst, capture
 }
 
