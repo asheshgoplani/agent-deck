@@ -41,7 +41,8 @@ func TestIssue1066_RemoteSessions_CountedInStatusCounter(t *testing.T) {
 	// Invalidate the 500ms cache so the next call recomputes.
 	home.cachedStatusCounts.valid.Store(false)
 
-	running, waiting, idle, errored := home.countSessionStatuses()
+	running, waiting, idle, stopped, errored := home.countSessionStatuses()
+	_ = stopped
 
 	if running != 1 {
 		t.Errorf("running = %d, want 1 (remote dev/r1) — counter is ignoring remote sessions", running)
