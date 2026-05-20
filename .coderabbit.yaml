@@ -11,24 +11,69 @@ reviews:
   review_status: true
   collapse_walkthrough: true
 
+  # Surface the PR scope + scoring up-front
+  changed_files_summary: true       # file-by-file change summary
+  sequence_diagrams: true           # Mermaid diagrams for complex flows (great for refactors)
+  estimated_code_review_effort: true # review-time estimate badge
+  assess_linked_issues: true         # check PR ↔ issue alignment
+  related_issues: true               # surface related open issues
+  related_prs: true                  # surface related open/recent PRs
+  suggested_labels: true             # auto-label proposal
+  suggested_reviewers: true          # nominate reviewers from CODEOWNERS
+
+  # Auto-suggest follow-ups: missing docstrings, missing unit tests
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+
+  # SCORES + quality gates (the "score" you saw on CodeRabbit)
+  # Each runs the AI quality assessor; thresholds 0-100 block merge if not met.
+  # Start lenient; tighten over time as we build confidence.
+  pre_merge_checks:
+    docstrings:
+      mode: warning                 # warn, don't block
+      threshold: 70
+    title:
+      mode: warning
+      requirements: "Conventional Commits format (feat:, fix:, chore:, etc.)"
+    description:
+      mode: warning
+      requirements: "PR description must explain why + reference issue (Closes #N)"
+    issue_assessment:
+      mode: warning                 # PR must address what linked issue actually asks
+      threshold: 70
+    custom_checks:
+      - name: "remote_parity"
+        mode: warning
+        instructions: |
+          If this PR changes TUI behavior in internal/ui/ or cmd/agent-deck/,
+          verify it also handles RemoteSession (or has an explicit t.Skip
+          documenting why). See ~/.agent-deck/skills/pool/agent-deck-tdd-feature/SKILL.md.
+      - name: "test_coverage_per_surface"
+        mode: warning
+        instructions: |
+          Any new feature must have tests for every applicable surface
+          (TUI / Web / CLI / remote). Stubs in Web UI are not acceptable for new features.
+
   auto_review:
     enabled: true
     drafts: false                   # don't review draft PRs (RFCs etc.)
     base_branches:
       - main
-    # Don't review trivial / generated PRs to save tokens + seat noise:
     ignore_title_keywords:
       - "[skip ci]"
       - "[no-review]"
       - "WIP"
 
-  # Don't review pure dependency bumps (Dependabot opens lots of these;
-  # govulncheck + golangci-lint already cover real risk):
+  # Don't review pure dependency bumps or pure-docs churn (CI tools already cover):
   path_filters:
     - "!.github/dependabot.yml"
-    - "!**/*.md"                    # markdown-only churn (changelog/docs)
+    - "!**/*.md"
     - "!CHANGELOG.md"
     - "!**/testdata/**"
+    - "!documentation/**"           # design docs don't need code review
 
   # Bots that open PRs should NOT trigger reviews or consume seats:
   ignore_users:
@@ -36,8 +81,40 @@ reviews:
     - github-actions[bot]
     - renovate[bot]
 
+  # Path-specific instructions — extra scrutiny on hot paths
+  path_instructions:
+    - path: "internal/session/**"
+      instructions: |
+        This is the core session lifecycle. Pay extra attention to:
+        - signal handling (SIGINT, SIGTERM teardown)
+        - SQLite write atomicity
+        - RemoteSession vs LocalSession parity
+        - race conditions (this code runs with -race in CI)
+    - path: "internal/web/**"
+      instructions: |
+        Web backend. Verify:
+        - new endpoints update tests/web/PARITY_MATRIX.md
+        - mutator parity with TUI (any state change in TUI must work in Web too)
+        - handlers have a corresponding _test.go
+    - path: "internal/tmux/**"
+      instructions: |
+        tmux integration. Verify:
+        - tmux command construction uses slice args (not shell strings)
+        - controlling-tty assumptions documented (see #1114 for the failure mode)
+    - path: "cmd/agent-deck/**"
+      instructions: |
+        CLI surface. Verify:
+        - flags follow existing pattern (--listen, --no-tui, etc.)
+        - --help output reflects the new behavior
+    - path: ".github/workflows/**"
+      instructions: |
+        CI workflows. Verify:
+        - third-party actions pinned by SHA or major-version tag
+        - timeouts on every test/build step (we hit a 3hr hang earlier)
+        - permissions block follows least-privilege
+
   tools:
-    # Repo already runs these in CI; let CodeRabbit hook into their output:
+    # Go-specific linters already run in CI; CodeRabbit can summarize their output
     golangci-lint:
       enabled: true
     gosec:
@@ -46,12 +123,35 @@ reviews:
       enabled: true
     shellcheck:
       enabled: true
+    actionlint:                     # GitHub Actions linting
+      enabled: true
+    hadolint:                       # if we ever add Dockerfiles
+      enabled: true
+    biome:                          # for the tests/web TypeScript
+      enabled: true
     markdownlint:
       enabled: false                # noisy on docs-heavy repos
 
 chat:
   auto_reply: true                  # respond to @coderabbitai mentions
+  integrations:
+    jira:
+      usage: auto                   # if we ever wire jira
+    linear:
+      usage: auto
+
+# Code generation suggestions (used when @coderabbitai is asked to write code)
+code_generation:
+  docstrings:
+    language: en-US
+  unit_tests:
+    language: en-US
 
 knowledge_base:
+  opt_out: false                    # share learnings (OSS is public anyway)
   learnings:
     scope: auto                     # learn this repo's patterns over time
+  issues:
+    scope: local                    # link related issues for context
+  pull_requests:
+    scope: local                    # link related PRs for context
