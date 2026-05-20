@@ -643,7 +643,7 @@ func detectToolFromCommand(command string) string {
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
 		return "hermes"
-	case strings.Contains(cmdLower, "kiro"):
+	case strings.Contains(cmdLower, "kiro-cli") || strings.Contains(cmdLower, " kiro ") || strings.HasPrefix(cmdLower, "kiro ") || cmdLower == "kiro":
 		return "kiro"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"

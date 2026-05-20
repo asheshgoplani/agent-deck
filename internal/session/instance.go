@@ -1326,12 +1326,16 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 
 	// Apply tool options if set
 	opts := i.GetKiroOptions()
+	hasResume := false
 	if opts != nil {
 		for _, arg := range opts.ToArgs() {
 			args += " " + arg
+			if arg == "--resume-id" || arg == "--resume" {
+				hasResume = true
+			}
 		}
-	} else if i.KiroSessionID != "" {
-		// Resume existing session on restart
+	}
+	if !hasResume && i.KiroSessionID != "" {
 		args += " --resume-id " + i.KiroSessionID
 	}
 
@@ -1347,7 +1351,7 @@ func (i *Instance) buildKiroCommand(baseCommand string) string {
 	if opts == nil || opts.Agent == "" {
 		userConfig, _ := LoadUserConfig()
 		if userConfig != nil && userConfig.Kiro.DefaultAgent != "" {
-			args += " --agent " + userConfig.Kiro.DefaultAgent
+			args += " --agent " + shellescape.Quote(userConfig.Kiro.DefaultAgent)
 		}
 	}
 

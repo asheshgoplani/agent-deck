@@ -111,7 +111,10 @@ func TestBuildKiroCommand_WithOptions(t *testing.T) {
 		Agent:         "my-agent",
 		Model:         "claude-opus-4.7",
 	}
-	data, _ := MarshalToolOptions(opts)
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		t.Fatalf("MarshalToolOptions: %v", err)
+	}
 	inst.ToolOptionsJSON = data
 
 	cmd := inst.buildKiroCommand("kiro-cli")

@@ -523,6 +523,7 @@ func initStyles() {
 		"codex":    lipgloss.NewStyle().Foreground(ColorCyan),
 		"copilot":  lipgloss.NewStyle().Foreground(ColorAccent),
 		"hermes":   lipgloss.NewStyle().Foreground(ColorYellow),
+		"kiro":     lipgloss.NewStyle().Foreground(ColorGreen),
 		"pi":       lipgloss.NewStyle().Foreground(ColorAccent),
 		"aider":    lipgloss.NewStyle().Foreground(ColorRed),
 		"cursor":   lipgloss.NewStyle().Foreground(ColorAccent),

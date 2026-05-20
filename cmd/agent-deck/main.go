@@ -3098,7 +3098,7 @@ func detectTool(cmd string) string {
 		return "cursor"
 	case strings.Contains(cmd, "hermes"):
 		return "hermes"
-	case strings.Contains(cmd, "kiro"):
+	case hasCommandToken(cmd, "kiro") || strings.Contains(cmd, "kiro-cli"):
 		return "kiro"
 	default:
 		return "shell"

@@ -2194,13 +2194,17 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "kiro":
+		if config.Kiro.Command != "" {
+			return config.Kiro.Command
+		}
 	}
 	return toolName
 }
 
 func isBuiltinToolName(toolName string) bool {
 	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi", "shell", "aider":
+	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "kiro", "pi", "shell", "aider":
 		return true
 	default:
 		return false
@@ -2232,6 +2236,8 @@ func GetToolIcon(toolName string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "kiro":
+		return "🦊"
 	case "pi":
 		return "π"
 	case "shell":
