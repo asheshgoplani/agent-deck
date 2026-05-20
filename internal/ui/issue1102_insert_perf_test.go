@@ -137,7 +137,7 @@ func TestIssue1102_PersistentKeySender_NamedKeysGoThroughIt(t *testing.T) {
 	home, fake := armInsertModeWithFakeKeySender(t)
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type; we only check the fake's counters
 
 	if got := fake.namedKeyCount.Load(); got != 1 {
 		t.Errorf("SendNamedKey called %d times, want 1 (Backspace)", got)
@@ -153,7 +153,7 @@ func TestIssue1102_PersistentKeySender_EnterGoesThroughIt(t *testing.T) {
 	home, fake := armInsertModeWithFakeKeySender(t)
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type; we only check the fake's counters
 
 	if got := fake.enterCount.Load(); got != 1 {
 		t.Errorf("SendEnter called %d times, want 1", got)
