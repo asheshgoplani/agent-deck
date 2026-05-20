@@ -73,7 +73,7 @@ func GetRepoRoot(dir string) (string, error) {
 
 // GetCurrentBranch returns the first bookmark of the current working-copy change.
 func (b *JJBackend) GetCurrentBranch() (string, error) {
-	cmd := exec.Command("jj", "log", "-r", "@", "--no-graph", "-T", "bookmarks", "-R", b.repoDir, "--ignore-working-copy")
+	cmd := exec.Command("jj", "log", "-r", "@", "--no-graph", "-T", "bookmarks", "-R", b.repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args + internal repoDir/branch fields, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current bookmark: %w", err)
@@ -106,7 +106,7 @@ type Workspace struct {
 
 // ListWorktrees returns all workspaces for the repository.
 func (b *JJBackend) ListWorktrees() ([]vcs.Worktree, error) {
-	cmd := exec.Command("jj", "workspace", "list", "-R", b.repoDir, "-T", "name ++ ':' ++ target.commit_id() ++ \"\\n\"", "--ignore-working-copy")
+	cmd := exec.Command("jj", "workspace", "list", "-R", b.repoDir, "-T", "name ++ ':' ++ target.commit_id() ++ \"\\n\"", "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args + internal repoDir/branch fields, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workspaces: %w", err)
@@ -241,7 +241,7 @@ func (b *JJBackend) PruneWorktrees() error {
 			continue
 		}
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
-			cmd := exec.Command("jj", "workspace", "forget", ws.Branch, "-R", b.repoDir)
+			cmd := exec.Command("jj", "workspace", "forget", ws.Branch, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args + internal repoDir/branch fields, not shell-formed
 			_ = cmd.Run()
 		}
 	}
