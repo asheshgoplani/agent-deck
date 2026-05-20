@@ -57,13 +57,13 @@ func IsJJRepo(dir string) bool {
 	if _, err := exec.LookPath("jj"); err != nil {
 		return false
 	}
-	cmd := exec.Command("jj", "root", "-R", dir, "--ignore-working-copy")
+	cmd := exec.Command("jj", "root", "-R", dir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	return cmd.Run() == nil
 }
 
 // GetRepoRoot returns the root directory of the jj repository.
 func GetRepoRoot(dir string) (string, error) {
-	cmd := exec.Command("jj", "root", "-R", dir, "--ignore-working-copy")
+	cmd := exec.Command("jj", "root", "-R", dir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("not a jj repository: %w", err)
@@ -90,7 +90,7 @@ func (b *JJBackend) GetCurrentBranch() (string, error) {
 
 // BranchExists checks if a bookmark exists in the repository.
 func (b *JJBackend) BranchExists(branchName string) bool {
-	cmd := exec.Command("jj", "bookmark", "list", "--name", branchName, "-R", b.repoDir, "--ignore-working-copy")
+	cmd := exec.Command("jj", "bookmark", "list", "--name", branchName, "-R", b.repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return false
@@ -144,7 +144,7 @@ func getWorkspacePath(repoDir, workspaceName string) (string, error) {
 		return GetRepoRoot(repoDir)
 	}
 
-	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "--ignore-working-copy")
+	cmd := exec.Command("jj", "workspace", "root", "--name", workspaceName, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get workspace path: %w", err)
@@ -184,7 +184,7 @@ func (b *JJBackend) CreateWorktree(workspacePath, branchName string) error {
 	// Derive workspace name from the path
 	wsName := workspaceNameFromPath(workspacePath)
 
-	cmd := exec.Command("jj", "workspace", "add", "--name", wsName, workspacePath, "-R", b.repoDir)
+	cmd := exec.Command("jj", "workspace", "add", "--name", wsName, workspacePath, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create workspace: %s: %w", strings.TrimSpace(string(output)), err)
@@ -194,10 +194,10 @@ func (b *JJBackend) CreateWorktree(workspacePath, branchName string) error {
 	if branchName != "" {
 		if b.BranchExists(branchName) {
 			// Set existing bookmark to point to the new workspace's working copy
-			cmd = exec.Command("jj", "bookmark", "set", branchName, "-r", "@", "-R", workspacePath)
+			cmd = exec.Command("jj", "bookmark", "set", branchName, "-r", "@", "-R", workspacePath) // #nosec G204 -- jj invocations with slice args, not shell-formed
 		} else {
 			// Create new bookmark
-			cmd = exec.Command("jj", "bookmark", "create", branchName, "-r", "@", "-R", workspacePath)
+			cmd = exec.Command("jj", "bookmark", "create", branchName, "-r", "@", "-R", workspacePath) // #nosec G204 -- jj invocations with slice args, not shell-formed
 		}
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -212,7 +212,7 @@ func (b *JJBackend) CreateWorktree(workspacePath, branchName string) error {
 func (b *JJBackend) RemoveWorktree(workspacePath string, force bool) error {
 	wsName := workspaceNameFromPath(workspacePath)
 
-	cmd := exec.Command("jj", "workspace", "forget", wsName, "-R", b.repoDir)
+	cmd := exec.Command("jj", "workspace", "forget", wsName, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to forget workspace: %s: %w", strings.TrimSpace(string(output)), err)
@@ -250,7 +250,7 @@ func (b *JJBackend) PruneWorktrees() error {
 
 // HasUncommittedChanges checks if the working copy has uncommitted changes.
 func (b *JJBackend) HasUncommittedChanges() (bool, error) {
-	cmd := exec.Command("jj", "diff", "--stat", "-R", b.repoDir, "--ignore-working-copy")
+	cmd := exec.Command("jj", "diff", "--stat", "-R", b.repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("failed to check jj diff: %s: %w", strings.TrimSpace(string(output)), err)
@@ -271,7 +271,7 @@ func (b *JJBackend) GetDefaultBranch() (string, error) {
 
 // MergeBranch creates a merge change combining the current change with the given bookmark.
 func (b *JJBackend) MergeBranch(branchName string) error {
-	cmd := exec.Command("jj", "new", "@", branchName, "-R", b.repoDir)
+	cmd := exec.Command("jj", "new", "@", branchName, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("merge failed: %s: %w", strings.TrimSpace(string(output)), err)
@@ -281,7 +281,7 @@ func (b *JJBackend) MergeBranch(branchName string) error {
 
 // DeleteBranch deletes a bookmark.
 func (b *JJBackend) DeleteBranch(branchName string, force bool) error {
-	cmd := exec.Command("jj", "bookmark", "delete", branchName, "-R", b.repoDir)
+	cmd := exec.Command("jj", "bookmark", "delete", branchName, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to delete bookmark: %s: %w", strings.TrimSpace(string(output)), err)
@@ -291,7 +291,7 @@ func (b *JJBackend) DeleteBranch(branchName string, force bool) error {
 
 // CheckoutBranch moves the working copy to a new change based on the given bookmark.
 func (b *JJBackend) CheckoutBranch(branchName string) error {
-	cmd := exec.Command("jj", "new", branchName, "-R", b.repoDir)
+	cmd := exec.Command("jj", "new", branchName, "-R", b.repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to checkout %s: %s: %w", branchName, strings.TrimSpace(string(output)), err)
@@ -301,7 +301,7 @@ func (b *JJBackend) CheckoutBranch(branchName string) error {
 
 // AbortMerge undoes the last operation (equivalent to aborting a merge).
 func AbortMerge(repoDir string) error {
-	cmd := exec.Command("jj", "undo", "-R", repoDir)
+	cmd := exec.Command("jj", "undo", "-R", repoDir) // #nosec G204 -- jj invocations with slice args, not shell-formed
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to undo: %s: %w", strings.TrimSpace(string(output)), err)
