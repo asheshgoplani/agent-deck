@@ -4910,8 +4910,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setupWizard, cmd = h.setupWizard.Update(msg)
 			// Check if wizard completed (Enter on final step, or Esc on welcome to use defaults)
 			if h.setupWizard.IsComplete() {
-				// Save config and close wizard
+				// Save config and close wizard. Merge onto disk first so
+				// fields the wizard doesn't manage (Remotes, Hotkeys,
+				// Plugins, etc.) survive — issue #1067.
 				config := h.setupWizard.GetConfig()
+				merged, mergeErr := session.MergePanelConfigOntoDisk(config)
+				if mergeErr == nil && merged != nil {
+					config = merged
+				}
 				if err := session.SaveUserConfig(config); err != nil {
 					h.err = err
 					h.errTime = time.Now()
@@ -4941,7 +4947,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var shouldSave bool
 			h.settingsPanel, cmd, shouldSave = h.settingsPanel.Update(msg)
 			if shouldSave {
+				// Merge panel output onto the on-disk config so top-level
+				// fields the panel does not manage (Remotes, Hotkeys,
+				// Plugins, Conductors, Groups, etc.) survive — issue #1067.
 				config := h.settingsPanel.GetConfig()
+				merged, mergeErr := session.MergePanelConfigOntoDisk(config)
+				if mergeErr == nil && merged != nil {
+					config = merged
+				}
 				if err := session.SaveUserConfig(config); err != nil {
 					h.err = err
 					h.errTime = time.Now()
@@ -9457,6 +9470,28 @@ func (h *Home) countSessionStatuses() (running, waiting, idle, errored int) {
 			errored++
 		}
 	}
+
+	// Include remote sessions (issue #1066). Remotes carry their status as a
+	// lowercase string from the remote's `agent-deck list --json` (see
+	// internal/session/discovery.go for the canonical mapping). The counter
+	// previously only iterated the local-instance snapshot, so the header
+	// pill read 0 for users with only remote sessions.
+	h.remoteSessionsMu.RLock()
+	for _, sessions := range h.remoteSessions {
+		for _, rs := range sessions {
+			switch rs.Status {
+			case "running":
+				running++
+			case "waiting":
+				waiting++
+			case "idle":
+				idle++
+			case "error", "stopped":
+				errored++
+			}
+		}
+	}
+	h.remoteSessionsMu.RUnlock()
 
 	// Cache results with timestamp
 	h.cachedStatusCounts.running = running
