@@ -10,6 +10,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleLaunch combines add + start + optional send into a single command.
@@ -184,18 +185,15 @@ func handleLaunch(profile string, args []string) {
 	}
 
 	// Handle worktree creation
-	var worktreePath, worktreeRepoRoot string
+	var worktreePath, worktreeRepoRoot, worktreeType string
 	if wtBranch != "" {
-		if !git.IsGitRepoOrBareProjectRoot(path) {
-			out.Error(fmt.Sprintf("%s is not a git repository", path), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-
-		repoRoot, err := git.GetWorktreeBaseRoot(path)
+		backend, err := detectAndCreateBackend(path)
 		if err != nil {
-			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
+			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		worktreeType = string(backend.Type())
+		repoRoot := backend.RepoDir()
 
 		// Apply configured branch prefix before validation/existence checks
 		wtSettings := session.GetWorktreeSettings()
@@ -206,7 +204,7 @@ func handleLaunch(profile string, args []string) {
 			os.Exit(1)
 		}
 
-		branchExists := git.BranchExists(repoRoot, wtBranch)
+		branchExists := backend.BranchExists(wtBranch)
 		if createNewBranch && branchExists {
 			out.Error(fmt.Sprintf("branch '%s' already exists (remove -b flag to use existing branch)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
@@ -217,16 +215,15 @@ func handleLaunch(profile string, args []string) {
 			location = *worktreeLocation
 		}
 
-		worktreePath = git.WorktreePath(git.WorktreePathOptions{
+		worktreePath = backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  location,
-			RepoDir:   repoRoot,
 			SessionID: git.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
+		if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
 			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
 			worktreePath = existingPath
 		} else {
@@ -240,7 +237,7 @@ func handleLaunch(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithSetup(repoRoot, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			setupErr, err := createWorktreeWithSetup(backend, worktreePath, wtBranch, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
 			if err != nil {
 				out.Error(fmt.Sprintf("failed to create worktree: %v", err), ErrCodeInvalidOperation)
 				os.Exit(1)
@@ -396,6 +393,7 @@ func handleLaunch(profile string, args []string) {
 		newInstance.WorktreePath = worktreePath
 		newInstance.WorktreeRepoRoot = worktreeRepoRoot
 		newInstance.WorktreeBranch = wtBranch
+		newInstance.WorktreeType = worktreeType
 	}
 
 	if *resumeSession != "" {

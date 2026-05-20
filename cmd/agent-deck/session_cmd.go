@@ -19,6 +19,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/ui"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
 )
 
 // handleSession dispatches session subcommands
@@ -707,36 +708,34 @@ func handleSessionFork(profile string, args []string) {
 
 	// Handle worktree creation
 	var opts *session.ClaudeOptions
+	var worktreeType string
 	if wtBranch != "" {
-		if !git.IsGitRepoOrBareProjectRoot(inst.ProjectPath) {
-			out.Error("session path is not a git repository", ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
-		repoRoot, err := git.GetWorktreeBaseRoot(inst.ProjectPath)
+		backend, err := detectAndCreateBackend(inst.ProjectPath)
 		if err != nil {
-			out.Error(fmt.Sprintf("failed to get repo root: %v", err), ErrCodeInvalidOperation)
+			out.Error(fmt.Sprintf("%v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
+		worktreeType = string(backend.Type())
+		repoRoot := backend.RepoDir()
 
 		// Apply configured branch prefix before validation/existence checks
 		wtSettings := session.GetWorktreeSettings()
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
-		if !createNewBranch && !git.BranchExists(repoRoot, wtBranch) {
+		if !createNewBranch && !backend.BranchExists(wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
-		worktreePath := git.WorktreePath(git.WorktreePathOptions{
+		worktreePath := backend.WorktreePath(vcs.WorktreePathOptions{
 			Branch:    wtBranch,
 			Location:  wtSettings.DefaultLocation,
-			RepoDir:   repoRoot,
 			SessionID: git.GeneratePathID(),
 			Template:  wtSettings.Template(),
 		})
 
 		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := git.GetWorktreeForBranch(repoRoot, wtBranch); err == nil && existingPath != "" {
+		if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
 			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
 			worktreePath = existingPath
 		} else {
@@ -750,16 +749,28 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			setupErr, err := git.CreateWorktreeWithStateAndSetup(
-				repoRoot, worktreePath, wtBranch,
-				git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
-				os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
-			if err != nil {
-				out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
-				os.Exit(1)
-			}
-			if setupErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
+			// --with-state* is git-specific (uses index/stash). Reject for jujutsu.
+			if backend.Type() == vcs.TypeGit {
+				setupErr, err := git.CreateWorktreeWithStateAndSetup(
+					repoRoot, worktreePath, wtBranch,
+					git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
+					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+				if err != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if setupErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
+				}
+			} else {
+				if wantState {
+					out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if err := backend.CreateWorktree(worktreePath, wtBranch); err != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
 			}
 		}
 
@@ -776,6 +787,10 @@ func handleSessionFork(profile string, args []string) {
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
+	}
+
+	if worktreeType != "" {
+		forkedInst.WorktreeType = worktreeType
 	}
 
 	// Apply sandbox config if requested.

@@ -96,6 +96,7 @@ type Instance struct {
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
+	WorktreeType     string `json:"worktree_type,omitempty"`      // "git", "jujutsu", or "" (legacy = git)
 
 	// Multi-repo support
 	MultiRepoEnabled   bool                `json:"multi_repo_enabled,omitempty"`
