@@ -3970,6 +3970,15 @@ func (s *Session) SendEnter() error {
 	return cmd.Run()
 }
 
+// OpenKeySender opens a persistent tmux control-mode client bound to this
+// session's pane. Used by TUI insert mode (#1102) to amortize the fork+exec
+// cost of `tmux send-keys` across a typing burst. Returns nil and an error
+// when the user's tmux can't be reached or the session no longer exists;
+// callers should fall back to per-call SendKeys / SendEnter / SendNamedKey.
+func (s *Session) OpenKeySender() (KeySender, error) {
+	return OpenKeySender(s.SocketName, s.Name)
+}
+
 // SendNamedKey sends a single tmux named key (e.g. "BSpace", "Up", "Down",
 // "Left", "Right", "Tab", "BTab", "C-c", "C-d") to the session. Unlike
 // SendKeys it does NOT use the -l flag, so tmux interprets the argument as a

@@ -506,6 +506,25 @@ type Home struct {
 	// (Backspace, arrows, Tab, Ctrl-C, Ctrl-D — #1094). When nil, named keys
 	// are sent via the session's tmux pane (SendNamedKey).
 	insertNamedKeySink func(inst *session.Instance, key string) error
+	// insertKeySender is the persistent dispatch path opened on
+	// enterInsertMode and closed on exitInsertMode (#1102 perf fix +
+	// remote support). Local sessions get a tmux.KeySender (control-mode
+	// client, no per-keystroke fork+exec); remote sessions get a
+	// session.RemoteKeySender (SSH RPC to the remote agent-deck). When
+	// insertKeySink/insertNamedKeySink are set (test mode) they win;
+	// when neither is set, dispatch falls back to per-call SendKeys
+	// (the legacy path, ~50× slower but unconditional).
+	insertKeySender insertKeySender
+	// insertOpenKeySender creates a persistent KeySender for the given
+	// insert target. Defaulted to the production opener at construction
+	// time; tests override to inject a mock without real tmux/SSH.
+	insertOpenKeySender func(target insertTargetRef) (insertKeySender, error)
+	// insertModeRemoteName / insertModeRemoteID identify the remote
+	// agent-deck and session ID when insert mode targets a remote session
+	// (ItemTypeRemoteSession). Empty for local sessions, which use
+	// insertModeSessionID instead.
+	insertModeRemoteName string
+	insertModeRemoteID   string
 
 	// Insert-mode keystroke batching (#1094). Per-keystroke tmux send-keys
 	// invocations are too slow when typing fast. Runes are accumulated in
@@ -887,6 +906,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		feedbackSender:       feedback.NewSender(),
 		watcherPanel:         NewWatcherPanel(),
 		insertBatchDuration:  defaultInsertBatchDuration,
+		insertOpenKeySender:  defaultInsertOpenKeySender,
 		cursor:               0,
 		initialLoading:       true, // Show splash until sessions load
 		ctx:                  ctx,
