@@ -472,6 +472,17 @@ type Home struct {
 	// System stats collector (CPU, RAM, disk, etc.)
 	sysStatsCollector *sysinfo.Collector
 	sysStatsConfig    session.SystemStatsSettings
+
+	// Insert mode (#1069, feature 1): vim-style modal type-through. When
+	// active, printable runes, Space, and Enter are routed directly to the
+	// focused session's tmux pane instead of being interpreted as TUI
+	// commands. Toggled with `I` (enter) and `Esc` (exit).
+	insertMode          bool
+	insertModeSessionID string
+	// insertKeySink is an optional override used by tests to capture keys
+	// without running real tmux. When nil, keys are sent via the session's
+	// tmux pane (SendKeys / SendEnter).
+	insertKeySink func(inst *session.Instance, text string, sendEnter bool) error
 }
 
 // reloadState preserves UI state during storage reload
@@ -5744,6 +5755,12 @@ func (h *Home) mouseYToItemIndex(y int) int {
 
 // handleMainKey handles keys in main view
 func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Insert mode (#1069): short-circuit before any normal-mode handling.
+	// Keystrokes are sent to the focused session's tmux pane; Esc exits.
+	if h.insertMode {
+		return h.handleInsertModeKey(msg)
+	}
+
 	raw := msg.String()
 	key := h.normalizeMainKey(raw)
 	uiLog.Info("keypress", "raw", raw, "normalized", key, "type", msg.Type, "runes", string(msg.Runes))
@@ -6623,6 +6640,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "i":
 		return h, h.importSessions
+
+	case "I":
+		// Enter insert mode (#1069 feature 1): subsequent keystrokes are
+		// routed to the currently-selected session's tmux pane. Esc exits.
+		// `i` is taken by import; `I` follows the vim convention (Insert).
+		if h.enterInsertMode() {
+			return h, nil
+		}
+		return h, nil
 
 	case "u":
 		// Mark session as unread (idle → waiting)
@@ -9886,9 +9912,15 @@ func (h *Home) View() string {
 	b.WriteString("\n")
 
 	// ═══════════════════════════════════════════════════════════════════
-	// HELP BAR (context-aware shortcuts)
+	// HELP BAR (context-aware shortcuts) — replaced by the insert-mode
+	// indicator when the user is typing through to a focused session (#1069).
 	// ═══════════════════════════════════════════════════════════════════
-	helpBar := h.renderHelpBar()
+	var helpBar string
+	if h.insertMode {
+		helpBar = h.renderInsertModeBar()
+	} else {
+		helpBar = h.renderHelpBar()
+	}
 	b.WriteString(helpBar)
 
 	// Debug performance overlay (AGENTDECK_DEBUG=1 only)
