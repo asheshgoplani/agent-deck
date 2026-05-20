@@ -6,7 +6,7 @@ import { html } from 'htm/preact'
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks'
 import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
-import { selectedIdSignal, createSessionDialogSignal, infoDrawerOpenSignal, mutationsEnabledSignal } from './state.js'
+import { selectedIdSignal, createSessionDialogSignal, infoDrawerOpenSignal, mutationsEnabledSignal, shortcutsOverlaySignal } from './state.js'
 import { paletteOpenSignal, activeTabSignal, tweaksOpenSignal } from './uiState.js'
 
 export function CommandPalette() {
@@ -31,7 +31,8 @@ export function CommandPalette() {
       { id: 'cmd-terminal',  sec: 'COMMANDS', label: 'Open Terminal',  tool: '›_', run: () => { activeTabSignal.value = 'terminal'; close() } },
       { id: 'cmd-costs',     sec: 'COMMANDS', label: 'Costs dashboard', tool: '$', run: () => { activeTabSignal.value = 'costs'; close() } },
       { id: 'cmd-search',    sec: 'COMMANDS', label: 'Session search', tool: '/', run: () => { activeTabSignal.value = 'search'; close() } },
-      { id: 'cmd-tweaks',    sec: 'COMMANDS', label: 'Open Tweaks',    tool: '?', run: () => { tweaksOpenSignal.value = true; close() } },
+      { id: 'cmd-tweaks',    sec: 'COMMANDS', label: 'Open Tweaks',    tool: 'T', run: () => { tweaksOpenSignal.value = true; close() } },
+      { id: 'cmd-shortcuts', sec: 'COMMANDS', label: 'Keyboard shortcuts', tool: '?', run: () => { shortcutsOverlaySignal.value = true; close() } },
       { id: 'cmd-settings',  sec: 'COMMANDS', label: 'Settings drawer', tool: 'S', run: () => { infoDrawerOpenSignal.value = true; close() } },
     ]
     if (mutationsEnabledSignal.value) {

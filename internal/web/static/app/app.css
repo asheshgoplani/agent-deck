@@ -991,3 +991,22 @@ body[data-rail="hidden"] .rightrail { display: none; }
   font-family: var(--mono); font-size: 10.5px; color: var(--muted);
   padding: 6px 8px; border-top: 1px solid var(--border); margin-top: 4px;
 }
+
+/* Keyboard shortcuts overlay (issue #780) */
+.kshort-dialog { min-width: 460px; max-width: 640px; }
+.kshort-table { width: 100%; border-collapse: collapse; }
+.kshort-table tr { border-bottom: 1px solid var(--border); }
+.kshort-table tr:last-child { border-bottom: 0; }
+.kshort-table td { padding: 8px 6px; vertical-align: middle; }
+.kshort-keys { white-space: nowrap; width: 1%; }
+.kshort-label { font-size: 12.5px; color: var(--text); }
+.kshort-plus { color: var(--muted); margin: 0 4px; font-family: var(--mono); font-size: 11px; }
+.kshort-kbd {
+  font-family: var(--mono); font-size: 11px; color: var(--text-hi);
+  border: 1px solid var(--border); border-radius: 3px; padding: 1px 6px;
+  background: var(--card); display: inline-block; min-width: 18px; text-align: center;
+}
+.kshort-foot {
+  margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
