@@ -498,7 +498,11 @@ type Home struct {
 	insertBuf           strings.Builder
 	insertFlushPending  bool
 	insertBatchDuration time.Duration
-}
+// openInNewWindowSink is an optional override used by tests to capture
+	// Shift+Enter dispatches without spawning a real iTerm2 window. When
+	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
+	// See issue #1093.
+	openInNewWindowSink func(req terminal.AttachRequest) error}
 
 // reloadState preserves UI state during storage reload
 type reloadState struct {
@@ -542,7 +546,33 @@ func (h *Home) setHotkeys(bindings map[string]string) {
 	}
 }
 
+// openInNewWindow dispatches the Shift+Enter new-window launch through an
+// optional test sink, or falls back to the real terminal launcher.
+//
+// The sessionExists flag short-circuits the real launcher for dead sessions
+// — opening a fresh iTerm2 window only to land on a "tmux: no such session"
+// error is worse UX than a silent no-op. The sink path skips this guard so
+// tests can pin the dispatch without faking tmux state. Issue #1093.
+func (h *Home) openInNewWindow(req terminal.AttachRequest, sessionExists bool) error {
+	if h.openInNewWindowSink != nil {
+		return h.openInNewWindowSink(req)
+	}
+	if !sessionExists {
+		return nil
+	}
+	return terminal.OpenSessionInNewWindow(req)
+}
+
 func (h *Home) normalizeMainKey(pressed string) string {
+	// Shift+Enter relay: csiuReader emits the Private-Use rune
+	// shiftEnterMarker (U+E5E5) when it sees a Shift+Enter CSI u or
+	// modifyOtherKeys sequence (issue #1093). Bubble Tea v1.3.10 has no
+	// native shift+enter string, so we rewrite the rune to the canonical
+	// label here, before any hotkey lookup, so the dispatch arm at
+	// `case "shift+enter":` is reachable.
+	if pressed == string(shiftEnterMarker) {
+		pressed = "shift+enter"
+	}
 	if canonical, ok := h.hotkeyLookup[pressed]; ok {
 		return canonical
 	}
@@ -6008,16 +6038,21 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open the focused session in a new native terminal window (e.g. a
 		// fresh iTerm2 window on macOS), leaving agent-deck running here.
 		// Issue #1069 feature 2, credit @ddorman-dn.
+		//
+		// Reaching this arm at all required the #1093 fix to keyboard_compat.go
+		// + normalizeMainKey: Bubble Tea v1.3.10 has no shift+enter string,
+		// so we relay Shift+Enter via a Private-Use rune through the input
+		// reader and rewrite it to "shift+enter" before this switch sees it.
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.Exists() {
+			if item.Type == session.ItemTypeSession && item.Session != nil {
 				tmuxSess := item.Session.GetTmuxSession()
 				if tmuxSess != nil {
-					err := terminal.OpenSessionInNewWindow(terminal.AttachRequest{
+					req := terminal.AttachRequest{
 						Name:       tmuxSess.Name,
 						SocketName: tmuxSess.SocketName,
-					})
-					if err != nil {
+					}
+					if err := h.openInNewWindow(req, item.Session.Exists()); err != nil {
 						h.setError(fmt.Errorf("open in new window: %w", err))
 					}
 				}

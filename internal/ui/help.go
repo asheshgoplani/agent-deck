@@ -220,6 +220,7 @@ func (h *HelpOverlay) View() string {
 				{"1-9", "Jump to root group"},
 				{"Space", "Jump mode"},
 				{"Enter", "Attach / toggle"},
+				{"Shift+Enter", "Open session in new iTerm window (macOS)"},
 			},
 		},
 		{

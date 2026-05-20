@@ -777,6 +777,15 @@ func main() {
 	ui.DisableKittyKeyboard(os.Stdout)
 	defer ui.RestoreKittyKeyboard(os.Stdout)
 
+	// Issue #1093: also request xterm modifyOtherKeys mode 1 so iTerm2 (and
+	// other xterm-compatible terminals) send Shift+Enter as a distinct
+	// CSI 27;2;13~ sequence instead of plain '\r'. Without this, Bubble Tea
+	// v1.3.10 cannot distinguish Shift+Enter from Enter on a fresh launch,
+	// and the "open in new iTerm window" binding shipped in #1077 falls
+	// through to the in-pane attach handler. Plain Enter is unaffected.
+	ui.EnableModifyOtherKeys(os.Stdout)
+	defer ui.DisableModifyOtherKeys(os.Stdout)
+
 	p := tea.NewProgram(
 		homeModel,
 		tea.WithAltScreen(),

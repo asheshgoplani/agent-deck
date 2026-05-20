@@ -28,6 +28,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// shiftEnterMarker is the Unicode Private-Use-Area rune used to relay
+// Shift+Enter from the CSI u / xterm-modifyOtherKeys parser through
+// Bubble Tea v1.3.10 (which has no native Shift+Enter representation) and
+// out to home.go's keybinding switch. It is emitted in UTF-8 form by the
+// csiuReader; Bubble Tea decodes the UTF-8 to a KeyRunes message; and
+// Home.normalizeMainKey rewrites it back to the canonical "shift+enter"
+// string the dispatch switch matches on. See issue #1093.
+// U+E5E5 sits in the Basic Multilingual Plane Private Use Area
+// (U+E000..U+F8FF), which Unicode reserves for application-private use
+// and no standard keyboard or input method can produce.
+const shiftEnterMarker rune = 0xE5E5
+
 // DisableKittyKeyboard writes the escape sequence that pops the Kitty keyboard
 // protocol stack, restoring the previous keyboard mode. If nothing was on the
 // stack, this is a safe no-op. After this call, Kitty-protocol-aware terminals
@@ -64,6 +76,31 @@ func RestoreLegacyKeyboardCmd(w io.Writer) tea.Cmd {
 // return.
 func EnableKittyKeyboard(w io.Writer) {
 	_, _ = io.WriteString(w, "\x1b[>1u")
+}
+
+// EnableModifyOtherKeys writes the xterm escape sequence that requests
+// modifyOtherKeys mode 1: terminals supporting the protocol (iTerm2, xterm,
+// Konsole, …) start sending modified keys — including the previously
+// indistinguishable Shift+Enter — as CSI 27;<modifier>;<codepoint>~
+// sequences rather than the legacy unmodified byte. Unmodified keys still
+// arrive as their normal bytes, so plain Enter is unaffected.
+//
+// This is the upstream half of the #1093 fix: without it, a fresh agent-deck
+// launch in iTerm2 sees plain '\r' for both Enter and Shift+Enter and cannot
+// distinguish them. With it, Shift+Enter arrives as \x1b[27;2;13~ and our
+// csiuReader relays it through to home.go as "shift+enter".
+//
+// Pair with DisableModifyOtherKeys on TUI exit so the user's shell prompt
+// returns to default key-reporting behavior.
+func EnableModifyOtherKeys(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[>4;1m")
+}
+
+// DisableModifyOtherKeys writes the xterm escape sequence that returns the
+// terminal to default key reporting (modifyOtherKeys mode 0). Call on TUI
+// exit so the user's shell behaves normally again.
+func DisableModifyOtherKeys(w io.Writer) {
+	_, _ = io.WriteString(w, "\x1b[>4;0m")
 }
 
 // RestoreKittyKeyboard writes the escape sequence that pops the keyboard mode
@@ -133,6 +170,14 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	// Map well-known control codepoints to tea key types.
 	switch codepoint {
 	case 13: // CR = Enter
+		if shiftHeld {
+			// Bubble Tea v1.3.10 has no Shift+Enter representation, so we
+			// relay it via a Private-Use-Area rune. home.go's
+			// normalizeMainKey rewrites this back to "shift+enter". See
+			// issue #1093.
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9: // HT = Tab
@@ -219,6 +264,11 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 
 	switch codepoint {
 	case 13:
+		if shiftHeld {
+			// See ParseCSIu / shiftEnterMarker comment. Issue #1093.
+			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{shiftEnterMarker}}
+			return &msg
+		}
 		msg := tea.KeyMsg{Type: tea.KeyEnter}
 		return &msg
 	case 9:
