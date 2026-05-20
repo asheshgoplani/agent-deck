@@ -94,7 +94,7 @@ export function Topbar() {
             ${rail === 'visible' && html`<line x1="18" y1="8" x2="18" y2="16" opacity="0.5"/>`}
           </svg>
         </button>
-        <button class="icon-btn" onClick=${() => (tweaksOpenSignal.value = !tweaksOpenSignal.value)} title="Tweaks (?)" aria-label="Tweaks">
+        <button class="icon-btn" onClick=${() => (tweaksOpenSignal.value = !tweaksOpenSignal.value)} title="Tweaks" aria-label="Tweaks">
           <${Icon} d=${ICONS.settings}/>
         </button>
       </div>
