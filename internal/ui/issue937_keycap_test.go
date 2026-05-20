@@ -67,26 +67,26 @@ func Test_Issue937v2_KeycapWidth_MatchesTerminal(t *testing.T) {
 	}
 }
 
-// Test_Issue937v2_AnsiStringWidth_FailsKeycap documents the upstream
-// disagreement that motivated cellWidth. If a future ansi (or uniseg)
-// release fixes keycap classification, this test starts failing — that's
-// the signal to delete cellWidth and route callsites back to ansi.
-// Informational; refuses to silently lock keycap to width 1.
-func Test_Issue937v2_AnsiStringWidth_FailsKeycap(t *testing.T) {
+// Test_Issue937v2_AnsiStringWidth_HandlesKeycap is the post-upstream-fix
+// counterpart to the original FailsKeycap canary. The canary fired on the
+// charmbracelet/x/ansi 0.11.7 dep bump (#1070): ansi.StringWidth now
+// classifies keycap clusters as 2 cells natively, matching what real
+// terminals render. cellWidth's previous +keycapCount adjustment became
+// double-counting and was removed.
+//
+// This test inverts the canary: it pins the contract that ansi.StringWidth
+// agrees with cellWidth on every keycap case, so that any future ansi/uniseg
+// regression back to width-1 keycaps is caught immediately. If this starts
+// failing, restore the keycapCount adjustment in cellwidth.go.
+func Test_Issue937v2_AnsiStringWidth_HandlesKeycap(t *testing.T) {
 	for _, tc := range keycapCases {
-		if tc.name == "repeat_emoji" {
-			continue
-		}
-		// Inputs in keycapCases that are pure keycap (no ASCII shoulders)
-		// should still under-report under ansi.StringWidth.
-		if tc.name != "keycap_in_text" {
-			if got := ansi.StringWidth(tc.in); got >= tc.want {
-				t.Errorf(
-					"ansi.StringWidth(%q) = %d, expected < %d — upstream "+
-						"may have fixed keycap classification; revisit cellWidth",
-					tc.in, got, tc.want,
-				)
-			}
+		if got := ansi.StringWidth(tc.in); got != tc.want {
+			t.Errorf(
+				"ansi.StringWidth(%q) = %d, want %d (%s) — upstream may "+
+					"have regressed keycap classification; restore the "+
+					"keycapCount adjustment in cellwidth.go.",
+				tc.in, got, tc.want, tc.report,
+			)
 		}
 	}
 }
