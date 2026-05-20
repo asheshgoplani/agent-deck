@@ -3344,6 +3344,15 @@ func (i *Instance) UpdateStatus() error {
 	status, err := i.tmuxSession.GetStatus()
 	i.mu.Lock()
 
+	// Issue #953: a concurrent Kill() may have published StatusStopped
+	// while we were unlocked for the GetStatus call above. Honoring a
+	// stale tmux-derived status now would clobber the user-initiated
+	// stop with idle/running/error and the next render would show the
+	// wrong icon (the original v1.9.20 user-visible symptom).
+	if i.Status == StatusStopped {
+		return nil
+	}
+
 	if err != nil {
 		i.Status = StatusError
 		return err
@@ -4867,8 +4876,26 @@ func (i *Instance) killInternal(sync bool) error {
 	// SIGKILL anything still alive.
 	i.reapTrackedMCPChildren()
 
-	// Kill tmux session first, but always continue to container cleanup.
+	// Issue #953: kill the tmux session AND publish StatusStopped
+	// atomically under i.mu so concurrent UpdateStatus() callers (most
+	// notably the TUI's backgroundStatusUpdate poller) cannot observe
+	// the intermediate state where the tmux pane is gone but Status
+	// still reflects the pre-kill running/idle value. The pre-existing
+	// !tmuxSession.Exists() branch in UpdateStatus then short-circuits
+	// on `Status == StatusStopped` (lines around 3221/3237) and leaves
+	// the status alone. Setting Status only AFTER the tmux Kill (and
+	// not before) also prevents the symmetric "Status is stopped, tmux
+	// is alive — must be a user-initiated restart, flip to Running"
+	// path at line 3245 from firing during the cleanup window.
+	//
+	// Holding the lock around the kill is safe: tmuxSession.Kill() is
+	// a single tmux command (the process-tree reaping is deferred to a
+	// goroutine via ensureProcessesDead). The KillAndWait variant can
+	// take up to 3s when escalating to SIGKILL — only short-lived CLI
+	// processes (session remove) take that path, and they have no
+	// concurrent TUI render contending for the lock.
 	var tmuxErr error
+	i.mu.Lock()
 	if i.tmuxSession != nil {
 		if sync {
 			tmuxErr = i.tmuxSession.KillAndWait()
@@ -4876,6 +4903,8 @@ func (i *Instance) killInternal(sync bool) error {
 			tmuxErr = i.tmuxSession.Kill()
 		}
 	}
+	i.Status = StatusStopped
+	i.mu.Unlock()
 
 	// Clean up sandbox container (only if name matches our prefix convention).
 	// Runs regardless of tmux kill result to avoid orphaned containers.
@@ -4906,7 +4935,9 @@ func (i *Instance) killInternal(sync bool) error {
 	// dir on an unclean shutdown is harmless, just wasteful.
 	i.CleanupWorkerScratchConfigDir()
 
-	i.Status = StatusStopped
+	// Issue #953: StatusStopped was already written under i.mu at the top
+	// of this function. Re-asserting it here without the lock would
+	// reintroduce the write/write data race with concurrent UpdateStatus.
 
 	if tmuxErr != nil {
 		return fmt.Errorf("failed to kill tmux session: %w", tmuxErr)
