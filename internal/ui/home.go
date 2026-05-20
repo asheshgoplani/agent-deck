@@ -12181,7 +12181,10 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 
 	toolStr := ""
 	if rs.Tool != "" {
-		tStyle := DimStyle
+		// #1091: use brand-specific color (claude=orange, gemini=purple, …)
+		// so SSH-remote rows match local rows. Falls back to ColorTextDim
+		// for unknown/empty tool names via GetToolStyle.
+		tStyle := GetToolStyle(rs.Tool)
 		if selected {
 			tStyle = SessionStatusSelStyle
 		}
