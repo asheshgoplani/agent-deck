@@ -110,7 +110,7 @@ func TestIssue1094_TabAndShiftTab(t *testing.T) {
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyTab})
 	home = model.(*Home)
 	model, _ = home.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type, value unused
 
 	if len(namedCap.calls) != 2 {
 		t.Fatalf("expected 2 named-key calls (Tab+BTab), got %d", len(namedCap.calls))
@@ -234,7 +234,7 @@ func TestIssue1094_EnterFlushesBufferedRunes(t *testing.T) {
 	}
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type, value unused
 
 	if len(runeCap.calls) != 2 {
 		t.Fatalf("expected flush (text='hi', sendEnter=false) + enter (text='', sendEnter=true); got %d calls: %+v", len(runeCap.calls), runeCap.calls)
@@ -287,7 +287,7 @@ func TestIssue1094_ScheduleInsertFlushIdempotent(t *testing.T) {
 	}
 
 	model, secondCmd := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
-	home = model.(*Home)
+	_ = model.(*Home) // assert type, value unused
 	if secondCmd != nil {
 		t.Error("second rune should NOT schedule a duplicate tick while a flush is already pending")
 	}
