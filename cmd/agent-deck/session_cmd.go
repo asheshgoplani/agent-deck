@@ -2783,6 +2783,11 @@ func handleSessionOutput(profile string, args []string) {
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
 	copyFlag := fs.Bool("copy", false, "Copy output to system clipboard")
+	// #1101: --pane returns the raw tmux capture-pane content (with ANSI escapes
+	// and the tool's full UI chrome) instead of the parsed transcript "last
+	// response". The local TUI preview uses capture-pane; remote sessions
+	// fetched via SSH need this same content to render claude-formatted output.
+	paneFlag := fs.Bool("pane", false, "Return tmux capture-pane content (full UI with ANSI)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session output [id|title] [options]")
@@ -2827,6 +2832,32 @@ func handleSessionOutput(profile string, args []string) {
 			inst.ClaudeSessionID = freshID
 			inst.ClaudeDetectedAt = time.Now()
 		}
+	}
+
+	// #1101: --pane short-circuits the transcript path and returns the live
+	// tmux pane capture so remote previews can render the same claude-formatted
+	// content the local preview shows. We still emit a ResponseOutput-shaped
+	// JSON so the wire format is unchanged.
+	if *paneFlag {
+		paneContent, paneErr := inst.PreviewFull()
+		if paneErr != nil {
+			out.Error(fmt.Sprintf("failed to capture pane: %v", paneErr), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		jsonData := map[string]interface{}{
+			"success":       true,
+			"session_id":    inst.ID,
+			"session_title": inst.Title,
+			"tool":          inst.Tool,
+			"role":          "pane",
+			"content":       paneContent,
+		}
+		if quietMode {
+			fmt.Println(paneContent)
+			return
+		}
+		out.Print(paneContent, jsonData)
+		return
 	}
 
 	// Get the last response (best-effort fallback for smoother CLI reads)

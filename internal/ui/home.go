@@ -466,7 +466,11 @@ type Home struct {
 	lastRemoteLatencyFetch  time.Time
 	remoteLatencyFetchBusy  bool
 	remoteLatencyRefreshSec int // resolved once at construction
-
+// #1101: remote cost summaries fetched alongside session listings so the
+	// status-line cost segment reflects spend on every configured remote, not
+	// just events written to the local cost_events table.
+	remoteCosts   map[string]*costs.RemoteCostSummary // remoteName -> summary
+	remoteCostsMu sync.RWMutex
 	// Cost tracking
 	costStore            *costs.Store
 	costPricer           *costs.Pricer
@@ -764,6 +768,8 @@ type sendOutputResultMsg struct {
 // remoteSessionsFetchedMsg is sent when async remote sessions fetch completes.
 type remoteSessionsFetchedMsg struct {
 	sessions map[string][]session.RemoteSessionInfo
+	// #1101: per-remote cost summary collected on the same SSH fanout.
+	costs map[string]*costs.RemoteCostSummary
 }
 
 // remoteLatenciesFetchedMsg is sent when an async batch of latency
@@ -2192,6 +2198,13 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 	}
 
 	results := make(map[string][]session.RemoteSessionInfo)
+	// #1101: remote cost summaries piggy-back on the existing remote-fetch
+	// channel so the status-line cost segment doesn't lag behind the session
+	// list. nil-valued entries indicate fetch failures (e.g., older remote
+	// agent-deck without `costs summary --json`); the renderer treats those
+	// as "remote contributes zero" so a single broken remote can't poison
+	// the displayed total.
+	costResults := make(map[string]*costs.RemoteCostSummary)
 	ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
 	defer cancel()
 
@@ -2205,9 +2218,13 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 			sessions[i].RemoteName = name
 		}
 		results[name] = sessions
+
+		if summary, costErr := runner.FetchCostSummary(ctx); costErr == nil && summary != nil {
+			costResults[name] = summary
+		}
 	}
 
-	return remoteSessionsFetchedMsg{sessions: results}
+	return remoteSessionsFetchedMsg{sessions: results, costs: costResults}
 }
 
 // measureRemoteLatencies measures round-trip latency to every configured
@@ -2604,7 +2621,18 @@ func (h *Home) fetchRemotePreview(remoteName, sessionID, key string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
 		defer cancel()
 
-		content, fetchErr := runner.FetchSessionOutput(ctx, sessionID)
+		// #1101: use FetchSessionPane (raw capture-pane content with ANSI +
+		// tool UI chrome) instead of FetchSessionOutput (parsed transcript
+		// text) so claude-formatted previews render the same way local
+		// sessions do. If the remote agent-deck predates --pane, fall back
+		// to the transcript path so the preview is at least non-empty.
+		content, fetchErr := runner.FetchSessionPane(ctx, sessionID)
+		if fetchErr != nil || strings.TrimSpace(content) == "" {
+			if fallback, fbErr := runner.FetchSessionOutput(ctx, sessionID); fbErr == nil && strings.TrimSpace(fallback) != "" {
+				content = fallback
+				fetchErr = nil
+			}
+		}
 		content = truncateRemotePreviewContent(content)
 		return previewFetchedMsg{previewKey: key, content: content, err: fetchErr}
 	}
@@ -4332,6 +4360,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.lastRemoteFetch = time.Now()
 		h.remotesFetchActive = false
 		h.remoteSessionsMu.Unlock()
+		// #1101: store remote cost summaries so renderCostLine can fold them
+		// into the displayed totals on the next paint.
+		h.remoteCostsMu.Lock()
+		h.remoteCosts = msg.costs
+		h.remoteCostsMu.Unlock()
 		h.rebuildFlatItems()
 		return h, nil
 
@@ -10084,14 +10117,21 @@ func (h *Home) View() string {
 	// See session.ResolveCostLineTemplate for the [costs] / per-profile
 	// override chain. RenderCostLine returns "" when hide_when_zero is on
 	// and every recognized variable rendered to $0.00.
+	// #1101: aggregate remote per-host summaries on top of local totals so the
+	// status-line cost segment reflects spend across every configured host,
+	// not only events written to the local cost_events table. Remotes whose
+	// fetch failed contribute zero — the local figures still render.
+	h.remoteCostsMu.RLock()
+	remoteAgg := costs.MergeRemoteCostSummaries(h.remoteCosts)
+	h.remoteCostsMu.RUnlock()
 	costVars := map[string]int64{
-		"cost_today":      h.costToday.Load(),
-		"cost_yesterday":  h.costYesterday.Load(),
-		"cost_this_week":  h.costWeek.Load(),
-		"cost_last_week":  h.costLastWeek.Load(),
-		"cost_this_month": h.costThisMonth.Load(),
-		"cost_last_month": h.costLastMonth.Load(),
-		"cost_projected":  h.costProjected.Load(),
+		"cost_today":      h.costToday.Load() + remoteAgg.CostTodayMicrodollars,
+		"cost_yesterday":  h.costYesterday.Load() + remoteAgg.CostYesterdayMicrodollars,
+		"cost_this_week":  h.costWeek.Load() + remoteAgg.CostThisWeekMicrodollars,
+		"cost_last_week":  h.costLastWeek.Load() + remoteAgg.CostLastWeekMicrodollars,
+		"cost_this_month": h.costThisMonth.Load() + remoteAgg.CostThisMonthMicrodollars,
+		"cost_last_month": h.costLastMonth.Load() + remoteAgg.CostLastMonthMicrodollars,
+		"cost_projected":  h.costProjected.Load() + remoteAgg.CostProjectedMicrodollars,
 	}
 	if rendered := costs.RenderCostLine(h.costLineTemplate, costVars, h.costLineHideWhenZero); rendered != "" {
 		costStyle := lipgloss.NewStyle().Foreground(ColorCyan)

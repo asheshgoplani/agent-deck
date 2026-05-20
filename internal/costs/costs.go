@@ -48,3 +48,42 @@ type DailyCost struct {
 func FormatUSD(microdollars int64) string {
 	return fmt.Sprintf("$%.2f", float64(microdollars)/1_000_000)
 }
+
+// RemoteCostSummary mirrors `agent-deck costs summary --json` output. #1101:
+// when an SSH remote is configured, the TUI fetches one of these per remote
+// and folds the totals into the local cost-line totals so the status bar
+// reflects spend across every host.
+type RemoteCostSummary struct {
+	CostTodayMicrodollars     int64 `json:"cost_today_microdollars"`
+	CostYesterdayMicrodollars int64 `json:"cost_yesterday_microdollars"`
+	CostThisWeekMicrodollars  int64 `json:"cost_this_week_microdollars"`
+	CostLastWeekMicrodollars  int64 `json:"cost_last_week_microdollars"`
+	CostThisMonthMicrodollars int64 `json:"cost_this_month_microdollars"`
+	CostLastMonthMicrodollars int64 `json:"cost_last_month_microdollars"`
+	CostProjectedMicrodollars int64 `json:"cost_projected_microdollars"`
+	EventsToday               int   `json:"events_today"`
+	EventsThisWeek            int   `json:"events_this_week"`
+	EventsThisMonth           int   `json:"events_this_month"`
+}
+
+// MergeRemoteCostSummaries sums per-remote summaries into a single aggregate.
+// Used by the TUI to display a combined "local + all remotes" cost line.
+func MergeRemoteCostSummaries(summaries map[string]*RemoteCostSummary) RemoteCostSummary {
+	var out RemoteCostSummary
+	for _, s := range summaries {
+		if s == nil {
+			continue
+		}
+		out.CostTodayMicrodollars += s.CostTodayMicrodollars
+		out.CostYesterdayMicrodollars += s.CostYesterdayMicrodollars
+		out.CostThisWeekMicrodollars += s.CostThisWeekMicrodollars
+		out.CostLastWeekMicrodollars += s.CostLastWeekMicrodollars
+		out.CostThisMonthMicrodollars += s.CostThisMonthMicrodollars
+		out.CostLastMonthMicrodollars += s.CostLastMonthMicrodollars
+		out.CostProjectedMicrodollars += s.CostProjectedMicrodollars
+		out.EventsToday += s.EventsToday
+		out.EventsThisWeek += s.EventsThisWeek
+		out.EventsThisMonth += s.EventsThisMonth
+	}
+	return out
+}

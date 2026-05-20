@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
@@ -21,7 +23,7 @@ func handleCosts(profile string, args []string) {
 	case "sync":
 		handleCostsSync(profile)
 	case "summary":
-		handleCostsSummary(profile)
+		handleCostsSummary(profile, args[1:])
 	case "recompute":
 		handleCostsRecompute(profile, args[1:])
 	default:
@@ -108,14 +110,44 @@ func handleCostsSync(profile string) {
 	}
 }
 
-func handleCostsSummary(profile string) {
+func handleCostsSummary(profile string, args []string) {
+	// #1101: --json output so a remote agent-deck can be queried over SSH and
+	// its cost totals merged into the local TUI's status-line cost segment.
+	fs := flag.NewFlagSet("costs summary", flag.ExitOnError)
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
 	costStore, storage := openCostStore(profile)
 	defer storage.Close()
 
 	today, _ := costStore.TotalToday()
+	yesterday, _ := costStore.TotalYesterday()
 	week, _ := costStore.TotalThisWeek()
+	lastWeek, _ := costStore.TotalLastWeek()
 	month, _ := costStore.TotalThisMonth()
+	lastMonth, _ := costStore.TotalLastMonth()
 	projected, _ := costStore.ProjectedMonthly()
+
+	if *jsonOutput {
+		// Wire shape mirrors costs.RemoteCostSummary so SSHRunner can json.Unmarshal directly.
+		payload := map[string]interface{}{
+			"cost_today_microdollars":      today.TotalCostMicrodollars,
+			"cost_yesterday_microdollars":  yesterday.TotalCostMicrodollars,
+			"cost_this_week_microdollars":  week.TotalCostMicrodollars,
+			"cost_last_week_microdollars":  lastWeek.TotalCostMicrodollars,
+			"cost_this_month_microdollars": month.TotalCostMicrodollars,
+			"cost_last_month_microdollars": lastMonth.TotalCostMicrodollars,
+			"cost_projected_microdollars":  projected,
+			"events_today":                 today.EventCount,
+			"events_this_week":             week.EventCount,
+			"events_this_month":            month.EventCount,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		_ = enc.Encode(payload)
+		return
+	}
 
 	fmt.Printf("Cost Summary:\n")
 	fmt.Printf("  Today:      %s (%d events)\n", costs.FormatUSD(today.TotalCostMicrodollars), today.EventCount)
