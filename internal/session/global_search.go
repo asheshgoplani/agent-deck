@@ -705,6 +705,9 @@ func (idx *GlobalSearchIndex) initialLoad() {
 			entry, err = parseClaudeJSONLHead(path)
 		} else {
 			var data []byte
+			// #nosec G122 -- walk callback over the user's own Claude session
+			// directory; not attacker-controlled. TOCTOU symlink races affect
+			// only this user's own files.
 			data, err = os.ReadFile(path)
 			if err != nil {
 				return nil

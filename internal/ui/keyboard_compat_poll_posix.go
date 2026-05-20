@@ -17,7 +17,7 @@ func pollFdReady(fd int, timeout time.Duration) bool {
 	if ms < 1 {
 		ms = 1
 	}
-	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}} // #nosec G115 -- fd is a real OS file descriptor (small positive int), fits in int32
 	for {
 		n, err := unix.Poll(fds, ms)
 		if err == unix.EINTR {

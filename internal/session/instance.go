@@ -1328,15 +1328,11 @@ func (i *Instance) buildCopilotCommand(baseCommand string) string {
 	return envPrefix + GetToolCommand("copilot")
 }
 
-// codexRolloutExists reports whether Codex has flushed a rollout JSONL for
-// the given session ID under $CODEX_HOME/sessions. Used by buildCodexCommand
+// codexRolloutExistsInHome reports whether Codex has flushed a rollout JSONL
+// for the given session ID under codexHome/sessions. Used by buildCodexCommand
 // to gate `codex resume <sid>` on a real on-disk rollout file (Issue #756).
 //
-// Codex layout: $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
-func codexRolloutExists(sessionID string) bool {
-	return codexRolloutExistsInHome(sessionID, getCodexHomeDir())
-}
-
+// Codex layout: codexHome/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
 func codexRolloutExistsInHome(sessionID, codexHome string) bool {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
@@ -2063,6 +2059,8 @@ func collectProcessTreePIDsViaPgrep(rootPID int) []int {
 		queue = queue[1:]
 		allPIDs = append(allPIDs, parent)
 
+		// #nosec G204 -- "pgrep" is a fixed binary name and the only argument is
+		// strconv.Itoa(int), never reachable from external input.
 		childrenRaw, err := exec.Command("pgrep", "-P", strconv.Itoa(parent)).Output()
 		if err != nil {
 			continue
@@ -2080,6 +2078,7 @@ func collectProcessTreePIDsViaPgrep(rootPID int) []int {
 }
 
 func isLikelyCodexProcessPID(pid int) bool {
+	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
 	argsOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
 	if err != nil {
 		return false
@@ -2159,6 +2158,9 @@ for f in /proc/[0-9]*/fd/*; do
 done`,
 		codexProbeMissingSentinel,
 	)
+	// #nosec G204 -- "docker exec" with internal SandboxContainer name and a
+	// hardcoded shell probe script (codexProbeMissingSentinel is a compile-time
+	// constant); no external input flows here.
 	out, err := exec.Command("docker", "exec", i.SandboxContainer, "sh", "-lc", script).Output()
 	if err != nil {
 		return "", ""
@@ -2182,6 +2184,7 @@ func (i *Instance) queryCodexSessionFromHostLsof() (string, string) {
 			continue
 		}
 
+		// #nosec G204 -- "lsof" is a fixed binary; only arg is strconv.Itoa(int).
 		out, err := exec.Command("lsof", "-p", strconv.Itoa(pid)).Output()
 		if err != nil {
 			var execErr *exec.Error
@@ -6795,6 +6798,9 @@ func sandboxTmpExecutable(ctx context.Context, ctr *docker.Container) bool {
 func sandboxExecProbe(ctx context.Context, ctr *docker.Container, script string) bool {
 	prefix := ctr.ExecPrefixNonInteractive()
 	args := append(prefix[1:], "bash", "-lc", script)
+	// #nosec G204 -- prefix comes from docker.Container.ExecPrefixNonInteractive
+	// (returns ["docker", "exec", containerName]); script is a hardcoded probe
+	// snippet from callers above. No external input.
 	_, err := exec.CommandContext(ctx, prefix[0], args...).CombinedOutput()
 	return err == nil
 }

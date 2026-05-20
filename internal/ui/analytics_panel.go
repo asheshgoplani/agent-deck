@@ -550,7 +550,7 @@ func formatNumber(n int) string {
 		if i > 0 && (len(str)-i)%3 == 0 {
 			result = append(result, ',')
 		}
-		result = append(result, byte(c))
+		result = append(result, byte(c)) // #nosec G115 -- c iterates a numeric-only string ('0'-'9'), always ASCII range
 	}
 
 	return string(result)

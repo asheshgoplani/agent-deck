@@ -81,5 +81,7 @@ func (rb *RingBuffer) Bytes() []byte {
 // DumpToFile writes the ring buffer contents to a file in chronological order.
 func (rb *RingBuffer) DumpToFile(path string) error {
 	data := rb.Bytes()
+	// #nosec G306 -- diagnostic log dump intended to be readable for incident
+	// triage; contains no secrets. 0o644 matches the rest of the log surface.
 	return os.WriteFile(path, data, 0o644)
 }

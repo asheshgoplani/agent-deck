@@ -610,6 +610,7 @@ func readParentPID(pid int) (int, error) {
 		}
 		return strconv.Atoi(fields[1])
 	}
+	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
 	if err != nil {
 		return 0, err
@@ -626,6 +627,7 @@ func readProcessExe(pid int) (string, error) {
 	if exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid)); err == nil {
 		return exe, nil
 	}
+	// #nosec G204 -- "ps" is a fixed binary; only arg is strconv.Itoa(int).
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 	if err != nil {
 		return "", err

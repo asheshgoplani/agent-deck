@@ -152,6 +152,8 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G703 -- src/dst are agent-deck-managed worktree paths; not derived
+	// from external/untrusted input.
 	return os.WriteFile(dst, data, mode)
 }
 

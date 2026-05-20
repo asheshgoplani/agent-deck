@@ -162,7 +162,7 @@ func ParseCSIu(data []byte) *tea.KeyMsg {
 	}
 
 	// Regular rune: apply shift to lowercase letters.
-	r := rune(codepoint)
+	r := rune(codepoint) // #nosec G115 -- codepoint parsed from CSI/xterm sequence, validated >= 0 above
 	if shiftHeld && r >= 'a' && r <= 'z' {
 		r = r - 'a' + 'A'
 	}
@@ -245,7 +245,7 @@ func ParseModifyOtherKeys(data []byte) *tea.KeyMsg {
 		return &msg
 	}
 
-	r := rune(codepoint)
+	r := rune(codepoint) // #nosec G115 -- codepoint parsed from CSI/xterm sequence, validated >= 0 above
 	if shiftHeld && r >= 'a' && r <= 'z' {
 		r = r - 'a' + 'A'
 	}

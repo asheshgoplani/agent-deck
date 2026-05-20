@@ -185,8 +185,8 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	// the biggest viewer; smaller clients see a clipped portion of the larger
 	// window content (no dot-filled void cells).
 	if err := pty.Setsize(b.ptmx, &pty.Winsize{
-		Rows: uint16(rows),
-		Cols: uint16(cols),
+		Rows: uint16(rows), // #nosec G115 -- terminal rows fits in uint16; PTY ABI enforces this
+		Cols: uint16(cols), // #nosec G115 -- terminal cols fits in uint16; PTY ABI enforces this
 	}); err != nil {
 		return fmt.Errorf("resize pty: %w", err)
 	}

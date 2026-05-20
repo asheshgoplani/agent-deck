@@ -701,6 +701,8 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 // 0600. Token files contain the long-lived refresh token — file mode is
 // security-critical per RESEARCH.md §Security Domain. T-17-05.
 func writeTokenAtomic(path string, t *oauth2.Token) error {
+	// #nosec G117 -- OAuth token persistence is the intended use; file is
+	// written with mode 0o600 (below) per RESEARCH.md §Security Domain T-17-05.
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {
 		return err

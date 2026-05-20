@@ -2350,14 +2350,13 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 					waitingNoActivityChecks = 0
 					_ = target.SendCtrlC()
 					time.Sleep(200 * time.Millisecond)
-					if resendErr := target.SendKeysAndEnter(message); resendErr == nil {
-						// A successful resend is not yet evidence of receipt
-						// — the next iteration must still observe a positive
-						// signal — but we record the attempt so verifyDelivery
-						// can distinguish "send pipe ever fired" from "never
-						// even acked". Intentionally NOT setting
-						// sawDeliveryEvidence here.
-					}
+					// A successful resend is not yet evidence of receipt — the
+					// next iteration must still observe a positive signal — so
+					// we intentionally do NOT set sawDeliveryEvidence here, even
+					// when SendKeysAndEnter returns nil. The send attempt is
+					// recorded only so verifyDelivery can distinguish "pipe ever
+					// fired" from "never even acked".
+					_ = target.SendKeysAndEnter(message)
 					continue
 				}
 

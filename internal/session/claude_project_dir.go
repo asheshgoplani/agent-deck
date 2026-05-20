@@ -98,6 +98,9 @@ func copyDirRecursive(src, dst string) error {
 			if err != nil {
 				return err
 			}
+			// #nosec G122 -- walk callback operating on a Claude-managed
+			// project-dir tree owned by the user, not on attacker-controlled
+			// input. TOCTOU symlink races here only affect this user's own dir.
 			return os.Symlink(link, target)
 		}
 		if info.IsDir() {

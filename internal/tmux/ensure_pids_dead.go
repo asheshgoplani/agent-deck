@@ -138,6 +138,8 @@ func filterAliveOurProcesses(pids []int) []int {
 // callers that care about stricter filtering can pre-filter before
 // handing PIDs in.
 func isOurProcessLoose(pid int) bool {
+	// #nosec G204 -- "ps" is a fixed binary and the only varying arg is
+	// strconv.Itoa(int), never external input.
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
 	if err != nil {
 		return false

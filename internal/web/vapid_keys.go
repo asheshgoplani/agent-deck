@@ -105,6 +105,8 @@ func writePushVAPIDKeysFile(path string, file *pushVAPIDKeysFile) error {
 		return fmt.Errorf("mkdir vapid dir: %w", err)
 	}
 
+	// #nosec G117 -- VAPID key file persistence is the intended storage path;
+	// file mode 0o600 (below) restricts read access. Required by web push spec.
 	raw, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal vapid keys: %w", err)

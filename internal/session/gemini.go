@@ -329,6 +329,8 @@ func GetAvailableGeminiModels() ([]string, error) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
+	// #nosec G704 -- URL is a hardcoded Google API endpoint; only the API key
+	// query param is interpolated, sourced from the local GOOGLE_API_KEY env.
 	resp, err := client.Get("https://generativelanguage.googleapis.com/v1beta/models?key=" + apiKey)
 	if err != nil {
 		return geminiModelFallback, fmt.Errorf("API request failed: %w", err)

@@ -3423,7 +3423,7 @@ func (h *Home) processStatusUpdate(req statusUpdateRequest) {
 			statusChanged = true
 		}
 		remaining--
-		h.statusUpdateIndex.Store(int32((idx + 1) % instanceCount))
+		h.statusUpdateIndex.Store(int32((idx + 1) % instanceCount)) // #nosec G115 -- idx is bounded by instanceCount (slice length), fits in int32
 	}
 
 	// Only invalidate status counts cache if status actually changed

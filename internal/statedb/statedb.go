@@ -14,11 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/logging"
 	_ "modernc.org/sqlite"
 )
-
-var statedbLog = logging.ForComponent(logging.CompStorage)
 
 // withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
 // ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
@@ -578,6 +575,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			placeholders[i] = "?"
 			args[i] = inst.ID
 		}
+		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+		// from len(insts); all values flow through args[], never the SQL string.
 		query := "SELECT id, tool_data FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 		rows, queryErr := s.db.Query(query, args...)
 		if queryErr == nil {
@@ -610,6 +609,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			placeholders[i] = "?"
 			args[i] = inst.ID
 		}
+		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+		// from len(insts); all values flow through args[], never the SQL string.
 		query := "DELETE FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
 		if _, err := tx.Exec(query, args...); err != nil {
 			return err
@@ -738,14 +739,6 @@ func (s *StateDB) InstanceExists(id string) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// UpdateInstanceField updates a single column for a given instance.
-// field must be a valid column name (caller is responsible for safety).
-func (s *StateDB) UpdateInstanceField(id, field string, value any) error {
-	query := fmt.Sprintf("UPDATE instances SET %s = ? WHERE id = ?", field)
-	_, err := s.db.Exec(query, value, id)
-	return err
 }
 
 // --- Group CRUD ---

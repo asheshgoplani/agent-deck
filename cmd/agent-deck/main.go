@@ -2789,6 +2789,9 @@ type brewRunner interface {
 type execBrewRunner struct{ bin string }
 
 func (e *execBrewRunner) Run(args ...string) ([]byte, error) {
+	// #nosec G204 -- e.bin is an internal path (typically "brew") chosen by
+	// the install path resolver; args are constructed by the brew_cmd.go
+	// runner, not from external input.
 	cmd := exec.Command(e.bin, args...)
 	cmd.Stdin = os.Stdin
 	var buf bytes.Buffer
@@ -3361,6 +3364,9 @@ func handleUninstall(args []string) {
 		if f, err := os.Create(testFile); err != nil {
 			// Need elevated permissions
 			fmt.Printf("Requires sudo to remove %s\n", item.path)
+			// #nosec G204 -- item.path comes from the local uninstall scan
+			// (binary install paths), not external input. Fixed "sudo rm -f"
+			// args are hardcoded.
 			cmd := exec.Command("sudo", "rm", "-f", item.path)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr

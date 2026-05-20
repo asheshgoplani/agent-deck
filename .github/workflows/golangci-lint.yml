@@ -16,7 +16,9 @@ jobs:
       # v6-era cached golangci-lint binary (v1.64.8) was built with Go 1.24,
       # which refuses to lint a go.mod targeting 1.25. v9 pulls v2.x binaries
       # built with Go 1.25+. .golangci.yml was migrated to v2 schema.
-      # Still warn-only — flip to strict after baseline gosec findings are
-      # triaged in follow-up PR.
+      # Strict mode (#1055): non-zero exit on findings. Baseline triaged in
+      # the same PR — SQL parameterization annotated, pprof timeouts added,
+      # G115/G117/G118/G122/G306/G703/G704 false positives carry // #nosec
+      # explanations, testutil/eval paths excluded via .golangci.yml.
       - uses: golangci/golangci-lint-action@v9
-        with: { version: latest, args: --timeout=5m --issues-exit-code=0 }
+        with: { version: latest, args: --timeout=5m }

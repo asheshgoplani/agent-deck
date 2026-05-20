@@ -93,6 +93,8 @@ func (c *Container) Name() string {
 // A non-zero exit code from docker inspect indicates the container does not exist.
 // Other errors (e.g. Docker daemon unreachable) are propagated.
 func (c *Container) Exists(ctx context.Context) (bool, error) {
+	// #nosec G204 -- "docker" is a fixed binary and c.name is an agent-deck-
+	// generated container name (set via NewContainer), not external input.
 	out, err := exec.CommandContext(ctx,
 		"docker", "inspect",
 		"--format", "{{.State.Status}}",
@@ -110,6 +112,7 @@ func (c *Container) Exists(ctx context.Context) (bool, error) {
 // IsRunning returns true if the container is currently running.
 // Uses exit code as the primary signal rather than parsing error messages.
 func (c *Container) IsRunning(ctx context.Context) (bool, error) {
+	// #nosec G204 -- see Exists() above; c.name is internally generated.
 	out, err := exec.CommandContext(ctx,
 		"docker", "inspect",
 		"--format", "{{.State.Running}}",

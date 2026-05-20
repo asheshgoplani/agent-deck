@@ -555,6 +555,8 @@ func discoverLatestClaudeJSONL(projectPath string) (string, bool) {
 	}
 
 	projectDir := filepath.Join(configDir, "projects", encoded)
+	// #nosec G703 -- projectDir is derived from configDir (CLAUDE_CONFIG_DIR)
+	// joined with an encoded session ID; not from untrusted input.
 	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
 		return "", false
 	}

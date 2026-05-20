@@ -23,6 +23,8 @@ func runMCPProxy(socketPath string) {
 	retries := 0
 
 	for {
+		// #nosec G704 -- "unix" socket dial, not a network address; socketPath
+		// is the agent-deck-managed MCP proxy socket path resolved from local config.
 		conn, err := net.DialTimeout("unix", socketPath, dialTimeout)
 		if err != nil {
 			retries++

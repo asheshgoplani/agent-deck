@@ -827,6 +827,8 @@ func isExecutablePath(path string) bool {
 	if path == "" {
 		return false
 	}
+	// #nosec G703 -- callers pass agent-deck-resolved command paths (e.g. from
+	// $PATH lookup or user config), not raw external input.
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return false

@@ -244,7 +244,6 @@ func MigrateGroupToProfile(groupPath, sourceProfile, targetProfile string, opts 
 		if sanitized := sanitizeGroupName(groupPath); sanitized != groupPath {
 			if alt, lerr := src.LoadInstancesByGroup(sanitized); lerr == nil && len(alt) > 0 {
 				rows = alt
-				groupPath = sanitized
 			}
 		}
 	}

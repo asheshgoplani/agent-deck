@@ -9,8 +9,8 @@ func collectDisk() DiskStat {
 		return DiskStat{}
 	}
 
-	totalBytes := stat.Blocks * uint64(stat.Bsize)
-	freeBytes := stat.Bavail * uint64(stat.Bsize) // Bavail = available to non-root
+	totalBytes := stat.Blocks * uint64(stat.Bsize) // #nosec G115 -- statfs Bsize is positive on real filesystems
+	freeBytes := stat.Bavail * uint64(stat.Bsize)  // #nosec G115 -- statfs Bsize is positive on real filesystems; Bavail = available to non-root
 	usedBytes := totalBytes - freeBytes
 
 	var pct float64

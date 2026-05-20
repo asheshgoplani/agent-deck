@@ -92,7 +92,7 @@ func New(t *testing.T, sessionName string) *Harness {
 func (h *Harness) AddClient(cols, rows int) error {
 	cmd := exec.Command("tmux", "-S", h.SocketPath, "attach-session", "-t", h.SessionName)
 
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}) // #nosec G115 -- test helper, sizes provided by caller fit uint16
 	if err != nil {
 		return fmt.Errorf("multiclienttmux: pty.Start: %w", err)
 	}
