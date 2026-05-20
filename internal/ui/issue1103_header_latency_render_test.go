@@ -41,11 +41,11 @@ func TestIssue1103_Header_ShowsLatencyMs_ForConnectedRemote(t *testing.T) {
 	home.renderRemoteGroupItem(&b, item, false)
 	rendered := b.String()
 
-	if !strings.Contains(stripANSI(rendered), "remotes/dev") {
+	if !strings.Contains(stripANSILatency(rendered), "remotes/dev") {
 		t.Fatalf("header missing `remotes/dev`: %q", rendered)
 	}
-	if !strings.Contains(stripANSI(rendered), "— 47ms") {
-		t.Fatalf("header missing ` — 47ms` marker per #1103: %q", stripANSI(rendered))
+	if !strings.Contains(stripANSILatency(rendered), "— 47ms") {
+		t.Fatalf("header missing ` — 47ms` marker per #1103: %q", stripANSILatency(rendered))
 	}
 }
 
@@ -112,7 +112,7 @@ func TestIssue1103_Header_OfflineRendersOfflineMarker(t *testing.T) {
 	}
 	var b strings.Builder
 	home.renderRemoteGroupItem(&b, item, false)
-	rendered := stripANSI(b.String())
+	rendered := stripANSILatency(b.String())
 
 	if !strings.Contains(rendered, "— offline") {
 		t.Fatalf("disconnected remote must show ` — offline` per #1103; got %q", rendered)
@@ -139,7 +139,7 @@ func TestIssue1103_Header_NeverMeasured_SuppressesMarker(t *testing.T) {
 	}
 	var b strings.Builder
 	home.renderRemoteGroupItem(&b, item, false)
-	rendered := stripANSI(b.String())
+	rendered := stripANSILatency(b.String())
 
 	if strings.Contains(rendered, " — ") {
 		t.Fatalf("unmeasured remote must NOT render a latency marker (avoids first-paint jitter); got %q", rendered)
@@ -173,9 +173,9 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-// stripANSI removes ANSI escape sequences so substring assertions on the
+// stripANSILatency removes ANSI escape sequences so substring assertions on the
 // human-visible text are robust to color codes.
-func stripANSI(s string) string {
+func stripANSILatency(s string) string {
 	var out strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
