@@ -1,9 +1,57 @@
+# CodeRabbit config — agent-deck (public OSS Go repo)
+# Docs: https://docs.coderabbit.ai/reference/configuration
+
+language: en
+
 reviews:
-  profile: chill
-  request_changes_workflow: false
+  profile: chill                    # less nitpicky, ship-friendly
+  request_changes_workflow: false   # never block merge with "Request Changes"
   high_level_summary: true
-  poem: false
+  poem: false                       # save tokens; the bunny is cute but eats budget
+  review_status: true
+  collapse_walkthrough: true
+
   auto_review:
     enabled: true
-    drafts: false
-language: en
+    drafts: false                   # don't review draft PRs (RFCs etc.)
+    base_branches:
+      - main
+    # Don't review trivial / generated PRs to save tokens + seat noise:
+    ignore_title_keywords:
+      - "[skip ci]"
+      - "[no-review]"
+      - "WIP"
+
+  # Don't review pure dependency bumps (Dependabot opens lots of these;
+  # govulncheck + golangci-lint already cover real risk):
+  path_filters:
+    - "!.github/dependabot.yml"
+    - "!**/*.md"                    # markdown-only churn (changelog/docs)
+    - "!CHANGELOG.md"
+    - "!**/testdata/**"
+
+  # Bots that open PRs should NOT trigger reviews or consume seats:
+  ignore_users:
+    - dependabot[bot]
+    - github-actions[bot]
+    - renovate[bot]
+
+  tools:
+    # Repo already runs these in CI; let CodeRabbit hook into their output:
+    golangci-lint:
+      enabled: true
+    gosec:
+      enabled: true
+    yamllint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: false                # noisy on docs-heavy repos
+
+chat:
+  auto_reply: true                  # respond to @coderabbitai mentions
+
+knowledge_base:
+  learnings:
+    scope: auto                     # learn this repo's patterns over time
