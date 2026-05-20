@@ -161,7 +161,9 @@ func (g *GroupDialog) ShowRename(currentPath, currentName string) {
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
 	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
-	g.nameInput.Focus()
+	// Issue #1068: must reset focusIndex and blur pathInput, otherwise stale
+	// state from a prior Create-dialog Tab routes keys to the invisible path.
+	g.focusName()
 }
 
 // ShowMove shows the dialog for moving a session to a group path.
@@ -181,7 +183,9 @@ func (g *GroupDialog) ShowRenameSession(sessionID, currentName string) {
 	g.validationErr = ""
 	g.nameInput.SetValue(currentName)
 	g.nameInput.CursorEnd() // Issue #604: place cursor at end of pre-filled name.
-	g.nameInput.Focus()
+	// Issue #1068: must reset focusIndex and blur pathInput, otherwise stale
+	// state from a prior Create-dialog Tab routes keys to the invisible path.
+	g.focusName()
 }
 
 // GetSessionID returns the session ID being renamed
