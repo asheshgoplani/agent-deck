@@ -1170,6 +1170,12 @@ func handleAdd(profile string, args []string) {
 	// subsequent start/restart/revive always target the same socket.
 	tmuxSocket := fs.String("tmux-socket", "", "tmux -L socket name for this session (overrides [tmux].socket_name)")
 
+	// Per-session named account slot (#924). Maps to
+	// [profiles.<account>.claude].config_dir in ~/.agent-deck/config.toml
+	// and becomes the most-specific level of CLAUDE_CONFIG_DIR resolution.
+	// Empty = fall through to conductor/group/env/profile/global/default.
+	account := fs.String("account", "", "Named account slot (resolves via [profiles.<account>.claude].config_dir; #924)")
+
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck add [path] [options]")
 		fmt.Println()
@@ -1528,6 +1534,13 @@ func handleAdd(profile string, args []string) {
 	// Set wrapper if provided
 	if sessionWrapperResolved != "" {
 		newInstance.Wrapper = sessionWrapperResolved
+	}
+
+	// #924 per-session named account slot — captured verbatim. The
+	// resolver silently falls through when no matching [profiles.<account>]
+	// block exists, so unknown names are never an error here.
+	if trimmed := strings.TrimSpace(*account); trimmed != "" {
+		newInstance.Account = trimmed
 	}
 
 	// Apply per-session model override after command/tool resolution so the

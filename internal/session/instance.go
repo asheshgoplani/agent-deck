@@ -98,6 +98,17 @@ type Instance struct {
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`    // Branch name in worktree
 	WorktreeType     string `json:"worktree_type,omitempty"`      // "git", "jujutsu", or "" (legacy = git)
 
+	// Account is the per-session named account slot (issue #924). Maps to
+	// `[profiles.<account>.claude].config_dir` in ~/.agent-deck/config.toml
+	// at spawn time and becomes the most-specific level in the
+	// CLAUDE_CONFIG_DIR resolution chain — beating conductor / group / env.
+	// Switching the value requires a session restart (the Option 1 MVP
+	// tradeoff): the in-flight Claude conversation is lost since the new
+	// account's settings.json and history live elsewhere. Empty means
+	// "fall through to conductor/group/env/profile/global/default" so
+	// pre-#924 sessions keep their existing behavior unchanged.
+	Account string `json:"account,omitempty"`
+
 	// Multi-repo support
 	MultiRepoEnabled   bool                `json:"multi_repo_enabled,omitempty"`
 	AdditionalPaths    []string            `json:"additional_paths,omitempty"`    // Paths beyond ProjectPath

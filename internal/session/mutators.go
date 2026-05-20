@@ -29,6 +29,7 @@ const (
 	FieldNoTransitionNotify = "no-transition-notify"
 	FieldSkipPermissions    = "skip-permissions"
 	FieldAutoMode           = "auto-mode"
+	FieldAccount            = "account" // #924 per-session named account slot
 )
 
 var ValidMutableFields = []string{
@@ -48,6 +49,7 @@ var ValidMutableFields = []string{
 	FieldNoTransitionNotify,
 	FieldSkipPermissions,
 	FieldAutoMode,
+	FieldAccount,
 }
 
 type FieldRestartPolicy int
@@ -60,7 +62,7 @@ const (
 func RestartPolicyFor(field string) FieldRestartPolicy {
 	switch field {
 	case FieldCommand, FieldWrapper, FieldTool, FieldChannels, FieldPlugins, FieldExtraArgs, FieldPath,
-		FieldSkipPermissions, FieldAutoMode:
+		FieldSkipPermissions, FieldAutoMode, FieldAccount:
 		return FieldRestartRequired
 	default:
 		return FieldLive
@@ -275,6 +277,15 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		if err != nil {
 			return oldValue, nil, err
 		}
+
+	case FieldAccount:
+		// #924 per-session named account slot. Stored verbatim; an
+		// unconfigured name silently falls through the resolver chain.
+		// Empty string clears the override (back to conductor/group/env).
+		// Restart required (see RestartPolicyFor) — the in-flight
+		// conversation is lost, that's the documented Option 1 tradeoff.
+		oldValue = inst.Account
+		inst.Account = strings.TrimSpace(value)
 
 	default:
 		return "", nil, &MutationError{

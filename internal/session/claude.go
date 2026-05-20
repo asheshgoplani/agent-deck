@@ -241,6 +241,7 @@ type resolveOpts struct {
 //
 // Returns (path, source) where source is one of:
 //
+//	"account"   — Instance.Account (issue #924) resolved via [profiles.<account>.claude].config_dir
 //	"env"       — CLAUDE_CONFIG_DIR env var
 //	"conductor" — [conductors.<name>.claude].config_dir
 //	"group"     — [groups."<groupPath>".claude].config_dir
@@ -248,7 +249,8 @@ type resolveOpts struct {
 //	"global"    — top-level [claude].config_dir
 //	"default"   — ~/.claude
 //
-// On the instance chain conductor and group beat env (the #881 fix); see
+// On the instance chain Account is the most-specific level (beats
+// conductor/group/env). Conductor and group beat env (the #881 fix); see
 // GetClaudeConfigDirForInstance doc for the rationale.
 func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 	userConfig, _ := LoadUserConfig()
@@ -259,6 +261,16 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 	}
 
 	if opts.inst != nil {
+		// Instance chain: account is the most-specific override (#924).
+		// Falls through to conductor/group/env when the account name has
+		// no matching [profiles.<account>.claude].config_dir block — so an
+		// unconfigured account name is a silent no-op, matching the
+		// permissive style of the other levels.
+		if userConfig != nil && opts.inst.Account != "" {
+			if accountDir := userConfig.GetProfileClaudeConfigDir(opts.inst.Account); accountDir != "" {
+				return accountDir, "account"
+			}
+		}
 		// Instance chain: conductor / group beat env.
 		if userConfig != nil {
 			if name := conductorNameFromInstance(opts.inst); name != "" {
@@ -353,13 +365,14 @@ func conductorNameFromInstance(inst *Instance) string {
 //
 // Priority (most-specific → least-specific):
 //
-//  1. [conductors.<name>.claude].config_dir — consulted only when
+//  1. Instance.Account (#924) → [profiles.<account>.claude].config_dir
+//  2. [conductors.<name>.claude].config_dir — consulted only when
 //     Instance.Title starts with "conductor-"
-//  2. [groups."<group>".claude].config_dir
-//  3. CLAUDE_CONFIG_DIR env var
-//  4. [profiles.<profile>.claude].config_dir
-//  5. [claude].config_dir
-//  6. ~/.claude
+//  3. [groups."<group>".claude].config_dir
+//  4. CLAUDE_CONFIG_DIR env var
+//  5. [profiles.<profile>.claude].config_dir
+//  6. [claude].config_dir
+//  7. ~/.claude
 //
 // Why conductor/group beat env (fix-config-dir-priority, 2026-04-17):
 // developer shells commonly export CLAUDE_CONFIG_DIR via aliases (cdp,
@@ -376,8 +389,8 @@ func GetClaudeConfigDirForInstance(inst *Instance) string {
 }
 
 // GetClaudeConfigDirSourceForInstance returns (path, source) for the
-// instance chain. Source labels: "conductor", "group", "env", "profile",
-// "global", "default".
+// instance chain. Source labels: "account" (issue #924), "conductor",
+// "group", "env", "profile", "global", "default".
 func GetClaudeConfigDirSourceForInstance(inst *Instance) (path, source string) {
 	return resolveClaudeConfigDir(resolveOpts{inst: inst})
 }

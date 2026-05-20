@@ -63,6 +63,10 @@ type InstanceData struct {
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"`
 	WorktreeBranch   string `json:"worktree_branch,omitempty"`
 
+	// Account is the per-session named account (issue #924). See
+	// Instance.Account for full semantics.
+	Account string `json:"account,omitempty"`
+
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -653,6 +657,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreePath:       inst.WorktreePath,
 		WorktreeRepo:       inst.WorktreeRepoRoot,
 		WorktreeBranch:     inst.WorktreeBranch,
+		Account:            inst.Account,
 		ToolData:           toolData,
 	}, nil
 }
@@ -763,6 +768,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			WorktreePath:              r.WorktreePath,
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
+			Account:                   r.Account,
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -876,6 +882,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			WorktreePath:              r.WorktreePath,
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
+			Account:                   r.Account,
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -1123,6 +1130,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			WorktreePath:              instData.WorktreePath,
 			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
 			WorktreeBranch:            instData.WorktreeBranch,
+			Account:                   instData.Account,
 			TmuxSocketName:            instData.TmuxSocketName,
 			ClaudeSessionID:           instData.ClaudeSessionID,
 			ClaudeDetectedAt:          instData.ClaudeDetectedAt,
