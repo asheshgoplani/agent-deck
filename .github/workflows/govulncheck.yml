@@ -1,6 +1,7 @@
 name: govulncheck
 on:
   pull_request: { branches: [main] }
+  push: { branches: [main] }
   schedule: [{ cron: '0 7 * * 1' }]
 permissions:
   contents: read
@@ -11,24 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
-        with: { go-version: '1.25.10' }
-      # strict mode (flipped in #1054): Go toolchain bumped to 1.25.10,
-      # which closes all stdlib CVEs that triggered this gate. Any new stdlib
-      # CVE surfaced by govulncheck now blocks the PR.
-      - name: govulncheck (text, strict)
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-      # SARIF run is best-effort for the Security tab. Upstream action has a
-      # known issue where duplicate rule tags can break upload-sarif; don't
-      # let that fail the workflow.
-      - uses: golang/govulncheck-action@v1
         with:
-          go-version-input: '1.25.10'
-          output-format: sarif
-          output-file: vuln.sarif
-      - uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        continue-on-error: true
-        with:
-          sarif_file: vuln.sarif
+          go-version: '1.25.10'
+          check-latest: false
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck (strict — fails on any reachable vuln)
+        run: govulncheck ./...
