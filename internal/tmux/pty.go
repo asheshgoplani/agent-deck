@@ -143,6 +143,15 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// it off at runtime. AGENTDECK_ITERM_BADGE=1 ad-hoc enables.
 	emitITermBadge(os.Stdout, s.DisplayName, s.terminalChromeIsEnabled())
 
+	// #1114: subscribe to mid-attach badge updates from the Claude
+	// rename hook. The hook subprocess has no controlling tty (Claude
+	// spawns hooks detached via setsid), so its EmitITermBadgeViaTty
+	// path silently no-ops. Instead, the hook drops a file under
+	// ~/.agent-deck/badge-updates/ and this goroutine — which DOES own
+	// the outer iTerm2 tty via os.Stdout — re-emits the OSC. Stopped
+	// by the ctx cancel that fires in cleanupAttach.
+	go WatchBadgeUpdates(ctx, s.Name, os.Stdout, s.terminalChromeIsEnabled(), nil)
+
 	// Create context with cancel for detach
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
