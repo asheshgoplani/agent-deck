@@ -3,15 +3,33 @@ package session
 import (
 	"log/slog"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // mcpReapGracePeriod is how long we wait after SIGTERM before escalating
-// to SIGKILL on a tracked MCP child. Kept short — stdio MCP children
-// generally exit immediately when their stdio is closed, so anything
-// that survives 500ms is almost certainly stuck.
-const mcpReapGracePeriod = 500 * time.Millisecond
+// to SIGKILL on a tracked MCP child. Stdio MCP children generally exit
+// immediately when their stdio is closed, so anything that survives this
+// window is almost certainly stuck and needs the harder signal.
+//
+// Raised from 500ms → 1s in the issue #1086 fix: on CI runners under
+// the race detector, scheduler latency between the SIGTERM and the
+// child's libc signal handler can exceed 500ms, causing a spurious
+// SIGKILL escalation that races with the child's already-in-flight
+// exit.
+const mcpReapGracePeriod = 1 * time.Second
+
+// mcpReapVerifyTimeout is how long we wait AFTER SIGKILL for the child
+// to actually be gone (reaped by init or exit'd by the kernel). Without
+// this verification, killInternal returns while children are still
+// transitioning, which leaves a window where callers (and tests) can
+// observe live PIDs even though the kernel has accepted SIGKILL. See
+// issue #1086.
+const mcpReapVerifyTimeout = 2 * time.Second
 
 // RegisterMCPChild records the OS PID of a stdio MCP child spawned for
 // this session. Session stop iterates these PIDs and signals each
@@ -69,37 +87,76 @@ func (i *Instance) UnregisterMCPChild(pid int) {
 //     into their own session, escaping tmux's pgroup kill — those
 //     are exactly the leakers from issue #965.
 //
-// Issue #965 wiring follow-up to PR #1000.
+// Issue #965 wiring follow-up to PR #1000. Hardened in issue #1086
+// to use a single ps snapshot (was: two snapshots, which could
+// disagree under load on CI runners and skip a depth-2 child whose
+// intermediate parent had just exec-optimized).
 func (i *Instance) discoverMCPChildrenFromPaneTree() {
-	pids := i.collectTmuxPaneProcessTreePIDs()
-	if len(pids) <= 1 {
+	if i.tmuxSession == nil || !i.tmuxSession.Exists() {
 		return
 	}
-	panePID := pids[0]
+	panePID := i.readPanePID()
+	if panePID <= 0 {
+		return
+	}
 
-	// Build a {pid -> ppid} map from a single ps snapshot so we can
-	// classify each descendant by its immediate parent without an
-	// extra syscall per PID. Falls back to no-op on platforms where
-	// `ps -eo pid=,ppid=` isn't available (same fallback shape as
-	// collectProcessTreePIDsFromTable in instance.go).
 	procTable, err := exec.Command("ps", "-eo", "pid=,ppid=").Output()
-	if err != nil {
+	if err != nil || len(procTable) == 0 {
 		return
 	}
 	childrenByParent := parsePSParentChildMap(procTable)
-	parentByPID := make(map[int]int, len(pids))
-	for parent, children := range childrenByParent {
-		for _, child := range children {
-			parentByPID[child] = parent
-		}
+	if len(childrenByParent) == 0 {
+		return
 	}
 
-	for _, pid := range pids[1:] {
-		if parentByPID[pid] == panePID {
-			continue // depth-1 — tmux teardown owns this
-		}
-		i.RegisterMCPChild(pid)
+	// BFS from pane PID with depth tracking. Single snapshot — every
+	// classification decision (depth-1 skip vs depth-2+ register) is
+	// against the same ps output, removing the two-snapshot race the
+	// previous implementation had between collectTmuxPaneProcessTreePIDs
+	// and the per-pid parent lookup.
+	type queued struct {
+		pid   int
+		depth int
 	}
+	seen := map[int]bool{panePID: true}
+	queue := []queued{{pid: panePID, depth: 0}}
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+
+		for _, child := range childrenByParent[node.pid] {
+			if child <= 0 || seen[child] {
+				continue
+			}
+			seen[child] = true
+			childDepth := node.depth + 1
+			if childDepth >= 2 {
+				i.RegisterMCPChild(child)
+			}
+			queue = append(queue, queued{pid: child, depth: childDepth})
+		}
+	}
+}
+
+// readPanePID returns the pane PID for this Instance's tmux session,
+// or 0 if it cannot be determined. Extracted so discovery can take a
+// single ps snapshot rather than indirecting through
+// collectTmuxPaneProcessTreePIDs (which also takes its own snapshot).
+func (i *Instance) readPanePID() int {
+	target := i.tmuxSession.Name + ":"
+	out, err := tmux.Exec(i.TmuxSocketName, "list-panes", "-t", target, "-F", "#{pane_pid}").Output()
+	if err != nil {
+		return 0
+	}
+	pidStr := strings.TrimSpace(string(out))
+	if idx := strings.IndexByte(pidStr, '\n'); idx >= 0 {
+		pidStr = pidStr[:idx]
+	}
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 // reapTrackedMCPChildren SIGTERMs every PID in TrackedMCPPIDs, waits a
@@ -109,6 +166,13 @@ func (i *Instance) discoverMCPChildrenFromPaneTree() {
 // Errors signaling a single PID are logged and swallowed: a missing
 // child (ESRCH) is the success case, and we never want a single stuck
 // PID to block tmux teardown.
+//
+// Issue #1086: after SIGKILL, this function now blocks until every PID
+// has actually been reaped (ESRCH or zombie) or mcpReapVerifyTimeout
+// elapses. Previously it returned immediately after sending SIGKILL,
+// which allowed callers (and the issue #965 regression test) to
+// observe live PIDs in the brief window before the kernel reaped
+// them — flaky on CI runners under -race.
 func (i *Instance) reapTrackedMCPChildren() {
 	i.mcpPIDsMu.Lock()
 	pids := append([]int(nil), i.TrackedMCPPIDs...)
@@ -125,8 +189,37 @@ func (i *Instance) reapTrackedMCPChildren() {
 		}
 	}
 
-	deadline := time.Now().Add(mcpReapGracePeriod)
-	for time.Now().Before(deadline) {
+	if waitPIDsGone(pids, mcpReapGracePeriod) {
+		return
+	}
+
+	for _, pid := range pids {
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			mcpLog.Debug("mcp_child_sigkill_failed", slog.Int("pid", pid), slog.Any("error", err))
+		}
+	}
+
+	if !waitPIDsGone(pids, mcpReapVerifyTimeout) {
+		var survivors []int
+		for _, pid := range pids {
+			if syscall.Kill(pid, syscall.Signal(0)) == nil {
+				survivors = append(survivors, pid)
+			}
+		}
+		if len(survivors) > 0 {
+			mcpLog.Warn("mcp_child_sigkill_unverified",
+				slog.Any("survivors", survivors),
+				slog.Duration("waited", mcpReapVerifyTimeout))
+		}
+	}
+}
+
+// waitPIDsGone polls until every PID in the slice is gone (ESRCH on
+// signal-0 probe) or the deadline elapses. Returns true when all PIDs
+// are confirmed gone, false on timeout.
+func waitPIDsGone(pids []int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
 		anyAlive := false
 		for _, pid := range pids {
 			if syscall.Kill(pid, syscall.Signal(0)) == nil {
@@ -135,14 +228,11 @@ func (i *Instance) reapTrackedMCPChildren() {
 			}
 		}
 		if !anyAlive {
-			return
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-
-	for _, pid := range pids {
-		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			mcpLog.Debug("mcp_child_sigkill_failed", slog.Int("pid", pid), slog.Any("error", err))
-		}
 	}
 }

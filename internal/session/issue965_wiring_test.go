@@ -13,7 +13,6 @@
 package session
 
 import (
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -32,9 +31,6 @@ import (
 // {claude,node,zsh,bash,sh,cat,npm} whitelist in
 // internal/tmux/tmux.go:isOurProcess) don't reparent to PID 1.
 func TestKillInternal_DiscoversAndReapsMcpChildrenFromPaneTree_RegressionFor965(t *testing.T) {
-	if os.Getenv("CI") == "true" {
-		t.Skip("flaky on CI runners — production wiring for #965 incomplete; see issue follow-up. Local-only test.")
-	}
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("unix-only: relies on syscall.Kill semantics")
 	}
