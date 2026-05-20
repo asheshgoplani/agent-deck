@@ -59,6 +59,9 @@ RUN npm install -g @openai/codex@0
 # Pin major version; update periodically.
 RUN npm install -g @google/gemini-cli@0
 
+# ── Kiro CLI (AWS) ──────────────────────────────────────────────────
+RUN curl -fsSL https://cli.kiro.dev/install | bash
+
 # Pre-create credential directories for auth volume mounts.
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
@@ -66,6 +69,9 @@ RUN mkdir -p /root/.claude \
     /root/.local/state/opencode \
     /root/.codex \
     /root/.gemini \
+    /root/.kiro \
+    /root/.local/share/kiro-cli \
+    /root/.aws \
     /root/.ssh
 
 # Make /root traversable by the non-root runtime user (--user uid:gid).

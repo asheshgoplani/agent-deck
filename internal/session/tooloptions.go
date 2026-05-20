@@ -501,3 +501,68 @@ func UnmarshalClaudeOptions(data json.RawMessage) (*ClaudeOptions, error) {
 
 	return &opts, nil
 }
+
+// KiroOptions holds launch options for Kiro CLI sessions
+type KiroOptions struct {
+	SessionMode     string `json:"session_mode,omitempty"`      // "new", "resume"
+	ResumeSessionID string `json:"resume_session_id,omitempty"` // --resume-id <UUID>
+	Agent           string `json:"agent,omitempty"`             // --agent <name>
+	Model           string `json:"model,omitempty"`             // --model <id>
+	TrustAllTools   bool   `json:"trust_all_tools,omitempty"`   // --trust-all-tools
+}
+
+// ToolName returns "kiro"
+func (o *KiroOptions) ToolName() string {
+	return "kiro"
+}
+
+// ToArgs returns command-line arguments based on options
+func (o *KiroOptions) ToArgs() []string {
+	var args []string
+	switch o.SessionMode {
+	case "resume":
+		if o.ResumeSessionID != "" {
+			args = append(args, "--resume-id", o.ResumeSessionID)
+		} else {
+			args = append(args, "--resume")
+		}
+	}
+	if o.Agent != "" {
+		args = append(args, "--agent", o.Agent)
+	}
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
+	}
+	if o.TrustAllTools {
+		args = append(args, "--trust-all-tools")
+	}
+	return args
+}
+
+// NewKiroOptions creates KiroOptions with defaults
+func NewKiroOptions() *KiroOptions {
+	return &KiroOptions{}
+}
+
+// UnmarshalKiroOptions deserializes KiroOptions from JSON wrapper
+func UnmarshalKiroOptions(data json.RawMessage) (*KiroOptions, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	var wrapper ToolOptionsWrapper
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Tool != "kiro" {
+		return nil, nil
+	}
+
+	var opts KiroOptions
+	if err := json.Unmarshal(wrapper.Options, &opts); err != nil {
+		return nil, err
+	}
+
+	return &opts, nil
+}

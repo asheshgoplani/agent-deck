@@ -3098,6 +3098,8 @@ func detectTool(cmd string) string {
 		return "cursor"
 	case strings.Contains(cmd, "hermes"):
 		return "hermes"
+	case strings.Contains(cmd, "kiro"):
+		return "kiro"
 	default:
 		return "shell"
 	}

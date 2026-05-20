@@ -81,6 +81,32 @@ func (d *PromptDetector) HasPrompt(content string) bool {
 		// with a status bar (model · path · branch · usage) below it.
 		return d.hasCodexPromptMarker(content)
 
+	case "kiro":
+		// Kiro CLI uses a full-screen TUI. Primary status detection is via
+		// filesystem signals (lock file + JSONL mtime) in instance.go.
+		// This prompt detector is a fallback for tmux content-based detection.
+		//
+		// The TUI always shows an input area at the bottom. The key distinction:
+		//   Busy:  "type to queue a message" / "Kiro is working" / "esc to cancel"
+		//   Idle:  "Enter to send"
+		//   Permission: "requires approval" / "Yes, single permission"
+		lower := strings.ToLower(content)
+		// Busy: agent is streaming, executing tools, or running subagents
+		if strings.Contains(content, "type to queue") ||
+			strings.Contains(content, "Kiro is working") ||
+			strings.Contains(lower, "esc to cancel") ||
+			strings.Contains(lower, "esc to interrupt") ||
+			strings.Contains(lower, "ctrl+c to interrupt") {
+			return false
+		}
+		// Permission approval prompt (waiting state)
+		if strings.Contains(content, "requires approval") ||
+			strings.Contains(content, "Yes, single permission") {
+			return true
+		}
+		// Idle: input area shows "Enter to send" (only when agent is NOT working)
+		return strings.Contains(content, "Enter to send")
+
 	default:
 		// Generic shell - check for common prompts
 		return d.hasShellPrompt(content)

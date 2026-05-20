@@ -537,7 +537,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "kiro", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -586,6 +586,11 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bcursor\s+agent\b`),
 		regexp.MustCompile(`(?i)cursor\s+cli\b`),
 	},
+	"kiro": {
+		// Kiro CLI (AWS/Kiro agentic IDE terminal interface)
+		regexp.MustCompile(`(?i)\bkiro\s+cli\b`),
+		regexp.MustCompile(`(?i)\bkiro-cli\b`),
+	},
 }
 
 func detectToolFromCommand(command string) string {
@@ -614,6 +619,8 @@ func detectToolFromCommand(command string) string {
 			return "cursor"
 		case "hermes":
 			return "hermes"
+		case "kiro-cli", "kiro":
+			return "kiro"
 		case "pi":
 			return "pi"
 		}
@@ -636,6 +643,8 @@ func detectToolFromCommand(command string) string {
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
 		return "hermes"
+	case strings.Contains(cmdLower, "kiro"):
+		return "kiro"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
 	default:
@@ -3677,6 +3686,22 @@ func (s *Session) hasBusyIndicatorResolved(content string) bool {
 	// No busy signal. Check grace period: between tool calls the spinner
 	// briefly disappears. If it was visible recently, stay busy.
 	if tracker.InGracePeriod() {
+		// Override grace period if a prompt pattern is explicitly present.
+		// This handles tools like kiro where a permission prompt replaces
+		// the busy indicator but the grace window hasn't expired yet.
+		if patterns != nil && len(patterns.PromptStrings) > 0 {
+			recentLines := lastNLines(content, 15)
+			recentContent := strings.Join(recentLines, "\n")
+			lowerRecent := strings.ToLower(recentContent)
+			for _, ps := range patterns.PromptStrings {
+				if strings.Contains(lowerRecent, strings.ToLower(ps)) {
+					statusLog.Debug("busy_grace_overridden_by_prompt",
+						slog.String("session", shortName),
+						slog.String("prompt_pattern", ps))
+					return false
+				}
+			}
+		}
 		statusLog.Debug("busy_spinner_grace", slog.String("session", shortName),
 			slog.Duration("since_busy", time.Since(tracker.lastBusyTime)))
 		return true

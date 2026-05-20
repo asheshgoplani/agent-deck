@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"al.essio.dev/pkg/shellescape"
@@ -163,6 +164,11 @@ type Instance struct {
 	CopilotStartedAt  int64     `json:"-"`                           // Unix millis when we started Copilot (for session matching, not persisted)
 	CopilotModel      string    `json:"copilot_model,omitempty"`     // Active model for this session
 	CopilotAllowAll   bool      `json:"copilot_allow_all,omitempty"` // Per-session --allow-all override
+
+	// Kiro CLI integration
+	KiroSessionID         string    `json:"kiro_session_id,omitempty"`
+	KiroDetectedAt        time.Time `json:"kiro_detected_at,omitempty"`
+	lastKiroCostTurnCount int       `json:"-"` // tracks emitted cost turns
 
 	// Latest user input for context (extracted from session files)
 	LatestPrompt      string    `json:"latest_prompt,omitempty"`
@@ -1300,6 +1306,204 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	}
 
 	return envPrefix + command + yoloFlag + modelFlag
+}
+
+// buildKiroCommand builds the command for Kiro CLI (`kiro-cli chat`).
+// Handles resume via --resume-id, --trust-all-tools, --agent, and --model flags.
+func (i *Instance) buildKiroCommand(baseCommand string) string {
+	envPrefix := i.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" || strings.EqualFold(cmd, "kiro-cli") || strings.EqualFold(cmd, "kiro") {
+		cmd = GetKiroCommand()
+	}
+
+	args := cmd + " chat"
+
+	// Discover session ID from disk if not already known
+	if i.KiroSessionID == "" {
+		i.detectKiroSessionFromDisk()
+	}
+
+	// Apply tool options if set
+	opts := i.GetKiroOptions()
+	if opts != nil {
+		for _, arg := range opts.ToArgs() {
+			args += " " + arg
+		}
+	} else if i.KiroSessionID != "" {
+		// Resume existing session on restart
+		args += " --resume-id " + i.KiroSessionID
+	}
+
+	// Apply config-level trust-all-tools if no explicit option set
+	if opts == nil || !opts.TrustAllTools {
+		userConfig, _ := LoadUserConfig()
+		if userConfig != nil && userConfig.Kiro.TrustAllTools {
+			args += " --trust-all-tools"
+		}
+	}
+
+	// Apply config-level default agent if no explicit option set
+	if opts == nil || opts.Agent == "" {
+		userConfig, _ := LoadUserConfig()
+		if userConfig != nil && userConfig.Kiro.DefaultAgent != "" {
+			args += " --agent " + userConfig.Kiro.DefaultAgent
+		}
+	}
+
+	return envPrefix + args
+}
+
+// GetKiroOptions returns the KiroOptions for this instance, or nil.
+func (i *Instance) GetKiroOptions() *KiroOptions {
+	if i.ToolOptionsJSON == nil || len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, _ := UnmarshalKiroOptions(i.ToolOptionsJSON)
+	return opts
+}
+
+// detectKiroSessionFromDisk discovers the kiro session ID by scanning session files on disk.
+func (i *Instance) detectKiroSessionFromDisk() {
+	if i.Tool != "kiro" || i.KiroSessionID != "" {
+		return
+	}
+	homeDir, _ := os.UserHomeDir()
+	if homeDir == "" {
+		return
+	}
+	sessionsDir := filepath.Join(homeDir, ".kiro", "sessions", "cli")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return
+	}
+
+	// Expand project path for comparison (stored as ~/... but kiro uses absolute)
+	projectPath := i.ProjectPath
+	if strings.HasPrefix(projectPath, "~/") {
+		projectPath = filepath.Join(homeDir, projectPath[2:])
+	}
+	effectiveDir := i.EffectiveWorkingDir()
+	if strings.HasPrefix(effectiveDir, "~/") {
+		effectiveDir = filepath.Join(homeDir, effectiveDir[2:])
+	}
+
+	var bestID string
+	var bestTime time.Time
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".lock") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sessionsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var sess struct {
+			SessionID string `json:"session_id"`
+			Cwd       string `json:"cwd"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if json.Unmarshal(data, &sess) != nil {
+			continue
+		}
+		if sess.Cwd != projectPath && sess.Cwd != effectiveDir {
+			continue
+		}
+		t, _ := time.Parse(time.RFC3339Nano, sess.UpdatedAt)
+		if t.After(bestTime) {
+			bestTime = t
+			bestID = sess.SessionID
+		}
+	}
+	if bestID != "" {
+		i.KiroSessionID = bestID
+		i.KiroDetectedAt = time.Now()
+	}
+}
+
+// updateKiroFilesystemStatus detects kiro session status from filesystem signals.
+func (i *Instance) updateKiroFilesystemStatus() {
+	if i.Tool != "kiro" || i.KiroSessionID == "" {
+		return
+	}
+	homeDir, _ := os.UserHomeDir()
+	sessionsDir := filepath.Join(homeDir, ".kiro", "sessions", "cli")
+
+	// Check lock file
+	lockFile := filepath.Join(sessionsDir, i.KiroSessionID+".lock")
+	lockData, err := os.ReadFile(lockFile)
+	if err != nil {
+		return // No lock = can't determine status from filesystem
+	}
+	var lock struct {
+		PID int `json:"pid"`
+	}
+	if json.Unmarshal(lockData, &lock) != nil {
+		return
+	}
+	// Check PID liveness
+	if err := syscall.Kill(lock.PID, 0); err != nil {
+		// PID dead - session ended
+		i.hookStatus = "dead"
+		i.hookLastUpdate = time.Now()
+		return
+	}
+
+	// Check JSONL mtime
+	jsonlFile := filepath.Join(sessionsDir, i.KiroSessionID+".jsonl")
+	info, err := os.Stat(jsonlFile)
+	if err != nil {
+		return
+	}
+	age := time.Since(info.ModTime())
+	if age < 5*time.Second {
+		// Recently modified = running
+		i.hookStatus = "running"
+		i.hookLastUpdate = time.Now()
+		return
+	}
+	// Not recently modified = waiting (idle)
+	i.hookStatus = "waiting"
+	i.hookLastUpdate = time.Now()
+}
+
+// emitKiroCostEvents processes new cost turns from kiro session data.
+func (i *Instance) emitKiroCostEvents() {
+	if i.Tool != "kiro" || i.KiroSessionID == "" {
+		return
+	}
+	homeDir, _ := os.UserHomeDir()
+	sessionFile := filepath.Join(homeDir, ".kiro", "sessions", "cli", i.KiroSessionID+".json")
+	data, err := os.ReadFile(sessionFile)
+	if err != nil {
+		return
+	}
+	var sess struct {
+		SessionState struct {
+			ConversationMetadata struct {
+				UserTurnMetadatas []struct {
+					MeteringUsage []struct {
+						Value float64 `json:"value"`
+						Unit  string  `json:"unit"`
+					} `json:"metering_usage"`
+				} `json:"user_turn_metadatas"`
+			} `json:"conversation_metadata"`
+		} `json:"session_state"`
+	}
+	if json.Unmarshal(data, &sess) != nil {
+		return
+	}
+	turns := sess.SessionState.ConversationMetadata.UserTurnMetadatas
+	if len(turns) <= i.lastKiroCostTurnCount {
+		return // No new turns
+	}
+	// Process new turns only
+	for idx := i.lastKiroCostTurnCount; idx < len(turns); idx++ {
+		for _, usage := range turns[idx].MeteringUsage {
+			_ = usage.Value // Cost event emission would go here
+		}
+	}
+	i.lastKiroCostTurnCount = len(turns)
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -2722,6 +2926,8 @@ func (i *Instance) Start() error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "kiro":
+		command = i.buildKiroCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2926,6 +3132,8 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "kiro":
+		command = i.buildKiroCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -3264,6 +3472,11 @@ func (i *Instance) UpdateStatus() error {
 	// Session exists - clear error check timestamp
 	i.lastErrorCheck = time.Time{}
 
+	// Kiro session ID discovery — runs early, before idle skip, since it's lightweight.
+	if i.Tool == "kiro" && i.KiroSessionID == "" {
+		i.detectKiroSessionFromDisk()
+	}
+
 	// Tiered polling: skip expensive checks for idle sessions with no new activity
 	if i.Status == StatusIdle {
 		currentTS := i.tmuxSession.GetCachedWindowActivity()
@@ -3402,11 +3615,11 @@ func (i *Instance) UpdateStatus() error {
 			// Preserve configured custom tool names.
 		} else {
 			switch detectedTool {
-			case "claude", "gemini", "opencode", "codex":
+			case "claude", "gemini", "opencode", "codex", "kiro":
 				i.Tool = detectedTool
 			case "shell":
 				switch i.Tool {
-				case "", "shell", "claude", "gemini", "opencode", "codex":
+				case "", "shell", "claude", "gemini", "opencode", "codex", "kiro":
 					i.Tool = detectedTool
 				}
 			}
@@ -3416,7 +3629,7 @@ func (i *Instance) UpdateStatus() error {
 	// Update session metadata tracking only for active/waiting sessions.
 	// This path can perform filesystem and tmux env reads while i.mu is held, so
 	// rate-limit it to reduce intermittent render/key handling stalls under load.
-	if i.Status == StatusRunning || i.Status == StatusWaiting {
+	if i.Status == StatusRunning || i.Status == StatusWaiting || (i.Tool == "kiro" && i.Status == StatusIdle) {
 		interval := 2 * time.Second
 		// Bootstrap unknown IDs faster for newly-started sessions.
 		switch {
@@ -3430,6 +3643,10 @@ func (i *Instance) UpdateStatus() error {
 			}
 		case IsCodexCompatible(i.Tool):
 			if i.CodexSessionID == "" {
+				interval = 500 * time.Millisecond
+			}
+		case i.Tool == "kiro":
+			if i.KiroSessionID == "" {
 				interval = 500 * time.Millisecond
 			}
 		}
@@ -3463,6 +3680,13 @@ func (i *Instance) UpdateStatus() error {
 				i.mu.Unlock()
 				i.UpdateOpenCodeSession()
 				i.mu.Lock()
+			}
+
+			// Update Kiro session tracking (non-blocking, best-effort)
+			if i.Tool == "kiro" {
+				i.detectKiroSessionFromDisk()
+				i.updateKiroFilesystemStatus()
+				i.emitKiroCostEvents()
 			}
 		}
 	}
@@ -5295,6 +5519,8 @@ func (i *Instance) Restart() error {
 			command = i.buildCursorCommand(i.Command, true)
 		case i.Tool == "hermes":
 			command = i.buildHermesCommand(i.Command)
+		case i.Tool == "kiro":
+			command = i.buildKiroCommand(i.Command)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -6098,6 +6324,8 @@ func (i *Instance) GetMCPInfo() *MCPInfo {
 		return GetMCPInfo(i.ProjectPath)
 	case i.Tool == "gemini":
 		return GetGeminiMCPInfo(i.ProjectPath)
+	case i.Tool == "kiro":
+		return GetKiroMCPInfo(i.ProjectPath)
 	default:
 		return nil
 	}

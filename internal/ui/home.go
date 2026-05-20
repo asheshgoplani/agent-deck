@@ -5618,6 +5618,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			yolo := h.newDialog.GetCodexYoloMode()
 			codexOpts := &session.CodexOptions{YoloMode: &yolo}
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+		} else if command == "kiro" {
+			if h.newDialog.GetKiroTrustAllTools() {
+				kiroOpts := &session.KiroOptions{TrustAllTools: true}
+				toolOptionsJSON, _ = session.MarshalToolOptions(kiroOpts)
+			}
 		}
 
 		parentSessionID := h.newDialog.GetParentSessionID()
@@ -8785,6 +8790,9 @@ func createSessionTool(command string) (string, string) {
 		command = "cursor agent"
 	case "hermes":
 		tool = "hermes"
+	case "kiro":
+		tool = "kiro"
+		command = "kiro-cli"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
@@ -12657,11 +12665,21 @@ func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime
 			toolDesc = "Starting Cursor Agent..."
 		}
 	default:
-		toolName = "Shell"
-		if isResuming {
-			toolDesc = "Resuming shell session..."
+		// Check for kiro before falling through to shell
+		if inst.Tool == "kiro" {
+			toolName = "Kiro"
+			if isResuming {
+				toolDesc = "Resuming Kiro session..."
+			} else {
+				toolDesc = "Starting Kiro..."
+			}
 		} else {
-			toolDesc = "Launching shell session..."
+			toolName = "Shell"
+			if isResuming {
+				toolDesc = "Resuming shell session..."
+			} else {
+				toolDesc = "Launching shell session..."
+			}
 		}
 	}
 

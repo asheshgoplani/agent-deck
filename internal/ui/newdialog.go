@@ -162,6 +162,7 @@ type NewDialog struct {
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
+	kiroOptions           *YoloOptionsPanel   // Kiro trust-all-tools panel.
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
 	focusTargets          []focusTarget       // Ordered list of active focusable elements.
 	focusIndex            int                 // Index into focusTargets.
@@ -246,7 +247,7 @@ func displayCommandPreset(cmd string) string {
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "kiro"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -328,6 +329,7 @@ func NewNewDialog() *NewDialog {
 		claudeOptions:   NewClaudeOptionsPanel(),
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
+		kiroOptions:     NewYoloOptionsPanel("Kiro", "Trust all tools - skip permission prompts"),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -925,6 +927,11 @@ func (d *NewDialog) GetCodexYoloMode() bool {
 	return d.codexOptions.GetYoloMode()
 }
 
+// GetKiroTrustAllTools returns whether Kiro trust-all-tools mode is enabled.
+func (d *NewDialog) GetKiroTrustAllTools() bool {
+	return d.kiroOptions.GetYoloMode()
+}
+
 // IsSandboxEnabled returns whether Docker sandbox mode is enabled.
 func (d *NewDialog) IsSandboxEnabled() bool {
 	return d.sandboxEnabled
@@ -1213,6 +1220,8 @@ func (d *NewDialog) updateToolOptions() {
 		d.toolOptions = d.geminiOptions
 	case cmd == "codex":
 		d.toolOptions = d.codexOptions
+	case cmd == "kiro":
+		d.toolOptions = d.kiroOptions
 	default:
 		d.toolOptions = nil
 	}
@@ -1228,6 +1237,7 @@ func (d *NewDialog) updateFocus() {
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	d.kiroOptions.Blur()
 
 	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false

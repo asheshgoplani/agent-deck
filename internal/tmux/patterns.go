@@ -122,6 +122,21 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?m)^\s*›\s`,
 			},
 		}
+	case "kiro":
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"type to queue",
+				"esc to cancel",
+				"esc to interrupt",
+				"ctrl+c to interrupt",
+				"Kiro is working",
+			},
+			PromptPatterns: []string{
+				"Enter to send",
+				"requires approval",
+				"Yes, single permission",
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},

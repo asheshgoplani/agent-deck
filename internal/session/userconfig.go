@@ -108,6 +108,9 @@ type UserConfig struct {
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes"`
 
+	// Kiro defines Kiro CLI integration settings
+	Kiro KiroSettings `toml:"kiro"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -1027,6 +1030,21 @@ type HermesSettings struct {
 	// YoloMode enables --yolo flag for Hermes sessions (auto-approve all tool calls).
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+}
+
+// KiroSettings defines Kiro CLI configuration.
+// Binary: `kiro-cli` from kiro.dev. Full-screen TUI agent.
+// Key flags: --resume-id <UUID>, --trust-all-tools, --agent <name>, --model <id>.
+type KiroSettings struct {
+	// Command is the Kiro CLI command to use.
+	// Default: "kiro-cli"
+	Command string `toml:"command"`
+	// TrustAllTools enables --trust-all-tools flag (skip all permission prompts).
+	// Default: false
+	TrustAllTools bool `toml:"trust_all_tools"`
+	// DefaultAgent is the agent to use by default (--agent flag).
+	// Default: "" (uses kiro_default)
+	DefaultAgent string `toml:"default_agent"`
 }
 
 // CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).
@@ -2041,6 +2059,15 @@ func GetCodexCommand() string {
 		return strings.TrimSpace(userConfig.Codex.Command)
 	}
 	return "codex"
+}
+
+// GetKiroCommand returns the configured kiro-cli command or the default "kiro-cli".
+func GetKiroCommand() string {
+	userConfig, _ := LoadUserConfig()
+	if userConfig != nil && strings.TrimSpace(userConfig.Kiro.Command) != "" {
+		return strings.TrimSpace(userConfig.Kiro.Command)
+	}
+	return "kiro-cli"
 }
 
 func isClaudeCommand(command string) bool {

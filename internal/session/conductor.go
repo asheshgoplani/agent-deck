@@ -17,6 +17,7 @@ import (
 const (
 	ConductorAgentClaude = "claude"
 	ConductorAgentCodex  = "codex"
+	ConductorAgentKiro   = "kiro"
 
 	ConductorSessionTitlePrefix     = "conductor-"
 	ConductorHeartbeatMessagePrefix = "Heartbeat:"
@@ -50,6 +51,13 @@ var conductorAgentSpecs = map[string]ConductorAgentSpec{
 		DisplayName:            "Codex",
 		DefaultCommand:         "codex",
 		InstructionsFileName:   "AGENTS.md",
+		SupportsClearOnCompact: false,
+	},
+	ConductorAgentKiro: {
+		Agent:                  ConductorAgentKiro,
+		DisplayName:            "Kiro",
+		DefaultCommand:         "kiro-cli",
+		InstructionsFileName:   "KIRO.md",
 		SupportsClearOnCompact: false,
 	},
 }

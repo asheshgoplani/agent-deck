@@ -68,6 +68,22 @@ var agentConfigMounts = []AgentConfigMount{
 		containerSuffix: ".gemini",
 		skipEntries:     []string{"sandbox"},
 	},
+	{
+		hostRel:         ".kiro",
+		containerSuffix: ".kiro",
+		skipEntries:     []string{"sandbox"},
+	},
+	{
+		hostRel:         ".local/share/kiro-cli",
+		containerSuffix: ".local/share/kiro-cli",
+		skipEntries:     []string{"sandbox"},
+	},
+	{
+		hostRel:         ".aws",
+		containerSuffix: ".aws",
+		skipEntries:     []string{"sandbox"},
+		copyDirs:        []string{"sso"},
+	},
 }
 
 // Mount path blocklists — prevent accidental exposure of sensitive host and container paths.
