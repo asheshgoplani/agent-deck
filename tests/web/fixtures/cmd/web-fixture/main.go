@@ -64,7 +64,7 @@ func main() {
 		MenuData:     store,
 	})
 	server.SetMutator(store)
-	server.SetSkillsService(store)
+	server.SetMCPManager(newFixtureMCPManager())
 
 	// Wrap the server's handler with the fixture admin endpoints so tests can
 	// reset and inspect state without going through the real Go test harness.

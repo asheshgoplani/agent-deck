@@ -35,10 +35,10 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Delete group | `internal/ui/home.go:6302` (`d` key, group) | DELETE `/api/groups/{path}` | `DeleteGroup` | `handlers_groups_test.go` | Moves children to default group |
 | Move session to group | `internal/ui/home.go:6028` (`M`/`shift+m`) | MISSING | N/A | N/A | TUI-only via GroupDialog move mode |
 | **MCP MANAGEMENT** |
-| Attach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI dialog only; writes `.mcp.json` |
-| Detach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI dialog only; edits `.mcp.json` |
-| List MCPs | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI displays from catalog |
-| Toggle pooled ↔ local | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI dialog only |
+| Attach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | POST `/api/sessions/{id}/mcps/{name}` | `MCPManager.Attach` | `handlers_mcps_test.go` | Body `{scope?}`; default scope=local; writes `.mcp.json` via session helpers |
+| Detach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | DELETE `/api/sessions/{id}/mcps/{name}` | `MCPManager.Detach` | `handlers_mcps_test.go` | Body `{scope?}`; scope auto-detected if omitted |
+| List MCPs | `internal/ui/home.go:5965` (`m` key → MCPDialog) | GET `/api/sessions/{id}/mcps` | `MCPManager.ListAttached` | `handlers_mcps_test.go` | Returns `{local,global,user}`; catalog at GET `/api/mcps` |
+| Toggle pooled ↔ local | `internal/ui/home.go:5965` (`m` key → MCPDialog) | PATCH `/api/sessions/{id}/mcps/{name}` | `MCPManager.Move` | `handlers_mcps_test.go` | Body `{scope}` or `{pooled:bool}`; pooled=true→global, pooled=false→local |
 | **SKILLS MANAGEMENT** |
 | Attach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `POST /api/sessions/{id}/skills/{name}` | `apiFetch('POST', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService`; writes project config |
 | Detach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `DELETE /api/sessions/{id}/skills/{name}` | `apiFetch('DELETE', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService` |

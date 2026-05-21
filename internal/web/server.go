@@ -66,6 +66,7 @@ type Server struct {
 	costStore       *costs.Store
 	mutator         SessionMutator
 	skills          SkillsService
+	mcpMgr          MCPManager
 	mutationLimiter *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
@@ -151,6 +152,14 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/system/stats", s.handleSystemStats)
 
 	mux.HandleFunc("/api/skills", s.handleSkillsCatalog)
+
+	// MCP management (Web UI parity with TUI `m` key dialog). Closes the
+	// four MISSING rows under "MCP MANAGEMENT" in PARITY_MATRIX.md.
+	mux.HandleFunc("/api/mcps", s.handleMCPsCatalog)
+	mux.HandleFunc("GET /api/sessions/{id}/mcps", s.handleSessionMCPsRouter)
+	mux.HandleFunc("POST /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+	mux.HandleFunc("DELETE /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
+	mux.HandleFunc("PATCH /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
 
 	handler := withRecover(mux)
 
@@ -282,8 +291,7 @@ func (s *Server) SetMutator(m SessionMutator) {
 }
 
 // SetSkillsService injects an alternate SkillsService (used by tests).
-// When nil, handlers fall back to defaultSkillsService which delegates to
-// the on-disk session.* skill APIs.
+// When nil, handlers fall back to defaultSkillsService.
 func (s *Server) SetSkillsService(svc SkillsService) {
 	s.skills = svc
 }

@@ -18,8 +18,8 @@ const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 47
-const EXPECTED_PROBEABLE_MISSING = 15
+const EXPECTED_ACTION_ROWS = 48
+const EXPECTED_PROBEABLE_MISSING = 9
 
 test.describe.configure({ mode: 'serial' })
 
