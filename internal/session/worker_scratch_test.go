@@ -176,8 +176,17 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing
 
 // Issue #941: when a channel-owning conductor's ambient profile has the
 // GLOBAL_ANTIPATTERN (enabledPlugins.telegram=true), the worker-scratch
-// guard MUST fire — pinning telegram off so --channels is the sole
-// activation source and only one bun poller spawns.
+// guard MUST fire so the conductor's claude reads scratch settings (not
+// the ambient profile) — that's how agent-deck owns the plugin
+// enablement state per-session instead of leaking ambient changes.
+//
+// Issue #1134 amended the assertion: scratch must KEEP telegram ENABLED
+// for channel-owning sessions (not pin it off). claude's `--channels`
+// flag is a routing directive and requires the plugin's MCP stdio
+// transport to already be live; pinning telegram=false breaks the
+// transport and bun crashes in a respawn loop. The "sole-activation"
+// reading of --channels was wrong; the correct reading is "use the
+// already-enabled plugin to route channel events here."
 func TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch(t *testing.T) {
 	withTelegramConductorPresent(t)
 	source := t.TempDir()
@@ -210,8 +219,8 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch
 		t.Fatalf("parse: %v", err)
 	}
 	plugins := parsed["enabledPlugins"].(map[string]interface{})
-	if v, ok := plugins[telegramPluginID].(bool); !ok || v {
-		t.Errorf("issue #941: scratch settings.json must pin telegram OFF (false); got %v", plugins[telegramPluginID])
+	if v, ok := plugins[telegramPluginID].(bool); !ok || !v {
+		t.Errorf("issue #1134: scratch settings.json must keep telegram ENABLED for channel-owning conductors so --channels has a live MCP transport to wire to; got %v", plugins[telegramPluginID])
 	}
 }
 

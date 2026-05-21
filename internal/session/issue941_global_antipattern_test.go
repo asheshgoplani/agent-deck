@@ -109,29 +109,28 @@ func TestTelegram_GlobalScope_OneBunPollerOnly_RegressionFor941(t *testing.T) {
 		t.Fatalf("write poller: %v", err)
 	}
 
-	// fake-claude.sh — counts activation sources, then forks one poller
-	// per source. Sources:
-	//   (a) settings.json has `"telegram@claude-plugins-official": true`
-	//   (b) --channels argv contains "plugin:telegram@"
+	// fake-claude.sh — models real claude's plugin spawn behavior:
+	//   * The plugin's MCP server (bun telegram) is spawned IFF
+	//     settings.json enables the plugin
+	//     (`"telegram@claude-plugins-official": true`).
+	//   * `--channels plugin:telegram@...` is a ROUTING/WIRING directive
+	//     that requires the plugin's MCP transport to already be open —
+	//     it does NOT spawn a second server. If the plugin is disabled,
+	//     --channels has nothing to wire to and bun never sustains
+	//     (crash-respawn). Issue #1134 corrected the prior model where
+	//     this fake counted --channels as an additive spawn source.
 	fakeClaude := filepath.Join(binDir, "fake-claude.sh")
 	fakeClaudeBody := `#!/bin/bash
 set -u
-COUNT=0
+SPAWN=0
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
   if grep -Eq '"telegram@claude-plugins-official"[[:space:]]*:[[:space:]]*true' "$CLAUDE_CONFIG_DIR/settings.json"; then
-    COUNT=$((COUNT+1))
+    SPAWN=1
   fi
 fi
-for a in "$@"; do
-  case "$a" in
-    *plugin:telegram@*) COUNT=$((COUNT+1));;
-  esac
-done
-i=0
-while [ "$i" -lt "$COUNT" ]; do
+if [ "$SPAWN" = "1" ]; then
   "` + pollerScript + `" &
-  i=$((i+1))
-done
+fi
 sleep 20
 `
 	if err := os.WriteFile(fakeClaude, []byte(fakeClaudeBody), 0o755); err != nil {
