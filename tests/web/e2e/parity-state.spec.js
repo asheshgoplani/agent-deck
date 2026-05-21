@@ -14,7 +14,7 @@ const MATRIX = loadMatrix()
 
 // Pinned counts so silent row deletion fails the build.
 const EXPECTED_STATE_ROWS = 45
-const EXPECTED_PRESENT_FIELDS = 12
+const EXPECTED_PRESENT_FIELDS = 42
 
 const PRESENT = MATRIX.stateFields.filter((f) => !f.isMissing && f.jsonKey)
 const MISSING = MATRIX.stateFields.filter((f) => f.isMissing)

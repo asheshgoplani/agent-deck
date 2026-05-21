@@ -143,11 +143,53 @@ func (s *fixtureStore) seed() {
 		"personal":       {Name: "personal", Path: "personal", Expanded: false, Order: 2, SessionCount: 1},
 	}
 	now := time.Date(2026, 4, 29, 10, 0, 0, 0, time.UTC)
+	yoloTrue := true
+	sandboxCPU := "2.0"
 	s.sessions = map[string]*web.MenuSession{
 		"sess-001": {
 			ID: "sess-001", Title: "agent-deck", Tool: "claude",
 			Status: session.StatusIdle, GroupPath: "work", ProjectPath: "/srv/agent-deck",
 			Order: 0, CreatedAt: now,
+			// Populate every promoted MenuSession field on a single session so
+			// parity-state's "at least one session carries this key" assertion
+			// passes for every row promoted out of MISSING in PARITY_MATRIX.md.
+			// Not rendered by the UI; no screenshot impact.
+			IsConductor:       true,
+			ClaudeSessionID:   "fixture-claude-sess-001",
+			GeminiSessionID:   "fixture-gemini-sess-001",
+			GeminiModel:       "gemini-2.5-pro",
+			GeminiYoloMode:    &yoloTrue,
+			CodexSessionID:    "fixture-codex-sess-001",
+			OpenCodeSessionID: "fixture-opencode-sess-001",
+			LatestPrompt:      "what's the next step?",
+			Notes:             "fixture notes for parity tests",
+			Color:             "#ff8800",
+			Command:           "claude --resume fixture-claude-sess-001",
+			Wrapper:           "env FOO=bar {command}",
+			Channels:          []string{"plugin:telegram@user/repo"},
+			ExtraArgs:         []string{"--agent", "reviewer"},
+			ToolOptionsJSON:   json.RawMessage(`{"tool":"claude","options":{"agent":"reviewer"}}`),
+			Sandbox: &session.SandboxConfig{
+				Enabled:  true,
+				Image:    "ghcr.io/asheshgoplani/agent-deck-sandbox:latest",
+				CPULimit: &sandboxCPU,
+			},
+			SandboxContainer:   "agent-deck-sbx-sess-001",
+			SSHHost:            "remote.example",
+			SSHRemotePath:      "/srv/remote-agent-deck",
+			MultiRepoEnabled:   true,
+			AdditionalPaths:    []string{"/srv/lib", "/srv/api"},
+			MultiRepoTempDir:   "/tmp/multi-repo-sess-001",
+			MultiRepoWorktrees: []session.MultiRepoWorktree{{OriginalPath: "/srv/agent-deck", WorktreePath: "/tmp/wt/sess-001", RepoRoot: "/srv/agent-deck", Branch: "feat/fixture"}},
+			WorktreePath:       "/tmp/worktrees/sess-001",
+			WorktreeRepoRoot:   "/srv/agent-deck",
+			WorktreeBranch:     "feat/fixture",
+			TitleLocked:        true,
+			NoTransitionNotify: true,
+			LoadedMCPNames:     []string{"exa", "filesystem"},
+			GeminiAnalytics: &session.GeminiSessionAnalytics{
+				InputTokens: 100, OutputTokens: 200, Model: "gemini-2.5-pro",
+			},
 		},
 		"sess-002": {
 			ID: "sess-002", Title: "frontend", Tool: "claude",

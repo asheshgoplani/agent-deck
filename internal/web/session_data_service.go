@@ -74,6 +74,54 @@ type MenuSession struct {
 	TmuxSocketName string    `json:"tmuxSocketName,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	LastAccessedAt time.Time `json:"lastAccessedAt,omitempty"`
+
+	// Fields below mirror *session.Instance state visible in the TUI
+	// EditSessionDialog. Promoted from MISSING in tests/web/PARITY_MATRIX.md
+	// so a web client can render the same edit form as the TUI without a
+	// secondary lookup. All omit on zero-value so the wire stays compact.
+
+	IsConductor bool `json:"isConductor,omitempty"`
+
+	ClaudeSessionID   string `json:"claudeSessionId,omitempty"`
+	GeminiSessionID   string `json:"geminiSessionId,omitempty"`
+	GeminiModel       string `json:"geminiModel,omitempty"`
+	GeminiYoloMode    *bool  `json:"geminiYoloMode,omitempty"`
+	CodexSessionID    string `json:"codexSessionId,omitempty"`
+	OpenCodeSessionID string `json:"opencodeSessionId,omitempty"`
+
+	LatestPrompt string `json:"latestPrompt,omitempty"`
+	Notes        string `json:"notes,omitempty"`
+
+	Color string `json:"color,omitempty"`
+
+	Command         string          `json:"command,omitempty"`
+	Wrapper         string          `json:"wrapper,omitempty"`
+	Channels        []string        `json:"channels,omitempty"`
+	ExtraArgs       []string        `json:"extraArgs,omitempty"`
+	ToolOptionsJSON json.RawMessage `json:"toolOptions,omitempty"`
+
+	Sandbox          *session.SandboxConfig `json:"sandbox,omitempty"`
+	SandboxContainer string                 `json:"sandboxContainer,omitempty"`
+	SSHHost          string                 `json:"sshHost,omitempty"`
+	SSHRemotePath    string                 `json:"sshRemotePath,omitempty"`
+
+	MultiRepoEnabled   bool                        `json:"multiRepoEnabled,omitempty"`
+	AdditionalPaths    []string                    `json:"additionalPaths,omitempty"`
+	MultiRepoTempDir   string                      `json:"multiRepoTempDir,omitempty"`
+	MultiRepoWorktrees []session.MultiRepoWorktree `json:"multiRepoWorktrees,omitempty"`
+
+	WorktreePath     string `json:"worktreePath,omitempty"`
+	WorktreeRepoRoot string `json:"worktreeRepoRoot,omitempty"`
+	WorktreeBranch   string `json:"worktreeBranch,omitempty"`
+
+	TitleLocked        bool `json:"titleLocked,omitempty"`
+	NoTransitionNotify bool `json:"noTransitionNotify,omitempty"`
+
+	LoadedMCPNames []string `json:"loadedMcpNames,omitempty"`
+
+	// claude_analytics has no underlying struct on *Instance so the matrix
+	// keeps it MISSING; only gemini is exposed today.
+	GeminiAnalytics *session.GeminiSessionAnalytics `json:"geminiAnalytics,omitempty"`
 }
 
 type storageLoader interface {
@@ -149,21 +197,51 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 	modelInfo := inst.LaunchModelInfo()
 
 	return &MenuSession{
-		ID:              inst.ID,
-		Title:           inst.Title,
-		Tool:            inst.GetToolThreadSafe(),
-		ModelID:         modelInfo.ModelID,
-		Model:           modelInfo.Model,
-		ModelVersion:    modelInfo.Version,
-		Status:          inst.GetStatusThreadSafe(),
-		GroupPath:       inst.GroupPath,
-		ProjectPath:     inst.ProjectPath,
-		ParentSessionID: inst.ParentSessionID,
-		Order:           inst.Order,
-		TmuxSession:     tmuxName,
-		TmuxSocketName:  inst.TmuxSocketName,
-		CreatedAt:       inst.CreatedAt,
-		LastAccessedAt:  inst.LastAccessedAt,
+		ID:                 inst.ID,
+		Title:              inst.Title,
+		Tool:               inst.GetToolThreadSafe(),
+		ModelID:            modelInfo.ModelID,
+		Model:              modelInfo.Model,
+		ModelVersion:       modelInfo.Version,
+		Status:             inst.GetStatusThreadSafe(),
+		GroupPath:          inst.GroupPath,
+		ProjectPath:        inst.ProjectPath,
+		ParentSessionID:    inst.ParentSessionID,
+		Order:              inst.Order,
+		TmuxSession:        tmuxName,
+		TmuxSocketName:     inst.TmuxSocketName,
+		CreatedAt:          inst.CreatedAt,
+		LastAccessedAt:     inst.LastAccessedAt,
+		IsConductor:        inst.IsConductor,
+		ClaudeSessionID:    inst.ClaudeSessionID,
+		GeminiSessionID:    inst.GeminiSessionID,
+		GeminiModel:        inst.GeminiModel,
+		GeminiYoloMode:     inst.GeminiYoloMode,
+		CodexSessionID:     inst.CodexSessionID,
+		OpenCodeSessionID:  inst.OpenCodeSessionID,
+		LatestPrompt:       inst.LatestPrompt,
+		Notes:              inst.Notes,
+		Color:              inst.Color,
+		Command:            inst.Command,
+		Wrapper:            inst.Wrapper,
+		Channels:           inst.Channels,
+		ExtraArgs:          inst.ExtraArgs,
+		ToolOptionsJSON:    inst.ToolOptionsJSON,
+		Sandbox:            inst.Sandbox,
+		SandboxContainer:   inst.SandboxContainer,
+		SSHHost:            inst.SSHHost,
+		SSHRemotePath:      inst.SSHRemotePath,
+		MultiRepoEnabled:   inst.MultiRepoEnabled,
+		AdditionalPaths:    inst.AdditionalPaths,
+		MultiRepoTempDir:   inst.MultiRepoTempDir,
+		MultiRepoWorktrees: inst.MultiRepoWorktrees,
+		WorktreePath:       inst.WorktreePath,
+		WorktreeRepoRoot:   inst.WorktreeRepoRoot,
+		WorktreeBranch:     inst.WorktreeBranch,
+		TitleLocked:        inst.TitleLocked,
+		NoTransitionNotify: inst.NoTransitionNotify,
+		LoadedMCPNames:     inst.LoadedMCPNames,
+		GeminiAnalytics:    inst.GeminiAnalytics,
 	}
 }
 
