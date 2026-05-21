@@ -10783,8 +10783,9 @@ func (h *Home) renderDualColumnLayout(contentHeight int) string {
 	var b strings.Builder
 
 	// Calculate panel widths from configurable split (issue #1092 — [ui] preview_pct)
-	leftWidth := h.sessionsPaneWidth()
-	rightWidth := h.width - leftWidth - 3 // -3 for separator
+	// with chrome / min-width clamping (issue #1113) so the PREVIEW pane never
+	// shrinks below its title width.
+	leftWidth, rightWidth := h.splitPaneWidths()
 
 	// Panel title is exactly 2 lines (title + underline)
 	// Panel content gets the remaining space: contentHeight - 2

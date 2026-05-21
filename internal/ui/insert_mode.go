@@ -70,6 +70,15 @@ func (h *Home) enterInsertMode() bool {
 		return false
 	}
 
+	// Issue #1113: defensively reset the rune-batch buffer so any stale
+	// content left by a previous insert session (interrupted flush, race
+	// with a tick, future regression) never leaks into the new target.
+	// exitInsertMode resets the buffer on the way out, but the user-
+	// reported flow (type + Enter + Esc + switch session + re-enter)
+	// proves we can't trust the exit path as the sole reset point.
+	h.insertBuf.Reset()
+	h.insertFlushPending = false
+
 	h.insertMode = true
 	if target.isRemote() {
 		h.insertModeSessionID = ""

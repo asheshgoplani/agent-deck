@@ -26,6 +26,19 @@ const previewPctStep = 5
 // overlay stays visible after an adjustment.
 const previewPctOverlayDuration = 1500 * time.Millisecond
 
+// Pane chrome / minimum widths for the dual layout (issue #1113).
+//
+// The dual layout draws " │ " (3 cols) between sessions and preview. At
+// extreme preview_pct values or narrow widths the integer percentage math
+// alone would shrink one pane below its title. These minimums guarantee
+// both panel titles always render without truncation; splitPaneWidths
+// clamps to them and gives the leftover columns to the other pane.
+const (
+	paneSeparatorWidth   = 3 // " │ "
+	minSessionsPaneWidth = 8 // fits "SESSIONS"
+	minPreviewPaneWidth  = 8 // fits "PREVIEW " (with overlay suffix budget)
+)
+
 // getPreviewPct returns the current preview percentage with bounds
 // applied. Falls back to the package default when the field is zero
 // (which is the case for Home instances built before this feature
@@ -47,9 +60,47 @@ func (h *Home) getPreviewPct() int {
 // list panel in the dual layout. Replaces the historical
 // `int(float64(h.width) * 0.35)` literal.
 func (h *Home) sessionsPaneWidth() int {
+	left, _ := h.splitPaneWidths()
+	return left
+}
+
+// splitPaneWidths resolves the (sessions, preview) column widths for the
+// dual layout, accounting for the 3-column separator chrome and clamping
+// each pane to its title-fit minimum (issue #1113). Returned widths
+// always satisfy left + paneSeparatorWidth + right == h.width when
+// h.width is wide enough to fit both minimums plus the separator. For
+// degenerate widths (below the chrome budget), the function falls back
+// gracefully: it gives whatever it can to each pane without producing
+// negative widths.
+func (h *Home) splitPaneWidths() (int, int) {
+	if h.width <= 0 {
+		return 0, 0
+	}
 	previewPct := h.getPreviewPct()
 	sessionsPct := 100 - previewPct
-	return int(float64(h.width) * float64(sessionsPct) / 100.0)
+	left := int(float64(h.width) * float64(sessionsPct) / 100.0)
+	right := h.width - left - paneSeparatorWidth
+
+	chromeBudget := minSessionsPaneWidth + minPreviewPaneWidth + paneSeparatorWidth
+	if h.width < chromeBudget {
+		// Not enough room for both minimums. Keep widths non-negative;
+		// renderDualColumnLayout is only routed to above
+		// layoutBreakpointStacked (80), so this branch is safety for
+		// edge calls (tests, dynamic resize churn).
+		return max(left, 0), max(right, 0)
+	}
+
+	// Below the preview minimum: borrow from sessions.
+	if right < minPreviewPaneWidth {
+		right = minPreviewPaneWidth
+		left = h.width - right - paneSeparatorWidth
+	}
+	// Below the sessions minimum: borrow from preview.
+	if left < minSessionsPaneWidth {
+		left = minSessionsPaneWidth
+		right = h.width - left - paneSeparatorWidth
+	}
+	return left, right
 }
 
 // adjustPreviewPct shifts the preview percentage by delta (in percent
