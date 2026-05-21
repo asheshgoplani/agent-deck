@@ -8642,62 +8642,13 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				}
 				inst.MultiRepoTempDir = parentDir
 
-				// Create worktrees inside parentDir, named after each repo
-				dirnames := session.DeduplicateDirnames(allPaths)
-				var newProjectPath string
-				var newAdditionalPaths []string
-				for i, p := range allPaths {
-					wtPath := filepath.Join(parentDir, dirnames[i])
-					// Accept bare-repo project roots in the multi-repo
-					// path too (#742). Without this, a .bare layout
-					// silently fell through to os.Symlink below,
-					// skipping worktree creation AND the setup hook.
-					if git.IsGitRepoOrBareProjectRoot(p) {
-						repoRoot, rootErr := git.GetWorktreeBaseRoot(p)
-						if rootErr != nil {
-							uiLog.Warn("multi_repo_worktree_skip", slog.String("path", p), slog.String("error", rootErr.Error()))
-							// Copy path as-is into the parent dir via symlink
-							_ = os.Symlink(p, wtPath)
-							if i == 0 {
-								newProjectPath = wtPath
-							} else {
-								newAdditionalPaths = append(newAdditionalPaths, wtPath)
-							}
-							continue
-						}
-						if err := createWorktreeWithSetupAndLog(repoRoot, wtPath, worktreeBranch); err != nil {
-							uiLog.Warn("multi_repo_worktree_create_fail", slog.String("path", p), slog.String("error", err.Error()))
-							_ = os.Symlink(p, wtPath)
-							if i == 0 {
-								newProjectPath = wtPath
-							} else {
-								newAdditionalPaths = append(newAdditionalPaths, wtPath)
-							}
-							continue
-						}
-						inst.MultiRepoWorktrees = append(inst.MultiRepoWorktrees, session.MultiRepoWorktree{
-							OriginalPath: p,
-							WorktreePath: wtPath,
-							RepoRoot:     repoRoot,
-							Branch:       worktreeBranch,
-						})
-						if i == 0 {
-							newProjectPath = wtPath
-						} else {
-							newAdditionalPaths = append(newAdditionalPaths, wtPath)
-						}
-					} else {
-						// Non-git paths: symlink into parent dir
-						_ = os.Symlink(p, wtPath)
-						if i == 0 {
-							newProjectPath = wtPath
-						} else {
-							newAdditionalPaths = append(newAdditionalPaths, wtPath)
-						}
-					}
+				wtResult := session.CreateMultiRepoWorktrees(allPaths, parentDir, worktreeBranch, session.GetWorktreeSettings().SetupTimeout())
+				for _, w := range wtResult.Warnings {
+					uiLog.Warn("multi_repo_worktree", slog.String("detail", w))
 				}
-				inst.ProjectPath = newProjectPath
-				inst.AdditionalPaths = newAdditionalPaths
+				inst.MultiRepoWorktrees = wtResult.Worktrees
+				inst.ProjectPath = wtResult.MappedPaths[0]
+				inst.AdditionalPaths = wtResult.MappedPaths[1:]
 			} else {
 				// Multi-repo without worktree: create a persistent parent dir with symlinks.
 				home, _ := os.UserHomeDir()
