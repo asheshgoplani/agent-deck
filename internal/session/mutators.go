@@ -29,7 +29,8 @@ const (
 	FieldNoTransitionNotify = "no-transition-notify"
 	FieldSkipPermissions    = "skip-permissions"
 	FieldAutoMode           = "auto-mode"
-	FieldAccount            = "account" // #924 per-session named account slot
+	FieldAccount            = "account"      // #924 per-session named account slot
+	FieldIdleTimeout        = "idle-timeout" // #1143 auto-stop dormant sessions
 )
 
 var ValidMutableFields = []string{
@@ -50,6 +51,7 @@ var ValidMutableFields = []string{
 	FieldSkipPermissions,
 	FieldAutoMode,
 	FieldAccount,
+	FieldIdleTimeout,
 }
 
 type FieldRestartPolicy int
@@ -286,6 +288,16 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		// conversation is lost, that's the documented Option 1 tradeoff.
 		oldValue = inst.Account
 		inst.Account = strings.TrimSpace(value)
+
+	case FieldIdleTimeout:
+		// #1143: parses a Go duration like "30m"; 0 (or "0", "") disables.
+		// Live: the next watcher tick reads the new value.
+		oldValue = strconv.FormatInt(inst.IdleTimeoutSecs, 10)
+		secs, perr := ParseIdleTimeoutFlag(strings.TrimSpace(value))
+		if perr != nil {
+			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
+		}
+		inst.IdleTimeoutSecs = secs
 
 	default:
 		return "", nil, &MutationError{

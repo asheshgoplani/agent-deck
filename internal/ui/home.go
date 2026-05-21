@@ -283,6 +283,13 @@ type Home struct {
 	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
 
+	// Issue #1143: auto-stop dormant child sessions via central poll.
+	// Coalesced into the existing 2-second statusWorker tick by way of
+	// idleTimeoutLastTick, so we don't burn extra goroutines and the watcher
+	// only runs every ~60s.
+	idleTimeoutWatcher  *session.IdleTimeoutWatcher
+	idleTimeoutLastTick atomic.Int64 // UnixNano
+
 	// PERFORMANCE: Worker pool for output-driven status updates (Priority 2)
 	// Caps the number of goroutines spawned for %output events from control pipes
 	logUpdateChan chan *session.Instance // Buffers status update requests from PipeManager
@@ -932,6 +939,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		worktreeDirtyCacheTs: make(map[string]time.Time),
 		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
 		statusWorkerDone:     make(chan struct{}),
+		idleTimeoutWatcher:   session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
 		lastPersistedStatus:  make(map[string]string),
 		logUpdateChan:        make(chan *session.Instance, 100), // Buffered to absorb bursts
 		hotkeys:              make(map[string]string),
@@ -3098,6 +3106,21 @@ func (h *Home) backgroundStatusUpdate() {
 	instances := make([]*session.Instance, len(h.instances))
 	copy(instances, h.instances)
 	h.instancesMu.RUnlock()
+
+	// Issue #1143: rate-limit the idle-timeout watcher to one tick per minute.
+	// The background sweep runs every 2s; capture-pane on every session every
+	// 2s would add unnecessary tmux load. 60s is the same cadence the spec
+	// suggests and matches how the lifecycle log surfaces dormant workers.
+	if h.idleTimeoutWatcher != nil {
+		const idleTickEvery = 60 * time.Second
+		nowNano := time.Now().UnixNano()
+		lastNano := h.idleTimeoutLastTick.Load()
+		if lastNano == 0 || time.Duration(nowNano-lastNano) >= idleTickEvery {
+			if h.idleTimeoutLastTick.CompareAndSwap(lastNano, nowNano) {
+				h.idleTimeoutWatcher.Tick(instances)
+			}
+		}
+	}
 
 	// PERFORMANCE: Gradually configure unconfigured sessions in background
 	// Configure one session per tick to avoid blocking the status update

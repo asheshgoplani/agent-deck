@@ -135,6 +135,9 @@ type InstanceData struct {
 	AdditionalPaths    []string                        `json:"additional_paths,omitempty"`
 	MultiRepoTempDir   string                          `json:"multi_repo_temp_dir,omitempty"`
 	MultiRepoWorktrees []statedb.MultiRepoWorktreeData `json:"multi_repo_worktrees,omitempty"`
+
+	// IdleTimeoutSecs mirrors Instance.IdleTimeoutSecs (#1143). 0 = disabled.
+	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
 }
 
 // GroupData represents serializable group data
@@ -635,6 +638,10 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		inst.AutoLinkedChannels,        // RFC §4.7 (G4/C2 fix)
 		inst.Color,                     // issue #391
 	)
+	// #1143: idle_timeout_secs lives in the tool_data extras zone — outside
+	// the positional MarshalToolData signature so legacy binaries that don't
+	// know the key preserve it via MergeToolDataExtras.
+	toolData = WriteIdleTimeoutSecsToToolData(toolData, inst.IdleTimeoutSecs)
 
 	return &statedb.InstanceRow{
 		ID:                 inst.ID,
@@ -797,6 +804,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			PluginChannelLinkDisabled: pluginChannelLinkDisabled2,
 			AutoLinkedChannels:        autoLinkedChannels2,
 			Color:                     color2,
+			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 		}
 	}
 
@@ -911,6 +919,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			PluginChannelLinkDisabled: pluginChannelLinkDisabled,
 			AutoLinkedChannels:        autoLinkedChannels,
 			Color:                     color,
+			IdleTimeoutSecs:           ReadIdleTimeoutSecsFromToolData(r.ToolData),
 		}
 	}
 
@@ -1152,6 +1161,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			PluginChannelLinkDisabled: instData.PluginChannelLinkDisabled,
 			AutoLinkedChannels:        instData.AutoLinkedChannels,
 			Color:                     instData.Color,
+			IdleTimeoutSecs:           instData.IdleTimeoutSecs,
 			Sandbox:                   instData.Sandbox,
 			SandboxContainer:          instData.SandboxContainer,
 			SSHHost:                   instData.SSHHost,

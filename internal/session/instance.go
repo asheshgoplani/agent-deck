@@ -263,6 +263,12 @@ type Instance struct {
 	// non-claude tools — they use the ambient profile as-is.
 	WorkerScratchConfigDir string `json:"worker_scratch_config_dir,omitempty"`
 
+	// IdleTimeoutSecs is the auto-stop threshold (#1143). When > 0, a central
+	// watcher poll triggers Kill() if the tmux pane content stays unchanged
+	// for this many seconds. 0 = disabled (current behavior). Default is 0
+	// so existing sessions are unaffected on upgrade.
+	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
+
 	// IsForkAwaitingStart signals that this instance was produced by
 	// CreateForkedInstanceWithOptions and holds a pre-built fork command
 	// in Command that must be run verbatim on the first Start() (#745).
