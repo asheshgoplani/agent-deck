@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
@@ -104,5 +106,98 @@ func (r *RemoteKeySender) Close() error {
 	r.mu.Lock()
 	r.closed = true
 	r.mu.Unlock()
+	return nil
+}
+
+// StreamingRemoteKeySender amortizes the per-keystroke ssh fork+exec cost
+// (#1112 bug 2) across an entire insert-mode session by holding one
+// long-running `ssh ... agent-deck session send-keys <id> --stream`
+// subprocess open. Each Send writes one line to that subprocess's stdin
+// — sub-millisecond regardless of network RTT, because the SSH transport
+// is already negotiated.
+//
+// Wire protocol (matches cmd/agent-deck/session_send_keys_cmd.go's
+// runSendKeysStream):
+//
+//	T <hex-text>\n   — SendKeys(decode(<hex-text>))
+//	N <name>\n       — SendNamedKey(<name>)
+//	E\n              — SendEnter()
+//
+// Hex encoding for text means newlines/NULL/non-printables round-trip
+// safely without escape-sequence gymnastics.
+type StreamingRemoteKeySender struct {
+	stdin   io.WriteCloser
+	closeFn func() error
+
+	mu     sync.Mutex
+	closed bool
+}
+
+// OpenStreamingRemoteKeySender spawns the persistent SSH stream and
+// returns a sender ready to dispatch. Falls back to a per-call
+// RemoteKeySender if the stream can't open (caller can check via
+// errors.Is — the streaming type implements the same insertKeySender
+// interface as RemoteKeySender).
+func OpenStreamingRemoteKeySender(runner *SSHRunner, sessionID string, ctx context.Context) (*StreamingRemoteKeySender, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stdin, closeFn, err := runner.OpenStream(ctx, "session", "send-keys", sessionID, "--stream")
+	if err != nil {
+		return nil, fmt.Errorf("open stream: %w", err)
+	}
+	return &StreamingRemoteKeySender{stdin: stdin, closeFn: closeFn}, nil
+}
+
+// SendKeys writes a "T <hex>\n" line to the persistent stream. Empty
+// text is a no-op (matches RemoteKeySender).
+func (s *StreamingRemoteKeySender) SendKeys(text string) error {
+	if text == "" {
+		return nil
+	}
+	return s.write("T " + hex.EncodeToString([]byte(text)) + "\n")
+}
+
+// SendNamedKey writes "N <key>\n" to the stream. Empty key fails fast.
+func (s *StreamingRemoteKeySender) SendNamedKey(key string) error {
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("streaming remote keysender: empty named key")
+	}
+	if strings.ContainsRune(key, '\n') {
+		return fmt.Errorf("streaming remote keysender: named key must not contain newline")
+	}
+	return s.write("N " + key + "\n")
+}
+
+// SendEnter writes "E\n" to the stream.
+func (s *StreamingRemoteKeySender) SendEnter() error {
+	return s.write("E\n")
+}
+
+func (s *StreamingRemoteKeySender) write(line string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("streaming remote keysender: closed")
+	}
+	if _, err := io.WriteString(s.stdin, line); err != nil {
+		return fmt.Errorf("streaming remote keysender: write: %w", err)
+	}
+	return nil
+}
+
+// Close terminates the persistent stream. Idempotent.
+func (s *StreamingRemoteKeySender) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	closeFn := s.closeFn
+	s.mu.Unlock()
+	if closeFn != nil {
+		return closeFn()
+	}
 	return nil
 }

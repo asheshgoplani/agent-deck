@@ -65,6 +65,13 @@ func defaultInsertOpenKeySender(target insertTargetRef) (insertKeySender, error)
 // RemoteKeySender bound to (remoteName, sessionID). Separated out so the
 // configuration-load + runner construction is unit-testable without
 // touching the UI.
+//
+// #1112 bug 2: prefers the streaming RemoteKeySender (one persistent
+// `ssh ... agent-deck session send-keys --stream` subprocess for the
+// entire insert-mode session) over the per-call variant. If the stream
+// fails to open (older remote agent-deck without --stream support, ssh
+// transient error), falls back to the per-call sender so the feature
+// still works — just slower.
 func openRemoteInsertKeySender(remoteName, sessionID string) (insertKeySender, error) {
 	config, err := session.LoadUserConfig()
 	if err != nil {
@@ -78,5 +85,8 @@ func openRemoteInsertKeySender(remoteName, sessionID string) (insertKeySender, e
 		return nil, errInsertNoRemoteConfig
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
+	if streamer, err := session.OpenStreamingRemoteKeySender(runner, sessionID, context.Background()); err == nil {
+		return streamer, nil
+	}
 	return session.NewRemoteKeySender(runner, sessionID, context.Background()), nil
 }
