@@ -37,6 +37,10 @@ type SSHRunner struct {
 
 	// runFn lets tests stub out command execution. nil = real SSH.
 	runFn func(ctx context.Context, args ...string) ([]byte, error)
+
+	// openStreamFn lets tests stub out the persistent-stream subprocess
+	// without spawning real ssh. nil = real SSH (#1112 bug 2).
+	openStreamFn func(ctx context.Context, args ...string) (io.WriteCloser, func() error, error)
 }
 
 // NewSSHRunner creates an SSHRunner from a RemoteConfig.
@@ -53,6 +57,58 @@ func (r *SSHRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	return r.run(timeoutCtx, args...)
+}
+
+// OpenStream spawns a single long-running remote `agent-deck <args...>`
+// subprocess over SSH and returns its stdin pipe + a close function that
+// terminates the subprocess. Used by #1112 bug 2's persistent insert-mode
+// stream so 100 keystrokes amortize to one ssh fork+exec instead of 100.
+//
+// The returned WriteCloser is goroutine-safe at the OS pipe layer; the
+// caller is responsible for serializing if it needs message-level
+// ordering (RemoteKeySender does this with its own mutex).
+func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteCloser, func() error, error) {
+	if r.openStreamFn != nil {
+		return r.openStreamFn(ctx, args...)
+	}
+	_ = os.MkdirAll(sshControlDir, 0700)
+
+	remoteCmd := r.buildRemoteCommand(args...)
+	sshArgs := []string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
+		"-o", "ControlPersist=600",
+		"-o", "ConnectTimeout=10",
+		"-o", "BatchMode=yes",
+		r.Host,
+		remoteCmd,
+	}
+
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stream stdin pipe: %w", err)
+	}
+	// Drop the subprocess's stdout/stderr — `--stream` mode prints nothing
+	// on success, and surfacing partial errors would require parsing the
+	// CLIOutput JSON. Failures already surface via the stdin write erroring
+	// when the remote exits.
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return nil, nil, fmt.Errorf("stream start: %w", err)
+	}
+	closeFn := func() error {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			// stdin close should make the remote loop exit; kill as backstop.
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+		return nil
+	}
+	return stdin, closeFn, nil
 }
 
 // run executes an agent-deck command on the remote host using the provided context directly.

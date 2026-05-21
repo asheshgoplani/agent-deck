@@ -4385,6 +4385,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.remoteCostsMu.Lock()
 		h.remoteCosts = msg.costs
 		h.remoteCostsMu.Unlock()
+		// #1112 bug 1: a remote running→waiting transition wouldn't update
+		// the header pill ("[◐ Waiting N]") because countSessionStatuses
+		// caches for 500ms. The row icon updated (read from the map
+		// directly), but the pill froze on the previous fetch's totals.
+		// Invalidate so the next View() recomputes.
+		h.cachedStatusCounts.valid.Store(false)
 		h.rebuildFlatItems()
 		return h, nil
 
