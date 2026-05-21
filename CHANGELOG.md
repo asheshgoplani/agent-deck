@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.29] - 2026-05-21
+
+A 3-fix follow-up to v1.9.28 closing out the recursive self-improvement → file-issue → TDD-fix cycle that surfaced three production-observable gaps. v1.9.29 is the **twenty-fourth release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.
+
+### Fixed
+
+- **Codex + Gemini session-id rebinds now persisted to SQLite** ([PR #1141](https://github.com/asheshgoplani/agent-deck/pull/1141), fixes [#1139](https://github.com/asheshgoplani/agent-deck/issues/1139), mirror of [#1138](https://github.com/asheshgoplani/agent-deck/issues/1138) in v1.9.28). The Claude `/clear` rebind persistence fix in #1140 left the same gap open for the codex and gemini wrappers: when those tiles rebound to a fresh session-id, the in-memory `Instance` updated but `state.db` kept pinning the pre-rebind UUID in `tool_data.codex_session_id` / `tool_data.gemini_session_id`. Third-party consumers joining on `tool_data` saw stale UUIDs and could not follow the live conversation. Fix mirrors the Claude rebind-persist path for both wrappers, with 636 lines of regression tests (`issue1139_codex_session_persist_test.go` + `issue1139_gemini_session_persist_test.go`) pinning the invariant.
+
+- **Status-transition notifier de-duplicates identical `[EVENT]` notifications** ([PR #1144](https://github.com/asheshgoplani/agent-deck/pull/1144), closes [#1142](https://github.com/asheshgoplani/agent-deck/issues/1142)). Self-improvement telemetry surfaced a 47×-loop pattern: a single child status flap could fan out 47 duplicate `[EVENT]` lines to the conductor within seconds when output-hashes matched. Fix keys de-duplication on `(child, status, output-hash)` so identical events collapse to one delivery, eliminating the loop while keeping legitimate distinct events. Pinned by `internal/session/issue1142_event_dedup_test.go`.
+
+### Added
+
+- **`--idle-timeout <duration>` flag on `launch` + `session`** ([PR #1145](https://github.com/asheshgoplani/agent-deck/pull/1145), closes [#1143](https://github.com/asheshgoplani/agent-deck/issues/1143)). Self-improvement telemetry surfaced a 4×-dormant-worker pattern: child sessions sitting idle for hours after their parent had moved on, holding tmux + claude resources. New `--idle-timeout` flag auto-stops dormant children once they exceed the configured duration (e.g. `--idle-timeout 30m`). Configurable per-session at any time via `agent-deck session set <id> idle_timeout 30m`. Idle watcher lives in `internal/session/idle_timeout_watcher.go` with persistence in `idle_timeout_persist.go`. Pinned by `issue1143_idle_timeout_test.go` (368 LOC) + `issue1143_idle_timeout_cli_test.go`.
+
 ## [1.9.28] - 2026-05-21
 
 A single-fix follow-up to v1.9.27 closing the Claude `/clear` rebind persistence gap reported in [#1138](https://github.com/asheshgoplani/agent-deck/issues/1138). v1.9.28 is the **twenty-third release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.
