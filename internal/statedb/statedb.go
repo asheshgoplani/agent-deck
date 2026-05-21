@@ -846,6 +846,43 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 	})
 }
 
+// WriteClaudeSessionBinding atomically updates claude_session_id and
+// claude_detected_at inside the tool_data JSON column for the given
+// instance. Used by the hook-rebind path (UpdateHookStatus →
+// bindClaudeSessionFromHook) to persist the new session ID without a
+// whole-row INSERT OR REPLACE — which would clobber any concurrent
+// writes to other tool_data fields by writers holding a stale snapshot
+// of the instance.
+//
+// PERSIST-12 (see instance.go:bindClaudeSessionFromHook doc comment)
+// originally deferred this to an external "save cycle", but none of the
+// three UpdateHookStatus callers (TUI tick, web refresh, CLI status
+// refresh) actually call Save after rebind. Without this targeted
+// write, tool_data.claude_session_id stays pinned at the pre-/clear
+// UUID indefinitely for any DB-direct consumer (claudopticon, etc.) —
+// and the lifecycle log accumulates fresh "rebind" entries forever
+// because concurrent processes keep reloading the stale row from disk
+// and clobbering the in-memory mutation.
+//
+// Wrapped in withBusyRetry: SQLite serializes writers through a single
+// write lock, so under contention with WriteStatus / SaveInstance /
+// heartbeat writers a transient SQLITE_BUSY would otherwise drop this
+// update — matching the WriteStatus rationale above.
+func (s *StateDB) WriteClaudeSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.claude_session_id', ?,
+			         '$.claude_detected_at', ?)
+			 WHERE id = ?`,
+			sessionID, detectedAt.Unix(), id,
+		)
+		return err
+	})
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")

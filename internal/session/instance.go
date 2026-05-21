@@ -28,6 +28,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/send"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
@@ -6327,6 +6328,36 @@ func (i *Instance) bindClaudeSessionFromHook(sessionID, hookSource, hookEvent, a
 
 	if i.tmuxSession != nil && i.tmuxSession.Exists() {
 		_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", sessionID)
+	}
+
+	// Persist the rebind to SQLite. The PERSIST-12 contract above assumed
+	// an "external save cycle" would pick this up, but none of the three
+	// UpdateHookStatus callers (TUI tick, web refresh, CLI status refresh)
+	// actually save after rebind — leaving tool_data.claude_session_id
+	// stuck at the pre-/clear UUID indefinitely for DB-direct consumers,
+	// and producing a runaway loop of fresh "rebind" lifecycle entries
+	// because peer processes keep reloading the stale row and clobbering
+	// the in-memory mutation.
+	//
+	// What this UPDATE guarantees: the write is atomic at SQLite's row
+	// lock against WriteStatus (different columns) and SaveInstance
+	// (same row, serialized). What it does NOT prevent: a concurrent
+	// SaveInstance from a peer process holding a stale Instance snapshot
+	// can still clobber the value we just wrote, because
+	// claude_session_id is a typed schema field — MergeToolDataExtras
+	// only protects keys outside that typed set, so the peer's stale
+	// typed value wins. The runaway-rebind loop terminates anyway
+	// because the writer that decided to rebind also persists
+	// synchronously here, not because clobbering is impossible — a
+	// later peer reload that observes the new ID will short-circuit at
+	// the `sessionID == i.ClaudeSessionID` check in UpdateHookStatus.
+	if db := statedb.GetGlobal(); db != nil {
+		if err := db.WriteClaudeSessionBinding(i.ID, sessionID, i.ClaudeDetectedAt); err != nil {
+			sessionLog.Warn("claude_session_rebind_persist_failed",
+				slog.String("instance_id", i.ID),
+				slog.String("new_id", sessionID),
+				slog.String("error", err.Error()))
+		}
 	}
 }
 
