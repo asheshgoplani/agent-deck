@@ -40,9 +40,10 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | List MCPs | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI displays from catalog |
 | Toggle pooled ↔ local | `internal/ui/home.go:5965` (`m` key → MCPDialog) | MISSING | N/A | N/A | TUI dialog only |
 | **SKILLS MANAGEMENT** |
-| Attach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | MISSING | N/A | N/A | TUI dialog only; writes project config |
-| Detach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | MISSING | N/A | N/A | TUI dialog only |
-| List skills | `internal/ui/home.go:6015` (`s` key → SkillDialog) | MISSING | N/A | N/A | TUI displays from catalog |
+| Attach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `POST /api/sessions/{id}/skills/{name}` | `apiFetch('POST', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService`; writes project config |
+| Detach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `DELETE /api/sessions/{id}/skills/{name}` | `apiFetch('DELETE', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService` |
+| List skills (catalog) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `GET /api/skills` | `SkillsPane.js` catalog column | `tests/web/e2e/skills.spec.js` | Mirrors `session.ListAvailableSkills` |
+| List skills (attached) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `GET /api/sessions/{id}/skills` | `SkillsPane.js` attached column | `tests/web/e2e/skills.spec.js` | Mirrors `session.GetAttachedProjectSkills(projectPath)` |
 | **SETTINGS & DISPLAY** |
 | Edit session settings | `internal/ui/home.go:5953` (`P`/`shift+p` → EditSessionDialog) | MISSING | `SetField` (indirect) | N/A | Title, color, notes, tool options, channels |
 | Edit multi-repo paths | `internal/ui/home.go:5942` (`p` → EditPathsDialog) | MISSING | N/A | N/A | Multi-repo session paths |

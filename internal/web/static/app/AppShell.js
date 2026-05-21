@@ -20,6 +20,7 @@ import { CostsPane } from './panes/CostsPane.js'
 import { FleetPane } from './panes/FleetPane.js'
 import { StubPane } from './panes/StubPane.js'
 import { SearchPane } from './panes/SearchPane.js'
+import { SkillsPane } from './panes/SkillsPane.js'
 import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
@@ -102,9 +103,7 @@ function Panes({ tab }) {
     ${tab === 'mcp'       && html`<${StubPane} title="MCP Manager"
                               message="MCP attachments are managed in the TUI today. The web API does not expose attach / detach / pool toggles yet."
                               hotkey="m"/>`}
-    ${tab === 'skills'    && html`<${StubPane} title="Skills"
-                              message="Skill attachments are managed in the TUI today. The web API does not expose skill management yet."
-                              hotkey="s"/>`}
+    ${tab === 'skills'    && html`<${SkillsPane}/>`}
     ${tab === 'conductor' && html`<${StubPane} title="Conductor"
                               message="Conductor orchestration view is TUI-only. The web API does not expose child topology, bridges, or NEED escalation."/>`}
     ${tab === 'watchers'  && html`<${StubPane} title="Watchers"

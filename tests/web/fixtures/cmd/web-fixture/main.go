@@ -64,6 +64,7 @@ func main() {
 		MenuData:     store,
 	})
 	server.SetMutator(store)
+	server.SetSkillsService(store)
 
 	// Wrap the server's handler with the fixture admin endpoints so tests can
 	// reset and inspect state without going through the real Go test harness.
@@ -116,6 +117,8 @@ type fixtureStore struct {
 	order        []string // session id order
 	nextID       int
 	startupToken string // echoed at /__fixture/whoami for spawn verification
+	catalog      []session.SkillCandidate
+	attached     map[string][]session.ProjectSkillAttachment // by projectPath
 }
 
 func newFixtureStore() *fixtureStore {
@@ -124,6 +127,7 @@ func newFixtureStore() *fixtureStore {
 		profile:  "fixture",
 		groups:   make(map[string]*web.MenuGroup),
 		sessions: make(map[string]*web.MenuSession),
+		attached: make(map[string][]session.ProjectSkillAttachment),
 	}
 }
 
@@ -168,6 +172,16 @@ func (s *fixtureStore) seed() {
 	}
 	s.order = []string{"sess-001", "sess-002", "sess-003", "sess-004"}
 	s.nextID = 5
+	s.catalog = []session.SkillCandidate{
+		{ID: "pool/alpha", Name: "alpha", Source: "pool", EntryName: "alpha", Kind: "dir", Description: "Alpha test skill"},
+		{ID: "pool/beta", Name: "beta", Source: "pool", EntryName: "beta", Kind: "dir", Description: "Beta test skill"},
+		{ID: "pool/gamma", Name: "gamma", Source: "pool", EntryName: "gamma", Kind: "dir", Description: "Gamma test skill"},
+	}
+	s.attached = map[string][]session.ProjectSkillAttachment{
+		"/srv/agent-deck": {
+			{ID: "pool/alpha", Name: "alpha", Source: "pool", EntryName: "alpha", TargetPath: ".claude/skills/alpha"},
+		},
+	}
 }
 
 // LoadMenuSnapshot implements web.MenuDataLoader.
@@ -388,4 +402,67 @@ func indexOf(s string, c byte) int {
 		}
 	}
 	return -1
+}
+
+// --- web.SkillsService -----------------------------------------------------
+
+// ListCatalog implements web.SkillsService.
+func (s *fixtureStore) ListCatalog() ([]session.SkillCandidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]session.SkillCandidate, len(s.catalog))
+	copy(out, s.catalog)
+	return out, nil
+}
+
+// ListAttached implements web.SkillsService.
+func (s *fixtureStore) ListAttached(projectPath string) ([]session.ProjectSkillAttachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]session.ProjectSkillAttachment, len(s.attached[projectPath]))
+	copy(out, s.attached[projectPath])
+	return out, nil
+}
+
+// Attach implements web.SkillsService.
+func (s *fixtureStore) Attach(projectPath, tool, skillRef, source string) (*session.ProjectSkillAttachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var match *session.SkillCandidate
+	for i := range s.catalog {
+		c := s.catalog[i]
+		if (source == "" || c.Source == source) && (c.Name == skillRef || c.ID == skillRef || c.EntryName == skillRef) {
+			match = &c
+			break
+		}
+	}
+	if match == nil {
+		return nil, fmt.Errorf("%w: %s", session.ErrSkillNotFound, skillRef)
+	}
+	for _, a := range s.attached[projectPath] {
+		if a.ID == match.ID {
+			return nil, session.ErrSkillAlreadyAttached
+		}
+	}
+	att := session.ProjectSkillAttachment{
+		ID: match.ID, Name: match.Name, Source: match.Source,
+		EntryName: match.EntryName, TargetPath: ".claude/skills/" + match.EntryName,
+	}
+	s.attached[projectPath] = append(s.attached[projectPath], att)
+	return &att, nil
+}
+
+// Detach implements web.SkillsService.
+func (s *fixtureStore) Detach(projectPath, skillRef, source string) (*session.ProjectSkillAttachment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list := s.attached[projectPath]
+	for i, a := range list {
+		if (source == "" || a.Source == source) && (a.Name == skillRef || a.ID == skillRef || a.EntryName == skillRef) {
+			removed := a
+			s.attached[projectPath] = append(list[:i], list[i+1:]...)
+			return &removed, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", session.ErrSkillNotAttached, skillRef)
 }
