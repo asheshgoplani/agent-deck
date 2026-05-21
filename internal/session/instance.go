@@ -3649,18 +3649,7 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if sessionID == i.CodexSessionID {
 			return
 		}
-		sessionLog.Debug("codex_session_update_from_hook",
-			slog.String("old_id", i.CodexSessionID),
-			slog.String("new_id", sessionID),
-			slog.String("event", status.Event),
-		)
-		i.CodexSessionID = sessionID
-		i.CodexDetectedAt = time.Now()
-		i.hookSessionID = sessionID
-
-		if i.tmuxSession != nil && i.tmuxSession.Exists() {
-			_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
-		}
+		i.bindCodexSessionFromHook(sessionID, status.Event)
 	case i.Tool == "gemini":
 		if sessionID == i.GeminiSessionID {
 			return
@@ -3668,18 +3657,86 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		// Quality gate: only accept when candidate session appears valid on disk,
 		// OR when current session is empty (first detection/bootstrap).
 		if i.GeminiSessionID == "" || geminiSessionHasConversationData(sessionID, i.ProjectPath) {
-			sessionLog.Debug("gemini_session_update_from_hook",
-				slog.String("old_id", i.GeminiSessionID),
-				slog.String("new_id", sessionID),
-				slog.String("event", status.Event),
-			)
-			i.GeminiSessionID = sessionID
-			i.GeminiDetectedAt = time.Now()
-			i.hookSessionID = sessionID
+			i.bindGeminiSessionFromHook(sessionID, status.Event)
+		}
+	}
+}
 
-			if i.tmuxSession != nil && i.tmuxSession.Exists() {
-				_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", sessionID)
-			}
+// bindCodexSessionFromHook is the Codex counterpart of
+// bindClaudeSessionFromHook (see that function's doc comment for the
+// PERSIST-12 rationale). It performs the same bookkeeping that the
+// inlined pre-#1139 code did — debug log, in-memory mutation, tmux env
+// propagation — and then persists the new binding to SQLite so
+// DB-direct consumers and peer agent-deck processes observe the new
+// codex_session_id immediately, instead of reloading the stale row and
+// clobbering the in-memory mutation on the next save cycle.
+func (i *Instance) bindCodexSessionFromHook(sessionID, hookEvent string) {
+	sessionLog.Debug("codex_session_update_from_hook",
+		slog.String("old_id", i.CodexSessionID),
+		slog.String("new_id", sessionID),
+		slog.String("event", hookEvent),
+	)
+	i.CodexSessionID = sessionID
+	i.CodexDetectedAt = time.Now()
+	i.hookSessionID = sessionID
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("CODEX_SESSION_ID", sessionID)
+	}
+
+	// Persist the rebind to SQLite. See bindClaudeSessionFromHook for the
+	// full rationale: none of the three UpdateHookStatus callers (TUI
+	// tick, web refresh, CLI status refresh) save after a hook-triggered
+	// rebind, so tool_data.codex_session_id stays pinned at the stale
+	// UUID indefinitely for DB-direct consumers, and peer processes
+	// holding stale snapshots keep clobbering the in-memory mutation —
+	// producing a runaway loop of fresh "rebind" decisions on every
+	// poll. WriteCodexSessionBinding rewrites only the typed schema
+	// fields via json_set, leaving every other tool_data key untouched.
+	if db := statedb.GetGlobal(); db != nil {
+		if err := db.WriteCodexSessionBinding(i.ID, sessionID, i.CodexDetectedAt); err != nil {
+			sessionLog.Warn("codex_session_rebind_persist_failed",
+				slog.String("instance_id", i.ID),
+				slog.String("new_id", sessionID),
+				slog.String("error", err.Error()))
+		}
+	}
+}
+
+// bindGeminiSessionFromHook is the Gemini counterpart of
+// bindClaudeSessionFromHook. See that function's doc comment for the
+// PERSIST-12 rationale. The quality gate (GeminiSessionID == "" ||
+// geminiSessionHasConversationData(...)) is enforced by the caller in
+// UpdateHookStatus before this function is invoked, mirroring the
+// invariant the inlined pre-#1139 code preserved.
+func (i *Instance) bindGeminiSessionFromHook(sessionID, hookEvent string) {
+	sessionLog.Debug("gemini_session_update_from_hook",
+		slog.String("old_id", i.GeminiSessionID),
+		slog.String("new_id", sessionID),
+		slog.String("event", hookEvent),
+	)
+	i.GeminiSessionID = sessionID
+	i.GeminiDetectedAt = time.Now()
+	i.hookSessionID = sessionID
+
+	if i.tmuxSession != nil && i.tmuxSession.Exists() {
+		_ = i.tmuxSession.SetEnvironment("GEMINI_SESSION_ID", sessionID)
+	}
+
+	// Persist the rebind to SQLite. See bindClaudeSessionFromHook for
+	// the full rationale on why the in-memory mutation alone is not
+	// enough: the bug pattern (#1138 for Claude, #1139 for
+	// Codex/Gemini) is that UpdateHookStatus callers don't call Save
+	// afterwards, so peer agent-deck processes keep reloading the stale
+	// row and clobbering this instance's in-memory state. The targeted
+	// json_set UPDATE atomically rewrites only $.gemini_session_id and
+	// $.gemini_detected_at, preserving the rest of tool_data.
+	if db := statedb.GetGlobal(); db != nil {
+		if err := db.WriteGeminiSessionBinding(i.ID, sessionID, i.GeminiDetectedAt); err != nil {
+			sessionLog.Warn("gemini_session_rebind_persist_failed",
+				slog.String("instance_id", i.ID),
+				slog.String("new_id", sessionID),
+				slog.String("error", err.Error()))
 		}
 	}
 }

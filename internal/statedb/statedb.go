@@ -883,6 +883,49 @@ func (s *StateDB) WriteClaudeSessionBinding(id, sessionID string, detectedAt tim
 	})
 }
 
+// WriteCodexSessionBinding is the Codex counterpart of
+// WriteClaudeSessionBinding: it atomically rewrites $.codex_session_id
+// and $.codex_detected_at inside the tool_data JSON column without
+// touching any unrelated keys. See WriteClaudeSessionBinding for the
+// full rationale (PERSIST-12, json_set vs. tool_data = ?, withBusyRetry).
+// This sibling exists because the Codex rebind path in
+// bindCodexSessionFromHook has the same in-memory-only mutation shape
+// that the Claude fix in #1140 addressed — tracked as #1139.
+func (s *StateDB) WriteCodexSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.codex_session_id', ?,
+			         '$.codex_detected_at', ?)
+			 WHERE id = ?`,
+			sessionID, detectedAt.Unix(), id,
+		)
+		return err
+	})
+}
+
+// WriteGeminiSessionBinding is the Gemini counterpart of
+// WriteClaudeSessionBinding. See that function's doc comment for the
+// PERSIST-12 / json_set / withBusyRetry rationale; the Gemini rebind
+// path in bindGeminiSessionFromHook had the same persistence gap
+// (#1139).
+func (s *StateDB) WriteGeminiSessionBinding(id, sessionID string, detectedAt time.Time) error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec(
+			`UPDATE instances
+			   SET tool_data = json_set(
+			         COALESCE(tool_data, '{}'),
+			         '$.gemini_session_id', ?,
+			         '$.gemini_detected_at', ?)
+			 WHERE id = ?`,
+			sessionID, detectedAt.Unix(), id,
+		)
+		return err
+	})
+}
+
 // ReadAllStatuses returns status + acknowledged flag for every instance.
 func (s *StateDB) ReadAllStatuses() (map[string]StatusRow, error) {
 	rows, err := s.db.Query("SELECT id, status, tool, acknowledged FROM instances")
