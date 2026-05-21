@@ -93,8 +93,8 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | `created_at` | Info section | `MenuSession.createdAt` | ✅ Present |
 | `last_accessed_at` | Info section | `MenuSession.lastAccessedAt` | ✅ Present |
 | **RELATIONSHIPS** |
-| `parent_session_id` | Sub-session indicator | `MenuSession.parentSessionId` | ✅ Present |
-| `is_conductor` | (Not shown in TUI) | MISSING | Conductor metadata |
+| `parent_session_id` | Sub-session indicator | `MenuSession.parentSessionId` + `GET /api/sessions/{id}/children` | ✅ Present; tree endpoint surfaces full conductor child topology in the right-rail Children card (`internal/web/handlers_children.go`, `tests/web/e2e/children-panel.spec.js`) |
+| `is_conductor` | (Not shown in TUI) | MISSING | Conductor metadata; tree exposure now lives at `GET /api/sessions/{id}/children` (kind derived UI-side from title/groupPath in `dataModel.js`) |
 | **PROCESS STATE** |
 | `tmux_session` | Internal reference | `MenuSession.tmuxSession` | ✅ Present (tmux session name) |
 | `tmux_socket_name` | (Internal) | `MenuSession.tmuxSocketName` | ✅ Present; issue #687 |

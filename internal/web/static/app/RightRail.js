@@ -3,12 +3,24 @@
 // Cards: Overview, Usage, MCPs, Skills, Children, Events. User toggles which
 // are visible in the rail-add picker at the bottom.
 //
-// MCPs / Skills / Children / Events have no API today; they render an
-// informative "TUI-only feature" hint instead of fake data.
+// The Children card renders the conductor child-session topology. The
+// tree is built client-side from the same menuModelSignal that drives
+// the session list, so it stays in sync with SSE menu updates for free.
+// The Go endpoint at GET /api/sessions/{id}/children exposes the same
+// shape for direct API consumers and lives in handlers_children.go.
+//
+// MCPs / Skills / Events still render an informative "TUI-only" hint
+// because their underlying APIs are not yet wired through the right rail.
 import { html } from 'htm/preact'
+import { signal } from '@preact/signals'
 import { menuModelSignal } from './dataModel.js'
 import { selectedIdSignal } from './state.js'
 import { rightRailPanelsSignal } from './uiState.js'
+
+// Module-scope signal so collapsed state survives RightRail re-mounts
+// (e.g. when the user switches between sessions and back). Keyed by
+// session id so each conductor remembers its own expanded set.
+const collapsedNodesSignal = signal({})
 
 const AVAIL_PANELS = [
   { id: 'overview', label: 'Overview' },
@@ -33,6 +45,76 @@ function Card({ title, badge, children }) {
 
 function NoData({ msg }) {
   return html`<div style="font-family: var(--mono); font-size: 11px; color: var(--muted);">${msg}</div>`
+}
+
+// Build the conductor → children adjacency map once per render. Cycles
+// (corrupt parent pointers) are broken by a visited set so the tree
+// builder cannot loop forever — mirrors the Go handler's defense.
+function buildChildrenTree(rootId, sessions) {
+  const byParent = new Map()
+  for (const s of sessions) {
+    const p = s.raw && s.raw.parentSessionId
+    if (!p) continue
+    if (!byParent.has(p)) byParent.set(p, [])
+    byParent.get(p).push(s)
+  }
+  const visited = new Set([rootId])
+  const walk = (id) => {
+    const kids = byParent.get(id) || []
+    return kids
+      .filter((k) => {
+        if (visited.has(k.id)) return false
+        visited.add(k.id)
+        return true
+      })
+      .map((k) => ({ session: k, children: walk(k.id) }))
+  }
+  return walk(rootId)
+}
+
+// Renders one node + its descendants. Leaf nodes hide the disclosure
+// triangle; non-leaf nodes show ▾/▸ and toggle via collapsedNodesSignal.
+function ChildNode({ node, depth, rootId }) {
+  const collapsed = collapsedNodesSignal.value
+  const key = rootId + ':' + node.session.id
+  const isOpen = !collapsed[key]
+  const hasKids = node.children.length > 0
+  const toggle = () => {
+    collapsedNodesSignal.value = { ...collapsed, [key]: isOpen }
+  }
+  return html`
+    <div class="child-node" data-session-id=${node.session.id} data-depth=${depth}
+         style="font-family: var(--mono); font-size: 11px; line-height: 1.7; padding-left: ${depth * 12}px;">
+      <span class="child-row" style="display: inline-flex; align-items: center; gap: 4px;">
+        <span class="child-toggle"
+              onClick=${hasKids ? toggle : null}
+              style=${`width: 10px; display: inline-block; cursor: ${hasKids ? 'pointer' : 'default'}; color: var(--muted);`}>
+          ${hasKids ? (isOpen ? '▾' : '▸') : ' '}
+        </span>
+        <span class="child-status pill" data-status=${node.session.status}
+              style="font-size: 9px; padding: 0 4px;">${node.session.status}</span>
+        <span class="child-title" style="color: var(--text-hi);">${node.session.title}</span>
+        ${node.session.tool && html`<span class="child-tool" style="color: var(--muted);">· ${node.session.tool}</span>`}
+      </span>
+      ${hasKids && isOpen && node.children.map((kid) => html`
+        <${ChildNode} key=${kid.session.id} node=${kid} depth=${depth + 1} rootId=${rootId}/>
+      `)}
+    </div>
+  `
+}
+
+function ChildrenTree({ rootId, sessions }) {
+  const tree = buildChildrenTree(rootId, sessions)
+  if (tree.length === 0) {
+    return html`<${NoData} msg="No child sessions yet."/>`
+  }
+  return html`
+    <div class="children-tree" data-children-count=${tree.length}>
+      ${tree.map((node) => html`
+        <${ChildNode} key=${node.session.id} node=${node} depth=${0} rootId=${rootId}/>
+      `)}
+    </div>
+  `
 }
 
 export function RightRail() {
@@ -104,8 +186,8 @@ export function RightRail() {
           </${Card}>
         `}
         ${panels.children && session.kind === 'conductor' && html`
-          <${Card} title="CHILDREN">
-            <${NoData} msg="Conductor child topology not exposed via web API."/>
+          <${Card} title="CHILDREN" badge="conductor">
+            <${ChildrenTree} rootId=${session.id} sessions=${sessions}/>
           </${Card}>
         `}
         ${panels.events && session.kind === 'watcher' && html`

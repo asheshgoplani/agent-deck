@@ -110,6 +110,12 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Children sub-route: GET /api/sessions/{id}/children
+	if isChildrenAction(action) {
+		s.handleSessionChildren(w, r, sessionID)
+		return
+	}
+
 	// DELETE /api/sessions/{id}
 	if r.Method == http.MethodDelete && action == "" {
 		if !s.checkMutationsAllowed(w) {
