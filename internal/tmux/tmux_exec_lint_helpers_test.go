@@ -20,9 +20,12 @@ func walkGoFiles(root string, visit func(path string) error) error {
 		if d.IsDir() {
 			name := d.Name()
 			// Prune noise + nested worktrees so CI scanning a worktree
-			// does not trip on the sibling checkouts.
+			// does not trip on the sibling checkouts. `.claude` is the
+			// Claude Code tooling sandbox; nested worktrees under
+			// `.claude/worktrees/` are transient agent checkouts of older
+			// commits and must not feed the allowlist scan.
 			switch name {
-			case ".git", "node_modules", "vendor", ".worktrees":
+			case ".git", "node_modules", "vendor", ".worktrees", ".claude":
 				return filepath.SkipDir
 			}
 			return nil
