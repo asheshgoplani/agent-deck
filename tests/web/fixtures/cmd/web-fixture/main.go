@@ -119,6 +119,16 @@ type fixtureStore struct {
 	startupToken string // echoed at /__fixture/whoami for spawn verification
 	catalog      []session.SkillCandidate
 	attached     map[string][]session.ProjectSkillAttachment // by projectPath
+
+	// undoStack tracks recently-deleted sessions for ctrl+z undo. Capped
+	// at 10 entries (FIFO eviction) to match the TUI Home.undoStack.
+	undoStack  []fixtureDeletedEntry
+	undoWindow time.Duration // 0 → web.DefaultUndoWindow
+}
+
+type fixtureDeletedEntry struct {
+	session   *web.MenuSession
+	deletedAt time.Time
 }
 
 func newFixtureStore() *fixtureStore {
@@ -182,6 +192,7 @@ func (s *fixtureStore) seed() {
 			{ID: "pool/alpha", Name: "alpha", Source: "pool", EntryName: "alpha", TargetPath: ".claude/skills/alpha"},
 		},
 	}
+	s.undoStack = nil
 }
 
 // LoadMenuSnapshot implements web.MenuDataLoader.
@@ -247,8 +258,17 @@ func (s *fixtureStore) RestartSession(id string) error {
 func (s *fixtureStore) DeleteSession(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.sessions[id]; !ok {
+	sess, ok := s.sessions[id]
+	if !ok {
 		return fmt.Errorf("session %q not found", id)
+	}
+	// Snapshot the session for undo BEFORE removing from primary state.
+	s.undoStack = append(s.undoStack, fixtureDeletedEntry{
+		session:   sess,
+		deletedAt: s.now(),
+	})
+	if len(s.undoStack) > 10 {
+		s.undoStack = s.undoStack[len(s.undoStack)-10:]
 	}
 	delete(s.sessions, id)
 	for i, oid := range s.order {
@@ -258,6 +278,36 @@ func (s *fixtureStore) DeleteSession(id string) error {
 		}
 	}
 	return nil
+}
+
+// CloseSession mirrors the TUI's Shift+D handler: stop the session but
+// keep its metadata in storage (web parity row "Close session").
+func (s *fixtureStore) CloseSession(id string) error {
+	return s.transition(id, session.StatusStopped)
+}
+
+// UndoDelete restores the most-recently deleted session if its delete
+// was within s.undoWindow (default web.DefaultUndoWindow).
+func (s *fixtureStore) UndoDelete() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.undoStack) == 0 {
+		return "", web.ErrUndoNothing
+	}
+	entry := s.undoStack[len(s.undoStack)-1]
+	s.undoStack = s.undoStack[:len(s.undoStack)-1]
+	window := s.undoWindow
+	if window == 0 {
+		window = web.DefaultUndoWindow
+	}
+	if s.now().Sub(entry.deletedAt) > window {
+		return "", web.ErrUndoExpired
+	}
+	restored := *entry.session
+	restored.Status = session.StatusStopped
+	s.sessions[restored.ID] = &restored
+	s.order = append(s.order, restored.ID)
+	return restored.ID, nil
 }
 
 func (s *fixtureStore) ForkSession(parentID string) (string, error) {

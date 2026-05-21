@@ -260,14 +260,29 @@ export function AppShell() {
         const s = focusedSession()
         if (s) addToast(`Rename "${s.title}": use the TUI (web rename API not implemented yet)`, 'info')
       } else if (e.key === 'D') {
-        // Shift+D — stop focused session. Mirrors TUI's `D` close-session.
+        // Shift+D — non-destructive close of focused session. Mirrors
+        // TUI's `D` (closeSession): kills the tmux process but keeps the
+        // session record so a later start/restart can resurrect it.
         if (!mutationsEnabledSignal.value) return
         const s = focusedSession()
         if (!s) return
         confirmDialogSignal.value = {
-          message: `Stop session "${s.title}"? The tmux process will be killed; metadata is preserved.`,
-          onConfirm: () => apiFetch('POST', `/api/sessions/${s.id}/stop`).catch(() => {}),
+          message: `Close session "${s.title}"? The tmux process will be killed; metadata is preserved.`,
+          onConfirm: () => apiFetch('POST', `/api/sessions/${s.id}/close`).catch(() => {}),
         }
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        // Ctrl/Cmd+Z — Chrome-style undo of the most recent delete.
+        // Mirrors TUI's ctrl+z (Home.undoStack). The server enforces the
+        // configurable undo window (default 30s) and returns 404 once
+        // the entry expires; surface the result as a toast either way.
+        if (!mutationsEnabledSignal.value) return
+        e.preventDefault()
+        apiFetch('POST', '/api/sessions/undelete')
+          .then(resp => {
+            if (resp && resp.sessionId) addToast(`Restored session ${resp.sessionId}`, 'success')
+            else addToast('Restored last deleted session', 'success')
+          })
+          .catch(() => addToast('Nothing to undo', 'info'))
       } else if (e.key === 'q') {
         // Mirrors TUI's `q`: dismiss the current modal/overlay. Only fires
         // when no input is focused (guarded above), so it never blocks

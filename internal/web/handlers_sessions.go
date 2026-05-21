@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -151,6 +152,16 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 			}
 			s.notifyMenuChanged()
 			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
+		case "close":
+			// Non-destructive close: stop process, keep metadata. Mirrors
+			// the TUI Shift+D handler (closes the "Close session" MISSING
+			// row in tests/web/PARITY_MATRIX.md).
+			if err := s.mutator.CloseSession(sessionID); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				return
+			}
+			s.notifyMenuChanged()
+			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
 		case "start":
 			if err := s.mutator.StartSession(sessionID); err != nil {
 				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
@@ -180,4 +191,47 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, "route not found")
+}
+
+// undeleteResponse is the JSON body returned from POST /api/sessions/undelete.
+type undeleteResponse struct {
+	SessionID string `json:"sessionId"`
+}
+
+// handleSessionUndelete is POST /api/sessions/undelete — Chrome-style undo
+// of the most recent delete. Mirrors the TUI's ctrl+z handler. Closes the
+// "Undo delete" MISSING row in tests/web/PARITY_MATRIX.md.
+//
+//   - 401 if unauthorized
+//   - 403 if mutations are disabled
+//   - 503 if no mutator is wired
+//   - 404 if the undo stack is empty OR the entry expired (the front-end
+//     can surface either as "nothing to undo")
+//   - 200 with the restored sessionId on success
+func (s *Server) handleSessionUndelete(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
+		return
+	}
+	if !s.checkMutationsAllowed(w) {
+		return
+	}
+	if !s.checkMutationRateLimit(w) {
+		return
+	}
+	if s.mutator == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
+		return
+	}
+	restoredID, err := s.mutator.UndoDelete()
+	if err != nil {
+		if errors.Is(err, ErrUndoNothing) || errors.Is(err, ErrUndoExpired) {
+			writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+		return
+	}
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusOK, undeleteResponse{SessionID: restoredID})
 }

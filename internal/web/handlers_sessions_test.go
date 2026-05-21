@@ -19,6 +19,8 @@ type fakeMutator struct {
 	stopSessionFn    func(id string) error
 	restartSessionFn func(id string) error
 	deleteSessionFn  func(id string) error
+	closeSessionFn   func(id string) error
+	undoDeleteFn     func() (string, error)
 	forkSessionFn    func(id string) (string, error)
 	createGroupFn    func(name, parentPath string) (string, error)
 	renameGroupFn    func(groupPath, newName string) error
@@ -58,6 +60,20 @@ func (f *fakeMutator) DeleteSession(id string) error {
 		return fmt.Errorf("deleteSession not configured")
 	}
 	return f.deleteSessionFn(id)
+}
+
+func (f *fakeMutator) CloseSession(id string) error {
+	if f.closeSessionFn == nil {
+		return fmt.Errorf("closeSession not configured")
+	}
+	return f.closeSessionFn(id)
+}
+
+func (f *fakeMutator) UndoDelete() (string, error) {
+	if f.undoDeleteFn == nil {
+		return "", fmt.Errorf("undoDelete not configured")
+	}
+	return f.undoDeleteFn()
 }
 
 func (f *fakeMutator) ForkSession(id string) (string, error) {
@@ -411,6 +427,284 @@ func TestMutationNilMutatorReturns503(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), ErrCodeNotImplemented) {
 		t.Errorf("expected NOT_IMPLEMENTED error, got: %s", rr.Body.String())
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Non-destructive Close (POST /api/sessions/{id}/close) + Undo Delete
+// (POST /api/sessions/undelete). Closes the two MISSING rows under
+// "SESSION OPERATIONS" in tests/web/PARITY_MATRIX.md.
+//
+// Coverage per ~/.agent-deck/skills/pool/agent-deck-tdd-feature/SKILL.md:
+//   - close: happy path, mutator wiring (mutations disabled / nil mutator
+//     / underlying error), SSE notification.
+//   - undo: happy path (roundtrip after delete), boundary (nothing on
+//     stack → 404), boundary (entry expired → 404), nil mutator → 503.
+// ----------------------------------------------------------------------------
+
+func TestSessionCloseOK(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		closeSessionFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/close", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("close: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "test-id" {
+		t.Errorf("close: mutator saw id=%q, want %q", gotID, "test-id")
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"test-id"`) {
+		t.Errorf("close: response missing sessionId field: %s", rr.Body.String())
+	}
+}
+
+func TestSessionCloseMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: false,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/close", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("close (mutations disabled): expected 403, got %d", rr.Code)
+	}
+}
+
+func TestSessionCloseNilMutatorReturns503(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/close", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("close (nil mutator): expected 503, got %d", rr.Code)
+	}
+}
+
+func TestSessionCloseMutatorError(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		closeSessionFn: func(id string) error { return fmt.Errorf("kill failed: signal 9") },
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/close", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("close (mutator err): expected 500, got %d", rr.Code)
+	}
+}
+
+func TestSessionCloseNotifiesSSE(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		closeSessionFn: func(id string) error { return nil },
+	}
+
+	ch := srv.subscribeMenuChanges()
+	defer srv.unsubscribeMenuChanges(ch)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/whatever/close", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("close: status=%d", rr.Code)
+	}
+
+	select {
+	case <-ch:
+	case <-time.After(250 * time.Millisecond):
+		t.Error("close: expected SSE notification within 250ms")
+	}
+}
+
+// TestSessionDeleteUndoRoundtrip exercises the full delete → undelete
+// flow against the fake mutator. Asserts both endpoints fire (with
+// distinct paths) and that the restored id matches what undo returned.
+func TestSessionDeleteUndoRoundtrip(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var deletedID string
+	var undoCalls int
+	srv.mutator = &fakeMutator{
+		deleteSessionFn: func(id string) error { deletedID = id; return nil },
+		undoDeleteFn: func() (string, error) {
+			undoCalls++
+			return deletedID, nil
+		},
+	}
+
+	// Delete.
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-42", nil)
+	delRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(delRR, delReq)
+	if delRR.Code != http.StatusOK {
+		t.Fatalf("delete: status=%d body=%s", delRR.Code, delRR.Body.String())
+	}
+	if deletedID != "sess-42" {
+		t.Fatalf("delete: mutator saw id=%q, want sess-42", deletedID)
+	}
+
+	// Undo.
+	undoReq := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	undoRR := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(undoRR, undoReq)
+	if undoRR.Code != http.StatusOK {
+		t.Fatalf("undelete: status=%d body=%s", undoRR.Code, undoRR.Body.String())
+	}
+	if undoCalls != 1 {
+		t.Fatalf("undelete: mutator called %d times, want 1", undoCalls)
+	}
+	if !strings.Contains(undoRR.Body.String(), `"sessionId":"sess-42"`) {
+		t.Errorf("undelete: response missing restored sessionId: %s", undoRR.Body.String())
+	}
+}
+
+func TestSessionUndoNothing(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		undoDeleteFn: func() (string, error) { return "", ErrUndoNothing },
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("undo nothing: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), ErrCodeNotFound) {
+		t.Errorf("undo nothing: expected NOT_FOUND code, got: %s", rr.Body.String())
+	}
+}
+
+// TestSessionUndoExpiredReturns404 covers the boundary where the most
+// recent delete is older than the undo window. Critical: tests the
+// distinction between empty stack and stale stack — both must surface
+// as 404 to the front-end (which then shows "nothing to undo").
+func TestSessionUndoExpiredReturns404(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		undoDeleteFn: func() (string, error) { return "", ErrUndoExpired },
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("undo expired: expected 404, got %d", rr.Code)
+	}
+}
+
+func TestSessionUndoMutatorError(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		undoDeleteFn: func() (string, error) { return "", fmt.Errorf("restart failed: tmux missing") },
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("undo internal err: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUndoNilMutatorReturns503(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("undo nil mutator: expected 503, got %d", rr.Code)
+	}
+}
+
+func TestSessionUndoMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: false,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("undo disabled: expected 403, got %d", rr.Code)
+	}
+}
+
+func TestSessionUndoUnauthorized(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Token:      "secret-token",
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("undo unauthorized: expected 401, got %d", rr.Code)
 	}
 }
 

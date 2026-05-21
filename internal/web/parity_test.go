@@ -411,6 +411,11 @@ func (s *parityStore) CreateSession(title, tool, projectPath, groupPath, modelID
 func (s *parityStore) StartSession(id string) error   { return s.transition(id, session.StatusRunning) }
 func (s *parityStore) StopSession(id string) error    { return s.transition(id, session.StatusStopped) }
 func (s *parityStore) RestartSession(id string) error { return s.transition(id, session.StatusRunning) }
+func (s *parityStore) CloseSession(id string) error   { return s.transition(id, session.StatusStopped) }
+
+// UndoDelete is unused by the parity tests; returning ErrUndoNothing
+// keeps the SessionMutator interface satisfied.
+func (s *parityStore) UndoDelete() (string, error) { return "", ErrUndoNothing }
 
 func (s *parityStore) DeleteSession(id string) error {
 	s.mu.Lock()

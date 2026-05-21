@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -13,10 +15,36 @@ var _ web.SessionMutator = (*WebMutator)(nil)
 
 // WebMutator bridges the web HTTP handlers to the TUI session/group management
 // methods. It wraps the Home model and implements web.SessionMutator.
-type WebMutator struct{ h *Home }
+//
+// The undoStack/undoWindow fields support the web's Chrome-style undo of
+// deletes (POST /api/sessions/undelete). The TUI maintains its own
+// in-memory stack in Home; the web stack is kept here so that web
+// deletes/undos don't race with the Tea Update goroutine.
+type WebMutator struct {
+	h *Home
 
-// NewWebMutator returns a WebMutator backed by the given Home.
-func NewWebMutator(h *Home) *WebMutator { return &WebMutator{h: h} }
+	undoMu     sync.Mutex
+	undoStack  []webDeletedEntry
+	undoWindow time.Duration
+}
+
+type webDeletedEntry struct {
+	instance  *session.Instance
+	deletedAt time.Time
+}
+
+// NewWebMutator returns a WebMutator backed by the given Home. The undo
+// window defaults to web.DefaultUndoWindow (30s).
+func NewWebMutator(h *Home) *WebMutator {
+	return &WebMutator{h: h, undoWindow: web.DefaultUndoWindow}
+}
+
+// WithUndoWindow overrides the undo grace period (useful for tests that
+// need to force expiry without sleeping).
+func (m *WebMutator) WithUndoWindow(d time.Duration) *WebMutator {
+	m.undoWindow = d
+	return m
+}
 
 // CreateSession creates and starts a new session, persisting it to storage.
 func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
@@ -92,6 +120,8 @@ func (m *WebMutator) RestartSession(id string) error {
 }
 
 // DeleteSession kills a session and removes it from persistent storage.
+// Before removal, the instance is pushed onto the web undo stack so a
+// subsequent UndoDelete (POST /api/sessions/undelete) can restore it.
 func (m *WebMutator) DeleteSession(id string) error {
 	m.h.instancesMu.RLock()
 	inst := m.h.instanceByID[id]
@@ -109,7 +139,89 @@ func (m *WebMutator) DeleteSession(id string) error {
 	}
 	defer storage.Close()
 
-	return storage.DeleteInstance(id)
+	if err := storage.DeleteInstance(id); err != nil {
+		return err
+	}
+	m.pushUndo(inst)
+	return nil
+}
+
+// CloseSession stops the session process but keeps its metadata in
+// storage. Mirrors the TUI's Shift+D handler (internal/ui/home.go
+// closeSession). Identical to StopSession at the session.Instance level
+// — both call Kill() — but is kept distinct so the parity matrix and
+// the front-end can express the user-visible intent ("close, but don't
+// delete").
+func (m *WebMutator) CloseSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	return inst.Kill()
+}
+
+// UndoDelete restores the most-recently deleted session if its delete
+// timestamp is within the configured undo window. Returns the restored
+// session id. Returns web.ErrUndoNothing if the stack is empty, or
+// web.ErrUndoExpired if the most recent entry is older than the window.
+func (m *WebMutator) UndoDelete() (string, error) {
+	m.undoMu.Lock()
+	if len(m.undoStack) == 0 {
+		m.undoMu.Unlock()
+		return "", web.ErrUndoNothing
+	}
+	entry := m.undoStack[len(m.undoStack)-1]
+	m.undoStack = m.undoStack[:len(m.undoStack)-1]
+	window := m.undoWindow
+	m.undoMu.Unlock()
+
+	if window == 0 {
+		window = web.DefaultUndoWindow
+	}
+	if time.Since(entry.deletedAt) > window {
+		return "", web.ErrUndoExpired
+	}
+
+	// Restart the session and re-persist alongside the rest of the
+	// current in-memory list. Note: Restart() may not succeed for every
+	// tool (e.g. a tool the user has since uninstalled). Bubble the
+	// error up so the handler returns 500; the entry has already been
+	// popped, mirroring the TUI's ctrl+z semantics.
+	if err := entry.instance.Restart(); err != nil {
+		return "", fmt.Errorf("restart session: %w", err)
+	}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return "", fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	existing := make([]*session.Instance, len(m.h.instances))
+	copy(existing, m.h.instances)
+	m.h.instancesMu.RUnlock()
+	allInstances := append(existing, entry.instance) //nolint:gocritic
+	if err := storage.SaveWithGroups(allInstances, m.h.groupTree); err != nil {
+		return "", fmt.Errorf("save session: %w", err)
+	}
+	return entry.instance.ID, nil
+}
+
+// pushUndo records a freshly-deleted instance onto the web undo stack,
+// capped at 10 entries (FIFO eviction) to bound memory.
+func (m *WebMutator) pushUndo(inst *session.Instance) {
+	m.undoMu.Lock()
+	defer m.undoMu.Unlock()
+	m.undoStack = append(m.undoStack, webDeletedEntry{
+		instance:  inst,
+		deletedAt: time.Now(),
+	})
+	if len(m.undoStack) > 10 {
+		m.undoStack = m.undoStack[len(m.undoStack)-10:]
+	}
 }
 
 // ForkSession forks an existing session using the proper Claude resume command.

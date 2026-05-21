@@ -24,11 +24,11 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Restart session | `internal/ui/home.go:6473` (`R` key) | POST `/api/sessions/{id}/restart` | `RestartSession` | `handlers_sessions_test.go` | Recreate tmux with resume |
 | Restart fresh | `internal/ui/home.go:6494` (`T` key) | MISSING | `RestartSessionFresh` | N/A | Discards tool binding, no web equivalent |
 | Delete session | `internal/ui/home.go:6302` (`d` key) | DELETE `/api/sessions/{id}` | `DeleteSession` | `handlers_sessions_test.go` | Kills + removes from storage |
-| Close session | `internal/ui/home.go:6318` (`D` key) | MISSING | N/A | N/A | Non-destructive close (stops process, keeps metadata) |
+| Close session | `internal/ui/home.go:6318` (`D` key) | POST `/api/sessions/{id}/close` | `CloseSession` | `handlers_sessions_test.go`, `tests/web/e2e/close-undo.spec.js` | Non-destructive close (stops process, keeps metadata); Shift+D in web UI |
 | Fork session | `internal/ui/home.go:5979` (`f` key, quick) | POST `/api/sessions/{id}/fork` | `ForkSession` | `handlers_sessions_test.go` | Creates fork with resume command |
 | Fork with dialog | `internal/ui/home.go:5997` (`F`/`shift+f`) | POST `/api/sessions/{id}/fork` | `ForkSession` | `handlers_sessions_test.go` | Dialog allows custom title + group |
 | Rename session | `internal/ui/home.go:6119` (`r` key) | MISSING | N/A | N/A | Title edit via GroupDialog |
-| Undo delete | `internal/ui/home.go:6572` (`ctrl+z`) | MISSING | N/A | N/A | Chrome-style undo, TUI-only |
+| Undo delete | `internal/ui/home.go:6572` (`ctrl+z`) | POST `/api/sessions/undelete` | `UndoDelete` | `handlers_sessions_test.go`, `tests/web/e2e/close-undo.spec.js` | Chrome-style undo within 30s window (web.DefaultUndoWindow); Ctrl+Z in web UI |
 | **GROUP OPERATIONS** |
 | Create group | `internal/ui/home.go:6094` (`g` key) | POST `/api/groups` | `CreateGroup` | `handlers_groups_test.go` | Root or as subgroup |
 | Rename group | `internal/ui/home.go:6119` (`r` key, group) | PATCH `/api/groups/{path}` | `RenameGroup` | `handlers_groups_test.go` | Via GroupDialog |

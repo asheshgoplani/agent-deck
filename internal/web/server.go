@@ -31,6 +31,19 @@ type Config struct {
 	PushTestInterval    time.Duration
 }
 
+// DefaultUndoWindow is the default Chrome-style undo grace period for
+// session deletes (POST /api/sessions/undelete). Mirrors the TUI ctrl+z
+// in-memory undo stack window.
+const DefaultUndoWindow = 30 * time.Second
+
+// ErrUndoNothing is returned by SessionMutator.UndoDelete when the undo
+// stack is empty.
+var ErrUndoNothing = errors.New("nothing to undo")
+
+// ErrUndoExpired is returned by SessionMutator.UndoDelete when the most
+// recent delete is older than the configured undo window.
+var ErrUndoExpired = errors.New("undo window expired")
+
 // MenuDataLoader provides menu snapshots for web APIs and push notifications.
 type MenuDataLoader interface {
 	LoadMenuSnapshot() (*MenuSnapshot, error)
@@ -44,7 +57,16 @@ type SessionMutator interface {
 	StopSession(sessionID string) error
 	RestartSession(sessionID string) error
 	DeleteSession(sessionID string) error
+	// CloseSession stops the session process while keeping its metadata
+	// in storage (TUI Shift+D — non-destructive close).
+	CloseSession(sessionID string) error
 	ForkSession(sessionID string) (string, error)
+	// UndoDelete restores the most-recently deleted session if it was
+	// deleted within the implementation's undo window. Returns the
+	// restored session id. Implementations should return ErrUndoNothing
+	// when the stack is empty and ErrUndoExpired when the most recent
+	// entry is older than the window — the handler maps both to 404.
+	UndoDelete() (string, error)
 	CreateGroup(name, parentPath string) (string, error)
 	RenameGroup(groupPath, newName string) error
 	DeleteGroup(groupPath string) error
@@ -127,6 +149,11 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
 	mux.HandleFunc("/api/sessions", s.handleSessionsCollection)
+	// /api/sessions/undelete is a collection-level action (Chrome-style
+	// ctrl+z undo). Register before the subtree pattern so Go 1.22+
+	// ServeMux precedence routes it cleanly instead of treating
+	// "undelete" as a sessionID.
+	mux.HandleFunc("POST /api/sessions/undelete", s.handleSessionUndelete)
 	mux.HandleFunc("/api/sessions/", s.handleSessionByAction)
 	mux.HandleFunc("/api/groups", s.handleGroupsCollection)
 	mux.HandleFunc("/api/groups/", s.handleGroupByPath)
