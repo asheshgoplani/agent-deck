@@ -20,6 +20,24 @@ const (
 	defaultSendTimeout      = 30 * time.Second
 	defaultQueueMaxAge      = 10 * time.Minute
 	defaultQueueMaxAttempts = 20
+
+	// defaultOutputHashDedupTTL caps the (child, to_status, output_hash)
+	// suppression window from issue #1142. A dormant child that re-emits
+	// the same transition with the same pane content is silenced for the
+	// TTL, then re-emits once as a liveness ping so the operator still
+	// sees the child is alive. 2h matches the worst-case 20.2-min mean
+	// interval observed in the 2026-05-21 self-improvement report (47
+	// fires over 15.5 hours) while still giving the operator periodic
+	// confirmation a child hasn't died silently.
+	defaultOutputHashDedupTTL = 2 * time.Hour
+
+	// shortWindowDedupSeconds preserves the pre-#1142 90-second
+	// idempotency window. It catches duplicate polls inside one daemon
+	// tick (e.g. when a hook fires the same transition that the
+	// status-poll also observes). Independent of output-hash dedup so
+	// callers that haven't been wired to populate LastOutputHash still
+	// get the legacy guarantee.
+	shortWindowDedupSeconds = 90
 )
 
 type TransitionNotificationEvent struct {
@@ -30,6 +48,14 @@ type TransitionNotificationEvent struct {
 	ToStatus       string    `json:"to_status"`
 	Timestamp      time.Time `json:"timestamp"`
 
+	// LastOutputHash is a cheap stable signal (e.g. SHA-1 of the last N
+	// bytes of the child's tmux pane at transition time) used by the
+	// notifier's #1142 dedup to suppress repeated [EVENT] notifications
+	// for a dormant child whose pane content hasn't changed. Optional —
+	// empty string disables hash-based dedup and falls back to the legacy
+	// 90s short window.
+	LastOutputHash string `json:"last_output_hash,omitempty"`
+
 	TargetSessionID string `json:"target_session_id,omitempty"`
 	TargetKind      string `json:"target_kind,omitempty"` // parent | conductor
 	DeliveryResult  string `json:"delivery_result,omitempty"`
@@ -39,6 +65,10 @@ type transitionNotifyRecord struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	At   int64  `json:"at"`
+	// OutputHash mirrors TransitionNotificationEvent.LastOutputHash at
+	// the moment of the last accepted (non-deduped) emission. Used by
+	// isDuplicate to suppress identical re-fires within the TTL.
+	OutputHash string `json:"output_hash,omitempty"`
 }
 
 type transitionNotifyState struct {
@@ -141,6 +171,14 @@ type TransitionNotifier struct {
 	// hangs past sendTimeout.
 	watchersWG sync.WaitGroup
 	sendersWG  sync.WaitGroup
+
+	// outputHashDedupTTLOverride lets tests shrink the issue #1142
+	// output-hash dedup window without waiting hours of wall-clock time.
+	// Zero means "use defaultOutputHashDedupTTL". Production never sets
+	// it. Tests that need a deterministic boundary drive the TTL via
+	// synthetic event.Timestamp values instead — this override exists
+	// only for the rare suite that wants to assert TTL math directly.
+	outputHashDedupTTLOverride time.Duration
 }
 
 func NewTransitionNotifier() *TransitionNotifier {
@@ -513,6 +551,21 @@ func isLiveSessionStatus(status Status) bool {
 	}
 }
 
+// isDuplicate reports whether the event should be suppressed because the
+// parent has already seen an equivalent [EVENT] line. Two layered checks:
+//
+//  1. Short-window (legacy): identical (from→to) within shortWindowDedupSeconds.
+//     Catches duplicate polls inside one daemon tick and back-compat callers
+//     that don't populate LastOutputHash.
+//
+//  2. Output-hash (issue #1142): identical to_status AND identical
+//     LastOutputHash within outputHashDedupTTL. Suppresses a dormant child
+//     re-emitting the same transition with no new pane content. After the
+//     TTL elapses, the event re-emits once as a liveness ping and the
+//     stored record resets via markNotified.
+//
+// Either layer matching is enough to dedup. From-status is intentionally
+// ignored in layer 2 since ShouldNotifyTransition already pins from=running.
 func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -521,10 +574,47 @@ func (n *TransitionNotifier) isDuplicate(event TransitionNotificationEvent) bool
 	if !ok {
 		return false
 	}
-	if record.From != event.FromStatus || record.To != event.ToStatus {
-		return false
+
+	elapsed := event.Timestamp.Unix() - record.At
+
+	if record.From == event.FromStatus && record.To == event.ToStatus && elapsed <= shortWindowDedupSeconds {
+		return true
 	}
-	return event.Timestamp.Unix()-record.At <= 90
+
+	if event.LastOutputHash != "" &&
+		record.To == event.ToStatus &&
+		record.OutputHash == event.LastOutputHash &&
+		elapsed <= int64(n.outputHashTTL().Seconds()) {
+		return true
+	}
+
+	return false
+}
+
+// outputHashTTL returns the active TTL for the output-hash dedup layer. The
+// override field is reserved for tests; production callers get the default.
+func (n *TransitionNotifier) outputHashTTL() time.Duration {
+	if n.outputHashDedupTTLOverride > 0 {
+		return n.outputHashDedupTTLOverride
+	}
+	return defaultOutputHashDedupTTL
+}
+
+// transitionEventOutputHash derives the cheap stable pane-activity signal
+// used by the issue #1142 output-hash dedup. It returns the inst's
+// LastActivityTime serialized to ns precision: identical bytes mean the pane
+// content hasn't changed since the last accepted [EVENT], so the notifier
+// safely suppresses the re-fire. Empty string for nil/missing — falls back
+// to the legacy 90s dedup window.
+func transitionEventOutputHash(inst *Instance) string {
+	if inst == nil {
+		return ""
+	}
+	t := inst.GetLastActivityTime()
+	if t.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("act:%d", t.UnixNano())
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
@@ -535,9 +625,10 @@ func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
 		n.state.Records = map[string]transitionNotifyRecord{}
 	}
 	n.state.Records[event.ChildSessionID] = transitionNotifyRecord{
-		From: event.FromStatus,
-		To:   event.ToStatus,
-		At:   event.Timestamp.Unix(),
+		From:       event.FromStatus,
+		To:         event.ToStatus,
+		At:         event.Timestamp.Unix(),
+		OutputHash: event.LastOutputHash,
 	}
 	_ = n.saveStateLocked()
 }

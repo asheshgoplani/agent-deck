@@ -214,6 +214,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			FromStatus:     from,
 			ToStatus:       to,
 			Timestamp:      time.Now(),
+			LastOutputHash: transitionEventOutputHash(inst),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
@@ -394,6 +395,7 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 			FromStatus:     string(StatusRunning),
 			ToStatus:       to,
 			Timestamp:      candidate.Timestamp,
+			LastOutputHash: transitionEventOutputHash(inst),
 		}
 		_ = d.notifier.NotifyTransition(event)
 	}
