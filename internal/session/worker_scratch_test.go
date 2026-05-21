@@ -136,24 +136,34 @@ func TestEnsureWorkerScratchConfigDir_ConductorKeepsAmbientProfile(t *testing.T)
 	}
 }
 
-// A session that carries a `plugin:telegram@...` channel is the
-// explicit, opted-in telegram bot owner and MUST keep the ambient
-// profile when the v3 topology is correct (global enabledPlugins.telegram
-// disabled, --channels is the sole activation). Isolating it would
-// break its own bot.
+// Issue #1138 amendment (was: ChannelOwnerKeepsAmbientProfile).
 //
-// Issue #941 amendment: if the ambient profile has global
-// enabledPlugins.telegram=true (the GLOBAL_ANTIPATTERN), scratch
-// creation is now expected (see
-// TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch).
-func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing.T) {
+// History: pre-#1138 a channel owner with v3 topology (global
+// enabledPlugins.telegram=false, --channels as activation) kept the
+// ambient profile because the scratch indirection seemed unnecessary —
+// claude would supposedly read `--channels` and find the plugin
+// already enabled globally.
+//
+// That assumption broke in production. With the ambient settings.json
+// as the only source of truth for plugin enablement, ANY drift in the
+// ambient (manual edit, Claude Code's `/plugin disable`, an out-of-band
+// rewriter) silently disabled the channel transport. On the next
+// restart there was no force-correct pass to heal it — channels
+// silently dropped for hours until the maintainer noticed.
+//
+// Post-#1138: channel-owning sessions ALWAYS receive a scratch dir.
+// The scratch is a shallow mirror of the ambient profile (everything
+// is symlinked through), so the bot's own token files / commands /
+// agents / plugins keep working. The only file the scratch OWNS is
+// settings.json, where agent-deck force-writes
+// enabledPlugins["telegram@claude-plugins-official"]=true on every
+// spawn. That makes the scratch the heal point for drift.
+func TestEnsureWorkerScratchConfigDir_ChannelOwner_AlwaysGetsScratch(t *testing.T) {
 	withTelegramConductorPresent(t)
 	source := t.TempDir()
 	// v3 topology: global flag is unset, only --channels activates.
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{}}`), 0o644)
 
-	// Pin source resolution so needsScratchForGlobalChannelConflict reads
-	// THIS settings.json (not the host's real ~/.claude).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", source)
@@ -169,8 +179,22 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwnerKeepsAmbientProfile(t *testing
 	if err != nil {
 		t.Fatalf("EnsureWorkerScratchConfigDir: %v", err)
 	}
-	if got != "" {
-		t.Errorf("telegram channel owner with correct v3 topology must keep ambient profile; got scratch=%q", got)
+	if got == "" {
+		t.Fatalf("issue #1138: telegram channel owner MUST get a scratch dir for force-correct of channel-plugin enablement; got empty")
+	}
+
+	data, err := os.ReadFile(filepath.Join(got, "settings.json"))
+	if err != nil {
+		t.Fatalf("read scratch settings: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	plugins, _ := parsed["enabledPlugins"].(map[string]interface{})
+	v, ok := plugins[telegramPluginID].(bool)
+	if !ok || !v {
+		t.Fatalf("scratch must force telegram=true for channel owner; got present=%v value=%v", ok, v)
 	}
 }
 

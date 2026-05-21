@@ -73,7 +73,8 @@ var hostHasTelegramConductor = func() bool {
 func (i *Instance) NeedsWorkerScratchConfigDir() bool {
 	return needsScratchForTelegram(i) ||
 		needsScratchForExplicitPlugins(i) ||
-		needsScratchForGlobalChannelConflict(i)
+		needsScratchForGlobalChannelConflict(i) ||
+		needsScratchForTelegramChannelOwner(i)
 }
 
 func needsScratchForTelegram(i *Instance) bool {
@@ -454,6 +455,21 @@ func (i *Instance) prepareWorkerScratchConfigDirForSpawn() {
 		return
 	}
 	i.WorkerScratchConfigDir = scratch
+
+	// Issue #1138: post-write verification. After the scratch
+	// settings.json is rewritten, confirm the channel plugin is
+	// actually enabled in the EFFECTIVE config dir (scratch when
+	// present, ambient otherwise). Any failure here means `--channels`
+	// would land on a disabled plugin and bun-telegram would never
+	// spawn — surface it loudly so operators can heal manually if the
+	// force-correct itself somehow drifted.
+	effectiveDir := scratch
+	if effectiveDir == "" {
+		effectiveDir = sourceDir
+	}
+	if result := VerifyTelegramChannelEnabled(effectiveDir, i.Channels); !result.OK {
+		EmitTelegramChannelDriftWarning(i.Title, i.ID, effectiveDir, i.Channels, result)
+	}
 }
 
 // macOSScratchWarningEmitter is the package-level seam that lets tests

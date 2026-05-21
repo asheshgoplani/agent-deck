@@ -1,0 +1,49 @@
+# Telegram channel-plugin reliability regression gate (issue #1138).
+# No untrusted GitHub event inputs are interpolated into run: blocks.
+
+name: telegram-reliability
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'internal/session/worker_scratch*.go'
+      - 'internal/session/telegram_reliability.go'
+      - 'internal/session/telegram_validator.go'
+      - 'internal/session/env.go'
+      - 'internal/session/issue113*_*.go'
+      - 'cmd/agent-deck/cmd_telegram_doctor*.go'
+      - 'cmd/agent-deck/main.go'
+      - '.github/workflows/telegram-reliability.yml'
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Targeted regression tests
+        run: |
+          go test -race -count=1 -timeout 5m \
+            -run "TestIssue1138|TestIssue1134|TestDoctor|TestHasTelegramChannel|TestEnsureWorkerScratch_AllowAndDenyCoexist|TestEnsureWorkerScratchConfigDir_ChannelOwner|TestComputeChannelPluginAllowList|TestComputeDenyList_FiresOnlyWhenTelegramScratchNeeded" \
+            ./internal/session/ ./cmd/agent-deck/
+
+      - name: Build binary
+        run: go build -o /tmp/agent-deck ./cmd/agent-deck
+
+      - name: CLI smoke — empty profile must exit 0
+        env:
+          HOME: /tmp/td-home
+        run: |
+          mkdir -p "$HOME/.agent-deck"
+          /tmp/agent-deck telegram-doctor --json > /tmp/doctor.json
+          cat /tmp/doctor.json
+          test -s /tmp/doctor.json
