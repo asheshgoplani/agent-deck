@@ -65,6 +65,7 @@ type Server struct {
 
 	costStore       *costs.Store
 	mutator         SessionMutator
+	skills          SkillsService
 	mutationLimiter *rate.Limiter
 
 	// hookStatusLoader returns the latest hook payload for every instance
@@ -148,6 +149,8 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/costs/stream", s.handleCostsStream)
 
 	mux.HandleFunc("/api/system/stats", s.handleSystemStats)
+
+	mux.HandleFunc("/api/skills", s.handleSkillsCatalog)
 
 	handler := withRecover(mux)
 
@@ -276,6 +279,13 @@ func (s *Server) SetCostStore(store *costs.Store) {
 // SetMutator injects the session mutator implementation (typically *ui.WebMutator).
 func (s *Server) SetMutator(m SessionMutator) {
 	s.mutator = m
+}
+
+// SetSkillsService injects an alternate SkillsService (used by tests).
+// When nil, handlers fall back to defaultSkillsService which delegates to
+// the on-disk session.* skill APIs.
+func (s *Server) SetSkillsService(svc SkillsService) {
+	s.skills = svc
 }
 
 // HasMutator reports whether a SessionMutator has been wired. Mutating

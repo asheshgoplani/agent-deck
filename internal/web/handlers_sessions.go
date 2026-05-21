@@ -101,6 +101,15 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 
+	// Skills sub-routes: /api/sessions/{id}/skills            (GET)
+	//                    /api/sessions/{id}/skills/{name}     (POST/DELETE)
+	if action == "skills" || strings.HasPrefix(action, "skills/") {
+		sub := strings.TrimPrefix(action, "skills")
+		sub = strings.TrimPrefix(sub, "/")
+		s.handleSessionSkills(w, r, sessionID, sub)
+		return
+	}
+
 	// DELETE /api/sessions/{id}
 	if r.Method == http.MethodDelete && action == "" {
 		if !s.checkMutationsAllowed(w) {
