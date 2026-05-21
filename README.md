@@ -227,15 +227,34 @@ default_location = "subdirectory"  # "sibling" (default), "subdirectory", or a c
 
 `sibling` creates worktrees next to the repo (`repo-branch`). `subdirectory` creates them inside it (`repo/.worktrees/branch`). A custom path like `~/worktrees` or `/tmp/worktrees` creates repo-namespaced worktrees at `<path>/<repo_name>/<branch>`. The `--location` flag overrides the config per session.
 
+#### Copying Gitignored Files (`.worktreeinclude`)
+
+Gitignored files (`.env`, `.mcp.json`, etc.) aren't copied into new worktrees by default.
+To declare which gitignored files should be copied automatically, create a `.worktreeinclude` file in your repo root:
+
+```gitignore
+# .worktreeinclude — gitignore-syntax patterns
+.env
+.env.local
+.mcp.json
+secrets/
+```
+
+Only files that are both pattern-matched AND gitignored get copied — tracked files are never duplicated.
+Directories are copied recursively and merged into existing destinations.
+Existing files in the worktree are not overwritten.
+
+This works for both single-repo and multi-repo worktree sessions.
+Matches [Claude Code Desktop semantics](https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees).
+
 #### Worktree Setup Script
 
-Gitignored files (`.env`, `.mcp.json`, etc.) aren't copied into new worktrees. To automate this, create a setup script at `.agent-deck/worktree-setup.sh` in your repo. Agent-deck runs it automatically after creating a worktree.
+For imperative setup tasks (installing dependencies, running migrations, etc.), create a script at `.agent-deck/worktree-setup.sh`.
+Agent-deck runs it automatically after creating a worktree and processing `.worktreeinclude`.
 
 ```sh
 #!/bin/sh
-for f in .env .env.local .mcp.json; do
-    [ -f "$AGENT_DECK_REPO_ROOT/$f" ] && cp "$AGENT_DECK_REPO_ROOT/$f" "$AGENT_DECK_WORKTREE_PATH/$f"
-done
+npm install
 ```
 
 The script receives two environment variables:
