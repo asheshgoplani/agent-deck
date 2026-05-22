@@ -6,6 +6,7 @@ import "github.com/asheshgoplani/agent-deck/internal/session"
 const (
 	ErrCodeUnauthorized     = "UNAUTHORIZED"
 	ErrCodeForbidden        = "MUTATIONS_DISABLED"
+	ErrCodeCSRF             = "CROSS_ORIGIN_BLOCKED"
 	ErrCodeNotFound         = "NOT_FOUND"
 	ErrCodeBadRequest       = "INVALID_REQUEST"
 	ErrCodeMethodNotAllowed = "METHOD_NOT_ALLOWED"

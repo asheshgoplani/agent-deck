@@ -238,7 +238,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("DELETE /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
 	mux.HandleFunc("PATCH /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
 
-	handler := withRecover(mux)
+	handler := withRecover(csrfProtect(mux))
 
 	s.httpServer = &http.Server{
 		Addr:              cfg.ListenAddr,
