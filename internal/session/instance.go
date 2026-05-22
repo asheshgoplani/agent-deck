@@ -238,6 +238,16 @@ type Instance struct {
 	// RFC: docs/rfc/PLUGIN_ATTACH.md.
 	Plugins []string `json:"plugins,omitempty"`
 
+	// InheritTelegramEnv is the explicit opt-in for #1133: when true, a
+	// non-channel-owning claude child KEEPS the conductor's TELEGRAM_*
+	// env vars (TELEGRAM_STATE_DIR, TELEGRAM_BOT_TOKEN, etc.). Default
+	// false strips them so a child can't spawn a duplicate `bun telegram`
+	// poller that races the conductor for getUpdates (Telegram 409
+	// Conflict + dropped inbound messages). CLI flag:
+	// `--inherit-telegram-env` on `agent-deck launch`. Rare use case;
+	// existing behavior is preserved when the flag is absent.
+	InheritTelegramEnv bool `json:"inherit_telegram_env,omitempty"`
+
 	// PluginChannelLinkDisabled opts the session out of the catalog-driven
 	// auto-link between Plugins and Channels (RFC §4.7). When true, an
 	// `--plugin foo` whose catalog entry has EmitsChannel=true does NOT
@@ -748,14 +758,16 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	}
 
 	// S8 (v1.7.40) defense-in-depth: non-channel-owning claude spawns
-	// wrap the final exec in `env -u TELEGRAM_STATE_DIR` so the child
-	// process is guaranteed to start without TSD even if the shell
-	// unset in buildEnvSourceCommand is somehow bypassed. Empty string
-	// for conductors, explicit telegram channel owners, and non-claude
-	// tools (see telegramStateDirStripExpr for the predicate).
+	// wrap the final exec in `env -u TELEGRAM_*` so the child process
+	// is guaranteed to start without telegram env even if the shell
+	// unset in buildEnvSourceCommand is somehow bypassed. #1133
+	// broadens the flag list from TELEGRAM_STATE_DIR alone to every
+	// var in telegramEnvVarsToStrip. Empty string for conductors,
+	// explicit telegram channel owners, --inherit-telegram-env opt-in,
+	// and non-claude tools (see telegramStateDirStripExpr predicate).
 	execEnvPrefix := ""
-	if telegramStateDirStripExpr(i) != "" {
-		execEnvPrefix = "env -u TELEGRAM_STATE_DIR "
+	if flags := telegramExecEnvStripFlags(i); flags != "" {
+		execEnvPrefix = "env " + flags + " "
 	}
 
 	// If baseCommand is just "claude", build the appropriate command

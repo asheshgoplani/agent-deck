@@ -35,6 +35,11 @@ func handleLaunch(profile string, args []string) {
 	// from overwriting the agent-deck title.
 	titleLock := fs.Bool("title-lock", false, "Lock session title so Claude's session name never overrides it (#697)")
 	noTitleSync := fs.Bool("no-title-sync", false, "Alias for --title-lock")
+	// #1133: opt-in to inherit the conductor's TELEGRAM_* env vars in the
+	// child. Off by default — a child inheriting TELEGRAM_STATE_DIR /
+	// TELEGRAM_BOT_TOKEN spawns a duplicate `bun telegram` poller that
+	// races the conductor for the bot lock (Telegram 409, dropped messages).
+	inheritTelegramEnv := fs.Bool("inherit-telegram-env", false, "Keep TELEGRAM_* env vars in the child (#1133); off by default to prevent duplicate plugin pollers")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("quiet", false, "Minimal output")
 	quietShort := fs.Bool("q", false, "Minimal output (short)")
@@ -338,6 +343,11 @@ func handleLaunch(profile string, args []string) {
 	// #697: title-lock blocks Claude's session-name sync.
 	if *titleLock || *noTitleSync {
 		newInstance.TitleLocked = true
+	}
+
+	// #1133: explicit opt-in for inheriting the conductor's telegram env.
+	if *inheritTelegramEnv {
+		newInstance.InheritTelegramEnv = true
 	}
 
 	if sessionCommandInput != "" {

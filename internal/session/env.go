@@ -350,32 +350,55 @@ func isValidEnvKey(key string) bool {
 	return true
 }
 
-// telegramStateDirStripExpr returns `unset TELEGRAM_STATE_DIR` for any
-// claude spawn that is NOT a channel-owning telegram session. S8
-// (v1.7.40) broadens issue #680's narrow conductor-pairing predicate:
-// every `agent-deck launch` child that doesn't own the telegram bot
-// must lose TELEGRAM_STATE_DIR, otherwise it inherits the conductor's
-// TSD via the parent shell env, the telegram plugin (enabled globally
-// per the v3 topology) reads the conductor's .env, and a duplicate
-// bun poller races the conductor on the same bot token → Telegram
-// returns 409 Conflict and messages drop for everyone.
+// telegramEnvVarsToStrip lists every TELEGRAM_* env var that the
+// Claude Code telegram plugin reads. #680 / #955 / S8 only stripped
+// TELEGRAM_STATE_DIR; #1133 broadens this to include TELEGRAM_BOT_TOKEN
+// (and any future plugin var) so a child whose conductor exports the
+// token can't re-derive plugin state and spawn a duplicate `bun
+// telegram` poller. Order is deterministic for stable shell output.
+var telegramEnvVarsToStrip = []string{
+	"TELEGRAM_STATE_DIR",
+	"TELEGRAM_BOT_TOKEN",
+}
+
+// telegramStateDirStripExpr returns an `unset TELEGRAM_STATE_DIR ...`
+// clause for any claude spawn that is NOT a channel-owning telegram
+// session. S8 (v1.7.40) broadens issue #680's narrow conductor-pairing
+// predicate: every `agent-deck launch` child that doesn't own the
+// telegram bot must lose TELEGRAM_*, otherwise it inherits the
+// conductor's env, the telegram plugin (enabled globally per the v3
+// topology) reads the conductor's .env, and a duplicate bun poller
+// races the conductor on the same bot token → Telegram returns 409
+// Conflict and messages drop for everyone.
+//
+// #1133 broadens further: TELEGRAM_BOT_TOKEN is now stripped too (the
+// plugin re-derives state from the token alone). An explicit opt-in
+// (Instance.InheritTelegramEnv, CLI `--inherit-telegram-env`) preserves
+// the full env for the rare case of debugging the poller from a fork.
 //
 // Fires when ALL hold:
-//  1. Tool is "claude" — TELEGRAM_STATE_DIR is a Claude Code plugin env
-//     var; don't mutate codex / gemini spawns.
+//  1. Tool is "claude" — TELEGRAM_* are Claude Code plugin env vars;
+//     don't mutate codex / gemini spawns.
 //  2. Title does NOT start with "conductor-". Conductors are the
 //     legitimate bot owners even before `Channels` is set.
 //  3. No entry in `Channels` carries the `plugin:telegram@` prefix.
-//     Explicit per-session telegram opt-in keeps the variable.
+//     Explicit per-session telegram opt-in keeps the variables.
+//  4. InheritTelegramEnv is false. The #1133 escape hatch.
 //
 // Returned string is empty when no strip is needed, so callers can
-// append it unconditionally to the sources slice.
+// append it unconditionally to the sources slice. The function name
+// retains "StateDir" for backward compatibility with callers in
+// instance.go and the existing test surface; the body covers all
+// telegram vars.
 func telegramStateDirStripExpr(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
 	if inst.Tool != "claude" {
 		return ""
+	}
+	if inst.InheritTelegramEnv {
+		return "" // #1133 opt-in — keep the conductor's telegram env
 	}
 	if conductorNameFromInstance(inst) != "" {
 		return "" // conductor session — owns the bot token
@@ -385,10 +408,26 @@ func telegramStateDirStripExpr(inst *Instance) string {
 			return "" // explicit telegram channel owner
 		}
 	}
-	return "unset TELEGRAM_STATE_DIR"
+	return "unset " + strings.Join(telegramEnvVarsToStrip, " ")
 }
 
-// ScrubProcessEnvForChildLaunch removes TELEGRAM_STATE_DIR from the
+// telegramExecEnvStripFlags returns the `-u VAR -u VAR ...` argument
+// list for the `env` exec wrapper at instance.go:758. Mirrors
+// telegramStateDirStripExpr at the exec layer: same predicate, same
+// var list, defense-in-depth against the shell `unset` somehow being
+// bypassed.
+func telegramExecEnvStripFlags(inst *Instance) string {
+	if telegramStateDirStripExpr(inst) == "" {
+		return ""
+	}
+	parts := make([]string, 0, len(telegramEnvVarsToStrip)*2)
+	for _, v := range telegramEnvVarsToStrip {
+		parts = append(parts, "-u", v)
+	}
+	return strings.Join(parts, " ")
+}
+
+// ScrubProcessEnvForChildLaunch removes TELEGRAM_* vars from the
 // CURRENT process environment when the given instance represents a
 // non-channel-owning claude child. Issue #955: `agent-deck launch`
 // invoked from a conductor session inherits the conductor's
@@ -396,20 +435,44 @@ func telegramStateDirStripExpr(inst *Instance) string {
 // tmux server (which inherits the launching process env on first
 // `new-session`) and from there into every subprocess in the new
 // pane — Bash-tool spawns, fork claudes, restart respawn — even when
-// the S8 exec-layer (`env -u TELEGRAM_STATE_DIR claude`) protects the
-// immediate claude binary. Any of those descendants can load the
-// Claude Code telegram plugin and start a second `bun telegram`
-// poller against the conductor's bot, racing the conductor for the
-// Bot API lock (HTTP 409) and silently dropping inbound messages.
+// the S8 exec-layer protects the immediate claude binary. Any of
+// those descendants can load the Claude Code telegram plugin and
+// start a second `bun telegram` poller against the conductor's bot,
+// racing the conductor for the Bot API lock (HTTP 409) and silently
+// dropping inbound messages.
+//
+// #1133 broadens the scrub: TELEGRAM_STATE_DIR alone left a hole —
+// conductors that also exported TELEGRAM_BOT_TOKEN (the plugin
+// re-derives state from the token) still leaked the duplicate poller.
+// We now unset every var named in telegramEnvVarsToStrip *and* any
+// other TELEGRAM_-prefixed var present in os.Environ. The prefix
+// sweep means a future plugin env addition (TELEGRAM_API_HASH etc.)
+// is covered without code change here.
 //
 // Reuses telegramStateDirStripExpr as the single source of truth for
 // the strip predicate so this layer can never disagree with the
 // shell-level and exec-level layers about which sessions own the
 // telegram bot. No-op for conductors, explicit telegram channel
-// owners, and non-claude tools.
+// owners, --inherit-telegram-env opt-ins, and non-claude tools.
 func ScrubProcessEnvForChildLaunch(inst *Instance) {
 	if telegramStateDirStripExpr(inst) == "" {
 		return
 	}
-	_ = os.Unsetenv("TELEGRAM_STATE_DIR")
+	for _, v := range telegramEnvVarsToStrip {
+		_ = os.Unsetenv(v)
+	}
+	// Prefix sweep: catch any other TELEGRAM_* var the conductor
+	// might have exported but the plugin doesn't strictly require.
+	// Keeps the child env minimal so a plugin update can't surprise
+	// us with a new poller-spawning var.
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := kv[:eq]
+		if strings.HasPrefix(key, "TELEGRAM_") {
+			_ = os.Unsetenv(key)
+		}
+	}
 }
