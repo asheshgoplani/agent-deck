@@ -1,12 +1,22 @@
-# Local CI pipeline - runs lint, test, and build in parallel
+# Local CI pipeline
 # Called automatically on git push (via pre-push hook) or manually: make ci
+#
+# pre-push runs serially (piped: true) to avoid a race between `css-verify`
+# and `lint` on the transient internal/web/static/.brute-tw.src.css file —
+# see issue #1146 and the comment on pre-push below.
 #
 # Usage:
 #   make ci              Run full CI checks locally
 #   lefthook run pre-push --force   Run directly (--force skips file-change check)
 
 pre-push:
-  parallel: true
+  # piped: true runs the commands below in the order they appear and stops on
+  # the first failure. We need ordered execution (not parallel) because
+  # `css-verify` momentarily writes `internal/web/static/.brute-tw.src.css`
+  # while `golangci-lint` snapshots `//go:embed static/*` — ~30% of runs the
+  # snapshot caught the transient file and lint failed (issue #1146). Order
+  # is fast-failing-first: css-verify, lint, build, then the longer test.
+  piped: true
   commands:
     css-verify:
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX make css-verify
@@ -14,12 +24,12 @@ pre-push:
     lint:
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX golangci-lint run
       tags: [quality]
-    test:
-      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX go test -race -count=1 ./...
-      tags: [test]
     build:
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX go build -o /dev/null ./cmd/agent-deck/
       tags: [build]
+    test:
+      run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX go test -race -count=1 ./...
+      tags: [test]
     release-tests-yaml-lint:
       # Structural guard against the AP-2 foot-gun (sprint REPORT F2): inline
       # `#NNN` issue refs inside plain multi-line scalars truncate via YAML
