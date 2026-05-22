@@ -281,6 +281,14 @@ func (i *Instance) getToolEnvFile() string {
 	case "crush":
 		return config.Crush.EnvFile
 	case "hermes":
+		if name := conductorNameFromInstance(i); name != "" {
+			if conductorEnv := config.GetConductorHermesEnvFile(name); conductorEnv != "" {
+				return conductorEnv
+			}
+		}
+		if groupEnv := config.GetGroupHermesEnvFile(i.GroupPath); groupEnv != "" {
+			return groupEnv
+		}
 		return config.Hermes.EnvFile
 	default:
 		// Check custom tools

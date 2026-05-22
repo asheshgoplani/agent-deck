@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1152,6 +1153,32 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			}
 			if !prompted {
 				h.pendingHooksPrompt = true
+			}
+		}
+	}
+
+	// Hermes shell hooks: auto-inject silently if the hermes binary is available.
+	// No user prompt needed — config.yaml is Hermes's own config file, not a
+	// shared settings file. The shared hook watcher (h.hookWatcher) covers all
+	// tools, so start it here if Claude hooks didn't already start it.
+	if hermesCmd := session.GetToolCommand("hermes"); hermesCmd != "" {
+		// GetToolCommand may return a full command string with arguments
+		// (e.g. "hermes --gateway-url=..."). LookPath needs the binary name only.
+		hermesBin := strings.Fields(hermesCmd)[0]
+		if _, err := exec.LookPath(hermesBin); err == nil {
+			hermesConfigDir := session.GetHermesConfigDir()
+			if !session.CheckHermesHooksInstalled(hermesConfigDir) {
+				if _, err := session.InjectHermesHooks(hermesConfigDir); err != nil {
+					uiLog.Warn("hermes_hooks_inject_failed", slog.String("error", err.Error()))
+				} else {
+					uiLog.Info("hermes_hooks_installed", slog.String("config_dir", hermesConfigDir))
+				}
+			}
+			if h.hookWatcher == nil {
+				if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+					h.hookWatcher = hookWatcher
+					go hookWatcher.Start()
+				}
 			}
 		}
 	}
@@ -5647,6 +5674,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			yolo := h.newDialog.GetCodexYoloMode()
 			codexOpts := &session.CodexOptions{YoloMode: &yolo}
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+		} else if command == "hermes" {
+			yolo := h.newDialog.GetHermesYoloMode()
+			hermesOpts := &session.HermesOptions{YoloMode: &yolo}
+			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
 		}
 
 		parentSessionID := h.newDialog.GetParentSessionID()
@@ -7091,6 +7122,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					opts.YoloMode = &newYolo
 					_ = inst.SetCodexOptions(opts)
+					toggled = true
+
+				case "hermes":
+					currentYolo := false
+					opts := inst.GetHermesOptions()
+					if opts != nil && opts.YoloMode != nil {
+						currentYolo = *opts.YoloMode
+					} else {
+						userConfig, _ := session.LoadUserConfig()
+						if userConfig != nil {
+							currentYolo = userConfig.Hermes.YoloMode
+						}
+					}
+					newYolo := !currentYolo
+					if opts == nil {
+						opts = &session.HermesOptions{}
+					}
+					opts.YoloMode = &newYolo
+					_ = inst.SetHermesOptions(opts)
 					toggled = true
 				}
 
@@ -10903,6 +10953,38 @@ func (h *Home) renderSingleColumnLayout(totalHeight int) string {
 
 // renderSectionDivider creates a modern section divider with optional centered label
 // Format: ─────────── Label ─────────── (lines extend to fill width)
+// renderHermesKanbanBadge returns a styled [K:...] badge string.
+// When selected, the entire badge uses SessionStatusSelStyle.
+// When not selected: running count is dim, blocked count+! is red.
+func renderHermesKanbanBadge(running, blocked int, selected bool) string {
+	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
+	if selected {
+		dimStyle = SessionStatusSelStyle
+	}
+	if running == 0 && blocked == 0 {
+		return dimStyle.Render(" [K]")
+	}
+	if selected {
+		switch {
+		case blocked == 0:
+			return dimStyle.Render(fmt.Sprintf(" [K:%d]", running))
+		case running == 0:
+			return dimStyle.Render(fmt.Sprintf(" [K:%d!]", blocked))
+		default:
+			return dimStyle.Render(fmt.Sprintf(" [K:%d+%d!]", running, blocked))
+		}
+	}
+	redStyle := lipgloss.NewStyle().Foreground(ColorRed)
+	switch {
+	case blocked == 0:
+		return dimStyle.Render(fmt.Sprintf(" [K:%d]", running))
+	case running == 0:
+		return dimStyle.Render(" [K:") + redStyle.Render(fmt.Sprintf("%d!", blocked)) + dimStyle.Render("]")
+	default:
+		return dimStyle.Render(fmt.Sprintf(" [K:%d+", running)) + redStyle.Render(fmt.Sprintf("%d!", blocked)) + dimStyle.Render("]")
+	}
+}
+
 func renderSectionDivider(label string, width int) string {
 	lineStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 
@@ -12187,6 +12269,10 @@ func (h *Home) renderSessionItem(
 		if opts := inst.GetCodexOptions(); opts != nil && opts.YoloMode != nil && *opts.YoloMode {
 			showYolo = true
 		}
+	} else if instTool == "hermes" {
+		if opts := inst.GetHermesOptions(); opts != nil && opts.YoloMode != nil && *opts.YoloMode {
+			showYolo = true
+		}
 	}
 	if showYolo {
 		yoloStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
@@ -12218,6 +12304,19 @@ func (h *Home) renderSessionItem(
 			sbStyle = SessionStatusSelStyle
 		}
 		sandboxBadge = sbStyle.Render(" [sandbox]")
+	}
+
+	// Kanban badge for Hermes sessions. Hermes Kanban is SQLite-backed at
+	// ~/.hermes/kanban.db. When the DB exists, query live running/blocked counts
+	// via GetHermesKanbanCounts (stale-while-revalidate, never blocks render).
+	// Format: [K:3] dim | [K:3+2!] with blocked portion in red | [K:2!] red only.
+	kanbanBadge := ""
+	if inst.Tool == "hermes" {
+		kanbanDB := filepath.Join(session.GetHermesConfigDir(), "kanban.db")
+		if _, err := os.Stat(kanbanDB); err == nil {
+			running, blocked := session.GetHermesKanbanCounts()
+			kanbanBadge = renderHermesKanbanBadge(running, blocked, selected)
+		}
 	}
 
 	// Multi-repo badge for multi-repo sessions.
@@ -12261,7 +12360,7 @@ func (h *Home) renderSessionItem(
 
 	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s",
+		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -12272,6 +12371,7 @@ func (h *Home) renderSessionItem(
 		yoloBadge,
 		worktreeBadge,
 		sandboxBadge,
+		kanbanBadge,
 		multiRepoBadge,
 		sshBadge,
 	)
@@ -12873,13 +12973,16 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
 
-	// Session ID (if available) - Claude, Gemini, or OpenCode
+	// Session ID (if available) - Claude, Gemini, OpenCode, or generic (Hermes/custom tools)
 	sessionID := inst.ClaudeSessionID
 	if sessionID == "" {
 		sessionID = inst.GeminiSessionID
 	}
 	if sessionID == "" {
 		sessionID = inst.OpenCodeSessionID
+	}
+	if sessionID == "" {
+		sessionID = inst.GetGenericSessionID()
 	}
 	if sessionID != "" {
 		shortID := sessionID

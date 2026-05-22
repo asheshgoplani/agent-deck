@@ -44,14 +44,14 @@ type MCPItem struct {
 	HasServerCfg bool   // True if HTTP MCP has [mcps.X.server] config
 }
 
-// MCPDialog handles MCP management for Claude and Gemini sessions
+// MCPDialog handles MCP management for Claude, Gemini, and Hermes sessions
 type MCPDialog struct {
 	visible     bool
 	width       int
 	height      int
 	projectPath string
 	sessionID   string // ID of the session being managed (for restart)
-	tool        string // "claude" or "gemini"
+	tool        string // "claude", "gemini", or "hermes"
 
 	// Current scope and column
 	scope  MCPScope

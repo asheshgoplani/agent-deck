@@ -25,6 +25,12 @@ func TestMapEventToStatus(t *testing.T) {
 		{"SessionEnd", "dead"},
 		{"PreCompact", ""},
 		{"UnknownEvent", ""},
+		// Hermes shell hook events
+		{"pre_tool_call", "running"},
+		{"post_tool_call", "waiting"},
+		{"on_session_start", "waiting"},
+		{"on_session_end", "dead"},
+		{"subagent_stop", ""},
 	}
 
 	for _, tt := range tests {
@@ -238,6 +244,7 @@ func TestIsTerminalHookEvent(t *testing.T) {
 	}{
 		{event: "SessionEnd", expect: true},
 		{event: "session_end", expect: true},
+		{event: "on_session_end", expect: true}, // Hermes shell hook terminal event
 		{event: "session.closed", expect: true},
 		{event: "ThreadClosed", expect: true},
 		{event: "thread/terminated", expect: true},

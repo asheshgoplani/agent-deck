@@ -22,6 +22,7 @@ const (
 	SettingClaudeConfigDir
 	SettingGeminiYoloMode
 	SettingCodexYoloMode
+	SettingHermesYoloMode
 	SettingCheckForUpdates
 	SettingAutoUpdate
 	SettingLogMaxSize
@@ -47,7 +48,7 @@ const (
 )
 
 // Total number of navigable settings.
-const settingsCount = 28
+const settingsCount = 29
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -70,6 +71,7 @@ type SettingsPanel struct {
 	claudeConfigIsScope bool // true = profile override, false = global [claude]
 	geminiYoloMode      bool
 	codexYoloMode       bool
+	hermesYoloMode      bool
 	checkForUpdates     bool
 	autoUpdate          bool
 	logMaxSizeMB        int
@@ -250,6 +252,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	// Codex settings
 	s.codexYoloMode = config.Codex.YoloMode
 
+	// Hermes settings
+	s.hermesYoloMode = config.Hermes.YoloMode
+
 	// Update settings
 	s.checkForUpdates = config.Updates.CheckEnabled
 	s.autoUpdate = config.Updates.AutoUpdate
@@ -377,6 +382,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Codex settings
 	config.Codex.YoloMode = s.codexYoloMode
+
+	// Hermes settings
+	config.Hermes.YoloMode = s.hermesYoloMode
 
 	// Update settings
 	config.Updates.CheckEnabled = s.checkForUpdates
@@ -610,6 +618,10 @@ func (s *SettingsPanel) toggleValue() bool {
 		s.codexYoloMode = !s.codexYoloMode
 		return true
 
+	case SettingHermesYoloMode:
+		s.hermesYoloMode = !s.hermesYoloMode
+		return true
+
 	case SettingCheckForUpdates:
 		s.checkForUpdates = !s.checkForUpdates
 		return true
@@ -841,6 +853,17 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	// HERMES
+	content.WriteString(sectionStyle.Render("HERMES"))
+	content.WriteString("\n")
+
+	// YOLO mode checkbox
+	line = s.renderCheckbox("YOLO mode", s.hermesYoloMode) + " - Auto-approve all tool calls"
+	if s.cursor == int(SettingHermesYoloMode) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// UPDATES
 	content.WriteString(sectionStyle.Render("UPDATES"))
 	content.WriteString("\n")
@@ -1048,28 +1071,29 @@ func (s *SettingsPanel) View() string {
 			12, // SettingClaudeConfigDir
 			15, // SettingGeminiYoloMode
 			18, // SettingCodexYoloMode
-			21, // SettingCheckForUpdates
-			22, // SettingAutoUpdate
-			25, // SettingLogMaxSize
-			25, // SettingLogMaxLines (shares line with LogMaxSize)
-			26, // SettingRemoveOrphans
-			29, // SettingGlobalSearchEnabled
-			30, // SettingSearchTier
-			31, // SettingRecentDays
-			34, // SettingShowOutput
-			35, // SettingShowAnalytics
-			36, // SettingShowNotes
-			37, // SettingNotesOutputSplit
-			40, // SettingMaintenanceEnabled
-			43, // SettingStatsEnabled
-			44, // SettingStatsRefresh
-			45, // SettingStatsFormat
-			47, // SettingStatsShowCPU (row with RAM, Disk)
-			47, // SettingStatsShowRAM
-			47, // SettingStatsShowDisk
-			48, // SettingStatsShowNetwork (row with GPU, Load)
-			48, // SettingStatsShowGPU
-			48, // SettingStatsShowLoad
+			21, // SettingHermesYoloMode
+			24, // SettingCheckForUpdates
+			25, // SettingAutoUpdate
+			28, // SettingLogMaxSize
+			28, // SettingLogMaxLines (shares line with LogMaxSize)
+			29, // SettingRemoveOrphans
+			32, // SettingGlobalSearchEnabled
+			33, // SettingSearchTier
+			34, // SettingRecentDays
+			37, // SettingShowOutput
+			38, // SettingShowAnalytics
+			39, // SettingShowNotes
+			40, // SettingNotesOutputSplit
+			43, // SettingMaintenanceEnabled
+			46, // SettingStatsEnabled
+			47, // SettingStatsRefresh
+			48, // SettingStatsFormat
+			50, // SettingStatsShowCPU (row with RAM, Disk)
+			50, // SettingStatsShowRAM
+			50, // SettingStatsShowDisk
+			51, // SettingStatsShowNetwork (row with GPU, Load)
+			51, // SettingStatsShowGPU
+			51, // SettingStatsShowLoad
 		}
 		cursorLine := cursorToLine[s.cursor]
 

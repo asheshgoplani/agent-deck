@@ -18,6 +18,9 @@ import (
 //go:embed assets/watcher-templates/CLAUDE.md
 var watcherClaudeTemplate []byte
 
+//go:embed assets/watcher-templates/HERMES.md
+var watcherHermesTemplate []byte
+
 //go:embed assets/watcher-templates/POLICY.md
 var watcherPolicyTemplate []byte
 
@@ -68,6 +71,7 @@ func ScaffoldWatcherLayout() error {
 		content []byte
 	}{
 		{"CLAUDE.md", watcherClaudeTemplate},
+		{"HERMES.md", watcherHermesTemplate},
 		{"POLICY.md", watcherPolicyTemplate},
 		{"LEARNINGS.md", watcherLearningsTemplate},
 		{"clients.json", []byte("{}\n")},

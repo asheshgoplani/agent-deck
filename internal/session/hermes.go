@@ -1,8 +1,15 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 // HermesOptions holds launch options for Hermes Agent CLI sessions.
@@ -98,5 +105,110 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 		}
 	}
 
+	// Inject HERMES_KANBAN_BOARD so the spawned session gets kanban_* tools
+	// automatically. Only injected when the DB exists to avoid polluting the
+	// env for users who haven't set up Kanban.
+	kanbanDB := filepath.Join(GetHermesConfigDir(), "kanban.db")
+	if _, err := os.Stat(kanbanDB); err == nil {
+		cmd = "HERMES_KANBAN_BOARD=default " + cmd
+	}
+
 	return envPrefix + cmd
+}
+
+// IsHermesGatewayReachable performs a basic reachable check against the
+// configured GatewayURL from HermesSettings. Returns true if a simple
+// HTTP request succeeds within timeout. Keeps existing process-alive logic
+// untouched; this augments status detection when gateway URL is available.
+func IsHermesGatewayReachable(gatewayURL string) bool {
+	if gatewayURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get(gatewayURL)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 500
+}
+
+// HermesSharedWorkspaceDir returns the base directory Hermes uses for
+// shared workspace sessions enabling multi-agent handoff visibility.
+// If the user config specifies a WorkspaceDir, that is used; otherwise
+// it falls back to a platform-appropriate temp directory.
+func HermesSharedWorkspaceDir() string {
+	if config, _ := LoadUserConfig(); config != nil && config.Hermes.WorkspaceDir != "" {
+		return config.Hermes.WorkspaceDir
+	}
+	return filepath.Join(os.TempDir(), "hermes-workspaces")
+}
+
+// kanbanCache holds the last-fetched Kanban task counts with stale-while-revalidate
+// semantics: callers always get the cached value instantly; a background goroutine
+// refreshes when the cache is older than kanbanCacheTTL.
+var kanbanCache struct {
+	mu         sync.Mutex
+	running    int
+	blocked    int
+	fetchedAt  time.Time
+	refreshing bool
+}
+
+const kanbanCacheTTL = 15 * time.Second
+
+// GetHermesKanbanCounts returns the current running and blocked task counts
+// from the Hermes Kanban board. Uses stale-while-revalidate: always returns
+// instantly from cache, refreshes in the background when stale.
+// Returns (0, 0) if hermes is not in PATH or the CLI call fails.
+func GetHermesKanbanCounts() (running, blocked int) {
+	kanbanCache.mu.Lock()
+	if time.Since(kanbanCache.fetchedAt) < kanbanCacheTTL {
+		r, b := kanbanCache.running, kanbanCache.blocked
+		kanbanCache.mu.Unlock()
+		return r, b
+	}
+	// Stale: return current cached values and kick off a background refresh.
+	r, b := kanbanCache.running, kanbanCache.blocked
+	if !kanbanCache.refreshing {
+		kanbanCache.refreshing = true
+		go func() {
+			refreshHermesKanbanCache()
+			kanbanCache.mu.Lock()
+			kanbanCache.refreshing = false
+			kanbanCache.mu.Unlock()
+		}()
+	}
+	kanbanCache.mu.Unlock()
+	return r, b
+}
+
+func refreshHermesKanbanCache() {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "hermes", "kanban", "list",
+		"--status", "running,blocked", "--json").Output()
+	if err != nil {
+		return
+	}
+	var tasks []struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(out, &tasks); err != nil {
+		return
+	}
+	var r, b int
+	for _, t := range tasks {
+		switch t.Status {
+		case "running":
+			r++
+		case "blocked":
+			b++
+		}
+	}
+	kanbanCache.mu.Lock()
+	kanbanCache.running = r
+	kanbanCache.blocked = b
+	kanbanCache.fetchedAt = time.Now()
+	kanbanCache.mu.Unlock()
 }

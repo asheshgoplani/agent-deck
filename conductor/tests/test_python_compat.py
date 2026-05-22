@@ -115,3 +115,39 @@ def test_bridge_imports_on_python_38():
     module = importlib.util.module_from_spec(spec)
     # Will raise TypeError on 3.8 if collections.abc.Coroutine[...] is used.
     spec.loader.exec_module(module)
+
+
+# Hermes-specific integration artifact checks (Phase 3)
+# Note: conductor spec / config override / status derivation logic lives in Go
+# (see internal/session/hermes_conductor_test.go and hermes_test.go).
+# These tests verify that the Python-side integration artifacts are present.
+
+REPO_ROOT = Path(__file__).parent.parent.parent
+
+
+def test_hermes_conductor_md_exists():
+    """conductor/conductor-hermes.md must exist — it is the Hermes conductor system prompt."""
+    conductor_md = Path(__file__).parent.parent / "conductor-hermes.md"
+    assert conductor_md.exists(), (
+        f"conductor-hermes.md not found at {conductor_md}. "
+        "Run SetupConductorWithAgent to regenerate or restore from the repo."
+    )
+
+
+def test_hermes_conductor_md_references_hermes():
+    """conductor-hermes.md must mention Hermes by name (not a copy of the Claude template)."""
+    conductor_md = Path(__file__).parent.parent / "conductor-hermes.md"
+    if not conductor_md.exists():
+        pytest.skip("conductor-hermes.md not present")
+    content = conductor_md.read_text()
+    assert "hermes" in content.lower(), (
+        "conductor-hermes.md does not mention 'hermes' — it may be a copy of the Claude template."
+    )
+
+
+def test_hermes_md_watcher_template_exists():
+    """assets/watcher-templates/HERMES.md must exist for the session watcher."""
+    template = REPO_ROOT / "assets" / "watcher-templates" / "HERMES.md"
+    assert template.exists(), (
+        f"HERMES.md watcher template not found at {template}."
+    )
