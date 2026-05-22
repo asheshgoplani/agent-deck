@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -156,6 +157,59 @@ func saveCache(cache *UpdateCache) error {
 	return os.WriteFile(cachePath, data, 0644)
 }
 
+// resolveGitHubToken returns a GitHub token from (in order) GITHUB_TOKEN,
+// GH_TOKEN, or `gh auth token`. Returns "" if none are available. Any
+// failure invoking `gh` is treated as "no token" so we fall back to
+// anonymous requests.
+func resolveGitHubToken() string {
+	if t := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("GH_TOKEN")); t != "" {
+		return t
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return ""
+	}
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// githubAPIGet performs an authenticated GET against the GitHub API when a
+// token is available. On a 403 response from an unauthenticated request it
+// returns a friendlier rate-limit error pointing the user at authentication.
+func githubAPIGet(url string) (*http.Response, bool, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	token := resolveGitHubToken()
+	authed := token != ""
+	if authed {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, authed, err
+	}
+	return resp, authed, nil
+}
+
+// rateLimitError returns a friendlier error for an unauthenticated 403 from
+// GitHub, or the original status-based error otherwise.
+func rateLimitError(status int, authed bool) error {
+	if status == http.StatusForbidden && !authed {
+		return fmt.Errorf("GitHub API rate limit exceeded (anonymous limit is 60/hour). Set GITHUB_TOKEN or install/login with the gh CLI to authenticate")
+	}
+	return fmt.Errorf("GitHub API returned status %d", status)
+}
+
 // fetchRecentReleases fetches the most recent `limit` releases from GitHub
 // (newest first). Used by CheckForUpdate to compute ReleasesBehind.
 func fetchRecentReleases(limit int) ([]Release, error) {
@@ -164,15 +218,14 @@ func fetchRecentReleases(limit int) ([]Release, error) {
 	}
 	url := fmt.Sprintf("%s/repos/%s/releases?per_page=%d", apiBaseURL, GitHubRepo, limit)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	resp, authed, err := githubAPIGet(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list releases: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		return nil, rateLimitError(resp.StatusCode, authed)
 	}
 
 	var releases []Release
@@ -244,15 +297,14 @@ func ShouldNudge(info *UpdateInfo) bool {
 func fetchLatestRelease() (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", apiBaseURL, GitHubRepo)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	resp, authed, err := githubAPIGet(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch release: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+		return nil, rateLimitError(resp.StatusCode, authed)
 	}
 
 	var release Release
@@ -308,8 +360,7 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 
 	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s", apiBaseURL, GitHubRepo, normalized)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	resp, authed, err := githubAPIGet(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch release %s: %w", normalized, err)
 	}
@@ -319,6 +370,9 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 		return nil, fmt.Errorf("release %s not found on GitHub", normalized)
 	}
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusForbidden && !authed {
+			return nil, fmt.Errorf("GitHub API rate limit exceeded fetching release %s (anonymous limit is 60/hour). Set GITHUB_TOKEN or install/login with the gh CLI to authenticate", normalized)
+		}
 		return nil, fmt.Errorf("GitHub API returned status %d for release %s", resp.StatusCode, normalized)
 	}
 
