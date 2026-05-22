@@ -19,3 +19,7 @@ Out of scope: third-party Claude / agent CLI tools agent-deck wraps, third-party
 - We use Dependabot (weekly) + govulncheck on PRs for Go module CVEs.
 - We use CodeQL + golangci-lint (gosec, staticcheck) for static analysis.
 - GitHub Actions are pinned by SHA where third-party.
+- Release artifacts are attested with [SLSA build provenance](https://slsa.dev/) via GitHub's artifact attestation. Consumers can verify:
+  ```bash
+  gh attestation verify agent-deck_*_linux_amd64.tar.gz --repo asheshgoplani/agent-deck
+  ```

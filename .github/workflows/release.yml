@@ -30,6 +30,8 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -92,6 +94,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      - name: Download release artifacts for attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist-attest
+          for asset in \
+            "agent-deck_${VERSION}_darwin_amd64.tar.gz" \
+            "agent-deck_${VERSION}_darwin_arm64.tar.gz" \
+            "agent-deck_${VERSION}_linux_amd64.tar.gz" \
+            "agent-deck_${VERSION}_linux_arm64.tar.gz" \
+            "checksums.txt"; do
+            gh release download "${GITHUB_REF_NAME}" --repo "${{ github.repository }}" --pattern "$asset" --dir dist-attest
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist-attest/*'
 
       - name: Validate release assets
         env:
