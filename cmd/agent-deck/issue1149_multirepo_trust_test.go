@@ -71,7 +71,7 @@ func TestIssue1149_MultiRepoClaudeSession_PreAcceptsTrustAndWritesParentMD(t *te
 	}
 
 	// Parent CLAUDE.md created and lists every repo subdir.
-	mdBytes, err := os.ReadFile(filepath.Join(parentDir, "CLAUDE.md"))
+	mdBytes, err := os.ReadFile(filepath.Join(parentDir, ".claude", "CLAUDE.md"))
 	if err != nil {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestIssue1149_ParentClaudeMD_ListsAllRepoSubdirs(t *testing.T) {
 		t.Fatalf("ApplyMultiRepoClaudeContext: %v", err)
 	}
 
-	md, err := os.ReadFile(filepath.Join(parentDir, "CLAUDE.md"))
+	md, err := os.ReadFile(filepath.Join(parentDir, ".claude", "CLAUDE.md"))
 	if err != nil {
 		t.Fatalf("read CLAUDE.md: %v", err)
 	}
@@ -137,8 +137,8 @@ func TestIssue1149_SingleRepoSession_DoesNotModifyClaudeJSON(t *testing.T) {
 	if string(got) != original {
 		t.Errorf("claude.json modified for single-repo session.\nwant:\n%s\ngot:\n%s", original, got)
 	}
-	if _, err := os.Stat(filepath.Join(parentPath, "CLAUDE.md")); !os.IsNotExist(err) {
-		t.Errorf("CLAUDE.md should not exist for single-repo session, stat err=%v", err)
+	if _, err := os.Stat(filepath.Join(parentPath, ".claude", "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Errorf(".claude/CLAUDE.md should not exist for single-repo session, stat err=%v", err)
 	}
 }
 
@@ -231,7 +231,7 @@ func TestIssue1149_NonClaudeTool_IsNoop(t *testing.T) {
 		if _, err := os.Stat(claudeJSON); !os.IsNotExist(err) {
 			t.Errorf("claude.json created for tool=%q, stat err=%v", tool, err)
 		}
-		if _, err := os.Stat(filepath.Join(parentDir, "CLAUDE.md")); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(parentDir, ".claude", "CLAUDE.md")); !os.IsNotExist(err) {
 			t.Errorf("CLAUDE.md created for tool=%q, stat err=%v", tool, err)
 		}
 	}
@@ -266,5 +266,178 @@ func TestIssue1149_Idempotent(t *testing.T) {
 
 	if string(first) != string(second) {
 		t.Errorf("claude.json not idempotent.\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+// @path imports — CLAUDE.md includes @path references for child projects that
+// have their own CLAUDE.md files.
+func TestIssue1149_ClaudeMD_IncludesAtPathImports(t *testing.T) {
+	parentDir := t.TempDir()
+	claudeJSON := filepath.Join(parentDir, ".claude.json")
+
+	// Create child repos with CLAUDE.md in different locations.
+	// repo-a uses .claude/CLAUDE.md
+	if err := os.MkdirAll(filepath.Join(parentDir, "repo-a", ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentDir, "repo-a", ".claude", "CLAUDE.md"), []byte("# Repo A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// repo-b uses root CLAUDE.md
+	if err := os.MkdirAll(filepath.Join(parentDir, "repo-b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentDir, "repo-b", "CLAUDE.md"), []byte("# Repo B"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// repo-c has no CLAUDE.md
+	if err := os.MkdirAll(filepath.Join(parentDir, "repo-c"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	repos := []string{"repo-a", "repo-b", "repo-c"}
+	if err := session.ApplyMultiRepoClaudeContext("claude", true, claudeJSON, parentDir, repos); err != nil {
+		t.Fatalf("ApplyMultiRepoClaudeContext: %v", err)
+	}
+
+	md, err := os.ReadFile(filepath.Join(parentDir, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read .claude/CLAUDE.md: %v", err)
+	}
+	content := string(md)
+
+	// .claude/CLAUDE.md is preferred over root CLAUDE.md
+	if !strings.Contains(content, "@repo-a/.claude/CLAUDE.md") {
+		t.Errorf("missing @path import for repo-a (.claude/CLAUDE.md); got:\n%s", content)
+	}
+	// Falls back to root CLAUDE.md
+	if !strings.Contains(content, "@repo-b/CLAUDE.md") {
+		t.Errorf("missing @path import for repo-b (root CLAUDE.md); got:\n%s", content)
+	}
+	// No import for repo without CLAUDE.md
+	if strings.Contains(content, "@repo-c") {
+		t.Errorf("should not have @path import for repo-c (no CLAUDE.md); got:\n%s", content)
+	}
+}
+
+// Command scoping instructions — CLAUDE.md includes git -C and cd && guidance.
+func TestIssue1149_ClaudeMD_IncludesScopingInstructions(t *testing.T) {
+	parentDir := t.TempDir()
+	claudeJSON := filepath.Join(parentDir, ".claude.json")
+
+	if err := session.ApplyMultiRepoClaudeContext("claude", true, claudeJSON, parentDir, []string{"proj"}); err != nil {
+		t.Fatalf("ApplyMultiRepoClaudeContext: %v", err)
+	}
+
+	md, err := os.ReadFile(filepath.Join(parentDir, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read .claude/CLAUDE.md: %v", err)
+	}
+	content := string(md)
+
+	if !strings.Contains(content, "git -C") {
+		t.Errorf("missing git -C scoping instruction; got:\n%s", content)
+	}
+	if !strings.Contains(content, "cd <project-dir> &&") {
+		t.Errorf("missing cd && scoping instruction; got:\n%s", content)
+	}
+}
+
+// Settings.json — intersection of allow, union of deny and ask.
+func TestIssue1149_SettingsJSON_PermissionIntersection(t *testing.T) {
+	parentDir := t.TempDir()
+	claudeJSON := filepath.Join(parentDir, ".claude.json")
+
+	// repo-a allows make and yarn, denies db:drop
+	repoA := filepath.Join(parentDir, "repo-a", ".claude")
+	if err := os.MkdirAll(repoA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoA, "settings.json"), []byte(`{
+		"permissions": {
+			"allow": ["Bash(make:*)", "Bash(yarn run:*)"],
+			"deny": ["Bash(php artisan db:drop:*)"],
+			"ask": ["Bash(docker compose exec:*)"]
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// repo-b allows make and composer, denies deploy
+	repoB := filepath.Join(parentDir, "repo-b", ".claude")
+	if err := os.MkdirAll(repoB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoB, "settings.json"), []byte(`{
+		"permissions": {
+			"allow": ["Bash(make:*)", "Bash(composer:*)"],
+			"deny": ["Bash(make deploy:*)"],
+			"ask": ["Bash(php artisan migrate:*)"]
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repos := []string{"repo-a", "repo-b"}
+	if err := session.ApplyMultiRepoClaudeContext("claude", true, claudeJSON, parentDir, repos); err != nil {
+		t.Fatalf("ApplyMultiRepoClaudeContext: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(parentDir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read .claude/settings.json: %v", err)
+	}
+
+	var settings struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+			Deny  []string `json:"deny"`
+			Ask   []string `json:"ask"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("unmarshal settings.json: %v", err)
+	}
+
+	// Intersection of allow: only Bash(make:*) is in both
+	if len(settings.Permissions.Allow) != 1 || settings.Permissions.Allow[0] != "Bash(make:*)" {
+		t.Errorf("allow should be intersection [Bash(make:*)], got: %v", settings.Permissions.Allow)
+	}
+
+	// Union of deny: both entries
+	denySet := map[string]bool{}
+	for _, d := range settings.Permissions.Deny {
+		denySet[d] = true
+	}
+	if !denySet["Bash(php artisan db:drop:*)"] || !denySet["Bash(make deploy:*)"] {
+		t.Errorf("deny should be union of both projects, got: %v", settings.Permissions.Deny)
+	}
+
+	// Union of ask: both entries
+	askSet := map[string]bool{}
+	for _, a := range settings.Permissions.Ask {
+		askSet[a] = true
+	}
+	if !askSet["Bash(docker compose exec:*)"] || !askSet["Bash(php artisan migrate:*)"] {
+		t.Errorf("ask should be union of both projects, got: %v", settings.Permissions.Ask)
+	}
+}
+
+// Settings.json not written when no child has settings.
+func TestIssue1149_SettingsJSON_NotWrittenWhenNoChildSettings(t *testing.T) {
+	parentDir := t.TempDir()
+	claudeJSON := filepath.Join(parentDir, ".claude.json")
+
+	// Create repos without .claude/settings.json
+	if err := os.MkdirAll(filepath.Join(parentDir, "repo-x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := session.ApplyMultiRepoClaudeContext("claude", true, claudeJSON, parentDir, []string{"repo-x"}); err != nil {
+		t.Fatalf("ApplyMultiRepoClaudeContext: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(parentDir, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Errorf("settings.json should not exist when no child has settings, stat err=%v", err)
 	}
 }
