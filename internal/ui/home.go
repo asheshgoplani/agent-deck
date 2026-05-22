@@ -8711,6 +8711,22 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			if inst.GetTmuxSession() != nil {
 				inst.GetTmuxSession().WorkDir = inst.MultiRepoTempDir
 			}
+
+			// Pre-accept the Claude trust dialog and emit a parent CLAUDE.md
+			// describing the layout (#1149, credit @spawnia). Skips silently
+			// for non-claude tools or empty repo lists. Failures are logged
+			// but non-fatal — the session can still launch; user just sees
+			// the usual trust prompt.
+			repoNames := make([]string, 0, len(inst.AllProjectPaths()))
+			for _, p := range inst.AllProjectPaths() {
+				repoNames = append(repoNames, filepath.Base(p))
+			}
+			if ctxErr := session.ApplyMultiRepoClaudeContext(
+				inst.Tool, inst.MultiRepoEnabled,
+				session.GetUserMCPRootPath(), inst.MultiRepoTempDir, repoNames,
+			); ctxErr != nil {
+				uiLog.Warn("multi_repo_claude_context", slog.String("error", ctxErr.Error()))
+			}
 		}
 
 		if parentSessionID != "" {
