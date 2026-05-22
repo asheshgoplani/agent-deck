@@ -96,6 +96,7 @@ jobs:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
       - name: Download release artifacts for attestation
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -111,6 +112,7 @@ jobs:
           done
 
       - name: Attest build provenance
+        timeout-minutes: 10
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: 'dist-attest/*'
