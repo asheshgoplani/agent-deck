@@ -165,6 +165,9 @@ func (b *tmuxPTYBridge) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("invalid dimensions: cols=%d rows=%d", cols, rows)
 	}
+	if cols < 10 || rows < 3 {
+		return fmt.Errorf("dimensions too small for a usable terminal: cols=%d rows=%d", cols, rows)
+	}
 
 	b.ptmxMu.RLock()
 	defer b.ptmxMu.RUnlock()

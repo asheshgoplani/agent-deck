@@ -69,6 +69,64 @@ func TestTmuxAttachCommand_SocketNameOverridesEnv(t *testing.T) {
 	}
 }
 
+// TestResize_RejectsNonsensicalDimensions: the web bridge must reject resize
+// requests with dimensions too small to be a real terminal. When xterm.js
+// calls fitAddon.fit() on a display:none container, it computes cols≈2 rows≈1
+// which, if forwarded to the PTY, shrinks the tmux window via window-size=largest
+// and corrupts all session output until a session restart.
+func TestResize_RejectsNonsensicalDimensions(t *testing.T) {
+	bridge := &tmuxPTYBridge{}
+
+	cases := []struct {
+		name string
+		cols int
+		rows int
+	}{
+		{"cols=2 rows=1 (hidden container)", 2, 1},
+		{"cols=5 rows=2 (still too small)", 5, 2},
+		{"cols=9 rows=10 (just below col minimum)", 9, 10},
+		{"cols=80 rows=2 (just below row minimum)", 80, 2},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := bridge.Resize(tc.cols, tc.rows)
+			if err == nil {
+				t.Fatalf("Resize(%d, %d) should reject nonsensical dimensions", tc.cols, tc.rows)
+			}
+			if !strings.Contains(err.Error(), "too small") {
+				t.Fatalf("expected 'too small' error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestResize_AcceptsReasonableDimensions(t *testing.T) {
+	bridge := &tmuxPTYBridge{}
+
+	cases := []struct {
+		name string
+		cols int
+		rows int
+	}{
+		{"minimum acceptable", 10, 3},
+		{"typical terminal", 120, 40},
+		{"wide monitor", 300, 80},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := bridge.Resize(tc.cols, tc.rows)
+			if err == nil {
+				return
+			}
+			if strings.Contains(err.Error(), "too small") {
+				t.Fatalf("Resize(%d, %d) should not reject reasonable dimensions", tc.cols, tc.rows)
+			}
+		})
+	}
+}
+
 // TestTmuxAttachCommand_WhitespaceSocketNameFallsBackToEnv: the same
 // defensive trim we use elsewhere. A typo like `socket_name = "   "` in
 // config must not send the web bridge to a phantom server named "   " —

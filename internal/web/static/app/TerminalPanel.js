@@ -168,7 +168,9 @@ export function TerminalPanel() {
       }
     }
 
-    fitAddon.fit()
+    if (container.offsetWidth && container.offsetHeight) {
+      fitAddon.fit()
+    }
 
     // PERF-E: single AbortController for every listener registered in this
     // effect. Calling controller.abort() in the cleanup detaches all 8
@@ -220,9 +222,10 @@ export function TerminalPanel() {
     function scheduleFitAndResize(delayMs) {
       clearTimeout(resizeTimer)
       resizeTimer = setTimeout(() => {
+        if (!container.offsetWidth || !container.offsetHeight) return
         fitAddon.fit()
         const { cols, rows } = terminal
-        if (cols > 1 && rows > 0 && ctx.ws && ctx.ws.readyState === WebSocket.OPEN && ctx.terminalAttached) {
+        if (cols >= 10 && rows >= 3 && ctx.ws && ctx.ws.readyState === WebSocket.OPEN && ctx.terminalAttached) {
           ctx.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
         }
       }, delayMs)
