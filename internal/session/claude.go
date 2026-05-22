@@ -19,6 +19,75 @@ var claudeDirNameRegex = regexp.MustCompile(`[^a-zA-Z0-9-]`)
 // uuidSessionFileRegex matches UUID-format JSONL session filenames.
 var uuidSessionFileRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$`)
 
+// uuidBareRegex matches a bare UUID (no .jsonl suffix). Used to validate
+// candidates extracted from `claude --session-id <token>` in a wrapper
+// command string before we trust them as the explicit session id.
+var uuidBareRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// extractExplicitClaudeSessionID parses the user-supplied wrapper command
+// string and returns the literal UUID argument of `--session-id <uuid>`
+// (or `--session-id=<uuid>`) if exactly one is present and well-formed.
+//
+// Issue #1147: in multi-session-per-cwd setups the user explicitly bakes
+// a distinct `--session-id <uuid>` into each session's launch command so
+// each tenant owns its own Claude conversation. The disk-discovery
+// preludes at instance.go:2576 / :2613 (`ensureClaudeSessionIDFromDisk`
+// and its restart variant) walk the shared cwd and pick the newest JSONL
+// by mtime, which silently hijacks every sibling's id onto whichever
+// transcript was written last. The explicit-flag extraction below makes
+// the launch command authoritative so disk discovery never gets a chance
+// to override an explicit user choice.
+//
+// Returns ("", false) when:
+//   - command is empty
+//   - command contains no `--session-id` token
+//   - the token is not followed by a well-formed UUID
+//   - the command contains shell metacharacters in the UUID argument
+//     (e.g. `--session-id "$VAR"`) — the user is doing dynamic id
+//     resolution; we cannot safely declare the id without expansion.
+func extractExplicitClaudeSessionID(command string) (string, bool) {
+	if command == "" {
+		return "", false
+	}
+	// Tokenize by whitespace and `=`. We do NOT attempt full shell parsing —
+	// the launch surface is a string like
+	//   `env FOO=bar claude --session-id <uuid> --resume <other>`
+	// and the contract is: if the literal token `--session-id <uuid>` (or
+	// `--session-id=<uuid>`) appears anywhere, trust it. Quoting, command
+	// substitution, and variable expansion are not supported because we
+	// cannot evaluate them without spawning a shell.
+	fields := strings.Fields(command)
+	for idx, f := range fields {
+		var candidate string
+		switch {
+		case f == "--session-id":
+			if idx+1 >= len(fields) {
+				return "", false
+			}
+			candidate = fields[idx+1]
+		case strings.HasPrefix(f, "--session-id="):
+			candidate = strings.TrimPrefix(f, "--session-id=")
+		default:
+			continue
+		}
+		// Strip a single layer of matched surrounding quotes so
+		// `--session-id "abc...def"` still parses. Anything that survives
+		// must be a bare UUID — no $VAR, no $(), no backticks.
+		candidate = strings.TrimSpace(candidate)
+		if len(candidate) >= 2 {
+			if (candidate[0] == '"' && candidate[len(candidate)-1] == '"') ||
+				(candidate[0] == '\'' && candidate[len(candidate)-1] == '\'') {
+				candidate = candidate[1 : len(candidate)-1]
+			}
+		}
+		if !uuidBareRegex.MatchString(candidate) {
+			return "", false
+		}
+		return candidate, true
+	}
+	return "", false
+}
+
 // ConvertToClaudeDirName converts a filesystem path to Claude's directory naming format.
 // Claude Code replaces all non-alphanumeric characters (except hyphens) with hyphens.
 // Example: /Users/master/Code cloud/!Project → -Users-master-Code-cloud--Project

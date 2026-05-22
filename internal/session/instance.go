@@ -2611,6 +2611,29 @@ func (i *Instance) ensureClaudeSessionIDFromDisk() {
 // is safe to bypass here. ClaudeDetectedAt is then stamped so subsequent
 // callers (status refresh, persistence) see a consistent capture time.
 func (i *Instance) ensureClaudeSessionIDFromDiskForRestart() {
+	// Issue #1147: an explicit `--session-id <uuid>` in i.Command is the
+	// user's authoritative declaration of WHICH conversation this session
+	// owns. In multi-session-per-cwd setups (5 tenant sessions sharing one
+	// project dir, each with its own --session-id), the pre-#1147
+	// disk-discovery walk picks the newest sibling JSONL by mtime and
+	// silently hijacks every sibling's id onto whichever transcript was
+	// written last. The dup-sweeper then kills 4 of 5 sessions for
+	// sharing a CLAUDE_SESSION_ID. Adopting the explicit id BEFORE the
+	// non-empty short-circuit ensures it also corrects a previously-
+	// hijacked id from an earlier buggy run.
+	if explicit, ok := extractExplicitClaudeSessionID(i.Command); ok {
+		if i.ClaudeSessionID != explicit {
+			i.ClaudeSessionID = explicit
+			sessionLog.Info("resume: id="+explicit+" reason=session_id_flag_explicit_restart",
+				slog.String("instance_id", i.ID),
+				slog.String("claude_session_id", explicit),
+				slog.String("reason", "session_id_flag_explicit_restart"))
+		}
+		if i.ClaudeDetectedAt.IsZero() {
+			i.ClaudeDetectedAt = time.Now()
+		}
+		return
+	}
 	if i.ClaudeSessionID != "" {
 		return
 	}
