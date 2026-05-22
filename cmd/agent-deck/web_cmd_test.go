@@ -29,6 +29,9 @@ func (noopMutator) CreateGroup(string, string) (string, error) {
 }
 func (noopMutator) RenameGroup(string, string) error { return nil }
 func (noopMutator) DeleteGroup(string) error         { return nil }
+func (noopMutator) FinishWorktree(string, web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+	return web.WorktreeFinishResult{}, nil
+}
 
 // Compile-time guard that ui.WebMutator continues to satisfy
 // web.SessionMutator. Catches accidental signature drift between the two

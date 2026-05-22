@@ -476,6 +476,13 @@ func (s *parityStore) RenameGroup(groupPath, newName string) error {
 	return nil
 }
 
+// FinishWorktree is stubbed for parity tests; the worktree finish action
+// isn't part of the snapshot-equality parity matrix (no in-memory worktree
+// state). Returns ErrNotAWorktree so any accidental call is loud.
+func (s *parityStore) FinishWorktree(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error) {
+	return WorktreeFinishResult{}, ErrNotAWorktree
+}
+
 func (s *parityStore) DeleteGroup(groupPath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

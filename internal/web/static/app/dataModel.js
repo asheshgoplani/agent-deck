@@ -41,7 +41,12 @@ function projectSession(item) {
     mcps: [],           // not exposed by API (TUI-only feature; pane shows stub)
     skills: [],         // not exposed by API (TUI-only feature; pane shows stub)
     children: [],       // not exposed by API
-    worktree: false,    // not exposed by API
+    // worktree: derived from MenuSession.worktreeBranch (issue #1126).
+    // When truthy, the UI shows the "Finish worktree" action button so
+    // users can merge + clean up from the browser instead of dropping
+    // back to the TUI.
+    worktree: !!(s.worktreeBranch && s.worktreeRepoRoot),
+    worktreeBranch: s.worktreeBranch || '',
     sandbox: false,     // not exposed by API
     parent: null,
     pendingNeeds: 0,

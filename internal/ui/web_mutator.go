@@ -2,11 +2,16 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
+	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
@@ -310,6 +315,121 @@ func (m *WebMutator) RenameGroup(groupPath, newName string) error {
 	m.h.instancesMu.RUnlock()
 
 	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// FinishWorktree merges (or skips), removes the worktree, optionally
+// deletes the source branch, kills the tmux session, and removes the
+// session from storage. Mirrors `agent-deck worktree finish` (see
+// cmd/agent-deck/worktree_cmd.go handleWorktreeFinish) — the
+// orchestration is duplicated rather than refactored to keep the
+// fix minimally invasive (issue #1126).
+func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return web.WorktreeFinishResult{}, web.ErrSessionNotFound
+	}
+	if !inst.IsWorktree() {
+		return web.WorktreeFinishResult{}, web.ErrNotAWorktree
+	}
+
+	repoRoot := inst.WorktreeRepoRoot
+	worktreePath := inst.WorktreePath
+	worktreeBranch := inst.WorktreeBranch
+
+	backend, err := vcsbackend.Detect(repoRoot)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("initialize VCS: %w", err)
+	}
+
+	if !opts.Force {
+		dirty, dErr := git.HasUncommittedChanges(worktreePath)
+		if dErr != nil {
+			if _, statErr := os.Stat(worktreePath); os.IsNotExist(statErr) {
+				dirty = false
+			} else {
+				return web.WorktreeFinishResult{}, fmt.Errorf("check worktree status: %w", dErr)
+			}
+		}
+		if dirty {
+			return web.WorktreeFinishResult{}, fmt.Errorf("worktree has uncommitted changes (set force=true to override)")
+		}
+	}
+
+	targetBranch := opts.Into
+	if targetBranch == "" && !opts.NoMerge {
+		targetBranch, err = backend.GetDefaultBranch()
+		if err != nil {
+			return web.WorktreeFinishResult{}, fmt.Errorf("determine target branch: %w (set into=<branch>)", err)
+		}
+	}
+	if !opts.NoMerge && targetBranch == worktreeBranch {
+		return web.WorktreeFinishResult{}, fmt.Errorf("cannot merge branch %q into itself", worktreeBranch)
+	}
+
+	if !opts.NoMerge {
+		// Checkout target in main repo, then merge.
+		checkout := exec.Command("git", "-C", repoRoot, "checkout", targetBranch)
+		if out, cErr := checkout.CombinedOutput(); cErr != nil {
+			return web.WorktreeFinishResult{}, fmt.Errorf("checkout %s: %s", targetBranch, strings.TrimSpace(string(out)))
+		}
+		if mErr := backend.MergeBranch(worktreeBranch); mErr != nil {
+			if backend.Type() == vcs.TypeGit {
+				_ = exec.Command("git", "-C", repoRoot, "merge", "--abort").Run()
+			}
+			return web.WorktreeFinishResult{}, fmt.Errorf("merge failed (aborted): %w", mErr)
+		}
+	}
+
+	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
+		// Best-effort: log via error wrapping only if it bubbles. CLI
+		// treats this as a warning; we mirror that by swallowing here so
+		// the rest of cleanup proceeds.
+		_ = backend.RemoveWorktree(worktreePath, opts.Force)
+	}
+	_ = backend.PruneWorktrees()
+
+	branchDeleted := false
+	if !opts.KeepBranch {
+		if dErr := backend.DeleteBranch(worktreeBranch, opts.Force); dErr == nil {
+			branchDeleted = true
+		}
+	}
+
+	if inst.Exists() {
+		_ = inst.Kill()
+	}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	existing := make([]*session.Instance, 0, len(m.h.instances))
+	for _, x := range m.h.instances {
+		if x.ID != id {
+			existing = append(existing, x)
+		}
+	}
+	m.h.instancesMu.RUnlock()
+	if sErr := storage.SaveWithGroups(existing, m.h.groupTree); sErr != nil {
+		return web.WorktreeFinishResult{}, fmt.Errorf("save session data: %w", sErr)
+	}
+
+	mergedInto := targetBranch
+	if opts.NoMerge {
+		mergedInto = ""
+	}
+	return web.WorktreeFinishResult{
+		SessionID:     id,
+		Branch:        worktreeBranch,
+		MergedInto:    mergedInto,
+		Merged:        !opts.NoMerge,
+		BranchDeleted: branchDeleted,
+	}, nil
 }
 
 // DeleteGroup deletes a group (and its subgroups), moving sessions to the default

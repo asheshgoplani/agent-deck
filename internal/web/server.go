@@ -44,6 +44,49 @@ var ErrUndoNothing = errors.New("nothing to undo")
 // recent delete is older than the configured undo window.
 var ErrUndoExpired = errors.New("undo window expired")
 
+// ErrSessionNotFound is returned by SessionMutator.FinishWorktree when the
+// target session id does not resolve to a live instance. The handler maps
+// this to 404. See issue #1126.
+var ErrSessionNotFound = errors.New("session not found")
+
+// ErrNotAWorktree is returned by SessionMutator.FinishWorktree when the
+// target session exists but is not in a git/jujutsu worktree (so there is
+// nothing to merge or clean up). The handler maps this to 400. See issue
+// #1126.
+var ErrNotAWorktree = errors.New("session is not in a worktree")
+
+// WorktreeFinishOptions configures a SessionMutator.FinishWorktree call.
+// All fields are optional; the zero value asks the implementation to
+// auto-detect the target branch, perform the merge, delete the source
+// branch, and refuse if the worktree is dirty.
+type WorktreeFinishOptions struct {
+	// Into is the target branch to merge the worktree branch into. When
+	// empty the backend's default branch is used (matches the
+	// `agent-deck worktree finish --into` flag).
+	Into string
+	// NoMerge skips the merge step (mirrors --no-merge). The branch is
+	// still removed (unless KeepBranch) and the worktree torn down.
+	NoMerge bool
+	// KeepBranch leaves the source branch in place after finishing
+	// (mirrors --keep-branch). Useful when the branch already lives on a
+	// remote PR.
+	KeepBranch bool
+	// Force skips the dirty-worktree safety check and forces branch
+	// deletion even if the merge fast-forward didn't succeed.
+	Force bool
+}
+
+// WorktreeFinishResult is what SessionMutator.FinishWorktree returns on
+// success. Mirrors the JSON-output payload of `agent-deck worktree finish
+// --json`.
+type WorktreeFinishResult struct {
+	SessionID     string
+	Branch        string
+	MergedInto    string
+	Merged        bool
+	BranchDeleted bool
+}
+
 // MenuDataLoader provides menu snapshots for web APIs and push notifications.
 type MenuDataLoader interface {
 	LoadMenuSnapshot() (*MenuSnapshot, error)
@@ -70,6 +113,13 @@ type SessionMutator interface {
 	CreateGroup(name, parentPath string) (string, error)
 	RenameGroup(groupPath, newName string) error
 	DeleteGroup(groupPath string) error
+	// FinishWorktree merges (or skips), removes the worktree, optionally
+	// deletes the source branch, kills the tmux session, and removes the
+	// session from storage. Mirrors the TUI W/shift+w hotkey and the
+	// `agent-deck worktree finish` CLI. Returns ErrSessionNotFound when
+	// the id doesn't resolve and ErrNotAWorktree when the session exists
+	// but lacks worktree metadata. See issue #1126.
+	FinishWorktree(sessionID string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
 // Server wraps an HTTP server for Agent Deck web mode.

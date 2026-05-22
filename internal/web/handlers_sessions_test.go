@@ -25,6 +25,7 @@ type fakeMutator struct {
 	createGroupFn    func(name, parentPath string) (string, error)
 	renameGroupFn    func(groupPath, newName string) error
 	deleteGroupFn    func(groupPath string) error
+	finishWorktreeFn func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
 func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
@@ -102,6 +103,13 @@ func (f *fakeMutator) DeleteGroup(groupPath string) error {
 		return fmt.Errorf("deleteGroup not configured")
 	}
 	return f.deleteGroupFn(groupPath)
+}
+
+func (f *fakeMutator) FinishWorktree(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error) {
+	if f.finishWorktreeFn == nil {
+		return WorktreeFinishResult{}, fmt.Errorf("finishWorktree not configured")
+	}
+	return f.finishWorktreeFn(id, opts)
 }
 
 func TestSessionsCollectionGET(t *testing.T) {

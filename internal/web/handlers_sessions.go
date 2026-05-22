@@ -117,6 +117,15 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Worktree sub-route: POST /api/sessions/{id}/worktree/finish
+	// (issue #1126 — closes the "Finish worktree" MISSING row in
+	// tests/web/PARITY_MATRIX.md, mirrors TUI W/shift+w + CLI
+	// `agent-deck worktree finish`).
+	if action == "worktree/finish" {
+		s.handleSessionWorktreeFinish(w, r, sessionID)
+		return
+	}
+
 	// DELETE /api/sessions/{id}
 	if r.Method == http.MethodDelete && action == "" {
 		if !s.checkMutationsAllowed(w) {

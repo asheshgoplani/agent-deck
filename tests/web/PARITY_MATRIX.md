@@ -65,7 +65,7 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Jump mode | `internal/ui/home.go:6406` (`space` key) | MISSING | N/A | N/A | Vimium-style hint navigation |
 | Attach session | `internal/ui/home.go:5744` (`enter` key) | MISSING | N/A | N/A | PTY attach via tmux; web uses WS for streaming |
 | **WORKTREE OPERATIONS** |
-| Finish worktree | `internal/ui/home.go:6038` (`W`/`shift+w`) | MISSING | N/A | N/A | Merge + cleanup; TUI dialog only |
+| Finish worktree | `internal/ui/home.go:6038` (`W`/`shift+w`) | POST `/api/sessions/{id}/worktree/finish` | `FinishWorktree` | `issue1126_worktree_finish_test.go`, `tests/web/e2e/worktree-finish.spec.js` | Merge + cleanup; body accepts `into`, `noMerge`, `keepBranch`, `force` (mirrors CLI flags). Issue #1126. |
 | **COST TRACKING** |
 | View costs dashboard | `internal/ui/home.go` (TUI only) | GET `/api/costs/summary` | N/A | `handlers_costs_test.go` | Sessions cost aggregation. **e2e parity: degraded-only** — fixture omits the SQLite cost store, so the e2e probe asserts the documented 503 `UNAVAILABLE` response. Happy-path (200 + payload) coverage is `parity-test-deferred` to PR-B fixture wiring. |
 | Cost export | N/A | GET `/api/costs/export` | N/A | `handlers_costs_test.go` | Web-only; CSV/JSON export. **e2e parity: degraded-only** (503 without cost store). Happy-path `parity-test-deferred` to PR-B. |

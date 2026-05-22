@@ -406,6 +406,46 @@ func (s *fixtureStore) DeleteGroup(groupPath string) error {
 	return nil
 }
 
+// FinishWorktree implements web.SessionMutator for issue #1126. Without a
+// real git backend the fixture validates inputs the same way the live
+// path does (session exists, worktree fields populated) and then removes
+// the session deterministically so e2e tests can verify the menu refresh.
+func (s *fixtureStore) FinishWorktree(id string, opts web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return web.WorktreeFinishResult{}, web.ErrSessionNotFound
+	}
+	if sess.WorktreeBranch == "" || sess.WorktreeRepoRoot == "" {
+		return web.WorktreeFinishResult{}, web.ErrNotAWorktree
+	}
+	branch := sess.WorktreeBranch
+	merged := !opts.NoMerge
+	mergedInto := opts.Into
+	if merged && mergedInto == "" {
+		mergedInto = "main"
+	}
+	if !merged {
+		mergedInto = ""
+	}
+	branchDeleted := !opts.KeepBranch
+	delete(s.sessions, id)
+	for i, x := range s.order {
+		if x == id {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	return web.WorktreeFinishResult{
+		SessionID:     id,
+		Branch:        branch,
+		MergedInto:    mergedInto,
+		Merged:        merged,
+		BranchDeleted: branchDeleted,
+	}, nil
+}
+
 func (s *fixtureStore) transition(id string, to session.Status) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

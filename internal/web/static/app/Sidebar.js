@@ -49,6 +49,16 @@ function doAction(action, s) {
       onConfirm: () => apiFetch('DELETE', `/api/sessions/${id}`).catch(() => {}),
     }
   }
+  if (action === 'worktreeFinish') {
+    // Issue #1126 — POST /api/sessions/{id}/worktree/finish. Mirrors TUI
+    // W/shift+w. Body left empty so the backend auto-detects target
+    // branch and uses default flags (merge + delete branch).
+    const branch = s.worktreeBranch || s.branch
+    confirmDialogSignal.value = {
+      message: `Finish worktree for "${s.title}"? Merges branch "${branch}" into default branch, removes worktree, deletes branch, and removes session.`,
+      onConfirm: () => apiFetch('POST', `/api/sessions/${id}/worktree/finish`).catch(() => {}),
+    }
+  }
 }
 
 function SessionItem({ s, sel, onSelect, showCols }) {
@@ -97,6 +107,7 @@ function SessionItem({ s, sel, onSelect, showCols }) {
           : html`<button class="mini good" title="Start" onClick=${() => doAction('start', s)}><${Icon} d=${ICONS.play} size=${12}/></button>`}
         <button class="mini good" title="Restart" onClick=${() => doAction('restart', s)}><${Icon} d=${ICONS.restart} size=${12}/></button>
         ${s.tool === 'claude' && html`<button class="mini fork" title="Fork" onClick=${() => doAction('fork', s)}><${Icon} d=${ICONS.fork} size=${12}/></button>`}
+        ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish">⎇✓</button>`}
         <button class="mini danger" title="Delete" onClick=${() => doAction('delete', s)}><${Icon} d=${ICONS.trash} size=${12}/></button>
       </div>
     </div>

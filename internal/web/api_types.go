@@ -41,6 +41,25 @@ type SessionActionResponse struct {
 	Status    session.Status `json:"status"`
 }
 
+// WorktreeFinishRequest is the body for POST /api/sessions/{id}/worktree/finish.
+// All fields are optional. Mirrors `agent-deck worktree finish` CLI flags.
+// See issue #1126.
+type WorktreeFinishRequest struct {
+	Into       string `json:"into,omitempty"`
+	NoMerge    bool   `json:"noMerge,omitempty"`
+	KeepBranch bool   `json:"keepBranch,omitempty"`
+	Force      bool   `json:"force,omitempty"`
+}
+
+// WorktreeFinishResponse is returned by POST /api/sessions/{id}/worktree/finish.
+type WorktreeFinishResponse struct {
+	SessionID     string `json:"sessionId"`
+	Branch        string `json:"branch"`
+	MergedInto    string `json:"mergedInto,omitempty"`
+	Merged        bool   `json:"merged"`
+	BranchDeleted bool   `json:"branchDeleted"`
+}
+
 // SettingsResponse is returned by GET /api/settings.
 type SettingsResponse struct {
 	Profile      string `json:"profile"`
