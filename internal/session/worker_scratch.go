@@ -53,7 +53,43 @@ var hostHasTelegramConductor = func() bool {
 	if err != nil || cfg == nil {
 		return false
 	}
-	return strings.TrimSpace(cfg.Conductor.Telegram.Token) != ""
+	return configDeclaresTelegram(cfg)
+}
+
+// configDeclaresTelegram reports whether the host runs a telegram conductor
+// under EITHER the legacy single-bot topology OR the modern per-conductor
+// env_file topology (issue #1163).
+//
+// The legacy field `[conductor.telegram].token` is empty under the 7-bot
+// setup — each conductor declares its bot via a `[conductors.<name>].claude.env_file`
+// whose .envrc exports TELEGRAM_STATE_DIR. Reading only the legacy field left
+// the scratch-pin gate (#759/#1137) permanently disarmed, so conductor-spawned
+// children inherited the conductor's telegram=true CLAUDE_CONFIG_DIR and fired
+// duplicate default-bot pollers. Detecting the modern topology re-arms the gate
+// for every spawn path.
+func configDeclaresTelegram(cfg *UserConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	// Legacy single-bot token.
+	if strings.TrimSpace(cfg.Conductor.Telegram.Token) != "" {
+		return true
+	}
+	// Modern topology: any conductor whose env_file defines TELEGRAM_STATE_DIR.
+	for _, c := range cfg.Conductors {
+		ef := strings.TrimSpace(c.Claude.EnvFile)
+		if ef == "" {
+			continue
+		}
+		data, err := os.ReadFile(ExpandPath(ef))
+		if err != nil {
+			continue // missing/unreadable env_file is not a telegram declaration
+		}
+		if strings.Contains(string(data), "TELEGRAM_STATE_DIR") {
+			return true
+		}
+	}
+	return false
 }
 
 // NeedsWorkerScratchConfigDir is true when a scratch CLAUDE_CONFIG_DIR

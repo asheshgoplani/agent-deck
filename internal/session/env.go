@@ -465,7 +465,7 @@ func ScrubProcessEnvForChildLaunch(inst *Instance) {
 	// might have exported but the plugin doesn't strictly require.
 	// Keeps the child env minimal so a plugin update can't surprise
 	// us with a new poller-spawning var.
-	for _, kv := range os.Environ() {
+	for _, kv := range os.Environ() { //nolint:forbidigo // enumerates current env to Unsetenv TELEGRAM_*; not building a child env (childenv is the launch chokepoint)
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
 			continue

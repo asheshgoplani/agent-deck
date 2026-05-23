@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -252,7 +253,11 @@ func (s *HTTPServer) Start() error {
 			slog.String("mcp", s.name),
 			slog.String("unit", scopeUnit))
 	}
-	cmdEnv := os.Environ()
+	// #1163: build the base env via childenv so an inherited CLAUDE_CONFIG_DIR
+	// and any TELEGRAM_* var can never leak into a pooled MCP child (a child
+	// must never load the conductor's telegram plugin). MCP-specific vars are
+	// layered on top.
+	cmdEnv := childenv.ForLaunch("")
 	for k, v := range s.env {
 		// Reject environment variables that could be used for code injection.
 		if dangerousEnvVars[k] {
@@ -263,9 +268,15 @@ func (s *HTTPServer) Start() error {
 	}
 	s.process.Env = cmdEnv
 
-	// Graceful shutdown: send SIGTERM on context cancel
+	// #1163 Change 3: own process group so grandchildren (node via npx, python
+	// via uvx, bun wrappers) can be reaped as a unit — mirrors socket_proxy.go.
+	s.process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Graceful shutdown: SIGTERM the WHOLE process group (negative pid) on
+	// context cancel so the entire subtree dies, not just the leader. Without
+	// this, killing the launcher leaves the real server orphaned under PID 1.
 	s.process.Cancel = func() error {
-		return s.process.Process.Signal(syscall.SIGTERM)
+		return syscall.Kill(-s.process.Process.Pid, syscall.SIGTERM)
 	}
 	s.process.WaitDelay = 3 * time.Second
 
@@ -376,7 +387,9 @@ func (s *HTTPServer) Stop() error {
 			}
 		case <-time.After(5 * time.Second):
 			httpLog.Warn("process_wait_timeout", slog.String("mcp", s.name))
-			_ = s.process.Process.Kill()
+			// #1163: SIGKILL the entire process group (negative pid), not just
+			// the leader, so grandchildren cannot be orphaned under PID 1.
+			_ = syscall.Kill(-s.process.Process.Pid, syscall.SIGKILL)
 			<-done
 		}
 		httpLog.Info("process_stopped", slog.String("mcp", s.name))

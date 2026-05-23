@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Telegram can no longer leak into conductor-spawned children (three structural defenses)** ([#1163](https://github.com/asheshgoplani/agent-deck/issues/1163)). Root cause (forensic investigation): conductor children inherited the conductor's `CLAUDE_CONFIG_DIR` — a worker-scratch profile whose `settings.json` has `telegram@claude-plugins-official: true` — because the scratch-pin gate `hostHasTelegramConductor()` read only the legacy single-bot `[conductor.telegram].token`, which is empty (`""`) under the modern 7-bot `env_file` topology. The gate stayed disarmed, no per-child `telegram=false` scratch was created, the child loaded the telegram plugin with no `TELEGRAM_STATE_DIR`, fell back to the default bot dir, and spawned a duplicate `bun telegram` poller (409 Conflict storm, dropped messages). Three by-construction fixes:
+  - **Change 1 — repaired the dead gate.** `configDeclaresTelegram()` now detects telegram via the modern topology: any `[conductors.<name>].claude.env_file` whose `.envrc` exports `TELEGRAM_STATE_DIR` arms the gate, in addition to the legacy token. This single repair re-enables the existing #1137 scratch-pin defense for every spawn path. Verified live: all 7 conductor env_files arm the gate while the legacy token is empty.
+  - **Change 2 — `childenv` chokepoint + forbidigo lint.** New leaf package `internal/childenv` (and `session.ChildLaunchEnv`) strips inherited `CLAUDE_CONFIG_DIR` (#1163) **and** every `TELEGRAM_*` var (#1152) from a child's env, pinning the child's own config dir. The pooled-MCP spawn paths (`internal/mcppool/{http_server,socket_proxy}.go`) route their base env through it. A `.golangci.yml` forbidigo rule bans raw `os.Environ()` in spawn paths so the leak cannot be reintroduced.
+  - **Change 3 — process-group reaping.** `internal/mcppool/http_server.go` now spawns with `Setpgid` and SIGTERM/SIGKILLs the whole process group on stop (matching `socket_proxy.go`), so a launcher's grandchildren (bun wrappers, npx/uvx subprocesses) are reaped as a unit instead of orphaning under PID 1.
+  - Pinned by `internal/session/issue1163_telegram_structural_test.go`, `internal/session/issue1163_procgroup_unix_test.go`, `internal/session/issue1163_forbidigo_test.go`, and `internal/childenv/childenv_test.go`.
+
 ## [1.9.30] - 2026-05-22
 
 A 5-fix improvement-cycle release on top of v1.9.29, closing four production-observable issues plus one Web UI parity gap. v1.9.30 is the **twenty-fifth release cut under the Option A pipeline** ([#981](https://github.com/asheshgoplani/agent-deck/pull/981) in v1.9.6); the local release worker stops at `git push origin <tag>` and `.github/workflows/release.yml` is the single source of truth for `goreleaser release --clean`.

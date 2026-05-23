@@ -95,7 +95,7 @@ func isSecretPluginEnv(key string) bool {
 }
 
 func scrubbedEnvForPluginInstall() []string {
-	host := os.Environ()
+	host := os.Environ() //nolint:forbidigo // strict allow-list scrub (CCD set explicitly by caller, TELEGRAM_* never allow-listed) — not the childenv chokepoint
 	out := make([]string, 0, len(host))
 	for _, kv := range host {
 		eq := strings.IndexByte(kv, '=')

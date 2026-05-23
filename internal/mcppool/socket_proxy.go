@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
 
@@ -244,7 +245,9 @@ func (p *SocketProxy) Start() error {
 			slog.String("mcp", p.name),
 			slog.String("unit", scopeUnit))
 	}
-	cmdEnv := os.Environ()
+	// #1163: strip inherited CLAUDE_CONFIG_DIR + TELEGRAM_* from the base env
+	// so a pooled MCP child can never load the conductor's telegram plugin.
+	cmdEnv := childenv.ForLaunch("")
 	for k, v := range p.env {
 		// Reject environment variables that could be used for code injection.
 		if dangerousEnvVars[k] {

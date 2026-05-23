@@ -2,7 +2,17 @@ version: "2"
 linters:
   enable:
     - gosec
+    - forbidigo
   settings:
+    forbidigo:
+      # Issue #1163: raw os.Environ() in a spawn path leaks the conductor's
+      # CLAUDE_CONFIG_DIR (telegram=true scratch) + TELEGRAM_* into child
+      # claude/MCP processes, which then load the telegram plugin and fire
+      # duplicate bun pollers (409 storm). The single chokepoint is
+      # internal/childenv (ChildLaunchEnv / ForLaunch) — build child env there.
+      forbid:
+        - pattern: os\.Environ
+          msg: "build child-process env via internal/childenv (ChildLaunchEnv / ForLaunch); raw os.Environ() leaks the conductor's CLAUDE_CONFIG_DIR + TELEGRAM_* into children (#1163)"
     gosec:
       excludes:
         - G104 # errors.New / fmt.Errorf — errcheck already covers real cases
@@ -30,6 +40,30 @@ linters:
           - errcheck
           - gosec
         path: _test\.go
+      # forbidigo (os.Environ ban, #1163) applies to spawn paths. Test files,
+      # the childenv chokepoint itself, and non-spawn helpers are exempt:
+      #   - internal/childenv: the one allow-listed home for os.Environ()
+      #   - internal/git: worktree setup script runner (not a claude child)
+      #   - internal/web: tmux PTY bridge env (not a claude child)
+      #   - internal/testutil + tests/eval: test scaffolding
+      - linters:
+          - forbidigo
+        path: _test\.go
+      - linters:
+          - forbidigo
+        path: internal/childenv/
+      - linters:
+          - forbidigo
+        path: internal/git/
+      - linters:
+          - forbidigo
+        path: internal/web/
+      - linters:
+          - forbidigo
+        path: internal/testutil/
+      - linters:
+          - forbidigo
+        path: tests/eval/
       - linters:
           - gosec
         path: docs/
