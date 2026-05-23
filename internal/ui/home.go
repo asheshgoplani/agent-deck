@@ -318,6 +318,9 @@ type Home struct {
 	// Hermes Kanban badge watcher (WebSocket real-time counts)
 	kanbanWatcher *session.KanbanWatcher
 
+	// Hermes Kanban board panel (toggled with 'K')
+	kanbanPanel *KanbanPanel
+
 	// Context-% based /clear for conductor sessions with clear_on_compact
 	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
@@ -1195,6 +1198,9 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		w := session.StartKanbanWatcher(gatewayURL)
 		h.kanbanWatcher = w
 	}
+
+	// Initialize Hermes Kanban board panel (hidden by default, toggled with 'K')
+	h.kanbanPanel = NewKanbanPanel()
 
 	// Start system theme watcher if configured
 	if session.GetTheme() == "system" {
@@ -3782,6 +3788,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.settingsPanel.SetSize(msg.Width, msg.Height)
 		h.watcherPanel.SetSize(msg.Width, msg.Height)
 		h.geminiModelDialog.SetSize(msg.Width, msg.Height)
+		h.kanbanPanel.SetSize(msg.Width, msg.Height)
 		return h, nil
 
 	case tea.MouseMsg:
@@ -4604,6 +4611,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case kanbanFetchDoneMsg:
+		if h.kanbanPanel != nil {
+			h.kanbanPanel.SetTasks(msg.tasks, msg.err)
+		}
+		return h, nil
+
 	case refreshMsg:
 		return h, h.loadSessions
 
@@ -5292,6 +5305,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			h.watcherPanel, cmd = h.watcherPanel.Update(msg)
 			return h, cmd
+		}
+
+		// Handle Kanban board panel keys
+		if h.kanbanPanel.IsVisible() {
+			switch msg.String() {
+			case "esc", "q", "B":
+				h.kanbanPanel.Hide()
+				return h, nil
+			case "r":
+				h.kanbanPanel.Show()
+				return h, fetchKanbanTasksCmd()
+			}
 		}
 
 		// Handle settings panel
@@ -6849,6 +6874,14 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open settings panel
 		h.settingsPanel.Show()
 		h.settingsPanel.SetSize(h.width, h.height)
+		return h, nil
+
+	case "B":
+		// Toggle Hermes Kanban board panel
+		if h.kanbanPanel.Toggle() {
+			h.kanbanPanel.SetSize(h.width, h.height)
+			return h, fetchKanbanTasksCmd()
+		}
 		return h, nil
 
 	case "w":
@@ -10130,6 +10163,11 @@ func (h *Home) View() string {
 	// Watcher panel is modal (before settings panel)
 	if h.watcherPanel.IsVisible() {
 		return h.watcherPanel.View()
+	}
+
+	// Kanban board panel is modal
+	if h.kanbanPanel.IsVisible() {
+		return h.kanbanPanel.View()
 	}
 
 	// Settings panel is modal

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1558,6 +1559,110 @@ def create_slack_app(config: dict):
 
 
 # ---------------------------------------------------------------------------
+# Hermes Kanban watch loop
+# ---------------------------------------------------------------------------
+
+async def _notify_kanban_event(
+    event: dict,
+    telegram_bot=None,
+    tg_user_id: int | None = None,
+    slack_app=None,
+    slack_channel_id: str | None = None,
+) -> None:
+    """Format and broadcast a Kanban event to configured platforms."""
+    kind = event.get("kind", "")
+    title = event.get("title") or event.get("task_id") or "unknown task"
+    reason = event.get("block_reason", "").strip()
+
+    if kind == "blocked":
+        msg = f"[KANBAN BLOCKED] {title}"
+        if reason:
+            msg += f"\n  Reason: {reason}"
+    elif kind == "timed_out":
+        msg = f"[KANBAN TIMED OUT] {title}"
+    else:
+        return  # not an alertable kind
+
+    log.info("Kanban event %s: %s", kind, title)
+
+    if telegram_bot and tg_user_id:
+        try:
+            await telegram_bot.send_message(tg_user_id, msg)
+        except Exception as exc:
+            log.warning("kanban_watch: Telegram notify failed: %s", exc)
+
+    if slack_app and slack_channel_id:
+        try:
+            await slack_app.client.chat_postMessage(channel=slack_channel_id, text=msg)
+        except Exception as exc:
+            log.warning("kanban_watch: Slack notify failed: %s", exc)
+
+
+async def kanban_watch_loop(
+    telegram_bot=None,
+    tg_user_id: int | None = None,
+    slack_app=None,
+    slack_channel_id: str | None = None,
+) -> None:
+    """Stream `hermes kanban watch --kinds blocked,timed_out` and notify users.
+
+    Spawns hermes as a subprocess, reads newline-delimited JSON events, and
+    sends notifications when tasks become blocked or time out.  Reconnects
+    with exponential back-off (5 s → 120 s) if the process exits unexpectedly.
+    Exits silently if hermes is not in PATH (non-Hermes deployments).
+    """
+    if not shutil.which("hermes"):
+        log.info("kanban_watch_loop: hermes not in PATH — kanban notifications disabled")
+        return
+
+    backoff = 5
+    max_backoff = 120
+
+    log.info("kanban_watch_loop: starting")
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hermes", "kanban", "watch",
+                "--kinds", "blocked,timed_out",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            backoff = 5  # reset on successful connect
+
+            assert proc.stdout is not None
+            async for raw_line in proc.stdout:
+                line = raw_line.decode(errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    await _notify_kanban_event(
+                        event,
+                        telegram_bot=telegram_bot,
+                        tg_user_id=tg_user_id,
+                        slack_app=slack_app,
+                        slack_channel_id=slack_channel_id,
+                    )
+                except json.JSONDecodeError:
+                    log.debug("kanban_watch_loop: non-JSON line: %s", line[:120])
+
+            await proc.wait()
+            log.info(
+                "kanban_watch_loop: process exited (code=%s), reconnecting in %ds",
+                proc.returncode, backoff,
+            )
+
+        except asyncio.CancelledError:
+            log.info("kanban_watch_loop: cancelled")
+            return
+        except Exception as exc:
+            log.warning("kanban_watch_loop: error: %s — retrying in %ds", exc, backoff)
+
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, max_backoff)
+
+
+# ---------------------------------------------------------------------------
 # Heartbeat loop
 # ---------------------------------------------------------------------------
 
@@ -1897,8 +2002,19 @@ async def main():
         )
     )
 
-    # Run both concurrently
-    tasks = [heartbeat_task]
+    # Start Hermes Kanban blocked/timed-out notification watcher
+    tg_user_id = config["telegram"]["user_id"] if config["telegram"]["configured"] else None
+    kanban_watch_task = asyncio.create_task(
+        kanban_watch_loop(
+            telegram_bot=telegram_bot,
+            tg_user_id=tg_user_id,
+            slack_app=slack_app,
+            slack_channel_id=slack_channel_id,
+        )
+    )
+
+    # Run all concurrently
+    tasks = [heartbeat_task, kanban_watch_task]
     if telegram_dp and telegram_bot:
         tasks.append(asyncio.create_task(telegram_dp.start_polling(telegram_bot)))
         log.info("Telegram bot polling started")
@@ -1910,6 +2026,7 @@ async def main():
         await asyncio.gather(*tasks)
     finally:
         heartbeat_task.cancel()
+        kanban_watch_task.cancel()
         if telegram_bot:
             await telegram_bot.session.close()
         if slack_handler:
