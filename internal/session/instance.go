@@ -536,6 +536,18 @@ func (inst *Instance) GetLastActivityTime() time.Time {
 	return inst.CreatedAt
 }
 
+// LastObservedActivity returns the last time the tmux tracker confirmed a
+// real busy spike for this session, and a bool that is false when no
+// confirmation has happened (the instance has no tmux session, or the
+// tracker has never observed activity). When the bool is false the time
+// value is zero.
+func (inst *Instance) LastObservedActivity() (time.Time, bool) {
+	if inst.tmuxSession == nil {
+		return time.Time{}, false
+	}
+	return inst.tmuxSession.LastObservedActivity()
+}
+
 // GetWaitingSince returns when the session transitioned to waiting status
 // Used for sorting notification bar (newest waiting sessions first)
 func (inst *Instance) GetWaitingSince() time.Time {

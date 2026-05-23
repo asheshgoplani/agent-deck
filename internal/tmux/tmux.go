@@ -679,6 +679,8 @@ type StateTracker struct {
 	activityCheckStart  time.Time // When we started tracking for sustained activity
 	activityChangeCount int       // How many timestamp changes seen in current window
 
+	realActivityConfirmed bool // true once a real busy spike has been observed (not just tracker init)
+
 	// Spinner activity tracking: grace period between tool calls
 	spinnerTracker *SpinnerActivityTracker
 }
@@ -2907,6 +2909,7 @@ func (s *Session) GetStatus() (string, error) {
 			s.mu.Lock()
 			s.ensureStateTrackerLocked()
 			s.stateTracker.lastChangeTime = time.Now()
+			s.stateTracker.realActivityConfirmed = true
 			s.stateTracker.acknowledged = false
 			s.resetPromptNoBusyHoldLocked()
 			s.stateTracker.spinnerTracker.MarkBusy()
@@ -3003,6 +3006,7 @@ func (s *Session) GetStatus() (string, error) {
 			// false "waiting" detection during tool transitions.
 			if isExplicitlyBusy {
 				s.stateTracker.lastChangeTime = time.Now()
+				s.stateTracker.realActivityConfirmed = true
 				s.stateTracker.acknowledged = false
 				s.resetPromptNoBusyHoldLocked()
 				s.stateTracker.lastActivityTimestamp = currentTS
@@ -3149,6 +3153,7 @@ func (s *Session) GetStatus() (string, error) {
 					// terminal redraws, and status bar updates can cause hash changes
 					if isExplicitlyBusy {
 						s.stateTracker.lastChangeTime = now
+						s.stateTracker.realActivityConfirmed = true
 						s.stateTracker.acknowledged = false
 						s.resetPromptNoBusyHoldLocked()
 						s.stateTracker.activityCheckStart = time.Time{} // Reset window
@@ -3350,6 +3355,7 @@ func (s *Session) getStatusFallback() (string, error) {
 		defer s.mu.Unlock()
 		s.ensureStateTrackerLocked()
 		s.stateTracker.lastChangeTime = time.Now()
+		s.stateTracker.realActivityConfirmed = true
 		s.stateTracker.acknowledged = false
 		s.resetPromptNoBusyHoldLocked()
 		s.lastStableStatus = "active"
@@ -3539,6 +3545,21 @@ func (s *Session) GetLastActivityTime() time.Time {
 		return time.Time{}
 	}
 	return s.stateTracker.lastChangeTime
+}
+
+// LastObservedActivity returns the last time a real busy spike was
+// observed for this tracker, plus a bool reporting whether such a spike
+// has ever happened in this tracker's lifetime. When the bool is false
+// the time is the zero value, so callers that miss the bool check still
+// get a sentinel they can detect.
+func (s *Session) LastObservedActivity() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stateTracker == nil || !s.stateTracker.realActivityConfirmed {
+		return time.Time{}, false
+	}
+	return s.stateTracker.lastChangeTime, true
 }
 
 // GetWaitingSince returns when the session transitioned to waiting status
