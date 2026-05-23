@@ -1735,6 +1735,11 @@ type DisplaySettings struct {
 	// Valid statuses: "running", "waiting", "idle", "error", "starting",
 	// "stopped".
 	ActiveFilterExcludes []string `toml:"active_filter_excludes"`
+
+	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
+	// Default: false — opt-in to avoid crowding existing badges. See
+	// renderSessionItem for the timestamp source.
+	ShowSessionTimestamps bool `toml:"show_session_timestamps"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter

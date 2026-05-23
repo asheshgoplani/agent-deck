@@ -411,6 +411,11 @@ type Home struct {
 	activeFilterLabel    string                  // from config.toml [display] active_filter_label
 	activeFilterExcludes map[session.Status]bool // from config.toml [display] active_filter_excludes; default {error}
 
+	// showSessionTimestamps gates the dim "Nm ago" badge on each session row.
+	// Cached here so all rows of a single frame see the same value even if
+	// the user toggles the setting mid-frame. Reloaded after the panel saves.
+	showSessionTimestamps bool
+
 	// Sessions/Preview split (issue #1092): percentage of width allocated to
 	// preview pane. Loaded from config.toml [ui] preview_pct, adjustable
 	// live via < and > keybindings, persisted back to config on adjustment.
@@ -964,6 +969,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
+		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
@@ -5245,6 +5251,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				_, _ = session.ReloadUserConfig()
 				h.reloadHotkeysFromConfig()
+				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
@@ -12245,6 +12252,24 @@ func (h *Home) renderSessionItem(
 		sshBadge = sshStyle.Render(" [ssh:" + host + "]")
 	}
 
+	// Last-update timestamp badge — see pickBadgeTime for the formula.
+	// Selected rows reuse the selection-bar style instead of dim, so the
+	// badge stays legible inside the highlight.
+	timestampBadge := ""
+	if h.showSessionTimestamps {
+		tsStyle := DimStyle
+		if selected {
+			tsStyle = SessionStatusSelStyle
+		}
+		var hookStatus *session.HookStatus
+		if h.hookWatcher != nil {
+			hookStatus = h.hookWatcher.GetHookStatus(inst.ID)
+		}
+		confirmedTs, confirmedObserved := inst.LastObservedActivity()
+		ts := pickBadgeTime(inst.CreatedAt, inst.LastStartedAt, hookStatus, confirmedTs, confirmedObserved)
+		timestampBadge = tsStyle.Render(" " + formatRelativeTime(ts))
+	}
+
 	// Window expand/collapse chevron for sessions with 2+ windows
 	windowChevron := " " // space placeholder to keep status icons aligned
 	if h.sessionHasWindows(item) {
@@ -12261,7 +12286,7 @@ func (h *Home) renderSessionItem(
 
 	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s",
+		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -12274,6 +12299,7 @@ func (h *Home) renderSessionItem(
 		sandboxBadge,
 		multiRepoBadge,
 		sshBadge,
+		timestampBadge,
 	)
 
 	// Append pane title filling remaining row space (only for the selected item).
@@ -14250,6 +14276,27 @@ func truncatePath(path string, maxLen int) string {
 		return cellTruncate(path, maxLen-3, "...")
 	}
 	return string(runes[:startLen]) + "..." + string(runes[len(runes)-endLen:])
+}
+
+// pickBadgeTime returns the most recent of the four signals the session-row
+// timestamp badge layers over, ignoring any signal that is unset / not
+// observed. Pure function — kept out of renderSessionItem so the 4-layer
+// composition can be unit-tested without faking renderer dependencies.
+//
+// LastAccessedAt is deliberately not a parameter: peeking at a quiet
+// session isn't an "update".
+func pickBadgeTime(createdAt, lastStartedAt time.Time, hookEvent *session.HookStatus, confirmedActivity time.Time, confirmedObserved bool) time.Time {
+	ts := createdAt
+	if lastStartedAt.After(ts) {
+		ts = lastStartedAt
+	}
+	if hookEvent != nil && hookEvent.UpdatedAt.After(ts) {
+		ts = hookEvent.UpdatedAt
+	}
+	if confirmedObserved && confirmedActivity.After(ts) {
+		ts = confirmedActivity
+	}
+	return ts
 }
 
 // formatRelativeTime formats a time as a human-readable relative string
