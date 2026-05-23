@@ -44,11 +44,17 @@ func NewKanbanPanel() *KanbanPanel {
 
 // IsVisible returns whether the panel is currently shown.
 func (p *KanbanPanel) IsVisible() bool {
+	if p == nil {
+		return false
+	}
 	return p.visible
 }
 
 // Show makes the panel visible and triggers a data refresh.
 func (p *KanbanPanel) Show() {
+	if p == nil {
+		return
+	}
 	p.visible = true
 	p.loading = true
 	p.fetchErr = ""
@@ -56,11 +62,17 @@ func (p *KanbanPanel) Show() {
 
 // Hide dismisses the panel.
 func (p *KanbanPanel) Hide() {
+	if p == nil {
+		return
+	}
 	p.visible = false
 }
 
 // Toggle flips visibility. Returns true if now visible.
 func (p *KanbanPanel) Toggle() bool {
+	if p == nil {
+		return false
+	}
 	if p.visible {
 		p.Hide()
 	} else {
@@ -71,12 +83,18 @@ func (p *KanbanPanel) Toggle() bool {
 
 // SetSize updates terminal dimensions used for layout.
 func (p *KanbanPanel) SetSize(width, height int) {
+	if p == nil {
+		return
+	}
 	p.width = width
 	p.height = height
 }
 
 // SetTasks updates the displayed task list.
 func (p *KanbanPanel) SetTasks(tasks []KanbanTask, err string) {
+	if p == nil {
+		return
+	}
 	p.tasks = tasks
 	p.fetchErr = err
 	p.loading = false
@@ -104,7 +122,7 @@ func FetchKanbanTasks() ([]KanbanTask, error) {
 
 // View renders the panel as a full overlay string.
 func (p *KanbanPanel) View() string {
-	if !p.visible {
+	if p == nil || !p.visible {
 		return ""
 	}
 
