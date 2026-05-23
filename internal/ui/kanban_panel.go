@@ -101,21 +101,27 @@ func (p *KanbanPanel) SetTasks(tasks []KanbanTask, err string) {
 	p.fetchedAt = time.Now()
 }
 
-// FetchTasks spawns `hermes kanban list --status running,blocked --json` and
-// returns a KanbanFetchDoneMsg via a Bubble Tea command.
+// FetchKanbanTasks fetches running and blocked Hermes Kanban tasks.
+// hermes --status only accepts one value, so we fetch all tasks and filter.
 func FetchKanbanTasks() ([]KanbanTask, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "hermes", "kanban", "list",
-		"--status", "running,blocked", "--json").Output()
+	out, err := exec.CommandContext(ctx, "hermes", "kanban", "list", "--json").Output()
 	if err != nil {
 		return nil, err
 	}
 
-	var tasks []KanbanTask
-	if err := json.Unmarshal(out, &tasks); err != nil {
+	var all []KanbanTask
+	if err := json.Unmarshal(out, &all); err != nil {
 		return nil, err
+	}
+
+	var tasks []KanbanTask
+	for _, t := range all {
+		if t.Status == "running" || t.Status == "claimed" || t.Status == "blocked" {
+			tasks = append(tasks, t)
+		}
 	}
 	return tasks, nil
 }
