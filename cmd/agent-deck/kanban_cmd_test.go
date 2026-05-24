@@ -204,6 +204,42 @@ func TestExtractKanbanStatusFlag_Empty(t *testing.T) {
 	}
 }
 
+// TestExtractKanbanProfileFlag_NextArgIsFlag verifies that a following flag is not consumed as the value.
+func TestExtractKanbanProfileFlag_NextArgIsFlag(t *testing.T) {
+	args := []string{"--profile", "--status", "blocked"}
+	remaining, profileVal := extractKanbanProfileFlag(args)
+	if profileVal != "" {
+		t.Errorf("profile should be empty when next arg is a flag, got %q", profileVal)
+	}
+	if len(remaining) != 2 || remaining[0] != "--status" || remaining[1] != "blocked" {
+		t.Errorf("remaining = %v, want [--status blocked]", remaining)
+	}
+}
+
+// TestExtractKanbanStatusFlag_NextArgIsFlag verifies that a following flag is not consumed as the value.
+func TestExtractKanbanStatusFlag_NextArgIsFlag(t *testing.T) {
+	args := []string{"--status", "--other", "val"}
+	remaining, status := extractKanbanStatusFlag(args)
+	if status != "" {
+		t.Errorf("status should be empty when next arg is a flag, got %q", status)
+	}
+	if len(remaining) != 2 || remaining[0] != "--other" || remaining[1] != "val" {
+		t.Errorf("remaining = %v, want [--other val]", remaining)
+	}
+}
+
+// TestExtractKanbanSessionFlag_NextArgIsFlag verifies that a following flag is not consumed as the value.
+func TestExtractKanbanSessionFlag_NextArgIsFlag(t *testing.T) {
+	args := []string{"Title", "--session", "--body", "desc"}
+	remaining, sessionVal := extractKanbanSessionFlag(args)
+	if sessionVal != "" {
+		t.Errorf("session should be empty when next arg is a flag, got %q", sessionVal)
+	}
+	if len(remaining) != 3 {
+		t.Errorf("remaining = %v, want [Title --body desc]", remaining)
+	}
+}
+
 // TestExtractKanbanSessionFlag checks --session extraction.
 func TestExtractKanbanSessionFlag(t *testing.T) {
 	args := []string{"My Title", "--session", "my-session", "--body", "desc"}

@@ -242,7 +242,7 @@ func extractKanbanProfileFlag(args []string) ([]string, string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-p" || arg == "--profile" {
-			if i+1 < len(args) && args[i+1] != "" {
+			if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
 				profileVal = args[i+1]
 				i++
 			} else {
@@ -280,7 +280,7 @@ func extractKanbanStatusFlag(args []string) ([]string, string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--status" {
-			if i+1 < len(args) && args[i+1] != "" {
+			if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
 				statuses = append(statuses, args[i+1])
 				i++
 			} else {
@@ -308,7 +308,7 @@ func extractKanbanSessionFlag(args []string) ([]string, string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--session" {
-			if i+1 < len(args) && args[i+1] != "" {
+			if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
 				sessionVal = args[i+1]
 				i++
 			} else {
