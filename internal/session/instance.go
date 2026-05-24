@@ -3413,6 +3413,11 @@ func (i *Instance) UpdateStatus() error {
 					i.mu.Unlock()
 					reachable := IsHermesGatewayReachable(gatewayURL)
 					i.mu.Lock()
+					// Mirror the stale-stop guard from the tmux path: a concurrent
+					// Kill() may have published StatusStopped while we were unlocked.
+					if i.Status == StatusStopped {
+						return nil
+					}
 					i.hermesGatewayCheckedAt = time.Now()
 					i.hermesGatewayOK = reachable
 				}

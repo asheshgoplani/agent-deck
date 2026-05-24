@@ -175,14 +175,21 @@ func (w *KanbanWatcher) reconnectLoop() {
 		default:
 		}
 
-		err := w.runSession()
+		established, err := w.runSession()
 		if err == nil {
 			// Clean disconnect (Stop called); exit without retrying.
 			return
 		}
-		// If we had a healthy session (seeded successfully), reset backoff so
-		// transient disconnects don't incur the full exponential penalty.
-		if w.IsHealthy() {
+
+		// Clear health so GetHermesKanbanCounts falls back to CLI polling
+		// until the next successful seed — prevents serving stale watcher data.
+		w.mu.Lock()
+		w.seedOK = false
+		w.mu.Unlock()
+
+		// Reset backoff only when this session was fully established (past WS
+		// dial). A failed seed or dial should keep accumulating backoff.
+		if established {
 			backoff = kanbanInitialBackoff
 		}
 		kanbanLog.Debug("kanban_watcher_disconnected",
@@ -204,7 +211,9 @@ func (w *KanbanWatcher) reconnectLoop() {
 }
 
 // runSession connects, seeds counts, reads events, returns on disconnect or error.
-func (w *KanbanWatcher) runSession() error {
+// established is true when the WebSocket connection was successfully opened;
+// callers use this to decide whether to reset reconnect backoff.
+func (w *KanbanWatcher) runSession() (established bool, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -218,10 +227,9 @@ func (w *KanbanWatcher) runSession() error {
 	}()
 
 	// Seed initial counts and per-task statuses via HTTP board endpoint.
-	// Clear stale task statuses from any previous connection before applying fresh seed.
 	running, blocked, statuses, err := w.seedCounts(ctx)
 	if err != nil {
-		return fmt.Errorf("seed counts: %w", err)
+		return false, fmt.Errorf("seed counts: %w", err)
 	}
 	w.mu.Lock()
 	w.seedOK = true
@@ -243,11 +251,10 @@ func (w *KanbanWatcher) runSession() error {
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
-		return fmt.Errorf("websocket dial: %w", err)
+		return false, fmt.Errorf("websocket dial: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Reset backoff on success
 	kanbanLog.Debug("kanban_watcher_connected", slog.String("url", wsURL))
 
 	readDone := make(chan error, 1)
@@ -258,9 +265,9 @@ func (w *KanbanWatcher) runSession() error {
 	select {
 	case <-w.stopCh:
 		_ = conn.Close()
-		return nil
+		return true, nil
 	case err := <-readDone:
-		return err
+		return true, err
 	}
 }
 
@@ -348,37 +355,77 @@ func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 	running := w.running
 	blocked := w.blocked
 
+	// prev is the task's current tracked status (empty if unseen/terminal).
+	prev := w.taskStatuses[evt.TaskID]
+
 	switch evt.Kind {
 	case "claimed":
-		running++
-		if evt.TaskID != "" {
+		// Only count if the task wasn't already tracked as active — prevents
+		// double-counting if a claimed event is delivered after a reconnect seed.
+		if prev == "" && evt.TaskID != "" {
+			running++
 			w.taskStatuses[evt.TaskID] = "running"
-		}
-	case "completed", "archived":
-		if running > 0 {
-			running--
-		}
-		if evt.TaskID != "" {
-			delete(w.taskStatuses, evt.TaskID)
+		} else if evt.TaskID == "" {
+			running++
 		}
 	case "blocked":
-		blocked++
 		if evt.TaskID != "" {
+			switch prev {
+			case "running":
+				// Transition running→blocked: swap counters.
+				if running > 0 {
+					running--
+				}
+				blocked++
+			case "blocked":
+				// Already blocked — no-op on counts.
+			default:
+				// Newly blocked (unseen task).
+				blocked++
+			}
 			w.taskStatuses[evt.TaskID] = "blocked"
+		} else {
+			blocked++
 		}
 	case "unblocked":
-		if blocked > 0 {
-			blocked--
-		}
 		if evt.TaskID != "" {
-			w.taskStatuses[evt.TaskID] = "running"
+			switch prev {
+			case "blocked":
+				// Transition blocked→running: swap counters.
+				if blocked > 0 {
+					blocked--
+				}
+				running++
+				w.taskStatuses[evt.TaskID] = "running"
+			// "running" or "" — no prior blocked state to transition from; ignore.
+			// An unseen task appearing as "unblocked" is a stale or out-of-order
+			// event; the seed would have captured its current state already.
+			}
+		} else {
+			// No task ID: trust the event and swap counters best-effort.
+			if blocked > 0 {
+				blocked--
+			}
+			running++
 		}
-	case "reclaimed", "crashed", "timed_out":
-		if running > 0 {
-			running--
-		}
+	case "completed", "archived", "reclaimed", "crashed", "timed_out":
 		if evt.TaskID != "" {
+			switch prev {
+			case "running":
+				if running > 0 {
+					running--
+				}
+			case "blocked":
+				if blocked > 0 {
+					blocked--
+				}
+			}
 			delete(w.taskStatuses, evt.TaskID)
+		} else {
+			// No task ID — best-effort decrement running.
+			if running > 0 {
+				running--
+			}
 		}
 	}
 

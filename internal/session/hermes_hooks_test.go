@@ -218,8 +218,10 @@ func TestRemoveHermesHooks_FilePermissions(t *testing.T) {
 	// File still exists (user hooks may have been kept); permissions must be 0600.
 	info, err := os.Stat(filepath.Join(dir, "config.yaml"))
 	if err != nil {
-		// File was removed entirely — nothing to check.
-		return
+		if os.IsNotExist(err) {
+			return // file removed entirely — nothing to check
+		}
+		t.Fatalf("stat config.yaml: %v", err)
 	}
 	if perm := info.Mode().Perm(); perm != 0600 {
 		t.Errorf("config.yaml permissions after remove = %04o, want 0600", perm)

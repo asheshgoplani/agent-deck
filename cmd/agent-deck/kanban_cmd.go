@@ -270,14 +270,20 @@ func extractKanbanStatusFlag(args []string) ([]string, string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--status" {
-			if i+1 < len(args) {
+			if i+1 < len(args) && args[i+1] != "" {
 				statuses = append(statuses, args[i+1])
 				i++
+			} else {
+				fmt.Fprintln(os.Stderr, "warning: --status requires a non-empty value; flag ignored")
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--status=") {
-			statuses = append(statuses, strings.TrimPrefix(arg, "--status="))
+			if val := strings.TrimPrefix(arg, "--status="); val != "" {
+				statuses = append(statuses, val)
+			} else {
+				fmt.Fprintln(os.Stderr, "warning: --status= requires a non-empty value; flag ignored")
+			}
 			continue
 		}
 		remaining = append(remaining, arg)

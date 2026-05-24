@@ -729,9 +729,13 @@ type attachReturnRefreshMsg struct{}
 // storageChangedMsg signals that state.db was modified externally
 type storageChangedMsg struct{}
 
-// kanbanCountsChangedMsg is sent by the Hermes KanbanWatcher when running or
-// blocked task counts change, or when the CLI poll ticker fires. Triggers re-render.
+// kanbanCountsChangedMsg is sent by the CLI poll ticker when it finishes a refresh.
+// Only this message re-arms the next kanbanPollCmd tick.
 type kanbanCountsChangedMsg struct{}
+
+// kanbanWatcherChangedMsg is sent by the WebSocket KanbanWatcher when counts change.
+// It only re-arms the watcher listener — it does NOT spawn an extra poll timer.
+type kanbanWatcherChangedMsg struct{}
 
 // kanbanPollInterval is how often agent-deck re-polls kanban CLI when the
 // WebSocket watcher is unavailable or unhealthy.
@@ -2122,8 +2126,10 @@ func listenForThemeChange(tw *ThemeWatcher) tea.Cmd {
 }
 
 // listenForKanbanUpdates blocks until the KanbanWatcher notifies a count change,
-// then returns a kanbanCountsChangedMsg. Must be re-issued in the Update handler
+// then returns a kanbanWatcherChangedMsg. Must be re-issued in the Update handler
 // after each message to keep listening (Bubble Tea cmd pattern).
+// Intentionally returns kanbanWatcherChangedMsg (not kanbanCountsChangedMsg) so
+// watcher events do not spawn additional CLI poll timers.
 func listenForKanbanUpdates(kw *session.KanbanWatcher) tea.Cmd {
 	if kw == nil {
 		return nil
@@ -2134,7 +2140,7 @@ func listenForKanbanUpdates(kw *session.KanbanWatcher) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return kanbanCountsChangedMsg{}
+		return kanbanWatcherChangedMsg{}
 	}
 }
 
@@ -4640,8 +4646,18 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case kanbanWatcherChangedMsg:
+		// WebSocket watcher fired — re-render and re-arm listener only.
+		// Do NOT re-arm kanbanPollCmd here; that would stack extra timers on
+		// every live badge update.
+		if h.kanbanWatcher != nil {
+			return h, listenForKanbanUpdates(h.kanbanWatcher)
+		}
+		return h, nil
+
 	case kanbanCountsChangedMsg:
-		// Kanban counts changed — re-render badge and re-register listeners.
+		// CLI poll tick fired — re-render badge and re-arm the next tick.
+		// Also re-arm the watcher listener in case it was not yet running.
 		var cmds []tea.Cmd
 		if h.kanbanWatcher != nil {
 			cmds = append(cmds, listenForKanbanUpdates(h.kanbanWatcher))
@@ -6050,7 +6066,8 @@ func (h *Home) hasModalVisible() bool {
 		h.geminiModelDialog.IsVisible() || h.sessionPickerDialog.IsVisible() ||
 		h.worktreeFinishDialog.IsVisible() || h.editPathsDialog.IsVisible() ||
 		h.editSessionDialog.IsVisible() ||
-		h.zoxidePicker.IsVisible()
+		h.zoxidePicker.IsVisible() ||
+		h.kanbanPanel.IsVisible()
 }
 
 // markNavigationAndFetchPreview sets navigation tracking state and returns a debounced preview command

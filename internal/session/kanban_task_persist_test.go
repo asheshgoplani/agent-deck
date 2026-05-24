@@ -31,9 +31,11 @@ func TestWriteKanbanTaskIDToToolData_EmptyRemovesKey(t *testing.T) {
 	if got := session.ReadKanbanTaskIDFromToolData(td); got != "" {
 		t.Errorf("expected empty after removal, got %q", got)
 	}
-	// The key must be absent from the JSON, not just set to "".
+	// The key must be absent from valid JSON output.
 	var m map[string]json.RawMessage
-	_ = json.Unmarshal(td, &m)
+	if err := json.Unmarshal(td, &m); err != nil {
+		t.Fatalf("result is not valid JSON after removal: %v", err)
+	}
 	if _, ok := m["kanban_task_id"]; ok {
 		t.Error("kanban_task_id key still present after removal")
 	}

@@ -55,19 +55,25 @@ func TestKanbanWatcher_SubscribeNotifies(t *testing.T) {
 }
 
 // TestKanbanWatcher_SubscribeNoNotifyOnNoChange verifies that applying an event
-// that does not change counts (e.g. unblocked when blocked=0) does not notify.
+// that does not change counts does not notify.
+// "unblocked" for a task with no prior tracked state is a stale/out-of-order
+// event — we have no proof it was blocked, so counts must not change.
 func TestKanbanWatcher_SubscribeNoNotifyOnNoChange(t *testing.T) {
 	w := NewKanbanWatcher("http://127.0.0.1:0")
 	ch := w.Subscribe()
 
-	// "unblocked" with blocked=0 should be a no-op and not notify.
+	// "unblocked" for an unseen task — must be a no-op.
 	w.applyEvent(kanbanEvent{ID: 1, Kind: "unblocked", TaskID: "task-1"})
 
 	select {
 	case <-ch:
-		t.Error("received unexpected notification when counts did not change")
+		t.Error("received unexpected notification: unblocked for unseen task should be a no-op")
 	case <-time.After(50 * time.Millisecond):
 		// good — no spurious notification
+	}
+	running, blocked := w.Counts()
+	if running != 0 || blocked != 0 {
+		t.Errorf("counts after unseen-task unblocked: running=%d blocked=%d, want 0 0", running, blocked)
 	}
 }
 
@@ -102,14 +108,17 @@ func TestKanbanWatcher_ApplyEventBlocked(t *testing.T) {
 	}
 }
 
-// TestKanbanWatcher_ApplyEventUnblocked verifies blocked decrements on "unblocked".
+// TestKanbanWatcher_ApplyEventUnblocked verifies that blocked→running transition
+// correctly swaps counters. After blocked+unblocked the task is running (not gone).
 func TestKanbanWatcher_ApplyEventUnblocked(t *testing.T) {
 	w := NewKanbanWatcher("http://127.0.0.1:0")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "unblocked"})
+	// Use a task ID so state is tracked. No-ID path uses best-effort swap.
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_x"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "t_x"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: "unblocked", TaskID: "t_x"})
 	running, blocked := w.Counts()
-	if running != 0 || blocked != 0 {
-		t.Errorf("after blocked+unblocked: running=%d blocked=%d, want 0 0", running, blocked)
+	if running != 1 || blocked != 0 {
+		t.Errorf("after claimed+blocked+unblocked: running=%d blocked=%d, want 1 0", running, blocked)
 	}
 }
 
@@ -278,6 +287,45 @@ func TestKanbanWatcher_TaskStatus_UnknownTask(t *testing.T) {
 	w := NewKanbanWatcher("http://127.0.0.1:0")
 	if got := w.TaskStatus("t_nonexistent"); got != "" {
 		t.Errorf("TaskStatus(t_nonexistent) = %q, want empty", got)
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_RunningToBlocked verifies that a running→blocked
+// transition decrements running AND increments blocked (not just increments blocked).
+// Without state reconciliation this test fails: running stays at 1, blocked hits 1.
+func TestKanbanWatcher_ApplyEvent_RunningToBlocked(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_x"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "t_x"})
+	running, blocked := w.Counts()
+	if running != 0 || blocked != 1 {
+		t.Errorf("after claimed+blocked: running=%d blocked=%d, want 0 1", running, blocked)
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_BlockedToCompleted verifies that completing a blocked
+// task decrements blocked (not running). Without reconciliation this decrements running.
+func TestKanbanWatcher_ApplyEvent_BlockedToCompleted(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_x"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "t_x"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: "completed", TaskID: "t_x"})
+	running, blocked := w.Counts()
+	if running != 0 || blocked != 0 {
+		t.Errorf("after claimed+blocked+completed: running=%d blocked=%d, want 0 0", running, blocked)
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_DoubleClaimed verifies that a duplicate claimed
+// event for a tracked task does not double-count the running counter.
+func TestKanbanWatcher_ApplyEvent_DoubleClaimed(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_x"})
+	// Duplicate claimed with different ID (passed the ID dedup filter)
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "claimed", TaskID: "t_x"})
+	running, _ := w.Counts()
+	if running != 1 {
+		t.Errorf("after double-claimed: running=%d, want 1 (no double-count)", running)
 	}
 }
 

@@ -1661,6 +1661,7 @@ async def kanban_watch_loop(
                     await asyncio.wait_for(proc.wait(), timeout=3)
                 except Exception:
                     proc.kill()
+                    await proc.wait()
             return
         except Exception as exc:
             log.warning("kanban_watch_loop: error: %s — retrying in %ds", exc, backoff)
