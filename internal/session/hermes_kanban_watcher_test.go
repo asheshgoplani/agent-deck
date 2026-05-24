@@ -280,3 +280,62 @@ func TestKanbanWatcher_TaskStatus_UnknownTask(t *testing.T) {
 		t.Errorf("TaskStatus(t_nonexistent) = %q, want empty", got)
 	}
 }
+
+// TestKanbanWatcher_StartIsIdempotent verifies that calling Start() multiple times
+// does not launch extra goroutines (the reconnect loop must start exactly once).
+// We stop the watcher immediately and verify no panic or deadlock occurs.
+func TestKanbanWatcher_StartIsIdempotent(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.Stop() // pre-stop so reconnectLoop exits immediately when started
+	w.Start()
+	w.Start() // second call must be a no-op
+	w.Start() // third call must be a no-op
+	// If two goroutines were started, both would race to read stopCh.
+	// This test primarily guards against panics; the sync.Once ensures correctness.
+}
+
+// TestKanbanWatcher_ApplyEvent_SkipsDuplicate verifies that replayed events
+// with the same ID are ignored and do not increment counts twice.
+// Before the fix, replaying an event with id=1 would double-count it.
+func TestKanbanWatcher_ApplyEvent_SkipsDuplicate(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_abc"})
+	running, _ := w.Counts()
+	if running != 1 {
+		t.Fatalf("after first claimed: running=%d, want 1", running)
+	}
+
+	// Replay the same event — must be a no-op.
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_abc"})
+	running, _ = w.Counts()
+	if running != 1 {
+		t.Errorf("after replayed claimed (same ID): running=%d, want 1 (no double-count)", running)
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_SkipsOlderID verifies that an event with a lower
+// ID than lastEventID is dropped, preventing out-of-order replay drift.
+func TestKanbanWatcher_ApplyEvent_SkipsOlderID(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+
+	w.applyEvent(kanbanEvent{ID: 5, Kind: "claimed", TaskID: "t_abc"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: "claimed", TaskID: "t_def"}) // older — must be skipped
+	running, _ := w.Counts()
+	if running != 1 {
+		t.Errorf("after older event replay: running=%d, want 1", running)
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_ZeroIDNotSkipped verifies that events with ID=0
+// (no sequence number) are always applied regardless of lastEventID.
+func TestKanbanWatcher_ApplyEvent_ZeroIDNotSkipped(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+
+	w.applyEvent(kanbanEvent{ID: 5, Kind: "claimed", TaskID: "t_abc"})
+	w.applyEvent(kanbanEvent{ID: 0, Kind: "claimed", TaskID: "t_def"}) // ID=0 means no sequencing
+	running, _ := w.Counts()
+	if running != 2 {
+		t.Errorf("after ID=0 event: running=%d, want 2", running)
+	}
+}

@@ -117,7 +117,7 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 	// Inject HERMES_KANBAN_TASK when this session is linked to a specific task.
 	// This causes Hermes to inject kanban_show/complete/block/heartbeat as tools.
 	if i.KanbanTaskID != "" {
-		cmd = "HERMES_KANBAN_TASK=" + i.KanbanTaskID + " " + cmd
+		cmd = "HERMES_KANBAN_TASK=" + shellQuote(i.KanbanTaskID) + " " + cmd
 	}
 
 	return envPrefix + cmd

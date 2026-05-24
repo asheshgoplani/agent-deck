@@ -261,26 +261,28 @@ func extractKanbanProfileFlag(args []string) ([]string, string) {
 	return remaining, profileVal
 }
 
-// extractKanbanStatusFlag removes --status <value> from args.
+// extractKanbanStatusFlag removes all --status <value> occurrences from args and
+// returns the remaining args along with a comma-joined string of all status values.
+// Multiple --status flags (e.g. --status running --status blocked) are supported.
 func extractKanbanStatusFlag(args []string) ([]string, string) {
 	var remaining []string
-	var statusVal string
+	var statuses []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--status" {
 			if i+1 < len(args) {
-				statusVal = args[i+1]
+				statuses = append(statuses, args[i+1])
 				i++
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--status=") {
-			statusVal = strings.TrimPrefix(arg, "--status=")
+			statuses = append(statuses, strings.TrimPrefix(arg, "--status="))
 			continue
 		}
 		remaining = append(remaining, arg)
 	}
-	return remaining, statusVal
+	return remaining, strings.Join(statuses, ",")
 }
 
 // extractKanbanSessionFlag removes --session <value> from args.

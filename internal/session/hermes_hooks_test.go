@@ -190,3 +190,38 @@ func TestGetHermesConfigDir_ReturnsPath(t *testing.T) {
 		t.Errorf("expected .hermes in path, got %q", dir)
 	}
 }
+
+func TestInjectHermesHooks_FilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := session.InjectHermesHooks(dir); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("stat config.yaml: %v", err)
+	}
+	// Config contains secrets (model keys, hook commands) — must not be world-readable.
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("config.yaml permissions = %04o, want 0600", perm)
+	}
+}
+
+func TestRemoveHermesHooks_FilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := session.InjectHermesHooks(dir); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	if _, err := session.RemoveHermesHooks(dir); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	// File still exists (user hooks may have been kept); permissions must be 0600.
+	info, err := os.Stat(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		// File was removed entirely — nothing to check.
+		return
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("config.yaml permissions after remove = %04o, want 0600", perm)
+	}
+}

@@ -615,7 +615,7 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 	} else if info, err := os.Lstat(targetPath); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		// No custom path - write default template (but preserve existing symlink)
 		var perNameTemplate string
-		if agent == ConductorAgentHermes {
+		if spec.Agent == ConductorAgentHermes {
 			perNameTemplate = conductorPerNameHermesMDTemplate
 		} else {
 			perNameTemplate = conductorPerNameClaudeMDTemplate

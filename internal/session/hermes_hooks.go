@@ -70,7 +70,7 @@ func InjectHermesHooks(configDir string) (bool, error) {
 	}
 
 	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
 		return false, fmt.Errorf("write config.yaml.tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, configPath); err != nil {
@@ -150,7 +150,7 @@ func RemoveHermesHooks(configDir string) (bool, error) {
 	}
 
 	tmpPath := configPath + ".tmp"
-	if err := os.WriteFile(tmpPath, out, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
 		return false, fmt.Errorf("write config.yaml.tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, configPath); err != nil {

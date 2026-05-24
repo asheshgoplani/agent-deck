@@ -3234,7 +3234,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
+			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
@@ -3853,6 +3853,14 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			if h.newDialog.IsVisible() || h.forkDialog.IsVisible() {
+				return h, nil
+			}
+			if h.kanbanPanel.IsVisible() {
+				if msg.Button == tea.MouseButtonWheelUp {
+					h.kanbanPanel.MoveUp()
+				} else {
+					h.kanbanPanel.MoveDown()
+				}
 				return h, nil
 			}
 			// Preview pane scroll (#574): when the wheel event lands in the
@@ -14908,13 +14916,39 @@ func (h *Home) finishWorktree(inst *session.Instance, sessionID, sessionTitle, b
 // moves the list cursor to it, and hides the kanban panel.
 // If no session is linked, the panel stays open with no change.
 func (h *Home) jumpToKanbanSession(taskID string) {
+	// Fast path: session visible in current flat list.
 	for i, item := range h.flatItems {
 		if item.Session != nil && item.Session.KanbanTaskID == taskID {
 			h.cursor = i
+			h.syncViewport()
 			h.kanbanPanel.Hide()
 			return
 		}
 	}
+	// Slow path: session may be in a collapsed group — expand and retry.
+	h.instancesMu.RLock()
+	for _, inst := range h.instances {
+		if inst.KanbanTaskID != taskID {
+			continue
+		}
+		groupPath := inst.GroupPath
+		h.instancesMu.RUnlock()
+		if groupPath != "" && h.groupTree != nil {
+			h.groupTree.ExpandGroupWithParents(groupPath)
+			h.rebuildFlatItems()
+			for i, item := range h.flatItems {
+				if item.Session != nil && item.Session.KanbanTaskID == taskID {
+					h.cursor = i
+					h.syncViewport()
+					h.kanbanPanel.Hide()
+					return
+				}
+			}
+		}
+		h.kanbanPanel.SetNotice("no linked session — use 'agent-deck kanban attach'")
+		return
+	}
+	h.instancesMu.RUnlock()
 	h.kanbanPanel.SetNotice("no linked session — use 'agent-deck kanban attach'")
 }
 

@@ -40,6 +40,7 @@ func printHermesHooksUsage(w io.Writer) {
 	fmt.Fprintln(w, "  install      Install agent-deck Hermes hooks")
 	fmt.Fprintln(w, "  uninstall    Remove agent-deck Hermes hooks")
 	fmt.Fprintln(w, "  status       Show Hermes hooks install status")
+	fmt.Fprintln(w, "  help         Show this help message")
 }
 
 func handleHermesHooksInstall() {

@@ -138,9 +138,9 @@ func TestExtractKanbanProfileFlag(t *testing.T) {
 	if profile != "myprofile" {
 		t.Errorf("profile = %q, want %q", profile, "myprofile")
 	}
-	if len(remaining) != 2 || remaining[0] != "--status" || remaining[1] != "done" {
-		// "extra" should also be in remaining
-		t.Logf("remaining = %v", remaining)
+	// remaining must be ["--status", "done", "extra"] — 3 args, not 2
+	if len(remaining) != 3 || remaining[0] != "--status" || remaining[1] != "done" || remaining[2] != "extra" {
+		t.Fatalf("remaining = %v, want [--status done extra]", remaining)
 	}
 	// Must not contain -p or myprofile
 	for _, r := range remaining {
@@ -161,6 +161,46 @@ func TestExtractKanbanStatusFlag(t *testing.T) {
 		if r == "--status" || r == "done,running" {
 			t.Errorf("remaining still contains status flag/value: %v", remaining)
 		}
+	}
+}
+
+// TestExtractKanbanStatusFlag_MultipleFlags verifies that multiple --status flags
+// are all collected and joined. With the old single-value implementation this test
+// would fail because the second flag overwrote the first.
+func TestExtractKanbanStatusFlag_MultipleFlags(t *testing.T) {
+	args := []string{"--status", "running", "--status", "blocked", "--other", "val"}
+	remaining, status := extractKanbanStatusFlag(args)
+	if status != "running,blocked" {
+		t.Errorf("status = %q, want %q", status, "running,blocked")
+	}
+	for _, r := range remaining {
+		if r == "--status" || r == "running" || r == "blocked" {
+			t.Errorf("remaining still contains status flag/value: %v", remaining)
+		}
+	}
+	if len(remaining) != 2 {
+		t.Errorf("expected 2 remaining args, got %d: %v", len(remaining), remaining)
+	}
+}
+
+// TestExtractKanbanStatusFlag_EqualForm verifies --status=value syntax with multiple flags.
+func TestExtractKanbanStatusFlag_EqualForm(t *testing.T) {
+	args := []string{"--status=running", "--status=blocked"}
+	_, status := extractKanbanStatusFlag(args)
+	if status != "running,blocked" {
+		t.Errorf("status = %q, want %q", status, "running,blocked")
+	}
+}
+
+// TestExtractKanbanStatusFlag_Empty verifies no --status flag returns empty string.
+func TestExtractKanbanStatusFlag_Empty(t *testing.T) {
+	args := []string{"--other", "val"}
+	remaining, status := extractKanbanStatusFlag(args)
+	if status != "" {
+		t.Errorf("expected empty status, got %q", status)
+	}
+	if len(remaining) != 2 {
+		t.Errorf("expected 2 remaining args, got %d", len(remaining))
 	}
 }
 

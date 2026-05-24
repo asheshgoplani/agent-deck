@@ -9,7 +9,9 @@ const toolDataKanbanTaskIDKey = "kanban_task_id"
 func WriteKanbanTaskIDToToolData(td json.RawMessage, taskID string) json.RawMessage {
 	m := map[string]json.RawMessage{}
 	if len(td) > 0 {
-		_ = json.Unmarshal(td, &m)
+		if err := json.Unmarshal(td, &m); err != nil {
+			return td
+		}
 	}
 	if taskID != "" {
 		raw, _ := json.Marshal(taskID)

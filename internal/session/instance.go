@@ -3403,6 +3403,24 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		}
+		// A1: For Hermes, run the gateway reachability check even on the fast path.
+		// Without this, a dead gateway can still report running/waiting for the full
+		// hook freshness window because the check at line ~3453 is skipped.
+		if i.Tool == "hermes" && (i.Status == StatusRunning || i.Status == StatusWaiting) {
+			if config, _ := LoadUserConfig(); config != nil && config.Hermes.GatewayURL != "" {
+				gatewayURL := config.Hermes.GatewayURL
+				if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+					i.mu.Unlock()
+					reachable := IsHermesGatewayReachable(gatewayURL)
+					i.mu.Lock()
+					i.hermesGatewayCheckedAt = time.Now()
+					i.hermesGatewayOK = reachable
+				}
+				if !i.hermesGatewayOK {
+					i.Status = StatusError
+				}
+			}
+		}
 		return nil
 	}
 
@@ -3451,9 +3469,15 @@ func (i *Instance) UpdateStatus() error {
 		if config, _ := LoadUserConfig(); config != nil && config.Hermes.GatewayURL != "" {
 			gatewayURL := config.Hermes.GatewayURL
 			if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+				// A2: A concurrent Kill() may publish StatusStopped while we are
+				// unlocked for the HTTP probe; re-check after reacquiring the lock
+				// and skip the write to avoid clobbering the stop.
 				i.mu.Unlock()
 				reachable := IsHermesGatewayReachable(gatewayURL)
 				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
 				i.hermesGatewayCheckedAt = time.Now()
 				i.hermesGatewayOK = reachable
 			}

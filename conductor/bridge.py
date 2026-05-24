@@ -1617,6 +1617,7 @@ async def kanban_watch_loop(
 
     backoff = 5
     max_backoff = 120
+    proc = None
 
     log.info("kanban_watch_loop: starting")
     while True:
@@ -1654,6 +1655,12 @@ async def kanban_watch_loop(
 
         except asyncio.CancelledError:
             log.info("kanban_watch_loop: cancelled")
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.terminate()
+                    await asyncio.wait_for(proc.wait(), timeout=3)
+                except Exception:
+                    proc.kill()
             return
         except Exception as exc:
             log.warning("kanban_watch_loop: error: %s — retrying in %ds", exc, backoff)

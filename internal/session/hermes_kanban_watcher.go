@@ -55,10 +55,11 @@ type KanbanWatcher struct {
 
 	lastEventID int64
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	subsMu   sync.Mutex
-	subs     []chan struct{}
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
+	subsMu    sync.Mutex
+	subs      []chan struct{}
 }
 
 // NewKanbanWatcher creates a new KanbanWatcher for the given gateway URL.
@@ -72,9 +73,11 @@ func NewKanbanWatcher(gatewayURL string) *KanbanWatcher {
 	}
 }
 
-// Start runs the reconnect loop in a goroutine. Safe to call once.
+// Start runs the reconnect loop in a goroutine. Idempotent — safe to call multiple times.
 func (w *KanbanWatcher) Start() {
-	go w.reconnectLoop()
+	w.startOnce.Do(func() {
+		go w.reconnectLoop()
+	})
 }
 
 // Stop signals the watcher to stop. Idempotent.
@@ -173,12 +176,19 @@ func (w *KanbanWatcher) reconnectLoop() {
 		}
 
 		err := w.runSession()
-		if err != nil {
-			kanbanLog.Debug("kanban_watcher_disconnected",
-				slog.String("error", err.Error()),
-				slog.Duration("backoff", backoff),
-			)
+		if err == nil {
+			// Clean disconnect (Stop called); exit without retrying.
+			return
 		}
+		// If we had a healthy session (seeded successfully), reset backoff so
+		// transient disconnects don't incur the full exponential penalty.
+		if w.IsHealthy() {
+			backoff = kanbanInitialBackoff
+		}
+		kanbanLog.Debug("kanban_watcher_disconnected",
+			slog.String("error", err.Error()),
+			slog.Duration("backoff", backoff),
+		)
 
 		// Exponential backoff before retry
 		select {
@@ -327,6 +337,14 @@ func (w *KanbanWatcher) readEvents(conn *websocket.Conn) error {
 // applyEvent updates in-memory counts and per-task status based on the event kind.
 func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 	w.mu.Lock()
+
+	// Skip replayed/duplicate events to prevent count drift.
+	// The ?since= query param reduces duplicates but does not eliminate them.
+	if evt.ID > 0 && evt.ID <= w.lastEventID {
+		w.mu.Unlock()
+		return
+	}
+
 	running := w.running
 	blocked := w.blocked
 
