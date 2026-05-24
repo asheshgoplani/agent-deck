@@ -70,6 +70,13 @@ func printKanbanHelp() {
 	fmt.Println("  attach <session-id-or-title> <task-id>")
 	fmt.Println("                          Link an existing session to a task")
 	fmt.Println()
+	fmt.Println("Flag forms:")
+	fmt.Println("  --status accepts both space-separated repeats (--status running --status blocked)")
+	fmt.Println("           and the equals form (--status=running).")
+	fmt.Println("  -p / --profile is accepted on every verb but has no effect (kanban is global).")
+	fmt.Println("  --session is meaningful only for 'create'; on other verbs it is stripped with a note.")
+	fmt.Println("  Any unrecognised flags pass through to hermes verbatim (e.g. --json on 'list').")
+	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  agent-deck kanban list")
 	fmt.Println("  agent-deck kanban list --status done")
@@ -178,15 +185,28 @@ func handleKanbanCreate(args []string) {
 	attachSession(sessionID, taskID)
 }
 
+// parseKanbanAttachArgs validates and extracts session and task IDs from attach
+// args. Returned as a pure helper so the validation logic is testable without
+// forking a subprocess or capturing os.Exit.
+func parseKanbanAttachArgs(args []string) (sessionID, taskID string, err error) {
+	if len(args) < 2 {
+		return "", "", fmt.Errorf("kanban attach requires <session-id-or-title> and <task-id>")
+	}
+	if args[0] == "" || args[1] == "" {
+		return "", "", fmt.Errorf("kanban attach session and task IDs must be non-empty")
+	}
+	return args[0], args[1], nil
+}
+
 // handleKanbanAttach links an existing agent-deck session to a Kanban task.
 // Usage: attach <session-id-or-title> <task-id>
 func handleKanbanAttach(args []string) {
-	if len(args) < 2 {
+	sessionID, taskID, err := parseKanbanAttachArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck kanban attach <session-id-or-title> <task-id>")
 		os.Exit(1)
 	}
-	sessionID := args[0]
-	taskID := args[1]
 	attachSession(sessionID, taskID)
 }
 

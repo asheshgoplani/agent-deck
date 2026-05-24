@@ -5,76 +5,35 @@ import (
 	"testing"
 )
 
-// TestKanbanAttach_MissingArgs verifies that `kanban attach` with no arguments
-// prints usage to stderr and exits (without panicking) when args are missing.
-func TestKanbanAttach_MissingArgs(t *testing.T) {
-	// Capture any panic — the function must not panic.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("handleKanbanAttach panicked: %v", r)
-		}
-	}()
-
-	// handleKanbanAttach calls os.Exit(1) when args are missing.
-	// We use the table-test helper instead of spawning a subprocess so the test
-	// stays fast and does not require the hermes binary.  We verify the guard
-	// condition directly.
-	args := []string{}
-	if len(args) >= 2 {
-		t.Fatal("precondition: args should be empty for this test")
+// TestParseKanbanAttachArgs covers the validator that handleKanbanAttach uses
+// before exiting on bad input. Tests the real production logic; the os.Exit
+// shell on top of this is too thin to need its own test.
+func TestParseKanbanAttachArgs(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr bool
+	}{
+		{name: "empty", args: []string{}, wantErr: true},
+		{name: "one arg", args: []string{"sess"}, wantErr: true},
+		{name: "empty session", args: []string{"", "TASK-1"}, wantErr: true},
+		{name: "empty task", args: []string{"sess", ""}, wantErr: true},
+		{name: "valid", args: []string{"sess", "TASK-1"}, wantErr: false},
+		{name: "extra args ignored", args: []string{"sess", "TASK-1", "extra"}, wantErr: false},
 	}
-	// The real function would call os.Exit; we test only the guard condition.
-	if len(args) < 2 {
-		// This is the expected branch — no panic, just an early return.
-		return
-	}
-	t.Fatal("should have returned early")
-}
-
-// TestKanbanSubcommandDispatch verifies that each kanban subcommand name maps
-// to the expected hermes verb (or agent-deck-internal handling).
-func TestKanbanSubcommandDispatch(t *testing.T) {
-	type testCase struct {
-		subcommand string
-		hermesVerb string // empty string means handled internally (attach, create w/ --session)
-		isInternal bool
-	}
-
-	cases := []testCase{
-		{subcommand: "list", hermesVerb: "list"},
-		{subcommand: "show", hermesVerb: "show"},
-		{subcommand: "block", hermesVerb: "block"},
-		{subcommand: "unblock", hermesVerb: "unblock"},
-		{subcommand: "complete", hermesVerb: "complete"},
-		{subcommand: "comment", hermesVerb: "comment"},
-		{subcommand: "create", hermesVerb: "create"},
-		{subcommand: "attach", isInternal: true},
-	}
-
 	for _, tc := range cases {
-		t.Run(tc.subcommand, func(t *testing.T) {
-			if tc.isInternal {
-				// attach is handled internally — confirm handleKanbanAttach exists
-				// and the dispatch switch routes to it.  We verify by checking that
-				// the function guard fires correctly for empty args.
-				args := []string{} // triggers the missing-args guard
-				if len(args) >= 2 {
-					t.Fatal("test precondition failed")
+		t.Run(tc.name, func(t *testing.T) {
+			sessionID, taskID, err := parseKanbanAttachArgs(tc.args)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error for args=%v, got sessionID=%q taskID=%q", tc.args, sessionID, taskID)
+			}
+			if !tc.wantErr {
+				if err != nil {
+					t.Errorf("unexpected error for args=%v: %v", tc.args, err)
 				}
-				// Guard fires: len < 2 → would os.Exit(1). Test passes.
-				return
-			}
-
-			// For passthrough subcommands, verify that extractKanbanStatusFlag and
-			// other helpers don't corrupt the verb.
-			// We build the hermes args the same way handleKanbanPassthrough does
-			// and confirm the verb is at position 1.
-			hermesArgs := append([]string{"kanban", tc.subcommand}, "arg1")
-			if hermesArgs[0] != "kanban" {
-				t.Errorf("expected hermesArgs[0]='kanban', got %q", hermesArgs[0])
-			}
-			if hermesArgs[1] != tc.hermesVerb {
-				t.Errorf("expected hermesArgs[1]=%q, got %q", tc.hermesVerb, hermesArgs[1])
+				if sessionID != tc.args[0] || taskID != tc.args[1] {
+					t.Errorf("got sessionID=%q taskID=%q, want %q %q", sessionID, taskID, tc.args[0], tc.args[1])
+				}
 			}
 		})
 	}

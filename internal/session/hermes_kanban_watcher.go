@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,7 +23,23 @@ const (
 	kanbanInitialBackoff = 1 * time.Second
 	kanbanMaxBackoff     = 30 * time.Second
 	kanbanBackoffFactor  = 2
+
+	// kanbanWSReadLimit bounds a single WebSocket frame the gateway can push.
+	// Same 1 MB cap used by seedCounts for the HTTP board endpoint.
+	kanbanWSReadLimit = 1 << 20
+
+	// kanbanReadTimeout is how long readEvents will wait between frames or pong
+	// responses before declaring the connection half-open and forcing a reconnect.
+	kanbanReadTimeout = 60 * time.Second
+
+	// kanbanPingInterval is how often we send a ping while the WS is idle.
+	// Must be < kanbanReadTimeout so a pong can reset the deadline in time.
+	kanbanPingInterval = 25 * time.Second
 )
+
+// kanbanSeedClient is shared across all seedCounts calls so TCP connection
+// reuse and TLS session caching survive reconnects.
+var kanbanSeedClient = &http.Client{Timeout: 10 * time.Second}
 
 // kanbanEvent is the minimal shape of a Hermes Kanban WebSocket event.
 type kanbanEvent struct {
@@ -60,6 +77,11 @@ type KanbanWatcher struct {
 	startOnce sync.Once
 	subsMu    sync.Mutex
 	subs      []chan struct{}
+
+	// droppedNotifications counts notify() calls where a subscriber's buffered
+	// channel was already full — i.e. the subscriber didn't drain in time.
+	// Exposed via DroppedNotifications() for observability.
+	droppedNotifications atomic.Int64
 }
 
 // NewKanbanWatcher creates a new KanbanWatcher for the given gateway URL.
@@ -136,7 +158,9 @@ func (w *KanbanWatcher) Subscribe() <-chan struct{} {
 	return ch
 }
 
-// notify sends to all subscriber channels (non-blocking).
+// notify sends to all subscriber channels (non-blocking). When a channel's
+// buffer is full the notification is coalesced (the subscriber will see one
+// signal when it drains) and droppedNotifications is incremented.
 func (w *KanbanWatcher) notify() {
 	w.subsMu.Lock()
 	defer w.subsMu.Unlock()
@@ -144,8 +168,18 @@ func (w *KanbanWatcher) notify() {
 		select {
 		case ch <- struct{}{}:
 		default:
+			w.droppedNotifications.Add(1)
 		}
 	}
+}
+
+// DroppedNotifications returns how many subscriber sends were coalesced because
+// the consumer's buffer was full. Useful for diagnosing slow consumers.
+func (w *KanbanWatcher) DroppedNotifications() int64 {
+	if w == nil {
+		return 0
+	}
+	return w.droppedNotifications.Load()
 }
 
 // setCountsAndStatusesAndNotify updates counts and the per-task status map atomically.
@@ -266,7 +300,38 @@ func (w *KanbanWatcher) runSession() (established bool, err error) {
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Bound frame size, install a read deadline, and refresh the deadline on
+	// every pong. Without these, a half-open connection (NAT timeout, LB idle
+	// reaper, power-cycled switch) silently wedges readEvents forever while
+	// IsHealthy() keeps returning true — the worst failure class.
+	conn.SetReadLimit(kanbanWSReadLimit)
+	_ = conn.SetReadDeadline(time.Now().Add(kanbanReadTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(kanbanReadTimeout))
+	})
+
 	kanbanLog.Debug("kanban_watcher_connected", slog.String("url", wsURL))
+
+	// Send pings on an idle interval so the pong handler keeps refreshing the
+	// read deadline. Exits when readEvents returns or stopCh fires.
+	pingDone := make(chan struct{})
+	go func() {
+		t := time.NewTicker(kanbanPingInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-pingDone:
+				return
+			case <-w.stopCh:
+				return
+			case <-t.C:
+				deadline := time.Now().Add(10 * time.Second)
+				if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
+					return
+				}
+			}
+		}
+	}()
 
 	readDone := make(chan error, 1)
 	go func() {
@@ -275,9 +340,11 @@ func (w *KanbanWatcher) runSession() (established bool, err error) {
 
 	select {
 	case <-w.stopCh:
+		close(pingDone)
 		_ = conn.Close()
 		return true, nil
 	case err := <-readDone:
+		close(pingDone)
 		return true, err
 	}
 }
@@ -292,8 +359,7 @@ func (w *KanbanWatcher) seedCounts(ctx context.Context) (running, blocked int, s
 		return 0, 0, nil, fmt.Errorf("build request: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := kanbanSeedClient.Do(req)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("http get board: %w", err)
 	}
@@ -413,11 +479,13 @@ func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 			// event; the seed would have captured its current state already.
 			}
 		} else {
-			// No task ID: trust the event and swap counters best-effort.
+			// No task ID: swap counters only if we actually had a blocked task
+			// to move. Without this guard, an "unblocked" event arriving when
+			// blocked==0 would phantom-increment running.
 			if blocked > 0 {
 				blocked--
+				running++
 			}
-			running++
 		}
 	case "reclaimed":
 		// Task re-queued by Hermes for another agent — transitions back to running.

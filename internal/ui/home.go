@@ -317,6 +317,10 @@ type Home struct {
 
 	// Hermes Kanban badge watcher (WebSocket real-time counts)
 	kanbanWatcher *session.KanbanWatcher
+	// kanbanWatcherCh is the long-lived subscription channel. Subscribed once at
+	// model init; listenForKanbanUpdates drains it forever rather than churning
+	// Subscribe/Unsubscribe on every event.
+	kanbanWatcherCh <-chan struct{}
 
 	// Hermes Kanban board panel (toggled with 'K')
 	kanbanPanel *KanbanPanel
@@ -742,11 +746,15 @@ type kanbanWatcherChangedMsg struct{}
 const kanbanPollInterval = 15 * time.Second
 
 // kanbanPollCmd returns a one-shot Cmd that waits kanbanPollInterval, then
-// synchronously refreshes the CLI cache and returns kanbanCountsChangedMsg.
-// Must be re-issued from the Update handler on each firing to keep ticking.
-func kanbanPollCmd() tea.Cmd {
+// returns kanbanCountsChangedMsg. The subprocess refresh is only invoked when
+// the WebSocket watcher is unhealthy — when healthy, the tick is essentially
+// free and exists only so that a healthy→unhealthy transition is picked up
+// within one interval.
+func kanbanPollCmd(w *session.KanbanWatcher) tea.Cmd {
 	return tea.Tick(kanbanPollInterval, func(time.Time) tea.Msg {
-		session.ForceRefreshHermesKanbanCache()
+		if w == nil || !w.IsHealthy() {
+			session.ForceRefreshHermesKanbanCache()
+		}
 		return kanbanCountsChangedMsg{}
 	})
 }
@@ -1225,6 +1233,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	if gatewayURL := session.GetHermesGatewayURL(); gatewayURL != "" {
 		w := session.StartKanbanWatcher(gatewayURL)
 		h.kanbanWatcher = w
+		h.kanbanWatcherCh = w.Subscribe()
 	}
 
 	// Initialize Hermes Kanban board panel (hidden by default, toggled with 'K')
@@ -2079,8 +2088,8 @@ func (h *Home) Init() tea.Cmd {
 	// Start listening for Hermes Kanban badge updates.
 	// Also start a CLI poll ticker so badges render even when the WebSocket
 	// watcher is unavailable (e.g. gateway running without kanban WS endpoints).
-	if h.kanbanWatcher != nil {
-		cmds = append(cmds, listenForKanbanUpdates(h.kanbanWatcher))
+	if h.kanbanWatcherCh != nil {
+		cmds = append(cmds, listenForKanbanUpdates(h.kanbanWatcherCh))
 	}
 	// Immediate refresh so badges appear on first render; kanbanImmediateRefreshCmd
 	// returns kanbanCountsChangedMsg which re-arms kanbanPollCmd, so only one
@@ -2127,21 +2136,19 @@ func listenForThemeChange(tw *ThemeWatcher) tea.Cmd {
 	}
 }
 
-// listenForKanbanUpdates blocks until the KanbanWatcher notifies a count change,
-// then returns a kanbanWatcherChangedMsg. Must be re-issued in the Update handler
-// after each message to keep listening (Bubble Tea cmd pattern).
+// listenForKanbanUpdates reads one item from the long-lived subscription
+// channel established at Init time and returns kanbanWatcherChangedMsg. Must
+// be re-issued in the Update handler after each message to keep listening
+// (Bubble Tea cmd pattern). The channel itself is never re-subscribed —
+// dropped notifications coalesce via the watcher's buffered channel.
 // Intentionally returns kanbanWatcherChangedMsg (not kanbanCountsChangedMsg) so
 // watcher events do not spawn additional CLI poll timers.
-func listenForKanbanUpdates(kw *session.KanbanWatcher) tea.Cmd {
-	if kw == nil {
+func listenForKanbanUpdates(ch <-chan struct{}) tea.Cmd {
+	if ch == nil {
 		return nil
 	}
-	ch := kw.Subscribe()
 	return func() tea.Msg {
 		_, ok := <-ch
-		// Remove channel from watcher before returning so dead channels don't
-		// accumulate in w.subs across repeated re-arms.
-		kw.Unsubscribe(ch)
 		if !ok {
 			return nil
 		}
@@ -4655,18 +4662,17 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// WebSocket watcher fired — re-render and re-arm listener only.
 		// Do NOT re-arm kanbanPollCmd here; that would stack extra timers on
 		// every live badge update.
-		if h.kanbanWatcher != nil {
-			return h, listenForKanbanUpdates(h.kanbanWatcher)
+		if h.kanbanWatcherCh != nil {
+			return h, listenForKanbanUpdates(h.kanbanWatcherCh)
 		}
 		return h, nil
 
 	case kanbanCountsChangedMsg:
-		// CLI poll tick fired — re-render badge and re-arm the next tick only.
-		// Do NOT call listenForKanbanUpdates here: each call adds a new channel
-		// to KanbanWatcher.subs and leaves the previous goroutine running,
-		// causing subscription count to grow unboundedly. Watcher lifecycle is
-		// managed exclusively by Init() and the kanbanWatcherChangedMsg handler.
-		return h, kanbanPollCmd()
+		// CLI poll tick fired. Re-arm unconditionally so we keep ticking even
+		// when the watcher is healthy — the subprocess call inside kanbanPollCmd
+		// is gated on !IsHealthy(), so this is essentially free when the WS
+		// watcher is working and self-recovers within one interval if it isn't.
+		return h, kanbanPollCmd(h.kanbanWatcher)
 
 	case kanbanFetchDoneMsg:
 		if h.kanbanPanel != nil {
