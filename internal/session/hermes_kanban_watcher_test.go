@@ -159,7 +159,8 @@ func TestKanbanWatcher_ApplyEvent_Reclaimed_FromBlocked(t *testing.T) {
 	}
 }
 
-// TestKanbanWatcher_Unsubscribe verifies that Unsubscribe removes the channel from subs.
+// TestKanbanWatcher_Unsubscribe verifies that after Unsubscribe, the removed
+// channel receives no notifications while remaining subscribers still do.
 func TestKanbanWatcher_Unsubscribe(t *testing.T) {
 	w := NewKanbanWatcher("http://127.0.0.1:0")
 	ch1 := w.Subscribe()
@@ -167,14 +168,24 @@ func TestKanbanWatcher_Unsubscribe(t *testing.T) {
 
 	w.Unsubscribe(ch1)
 
-	w.subsMu.Lock()
-	n := len(w.subs)
-	w.subsMu.Unlock()
+	// Trigger a count change so notify() fires.
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t_unsub"})
 
-	if n != 1 {
-		t.Errorf("after Unsubscribe: subs len=%d, want 1", n)
+	// ch2 must receive the notification.
+	select {
+	case <-ch2:
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Error("ch2 did not receive notification after event; Unsubscribe may have removed wrong channel")
 	}
-	_ = ch2
+
+	// ch1 must NOT receive the notification.
+	select {
+	case <-ch1:
+		t.Error("ch1 received notification after Unsubscribe; channel was not removed")
+	default:
+		// ok
+	}
 }
 
 // TestKanbanWatcher_NeverNegative verifies counts never go below zero.

@@ -231,19 +231,33 @@ func TestExtractKanbanStatusFlag_NextArgIsFlag(t *testing.T) {
 // TestExtractKanbanSessionFlag_NextArgIsFlag verifies that a following flag is not consumed as the value.
 func TestExtractKanbanSessionFlag_NextArgIsFlag(t *testing.T) {
 	args := []string{"Title", "--session", "--body", "desc"}
-	remaining, sessionVal := extractKanbanSessionFlag(args)
+	remaining, sessionVal, flagSeen := extractKanbanSessionFlag(args)
 	if sessionVal != "" {
 		t.Errorf("session should be empty when next arg is a flag, got %q", sessionVal)
 	}
-	if len(remaining) != 3 {
-		t.Errorf("remaining = %v, want [Title --body desc]", remaining)
+	if !flagSeen {
+		t.Error("flagSeen should be true when --session token was present")
+	}
+	want := []string{"Title", "--body", "desc"}
+	if len(remaining) != len(want) {
+		t.Errorf("remaining = %v, want %v", remaining, want)
+	} else {
+		for i, v := range want {
+			if remaining[i] != v {
+				t.Errorf("remaining[%d] = %q, want %q (full: %v)", i, remaining[i], v, remaining)
+				break
+			}
+		}
 	}
 }
 
 // TestExtractKanbanSessionFlag checks --session extraction.
 func TestExtractKanbanSessionFlag(t *testing.T) {
 	args := []string{"My Title", "--session", "my-session", "--body", "desc"}
-	remaining, sessionVal := extractKanbanSessionFlag(args)
+	remaining, sessionVal, flagSeen := extractKanbanSessionFlag(args)
+	if !flagSeen {
+		t.Error("flagSeen should be true")
+	}
 	if sessionVal != "my-session" {
 		t.Errorf("session = %q, want %q", sessionVal, "my-session")
 	}

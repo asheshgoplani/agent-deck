@@ -124,7 +124,7 @@ func handleKanbanList(args []string) {
 // --session flag before forwarding (hermes does not understand it, and these
 // verbs do not perform session auto-attach).
 func handleKanbanPassthrough(verb string, args []string) {
-	remaining, sessionID := extractKanbanSessionFlag(args)
+	remaining, sessionID, _ := extractKanbanSessionFlag(args)
 	if sessionID != "" {
 		fmt.Fprintf(os.Stderr, "Note: --session has no effect on 'kanban %s'; flag ignored.\n", verb)
 	}
@@ -136,7 +136,15 @@ func handleKanbanPassthrough(verb string, args []string) {
 // the task ID from the JSON output, then auto-attaches the session.
 func handleKanbanCreate(args []string) {
 	// Extract --session flag from args before forwarding.
-	remaining, sessionID := extractKanbanSessionFlag(args)
+	remaining, sessionID, sessionSeen := extractKanbanSessionFlag(args)
+
+	// --session was present but had no valid value — fail loudly rather than
+	// silently skipping the auto-attach the user requested.
+	if sessionSeen && sessionID == "" {
+		fmt.Fprintln(os.Stderr, "Error: --session requires a non-empty value that does not start with '-'")
+		fmt.Fprintln(os.Stderr, "Usage: agent-deck kanban create \"<title>\" --session <id> [--body \"...\"]")
+		os.Exit(1)
+	}
 
 	if sessionID == "" {
 		// No --session specified: delegate directly, no auto-attach.
@@ -307,29 +315,28 @@ func extractKanbanStatusFlag(args []string) ([]string, string) {
 }
 
 // extractKanbanSessionFlag removes --session <value> from args.
-func extractKanbanSessionFlag(args []string) ([]string, string) {
-	var remaining []string
-	var sessionVal string
+// flagSeen is true whenever the --session flag token was present, regardless of
+// whether a valid value followed it. Callers that require a value (e.g.
+// handleKanbanCreate) should treat flagSeen=true + empty sessionVal as an error.
+func extractKanbanSessionFlag(args []string) (remaining []string, sessionVal string, flagSeen bool) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--session" {
+			flagSeen = true
 			if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
 				sessionVal = args[i+1]
 				i++
-			} else {
-				fmt.Fprintln(os.Stderr, "warning: --session requires a non-empty value; flag ignored")
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--session=") {
+			flagSeen = true
 			if val := strings.TrimPrefix(arg, "--session="); val != "" {
 				sessionVal = val
-			} else {
-				fmt.Fprintln(os.Stderr, "warning: --session= requires a non-empty value; flag ignored")
 			}
 			continue
 		}
 		remaining = append(remaining, arg)
 	}
-	return remaining, sessionVal
+	return remaining, sessionVal, flagSeen
 }
