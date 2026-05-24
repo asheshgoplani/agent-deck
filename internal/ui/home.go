@@ -2082,8 +2082,10 @@ func (h *Home) Init() tea.Cmd {
 	if h.kanbanWatcher != nil {
 		cmds = append(cmds, listenForKanbanUpdates(h.kanbanWatcher))
 	}
-	// Immediate refresh so badges appear on first render, then periodic ticks.
-	cmds = append(cmds, kanbanImmediateRefreshCmd(), kanbanPollCmd())
+	// Immediate refresh so badges appear on first render; kanbanImmediateRefreshCmd
+	// returns kanbanCountsChangedMsg which re-arms kanbanPollCmd, so only one
+	// poll-timer chain is ever running at a time.
+	cmds = append(cmds, kanbanImmediateRefreshCmd())
 
 	// Start watcher engine (D-07: lifecycle tied to TUI startup)
 	cmds = append(cmds, h.startWatcherEngine())
@@ -2137,6 +2139,9 @@ func listenForKanbanUpdates(kw *session.KanbanWatcher) tea.Cmd {
 	ch := kw.Subscribe()
 	return func() tea.Msg {
 		_, ok := <-ch
+		// Remove channel from watcher before returning so dead channels don't
+		// accumulate in w.subs across repeated re-arms.
+		kw.Unsubscribe(ch)
 		if !ok {
 			return nil
 		}

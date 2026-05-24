@@ -120,10 +120,15 @@ func handleKanbanList(args []string) {
 	}
 }
 
-// handleKanbanPassthrough runs `hermes kanban <verb> <args...>` verbatim,
-// streaming output directly to the terminal.
+// handleKanbanPassthrough runs `hermes kanban <verb> <args...>`, stripping any
+// --session flag before forwarding (hermes does not understand it, and these
+// verbs do not perform session auto-attach).
 func handleKanbanPassthrough(verb string, args []string) {
-	hermesArgs := append([]string{"kanban", verb}, args...)
+	remaining, sessionID := extractKanbanSessionFlag(args)
+	if sessionID != "" {
+		fmt.Fprintf(os.Stderr, "Note: --session has no effect on 'kanban %s'; flag ignored.\n", verb)
+	}
+	hermesArgs := append([]string{"kanban", verb}, remaining...)
 	runHermes(hermesArgs)
 }
 
@@ -135,7 +140,7 @@ func handleKanbanCreate(args []string) {
 
 	if sessionID == "" {
 		// No --session specified: delegate directly, no auto-attach.
-		hermesArgs := append([]string{"kanban", "create"}, args...)
+		hermesArgs := append([]string{"kanban", "create"}, remaining...)
 		runHermes(hermesArgs)
 		return
 	}

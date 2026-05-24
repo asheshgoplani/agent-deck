@@ -149,9 +149,14 @@ func (w *KanbanWatcher) notify() {
 }
 
 // setCountsAndStatusesAndNotify updates counts and the per-task status map atomically.
-func (w *KanbanWatcher) setCountsAndStatusesAndNotify(running, blocked int, statuses map[string]string) {
+// When markSeedOK is true, seedOK is set to true inside the same lock so IsHealthy()
+// never returns true while counts are still stale.
+func (w *KanbanWatcher) setCountsAndStatusesAndNotify(running, blocked int, statuses map[string]string, markSeedOK bool) {
 	w.mu.Lock()
 	changed := w.running != running || w.blocked != blocked
+	if markSeedOK {
+		w.seedOK = true
+	}
 	w.running = running
 	w.blocked = blocked
 	w.taskStatuses = statuses
@@ -159,6 +164,19 @@ func (w *KanbanWatcher) setCountsAndStatusesAndNotify(running, blocked int, stat
 	if changed {
 		w.notify()
 	}
+}
+
+// Unsubscribe removes ch from the subscriber list. Call after the channel has
+// fired to prevent dead channels from accumulating in w.subs indefinitely.
+func (w *KanbanWatcher) Unsubscribe(ch <-chan struct{}) {
+	w.subsMu.Lock()
+	for i, c := range w.subs {
+		if c == ch {
+			w.subs = append(w.subs[:i], w.subs[i+1:]...)
+			break
+		}
+	}
+	w.subsMu.Unlock()
 }
 
 // reconnectLoop dials WebSocket, reads events, and reconnects on disconnect.
@@ -227,10 +245,7 @@ func (w *KanbanWatcher) runSession() (established bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("seed counts: %w", err)
 	}
-	w.mu.Lock()
-	w.seedOK = true
-	w.mu.Unlock()
-	w.setCountsAndStatusesAndNotify(running, blocked, statuses)
+	w.setCountsAndStatusesAndNotify(running, blocked, statuses, true)
 
 	// Build WebSocket URL
 	wsURL := w.buildWSURL()
@@ -404,7 +419,26 @@ func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 			}
 			running++
 		}
-	case "completed", "archived", "reclaimed", "crashed", "timed_out":
+	case "reclaimed":
+		// Task re-queued by Hermes for another agent — transitions back to running.
+		if evt.TaskID != "" {
+			switch prev {
+			case "blocked":
+				if blocked > 0 {
+					blocked--
+				}
+				running++
+			case "running":
+				// Already tracked as running — no counter change needed.
+			default:
+				// Unseen task surfacing as reclaimed; count it as running.
+				running++
+			}
+			w.taskStatuses[evt.TaskID] = "running"
+		} else {
+			running++
+		}
+	case "completed", "archived", "crashed", "timed_out":
 		if evt.TaskID != "" {
 			switch prev {
 			case "running":

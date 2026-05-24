@@ -133,6 +133,50 @@ func TestKanbanWatcher_ApplyEventCrashed(t *testing.T) {
 	}
 }
 
+// TestKanbanWatcher_ApplyEvent_Reclaimed_FromRunning verifies reclaimed running task stays running.
+func TestKanbanWatcher_ApplyEvent_Reclaimed_FromRunning(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "reclaimed", TaskID: "t1"})
+	running, blocked := w.Counts()
+	if running != 1 || blocked != 0 {
+		t.Errorf("after claimed+reclaimed: running=%d blocked=%d, want 1 0", running, blocked)
+	}
+	if w.TaskStatus("t1") != "running" {
+		t.Errorf("TaskStatus after reclaimed = %q, want running", w.TaskStatus("t1"))
+	}
+}
+
+// TestKanbanWatcher_ApplyEvent_Reclaimed_FromBlocked verifies blocked→running on reclaim.
+func TestKanbanWatcher_ApplyEvent_Reclaimed_FromBlocked(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "t1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "t1"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: "reclaimed", TaskID: "t1"})
+	running, blocked := w.Counts()
+	if running != 1 || blocked != 0 {
+		t.Errorf("after claimed+blocked+reclaimed: running=%d blocked=%d, want 1 0", running, blocked)
+	}
+}
+
+// TestKanbanWatcher_Unsubscribe verifies that Unsubscribe removes the channel from subs.
+func TestKanbanWatcher_Unsubscribe(t *testing.T) {
+	w := NewKanbanWatcher("http://127.0.0.1:0")
+	ch1 := w.Subscribe()
+	ch2 := w.Subscribe()
+
+	w.Unsubscribe(ch1)
+
+	w.subsMu.Lock()
+	n := len(w.subs)
+	w.subsMu.Unlock()
+
+	if n != 1 {
+		t.Errorf("after Unsubscribe: subs len=%d, want 1", n)
+	}
+	_ = ch2
+}
+
 // TestKanbanWatcher_NeverNegative verifies counts never go below zero.
 func TestKanbanWatcher_NeverNegative(t *testing.T) {
 	w := NewKanbanWatcher("http://127.0.0.1:0")
@@ -232,7 +276,7 @@ func TestKanbanWatcher_TaskStatus_AfterSeed(t *testing.T) {
 	}
 
 	// Verify TaskStatus returns correctly after setCountsAndStatusesAndNotify.
-	watcher.setCountsAndStatusesAndNotify(running, blocked, statuses)
+	watcher.setCountsAndStatusesAndNotify(running, blocked, statuses, false)
 	if got := watcher.TaskStatus("t_abc123"); got != "running" {
 		t.Errorf("TaskStatus(t_abc123) = %q, want %q", got, "running")
 	}
