@@ -69,16 +69,34 @@ func TestRemoteAttach_FullWidthFromFrameOne(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
-
-	out, err := exec.Command("tmux", "-S", socket,
-		"display", "-p", "-t", name, "#{window_width}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("display window_width: %v\n%s", err, out)
+	// Read the window width tmux reports for the attached client.
+	readWidth := func() int {
+		t.Helper()
+		out, err := exec.Command("tmux", "-S", socket,
+			"display", "-p", "-t", name, "#{window_width}").CombinedOutput()
+		if err != nil {
+			t.Fatalf("display window_width: %v\n%s", err, out)
+		}
+		w, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		if err != nil {
+			t.Fatalf("parse window_width %q: %v", out, err)
+		}
+		return w
 	}
-	got, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		t.Fatalf("parse window_width %q: %v", out, err)
+
+	// Poll until tmux registers the client and arbitrates window-size up to the
+	// expected width, or a generous timeout elapses. A fixed sleep races under
+	// heavy CI load: the async SIGWINCH/client-registration can take longer than
+	// any single guess, so the read fires while the window is still at the 80-col
+	// default. Polling stays fast on idle runners, waits as needed on loaded ones,
+	// and still surfaces the real (failing) width if a genuine regression never
+	// grows the window.
+	want := int(cols)
+	deadline := time.Now().Add(5 * time.Second)
+	got := readWidth()
+	for got != want && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		got = readWidth()
 	}
 	if got != int(cols) {
 		t.Fatalf("remote attach window width = %d, want %d (full terminal); #1167", got, cols)

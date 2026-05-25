@@ -91,9 +91,21 @@ func attachAt1167(t *testing.T, socket, name string, cols, rows uint16) int {
 		}
 	}()
 
-	// Give tmux a beat to register the client and arbitrate window-size.
-	time.Sleep(200 * time.Millisecond)
-	return windowWidth1167(t, socket, name)
+	// Poll until tmux registers the client and arbitrates window-size up to the
+	// expected width, or a generous timeout elapses. A fixed sleep races under
+	// heavy CI load: the async SIGWINCH/client-registration can take longer than
+	// any single guess, so the read fires while the window is still at the 80-col
+	// default. Polling stays fast on idle runners, waits as needed on loaded ones,
+	// and still returns the real (failing) width if a genuine regression never
+	// grows the window.
+	want := int(cols)
+	deadline := time.Now().Add(5 * time.Second)
+	width := windowWidth1167(t, socket, name)
+	for width != want && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		width = windowWidth1167(t, socket, name)
+	}
+	return width
 }
 
 // TestStartAttachPTY_FullWidthFromFrameOne is the happy path: attaching with a
