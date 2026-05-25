@@ -108,6 +108,27 @@ func emitScrollbackClear(w io.Writer) {
 	_, _ = io.WriteString(w, itermClearScrollback)
 }
 
+// StartAttachPTY starts cmd attached to a new PTY pre-sized to tty's current
+// dimensions.
+//
+// #1167: tmux clients connect at their PTY's size. A detached `new-session`
+// (no -x/-y) is born at tmux's 80x24 default-size, and a bare pty.Start creates
+// the attach client's PTY at the same 80x24 default — so window-size=largest
+// pins the window to 80 cols, ~half of a wide terminal, until an async SIGWINCH
+// grows it. Reading the controlling terminal's real size up front and starting
+// the PTY with it makes the client full-width from frame one.
+//
+// When tty is not a terminal (size probe fails), it falls back to a plain start
+// at the default size: a degraded attach is still better than no attach.
+func StartAttachPTY(cmd *exec.Cmd, tty *os.File) (*os.File, error) {
+	if tty != nil {
+		if ws, err := pty.GetsizeFull(tty); err == nil && ws.Cols > 0 && ws.Rows > 0 {
+			return pty.StartWithSize(cmd, ws)
+		}
+	}
+	return pty.Start(cmd)
+}
+
 // Attach attaches to the tmux session with full PTY support.
 // The configured detach key (default Ctrl+Q) will detach and return to the caller.
 // Pass an optional detachByte to override the default (0x11 / Ctrl+Q).
@@ -169,8 +190,9 @@ func (s *Session) Attach(ctx context.Context, detachByte ...byte) error {
 	// SIGINT is restored in cleanupAttach() via signal.Reset(syscall.SIGINT).
 	signal.Ignore(syscall.SIGINT)
 
-	// Start command with PTY
-	ptmx, err := pty.Start(cmd)
+	// Start command with PTY, pre-sized to the controlling terminal so the
+	// tmux client connects full-width from frame one (#1167).
+	ptmx, err := StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
 		signal.Reset(syscall.SIGINT)
 		return fmt.Errorf("failed to start pty: %w", err)

@@ -174,9 +174,13 @@ func (r *SSHRunner) Attach(sessionID string) error {
 
 	cmd := exec.Command("ssh", sshArgs...)
 
-	// Start SSH with a local PTY so it can detect terminal dimensions.
-	// Without this, piping stdin causes SSH to default to 80x24.
-	ptmx, err := pty.Start(cmd)
+	// Start SSH with a local PTY pre-sized to the controlling terminal so the
+	// remote tmux client connects full-width from frame one (#1167). A bare
+	// pty.Start creates the PTY at the 80x24 default, which under the remote
+	// session's window-size=largest pins the pane to ~half a wide terminal
+	// until an async SIGWINCH grows it. Shares the local-attach helper so both
+	// paths size identically.
+	ptmx, err := tmux.StartAttachPTY(cmd, os.Stdin)
 	if err != nil {
 		return fmt.Errorf("failed to start ssh with pty: %w", err)
 	}
