@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -18,7 +19,7 @@ import (
 // a Kanban task ID.
 func handleKanban(args []string) {
 	if len(args) == 0 {
-		printKanbanHelp()
+		printKanbanHelp(os.Stderr)
 		os.Exit(1)
 	}
 
@@ -40,53 +41,56 @@ func handleKanban(args []string) {
 	case "attach":
 		handleKanbanAttach(args[1:])
 	case "help", "--help", "-h":
-		printKanbanHelp()
+		printKanbanHelp(os.Stdout)
 	default:
 		fmt.Fprintf(os.Stderr, "Error: unknown kanban command '%s'\n", args[0])
-		printKanbanHelp()
+		fmt.Fprintln(os.Stderr, "Valid commands: list, show, create, block, unblock, complete, comment, attach, help")
+		printKanbanHelp(os.Stderr)
 		os.Exit(1)
 	}
 }
 
-// printKanbanHelp prints usage for `agent-deck kanban`.
-func printKanbanHelp() {
-	fmt.Println("Usage: agent-deck kanban <command> [options]")
-	fmt.Println()
-	fmt.Println("Manage Hermes Kanban tasks from agent-deck.")
-	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  list [-p profile] [--status <status>] [--status <status>...]")
-	fmt.Println("                          List tasks (e.g. --status running, --status blocked)")
-	fmt.Println("  show <task-id>          Show task details")
-	fmt.Println("  create \"<title>\" --session <id> [--body \"...\"]")
-	fmt.Println("                          Create a task and link it to a session")
-	fmt.Println("  block <task-id> \"<reason>\"")
-	fmt.Println("                          Mark a task as blocked")
-	fmt.Println("  unblock <task-id>       Remove blocked status")
-	fmt.Println("  complete <task-id> [--summary \"...\"]")
-	fmt.Println("                          Mark a task as complete")
-	fmt.Println("  comment <task-id> \"<text>\"")
-	fmt.Println("                          Add a comment to a task")
-	fmt.Println("  attach <session-id-or-title> <task-id>")
-	fmt.Println("                          Link an existing session to a task")
-	fmt.Println()
-	fmt.Println("Flag forms:")
-	fmt.Println("  --status accepts both space-separated repeats (--status running --status blocked)")
-	fmt.Println("           and the equals form (--status=running).")
-	fmt.Println("  -p / --profile is accepted on every verb but has no effect (kanban is global).")
-	fmt.Println("  --session is meaningful only for 'create'; on other verbs it is stripped with a note.")
-	fmt.Println("  Any unrecognised flags pass through to hermes verbatim (e.g. --json on 'list').")
-	fmt.Println()
-	fmt.Println("Examples:")
-	fmt.Println("  agent-deck kanban list")
-	fmt.Println("  agent-deck kanban list --status done")
-	fmt.Println("  agent-deck kanban show TASK-42")
-	fmt.Println("  agent-deck kanban create \"Fix login bug\" --session my-project")
-	fmt.Println("  agent-deck kanban block TASK-42 \"waiting for API keys\"")
-	fmt.Println("  agent-deck kanban unblock TASK-42")
-	fmt.Println("  agent-deck kanban complete TASK-42 --summary \"deployed to prod\"")
-	fmt.Println("  agent-deck kanban comment TASK-42 \"checked in PR #123\"")
-	fmt.Println("  agent-deck kanban attach my-project TASK-42")
+// printKanbanHelp prints usage for `agent-deck kanban` to the given writer.
+// Pass os.Stdout when help is explicitly requested; os.Stderr when help is
+// printed alongside an error (no args, unknown verb).
+func printKanbanHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage: agent-deck kanban <command> [options]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Manage Hermes Kanban tasks from agent-deck.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  list [-p profile] [--status <status>] [--status <status>...]")
+	fmt.Fprintln(w, "                          List tasks (e.g. --status running, --status blocked)")
+	fmt.Fprintln(w, "  show <task-id>          Show task details")
+	fmt.Fprintln(w, "  create \"<title>\" --session <id> [--body \"...\"]")
+	fmt.Fprintln(w, "                          Create a task and link it to a session")
+	fmt.Fprintln(w, "  block <task-id> \"<reason>\"")
+	fmt.Fprintln(w, "                          Mark a task as blocked")
+	fmt.Fprintln(w, "  unblock <task-id>       Remove blocked status")
+	fmt.Fprintln(w, "  complete <task-id> [--summary \"...\"]")
+	fmt.Fprintln(w, "                          Mark a task as complete")
+	fmt.Fprintln(w, "  comment <task-id> \"<text>\"")
+	fmt.Fprintln(w, "                          Add a comment to a task")
+	fmt.Fprintln(w, "  attach <session-id-or-title> <task-id>")
+	fmt.Fprintln(w, "                          Link an existing session to a task")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flag forms:")
+	fmt.Fprintln(w, "  --status accepts both space-separated repeats (--status running --status blocked)")
+	fmt.Fprintln(w, "           and the equals form (--status=running).")
+	fmt.Fprintln(w, "  -p / --profile is accepted on every verb but has no effect (kanban is global).")
+	fmt.Fprintln(w, "  --session is meaningful only for 'create'; on other verbs it is stripped with a note.")
+	fmt.Fprintln(w, "  Any unrecognised flags pass through to hermes verbatim (e.g. --json on 'list').")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Examples:")
+	fmt.Fprintln(w, "  agent-deck kanban list")
+	fmt.Fprintln(w, "  agent-deck kanban list --status done")
+	fmt.Fprintln(w, "  agent-deck kanban show TASK-42")
+	fmt.Fprintln(w, "  agent-deck kanban create \"Fix login bug\" --session my-project")
+	fmt.Fprintln(w, "  agent-deck kanban block TASK-42 \"waiting for API keys\"")
+	fmt.Fprintln(w, "  agent-deck kanban unblock TASK-42")
+	fmt.Fprintln(w, "  agent-deck kanban complete TASK-42 --summary \"deployed to prod\"")
+	fmt.Fprintln(w, "  agent-deck kanban comment TASK-42 \"checked in PR #123\"")
+	fmt.Fprintln(w, "  agent-deck kanban attach my-project TASK-42")
 }
 
 // handleKanbanList delegates to `hermes kanban list` with optional status filter.
@@ -128,11 +132,16 @@ func handleKanbanList(args []string) {
 }
 
 // handleKanbanPassthrough runs `hermes kanban <verb> <args...>`, stripping any
-// --session flag before forwarding (hermes does not understand it, and these
-// verbs do not perform session auto-attach).
+// -p/--profile flag (Kanban is global) and any --session flag (hermes does not
+// understand it, and these verbs do not perform session auto-attach) before
+// forwarding.
 func handleKanbanPassthrough(verb string, args []string) {
-	remaining, sessionID, _ := extractKanbanSessionFlag(args)
-	if sessionID != "" {
+	afterProfile, profileVal := extractKanbanProfileFlag(args)
+	if profileVal != "" {
+		fmt.Fprintf(os.Stderr, "Note: Hermes Kanban is global — -p/--profile flag is accepted but has no effect.\n")
+	}
+	remaining, session := extractKanbanSessionFlag(afterProfile)
+	if session != nil {
 		fmt.Fprintf(os.Stderr, "Note: --session has no effect on 'kanban %s'; flag ignored.\n", verb)
 	}
 	hermesArgs := append([]string{"kanban", verb}, remaining...)
@@ -143,17 +152,17 @@ func handleKanbanPassthrough(verb string, args []string) {
 // the task ID from the JSON output, then auto-attaches the session.
 func handleKanbanCreate(args []string) {
 	// Extract --session flag from args before forwarding.
-	remaining, sessionID, sessionSeen := extractKanbanSessionFlag(args)
+	remaining, session := extractKanbanSessionFlag(args)
 
 	// --session was present but had no valid value — fail loudly rather than
 	// silently skipping the auto-attach the user requested.
-	if sessionSeen && sessionID == "" {
+	if session != nil && *session == "" {
 		fmt.Fprintln(os.Stderr, "Error: --session requires a non-empty value that does not start with '-'")
 		fmt.Fprintln(os.Stderr, "Usage: agent-deck kanban create \"<title>\" --session <id> [--body \"...\"]")
 		os.Exit(1)
 	}
 
-	if sessionID == "" {
+	if session == nil {
 		// No --session specified: delegate directly, no auto-attach.
 		hermesArgs := append([]string{"kanban", "create"}, remaining...)
 		runHermes(hermesArgs)
@@ -177,12 +186,13 @@ func handleKanbanCreate(args []string) {
 	// Parse task ID from JSON output.
 	taskID := parseTaskIDFromJSON(out.Bytes())
 	if taskID == "" {
-		fmt.Fprintf(os.Stderr, "Warning: could not parse task ID from hermes output; skipping auto-attach.\n")
-		return
+		fmt.Fprintf(os.Stderr, "Error: --session %q was requested but auto-attach failed: could not extract task ID from hermes response.\n", *session)
+		fmt.Fprintf(os.Stderr, "       The task may have been created; re-run `agent-deck kanban attach %s <task-id>` manually once you have the task ID.\n", *session)
+		os.Exit(1)
 	}
 
 	// Auto-attach the session to the newly created task.
-	attachSession(sessionID, taskID)
+	attachSession(*session, taskID)
 }
 
 // parseKanbanAttachArgs validates and extracts session and task IDs from attach
@@ -335,28 +345,41 @@ func extractKanbanStatusFlag(args []string) ([]string, string) {
 }
 
 // extractKanbanSessionFlag removes --session <value> from args.
-// flagSeen is true whenever the --session flag token was present, regardless of
-// whether a valid value followed it. Callers that require a value (e.g.
-// handleKanbanCreate) should treat flagSeen=true + empty sessionVal as an error.
-func extractKanbanSessionFlag(args []string) (remaining []string, sessionVal string, flagSeen bool) {
+//
+// The returned `session` discriminates three states the old (string, bool)
+// return conflated — and makes the fourth (impossible) state unrepresentable:
+//   - session == nil          → flag absent
+//   - session != nil && *session == ""  → flag present but malformed (missing
+//     value, value started with '-', or `--session=`)
+//   - session != nil && *session != ""  → flag present with a usable value
+//
+// Callers that require a value (e.g. handleKanbanCreate) should hard-error on
+// the malformed case; passthrough callers can treat it the same as the
+// well-formed case (the flag is ignored either way, but the user gets a note).
+func extractKanbanSessionFlag(args []string) (remaining []string, session *string) {
+	var val string
+	seen := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--session" {
-			flagSeen = true
+			seen = true
 			if i+1 < len(args) && args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
-				sessionVal = args[i+1]
+				val = args[i+1]
 				i++
 			}
 			continue
 		}
 		if strings.HasPrefix(arg, "--session=") {
-			flagSeen = true
-			if val := strings.TrimPrefix(arg, "--session="); val != "" {
-				sessionVal = val
+			seen = true
+			if v := strings.TrimPrefix(arg, "--session="); v != "" {
+				val = v
 			}
 			continue
 		}
 		remaining = append(remaining, arg)
 	}
-	return remaining, sessionVal, flagSeen
+	if seen {
+		session = &val
+	}
+	return remaining, session
 }

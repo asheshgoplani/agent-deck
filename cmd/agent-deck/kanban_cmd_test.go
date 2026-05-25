@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -188,14 +189,15 @@ func TestExtractKanbanStatusFlag_NextArgIsFlag(t *testing.T) {
 }
 
 // TestExtractKanbanSessionFlag_NextArgIsFlag verifies that a following flag is not consumed as the value.
+// session must be non-nil (flag was present) with empty value (malformed).
 func TestExtractKanbanSessionFlag_NextArgIsFlag(t *testing.T) {
 	args := []string{"Title", "--session", "--body", "desc"}
-	remaining, sessionVal, flagSeen := extractKanbanSessionFlag(args)
-	if sessionVal != "" {
-		t.Errorf("session should be empty when next arg is a flag, got %q", sessionVal)
+	remaining, session := extractKanbanSessionFlag(args)
+	if session == nil {
+		t.Fatal("session should be non-nil when --session token was present")
 	}
-	if !flagSeen {
-		t.Error("flagSeen should be true when --session token was present")
+	if *session != "" {
+		t.Errorf("session should be empty when next arg is a flag, got %q", *session)
 	}
 	want := []string{"Title", "--body", "desc"}
 	if len(remaining) != len(want) {
@@ -210,15 +212,44 @@ func TestExtractKanbanSessionFlag_NextArgIsFlag(t *testing.T) {
 	}
 }
 
+// TestExtractKanbanSessionFlag_Absent verifies that a missing --session flag
+// returns session == nil (not an empty string).
+func TestExtractKanbanSessionFlag_Absent(t *testing.T) {
+	args := []string{"Title", "--body", "desc"}
+	_, session := extractKanbanSessionFlag(args)
+	if session != nil {
+		t.Errorf("session should be nil when --session absent, got %q", *session)
+	}
+}
+
+// TestPrintKanbanHelp_WritesToWriter verifies that printKanbanHelp writes
+// to the provided io.Writer instead of stdout, so error-path callers can route
+// output to stderr.
+func TestPrintKanbanHelp_WritesToWriter(t *testing.T) {
+	var buf bytes.Buffer
+	printKanbanHelp(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "Usage: agent-deck kanban <command>") {
+		t.Errorf("help output missing usage line; got: %q", out)
+	}
+	// Spot-check a couple of verbs are listed so future refactors don't
+	// silently truncate the help text.
+	for _, verb := range []string{"list", "create", "attach"} {
+		if !strings.Contains(out, verb) {
+			t.Errorf("help output missing verb %q; got: %q", verb, out)
+		}
+	}
+}
+
 // TestExtractKanbanSessionFlag checks --session extraction.
 func TestExtractKanbanSessionFlag(t *testing.T) {
 	args := []string{"My Title", "--session", "my-session", "--body", "desc"}
-	remaining, sessionVal, flagSeen := extractKanbanSessionFlag(args)
-	if !flagSeen {
-		t.Error("flagSeen should be true")
+	remaining, session := extractKanbanSessionFlag(args)
+	if session == nil {
+		t.Fatal("session should be non-nil")
 	}
-	if sessionVal != "my-session" {
-		t.Errorf("session = %q, want %q", sessionVal, "my-session")
+	if *session != "my-session" {
+		t.Errorf("session = %q, want %q", *session, "my-session")
 	}
 	for _, r := range remaining {
 		if r == "--session" || r == "my-session" {

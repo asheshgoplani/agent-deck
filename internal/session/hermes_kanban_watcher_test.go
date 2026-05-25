@@ -143,7 +143,7 @@ func TestKanbanWatcher_StartIsIdempotent(t *testing.T) {
 
 func TestApplyEvent_ClaimedNewTask(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0)", r, b)
@@ -155,8 +155,8 @@ func TestApplyEvent_ClaimedNewTask(t *testing.T) {
 
 func TestApplyEvent_ClaimedAlreadyRunning(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindClaimed, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0) — no double increment", r, b)
@@ -165,8 +165,8 @@ func TestApplyEvent_ClaimedAlreadyRunning(t *testing.T) {
 
 func TestApplyEvent_BlockedFromRunning(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindBlocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 1 {
 		t.Fatalf("counts = (%d,%d), want (0,1)", r, b)
@@ -178,7 +178,7 @@ func TestApplyEvent_BlockedFromRunning(t *testing.T) {
 
 func TestApplyEvent_BlockedUnseenTask(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindBlocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 1 {
 		t.Fatalf("counts = (%d,%d), want (0,1)", r, b)
@@ -187,8 +187,8 @@ func TestApplyEvent_BlockedUnseenTask(t *testing.T) {
 
 func TestApplyEvent_BlockedAlreadyBlocked(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindBlocked, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindBlocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 1 {
 		t.Fatalf("counts = (%d,%d), want (0,1) — no double increment", r, b)
@@ -197,8 +197,8 @@ func TestApplyEvent_BlockedAlreadyBlocked(t *testing.T) {
 
 func TestApplyEvent_UnblockedFromBlocked(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "unblocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindBlocked, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindUnblocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0)", r, b)
@@ -210,8 +210,8 @@ func TestApplyEvent_UnblockedFromBlocked(t *testing.T) {
 
 func TestApplyEvent_UnblockedFromRunningIsNoop(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "unblocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindUnblocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0) — stale unblocked is no-op", r, b)
@@ -220,7 +220,7 @@ func TestApplyEvent_UnblockedFromRunningIsNoop(t *testing.T) {
 
 func TestApplyEvent_UnblockedUnseenIsNoop(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "unblocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindUnblocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (0,0) — unseen unblocked is no-op", r, b)
@@ -229,8 +229,8 @@ func TestApplyEvent_UnblockedUnseenIsNoop(t *testing.T) {
 
 func TestApplyEvent_ReclaimedFromBlocked(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "reclaimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindBlocked, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindReclaimed, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0)", r, b)
@@ -239,8 +239,8 @@ func TestApplyEvent_ReclaimedFromBlocked(t *testing.T) {
 
 func TestApplyEvent_ReclaimedFromRunningIsNoop(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "reclaimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindReclaimed, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0) — already-running reclaim is no-op", r, b)
@@ -249,7 +249,7 @@ func TestApplyEvent_ReclaimedFromRunningIsNoop(t *testing.T) {
 
 func TestApplyEvent_ReclaimedUnseenIncrementsRunning(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "reclaimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindReclaimed, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0)", r, b)
@@ -257,10 +257,12 @@ func TestApplyEvent_ReclaimedUnseenIncrementsRunning(t *testing.T) {
 }
 
 func TestApplyEvent_TerminalKindsDecrementRunning(t *testing.T) {
-	for _, kind := range []string{"completed", "archived", "crashed", "timed_out", "gave_up"} {
-		t.Run(kind, func(t *testing.T) {
+	// Drives off the production-side terminalKinds list so a future addition
+	// (e.g. kindKilled) gets coverage automatically.
+	for _, kind := range terminalKinds {
+		t.Run(kind.String(), func(t *testing.T) {
 			w := NewKanbanWatcher("ignored")
-			w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+			w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 			w.applyEvent(kanbanEvent{ID: 2, Kind: kind, TaskID: "T1"})
 			r, b := w.Counts()
 			if r != 0 || b != 0 {
@@ -275,8 +277,8 @@ func TestApplyEvent_TerminalKindsDecrementRunning(t *testing.T) {
 
 func TestApplyEvent_CompletedFromBlockedDecrementsBlocked(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "blocked", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "completed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindBlocked, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindCompleted, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (0,0)", r, b)
@@ -285,7 +287,7 @@ func TestApplyEvent_CompletedFromBlockedDecrementsBlocked(t *testing.T) {
 
 func TestApplyEvent_CompletedUnseenIsNoop(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "completed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindCompleted, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 0 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (0,0)", r, b)
@@ -294,11 +296,11 @@ func TestApplyEvent_CompletedUnseenIsNoop(t *testing.T) {
 
 func TestApplyEvent_DuplicateEventIgnored(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 5, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 5, Kind: kindClaimed, TaskID: "T1"})
 	// Same id replayed — cursor already at 5, so this must be ignored even
 	// though logically the kind would otherwise be a no-op anyway. Replay
 	// with a count-changing kind to make the assertion sharp.
-	w.applyEvent(kanbanEvent{ID: 5, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 5, Kind: kindBlocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0) — duplicate id must be ignored", r, b)
@@ -307,8 +309,8 @@ func TestApplyEvent_DuplicateEventIgnored(t *testing.T) {
 
 func TestApplyEvent_LowerIDIgnored(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 10, Kind: "claimed", TaskID: "T1"})
-	w.applyEvent(kanbanEvent{ID: 3, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 10, Kind: kindClaimed, TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: kindBlocked, TaskID: "T1"})
 	r, b := w.Counts()
 	if r != 1 || b != 0 {
 		t.Fatalf("counts = (%d,%d), want (1,0) — out-of-order id below cursor must be ignored", r, b)
@@ -317,7 +319,7 @@ func TestApplyEvent_LowerIDIgnored(t *testing.T) {
 
 func TestApplyEvent_AdvancesCursor(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
-	w.applyEvent(kanbanEvent{ID: 7, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 7, Kind: kindClaimed, TaskID: "T1"})
 	w.mu.RLock()
 	got := w.cursor
 	w.mu.RUnlock()
@@ -334,12 +336,12 @@ func TestApplyEvent_CountsNeverNegative(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
 
 	// Terminate tasks that were never seen — must not push counters negative.
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "completed", TaskID: "ghost-1"})
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "archived", TaskID: "ghost-2"})
-	w.applyEvent(kanbanEvent{ID: 3, Kind: "crashed", TaskID: "ghost-3"})
-	w.applyEvent(kanbanEvent{ID: 4, Kind: "timed_out", TaskID: "ghost-4"})
-	w.applyEvent(kanbanEvent{ID: 5, Kind: "gave_up", TaskID: "ghost-5"})
-	w.applyEvent(kanbanEvent{ID: 6, Kind: "unblocked", TaskID: "ghost-6"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindCompleted, TaskID: "ghost-1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindArchived, TaskID: "ghost-2"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: kindCrashed, TaskID: "ghost-3"})
+	w.applyEvent(kanbanEvent{ID: 4, Kind: kindTimedOut, TaskID: "ghost-4"})
+	w.applyEvent(kanbanEvent{ID: 5, Kind: kindGaveUp, TaskID: "ghost-5"})
+	w.applyEvent(kanbanEvent{ID: 6, Kind: kindUnblocked, TaskID: "ghost-6"})
 
 	r, b := w.Counts()
 	if r != 0 {
@@ -358,7 +360,7 @@ func TestSubscribe_ReceivesNotificationOnChange(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
 	ch := w.Subscribe()
 
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 
 	select {
 	case <-ch:
@@ -373,7 +375,7 @@ func TestUnsubscribe_StopsDelivery(t *testing.T) {
 	ch := w.Subscribe()
 	w.Unsubscribe(ch)
 
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 
 	select {
 	case <-ch:
@@ -389,7 +391,7 @@ func TestSubscribe_SecondSubscriberStillReceives(t *testing.T) {
 	chB := w.Subscribe()
 	w.Unsubscribe(chA)
 
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 
 	select {
 	case <-chB:
@@ -409,10 +411,10 @@ func TestSubscribe_SecondSubscriberStillReceives(t *testing.T) {
 func TestSubscribe_NoNotifyWhenCountsUnchanged(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
 	// Pre-claim so the second claimed event is a no-op.
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 
 	ch := w.Subscribe()
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "claimed", TaskID: "T1"}) // no change
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindClaimed, TaskID: "T1"}) // no change
 
 	select {
 	case <-ch:
@@ -427,11 +429,11 @@ func TestDroppedNotifications_IncrementsWhenSubscriberFull(t *testing.T) {
 	ch := w.Subscribe()
 
 	// First event fills the buffer (cap 1).
-	w.applyEvent(kanbanEvent{ID: 1, Kind: "claimed", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 1, Kind: kindClaimed, TaskID: "T1"})
 	// Second count-changing event finds the channel already full → dropped.
-	w.applyEvent(kanbanEvent{ID: 2, Kind: "blocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 2, Kind: kindBlocked, TaskID: "T1"})
 	// Third count-changing event also dropped (we never drained).
-	w.applyEvent(kanbanEvent{ID: 3, Kind: "unblocked", TaskID: "T1"})
+	w.applyEvent(kanbanEvent{ID: 3, Kind: kindUnblocked, TaskID: "T1"})
 
 	if got := w.DroppedNotifications(); got < 2 {
 		t.Fatalf("DroppedNotifications() = %d, want >= 2", got)
@@ -620,9 +622,9 @@ func TestKanbanWatcher_Seed_FailsWhenFileMissing(t *testing.T) {
 func TestKanbanWatcher_FallbackReturnsCachedCounts(t *testing.T) {
 	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
 	// SQLite-unhealthy state (sqliteHealthy=false is the zero value).
-	w.applyCacheResult(3, 2, map[string]string{
-		"T_run":   "running",
-		"T_block": "blocked",
+	w.applyCacheResult(3, 2, map[string]taskStatus{
+		"T_run":   statusRunning,
+		"T_block": statusBlocked,
 	})
 	r, b := w.Counts()
 	if r != 3 || b != 2 {
@@ -641,7 +643,7 @@ func TestKanbanWatcher_FallbackReturnsCachedCounts(t *testing.T) {
 // NOT make us healthy.
 func TestKanbanWatcher_IsHealthyFalseEvenWithCachedData(t *testing.T) {
 	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
-	w.applyCacheResult(5, 0, map[string]string{"T1": "running"})
+	w.applyCacheResult(5, 0, map[string]taskStatus{"T1": statusRunning})
 	if w.IsHealthy() {
 		t.Fatal("IsHealthy() = true after cache populate; want false (cache != healthy)")
 	}
@@ -654,12 +656,12 @@ func TestKanbanWatcher_IsHealthyFalseEvenWithCachedData(t *testing.T) {
 func TestKanbanWatcher_SQLiteValuesOverrideCache(t *testing.T) {
 	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
 	// Pretend SQLite poll succeeded with running=10.
-	w.applySeed(10, 0, map[string]string{"T_sqlite": "running"}, 0)
+	w.applySeed(10, 0, map[string]taskStatus{"T_sqlite": statusRunning}, 0)
 	if !w.IsHealthy() {
 		t.Fatal("expected IsHealthy=true after applySeed")
 	}
 	// Late-arriving cache refresh must not clobber.
-	w.applyCacheResult(1, 1, map[string]string{"T_cache": "running"})
+	w.applyCacheResult(1, 1, map[string]taskStatus{"T_cache": statusRunning})
 	r, b := w.Counts()
 	if r != 10 || b != 0 {
 		t.Fatalf("Counts after late cache = (%d,%d), want (10,0) — SQLite must win", r, b)
@@ -742,7 +744,7 @@ func TestKanbanWatcher_ApplyCacheResult_NotifiesSubscribers(t *testing.T) {
 	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
 	ch := w.Subscribe()
 
-	w.applyCacheResult(1, 0, map[string]string{"T1": "running"})
+	w.applyCacheResult(1, 0, map[string]taskStatus{"T1": statusRunning})
 
 	select {
 	case <-ch:
@@ -757,11 +759,11 @@ func TestKanbanWatcher_ApplyCacheResult_NotifiesSubscribers(t *testing.T) {
 // actually change from the subscriber's perspective).
 func TestKanbanWatcher_ApplyCacheResult_NoNotifyWhenSeedOK(t *testing.T) {
 	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
-	w.applySeed(5, 0, map[string]string{"T_sqlite": "running"}, 0)
+	w.applySeed(5, 0, map[string]taskStatus{"T_sqlite": statusRunning}, 0)
 	ch := w.Subscribe()
 
 	// Late cache refresh with different values — must be ignored.
-	w.applyCacheResult(99, 99, map[string]string{"T_cache": "running"})
+	w.applyCacheResult(99, 99, map[string]taskStatus{"T_cache": statusRunning})
 
 	select {
 	case <-ch:
