@@ -465,6 +465,10 @@ type Home struct {
 	remoteSessionsMu   sync.RWMutex
 	lastRemoteFetch    time.Time // When remote sessions were last fetched
 	remotesFetchActive bool      // Prevents overlapping fetches
+	// remoteSessionRefreshSec is the poll cadence (seconds) for re-fetching
+	// the remote session list, resolved once at construction from
+	// [ui] remote_session_refresh_secs. Issue #1170.
+	remoteSessionRefreshSec int
 
 	// Remote latency (issue #1103) — measured per remote host on the same
 	// cadence as CPU/RAM (see UISettings.GetRemoteLatencyRefreshSecs).
@@ -796,6 +800,10 @@ type remoteSessionsFetchedMsg struct {
 	sessions map[string][]session.RemoteSessionInfo
 	// #1101: per-remote cost summary collected on the same SSH fanout.
 	costs map[string]*costs.RemoteCostSummary
+	// failed marks remotes whose fetch errored this round (issue #1170).
+	// The handler keeps their last-good sessions instead of wiping them,
+	// so one slow/offline remote can't flicker the whole list.
+	failed map[string]bool
 }
 
 // remoteLatenciesFetchedMsg is sent when an async batch of latency
@@ -968,12 +976,14 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
 		h.remoteLatencyRefreshSec = cfg.UI.GetRemoteLatencyRefreshSecs(cfg.SystemStats.GetRefreshSeconds())
+		h.remoteSessionRefreshSec = cfg.UI.GetRemoteSessionRefreshSecs()
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(nil, actualProfile)
 		h.previewPct = session.DefaultPreviewPct
 		h.remoteLatencyRefreshSec = (session.UISettings{}).GetRemoteLatencyRefreshSecs(0)
+		h.remoteSessionRefreshSec = (session.UISettings{}).GetRemoteSessionRefreshSecs()
 	}
 	h.remoteLatency = make(map[string]session.RemoteLatency)
 
@@ -2225,34 +2235,97 @@ func (h *Home) fetchRemoteSessions() tea.Msg {
 		return remoteSessionsFetchedMsg{sessions: nil}
 	}
 
-	results := make(map[string][]session.RemoteSessionInfo)
+	results := make(map[string][]session.RemoteSessionInfo, len(config.Remotes))
 	// #1101: remote cost summaries piggy-back on the existing remote-fetch
 	// channel so the status-line cost segment doesn't lag behind the session
 	// list. nil-valued entries indicate fetch failures (e.g., older remote
 	// agent-deck without `costs summary --json`); the renderer treats those
 	// as "remote contributes zero" so a single broken remote can't poison
 	// the displayed total.
-	costResults := make(map[string]*costs.RemoteCostSummary)
-	ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
-	defer cancel()
+	costResults := make(map[string]*costs.RemoteCostSummary, len(config.Remotes))
+	// #1170: track remotes that errored so the handler keeps their last-good
+	// sessions instead of dropping them.
+	failed := make(map[string]bool, len(config.Remotes))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
+	// #1170: fetch every remote in parallel, each with its OWN timeout, so a
+	// single slow/offline remote can't starve the others. The previous code
+	// shared one 15s budget across all remotes fetched sequentially, which
+	// made healthy remotes drop out of the result map (and flicker in the
+	// TUI) whenever an earlier remote was slow.
 	for name, rc := range config.Remotes {
-		runner := session.NewSSHRunner(name, rc)
-		sessions, err := runner.FetchSessions(ctx)
-		if err != nil {
+		wg.Add(1)
+		go func(name string, rc session.RemoteConfig) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(h.ctx, 15*time.Second)
+			defer cancel()
+
+			runner := session.NewSSHRunner(name, rc)
+			sessions, err := runner.FetchSessions(ctx)
+			if err != nil {
+				mu.Lock()
+				failed[name] = true
+				mu.Unlock()
+				return
+			}
+			for i := range sessions {
+				sessions[i].RemoteName = name
+			}
+			summary, costErr := runner.FetchCostSummary(ctx)
+
+			mu.Lock()
+			results[name] = sessions
+			if costErr == nil && summary != nil {
+				costResults[name] = summary
+			}
+			mu.Unlock()
+		}(name, rc)
+	}
+	wg.Wait()
+
+	return remoteSessionsFetchedMsg{sessions: results, costs: costResults, failed: failed}
+}
+
+// mergeRemoteSessions reconciles a freshly fetched remote-session map against
+// the previously displayed one (issue #1170). The contract:
+//
+//   - remotes present in fetched → replaced wholesale (new sessions appear,
+//     removed sessions drop);
+//   - remotes in failed (errored this round) → keep their last-good sessions
+//     from prev, so a transient SSH hiccup never wipes a remote;
+//   - remotes absent from both fetched and failed → dropped (deconfigured).
+//
+// It is a pure function so the reconciliation logic is unit-testable without
+// SSH or the Bubble Tea event loop.
+func mergeRemoteSessions(prev, fetched map[string][]session.RemoteSessionInfo, failed map[string]bool) map[string][]session.RemoteSessionInfo {
+	merged := make(map[string][]session.RemoteSessionInfo, len(fetched)+len(failed))
+	for name, sess := range fetched {
+		merged[name] = sess
+	}
+	for name := range failed {
+		if _, ok := merged[name]; ok {
+			// A successful result for this remote (if any) always wins.
 			continue
 		}
-		for i := range sessions {
-			sessions[i].RemoteName = name
-		}
-		results[name] = sessions
-
-		if summary, costErr := runner.FetchCostSummary(ctx); costErr == nil && summary != nil {
-			costResults[name] = summary
+		if prevSess, ok := prev[name]; ok && len(prevSess) > 0 {
+			merged[name] = prevSess
 		}
 	}
+	return merged
+}
 
-	return remoteSessionsFetchedMsg{sessions: results, costs: costResults}
+// shouldFetchRemoteSessions reports whether the periodic tick should kick off
+// a remote-session re-fetch: the configured interval has elapsed since the
+// last fetch and no fetch is currently in flight. Issue #1170.
+func (h *Home) shouldFetchRemoteSessions(now time.Time) bool {
+	interval := h.remoteSessionRefreshSec
+	if interval <= 0 {
+		interval = session.DefaultRemoteSessionRefreshSecs
+	}
+	h.remoteSessionsMu.RLock()
+	defer h.remoteSessionsMu.RUnlock()
+	return !h.remotesFetchActive && now.Sub(h.lastRemoteFetch) >= time.Duration(interval)*time.Second
 }
 
 // measureRemoteLatencies measures round-trip latency to every configured
@@ -4399,7 +4472,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case remoteSessionsFetchedMsg:
 		h.remoteSessionsMu.Lock()
-		h.remoteSessions = msg.sessions
+		// #1170: merge rather than wholesale-replace so a remote that errored
+		// this round keeps its last-good sessions instead of flickering out.
+		h.remoteSessions = mergeRemoteSessions(h.remoteSessions, msg.sessions, msg.failed)
 		h.lastRemoteFetch = time.Now()
 		h.remotesFetchActive = false
 		h.remoteSessionsMu.Unlock()
@@ -5038,11 +5113,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.saveUIState()
 		}
 
-		// Periodic remote session fetch (every 30 seconds)
-		h.remoteSessionsMu.RLock()
-		shouldFetch := !h.remotesFetchActive && time.Since(h.lastRemoteFetch) >= 30*time.Second
-		h.remoteSessionsMu.RUnlock()
-		if shouldFetch {
+		// Periodic remote session fetch (issue #1170). Cadence is configurable
+		// via [ui] remote_session_refresh_secs (default 15s); see
+		// shouldFetchRemoteSessions for the stale/in-flight gating.
+		if h.shouldFetchRemoteSessions(time.Now()) {
 			h.remoteSessionsMu.Lock()
 			h.remotesFetchActive = true
 			h.remoteSessionsMu.Unlock()
