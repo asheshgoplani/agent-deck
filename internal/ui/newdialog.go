@@ -426,6 +426,13 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 		}
 		d.inheritedSettings = buildInheritedSettings(userConfig.Docker)
 		d.branchPrefix = userConfig.Worktree.Prefix()
+		// #1172: preselect the configured default model so users who set
+		// [claude].default_model aren't forced to switch off Sonnet on every
+		// new session. Overrides the empty value set above; left empty when
+		// no (valid, in-catalog) default is configured.
+		if dm := preselectDefaultModel(userConfig, d.GetSelectedCommand()); dm != "" {
+			d.modelInput.SetValue(dm)
+		}
 	}
 	d.branchInput.Placeholder = d.branchPrefix + "branch-name"
 	d.rebuildFocusTargets()
@@ -826,6 +833,37 @@ func knownModelIDsForTool(tool string) []string {
 	default:
 		return nil
 	}
+}
+
+// preselectDefaultModel returns the model ID to prefill in the new-session
+// model field for the given tool. It honors the per-tool configured
+// default_model but only when that value is present in the tool's known-model
+// catalog — an empty default, an unset config, or a stale/typo'd value (e.g.
+// an alias like "opus" or a removed pin) all degrade gracefully to "" so the
+// dialog leaves the model unset and the tool falls back to its own default
+// rather than launching a bogus --model flag (#1172). Today only Claude routes
+// its launch model through this dialog field; the other tools apply their
+// default_model at command-build time.
+func preselectDefaultModel(config *session.UserConfig, tool string) string {
+	if config == nil {
+		return ""
+	}
+	var configured string
+	switch {
+	case session.IsClaudeCompatible(tool):
+		configured = config.Claude.DefaultModel
+	default:
+		return ""
+	}
+	if configured = strings.TrimSpace(configured); configured == "" {
+		return ""
+	}
+	for _, id := range knownModelIDsForTool(tool) {
+		if id == configured {
+			return configured
+		}
+	}
+	return ""
 }
 
 func (d *NewDialog) filterModelSuggestions() {

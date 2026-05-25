@@ -821,6 +821,12 @@ type ClaudeSettings struct {
 	// copied to Instance.ExtraArgs when a Claude session is created.
 	ExtraArgs []string `toml:"extra_args"`
 
+	// DefaultModel is the model to preselect for new Claude sessions
+	// (e.g., "claude-opus-4-7"). Mirrors [gemini]/[opencode]/[copilot]
+	// default_model. When empty, the dialog leaves the model unset and Claude
+	// Code falls back to its own default (#1172).
+	DefaultModel string `toml:"default_model"`
+
 	// UseChrome enables --chrome by default for Claude sessions.
 	UseChrome bool `toml:"use_chrome"`
 
@@ -2760,6 +2766,8 @@ func CreateExampleConfig() error {
 # dangerous_mode = true
 # Extra Claude CLI flags remembered from the New Session dialog
 # extra_args = ["--agent", "reviewer"]
+# Default model preselected for new sessions (must be a known catalog model)
+# default_model = "claude-opus-4-7"
 # Enable Chrome / teammate mode by default
 # use_chrome = false
 # use_teammate_mode = false
