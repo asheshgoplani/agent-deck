@@ -907,10 +907,12 @@ func TestApplyEvent_TaskTableCap(t *testing.T) {
 	}
 }
 
-// TestPollLoop_PanicMarksUnhealthy verifies that a recovered panic in
-// pollLoop's defer also clears sqliteHealthy, so callers fall back to the
-// CLI cache instead of receiving frozen-but-stale Counts forever.
-func TestPollLoop_PanicMarksUnhealthy(t *testing.T) {
+// TestMarkUnhealthy_PreservesLastKnownCounts verifies the primitive that
+// pollLoop's panic-recovery handler depends on: after markUnhealthy flips
+// sqliteHealthy=false, Counts continues returning the last-known values
+// (driven by the SQLite path before the panic), so the UI shows stale-but-
+// known instead of zero.
+func TestMarkUnhealthy_PreservesLastKnownCounts(t *testing.T) {
 	w := NewKanbanWatcher("ignored")
 	// Pretend a previous seed succeeded.
 	w.applySeed(5, 0, map[string]taskStatus{"T": statusRunning}, 0)
@@ -918,17 +920,36 @@ func TestPollLoop_PanicMarksUnhealthy(t *testing.T) {
 		t.Fatal("setup: expected IsHealthy=true after applySeed")
 	}
 
-	// Simulate the recovery path's effect: log + markUnhealthy.
-	// (We don't actually trigger a panic; we verify markUnhealthy is the
-	// right primitive — pollLoop's defer invokes exactly this.)
 	w.markUnhealthy()
 
 	if w.IsHealthy() {
 		t.Fatal("after markUnhealthy: expected IsHealthy=false")
 	}
-	// Counts must still return last-known values (not zero) so the UI
-	// shows stale-but-known instead of zeros.
 	if r, _ := w.Counts(); r != 5 {
 		t.Fatalf("Counts after markUnhealthy = %d, want 5 (last known)", r)
+	}
+}
+
+// TestPollLoopRecover_MarksUnhealthy verifies pollLoop's panic-recovery
+// handler (extracted as a method so it's directly testable). Calls the
+// helper with a synthesized panic value and asserts the watcher transitions
+// to unhealthy. If anyone deletes the pollLoopRecover call from pollLoop's
+// defer, that's a code-review-only catch — but if the helper's body itself
+// regresses, this test will fail.
+func TestPollLoopRecover_MarksUnhealthy(t *testing.T) {
+	w := NewKanbanWatcher("ignored")
+	w.applySeed(7, 1, map[string]taskStatus{"T": statusRunning, "B": statusBlocked}, 0)
+	if !w.IsHealthy() {
+		t.Fatal("setup: expected IsHealthy=true after applySeed")
+	}
+
+	w.pollLoopRecover("simulated panic value")
+
+	if w.IsHealthy() {
+		t.Fatal("pollLoopRecover did not clear sqliteHealthy")
+	}
+	// Counts still reflect last-known seed values.
+	if r, b := w.Counts(); r != 7 || b != 1 {
+		t.Fatalf("Counts after pollLoopRecover = (%d,%d), want (7,1)", r, b)
 	}
 }

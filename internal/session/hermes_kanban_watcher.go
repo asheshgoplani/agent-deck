@@ -77,24 +77,37 @@ type KanbanWatcher struct {
 
 	droppedNotifications atomic.Int64
 
-	// CLI-refresh error log-rate-limiting state. Atomic-only; no struct lock.
-	// Each flag drives "log this class of error at most once per failure
-	// streak"; reset on the next successful refresh in refreshCacheFromCLI.
-	cliRefreshFailed         atomic.Bool // any-exec-failure streak active
-	cliBinaryMissingLogged   atomic.Bool // "hermes not in PATH" logged once
-	cliUnmarshalFailed       atomic.Bool // JSON unmarshal failure streak active
-	cliPayloadTooLarge       atomic.Bool // CLI stdout exceeded kanbanCLIOutputCap streak active
+	// Log-rate-limiting state (atomic-only, no struct lock). Each
+	// onceUntilReset flag throttles one class of warning to at most one log
+	// line per failure streak; the refresh/seed success paths Reset() them.
+	cliRefreshFailed       onceUntilReset // any-exec-failure streak active
+	cliBinaryMissingLogged onceUntilReset // "hermes not in PATH" logged once
+	cliUnmarshalFailed     onceUntilReset // JSON unmarshal failure streak active
+	cliPayloadTooLarge     onceUntilReset // CLI stdout exceeded kanbanCLIOutputCap
+	taskTableFullLogged    onceUntilReset // taskStatuses map cap reached
 
 	// fetchFailStreak counts consecutive fetchNewEvents failures. When it
 	// crosses kanbanFetchFailStreakWarn we emit a single Warn log; reset
 	// to 0 on the next successful fetch (and that reset emits an Info if
-	// the streak was ≥ the warn threshold).
+	// the streak was ≥ the warn threshold). Counter rather than once-flag
+	// because the threshold matters (5s of failure before escalation).
 	fetchFailStreak atomic.Int32
-
-	// taskTableFullLogged is true after we've logged the "taskStatuses cap
-	// reached" Warn once. Reset by the next successful seed (in applySeed).
-	taskTableFullLogged atomic.Bool
 }
+
+// onceUntilReset is a state-transition log-once primitive. Trigger returns
+// true on the first call after construction (or after the most recent Reset),
+// allowing the caller to log exactly once per failure streak; subsequent
+// calls return false until Reset is called. Concurrent callers race for the
+// single "first" result; only one wins. The zero value is ready to use.
+type onceUntilReset struct{ fired atomic.Bool }
+
+// Trigger flips the state to "fired" and returns true if this is the first
+// trigger since construction or the last Reset.
+func (o *onceUntilReset) Trigger() bool { return !o.fired.Swap(true) }
+
+// Reset re-arms the trigger so the next Trigger call will return true again.
+// Typically called from the success path that the failure streak was tracking.
+func (o *onceUntilReset) Reset() { o.fired.Store(false) }
 
 var kanbanLog = logging.ForComponent("hermes-kanban")
 
@@ -398,9 +411,6 @@ func (w *KanbanWatcher) TaskStatus(id string) string {
 // watcher's data is usable — Counts/TaskStatus always return the best-
 // available values regardless of this flag.
 func (w *KanbanWatcher) IsHealthy() bool {
-	if w == nil {
-		return false
-	}
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.sqliteHealthy
@@ -453,9 +463,6 @@ func (w *KanbanWatcher) Unsubscribe(ch <-chan struct{}) {
 // DroppedNotifications returns how many subscriber sends were coalesced
 // because the consumer's buffer was full.
 func (w *KanbanWatcher) DroppedNotifications() int64 {
-	if w == nil {
-		return 0
-	}
 	return w.droppedNotifications.Load()
 }
 
@@ -474,30 +481,40 @@ func (w *KanbanWatcher) notify() {
 	}
 }
 
+// pollLoopRecover is the deferred recovery handler for pollLoop. It logs the
+// panic at Error level and clears sqliteHealthy so Counts/TaskStatus fall back
+// to the CLI cache; the inner recover defends against a secondary panic from
+// markUnhealthy if w.mu itself is in an inconsistent state.
+//
+// Exposed as a method (not an inline closure) so tests can exercise the
+// recovery behavior directly with a synthesized panic value, without needing
+// to manufacture a real panic inside the running pollLoop goroutine.
+func (w *KanbanWatcher) pollLoopRecover(r interface{}) {
+	kanbanLog.Error("kanban_pollloop_panic",
+		slog.Any("panic", r),
+		slog.String("db_path", loggablePath(w.dbPath)),
+		slog.String("hint", "restart agent-deck to resume real-time updates; CLI fallback now active"),
+	)
+	defer func() { _ = recover() }()
+	w.markUnhealthy()
+}
+
 // pollLoop is the main goroutine. It seeds from the tasks table, then on each
 // tick fetches new events from task_events. It re-seeds every kanbanReseedInterval
 // to bound any drift the state machine might accumulate.
 //
 // A panic inside this goroutine would silently freeze badges forever (no more
-// notifications would ever fire). The defer-recover logs an Error AND clears
-// sqliteHealthy so Counts/TaskStatus fall back to the CLI cache — a degraded
-// (15s polling) experience instead of a frozen one. The loop still exits
-// because Go can't safely resume after a recovered panic that may have left
-// internal state inconsistent; the user must restart agent-deck to recover
-// sub-second updates. The fallback is the safety net for the window in
-// between.
+// notifications would ever fire). pollLoopRecover (called from the defer
+// below) logs an Error AND clears sqliteHealthy so Counts/TaskStatus fall
+// back to the CLI cache — a degraded (15s polling) experience instead of a
+// frozen one. The loop still exits because Go can't safely resume after a
+// recovered panic that may have left internal state inconsistent; the user
+// must restart agent-deck to recover sub-second updates. The fallback is the
+// safety net for the window in between.
 func (w *KanbanWatcher) pollLoop() {
 	defer func() {
 		if r := recover(); r != nil {
-			kanbanLog.Error("kanban_pollloop_panic",
-				slog.Any("panic", r),
-				slog.String("db_path", loggablePath(w.dbPath)),
-				slog.String("hint", "restart agent-deck to resume real-time updates; CLI fallback now active"),
-			)
-			// Best-effort markUnhealthy — protect against a secondary panic
-			// in case w.mu itself is in an inconsistent state.
-			defer func() { _ = recover() }()
-			w.markUnhealthy()
+			w.pollLoopRecover(r)
 		}
 	}()
 
@@ -690,7 +707,7 @@ func (w *KanbanWatcher) applySeed(running, blocked int, statuses map[string]task
 	// Reset the table-full streak flag: the new taskStatuses map starts
 	// fresh, so the cap can re-trigger if events come in faster than we
 	// can clear them again.
-	w.taskTableFullLogged.Store(false)
+	w.taskTableFullLogged.Reset()
 	if recovered {
 		kanbanLog.Info("kanban_sqlite_recovered",
 			slog.String("db_path", loggablePath(w.dbPath)),
@@ -784,7 +801,7 @@ func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 	// tracked it. The 5-minute reseed resets the map and the streak flag.
 	trackNewTask := func(id string, s taskStatus) bool {
 		if len(w.taskStatuses) >= kanbanMaxTrackedTasks {
-			if !w.taskTableFullLogged.Swap(true) {
+			if w.taskTableFullLogged.Trigger() {
 				kanbanLog.Warn("kanban_task_table_full",
 					slog.Int("cap", kanbanMaxTrackedTasks),
 					slog.String("hint", "watcher will reseed in <5min to reclaim memory"),
@@ -966,7 +983,7 @@ func (w *KanbanWatcher) refreshCacheFromCLI() {
 		return
 	}
 	if int64(len(out)) > kanbanCLIOutputCap {
-		if !w.cliPayloadTooLarge.Swap(true) {
+		if w.cliPayloadTooLarge.Trigger() {
 			kanbanLog.Warn("kanban_cli_payload_too_large",
 				slog.Int("bytes_read", len(out)),
 				slog.Int("cap_bytes", kanbanCLIOutputCap),
@@ -975,14 +992,14 @@ func (w *KanbanWatcher) refreshCacheFromCLI() {
 		return
 	}
 	// On success, reset all CLI-error streak flags so future failures log again.
-	w.cliRefreshFailed.Store(false)
-	w.cliPayloadTooLarge.Store(false)
+	w.cliRefreshFailed.Reset()
+	w.cliPayloadTooLarge.Reset()
 	var tasks []struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(out, &tasks); err != nil {
-		if !w.cliUnmarshalFailed.Swap(true) {
+		if w.cliUnmarshalFailed.Trigger() {
 			preview := string(out)
 			if len(preview) > 200 {
 				preview = preview[:200]
@@ -996,7 +1013,7 @@ func (w *KanbanWatcher) refreshCacheFromCLI() {
 	}
 	// Successful unmarshal — reset the unmarshal-streak flag so a future
 	// shape drift logs again.
-	w.cliUnmarshalFailed.Store(false)
+	w.cliUnmarshalFailed.Reset()
 	var running, blocked int
 	statuses := make(map[string]taskStatus)
 	for _, t := range tasks {
@@ -1048,14 +1065,14 @@ func (w *KanbanWatcher) applyCacheResult(running, blocked int, statuses map[stri
 // once per failure streak.
 func (w *KanbanWatcher) logCLIRefreshError(err error) {
 	if errors.Is(err, exec.ErrNotFound) {
-		if !w.cliBinaryMissingLogged.Swap(true) {
+		if w.cliBinaryMissingLogged.Trigger() {
 			kanbanLog.Info("kanban_cli_not_installed",
 				slog.String("hint", "install hermes for CLI fallback when kanban.db is unreadable"),
 			)
 		}
 		return
 	}
-	if !w.cliRefreshFailed.Swap(true) {
+	if w.cliRefreshFailed.Trigger() {
 		kanbanLog.Warn("kanban_cli_refresh_failed",
 			slog.String("error", err.Error()),
 		)

@@ -122,7 +122,9 @@ func handleKanbanList(args []string) {
 
 	statuses := strings.Split(statusVal, ",")
 	if len(statuses) == 1 {
-		hermesArgs := append([]string{"kanban", "list", "--status", statuses[0]}, clean...)
+		hermesArgs := make([]string, 0, 4+len(clean))
+		hermesArgs = append(hermesArgs, "kanban", "list", "--status", statuses[0])
+		hermesArgs = append(hermesArgs, clean...)
 		runHermes(hermesArgs)
 		return
 	}
@@ -132,7 +134,9 @@ func handleKanbanList(args []string) {
 		if s == "" {
 			continue
 		}
-		hermesArgs := append([]string{"kanban", "list", "--status", s}, clean...)
+		hermesArgs := make([]string, 0, 4+len(clean))
+		hermesArgs = append(hermesArgs, "kanban", "list", "--status", s)
+		hermesArgs = append(hermesArgs, clean...)
 		runHermes(hermesArgs)
 	}
 }
@@ -150,7 +154,9 @@ func handleKanbanPassthrough(verb string, args []string) {
 	if session != nil {
 		fmt.Fprintf(os.Stderr, "Note: --session has no effect on 'kanban %s'; flag ignored.\n", verb)
 	}
-	hermesArgs := append([]string{"kanban", verb}, remaining...)
+	hermesArgs := make([]string, 0, 2+len(remaining))
+	hermesArgs = append(hermesArgs, "kanban", verb)
+	hermesArgs = append(hermesArgs, remaining...)
 	runHermes(hermesArgs)
 }
 
@@ -170,13 +176,17 @@ func handleKanbanCreate(args []string) {
 
 	if session == nil {
 		// No --session specified: delegate directly, no auto-attach.
-		hermesArgs := append([]string{"kanban", "create"}, remaining...)
+		hermesArgs := make([]string, 0, 2+len(remaining))
+		hermesArgs = append(hermesArgs, "kanban", "create")
+		hermesArgs = append(hermesArgs, remaining...)
 		runHermes(hermesArgs)
 		return
 	}
 
 	// Run hermes kanban create with --json so we can parse the task ID.
-	hermesArgs := append([]string{"kanban", "create", "--json"}, remaining...)
+	hermesArgs := make([]string, 0, 3+len(remaining))
+	hermesArgs = append(hermesArgs, "kanban", "create", "--json")
+	hermesArgs = append(hermesArgs, remaining...)
 	cmd := exec.Command("hermes", hermesArgs...) //nolint:gosec
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
