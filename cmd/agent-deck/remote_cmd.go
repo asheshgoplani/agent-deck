@@ -595,9 +595,11 @@ func installOnRemote(runner *session.SSHRunner, ctx context.Context) error {
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	// Deploy to remote
+	// Deploy to remote and verify the remote actually runs the new version
+	// before we report success (#1171: deploy + version-check used to target
+	// different files, producing a false "✓ Installed").
 	fmt.Printf("  Deploying to %s...\n", runner.Host)
-	if err := runner.DeployBinary(ctx, binaryData); err != nil {
+	if err := runner.InstallBinary(ctx, binaryData, Version); err != nil {
 		return fmt.Errorf("deploy failed: %w", err)
 	}
 
