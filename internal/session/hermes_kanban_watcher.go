@@ -3,9 +3,11 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +37,14 @@ type KanbanWatcher struct {
 	cursor       int64 // last-seen task_events.id
 	seedOK       bool
 
+	// CLI cache fallback — used by Counts/TaskStatus when seedOK is false
+	// (the SQLite path is unhealthy, e.g. kanban.db missing or unreadable).
+	// The same running/blocked/taskStatuses fields above hold cached values
+	// in this mode; cacheFetchedAt records when they were last refreshed and
+	// cacheRefreshing guards against multiple concurrent subprocess refreshes.
+	cacheFetchedAt  time.Time
+	cacheRefreshing bool
+
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 	startOnce sync.Once
@@ -57,6 +67,11 @@ const (
 	// `tasks` table. Re-seeding bounds drift from missed or out-of-order events
 	// (defense in depth — the state machine should already converge).
 	kanbanReseedInterval = 5 * time.Minute
+
+	// kanbanCacheTTL is how stale the CLI fallback cache may be before
+	// Counts/TaskStatus kicks off a background refresh. Only relevant when
+	// the SQLite poll is unhealthy.
+	kanbanCacheTTL = 15 * time.Second
 )
 
 // kanbanEvent mirrors the relevant columns of the task_events row.
@@ -98,16 +113,40 @@ func (w *KanbanWatcher) Stop() {
 	})
 }
 
-// Counts returns the current running and blocked task counts.
+// Counts returns the current running and blocked task counts. When the
+// SQLite poll is healthy, returns its values. Otherwise falls through to
+// the CLI cache (`hermes kanban list --json`), kicking off a background
+// refresh if the cache is stale.
 func (w *KanbanWatcher) Counts() (running, blocked int) {
+	w.mu.RLock()
+	if w.seedOK {
+		r, b := w.running, w.blocked
+		w.mu.RUnlock()
+		return r, b
+	}
+	w.mu.RUnlock()
+	w.maybeRefreshCache()
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return w.running, w.blocked
 }
 
 // TaskStatus returns "running", "blocked", or "" (terminal / unknown) for the
-// given task ID.
+// given task ID. Follows the same SQLite-then-cache priority as Counts.
 func (w *KanbanWatcher) TaskStatus(id string) string {
+	if id == "" {
+		return ""
+	}
+	w.mu.RLock()
+	if w.seedOK {
+		defer w.mu.RUnlock()
+		if w.taskStatuses == nil {
+			return ""
+		}
+		return w.taskStatuses[id]
+	}
+	w.mu.RUnlock()
+	w.maybeRefreshCache()
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.taskStatuses == nil {
@@ -439,4 +478,114 @@ func (w *KanbanWatcher) applyEvent(evt kanbanEvent) {
 	if changed {
 		w.notify()
 	}
+}
+
+// ----------------------------------------------------------------------------
+// CLI cache fallback
+//
+// When the SQLite poll is unhealthy (kanban.db missing / unreadable), Counts
+// and TaskStatus fall through to a stale-while-revalidate cache populated by
+// invoking `hermes kanban list --json` as a subprocess. The cache and the
+// SQLite-poll share the same in-memory fields (running, blocked, taskStatuses);
+// whichever source last wrote them owns the current value. seedOK distinguishes
+// who wrote last.
+// ----------------------------------------------------------------------------
+
+// ForceRefreshCache refreshes the CLI fallback cache immediately, bypassing
+// the TTL. Safe to call from a Bubble Tea Cmd goroutine; the refresh runs
+// in-line on the caller's goroutine.
+func (w *KanbanWatcher) ForceRefreshCache() {
+	w.refreshCacheFromCLI()
+}
+
+// maybeRefreshCache kicks off a background refresh iff the cache is stale
+// and no refresh is currently in flight. Returns immediately; cached values
+// remain readable through w.mu while the refresh runs.
+func (w *KanbanWatcher) maybeRefreshCache() {
+	w.mu.Lock()
+	stale := time.Since(w.cacheFetchedAt) >= kanbanCacheTTL
+	if !stale || w.cacheRefreshing {
+		w.mu.Unlock()
+		return
+	}
+	w.cacheRefreshing = true
+	w.mu.Unlock()
+
+	go func() {
+		w.refreshCacheFromCLI()
+		w.mu.Lock()
+		w.cacheRefreshing = false
+		w.mu.Unlock()
+	}()
+}
+
+// refreshCacheFromCLI runs `hermes kanban list --json`, parses the response,
+// and applies it via applyCacheResult. Errors are silent: a failed CLI call
+// (hermes not installed, command fails) leaves the previous cached values
+// in place and the next call will retry.
+func (w *KanbanWatcher) refreshCacheFromCLI() {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "hermes", "kanban", "list", "--json").Output()
+	if err != nil {
+		return
+	}
+	var tasks []struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(out, &tasks); err != nil {
+		return
+	}
+	var running, blocked int
+	statuses := make(map[string]string)
+	for _, t := range tasks {
+		switch t.Status {
+		case "running", "claimed":
+			running++
+			if t.ID != "" {
+				statuses[t.ID] = "running"
+			}
+		case "blocked":
+			blocked++
+			if t.ID != "" {
+				statuses[t.ID] = "blocked"
+			}
+		}
+	}
+	w.applyCacheResult(running, blocked, statuses)
+}
+
+// applyCacheResult installs a fresh cache snapshot under w.mu and notifies
+// subscribers if counts changed. Exposed as a separate method so tests can
+// exercise the cache path without forking a subprocess.
+//
+// Note: this does NOT set seedOK. The cache is the unhealthy-fallback path;
+// seedOK remains the property of the SQLite poll only.
+func (w *KanbanWatcher) applyCacheResult(running, blocked int, statuses map[string]string) {
+	w.mu.Lock()
+	changed := w.running != running || w.blocked != blocked
+	// Only overwrite when the SQLite poll is NOT healthy. If SQLite became
+	// healthy between when refreshCacheFromCLI started and now, its values
+	// are authoritative and we should not clobber them.
+	if !w.seedOK {
+		w.running = running
+		w.blocked = blocked
+		w.taskStatuses = statuses
+	}
+	w.cacheFetchedAt = time.Now()
+	w.mu.Unlock()
+	if changed && !w.seedOKLocked() {
+		w.notify()
+	}
+}
+
+// seedOKLocked is a tiny helper that re-reads seedOK under a brief RLock —
+// used by applyCacheResult to decide whether to notify after dropping the
+// write lock. (We can't hold the write lock across notify because notify
+// takes subsMu and could in principle interact poorly with future changes.)
+func (w *KanbanWatcher) seedOKLocked() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.seedOK
 }

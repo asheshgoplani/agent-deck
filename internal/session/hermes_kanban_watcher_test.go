@@ -610,3 +610,163 @@ func TestKanbanWatcher_Seed_FailsWhenFileMissing(t *testing.T) {
 		t.Fatal("IsHealthy() = true after failed seed; want false")
 	}
 }
+
+// ----------------------------------------------------------------------------
+// CLI cache fallback (used when SQLite poll is unhealthy)
+// ----------------------------------------------------------------------------
+
+// TestKanbanWatcher_FallbackReturnsCachedCounts verifies that when the SQLite
+// poll is unhealthy, Counts/TaskStatus return values written by applyCacheResult.
+func TestKanbanWatcher_FallbackReturnsCachedCounts(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	// SQLite-unhealthy state (seedOK=false is the zero value).
+	w.applyCacheResult(3, 2, map[string]string{
+		"T_run":   "running",
+		"T_block": "blocked",
+	})
+	r, b := w.Counts()
+	if r != 3 || b != 2 {
+		t.Fatalf("Counts after cache result = (%d,%d), want (3,2)", r, b)
+	}
+	if got := w.TaskStatus("T_run"); got != "running" {
+		t.Fatalf("TaskStatus(T_run) = %q, want running", got)
+	}
+	if got := w.TaskStatus("T_block"); got != "blocked" {
+		t.Fatalf("TaskStatus(T_block) = %q, want blocked", got)
+	}
+}
+
+// TestKanbanWatcher_IsHealthyFalseEvenWithCachedData pins the contract that
+// IsHealthy refers to the SQLite poll specifically — having cached data does
+// NOT make us healthy.
+func TestKanbanWatcher_IsHealthyFalseEvenWithCachedData(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	w.applyCacheResult(5, 0, map[string]string{"T1": "running"})
+	if w.IsHealthy() {
+		t.Fatal("IsHealthy() = true after cache populate; want false (cache != healthy)")
+	}
+}
+
+// TestKanbanWatcher_SQLiteValuesOverrideCache verifies that once the SQLite
+// poll becomes healthy, applyCacheResult does NOT clobber its values.
+// This guards against the race where a cache refresh started while unhealthy
+// completes after the SQLite poll has succeeded.
+func TestKanbanWatcher_SQLiteValuesOverrideCache(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	// Pretend SQLite poll succeeded with running=10.
+	w.applySeed(10, 0, map[string]string{"T_sqlite": "running"}, 0)
+	if !w.IsHealthy() {
+		t.Fatal("expected IsHealthy=true after applySeed")
+	}
+	// Late-arriving cache refresh must not clobber.
+	w.applyCacheResult(1, 1, map[string]string{"T_cache": "running"})
+	r, b := w.Counts()
+	if r != 10 || b != 0 {
+		t.Fatalf("Counts after late cache = (%d,%d), want (10,0) — SQLite must win", r, b)
+	}
+	if got := w.TaskStatus("T_sqlite"); got != "running" {
+		t.Fatalf("TaskStatus(T_sqlite) = %q, want running", got)
+	}
+}
+
+// TestKanbanWatcher_MaybeRefreshCache_KicksOffWhenStale verifies the
+// background-refresh trigger fires when the cache is older than TTL.
+func TestKanbanWatcher_MaybeRefreshCache_KicksOffWhenStale(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	// Force the cache to look very stale.
+	w.mu.Lock()
+	w.cacheFetchedAt = time.Now().Add(-2 * kanbanCacheTTL)
+	w.mu.Unlock()
+	w.maybeRefreshCache()
+	// maybeRefreshCache sets cacheRefreshing=true and spawns a goroutine.
+	// Verify the in-flight flag was set (it may have already cleared if the
+	// subprocess fails fast on a system without hermes — in that case the
+	// goroutine completed and reset it). Either the flag is true now, or
+	// cacheFetchedAt has been updated by a completed refresh.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		w.mu.RLock()
+		refreshing := w.cacheRefreshing
+		fetched := w.cacheFetchedAt
+		w.mu.RUnlock()
+		// A refresh either is in flight, or completed and updated fetchedAt.
+		if refreshing || time.Since(fetched) < time.Second {
+			return // success
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("maybeRefreshCache did not appear to schedule or complete a refresh")
+}
+
+// TestKanbanWatcher_MaybeRefreshCache_NoopWhenFresh verifies no refresh is
+// scheduled when the cache is within TTL.
+func TestKanbanWatcher_MaybeRefreshCache_NoopWhenFresh(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	// Fresh cache.
+	w.mu.Lock()
+	w.cacheFetchedAt = time.Now()
+	w.mu.Unlock()
+	w.maybeRefreshCache()
+	w.mu.RLock()
+	refreshing := w.cacheRefreshing
+	w.mu.RUnlock()
+	if refreshing {
+		t.Fatal("maybeRefreshCache set cacheRefreshing=true while cache was fresh")
+	}
+}
+
+// TestKanbanWatcher_MaybeRefreshCache_NoConcurrent verifies a second call
+// is a no-op while a refresh is in flight.
+func TestKanbanWatcher_MaybeRefreshCache_NoConcurrent(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	w.mu.Lock()
+	w.cacheFetchedAt = time.Now().Add(-2 * kanbanCacheTTL)
+	w.cacheRefreshing = true // pretend one is already in flight
+	w.mu.Unlock()
+
+	w.maybeRefreshCache()
+	// The flag should remain true — we did not spawn a second goroutine that
+	// would later reset it. This is asserted by the fact that the value
+	// remains true synchronously after the call.
+	w.mu.RLock()
+	refreshing := w.cacheRefreshing
+	w.mu.RUnlock()
+	if !refreshing {
+		t.Fatal("maybeRefreshCache cleared cacheRefreshing while it was already true")
+	}
+}
+
+// TestKanbanWatcher_ApplyCacheResult_NotifiesSubscribers verifies the cache
+// path participates in the same notification system as the SQLite path.
+func TestKanbanWatcher_ApplyCacheResult_NotifiesSubscribers(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	ch := w.Subscribe()
+
+	w.applyCacheResult(1, 0, map[string]string{"T1": "running"})
+
+	select {
+	case <-ch:
+		// ok
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("subscriber did not receive notification on cache result")
+	}
+}
+
+// TestKanbanWatcher_ApplyCacheResult_NoNotifyWhenSeedOK verifies that when
+// SQLite is healthy, a late cache result does NOT notify (counts didn't
+// actually change from the subscriber's perspective).
+func TestKanbanWatcher_ApplyCacheResult_NoNotifyWhenSeedOK(t *testing.T) {
+	w := NewKanbanWatcher(filepath.Join(t.TempDir(), "no.db"))
+	w.applySeed(5, 0, map[string]string{"T_sqlite": "running"}, 0)
+	ch := w.Subscribe()
+
+	// Late cache refresh with different values — must be ignored.
+	w.applyCacheResult(99, 99, map[string]string{"T_cache": "running"})
+
+	select {
+	case <-ch:
+		t.Fatal("subscriber received notification while SQLite was authoritative")
+	case <-time.After(100 * time.Millisecond):
+		// ok
+	}
+}

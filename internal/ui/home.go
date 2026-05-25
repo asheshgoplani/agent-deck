@@ -747,14 +747,14 @@ type kanbanWatcherChangedMsg struct{}
 const kanbanPollInterval = 15 * time.Second
 
 // kanbanPollCmd returns a one-shot Cmd that waits kanbanPollInterval, then
-// returns kanbanCountsChangedMsg. The subprocess refresh is only invoked when
-// the WebSocket watcher is unhealthy — when healthy, the tick is essentially
+// returns kanbanCountsChangedMsg. The CLI cache refresh is only invoked when
+// the SQLite watcher is unhealthy — when healthy, the tick is essentially
 // free and exists only so that a healthy→unhealthy transition is picked up
 // within one interval.
 func kanbanPollCmd(w *session.KanbanWatcher) tea.Cmd {
 	return tea.Tick(kanbanPollInterval, func(time.Time) tea.Msg {
-		if w == nil || !w.IsHealthy() {
-			session.ForceRefreshHermesKanbanCache()
+		if w != nil && !w.IsHealthy() {
+			w.ForceRefreshCache()
 		}
 		return kanbanCountsChangedMsg{}
 	})
@@ -763,9 +763,11 @@ func kanbanPollCmd(w *session.KanbanWatcher) tea.Cmd {
 // kanbanImmediateRefreshCmd does a one-shot synchronous CLI cache refresh and
 // returns kanbanCountsChangedMsg immediately. Used at startup so badges appear
 // without waiting for the first tick interval.
-func kanbanImmediateRefreshCmd() tea.Cmd {
+func kanbanImmediateRefreshCmd(w *session.KanbanWatcher) tea.Cmd {
 	return func() tea.Msg {
-		session.ForceRefreshHermesKanbanCache()
+		if w != nil {
+			w.ForceRefreshCache()
+		}
 		return kanbanCountsChangedMsg{}
 	}
 }
@@ -1233,7 +1235,8 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Start Hermes Kanban badge watcher. The watcher reads ~/.hermes/kanban.db
 	// directly and tolerates a missing file (stays unhealthy until it appears),
 	// so we can always start it — no gateway URL or dashboard process required.
-	w := session.StartKanbanWatcher()
+	w := session.NewKanbanWatcher(session.HermesKanbanDBPath())
+	w.Start()
 	h.kanbanWatcher = w
 	h.kanbanWatcherCh = w.Subscribe()
 
@@ -2095,7 +2098,7 @@ func (h *Home) Init() tea.Cmd {
 	// Immediate refresh so badges appear on first render; kanbanImmediateRefreshCmd
 	// returns kanbanCountsChangedMsg which re-arms kanbanPollCmd, so only one
 	// poll-timer chain is ever running at a time.
-	cmds = append(cmds, kanbanImmediateRefreshCmd())
+	cmds = append(cmds, kanbanImmediateRefreshCmd(h.kanbanWatcher))
 
 	// Start watcher engine (D-07: lifecycle tied to TUI startup)
 	cmds = append(cmds, h.startWatcherEngine())
@@ -12460,8 +12463,8 @@ func (h *Home) renderSessionItem(
 	// Kanban badge: shown only when this session is linked to an active kanban task.
 	// [K:●] green = running/claimed, [K:▲] red = blocked, nothing = task inactive/unlinked.
 	kanbanBadge := ""
-	if inst.KanbanTaskID != "" {
-		taskStatus := session.GetHermesKanbanTaskStatus(inst.KanbanTaskID)
+	if inst.KanbanTaskID != "" && h.kanbanWatcher != nil {
+		taskStatus := h.kanbanWatcher.TaskStatus(inst.KanbanTaskID)
 		kanbanBadge = renderHermesKanbanBadge(taskStatus, selected)
 	}
 
