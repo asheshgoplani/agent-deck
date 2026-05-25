@@ -5718,6 +5718,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 
 	case "esc":
+		// #1162: when the model picker dropdown is open, Esc dismisses only the
+		// picker and keeps the new-session form alive (focus stays on the model
+		// field) rather than cancelling the whole flow. Forward to the dialog so
+		// its picker-level Esc handler runs.
+		if h.newDialog.IsModelPickerOpen() {
+			var cmd tea.Cmd
+			h.newDialog, cmd = h.newDialog.Update(msg)
+			return h, cmd
+		}
 		h.newDialog.Hide()
 		h.clearError() // Clear any validation error
 		return h, nil

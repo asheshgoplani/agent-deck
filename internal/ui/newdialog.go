@@ -554,6 +554,17 @@ func (d *NewDialog) IsModelSuggestionsActive() bool {
 	return d.modelSuggestionActive
 }
 
+// IsModelPickerOpen reports whether the model picker dropdown is currently
+// shown: focus is on the model field, the tool supports a model override, and
+// the picker has not been explicitly dismissed. The parent (home.go) uses this
+// so Esc dismisses only the picker rather than cancelling the whole
+// new-session flow (#1162).
+func (d *NewDialog) IsModelPickerOpen() bool {
+	return d.currentTarget() == focusModel &&
+		d.selectedToolSupportsModel() &&
+		!d.modelSuggestionHidden
+}
+
 func (d *NewDialog) IsModelTypeCustomHighlighted() bool {
 	return d.modelSuggestionActive && d.modelSuggestionCursor == 0
 }
@@ -1743,6 +1754,16 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				d.pathInput.Blur()
 				return d, nil
 			}
+			// #1162 bug 2: Esc inside the model picker dismisses ONLY the picker
+			// and keeps the form alive with focus on the model field, instead of
+			// cancelling the entire new-session flow. A second Esc (picker already
+			// dismissed) falls through to Hide(). The parent forwards Esc here
+			// whenever IsModelPickerOpen() is true.
+			if d.IsModelPickerOpen() {
+				d.DismissModelSuggestions()
+				d.modelInput.Focus()
+				return d, nil
+			}
 			d.Hide()
 			return d, nil
 
@@ -2265,7 +2286,19 @@ func (d *NewDialog) View() string {
 		}
 		content.WriteString("\n  ")
 		content.WriteString(d.modelInput.View())
-		d.modelLineOffset = strings.Count(content.String(), "\n")
+		// #1162 bug 1: position the dropdown overlay using the *visual* (wrapped)
+		// line count, not the raw newline count. The command-button row above the
+		// model field wraps to extra lines at narrow widths; a newline count would
+		// undercount those and paint the dropdown directly over the model input,
+		// hiding whatever the user typed. lipgloss.Height of the width-wrapped
+		// content-so-far yields the row just below the input (the path field has
+		// no wrapping above it, so its newline count already lands correctly).
+		innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
+		if innerWidth < 1 {
+			innerWidth = 1
+		}
+		wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content.String())
+		d.modelLineOffset = lipgloss.Height(wrapped)
 		if hint := d.modelInputHint(); hint != "" {
 			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
 			content.WriteString("\n  ")
