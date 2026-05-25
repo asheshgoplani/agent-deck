@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -564,7 +565,7 @@ func handleConductorSetup(profile string, args []string) {
 			fmt.Println("Installing bridge...")
 		}
 
-		installPythonDeps()
+		depsInstalled := installPythonDeps()
 
 		if err := session.InstallBridgeScript(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error installing bridge.py: %v\n", err)
@@ -574,16 +575,27 @@ func handleConductorSetup(profile string, args []string) {
 			fmt.Println("[ok] bridge.py installed")
 		}
 
-		// Install daemon (platform-aware: launchd on macOS, systemd on Linux)
-		daemonPath, err := session.InstallBridgeDaemon()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to install bridge daemon: %v\n", err)
-			condDir, _ := session.ConductorDir()
-			fmt.Fprintf(os.Stderr, "Run manually: python3 %s/bridge.py\n", condDir)
-		} else {
-			plistPath = daemonPath
+		if !depsInstalled {
+			// Don't register a launchd job that will crash-loop silently on
+			// the missing imports. installPythonDeps() already printed an
+			// actionable error block; surface a one-liner here too so the
+			// final setup summary visibly mentions the gap.
 			if !*jsonOutput {
-				fmt.Println("[ok] Bridge daemon loaded")
+				fmt.Println("[skip] Bridge daemon NOT installed (Python deps unavailable — see error above)")
+				fmt.Println("       Re-run `agent-deck conductor setup <name>` after installing deps.")
+			}
+		} else {
+			// Install daemon (platform-aware: launchd on macOS, systemd on Linux)
+			daemonPath, err := session.InstallBridgeDaemon()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to install bridge daemon: %v\n", err)
+				condDir, _ := session.ConductorDir()
+				fmt.Fprintf(os.Stderr, "Run manually: python3 %s/bridge.py\n", condDir)
+			} else {
+				plistPath = daemonPath
+				if !*jsonOutput {
+					fmt.Println("[ok] Bridge daemon loaded")
+				}
 			}
 		}
 	}
@@ -1147,11 +1159,120 @@ func handleConductorList(profile string, args []string) {
 	fmt.Println()
 }
 
-// installPythonDeps installs Python dependencies for the bridge
-func installPythonDeps() {
+// pipFailureKind classifies why a `pip install` invocation failed, so
+// installPythonDeps() can emit an actionable error rather than the historical
+// single-line stderr note that silently masked the PEP 668 case.
+type pipFailureKind string
+
+const (
+	pipFailureNone   pipFailureKind = ""
+	pipFailurePEP668 pipFailureKind = "pep668"
+	pipFailureOther  pipFailureKind = "other"
+)
+
+// classifyPipFailure inspects captured pip stderr and returns the failure
+// kind. Empty stderr maps to pipFailureNone (pip succeeded or wasn't run).
+// The canonical PEP 668 marker is the literal phrase
+// `externally-managed-environment`, emitted by pip on any interpreter whose
+// stdlib ships an EXTERNALLY-MANAGED marker file (Homebrew, Debian/Ubuntu
+// system Python).
+func classifyPipFailure(stderr string) pipFailureKind {
+	if stderr == "" {
+		return pipFailureNone
+	}
+	if strings.Contains(stderr, "externally-managed-environment") {
+		return pipFailurePEP668
+	}
+	return pipFailureOther
+}
+
+// pipFailureDiagnostic carries everything the formatter needs to render an
+// actionable error block. Kept as a plain struct (no methods, no constructor)
+// so tests can build instances directly.
+type pipFailureDiagnostic struct {
+	Kind            pipFailureKind
+	InterpreterPath string   // sys.executable; empty if probing failed
+	InterpreterVer  string   // sys.version.split()[0]; empty if probing failed
+	Packages        []string // packages pip was asked to install
+	HasMise         bool     // mise binary on PATH at install time
+	RawStderr       string   // captured stderr from the failing pip call
+}
+
+// formatPipFailureMessage renders the user-facing error block. The PEP 668
+// path lists three remediation options and labels exactly ONE as
+// "recommended" — mise when available on PATH, otherwise the venv option.
+// The Other path surfaces the raw pip stderr and a manual install command,
+// without speculating on the cause.
+func formatPipFailureMessage(d pipFailureDiagnostic) string {
+	pkgs := strings.Join(d.Packages, " ")
+
+	if d.Kind != pipFailurePEP668 {
+		var b strings.Builder
+		b.WriteString("⚠  Python dependencies install failed.\n\n")
+		if d.RawStderr != "" {
+			b.WriteString("   pip stderr:\n")
+			for _, line := range strings.Split(strings.TrimRight(d.RawStderr, "\n"), "\n") {
+				b.WriteString("     ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("   Re-run `agent-deck conductor setup <name>`, or install manually:\n")
+		fmt.Fprintf(&b, "     pip3 install %s\n", pkgs)
+		return b.String()
+	}
+
+	pyDisplay := d.InterpreterPath
+	if d.InterpreterVer != "" {
+		pyDisplay = fmt.Sprintf("%s (%s)", d.InterpreterPath, d.InterpreterVer)
+	}
+
+	// Exactly one option carries the "recommended" label. mise wins when
+	// detected; venv is the fallback recommendation otherwise.
+	miseHeader := "1. Use a version-manager Python:"
+	venvHeader := "2. Install into a dedicated venv (most isolated):"
+	if d.HasMise {
+		miseHeader = "1. Use a version-manager Python (recommended — mise detected on PATH):"
+	} else {
+		venvHeader = "2. Install into a dedicated venv (recommended — most isolated):"
+	}
+
+	var b strings.Builder
+	b.WriteString("✗ Python dependencies could NOT be installed automatically.\n\n")
+	b.WriteString("  Reason:  PEP 668 — externally-managed-environment\n")
+	fmt.Fprintf(&b, "  Python:  %s\n", pyDisplay)
+	fmt.Fprintf(&b, "  Needed:  %s\n\n", strings.Join(d.Packages, ", "))
+	b.WriteString("  This Python interpreter is marked \"externally managed\" (common with\n")
+	b.WriteString("  Homebrew and Debian/Ubuntu system Python), so `pip install --user`\n")
+	b.WriteString("  is blocked by policy. The Telegram bridge cannot start until this\n")
+	b.WriteString("  is resolved, so the launchd daemon was NOT installed.\n\n")
+	b.WriteString("  Pick ONE of these and re-run `agent-deck conductor setup <name>`:\n\n")
+	fmt.Fprintf(&b, "    %s\n", miseHeader)
+	b.WriteString("         mise use -g python@<VERSION> && mise install\n")
+	b.WriteString("         # <VERSION> is any Python 3.11+ — e.g. 3.12 or 3.13.\n")
+	b.WriteString("         # agent-deck does not pin a specific version.\n\n")
+	fmt.Fprintf(&b, "    %s\n", venvHeader)
+	b.WriteString("         python3 -m venv ~/.agent-deck/conductor/.venv\n")
+	fmt.Fprintf(&b, "         ~/.agent-deck/conductor/.venv/bin/pip install %s\n", pkgs)
+	b.WriteString("         # (manual: edit ~/Library/LaunchAgents/com.agentdeck.conductor-bridge.plist\n")
+	b.WriteString("         #  to point at ~/.agent-deck/conductor/.venv/bin/python3)\n\n")
+	b.WriteString("    3. Override the policy (works, but the policy exists for a reason):\n")
+	fmt.Fprintf(&b, "         python3 -m pip install --user --break-system-packages %s\n\n", pkgs)
+	b.WriteString("  After fixing, verify with:  agent-deck conductor status\n")
+	b.WriteString("  If the bridge still won't start: tail ~/.agent-deck/conductor/bridge.log\n")
+	return b.String()
+}
+
+// installPythonDeps installs Python dependencies for the bridge.
+// Returns true on success. On failure it prints a formatted, actionable error
+// (PEP 668 gets a special-cased remediation block listing three fix options;
+// other failures pass the raw pip stderr through) and returns false so the
+// caller can skip the bridge daemon install rather than letting it crash-loop
+// invisibly.
+func installPythonDeps() bool {
 	config, err := session.LoadUserConfig()
-	var packages []string
-	packages = append(packages, "toml")
+	packages := []string{"toml"}
 
 	if err == nil && config != nil {
 		if config.Conductor.Telegram.Token != "" {
@@ -1170,16 +1291,57 @@ func installPythonDeps() {
 		packages = append(packages, "aiogram", "slack-bolt", "slack-sdk", "aiohttp", "discord.py")
 	}
 
+	// Try with --user first; fall back to no --user (venvs, containers).
+	// We capture stderr on the second attempt so a failure can be classified
+	// and surfaced with a remediation message.
 	args := append([]string{"-m", "pip", "install", "--quiet", "--user"}, packages...)
-	if err := exec.Command("python3", args...).Run(); err != nil {
-		// Try without --user (e.g. virtualenvs, containers)
-		args = append([]string{"-m", "pip", "install", "--quiet"}, packages...)
-		if err := exec.Command("python3", args...).Run(); err != nil {
-			// pip failed (e.g. PEP 668 externally-managed env) — rely on system packages
-			fmt.Fprintf(os.Stderr, "Note: pip install failed; using system-installed packages.\n")
-			fmt.Fprintf(os.Stderr, "If the bridge fails to start, install manually: pip3 install %s\n", strings.Join(packages, " "))
-		}
+	if err := exec.Command("python3", args...).Run(); err == nil {
+		return true
 	}
+	var stderrBuf bytes.Buffer
+	args = append([]string{"-m", "pip", "install"}, packages...)
+	cmd := exec.Command("python3", args...)
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+
+	diag := pipFailureDiagnostic{
+		Kind:      classifyPipFailure(stderrBuf.String()),
+		Packages:  packages,
+		RawStderr: stderrBuf.String(),
+	}
+	diag.InterpreterPath, diag.InterpreterVer = probePythonInterpreter()
+	if _, err := exec.LookPath("mise"); err == nil {
+		diag.HasMise = true
+	}
+
+	if diag.Kind == pipFailureNone {
+		// Pip exited non-zero but emitted nothing on stderr — treat as Other
+		// so the user at least sees the install command.
+		diag.Kind = pipFailureOther
+	}
+	fmt.Fprint(os.Stderr, formatPipFailureMessage(diag))
+	return false
+}
+
+// probePythonInterpreter returns (path, version) by asking python3 to print
+// sys.executable and sys.version. Empty strings on any probe failure — the
+// formatter renders gracefully without them.
+func probePythonInterpreter() (path, version string) {
+	out, err := exec.Command("python3", "-c",
+		"import sys; print(sys.executable); print(sys.version.split()[0])").Output()
+	if err != nil {
+		return "", ""
+	}
+	lines := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(lines) >= 1 {
+		path = strings.TrimSpace(lines[0])
+	}
+	if len(lines) >= 2 {
+		version = strings.TrimSpace(lines[1])
+	}
+	return path, version
 }
 
 // printConductorHelp prints the conductor subcommand help
