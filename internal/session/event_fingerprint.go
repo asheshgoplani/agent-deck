@@ -32,6 +32,18 @@ func EventFingerprint(e TransitionNotificationEvent) string {
 	b.WriteString(strings.ToLower(strings.TrimSpace(e.ToStatus)))
 	b.WriteByte('|')
 	b.WriteString(strconv.FormatInt(e.Timestamp.UnixNano(), 10))
+	// Issue #1186: finished events carry no from→to transition, so without
+	// the kind + outcome the fingerprint would collapse distinct completions
+	// (and could collide with a same-timestamp transition). Append them so
+	// each completion assertion is its own logical event.
+	if e.Kind != "" {
+		b.WriteByte('|')
+		b.WriteString(e.Kind)
+		b.WriteByte('|')
+		b.WriteString(strings.ToLower(strings.TrimSpace(e.DoneStatus)))
+		b.WriteByte('|')
+		b.WriteString(strings.TrimSpace(e.DoneSummary))
+	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:])
 }

@@ -59,7 +59,22 @@ type TransitionNotificationEvent struct {
 	TargetSessionID string `json:"target_session_id,omitempty"`
 	TargetKind      string `json:"target_kind,omitempty"` // parent | conductor
 	DeliveryResult  string `json:"delivery_result,omitempty"`
+
+	// Kind distinguishes a finished event (issue #1186) from the default
+	// status-transition event. Empty means the legacy transition event
+	// ("[EVENT] Child is waiting"); transitionKindFinished means a
+	// worker-asserted completion ("[DONE] Child finished: status=…").
+	Kind string `json:"kind,omitempty"`
+
+	// DoneStatus/DoneSummary carry the parsed completion sentinel for a
+	// finished event. Unused for transition events.
+	DoneStatus  string `json:"done_status,omitempty"`
+	DoneSummary string `json:"done_summary,omitempty"`
 }
+
+// transitionKindFinished marks a TransitionNotificationEvent as a worker-
+// asserted task-completion signal rather than a status transition.
+const transitionKindFinished = "finished"
 
 type transitionNotifyRecord struct {
 	From string `json:"from"`
@@ -303,6 +318,45 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 	return plan.event
 }
 
+// NotifyFinished dispatches a worker-asserted completion event (issue #1186)
+// to the child's parent. Unlike NotifyTransition it is not gated by
+// ShouldNotifyTransition (a finished event has no from→to transition); per-task
+// idempotency is the daemon's responsibility (it only calls this when the
+// detected sentinel actually changed). It reuses prepareDispatch so a finished
+// event still benefits from parent resolution, conductor/orphan suppression,
+// and the busy-defer retry queue.
+func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) TransitionNotificationEvent {
+	event.Kind = transitionKindFinished
+	event.Profile = strings.TrimSpace(event.Profile)
+	event.ChildTitle = strings.TrimSpace(event.ChildTitle)
+	event.ChildSessionID = strings.TrimSpace(event.ChildSessionID)
+	event.DoneStatus = strings.ToLower(strings.TrimSpace(event.DoneStatus))
+	event.DoneSummary = strings.TrimSpace(event.DoneSummary)
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now()
+	}
+
+	if event.ChildSessionID == "" || event.Profile == "" {
+		event.DeliveryResult = transitionDeliveryDropped
+		return event
+	}
+	if isConductorSessionTitle(event.ChildTitle) {
+		event.DeliveryResult = transitionDeliveryDropped
+		return event
+	}
+
+	plan := n.prepareDispatch(event)
+	if plan.finalized {
+		n.logEvent(plan.event)
+		return plan.event
+	}
+
+	n.dispatchAsync(plan.event.TargetSessionID, plan.message, plan.event)
+
+	plan.event.DeliveryResult = transitionDeliveryDispatching
+	return plan.event
+}
+
 type dispatchPlan struct {
 	event     TransitionNotificationEvent
 	message   string
@@ -508,6 +562,18 @@ func (n *TransitionNotifier) Flush() {
 }
 
 func buildTransitionMessage(event TransitionNotificationEvent) string {
+	if event.Kind == transitionKindFinished {
+		// Issue #1186: a worker-asserted completion. Distinct [DONE] prefix
+		// and outcome so the conductor gets "done + status + summary" in one
+		// signal instead of polling artifacts.
+		return fmt.Sprintf(
+			"[DONE] Child '%s' (%s) finished: status=%s summary=%s",
+			event.ChildTitle,
+			event.ChildSessionID,
+			event.DoneStatus,
+			event.DoneSummary,
+		)
+	}
 	return fmt.Sprintf(
 		"[EVENT] Child '%s' (%s) is %s.\nCheck: agent-deck -p %s session output %s -q",
 		event.ChildTitle,
@@ -600,21 +666,48 @@ func (n *TransitionNotifier) outputHashTTL() time.Duration {
 	return defaultOutputHashDedupTTL
 }
 
-// transitionEventOutputHash derives the cheap stable pane-activity signal
-// used by the issue #1142 output-hash dedup. It returns the inst's
-// LastActivityTime serialized to ns precision: identical bytes mean the pane
-// content hasn't changed since the last accepted [EVENT], so the notifier
-// safely suppresses the re-fire. Empty string for nil/missing — falls back
-// to the legacy 90s dedup window.
+// transitionEventOutputHash derives the stable content signal used by the
+// issue #1142 output-hash dedup. The key must be IDENTICAL across polls while
+// the child's logical state is unchanged, and MUST change on a genuine new
+// turn.
+//
+// issue #1187: the previous implementation keyed on
+// inst.GetLastActivityTime().UnixNano(), but that timestamp is re-stamped to
+// time.Now() on every tmux window_activity tick (tmux.go:2956/3102/3303). A
+// live Claude pane sitting at the prompt animates its footer/token-counter/
+// cursor/hint lines, so window_activity bumped every poll → the key moved
+// every poll → layer-2 dedup could never match → the same [EVENT] re-fired
+// 10-40x. The signal was clock-derived, structurally incapable of matching a
+// live pane.
+//
+// The fix derives the key from session CONTENT (the transcript), which the
+// animated chrome never touches. See transitionContentSignal. Empty string for
+// nil/missing/non-transcript tools — falls back to the legacy 90s dedup window,
+// exactly as before.
 func transitionEventOutputHash(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	t := inst.GetLastActivityTime()
-	if t.IsZero() {
+	return transitionContentSignal(inst)
+}
+
+// transitionContentSignal returns a dedup signal derived from the child's
+// transcript size. A Claude-compatible JSONL transcript is append-only and
+// grows ONLY when a real message is written (user prompt, assistant turn, tool
+// call) — it is completely untouched when the pane merely redraws its animated
+// chrome. So the signal stays identical across idle polls and strictly changes
+// on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
+// non-Claude tools), which routes the caller to the legacy 90s window.
+func transitionContentSignal(inst *Instance) string {
+	path := inst.GetJSONLPath()
+	if path == "" {
 		return ""
 	}
-	return fmt.Sprintf("act:%d", t.UnixNano())
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("jsonl:%d", info.Size())
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
@@ -786,7 +879,13 @@ func (n *TransitionNotifier) enqueueDeferredAtForTest(event TransitionNotificati
 }
 
 func deferredKey(event TransitionNotificationEvent) string {
-	return event.ChildSessionID + "|" + event.FromStatus + "|" + event.ToStatus
+	key := event.ChildSessionID + "|" + event.FromStatus + "|" + event.ToStatus
+	if event.Kind != "" {
+		// Finished events (issue #1186) have no from→to; key on kind + outcome
+		// so distinct completions don't collapse onto one another in the queue.
+		key += "|" + event.Kind + "|" + event.DoneStatus + "|" + event.DoneSummary
+	}
+	return key
 }
 
 // targetAvailabilityResolver reports whether the given target session is

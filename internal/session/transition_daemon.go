@@ -39,6 +39,12 @@ type TransitionDaemon struct {
 	lastStatus  map[string]map[string]string
 	initialized map[string]bool
 
+	// lastDone tracks the most recently emitted completion sentinel per
+	// (profile, instance) so a finished event (issue #1186) is emitted once
+	// per distinct completion. Re-reading the same done-bearing hook file
+	// across polls — or a later identical Stop — does not re-fire.
+	lastDone map[string]map[string]DoneSignal
+
 	// lastInboxTTLSweep tracks the most recent SweepInboxByTTL call so
 	// the daemon runs it at most once per inboxTTLSweepInterval. Zero
 	// means "never run" — the first SyncOnce pass will perform it.
@@ -51,6 +57,7 @@ func NewTransitionDaemon() *TransitionDaemon {
 		storages:    map[string]*Storage{},
 		lastStatus:  map[string]map[string]string{},
 		initialized: map[string]bool{},
+		lastDone:    map[string]map[string]DoneSignal{},
 	}
 }
 
@@ -134,11 +141,13 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 
 	byID := make(map[string]*Instance, len(instances))
 	hookCandidates := make(map[string]hookTransitionCandidate, len(instances))
+	hookStatuses := make(map[string]*HookStatus, len(instances))
 	for _, inst := range instances {
 		byID[inst.ID] = inst
 		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
 				inst.UpdateHookStatus(hs)
+				hookStatuses[inst.ID] = hs
 				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
 					hookCandidates[inst.ID] = candidate
 				}
@@ -191,6 +200,7 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.
 		d.emitHookTransitionCandidates(profile, byID, nil, statuses, hookCandidates)
+		d.emitDoneSignals(profile, byID, hookStatuses)
 		d.lastStatus[profile] = copyStatusMap(statuses)
 		d.initialized[profile] = true
 		return choosePollInterval(statuses)
@@ -219,9 +229,60 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		_ = d.notifier.NotifyTransition(event)
 	}
 	d.emitHookTransitionCandidates(profile, byID, prev, statuses, hookCandidates)
+	d.emitDoneSignals(profile, byID, hookStatuses)
 
 	d.lastStatus[profile] = copyStatusMap(statuses)
 	return choosePollInterval(statuses)
+}
+
+// emitDoneSignals turns a worker-printed completion sentinel (persisted into
+// the hook status file by the Stop-hook handler, issue #1186) into a distinct
+// "finished" event delivered to the parent. Per-task idempotency is enforced
+// via d.lastDone: the same sentinel re-read across polls — or repeated on a
+// later identical Stop — fires at most once. A genuinely new completion
+// (different status/summary) fires again. Stale hook files (older than
+// hookFreshWindow) are ignored so a daemon restart doesn't replay a long-dead
+// completion.
+func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Instance, hookStatuses map[string]*HookStatus) {
+	if len(hookStatuses) == 0 {
+		return
+	}
+	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
+	for id, hs := range hookStatuses {
+		if hs == nil || strings.TrimSpace(hs.DoneStatus) == "" {
+			continue
+		}
+		if !hs.UpdatedAt.IsZero() && time.Since(hs.UpdatedAt) > hookFreshWindow {
+			continue
+		}
+		sig := DoneSignal{
+			Status:  strings.ToLower(strings.TrimSpace(hs.DoneStatus)),
+			Summary: strings.TrimSpace(hs.DoneSummary),
+		}
+		if prev, ok := d.lastDone[profile][id]; ok && prev == sig {
+			continue // already emitted this exact completion
+		}
+
+		inst := byID[id]
+		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+			continue
+		}
+
+		event := TransitionNotificationEvent{
+			ChildSessionID: id,
+			ChildTitle:     inst.Title,
+			Profile:        profile,
+			DoneStatus:     sig.Status,
+			DoneSummary:    sig.Summary,
+			Timestamp:      hs.UpdatedAt,
+		}
+		_ = d.notifier.NotifyFinished(event)
+
+		if d.lastDone[profile] == nil {
+			d.lastDone[profile] = map[string]DoneSignal{}
+		}
+		d.lastDone[profile][id] = sig
+	}
 }
 
 func (d *TransitionDaemon) getStorage(profile string) *Storage {
@@ -331,10 +392,12 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		return nil
 	}
 	var raw struct {
-		Status    string `json:"status"`
-		SessionID string `json:"session_id"`
-		Event     string `json:"event"`
-		Timestamp int64  `json:"ts"`
+		Status      string `json:"status"`
+		SessionID   string `json:"session_id"`
+		Event       string `json:"event"`
+		Timestamp   int64  `json:"ts"`
+		DoneStatus  string `json:"done_status"`
+		DoneSummary string `json:"done_summary"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
@@ -347,10 +410,12 @@ func readHookStatusFile(instanceID string) *HookStatus {
 		updatedAt = time.Unix(raw.Timestamp, 0)
 	}
 	return &HookStatus{
-		Status:    raw.Status,
-		SessionID: raw.SessionID,
-		Event:     raw.Event,
-		UpdatedAt: updatedAt,
+		Status:      raw.Status,
+		SessionID:   raw.SessionID,
+		Event:       raw.Event,
+		UpdatedAt:   updatedAt,
+		DoneStatus:  raw.DoneStatus,
+		DoneSummary: raw.DoneSummary,
 	}
 }
 

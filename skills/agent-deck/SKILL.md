@@ -153,6 +153,36 @@ Files to read first:
 - Brand-new files (`Write` to a path that does not yet exist): no prelude needed — the guard only applies to modifications.
 - For conductor nudges that re-fire the same prompt across cycles, keep Step 0 in the prompt. The second-cycle process may not have prior reads in context.
 
+### Completion sentinel (trustworthy "worker finished" signal, #1186)
+
+A worker's `Stop` hook fires at the end of *every* turn, so "waiting" never means "done" — the conductor would otherwise have to poll RESULTS files / `gh pr` / `session output` to know a task actually finished. Instead, instruct every worker to **assert completion** by ending its final turn with a single machine-greppable line:
+
+```
+===AGENTDECK_DONE=== status=<ok|fail> summary=<one line to end of line>
+```
+
+agent-deck detects this on the `Stop` edge (scanning the transcript tail) and emits a distinct event to the parent:
+
+```
+[DONE] Child '<name>' (<id>) finished: status=ok summary=<...>
+```
+
+instead of the generic `[EVENT] … is waiting`. This is by-construction: completion is asserted by the only party that knows (the worker), not inferred from terminal cosmetics.
+
+**Bake this line into every worker prompt's final instruction:**
+
+```
+## Final step — assert completion
+When the task is fully done, print exactly this as the last line of your final message:
+  ===AGENTDECK_DONE=== status=ok summary=<what you accomplished, one line>
+Use status=fail if you could not complete it; put the blocker in the summary.
+```
+
+Notes:
+- Fires once per distinct completion (idempotent per task): re-reading the same sentinel across polls — or repeating an identical sentinel on a later `Stop` — does not re-emit. A genuinely new completion (different summary) emits again.
+- Absent on ordinary mid-task `Stop` edges, so existing `waiting` behavior is unchanged.
+- Malformed sentinel lines (missing/invalid `status`) are ignored, not guessed at.
+
 ## Consult Another Agent (Codex, Gemini)
 
 **Use when:** User says "consult with codex", "ask gemini", "get codex's opinion", "what does codex think", "consult another agent", "brainstorm with codex/gemini", "get a second opinion"
