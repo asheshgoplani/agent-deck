@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"al.essio.dev/pkg/shellescape"
 )
 
 // Tests for the uniform command/env_file override layer.
@@ -155,6 +157,56 @@ func TestBuildCopilotCommand_WrongTool(t *testing.T) {
 	got := inst.buildCopilotCommand("some-command")
 	if got != "some-command" {
 		t.Errorf("buildCopilotCommand with wrong tool = %q, want %q", got, "some-command")
+	}
+}
+
+func TestBuildPiCommand_UsesInstanceScopedSessionDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", origHome)
+
+	inst := &Instance{ID: "test-instance-id", Tool: "pi"}
+	got := inst.buildPiCommand("pi")
+
+	wantSessionDir := "${HOME}/.pi/agent-deck/test-instance-id"
+	for _, want := range []string{
+		"session_dir=" + wantSessionDir,
+		"mkdir -p \"$session_dir\"",
+		"AGENTDECK_INSTANCE_ID=test-instance-id",
+		"pi --continue --session-dir \"$session_dir\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildPiCommand() = %q, want to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, tmpDir) {
+		t.Errorf("buildPiCommand() must use target-side $HOME, got host path in %q", got)
+	}
+}
+
+func TestBuildPiCommand_QuotesInstanceIDPathComponent(t *testing.T) {
+	inst := &Instance{ID: "test instance'id", Tool: "pi"}
+	got := inst.buildPiCommand("pi")
+
+	wantSessionDir := `${HOME}/.pi/agent-deck/` + shellescape.Quote(inst.ID)
+	if !strings.Contains(got, "session_dir="+wantSessionDir) {
+		t.Errorf("buildPiCommand() should quote instance ID path component %q, got %q", wantSessionDir, got)
+	}
+}
+
+func TestBuildPiCommand_WrongTool(t *testing.T) {
+	inst := &Instance{Tool: "claude"}
+	got := inst.buildPiCommand("some-command")
+	if got != "some-command" {
+		t.Errorf("buildPiCommand with wrong tool = %q, want %q", got, "some-command")
+	}
+}
+
+func TestCanRestartPi(t *testing.T) {
+	inst := &Instance{Tool: "pi", Status: StatusWaiting}
+	if !inst.CanRestart() {
+		t.Fatal("Pi sessions should be restartable so Agent Deck can relaunch with --continue")
 	}
 }
 

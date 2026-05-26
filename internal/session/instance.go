@@ -1321,6 +1321,35 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	return envPrefix + command + yoloFlag + modelFlag
 }
 
+// buildPiCommand builds the command for the Pi CLI.
+// Pi sessions are JSONL files, not externally named sessions like Claude/Codex.
+// Scope Pi's session directory to the Agent Deck instance and always launch
+// with --continue so restarts resume that instance without colliding with other
+// Agent Deck Pi sessions in the same project.
+func (i *Instance) buildPiCommand(baseCommand string) string {
+	if i.Tool != "pi" {
+		return baseCommand
+	}
+
+	envPrefix := i.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = "pi"
+	}
+
+	// Use target-side $HOME rather than resolving the Agent Deck process' home
+	// directory. This keeps local, SSH, and sandbox launch paths consistent.
+	sessionDir := "${HOME}/.pi/agent-deck/" + shellescape.Quote(i.ID)
+	quotedInstanceID := shellescape.Quote(i.ID)
+
+	return envPrefix + fmt.Sprintf(
+		"session_dir=%s; mkdir -p \"$session_dir\" && AGENTDECK_INSTANCE_ID=%s %s --continue --session-dir \"$session_dir\"",
+		sessionDir,
+		quotedInstanceID,
+		cmd,
+	)
+}
+
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
 // continuePrev adds --continue so Restart resumes the previous chat in the workspace.
 // Env files from [shell].env_files are applied via buildEnvSourceCommand.
@@ -2758,6 +2787,8 @@ func (i *Instance) Start() error {
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "pi":
+		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "cursor":
@@ -2960,6 +2991,8 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
+	case i.Tool == "pi":
+		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
 	case i.Tool == "crush":
@@ -5386,6 +5419,8 @@ func (i *Instance) Restart() error {
 			command = i.buildCodexCommand(i.Command)
 			// Record start time for async session ID detection
 			i.CodexStartedAt = time.Now().UnixMilli()
+		case i.Tool == "pi":
+			command = i.buildPiCommand(i.Command)
 		case i.Tool == "copilot":
 			command = i.buildCopilotCommand(i.Command)
 		case i.Tool == "crush":
@@ -5720,6 +5755,12 @@ func (i *Instance) CanRestart() bool {
 	// Codex sessions without ID can still restart (will start fresh)
 	// This allows restart even before session ID is detected
 	if IsCodexCompatible(i.Tool) {
+		return true
+	}
+
+	// Pi sessions are scoped to an Agent Deck instance-specific session dir and
+	// can always be relaunched with --continue.
+	if i.Tool == "pi" {
 		return true
 	}
 
