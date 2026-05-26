@@ -210,15 +210,3 @@ func snapshot(t *testing.T, id, content string) {
 		t.Logf("snapshot %s: write: %v (display-only, ignoring)", id, err)
 	}
 }
-
-// snapshotPane captures the live tmux pane for ref via the same `session
-// output --pane` read path a human uses, for use as a display snapshot.
-func (c *capSandbox) snapshotPane(t *testing.T, id, ref string) {
-	t.Helper()
-	out, err := c.try("session", "output", ref, "--pane")
-	if err != nil {
-		t.Logf("snapshot %s: pane read failed: %v (display-only, ignoring)", id, err)
-		return
-	}
-	snapshot(t, id, out)
-}

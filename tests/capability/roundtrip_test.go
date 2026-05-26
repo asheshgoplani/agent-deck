@@ -52,6 +52,23 @@ busy_patterns = ["WORKING"]
 	}
 }
 
+// echoExchange distills a raw echo-agent pane down to the conversation that
+// proves the round trip: only the lines that carry our unique token, which are
+// the prompt line showing the message we sent and the agent's "ECHO:<token>"
+// reply. Everything else in the raw pane is chrome (the shell MOTD, the
+// "ECHOBOT READY >" banner, the braille "working" spinner frames) and would
+// only obscure the proof. Keeping exactly the token lines makes the display
+// snapshot deterministic and meaningful.
+func echoExchange(pane, token string) string {
+	var keep []string
+	for _, ln := range strings.Split(pane, "\n") {
+		if strings.Contains(ln, token) {
+			keep = append(keep, strings.TrimRight(ln, " \t"))
+		}
+	}
+	return strings.Join(keep, "\n")
+}
+
 // waitForPaneContains polls `session output --pane` until the substring shows
 // up or the deadline passes, returning the final capture and whether it matched.
 func (c *capSandbox) waitForPaneContains(t *testing.T, ref, want string, timeout time.Duration) (string, bool) {
@@ -106,10 +123,11 @@ func TestCapability_Agent_EchoRoundTrip(t *testing.T) {
 		t.Fatalf("pane never showed %q within timeout.\nThe send -> readiness -> capture round trip is broken.\nlast pane:\n%s", want, pane)
 	}
 
-	// Display proof, the backbone snapshot: the same pane shows the token we
-	// sent AND the agent's echoed reply, so a reader can literally see the
-	// conversation that the assertion above confirmed.
-	snapshot(t, "send-output-echo", pane)
+	// Display proof, the backbone snapshot: the token we sent AND the agent's
+	// echoed reply, distilled from the live pane so a reader can literally see
+	// the conversation that the assertion above confirmed, without the shell
+	// banner or spinner noise.
+	snapshot(t, "send-output-echo", echoExchange(pane, token))
 }
 
 // TestCapability_Lifecycle_Launch proves the atomic add+start+send path: a
@@ -138,6 +156,7 @@ func TestCapability_Lifecycle_Launch(t *testing.T) {
 		t.Fatalf("launch -m did not result in %q in the pane.\nlast pane:\n%s", want, pane)
 	}
 
-	// Display proof: the one-step launch pane with the echoed message visible.
-	snapshot(t, "launch", pane)
+	// Display proof: the one-step launch distilled to the message we asked
+	// launch -m to deliver and the agent's echoed reply, no shell banner.
+	snapshot(t, "launch", echoExchange(pane, token))
 }

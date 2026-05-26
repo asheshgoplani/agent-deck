@@ -71,8 +71,12 @@ func TestCapability_Lifecycle_Start(t *testing.T) {
 		t.Fatalf("status did not reach an active state after start; last = %q", got)
 	}
 
-	// Display proof: the live pane that just came up on the isolated socket.
-	c.snapshotPane(t, "start", "cap-start")
+	// Display proof: the session-state view a human checks after start. The raw
+	// pane of a freshly started bash session is only the shell login banner, so
+	// we capture `status -v` instead, which shows the session listed under an
+	// active state. That is the meaningful agent-deck content this capability
+	// proves (the registry flipped to active), not shell chrome.
+	snapshot(t, "start", c.run(t, "status", "-v"))
 }
 
 // TestCapability_Lifecycle_Stop proves `session stop` tears down the tmux pane
@@ -125,8 +129,11 @@ func TestCapability_Lifecycle_Restart(t *testing.T) {
 		t.Fatalf("status not active after restart; last = %q", got)
 	}
 
-	// Display proof: the single respawned pane on the isolated socket.
-	c.snapshotPane(t, "restart", "cap-restart")
+	// Display proof: the session-state view after restart. As with start, the
+	// raw bash pane is only the shell banner, so we capture `status -v`, which
+	// shows the single respawned session under an active state (the visible
+	// effect that proves the restart succeeded without a duplicate).
+	snapshot(t, "restart", c.run(t, "status", "-v"))
 }
 
 // TestCapability_Lifecycle_Rm proves `rm` drops a stopped session from the

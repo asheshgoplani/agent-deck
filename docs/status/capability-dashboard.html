@@ -54,7 +54,9 @@
   .terminal {
     margin: 0; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
     padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; tab-size: 4;
+    font-size: 12px; line-height: 1.45; tab-size: 4;
+     
+    white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   }
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 </style>
@@ -63,7 +65,7 @@
 <div class="wrap">
 <header class="page">
   <h1>agent-deck Capability E2E Dashboard</h1>
-  <div class="date">Generated 2026-05-26T12:20:13Z</div>
+  <div class="date">Generated 2026-05-26T12:57:08Z</div>
   <p class="pitch">One card per capability agent-deck promises a user can do. Each fast-gate capability is verified by a test that performs the real action through the compiled binary on an isolated tmux socket and asserts on the real effect: registry rows or live pane content. Nightly capabilities need real agents, keys, or network and run out of band.</p>
 </header>
 
@@ -84,13 +86,13 @@
     <h3>Register a session</h3>
     <p class="how">We run the add command to register a new session, then read the saved registry back. We confirm the row exists with the title, tool, group, and folder we asked for.</p>
     <p class="assert">Pass when: new registry row carries the given title, tool, group, and working directory</p>
-    <div class="meta">Tier F . Runtime: 2.9s . TestCapability_Lifecycle_Add</div>
+    <div class="meta">Tier F . Runtime: 3.2s . TestCapability_Lifecycle_Add</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Profile: default
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3720... 5cefc6c6-177
+cap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3250... c564c62a-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -100,16 +102,12 @@ Total: 1 sessions</pre></div>
     <h3>Start a session</h3>
     <p class="how">We register a session and start it. We then ask the throwaway tmux server whether a live pane actually appeared, and confirm the registry flips the session to an active state.</p>
     <p class="assert">Pass when: a real tmux pane appears on the isolated socket and status becomes active</p>
-    <div class="meta">Tier F . Runtime: 1.7s . TestCapability_Lifecycle_Start</div>
+    <div class="meta">Tier F . Runtime: 1.6s . TestCapability_Lifecycle_Start</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
-    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
-See &#34;man sudo_root&#34; for details.
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">IDLE (1):
+  ○ cap-start        shell      -                      ~/project
 
-ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c &#39;bash&#39;
-To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
-See &#34;man sudo_root&#34; for details.
-
-ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
+Total: 1 sessions in profile &#39;default&#39;</pre></div>
   </div>
   
   <div class="card green">
@@ -117,13 +115,13 @@ ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
     <h3>Stop a session</h3>
     <p class="how">We start a session, then stop it. We confirm the tmux pane is gone and the registry returns the session to the stopped state.</p>
     <p class="assert">Pass when: tmux pane disappears and registry status returns to stopped</p>
-    <div class="meta">Tier F . Runtime: 1.7s . TestCapability_Lifecycle_Stop</div>
+    <div class="meta">Tier F . Runtime: 1.6s . TestCapability_Lifecycle_Stop</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Profile: default
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-stop             001             /tmp/TestCapability_Lifecycle_Stop249... 2d988fcd-177
+cap-stop             001             /tmp/TestCapability_Lifecycle_Stop824... c370a25d-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -133,16 +131,12 @@ Total: 1 sessions</pre></div>
     <h3>Restart a session</h3>
     <p class="how">We start a session and restart it. We confirm exactly one pane exists afterward (no accidental duplicate) and the session is active again.</p>
     <p class="assert">Pass when: exactly one pane remains after restart and status is active (guards the #30 double-spawn)</p>
-    <div class="meta">Tier F . Runtime: 2.5s . TestCapability_Lifecycle_Restart</div>
+    <div class="meta">Tier F . Runtime: 2.9s . TestCapability_Lifecycle_Restart</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
-    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
-See &#34;man sudo_root&#34; for details.
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">IDLE (1):
+  ○ cap-restart      shell      -                      ~/project
 
-ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c &#39;bash&#39;
-To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
-See &#34;man sudo_root&#34; for details.
-
-ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
+Total: 1 sessions in profile &#39;default&#39;</pre></div>
   </div>
   
   <div class="card green">
@@ -150,7 +144,7 @@ ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
     <h3>Remove a session</h3>
     <p class="how">We confirm a stopped session can be removed and disappears from the registry, and that removing a still-running session is refused unless forced, so it is not destroyed by accident.</p>
     <p class="assert">Pass when: stopped session leaves the registry; a running session is refused without force</p>
-    <div class="meta">Tier F . Runtime: 11.1s . TestCapability_Lifecycle_Rm</div>
+    <div class="meta">Tier F . Runtime: 11.2s . TestCapability_Lifecycle_Rm</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck session remove cap-rm-running
 Error: session &#39;cap-rm-running&#39; is in state &#39;starting&#39;; only stopped/error sessions may be removed without --force
@@ -160,7 +154,7 @@ Profile: default
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm30872... 9956720c-177
+cap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm14158... 925d8bd4-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -173,9 +167,7 @@ Total: 1 sessions</pre></div>
     <div class="meta">Tier F . Runtime: 7.2s . TestCapability_Lifecycle_Launch</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PINGLAUNCH-cap-e2e-token
-⠏ working
-ECHO:PINGLAUNCH-cap-e2e-token
-ECHOBOT READY &gt;</pre></div>
+ECHO:PINGLAUNCH-cap-e2e-token</pre></div>
   </div>
   
   <div class="card green">
@@ -202,22 +194,7 @@ Error: session &#39;cap-fork&#39; is not a Claude session (tool: shell)</pre></d
     <div class="meta">Tier F . Runtime: 5.7s . TestCapability_Agent_EchoRoundTrip</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PING-TestCapability_Agent_EchoRoundTrip
-⠼ working
-⠏ working
-⠼ working
-⠏ working
-⠼ working
-⠸ working
-⠏ working
-ECHO:PING-TestCapability_Agent_EchoRoundTrip
-⠸ workingEADY &gt;
-⠹ working
-⠙ working
-⠋ working
-⠏ working
-ECHO:
-⠋ workingEADY &gt;
-⠏ working</pre></div>
+ECHO:PING-TestCapability_Agent_EchoRoundTrip</pre></div>
   </div>
   
   <div class="card grey">

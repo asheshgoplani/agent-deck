@@ -229,6 +229,62 @@ func TestRenderDashboard_NoTerminalBlockWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestCleanSnapshot_StripsShellMOTDAndSpinnerNoise(t *testing.T) {
+	// A raw bash pane capture: Ubuntu MOTD, bare prompts, and the shell-spawn
+	// line, with one genuine line of agent-deck content in the middle.
+	raw := strings.Join([]string{
+		`To run a command as administrator (user "root"), use "sudo <command>".`,
+		`See "man sudo_root" for details.`,
+		``,
+		`Welcome to Ubuntu 24.04 LTS`,
+		` * Documentation:  https://help.ubuntu.com`,
+		`Last login: Mon May 26 14:00:00 2026`,
+		`ashesh-goplani@HOST:~/project$ bash -c 'bash'`,
+		`RUNNING (1):`,
+		`  cap-start shell   ~/project`,
+		`ashesh-goplani@HOST:~/project$`,
+		``,
+		``,
+		``,
+	}, "\n")
+
+	got := cleanSnapshot(raw)
+
+	for _, banned := range []string{
+		"sudo_root", "man sudo", "To run a command as administrator",
+		"Welcome to Ubuntu", "* Documentation", "Last login:",
+		"bash -c", "@HOST:",
+	} {
+		if strings.Contains(got, banned) {
+			t.Errorf("cleanSnapshot leaked shell chrome %q:\n%s", banned, got)
+		}
+	}
+	// The genuine agent-deck content survives.
+	if !strings.Contains(got, "RUNNING (1):") || !strings.Contains(got, "cap-start shell") {
+		t.Errorf("cleanSnapshot dropped meaningful content:\n%s", got)
+	}
+}
+
+func TestCleanSnapshot_DropsBrailleSpinnerFrames(t *testing.T) {
+	// The echo agent animates a braille spinner; redraw frames leave garbled
+	// "working"/"...EADY >" fragments that must not reach the dashboard.
+	raw := strings.Join([]string{
+		"ECHOBOT READY > PING-42",
+		"⠋ working",
+		"⢸ workingEADY >",
+		"ECHO:PING-42",
+	}, "\n")
+
+	got := cleanSnapshot(raw)
+
+	if strings.Contains(got, "working") {
+		t.Errorf("spinner frames survived cleanSnapshot:\n%s", got)
+	}
+	if !strings.Contains(got, "ECHOBOT READY > PING-42") || !strings.Contains(got, "ECHO:PING-42") {
+		t.Errorf("cleanSnapshot dropped the real exchange:\n%s", got)
+	}
+}
+
 func TestRenderDashboard_FailingCardUsesRed(t *testing.T) {
 	res := sampleResults()
 	res["TestCapability_Lifecycle_Add"] = testResult{status: StatusFail, elapsed: 2.0}

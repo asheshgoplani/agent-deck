@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -32,24 +33,24 @@ const (
 const (
 	StatusPass    = "pass"
 	StatusFail    = "fail"
-	StatusNightly = "nightly"  // Tier N, not run in this fast pass.
-	StatusNotRun  = "not-run"  // Tier F capability with no matching test result.
+	StatusNightly = "nightly" // Tier N, not run in this fast pass.
+	StatusNotRun  = "not-run" // Tier F capability with no matching test result.
 )
 
 // Capability is one row of the inventory: the static metadata plus the result
 // filled in from a test run. Static fields come from the registry below; the
 // dynamic fields (Status, RuntimeSeconds) are populated by BuildManifest.
 type Capability struct {
-	ID         string   `json:"id"`
-	Group      string   `json:"group"`
-	Title      string   `json:"title"`
-	HowWeTest  string   `json:"how_we_test"`
-	Assertion  string   `json:"assertion"`
-	Tier       string   `json:"tier"`
-	Chips      []string `json:"chips"`
-	TestName   string   `json:"test_name,omitempty"`
-	Status     string   `json:"status"`
-	RuntimeSeconds float64 `json:"runtime_seconds"`
+	ID             string   `json:"id"`
+	Group          string   `json:"group"`
+	Title          string   `json:"title"`
+	HowWeTest      string   `json:"how_we_test"`
+	Assertion      string   `json:"assertion"`
+	Tier           string   `json:"tier"`
+	Chips          []string `json:"chips"`
+	TestName       string   `json:"test_name,omitempty"`
+	Status         string   `json:"status"`
+	RuntimeSeconds float64  `json:"runtime_seconds"`
 	// Snapshot is the real terminal pane (or CLI/registry output) captured at
 	// the test's verification point. It is display-only proof, not asserted on;
 	// empty when no snapshot was captured for this capability.
@@ -94,81 +95,81 @@ func registry() []Capability {
 	return []Capability{
 		{
 			ID: "add", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Add",
-			Title: "Register a session",
+			Title:     "Register a session",
 			HowWeTest: "We run the add command to register a new session, then read the saved registry back. We confirm the row exists with the title, tool, group, and folder we asked for.",
 			Assertion: "new registry row carries the given title, tool, group, and working directory",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "start", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Start",
-			Title: "Start a session",
+			Title:     "Start a session",
 			HowWeTest: "We register a session and start it. We then ask the throwaway tmux server whether a live pane actually appeared, and confirm the registry flips the session to an active state.",
 			Assertion: "a real tmux pane appears on the isolated socket and status becomes active",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "stop", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Stop",
-			Title: "Stop a session",
+			Title:     "Stop a session",
 			HowWeTest: "We start a session, then stop it. We confirm the tmux pane is gone and the registry returns the session to the stopped state.",
 			Assertion: "tmux pane disappears and registry status returns to stopped",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "restart", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Restart",
-			Title: "Restart a session",
+			Title:     "Restart a session",
 			HowWeTest: "We start a session and restart it. We confirm exactly one pane exists afterward (no accidental duplicate) and the session is active again.",
 			Assertion: "exactly one pane remains after restart and status is active (guards the #30 double-spawn)",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "rm", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Rm",
-			Title: "Remove a session",
+			Title:     "Remove a session",
 			HowWeTest: "We confirm a stopped session can be removed and disappears from the registry, and that removing a still-running session is refused unless forced, so it is not destroyed by accident.",
 			Assertion: "stopped session leaves the registry; a running session is refused without force",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "launch", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Launch",
-			Title: "Launch in one step",
+			Title:     "Launch in one step",
 			HowWeTest: "We use the single launch command, which creates, starts, and messages a session at once, pointed at the stand-in echo agent. We confirm the registry row exists and the echoed message shows up on screen.",
 			Assertion: "one launch command creates the row, starts the pane, and the echoed message appears",
-			Tier: TierF, Chips: []string{chipLocal, chipStub},
+			Tier:      TierF, Chips: []string{chipLocal, chipStub},
 		},
 		{
 			ID: "fork", Group: "Session lifecycle", TestName: "TestCapability_Lifecycle_Fork",
-			Title: "Fork guard",
+			Title:     "Fork guard",
 			HowWeTest: "Forking is only valid for a Claude session with live context. We confirm forking a non-Claude session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.",
 			Assertion: "forking a non-Claude session is refused and no child row is created",
-			Tier: TierF, Chips: []string{chipLocal},
+			Tier:      TierF, Chips: []string{chipLocal},
 		},
 		{
 			ID: "send-output-echo", Group: "Agent interaction", TestName: "TestCapability_Agent_EchoRoundTrip",
-			Title: "Send a message to an agent and read its reply",
+			Title:     "Send a message to an agent and read its reply",
 			HowWeTest: "We launch a tiny stand-in agent that simply repeats whatever you say. We send it a unique message through the normal send command, then read the screen back. If the screen shows the echoed message we know it reached the agent and a reply came out the other side.",
 			Assertion: "the pane shows ECHO:<token> after a real send, proving readiness, send-keys, and capture read-back",
-			Tier: TierF, Chips: []string{chipLocal, chipStub},
+			Tier:      TierF, Chips: []string{chipLocal, chipStub},
 		},
 		// Tier N: documented honest gaps. No test in Wave 1; shown greyed.
 		{
 			ID: "send-output-claude", Group: "Agent interaction",
-			Title: "Real agent round trip (Claude)",
+			Title:     "Real agent round trip (Claude)",
 			HowWeTest: "We launch a real Claude session, wait for its prompt, send a fixed instruction, and check the reply. This needs a real API key and network, so it runs nightly, not on every release.",
 			Assertion: "a real Claude reply contains the expected token",
-			Tier: TierN, Chips: []string{chipReal, chipKey, chipNet},
+			Tier:      TierN, Chips: []string{chipReal, chipKey, chipNet},
 		},
 		{
 			ID: "fork-context", Group: "Agent interaction",
-			Title: "Fork inherits Claude context",
+			Title:     "Fork inherits Claude context",
 			HowWeTest: "We fork a live Claude session and confirm the child inherits the conversation with a distinct id and a parent link. This needs a real Claude session id from a live transcript, so it runs nightly.",
 			Assertion: "child session links the parent and inherits conversation context",
-			Tier: TierN, Chips: []string{chipReal, chipKey, chipNet},
+			Tier:      TierN, Chips: []string{chipReal, chipKey, chipNet},
 		},
 		{
 			ID: "mcp-loads", Group: "MCP",
-			Title: "MCP actually loads in the agent",
+			Title:     "MCP actually loads in the agent",
 			HowWeTest: "We attach a tool server and ask a real agent to list its tools, confirming the agent honors the attachment. This needs a real agent to introspect, so it runs nightly.",
 			Assertion: "the agent lists the attached MCP server",
-			Tier: TierN, Chips: []string{chipReal, chipKey, chipNet},
+			Tier:      TierN, Chips: []string{chipReal, chipKey, chipNet},
 		},
 	}
 }
@@ -274,17 +275,69 @@ func (m *Manifest) AttachSnapshots(dir string) {
 	}
 }
 
+// noiseLine patterns are shell-login boilerplate that the sandbox's interactive
+// login bash prints when a pane's shell starts (the Ubuntu MOTD), plus the bare
+// shell-prompt lines that carry no agent-deck output. None of it proves a
+// capability, so a snapshot must never show it. This is the render-time safety
+// net; capture-time extraction (in tests/capability) is the primary defense.
+var noiseLine = []*regexp.Regexp{
+	regexp.MustCompile(`To run a command as administrator`),
+	regexp.MustCompile(`man sudo_root`),
+	regexp.MustCompile(`sudo_root`),
+	regexp.MustCompile(`man sudo`),
+	regexp.MustCompile(`Welcome to Ubuntu`),
+	regexp.MustCompile(`^\s*\* (Documentation|Support|Management|Strictly|Get|Just)`),
+	regexp.MustCompile(`^\s*Last login:`),
+	regexp.MustCompile(`System (information|load|restart)`),
+	// A bare interactive prompt line ("user@host:~/path$" possibly followed by
+	// the shell-spawn command), which is pane chrome, not agent output.
+	regexp.MustCompile(`^[^\s@]+@[^\s:]+:\S*[#$]\s*(bash -c .*)?$`),
+}
+
+// braille matches the spinner glyphs (U+2800..U+28FF) agent-deck's status line
+// animates while an agent is "working"; those redraw frames leave garbled
+// "working" / "...EADY >" fragments in a raw capture that mean nothing to a reader.
+var braille = regexp.MustCompile(`[\x{2800}-\x{28FF}]`)
+
+// isNoise reports whether a captured line is shell/MOTD/spinner chrome rather
+// than meaningful agent-deck content.
+func isNoise(line string) bool {
+	if braille.MatchString(line) {
+		return true
+	}
+	for _, re := range noiseLine {
+		if re.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
 // cleanSnapshot normalizes a captured pane for display: it strips carriage
-// returns, trims trailing whitespace on each line, and drops leading and
-// trailing blank lines. It keeps interior blank lines and all meaningful
-// content. The result is the text shown verbatim (HTML-escaped) in the
-// dashboard's terminal block.
+// returns, drops shell-login MOTD / bare-prompt / spinner-noise lines, trims
+// trailing whitespace on each line, collapses runs of blank lines to one, and
+// drops leading and trailing blank lines. It keeps all meaningful content. The
+// result is the text shown verbatim (HTML-escaped) in the dashboard's terminal
+// block.
 func cleanSnapshot(raw string) string {
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	raw = strings.ReplaceAll(raw, "\r", "")
-	lines := strings.Split(raw, "\n")
-	for i, ln := range lines {
-		lines[i] = strings.TrimRight(ln, " \t")
+	var lines []string
+	prevBlank := false
+	for _, ln := range strings.Split(raw, "\n") {
+		ln = strings.TrimRight(ln, " \t")
+		if isNoise(ln) {
+			continue
+		}
+		if ln == "" {
+			if prevBlank {
+				continue
+			}
+			prevBlank = true
+		} else {
+			prevBlank = false
+		}
+		lines = append(lines, ln)
 	}
 	start, end := 0, len(lines)
 	for start < end && lines[start] == "" {
@@ -438,7 +491,10 @@ const dashboardHTML = `<!DOCTYPE html>
   .terminal {
     margin: 0; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
     padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; tab-size: 4;
+    font-size: 12px; line-height: 1.45; tab-size: 4;
+    /* Wrap long lines so the meaningful content is fully visible without a
+       horizontal scrollbar clipping it (Wave 1.5 overflow fix). */
+    white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   }
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 </style>
