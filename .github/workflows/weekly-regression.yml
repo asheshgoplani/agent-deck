@@ -78,7 +78,7 @@ jobs:
           GOTOOLCHAIN: go1.25.10
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
 
