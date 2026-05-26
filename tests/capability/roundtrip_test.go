@@ -101,9 +101,15 @@ func TestCapability_Agent_EchoRoundTrip(t *testing.T) {
 	c.run(t, "session", "send", "cap-echo", token, "--no-wait")
 
 	want := "ECHO:" + token
-	if pane, ok := c.waitForPaneContains(t, "cap-echo", want, 20*time.Second); !ok {
+	pane, ok := c.waitForPaneContains(t, "cap-echo", want, 20*time.Second)
+	if !ok {
 		t.Fatalf("pane never showed %q within timeout.\nThe send -> readiness -> capture round trip is broken.\nlast pane:\n%s", want, pane)
 	}
+
+	// Display proof, the backbone snapshot: the same pane shows the token we
+	// sent AND the agent's echoed reply, so a reader can literally see the
+	// conversation that the assertion above confirmed.
+	snapshot(t, "send-output-echo", pane)
 }
 
 // TestCapability_Lifecycle_Launch proves the atomic add+start+send path: a
@@ -127,7 +133,11 @@ func TestCapability_Lifecycle_Launch(t *testing.T) {
 	}
 
 	want := "ECHO:" + token
-	if pane, ok := c.waitForPaneContains(t, "cap-launch", want, 20*time.Second); !ok {
+	pane, ok := c.waitForPaneContains(t, "cap-launch", want, 20*time.Second)
+	if !ok {
 		t.Fatalf("launch -m did not result in %q in the pane.\nlast pane:\n%s", want, pane)
 	}
+
+	// Display proof: the one-step launch pane with the echoed message visible.
+	snapshot(t, "launch", pane)
 }

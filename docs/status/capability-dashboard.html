@@ -49,6 +49,13 @@
   .meta { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .chips { margin-top: 8px; }
   .chip { display: inline-block; font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; margin: 2px 4px 2px 0; color: var(--muted); }
+  .term { margin-top: 12px; }
+  .term .term-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 5px; }
+  .terminal {
+    margin: 0; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; tab-size: 4;
+  }
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 </style>
 </head>
@@ -56,7 +63,7 @@
 <div class="wrap">
 <header class="page">
   <h1>agent-deck Capability E2E Dashboard</h1>
-  <div class="date">Generated 2026-05-26T12:03:17Z</div>
+  <div class="date">Generated 2026-05-26T12:20:13Z</div>
   <p class="pitch">One card per capability agent-deck promises a user can do. Each fast-gate capability is verified by a test that performs the real action through the compiled binary on an isolated tmux socket and asserts on the real effect: registry rows or live pane content. Nightly capabilities need real agents, keys, or network and run out of band.</p>
 </header>
 
@@ -77,8 +84,15 @@
     <h3>Register a session</h3>
     <p class="how">We run the add command to register a new session, then read the saved registry back. We confirm the row exists with the title, tool, group, and folder we asked for.</p>
     <p class="assert">Pass when: new registry row carries the given title, tool, group, and working directory</p>
-    <div class="meta">Tier F . Runtime: 2.1s . TestCapability_Lifecycle_Add</div>
+    <div class="meta">Tier F . Runtime: 2.9s . TestCapability_Lifecycle_Add</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Profile: default
+
+TITLE                GROUP           PATH                                     ID
+--------------------------------------------------------------------------------------------
+cap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3720... 5cefc6c6-177
+
+Total: 1 sessions</pre></div>
   </div>
   
   <div class="card green">
@@ -86,8 +100,16 @@
     <h3>Start a session</h3>
     <p class="how">We register a session and start it. We then ask the throwaway tmux server whether a live pane actually appeared, and confirm the registry flips the session to an active state.</p>
     <p class="assert">Pass when: a real tmux pane appears on the isolated socket and status becomes active</p>
-    <div class="meta">Tier F . Runtime: 1.4s . TestCapability_Lifecycle_Start</div>
+    <div class="meta">Tier F . Runtime: 1.7s . TestCapability_Lifecycle_Start</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
+See &#34;man sudo_root&#34; for details.
+
+ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c &#39;bash&#39;
+To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
+See &#34;man sudo_root&#34; for details.
+
+ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
   </div>
   
   <div class="card green">
@@ -95,8 +117,15 @@
     <h3>Stop a session</h3>
     <p class="how">We start a session, then stop it. We confirm the tmux pane is gone and the registry returns the session to the stopped state.</p>
     <p class="assert">Pass when: tmux pane disappears and registry status returns to stopped</p>
-    <div class="meta">Tier F . Runtime: 1.5s . TestCapability_Lifecycle_Stop</div>
+    <div class="meta">Tier F . Runtime: 1.7s . TestCapability_Lifecycle_Stop</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Profile: default
+
+TITLE                GROUP           PATH                                     ID
+--------------------------------------------------------------------------------------------
+cap-stop             001             /tmp/TestCapability_Lifecycle_Stop249... 2d988fcd-177
+
+Total: 1 sessions</pre></div>
   </div>
   
   <div class="card green">
@@ -104,8 +133,16 @@
     <h3>Restart a session</h3>
     <p class="how">We start a session and restart it. We confirm exactly one pane exists afterward (no accidental duplicate) and the session is active again.</p>
     <p class="assert">Pass when: exactly one pane remains after restart and status is active (guards the #30 double-spawn)</p>
-    <div class="meta">Tier F . Runtime: 2.6s . TestCapability_Lifecycle_Restart</div>
+    <div class="meta">Tier F . Runtime: 2.5s . TestCapability_Lifecycle_Restart</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
+See &#34;man sudo_root&#34; for details.
+
+ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c &#39;bash&#39;
+To run a command as administrator (user &#34;root&#34;), use &#34;sudo &lt;command&gt;&#34;.
+See &#34;man sudo_root&#34; for details.
+
+ashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$</pre></div>
   </div>
   
   <div class="card green">
@@ -115,6 +152,17 @@
     <p class="assert">Pass when: stopped session leaves the registry; a running session is refused without force</p>
     <div class="meta">Tier F . Runtime: 11.1s . TestCapability_Lifecycle_Rm</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck session remove cap-rm-running
+Error: session &#39;cap-rm-running&#39; is in state &#39;starting&#39;; only stopped/error sessions may be removed without --force
+
+$ agent-deck list   (after stopping and removing cap-rm-stopped)
+Profile: default
+
+TITLE                GROUP           PATH                                     ID
+--------------------------------------------------------------------------------------------
+cap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm30872... 9956720c-177
+
+Total: 1 sessions</pre></div>
   </div>
   
   <div class="card green">
@@ -122,8 +170,12 @@
     <h3>Launch in one step</h3>
     <p class="how">We use the single launch command, which creates, starts, and messages a session at once, pointed at the stand-in echo agent. We confirm the registry row exists and the echoed message shows up on screen.</p>
     <p class="assert">Pass when: one launch command creates the row, starts the pane, and the echoed message appears</p>
-    <div class="meta">Tier F . Runtime: 7.1s . TestCapability_Lifecycle_Launch</div>
+    <div class="meta">Tier F . Runtime: 7.2s . TestCapability_Lifecycle_Launch</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PINGLAUNCH-cap-e2e-token
+⠏ working
+ECHO:PINGLAUNCH-cap-e2e-token
+ECHOBOT READY &gt;</pre></div>
   </div>
   
   <div class="card green">
@@ -133,6 +185,8 @@
     <p class="assert">Pass when: forking a non-Claude session is refused and no child row is created</p>
     <div class="meta">Tier F . Runtime: 0.1s . TestCapability_Lifecycle_Fork</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck session fork cap-fork
+Error: session &#39;cap-fork&#39; is not a Claude session (tool: shell)</pre></div>
   </div>
   
 </div>
@@ -145,8 +199,25 @@
     <h3>Send a message to an agent and read its reply</h3>
     <p class="how">We launch a tiny stand-in agent that simply repeats whatever you say. We send it a unique message through the normal send command, then read the screen back. If the screen shows the echoed message we know it reached the agent and a reply came out the other side.</p>
     <p class="assert">Pass when: the pane shows ECHO:&lt;token&gt; after a real send, proving readiness, send-keys, and capture read-back</p>
-    <div class="meta">Tier F . Runtime: 6.4s . TestCapability_Agent_EchoRoundTrip</div>
+    <div class="meta">Tier F . Runtime: 5.7s . TestCapability_Agent_EchoRoundTrip</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PING-TestCapability_Agent_EchoRoundTrip
+⠼ working
+⠏ working
+⠼ working
+⠏ working
+⠼ working
+⠸ working
+⠏ working
+ECHO:PING-TestCapability_Agent_EchoRoundTrip
+⠸ workingEADY &gt;
+⠹ working
+⠙ working
+⠋ working
+⠏ working
+ECHO:
+⠋ workingEADY &gt;
+⠏ working</pre></div>
   </div>
   
   <div class="card grey">
@@ -156,6 +227,7 @@
     <p class="assert">Pass when: a real Claude reply contains the expected token</p>
     <div class="meta">Tier N . Runtime: not measured</div>
     <div class="chips"><span class="chip">Real-agent</span><span class="chip">Needs-creds</span><span class="chip">Needs-network</span></div>
+    
   </div>
   
   <div class="card grey">
@@ -165,6 +237,7 @@
     <p class="assert">Pass when: child session links the parent and inherits conversation context</p>
     <div class="meta">Tier N . Runtime: not measured</div>
     <div class="chips"><span class="chip">Real-agent</span><span class="chip">Needs-creds</span><span class="chip">Needs-network</span></div>
+    
   </div>
   
 </div>
@@ -179,6 +252,7 @@
     <p class="assert">Pass when: the agent lists the attached MCP server</p>
     <div class="meta">Tier N . Runtime: not measured</div>
     <div class="chips"><span class="chip">Real-agent</span><span class="chip">Needs-creds</span><span class="chip">Needs-network</span></div>
+    
   </div>
   
 </div>

@@ -37,6 +37,13 @@ fi
 
 MANIFEST="docs/status/capability-e2e-manifest.json"
 DASHBOARD="docs/status/capability-dashboard.html"
+# Per-capability terminal pane snapshots: each test writes "<id>.txt" here at
+# its verification point, and capability-report reads them back to embed the
+# real terminal content in the dashboard. Wiping it first means a removed test
+# can never leave a stale snapshot on a card.
+SNAPSHOT_DIR="tests/capability/testdata/snapshots"
+export CAPABILITY_SNAPSHOT_DIR="$PWD/$SNAPSHOT_DIR"
+rm -f "$SNAPSHOT_DIR"/*.txt 2>/dev/null || true
 RESULTS="$(mktemp -t cap-e2e-results.XXXXXX.json)"
 trap 'rm -f "$RESULTS"' EXIT
 
@@ -45,13 +52,14 @@ echo "capability-e2e: running suite (tags: $TAGS)"
 TEST_STATUS=0
 go test -tags "$TAGS" -race -count=1 -timeout 8m -json ./tests/capability/... >"$RESULTS" || TEST_STATUS=$?
 
-echo "capability-e2e: rendering manifest + dashboard"
+echo "capability-e2e: rendering manifest + dashboard (snapshots from $SNAPSHOT_DIR)"
 # capability-report exits non-zero if a Tier F capability failed.
 REPORT_STATUS=0
 go run ./tools/capability-report \
   --json-input "$RESULTS" \
   --manifest "$MANIFEST" \
-  --dashboard "$DASHBOARD" || REPORT_STATUS=$?
+  --dashboard "$DASHBOARD" \
+  --snapshot-dir "$SNAPSHOT_DIR" || REPORT_STATUS=$?
 
 if [[ "$TEST_STATUS" -ne 0 ]]; then
   echo "capability-e2e: test runner exited $TEST_STATUS" >&2

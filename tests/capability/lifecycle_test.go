@@ -49,6 +49,10 @@ func TestCapability_Lifecycle_Add(t *testing.T) {
 	if row.Group != "capgrp" {
 		t.Errorf("group = %q, want capgrp", row.Group)
 	}
+
+	// Display proof: the registry as a human sees it, showing the row that the
+	// assertions above checked field by field.
+	snapshot(t, "add", c.run(t, "list"))
 }
 
 // TestCapability_Lifecycle_Start proves `session start` spawns a real tmux pane
@@ -66,6 +70,9 @@ func TestCapability_Lifecycle_Start(t *testing.T) {
 	if got, ok := c.waitForStatus(t, "cap-start", 8*time.Second, "running", "starting", "idle", "waiting"); !ok {
 		t.Fatalf("status did not reach an active state after start; last = %q", got)
 	}
+
+	// Display proof: the live pane that just came up on the isolated socket.
+	c.snapshotPane(t, "start", "cap-start")
 }
 
 // TestCapability_Lifecycle_Stop proves `session stop` tears down the tmux pane
@@ -86,6 +93,10 @@ func TestCapability_Lifecycle_Stop(t *testing.T) {
 	if got, ok := c.waitForStatus(t, "cap-stop", 5*time.Second, "stopped"); !ok {
 		t.Fatalf("status did not return to stopped; last = %q", got)
 	}
+
+	// Display proof: pane is gone, so we show the registry returning the
+	// session to stopped (the visible effect a human checks after stop).
+	snapshot(t, "stop", c.run(t, "list"))
 }
 
 // TestCapability_Lifecycle_Restart proves `session restart` respawns the pane
@@ -113,6 +124,9 @@ func TestCapability_Lifecycle_Restart(t *testing.T) {
 	if got, ok := c.waitForStatus(t, "cap-restart", 8*time.Second, "running", "starting", "idle", "waiting"); !ok {
 		t.Fatalf("status not active after restart; last = %q", got)
 	}
+
+	// Display proof: the single respawned pane on the isolated socket.
+	c.snapshotPane(t, "restart", "cap-restart")
 }
 
 // TestCapability_Lifecycle_Rm proves `rm` drops a stopped session from the
@@ -128,8 +142,9 @@ func TestCapability_Lifecycle_Rm(t *testing.T) {
 	if name := c.waitForTmuxSession(t, 8*time.Second); name == "" {
 		t.Fatalf("session never started, cannot test rm guard")
 	}
-	if out, err := c.try("session", "remove", "cap-rm-running"); err == nil {
-		t.Fatalf("session remove of a running session should be refused without --force, got success:\n%s", out)
+	refusal, err := c.try("session", "remove", "cap-rm-running")
+	if err == nil {
+		t.Fatalf("session remove of a running session should be refused without --force, got success:\n%s", refusal)
 	}
 	if _, ok := c.findByTitle(t, "cap-rm-running"); !ok {
 		t.Fatalf("refused rm must leave the session in the registry, but it is gone")
@@ -147,6 +162,13 @@ func TestCapability_Lifecycle_Rm(t *testing.T) {
 	if _, ok := c.findByTitle(t, "cap-rm-stopped"); ok {
 		t.Fatalf("after session remove, the row should be absent from the registry")
 	}
+
+	// Display proof: the destructive-action guard refusing a running session,
+	// then the registry after the stopped session was removed.
+	snapshot(t, "rm", "$ agent-deck session remove cap-rm-running\n"+
+		strings.TrimRight(refusal, "\n")+
+		"\n\n$ agent-deck list   (after stopping and removing cap-rm-stopped)\n"+
+		c.run(t, "list"))
 }
 
 // TestCapability_Lifecycle_Fork proves the fork precondition guard: forking a
@@ -170,4 +192,8 @@ func TestCapability_Lifecycle_Fork(t *testing.T) {
 	if _, ok := c.findByTitle(t, "cap-fork-fork"); ok {
 		t.Fatalf("a refused fork must not create a child registry row")
 	}
+
+	// Display proof: the precondition guard refusing to fork a non-Claude
+	// session.
+	snapshot(t, "fork", "$ agent-deck session fork cap-fork\n"+strings.TrimRight(out, "\n"))
 }

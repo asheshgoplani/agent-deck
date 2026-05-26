@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +132,100 @@ func TestRenderDashboard_ContainsCapabilityContent(t *testing.T) {
 		if strings.Contains(html, emoji) {
 			t.Errorf("dashboard contains emoji %q; the style rules forbid emoji", emoji)
 		}
+	}
+}
+
+func TestAttachSnapshots_EmbedsContentByID(t *testing.T) {
+	dir := t.TempDir()
+	// One snapshot file named by capability id, plus a stale file with no
+	// matching capability (must be ignored, not error).
+	if err := os.WriteFile(filepath.Join(dir, "send-output-echo.txt"), []byte("$ send PING-42\nECHO:PING-42\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "no-such-capability.txt"), []byte("orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := BuildManifest(sampleResults(), fixedTime)
+	m.AttachSnapshots(dir)
+
+	var echo *Capability
+	for i := range m.Capabilities {
+		if m.Capabilities[i].ID == "send-output-echo" {
+			echo = &m.Capabilities[i]
+		}
+	}
+	if echo == nil {
+		t.Fatal("send-output-echo capability missing from registry")
+	}
+	if !strings.Contains(echo.Snapshot, "ECHO:PING-42") {
+		t.Errorf("snapshot not attached to send-output-echo: %q", echo.Snapshot)
+	}
+	if !strings.Contains(echo.Snapshot, "send PING-42") {
+		t.Errorf("snapshot should show the sent token: %q", echo.Snapshot)
+	}
+
+	// A capability without a snapshot file keeps an empty Snapshot.
+	for _, c := range m.Capabilities {
+		if c.ID == "fork-context" && c.Snapshot != "" {
+			t.Errorf("capability %q with no snapshot file should stay empty, got %q", c.ID, c.Snapshot)
+		}
+	}
+}
+
+func TestAttachSnapshots_MissingDirIsNoop(t *testing.T) {
+	m := BuildManifest(sampleResults(), fixedTime)
+	// Must not panic or error when the directory does not exist; snapshots are
+	// optional display data.
+	m.AttachSnapshots(filepath.Join(t.TempDir(), "does-not-exist"))
+	for _, c := range m.Capabilities {
+		if c.Snapshot != "" {
+			t.Errorf("capability %q should have no snapshot when dir is absent", c.ID)
+		}
+	}
+}
+
+func TestRenderDashboard_RendersTerminalBlockEscaped(t *testing.T) {
+	dir := t.TempDir()
+	// Deliberately include HTML-special characters and newlines so we can prove
+	// the terminal block escapes them and preserves line breaks.
+	raw := "$ session send cap-echo 'PING & <go>'\nECHO:PING & <go>\nECHOBOT READY"
+	if err := os.WriteFile(filepath.Join(dir, "send-output-echo.txt"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := BuildManifest(sampleResults(), fixedTime)
+	m.AttachSnapshots(dir)
+
+	html, err := RenderDashboard(m)
+	if err != nil {
+		t.Fatalf("RenderDashboard: %v", err)
+	}
+
+	// The terminal block is present.
+	if !strings.Contains(html, "terminal") {
+		t.Error("dashboard should contain a terminal-styled snapshot block")
+	}
+	// HTML special characters are escaped, not injected raw.
+	if !strings.Contains(html, "ECHO:PING &amp; &lt;go&gt;") {
+		t.Errorf("snapshot must be HTML-escaped (&amp;/&lt;/&gt;); html did not contain the escaped echo line")
+	}
+	if strings.Contains(html, "ECHO:PING & <go>") {
+		t.Error("dashboard contains the raw unescaped snapshot; HTML escaping is broken")
+	}
+	// A reader-facing label introduces the block.
+	if !strings.Contains(html, "What the terminal showed") {
+		t.Error("dashboard should label the terminal block for readers")
+	}
+}
+
+func TestRenderDashboard_NoTerminalBlockWithoutSnapshot(t *testing.T) {
+	// No snapshots attached: cards must not render an empty terminal block.
+	html, err := RenderDashboard(BuildManifest(sampleResults(), fixedTime))
+	if err != nil {
+		t.Fatalf("RenderDashboard: %v", err)
+	}
+	if strings.Contains(html, "What the terminal showed") {
+		t.Error("with no snapshots attached, no terminal block should render")
 	}
 }
 

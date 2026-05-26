@@ -14,6 +14,7 @@ func main() {
 	jsonInput := flag.String("json-input", "-", "path to `go test -json` output, or - for stdin")
 	manifestPath := flag.String("manifest", "docs/status/capability-e2e-manifest.json", "where to write the JSON manifest")
 	dashboardPath := flag.String("dashboard", "docs/status/capability-dashboard.html", "where to write the HTML dashboard")
+	snapshotDir := flag.String("snapshot-dir", "tests/capability/testdata/snapshots", "directory of per-capability terminal pane snapshots (<id>.txt)")
 	flag.Parse()
 
 	raw, err := readInput(*jsonInput)
@@ -24,6 +25,7 @@ func main() {
 
 	results := ParseTestResults(raw)
 	manifest := BuildManifest(results, time.Now())
+	manifest.AttachSnapshots(*snapshotDir)
 
 	if err := writeManifest(*manifestPath, manifest); err != nil {
 		fmt.Fprintf(os.Stderr, "capability-report: write manifest: %v\n", err)

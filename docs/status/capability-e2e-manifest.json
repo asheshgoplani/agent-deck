@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-26T12:03:17Z",
+  "generated_at": "2026-05-26T12:20:13Z",
   "summary": {
     "total": 11,
     "green": 8,
@@ -20,7 +20,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Add",
       "status": "pass",
-      "runtime_seconds": 2.06
+      "runtime_seconds": 2.89,
+      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3720... 5cefc6c6-177\n\nTotal: 1 sessions"
     },
     {
       "id": "start",
@@ -34,7 +35,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Start",
       "status": "pass",
-      "runtime_seconds": 1.43
+      "runtime_seconds": 1.68,
+      "snapshot": "To run a command as administrator (user \"root\"), use \"sudo \u003ccommand\u003e\".\nSee \"man sudo_root\" for details.\n\nashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c 'bash'\nTo run a command as administrator (user \"root\"), use \"sudo \u003ccommand\u003e\".\nSee \"man sudo_root\" for details.\n\nashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$"
     },
     {
       "id": "stop",
@@ -48,7 +50,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Stop",
       "status": "pass",
-      "runtime_seconds": 1.5
+      "runtime_seconds": 1.7,
+      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-stop             001             /tmp/TestCapability_Lifecycle_Stop249... 2d988fcd-177\n\nTotal: 1 sessions"
     },
     {
       "id": "restart",
@@ -62,7 +65,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Restart",
       "status": "pass",
-      "runtime_seconds": 2.6
+      "runtime_seconds": 2.52,
+      "snapshot": "To run a command as administrator (user \"root\"), use \"sudo \u003ccommand\u003e\".\nSee \"man sudo_root\" for details.\n\nashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$ bash -c 'bash'\nTo run a command as administrator (user \"root\"), use \"sudo \u003ccommand\u003e\".\nSee \"man sudo_root\" for details.\n\nashesh-goplani@ashesh-goplani-CELSIUS-M7010power:~/project$"
     },
     {
       "id": "rm",
@@ -76,7 +80,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Rm",
       "status": "pass",
-      "runtime_seconds": 11.09
+      "runtime_seconds": 11.11,
+      "snapshot": "$ agent-deck session remove cap-rm-running\nError: session 'cap-rm-running' is in state 'starting'; only stopped/error sessions may be removed without --force\n\n$ agent-deck list   (after stopping and removing cap-rm-stopped)\nProfile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm30872... 9956720c-177\n\nTotal: 1 sessions"
     },
     {
       "id": "launch",
@@ -91,7 +96,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Launch",
       "status": "pass",
-      "runtime_seconds": 7.1
+      "runtime_seconds": 7.18,
+      "snapshot": "ECHOBOT READY \u003e PINGLAUNCH-cap-e2e-token\n⠏ working\nECHO:PINGLAUNCH-cap-e2e-token\nECHOBOT READY \u003e"
     },
     {
       "id": "fork",
@@ -105,7 +111,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Fork",
       "status": "pass",
-      "runtime_seconds": 0.15
+      "runtime_seconds": 0.13,
+      "snapshot": "$ agent-deck session fork cap-fork\nError: session 'cap-fork' is not a Claude session (tool: shell)"
     },
     {
       "id": "send-output-echo",
@@ -120,7 +127,8 @@
       ],
       "test_name": "TestCapability_Agent_EchoRoundTrip",
       "status": "pass",
-      "runtime_seconds": 6.4
+      "runtime_seconds": 5.66,
+      "snapshot": "ECHOBOT READY \u003e PING-TestCapability_Agent_EchoRoundTrip\n⠼ working\n⠏ working\n⠼ working\n⠏ working\n⠼ working\n⠸ working\n⠏ working\nECHO:PING-TestCapability_Agent_EchoRoundTrip\n⠸ workingEADY \u003e\n⠹ working\n⠙ working\n⠋ working\n⠏ working\nECHO:\n⠋ workingEADY \u003e\n⠏ working"
     },
     {
       "id": "send-output-claude",

@@ -180,3 +180,45 @@ func (c *capSandbox) waitForNoTmuxSession(t *testing.T, timeout time.Duration) b
 func (c *capSandbox) stopQuietly(ref string) {
 	_, _ = c.try("session", "stop", ref)
 }
+
+// snapshotDir is where capability tests write their per-capability terminal
+// snapshots. tools/capability-report reads "<id>.txt" from here when it
+// regenerates the dashboard. It is overridable via CAPABILITY_SNAPSHOT_DIR so
+// the gate script can point it at a collected location; the default is the
+// committed testdata path (relative to this package's working directory), so a
+// bare `go test -tags capability_e2e ./tests/capability/...` also produces the
+// snapshots the Verify step expects.
+func snapshotDir() string {
+	if d := os.Getenv("CAPABILITY_SNAPSHOT_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join("testdata", "snapshots")
+}
+
+// snapshot records the real terminal/CLI content visible at a test's
+// verification point, keyed by capability id. It is DISPLAY proof only: the
+// pass/fail assertion lives on registry/pane state, never on this text. Writes
+// are best-effort so a snapshot failure never masks the real assertion result.
+func snapshot(t *testing.T, id, content string) {
+	t.Helper()
+	dir := snapshotDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Logf("snapshot %s: mkdir %s: %v (display-only, ignoring)", id, dir, err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".txt"), []byte(content), 0o644); err != nil {
+		t.Logf("snapshot %s: write: %v (display-only, ignoring)", id, err)
+	}
+}
+
+// snapshotPane captures the live tmux pane for ref via the same `session
+// output --pane` read path a human uses, for use as a display snapshot.
+func (c *capSandbox) snapshotPane(t *testing.T, id, ref string) {
+	t.Helper()
+	out, err := c.try("session", "output", ref, "--pane")
+	if err != nil {
+		t.Logf("snapshot %s: pane read failed: %v (display-only, ignoring)", id, err)
+		return
+	}
+	snapshot(t, id, out)
+}
