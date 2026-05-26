@@ -36,6 +36,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     # Tag-push runs use the pushed tag; manual dispatch supplies it explicitly.
     env:
       REF_NAME: ${{ inputs.tag || github.ref_name }}
@@ -52,6 +53,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Validate tag matches code version
         run: |
@@ -67,12 +69,14 @@ jobs:
       # ubuntu-latest by default; install here so `go test ./...` doesn't
       # false-fail on the non-title-lock zoxide_picker_test suite.
       - name: Install zoxide
+        timeout-minutes: 5
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y zoxide
           zoxide --version
 
       - name: Run tests
+        timeout-minutes: 25
         run: go test -race -timeout 20m ./...
 
       # Evaluator harness full tier. Blocking — a release that fails eval
@@ -81,12 +85,14 @@ jobs:
       # a longer timeout so smoke coverage is enforced at the release gate
       # too, not just on PRs.
       - name: Run eval harness (full tier)
+        timeout-minutes: 10
         env:
           GOTOOLCHAIN: go1.25.10
         run: |
           go test -tags 'eval_smoke eval_full' -race -count=1 -timeout 6m ./tests/eval/... ./internal/ui/...
 
       - name: Run GoReleaser
+        timeout-minutes: 15
         uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'
@@ -118,6 +124,7 @@ jobs:
           subject-path: 'dist-attest/*'
 
       - name: Validate release assets
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
