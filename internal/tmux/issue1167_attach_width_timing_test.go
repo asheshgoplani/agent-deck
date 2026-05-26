@@ -14,15 +14,15 @@ import (
 )
 
 // Latency-sensitive #1167 width-arbitration tests, gated behind the
-// `tmux_timing` build tag so they are EXCLUDED from the default `./...` build.
+// `tmux_timing` build tag so they are EXCLUDED from the default `./...` build
+// AND from CI entirely; they run locally and in pre-push only.
 //
-// Why gated: these tests depend on the tmux server completing client
-// window-size arbitration after attach. In the contended release
-// `go test -race ./...` run on a 4-vCPU runner, the server is CPU-starved past
-// any short deadline and `#{window_width}` is still read at tmux's 80-col birth
-// default, producing a false regression (see the #1167 investigation). They run
-// in a dedicated, low-contention CI job (`-p 1`, no co-scheduled heavy
-// packages) — see .github/workflows/issue1167-attach-width.yml.
+// Why excluded from CI: GitHub Actions' headless tmux does not perform
+// window-size arbitration for a synthetic pipe-attached PTY — the window stays
+// at tmux's 80-col birth default regardless of CPU or time, so no deadline
+// (even 30s, isolated with `-p 1`) lets `#{window_width}` reach the wide
+// terminal width. The fix is verified on real terminals, where a real tmux
+// arbitrates correctly; these tests guard it locally and in pre-push. See #1167.
 //
 // The assertion is unchanged from the original: with a wide controlling
 // terminal the attached window MUST reach that width. The wait is hardened, not

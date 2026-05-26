@@ -4,12 +4,12 @@
 package session
 
 // Gated behind the `tmux_timing` build tag (EXCLUDED from the default `./...`
-// build) for the same reason as internal/tmux/issue1167_attach_width_timing_test.go:
-// it depends on the tmux server completing client window-size arbitration, which
-// is CPU-starved past any short deadline in the contended release
-// `go test -race ./...` run on a 4-vCPU runner. It runs isolated, with `-p 1`,
-// in the dedicated job .github/workflows/issue1167-attach-width.yml. The
-// assertion is unchanged; only the wait is hardened.
+// build AND from CI entirely) for the same reason as
+// internal/tmux/issue1167_attach_width_timing_test.go: GitHub Actions' headless
+// tmux does not perform window-size arbitration for a synthetic pipe-attached
+// PTY (window stays at the 80-col birth default regardless of CPU/time), so it
+// can only be validated by a real tmux. It runs locally and in pre-push. See
+// #1167. The assertion is unchanged; only the wait is hardened.
 
 import (
 	"os/exec"
