@@ -7,12 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/creack/pty"
 )
 
 // Regression tests for #1167: opening/attaching a claude session renders the
@@ -24,6 +19,15 @@ import (
 // window-size=largest pins the window to 80 cols — ~half of a wide terminal —
 // until an async SIGWINCH grows it. StartAttachPTY pre-sizes the attach PTY to
 // the controlling terminal so the client connects full-width from frame one.
+//
+// The two width-arbitration tests (full-width + narrow-terminal) live in
+// issue1167_attach_width_timing_test.go behind the `tmux_timing` build tag.
+// They depend on the tmux server completing client window-size arbitration,
+// which is CPU-starved past any short deadline in the contended release
+// `go test -race ./...` run on a 4-vCPU runner (see #1167 investigation). They
+// run isolated, with `-p 1`, in their own CI job instead of the full suite.
+// The fast failure-mode test below has no such dependency, so it stays in the
+// default build and keeps PR coverage of the size-probe fallback path.
 
 func tmuxCtl1167(t *testing.T, socket string, args ...string) {
 	t.Helper()
@@ -31,20 +35,6 @@ func tmuxCtl1167(t *testing.T, socket string, args ...string) {
 	if out, err := exec.Command("tmux", full...).CombinedOutput(); err != nil {
 		t.Fatalf("tmux %v: %v\n%s", args, err, out)
 	}
-}
-
-func windowWidth1167(t *testing.T, socket, name string) int {
-	t.Helper()
-	out, err := exec.Command("tmux", "-S", socket,
-		"display", "-p", "-t", name, "#{window_width}").CombinedOutput()
-	if err != nil {
-		t.Fatalf("display window_width: %v\n%s", err, out)
-	}
-	w, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil {
-		t.Fatalf("parse window_width %q: %v", out, err)
-	}
-	return w
 }
 
 // newDetachedSession1167 reproduces production session birth: a detached
@@ -61,79 +51,6 @@ func newDetachedSession1167(t *testing.T, name string) string {
 	tmuxCtl1167(t, socket, "set-window-option", "-t", name, "aggressive-resize", "on")
 	t.Cleanup(func() { _ = exec.Command("tmux", "-S", socket, "kill-server").Run() })
 	return socket
-}
-
-// attachAt1167 opens a controlling terminal of the given size, attaches through
-// StartAttachPTY, waits for tmux to register the client, and returns the window
-// width tmux reports.
-func attachAt1167(t *testing.T, socket, name string, cols, rows uint16) int {
-	t.Helper()
-
-	termPTY, termTTY, err := pty.Open()
-	if err != nil {
-		t.Fatalf("pty.Open: %v", err)
-	}
-	defer func() { _ = termPTY.Close(); _ = termTTY.Close() }()
-	if err := pty.Setsize(termPTY, &pty.Winsize{Cols: cols, Rows: rows}); err != nil {
-		t.Fatalf("Setsize: %v", err)
-	}
-
-	cmd := exec.Command("tmux", "-S", socket, "attach-session", "-t", name)
-	ptmx, err := StartAttachPTY(cmd, termTTY)
-	if err != nil {
-		t.Fatalf("StartAttachPTY: %v", err)
-	}
-	defer func() {
-		_ = ptmx.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
-	}()
-
-	// Poll until tmux registers the client and arbitrates window-size up to the
-	// expected width, or a generous timeout elapses. A fixed sleep races under
-	// heavy CI load: the async SIGWINCH/client-registration can take longer than
-	// any single guess, so the read fires while the window is still at the 80-col
-	// default. Polling stays fast on idle runners, waits as needed on loaded ones,
-	// and still returns the real (failing) width if a genuine regression never
-	// grows the window.
-	want := int(cols)
-	deadline := time.Now().Add(5 * time.Second)
-	width := windowWidth1167(t, socket, name)
-	for width != want && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-		width = windowWidth1167(t, socket, name)
-	}
-	return width
-}
-
-// TestStartAttachPTY_FullWidthFromFrameOne is the happy path: attaching with a
-// wide controlling terminal must grow the window to the full terminal width,
-// not leave it at the 80-col default that produced the ~50% symptom.
-func TestStartAttachPTY_FullWidthFromFrameOne(t *testing.T) {
-	const cols, rows uint16 = 200, 50
-	socket := newDetachedSession1167(t, "issue1167-fullwidth")
-
-	got := attachAt1167(t, socket, "issue1167-fullwidth", cols, rows)
-	if got != int(cols) {
-		t.Fatalf("attached window width = %d, want %d (full terminal). "+
-			"#1167: the pane renders at ~50%% because the attach PTY started at "+
-			"the 80-col default instead of the controlling terminal size", got, cols)
-	}
-}
-
-// TestStartAttachPTY_MatchesNarrowTerminal is the boundary case: the window must
-// track the *actual* terminal size, proving StartAttachPTY uses the real
-// dimensions rather than any hardcoded width.
-func TestStartAttachPTY_MatchesNarrowTerminal(t *testing.T) {
-	const cols, rows uint16 = 132, 30
-	socket := newDetachedSession1167(t, "issue1167-narrow")
-
-	got := attachAt1167(t, socket, "issue1167-narrow", cols, rows)
-	if got != int(cols) {
-		t.Fatalf("attached window width = %d, want %d (exact terminal size)", got, cols)
-	}
 }
 
 // TestStartAttachPTY_FallsBackWhenSizeUnavailable is the failure mode: when the

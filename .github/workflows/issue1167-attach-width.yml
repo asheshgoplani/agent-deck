@@ -1,0 +1,53 @@
+# Dedicated, low-contention CI gate for the #1167 attach-width regression tests.
+#
+# These three tests are gated behind the `tmux_timing` build tag and are
+# EXCLUDED from the default `go test -race ./...` suite (release.yml). They
+# depend on the tmux server completing client window-size arbitration after an
+# attach, which is CPU-starved past the test deadline when co-scheduled with the
+# heavy full suite on a 4-vCPU runner — producing a false "window stuck at 80
+# cols" regression (see the #1167 investigation).
+#
+# This job runs ONLY those three tests, isolated, with `-p 1` and no
+# co-scheduled heavy packages, so arbitration finishes in tens of milliseconds.
+# It runs on PRs touching internal/tmux or internal/session (the tests had ZERO
+# PR coverage before this workflow) and on release tags.
+#
+# Strictly additive. Do NOT modify .github/workflows/release.yml.
+
+name: "#1167 attach width"
+
+on:
+  pull_request:
+    paths:
+      - 'internal/tmux/**'
+      - 'internal/session/**'
+      - '.github/workflows/issue1167-attach-width.yml'
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  attach-width:
+    name: tmux_timing attach-width tests (-race, -p 1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: go test -tags tmux_timing (isolated, -p 1)
+        run: |
+          go test -tags tmux_timing -race -count=1 -p 1 \
+            -run 'FullWidthFromFrameOne|MatchesNarrowTerminal|RemoteAttach_FullWidthFromFrameOne' \
+            ./internal/tmux/ ./internal/session/

@@ -1,7 +1,15 @@
-//go:build !windows
-// +build !windows
+//go:build tmux_timing && !windows
+// +build tmux_timing,!windows
 
 package session
+
+// Gated behind the `tmux_timing` build tag (EXCLUDED from the default `./...`
+// build) for the same reason as internal/tmux/issue1167_attach_width_timing_test.go:
+// it depends on the tmux server completing client window-size arbitration, which
+// is CPU-starved past any short deadline in the contended release
+// `go test -race ./...` run on a 4-vCPU runner. It runs isolated, with `-p 1`,
+// in the dedicated job .github/workflows/issue1167-attach-width.yml. The
+// assertion is unchanged; only the wait is hardened.
 
 import (
 	"os/exec"
@@ -84,15 +92,38 @@ func TestRemoteAttach_FullWidthFromFrameOne(t *testing.T) {
 		return w
 	}
 
-	// Poll until tmux registers the client and arbitrates window-size up to the
-	// expected width, or a generous timeout elapses. A fixed sleep races under
-	// heavy CI load: the async SIGWINCH/client-registration can take longer than
-	// any single guess, so the read fires while the window is still at the 80-col
-	// default. Polling stays fast on idle runners, waits as needed on loaded ones,
-	// and still surfaces the real (failing) width if a genuine regression never
-	// grows the window.
+	// clientWidthReached reports whether an attached client has registered at
+	// >= want columns. A registered client at the controlling terminal's width
+	// proves the client side of arbitration is done; only then can the server
+	// grow the window past the 80-col birth default.
+	clientWidthReached := func(want int) bool {
+		out, err := exec.Command("tmux", "-S", socket,
+			"list-clients", "-t", name, "-F", "#{client_width}").CombinedOutput()
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Fields(string(out)) {
+			if w, err := strconv.Atoi(line); err == nil && w >= want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 30s load-proportional deadline (mirrors the cgroup-isolation test budget).
+	// Under the contended full suite the tmux server can be CPU-starved for many
+	// seconds before it schedules the client attach + window-size arbitration; a
+	// short deadline mistakes "not yet scheduled" for a regression. In this
+	// isolated job arbitration finishes in tens of milliseconds, so the poll
+	// returns almost immediately. The assertion is unchanged — the wait is
+	// hardened, not weakened.
 	want := int(cols)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
+	// Phase 1: wait for the attach client to register at the terminal width.
+	for !clientWidthReached(want) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Phase 2: wait for the server to grow the window up to the client width.
 	got := readWidth()
 	for got != want && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
