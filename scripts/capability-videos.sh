@@ -8,10 +8,12 @@
 # far too slow for the fast gate. scripts/capability-e2e.sh remains the gate;
 # this script just produces the watchable proof videos a maintainer can play.
 #
-# Each tape records the REAL agent-deck binary running REAL commands against an
-# isolated sandbox (scratch HOME + per-recording tmux socket, TMUX unset). The
-# echobot reply shown in the echo-roundtrip clip is the genuine agent output,
-# read back via `session output` — nothing on screen is hardcoded. VHS only
+# Each tape records the REAL agent-deck binary against an isolated sandbox
+# (scratch HOME + a per-recording tmux -L socket via [tmux].socket_name, TMUX
+# unset). The headline clip, tui-walkthrough.tape, drives the actual interactive
+# TUI — navigate the session list, attach into a live pane, watch the echobot
+# echo a token back on screen — so you SEE the interface work, not CLI text. The
+# echobot reply is genuine agent output; nothing on screen is hardcoded. VHS only
 # supplies the paced terminal, the headless render, and the WebM encode.
 #
 # Usage:

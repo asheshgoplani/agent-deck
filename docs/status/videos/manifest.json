@@ -1,9 +1,10 @@
 {
-  "generated": "2026-05-26T12:48:21Z",
+  "generated": "2026-05-26T13:22:24Z",
   "videos": [
-    {"capability":"echo-roundtrip","webm":"echo-roundtrip.webm","gif":"echo-roundtrip.gif","seconds":36.9,"bytes":402930},
-    {"capability":"lifecycle-fork","webm":"lifecycle-fork.webm","gif":"lifecycle-fork.gif","seconds":19.8,"bytes":199468},
-    {"capability":"lifecycle-launch","webm":"lifecycle-launch.webm","gif":"lifecycle-launch.gif","seconds":25.0,"bytes":217774},
-    {"capability":"lifecycle-stop","webm":"lifecycle-stop.webm","gif":"lifecycle-stop.gif","seconds":29.4,"bytes":236581}
+    {"capability":"echo-roundtrip","webm":"echo-roundtrip.webm","gif":"echo-roundtrip.gif","seconds":38.0,"bytes":394796},
+    {"capability":"lifecycle-fork","webm":"lifecycle-fork.webm","gif":"lifecycle-fork.gif","seconds":20.2,"bytes":198620},
+    {"capability":"lifecycle-launch","webm":"lifecycle-launch.webm","gif":"lifecycle-launch.gif","seconds":25.6,"bytes":278634},
+    {"capability":"lifecycle-stop","webm":"lifecycle-stop.webm","gif":"lifecycle-stop.gif","seconds":29.8,"bytes":235924},
+    {"capability":"tui-walkthrough","webm":"tui-walkthrough.webm","gif":"tui-walkthrough.gif","seconds":14.5,"bytes":195206}
   ]
 }

@@ -59,9 +59,14 @@ export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_STATE_HOME="$HOME/.local/state"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 
-# Per-recording tmux socket: the binary honors AGENT_DECK_TMUX_SOCKET and passes
-# `-S <socket>` to every tmux call, so panes spawn here, not on the default.
-export AGENT_DECK_TMUX_SOCKET="$_capvid_scratch/tmux.sock"
+# Per-recording tmux socket. Isolation is driven by `[tmux].socket_name` in the
+# scratch config.toml below (read once at startup by tmux.SetDefaultSocketName,
+# then threaded as `-L <name>` onto every tmux call). A unique name per recording
+# means panes spawn on a throwaway server, never the user's default — verified by
+# code (internal/tmux/socket.go), unlike the legacy AGENT_DECK_TMUX_SOCKET env
+# which the binary does not read. We still export the name for the cleanup trap.
+_capvid_socket="capvid-$$-$(date +%s)"
+export CAPVID_TMUX_SOCKET="$_capvid_socket"
 export AGENT_DECK_TEST_ISOLATED=1
 unset TMUX TMUX_PANE
 
@@ -85,6 +90,12 @@ mkdir -p "$HOME/.agent-deck"
 cp "$_capvid_repo/tests/capability/testdata/echobot.sh" "$HOME/.agent-deck/echobot.sh"
 chmod +x "$HOME/.agent-deck/echobot.sh"
 cat > "$HOME/.agent-deck/config.toml" <<TOML
+[tmux]
+# Isolate every tmux server this recording spawns onto a unique named socket
+# (tmux -L), so a render can never touch the user's default tmux server. This is
+# the mechanism the binary actually honors (internal/tmux/socket.go).
+socket_name = "$_capvid_socket"
+
 [tools.echobot]
 command = "$HOME/.agent-deck/echobot.sh"
 icon = "E"
@@ -101,7 +112,7 @@ mkdir -p "$CAPVID_PROJECT"
 # server (so no pane lingers) and remove the scratch tree.
 _capvid_cleanup() {
   "$_capvid_bin" --help >/dev/null 2>&1 || true
-  tmux -S "$AGENT_DECK_TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
+  tmux -L "$_capvid_socket" kill-server >/dev/null 2>&1 || true
   rm -rf "$_capvid_scratch" >/dev/null 2>&1 || true
 }
 trap _capvid_cleanup EXIT

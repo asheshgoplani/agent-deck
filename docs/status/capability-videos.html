@@ -27,11 +27,13 @@
   .clip { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 20px; margin: 22px 0; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
   .clip.headline { border-top: 3px solid var(--green); }
   .clip.lifecycle { border-top: 3px solid var(--amber); }
+  .clip.cli { border-top: 3px solid #6366f1; }
   .clip h2 { font-size: 19px; margin: 0 0 4px; letter-spacing: -0.01em; }
   .clip .caption { font-size: 14.5px; color: var(--ink); margin: 4px 0 14px; }
   .clip .badge { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 650; padding: 2px 9px; border-radius: 999px; margin-bottom: 8px; }
   .clip.headline .badge { background: #dcfce7; color: #14532d; }
   .clip.lifecycle .badge { background: #fef3c7; color: #78350f; }
+  .clip.cli .badge { background: #e0e7ff; color: #3730a3; }
   video { width: 100%; height: auto; border-radius: 8px; border: 1px solid #30363d; background: #0d1117; display: block; }
   .meta { font-size: 12px; color: var(--muted); margin-top: 10px; }
   .meta code { background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 11.5px; }
@@ -45,13 +47,24 @@
 <header class="page">
   <h1>agent-deck Capability Videos</h1>
   <div class="date">Watchable proof of the capability E2E flows</div>
-  <p class="pitch">Each clip records the real <code>agent-deck</code> binary running real commands in an isolated sandbox (scratch HOME plus a per recording tmux socket, so no live session is ever touched). Nothing on screen is scripted text: the echobot reply you see is the genuine agent output, read back with <code>session output</code>. VHS only supplies the paced terminal and the WebM encode. These are an on demand artifact, not part of the release gate. The pass or fail signal lives in <a href="capability-dashboard.html">capability-dashboard.html</a>; these videos let you watch the same flows run.</p>
+  <p class="pitch">Each clip records the real <code>agent-deck</code> binary in an isolated sandbox (scratch HOME plus a per recording tmux socket via <code>[tmux].socket_name</code>, so no live session is ever touched). Nothing on screen is scripted text: the echobot reply you see is the genuine agent output. The headline clip drives the actual interactive TUI &mdash; you watch the session list, the selection moving, a live attach into a session pane, and the agent echoing a token back on screen &mdash; not commands typed at a prompt. VHS only supplies the paced terminal and the WebM encode. These are an on demand artifact, not part of the release gate. The pass or fail signal lives in <a href="capability-dashboard.html">capability-dashboard.html</a>; these videos let you watch the same flows run.</p>
 </header>
 
 <section class="clip headline">
-  <span class="badge">Headline</span>
-  <h2>Talk to a live agent and get a reply</h2>
-  <p class="caption">Launch a real echo session, send the token <code>PING-DEMO-7f3a</code>, and the agent echoes it back as <code>ECHO:PING-DEMO-7f3a</code> in the pane.</p>
+  <span class="badge">Headline &middot; Interactive TUI</span>
+  <h2>Drive the real TUI: navigate, attach, watch the agent reply</h2>
+  <p class="caption">Open the interactive <code>agent-deck</code> TUI, move the selection onto a live echobot session, press <kbd>Enter</kbd> to attach into its real tmux pane, type the token <code>PING-TUI-9f3a</code>, and watch the agent echo it back as <code>ECHO:PING-TUI-9f3a</code> live &mdash; then <kbd>Ctrl+Q</kbd> to detach and <kbd>q</kbd> to quit. This is the interface working, not CLI text being written.</p>
+  <video controls loop muted playsinline preload="metadata" poster="">
+    <source src="videos/tui-walkthrough.webm" type="video/webm">
+    Your browser cannot play WebM. <a href="videos/tui-walkthrough.gif">View the GIF instead.</a>
+  </video>
+  <p class="meta">Keybindings confirmed from <code>internal/ui/home.go</code> + <code>internal/ui/hotkeys.go</code>. The echo is genuine agent output captured live in the attached pane. Asserting twin: <code>TestCapability_Agent_EchoRoundTrip</code>.</p>
+</section>
+
+<section class="clip cli">
+  <span class="badge">CLI path</span>
+  <h2>Talk to a live agent from the CLI</h2>
+  <p class="caption">The same round-trip via the scriptable CLI: launch a real echo session, send the token <code>PING-DEMO-7f3a</code>, and read back the agent's <code>ECHO:PING-DEMO-7f3a</code> with <code>session output</code>.</p>
   <video controls loop muted playsinline preload="metadata" poster="">
     <source src="videos/echo-roundtrip.webm" type="video/webm">
     Your browser cannot play WebM. <a href="videos/echo-roundtrip.gif">View the GIF instead.</a>
