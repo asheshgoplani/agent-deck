@@ -600,21 +600,48 @@ func (n *TransitionNotifier) outputHashTTL() time.Duration {
 	return defaultOutputHashDedupTTL
 }
 
-// transitionEventOutputHash derives the cheap stable pane-activity signal
-// used by the issue #1142 output-hash dedup. It returns the inst's
-// LastActivityTime serialized to ns precision: identical bytes mean the pane
-// content hasn't changed since the last accepted [EVENT], so the notifier
-// safely suppresses the re-fire. Empty string for nil/missing — falls back
-// to the legacy 90s dedup window.
+// transitionEventOutputHash derives the stable content signal used by the
+// issue #1142 output-hash dedup. The key must be IDENTICAL across polls while
+// the child's logical state is unchanged, and MUST change on a genuine new
+// turn.
+//
+// issue #1187: the previous implementation keyed on
+// inst.GetLastActivityTime().UnixNano(), but that timestamp is re-stamped to
+// time.Now() on every tmux window_activity tick (tmux.go:2956/3102/3303). A
+// live Claude pane sitting at the prompt animates its footer/token-counter/
+// cursor/hint lines, so window_activity bumped every poll → the key moved
+// every poll → layer-2 dedup could never match → the same [EVENT] re-fired
+// 10-40x. The signal was clock-derived, structurally incapable of matching a
+// live pane.
+//
+// The fix derives the key from session CONTENT (the transcript), which the
+// animated chrome never touches. See transitionContentSignal. Empty string for
+// nil/missing/non-transcript tools — falls back to the legacy 90s dedup window,
+// exactly as before.
 func transitionEventOutputHash(inst *Instance) string {
 	if inst == nil {
 		return ""
 	}
-	t := inst.GetLastActivityTime()
-	if t.IsZero() {
+	return transitionContentSignal(inst)
+}
+
+// transitionContentSignal returns a dedup signal derived from the child's
+// transcript size. A Claude-compatible JSONL transcript is append-only and
+// grows ONLY when a real message is written (user prompt, assistant turn, tool
+// call) — it is completely untouched when the pane merely redraws its animated
+// chrome. So the signal stays identical across idle polls and strictly changes
+// on a genuine new turn. Returns "" when no transcript is resolvable (e.g.
+// non-Claude tools), which routes the caller to the legacy 90s window.
+func transitionContentSignal(inst *Instance) string {
+	path := inst.GetJSONLPath()
+	if path == "" {
 		return ""
 	}
-	return fmt.Sprintf("act:%d", t.UnixNano())
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("jsonl:%d", info.Size())
 }
 
 func (n *TransitionNotifier) markNotified(event TransitionNotificationEvent) {
