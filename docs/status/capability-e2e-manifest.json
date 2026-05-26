@@ -1,0 +1,171 @@
+{
+  "generated_at": "2026-05-26T12:03:17Z",
+  "summary": {
+    "total": 11,
+    "green": 8,
+    "failed": 0,
+    "nightly_only": 3,
+    "not_covered": 0
+  },
+  "capabilities": [
+    {
+      "id": "add",
+      "group": "Session lifecycle",
+      "title": "Register a session",
+      "how_we_test": "We run the add command to register a new session, then read the saved registry back. We confirm the row exists with the title, tool, group, and folder we asked for.",
+      "assertion": "new registry row carries the given title, tool, group, and working directory",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Add",
+      "status": "pass",
+      "runtime_seconds": 2.06
+    },
+    {
+      "id": "start",
+      "group": "Session lifecycle",
+      "title": "Start a session",
+      "how_we_test": "We register a session and start it. We then ask the throwaway tmux server whether a live pane actually appeared, and confirm the registry flips the session to an active state.",
+      "assertion": "a real tmux pane appears on the isolated socket and status becomes active",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Start",
+      "status": "pass",
+      "runtime_seconds": 1.43
+    },
+    {
+      "id": "stop",
+      "group": "Session lifecycle",
+      "title": "Stop a session",
+      "how_we_test": "We start a session, then stop it. We confirm the tmux pane is gone and the registry returns the session to the stopped state.",
+      "assertion": "tmux pane disappears and registry status returns to stopped",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Stop",
+      "status": "pass",
+      "runtime_seconds": 1.5
+    },
+    {
+      "id": "restart",
+      "group": "Session lifecycle",
+      "title": "Restart a session",
+      "how_we_test": "We start a session and restart it. We confirm exactly one pane exists afterward (no accidental duplicate) and the session is active again.",
+      "assertion": "exactly one pane remains after restart and status is active (guards the #30 double-spawn)",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Restart",
+      "status": "pass",
+      "runtime_seconds": 2.6
+    },
+    {
+      "id": "rm",
+      "group": "Session lifecycle",
+      "title": "Remove a session",
+      "how_we_test": "We confirm a stopped session can be removed and disappears from the registry, and that removing a still-running session is refused unless forced, so it is not destroyed by accident.",
+      "assertion": "stopped session leaves the registry; a running session is refused without force",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Rm",
+      "status": "pass",
+      "runtime_seconds": 11.09
+    },
+    {
+      "id": "launch",
+      "group": "Session lifecycle",
+      "title": "Launch in one step",
+      "how_we_test": "We use the single launch command, which creates, starts, and messages a session at once, pointed at the stand-in echo agent. We confirm the registry row exists and the echoed message shows up on screen.",
+      "assertion": "one launch command creates the row, starts the pane, and the echoed message appears",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_Lifecycle_Launch",
+      "status": "pass",
+      "runtime_seconds": 7.1
+    },
+    {
+      "id": "fork",
+      "group": "Session lifecycle",
+      "title": "Fork guard",
+      "how_we_test": "Forking is only valid for a Claude session with live context. We confirm forking a non-Claude session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.",
+      "assertion": "forking a non-Claude session is refused and no child row is created",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Lifecycle_Fork",
+      "status": "pass",
+      "runtime_seconds": 0.15
+    },
+    {
+      "id": "send-output-echo",
+      "group": "Agent interaction",
+      "title": "Send a message to an agent and read its reply",
+      "how_we_test": "We launch a tiny stand-in agent that simply repeats whatever you say. We send it a unique message through the normal send command, then read the screen back. If the screen shows the echoed message we know it reached the agent and a reply came out the other side.",
+      "assertion": "the pane shows ECHO:\u003ctoken\u003e after a real send, proving readiness, send-keys, and capture read-back",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_Agent_EchoRoundTrip",
+      "status": "pass",
+      "runtime_seconds": 6.4
+    },
+    {
+      "id": "send-output-claude",
+      "group": "Agent interaction",
+      "title": "Real agent round trip (Claude)",
+      "how_we_test": "We launch a real Claude session, wait for its prompt, send a fixed instruction, and check the reply. This needs a real API key and network, so it runs nightly, not on every release.",
+      "assertion": "a real Claude reply contains the expected token",
+      "tier": "N",
+      "chips": [
+        "Real-agent",
+        "Needs-creds",
+        "Needs-network"
+      ],
+      "status": "nightly",
+      "runtime_seconds": 0
+    },
+    {
+      "id": "fork-context",
+      "group": "Agent interaction",
+      "title": "Fork inherits Claude context",
+      "how_we_test": "We fork a live Claude session and confirm the child inherits the conversation with a distinct id and a parent link. This needs a real Claude session id from a live transcript, so it runs nightly.",
+      "assertion": "child session links the parent and inherits conversation context",
+      "tier": "N",
+      "chips": [
+        "Real-agent",
+        "Needs-creds",
+        "Needs-network"
+      ],
+      "status": "nightly",
+      "runtime_seconds": 0
+    },
+    {
+      "id": "mcp-loads",
+      "group": "MCP",
+      "title": "MCP actually loads in the agent",
+      "how_we_test": "We attach a tool server and ask a real agent to list its tools, confirming the agent honors the attachment. This needs a real agent to introspect, so it runs nightly.",
+      "assertion": "the agent lists the attached MCP server",
+      "tier": "N",
+      "chips": [
+        "Real-agent",
+        "Needs-creds",
+        "Needs-network"
+      ],
+      "status": "nightly",
+      "runtime_seconds": 0
+    }
+  ]
+}
