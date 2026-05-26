@@ -13,7 +13,10 @@ import (
 )
 
 // withPluginCatalog redirects HOME and writes a config.toml so
-// session.GetAvailablePluginNames returns predictable values.
+// session.GetAvailablePluginNames returns predictable values. Clears the
+// user-config cache because the tempdir's config.toml may share an mtime
+// with the previous test's, causing the cache to return stale plugin
+// definitions.
 func withPluginCatalog(t *testing.T, content string) {
 	t.Helper()
 	temp := t.TempDir()
@@ -28,6 +31,7 @@ func withPluginCatalog(t *testing.T, content string) {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+	session.ClearUserConfigCache()
 }
 
 // TestEditSessionDialog_PluginsFieldShownForClaudeWithCatalog asserts the

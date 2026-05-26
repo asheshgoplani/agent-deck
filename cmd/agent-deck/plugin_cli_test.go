@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // withTempPluginCatalog redirects HOME to a tempdir and writes a
@@ -30,15 +32,12 @@ func withTempPluginCatalog(t *testing.T, content string) string {
 }
 
 // clearSessionUserConfigCache forces a fresh read of config.toml between
-// tests. The cache is keyed on file mtime which can collide on the same
-// nanosecond in tight test loops.
+// tests. Required because withTempPluginCatalog swaps HOME between calls
+// and mtime equality on a fresh tempdir would otherwise return a stale
+// cached UserConfig (carrying the previous test's [plugins.*] block).
 func clearSessionUserConfigCache(t *testing.T) {
 	t.Helper()
-	// Use the exported cache-clear from the session package indirectly
-	// via package-level reload — the catalog accessor reads through the
-	// package cache which we can invalidate by importing session.
-	// Tests already do this through GetAvailablePlugins triggering a
-	// stat-based reload; advance mtime by 1s to be safe.
+	session.ClearUserConfigCache()
 }
 
 func TestValidatePluginFlags_Empty(t *testing.T) {
