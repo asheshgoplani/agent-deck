@@ -12,6 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -47,6 +50,10 @@ type Capability struct {
 	TestName   string   `json:"test_name,omitempty"`
 	Status     string   `json:"status"`
 	RuntimeSeconds float64 `json:"runtime_seconds"`
+	// Snapshot is the real terminal pane (or CLI/registry output) captured at
+	// the test's verification point. It is display-only proof, not asserted on;
+	// empty when no snapshot was captured for this capability.
+	Snapshot string `json:"snapshot,omitempty"`
 }
 
 // Summary is the headline strip on the dashboard.
@@ -248,6 +255,47 @@ func (m Manifest) HasFastFailure() bool {
 	return false
 }
 
+// AttachSnapshots fills each capability's Snapshot from a per-capability
+// artifact file named "<id>.txt" inside dir, as written by the capability
+// tests at their verification point. A missing dir or missing file is not an
+// error: snapshots are optional display data, and a re-run without the tests
+// (or a Tier N capability that never ran) simply leaves Snapshot empty. Files
+// with no matching capability id are ignored.
+func (m *Manifest) AttachSnapshots(dir string) {
+	for i := range m.Capabilities {
+		c := &m.Capabilities[i]
+		raw, err := os.ReadFile(filepath.Join(dir, c.ID+".txt"))
+		if err != nil {
+			continue
+		}
+		if s := cleanSnapshot(string(raw)); s != "" {
+			c.Snapshot = s
+		}
+	}
+}
+
+// cleanSnapshot normalizes a captured pane for display: it strips carriage
+// returns, trims trailing whitespace on each line, and drops leading and
+// trailing blank lines. It keeps interior blank lines and all meaningful
+// content. The result is the text shown verbatim (HTML-escaped) in the
+// dashboard's terminal block.
+func cleanSnapshot(raw string) string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "")
+	lines := strings.Split(raw, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " \t")
+	}
+	start, end := 0, len(lines)
+	for start < end && lines[start] == "" {
+		start++
+	}
+	for end > start && lines[end-1] == "" {
+		end--
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
 // groupedView is the per-group slice handed to the template.
 type groupedView struct {
 	Name string
@@ -385,6 +433,13 @@ const dashboardHTML = `<!DOCTYPE html>
   .meta { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .chips { margin-top: 8px; }
   .chip { display: inline-block; font-size: 11px; background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; margin: 2px 4px 2px 0; color: var(--muted); }
+  .term { margin-top: 12px; }
+  .term .term-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 5px; }
+  .terminal {
+    margin: 0; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px;
+    padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 12px; line-height: 1.45; white-space: pre; overflow-x: auto; tab-size: 4;
+  }
   footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
 </style>
 </head>
@@ -415,6 +470,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <p class="assert">Pass when: {{.Assertion}}</p>
     <div class="meta">Tier {{.Tier}} . Runtime: {{runtimeLabel .}}{{if .TestName}} . {{.TestName}}{{end}}</div>
     <div class="chips">{{range .Chips}}<span class="chip">{{.}}</span>{{end}}</div>
+    {{if .Snapshot}}<div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">{{.Snapshot}}</pre></div>{{end}}
   </div>
   {{end}}
 </div>

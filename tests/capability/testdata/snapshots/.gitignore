@@ -1,0 +1,6 @@
+# Per-capability terminal pane snapshots are runtime artifacts: each capability
+# test writes "<id>.txt" here at its verification point, and capability-report
+# reads them back into the manifest + dashboard (both of which ARE committed).
+# The raw captures are non-deterministic (spinner frames, hostnames, ids), so we
+# keep the directory but ignore the generated files.
+*.txt
