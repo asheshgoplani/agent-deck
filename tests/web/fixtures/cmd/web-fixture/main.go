@@ -65,6 +65,11 @@ func main() {
 	})
 	server.SetMutator(store)
 	server.SetMCPManager(newFixtureMCPManager())
+	// Without this, GET /api/skills falls back to defaultSkillsService, which
+	// scans the host's real ~/.agent-deck/skills + ~/.claude/skills via
+	// session.ListAvailableSkills() — so the seeded alpha/beta/gamma catalog is
+	// never served and skills.spec.js fails (empty/host-dependent catalog).
+	server.SetSkillsService(store)
 
 	// Wrap the server's handler with the fixture admin endpoints so tests can
 	// reset and inspect state without going through the real Go test harness.

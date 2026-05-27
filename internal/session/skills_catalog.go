@@ -73,15 +73,21 @@ type SkillCandidate struct {
 }
 
 // ProjectSkillAttachment is persisted in .agent-deck/skills.toml.
+//
+// The json tags are required for the web API: without them encoding/json
+// ignores the toml tags and falls back to the exported field names, emitting
+// PascalCase (`Name`) instead of the `name` the frontend + e2e tests read.
+// Tag style mirrors the sibling SkillCandidate so both skill types serialize
+// consistently across the /api/skills surface.
 type ProjectSkillAttachment struct {
-	ID         string `toml:"id"`
-	Name       string `toml:"name"`
-	Source     string `toml:"source"`
-	SourcePath string `toml:"source_path"`
-	EntryName  string `toml:"entry_name"`
-	TargetPath string `toml:"target_path"` // relative to project path
-	Mode       string `toml:"mode,omitempty"`
-	AttachedAt string `toml:"attached_at,omitempty"`
+	ID         string `toml:"id" json:"id"`
+	Name       string `toml:"name" json:"name"`
+	Source     string `toml:"source" json:"source"`
+	SourcePath string `toml:"source_path" json:"source_path"`
+	EntryName  string `toml:"entry_name" json:"entry_name"`
+	TargetPath string `toml:"target_path" json:"target_path"` // relative to project path
+	Mode       string `toml:"mode,omitempty" json:"mode,omitempty"`
+	AttachedAt string `toml:"attached_at,omitempty" json:"attached_at,omitempty"`
 }
 
 // ProjectSkillsManifest is the project-local attachment state.

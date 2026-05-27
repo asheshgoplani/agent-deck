@@ -40,10 +40,10 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | List MCPs | `internal/ui/home.go:5965` (`m` key → MCPDialog) | GET `/api/sessions/{id}/mcps` | `MCPManager.ListAttached` | `handlers_mcps_test.go` | Returns `{local,global,user}`; catalog at GET `/api/mcps` |
 | Toggle pooled ↔ local | `internal/ui/home.go:5965` (`m` key → MCPDialog) | PATCH `/api/sessions/{id}/mcps/{name}` | `MCPManager.Move` | `handlers_mcps_test.go` | Body `{scope}` or `{pooled:bool}`; pooled=true→global, pooled=false→local |
 | **SKILLS MANAGEMENT** |
-| Attach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `POST /api/sessions/{id}/skills/{name}` | `apiFetch('POST', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService`; writes project config |
-| Detach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `DELETE /api/sessions/{id}/skills/{name}` | `apiFetch('DELETE', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService` |
-| List skills (catalog) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `GET /api/skills` | `SkillsPane.js` catalog column | `tests/web/e2e/skills.spec.js` | Mirrors `session.ListAvailableSkills` |
-| List skills (attached) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | `GET /api/sessions/{id}/skills` | `SkillsPane.js` attached column | `tests/web/e2e/skills.spec.js` | Mirrors `session.GetAttachedProjectSkills(projectPath)` |
+| Attach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | POST `/api/sessions/{id}/skills/{name}` | `apiFetch('POST', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService`; writes project config |
+| Detach skill | `internal/ui/home.go:6015` (`s` key → SkillDialog) | DELETE `/api/sessions/{id}/skills/{name}` | `apiFetch('DELETE', …)` from `SkillsPane.js` | `tests/web/e2e/skills.spec.js` | Wired via `web.SkillsService` |
+| List skills (catalog) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | GET `/api/skills` | `SkillsPane.js` catalog column | `tests/web/e2e/skills.spec.js` | Mirrors `session.ListAvailableSkills` |
+| List skills (attached) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | GET `/api/sessions/{id}/skills` | `SkillsPane.js` attached column | `tests/web/e2e/skills.spec.js` | Mirrors `session.GetAttachedProjectSkills(projectPath)` |
 | **SETTINGS & DISPLAY** |
 | Edit session settings | `internal/ui/home.go:5953` (`P`/`shift+p` → EditSessionDialog) | MISSING | `SetField` (indirect) | N/A | Title, color, notes, tool options, channels |
 | Edit multi-repo paths | `internal/ui/home.go:5942` (`p` → EditPathsDialog) | MISSING | N/A | N/A | Multi-repo session paths |
@@ -94,8 +94,8 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | `last_accessed_at` | Info section | `MenuSession.lastAccessedAt` | ✅ Present |
 | **RELATIONSHIPS** |
 | `parent_session_id` | Sub-session indicator | `MenuSession.parentSessionId` + `GET /api/sessions/{id}/children` | ✅ Present; tree endpoint surfaces full conductor child topology in the right-rail Children card (`internal/web/handlers_children.go`, `tests/web/e2e/children-panel.spec.js`) |
-| `is_conductor` | (Not shown in TUI) | MISSING | Conductor metadata; tree exposure now lives at `GET /api/sessions/{id}/children` (kind derived UI-side from title/groupPath in `dataModel.js`) |
-| `is_conductor` | (Not shown in TUI) | `MenuSession.isConductor` | ✅ Present; conductor metadata || **PROCESS STATE** |
+| `is_conductor` | (Not shown in TUI) | `MenuSession.isConductor` | ✅ Present; conductor metadata. Tree topology also surfaced at `GET /api/sessions/{id}/children` (kind derived UI-side from title/groupPath in `dataModel.js`) |
+| **PROCESS STATE** |
 | `tmux_session` | Internal reference | `MenuSession.tmuxSession` | ✅ Present (tmux session name) |
 | `tmux_socket_name` | (Internal) | `MenuSession.tmuxSocketName` | ✅ Present; issue #687 |
 | **TOOL-SPECIFIC** |
