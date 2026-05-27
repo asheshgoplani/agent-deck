@@ -679,6 +679,15 @@ type ShellSettings struct {
 	// IgnoreMissingEnvFiles silently ignores missing .env files (default: true)
 	// When false, sessions will error if an env_file doesn't exist
 	IgnoreMissingEnvFiles *bool `toml:"ignore_missing_env_files"`
+
+	// ExitToShell, when true, wraps built-in agent spawn commands so that
+	// exiting the agent (e.g. `/exit` from Claude Code) drops the pane back to
+	// an interactive shell at the same cwd instead of the pane dying / the TUI
+	// auto-restarting. This restores the pre-#503 workflow: exit → do shell-only
+	// work (aws-vault exec, direnv, …) → `claude --resume` the same session.
+	// Default: false (opt-in). Issue #1161, design doc
+	// docs/decisions/1161-exit-to-shell-then-resume.md.
+	ExitToShell *bool `toml:"exit_to_shell"`
 }
 
 // GetIgnoreMissingEnvFiles returns whether to ignore missing env files, defaulting to true
@@ -687,6 +696,15 @@ func (s *ShellSettings) GetIgnoreMissingEnvFiles() bool {
 		return true // Default: ignore missing files (fail-safe)
 	}
 	return *s.IgnoreMissingEnvFiles
+}
+
+// GetExitToShell returns whether agent sessions should fall back to an
+// interactive shell on agent exit, defaulting to false (opt-in). Issue #1161.
+func (s *ShellSettings) GetExitToShell() bool {
+	if s.ExitToShell == nil {
+		return false // Default: OFF (preserve current exit/resume behavior)
+	}
+	return *s.ExitToShell
 }
 
 // GetShowAnalytics returns whether to show analytics, defaulting to false

@@ -39,6 +39,7 @@ Shell environment configuration applied to all sessions.
 env_files = ["~/.agent-deck.env", ".env"]   # .env files to source for ALL sessions
 init_script = "~/.agent-deck/init.sh"       # Script or command to run before each session
 ignore_missing_env_files = true             # Silently skip missing .env files (default: true)
+exit_to_shell = false                       # Drop to an interactive shell when an agent exits (default: false)
 ```
 
 | Key | Type | Default | Description |
@@ -46,6 +47,7 @@ ignore_missing_env_files = true             # Silently skip missing .env files (
 | `env_files` | array of strings | `[]` | List of .env files to source for ALL sessions, in order. Later files override earlier ones. See [Path Resolution](#path-resolution). |
 | `init_script` | string | `""` | Shell script or inline command to run before each session. Useful for direnv, nvm, pyenv, etc. File paths (starting with `/`, `~/`, `./`, `../`) are sourced; anything else is treated as an inline command. |
 | `ignore_missing_env_files` | bool | `true` | When `true`, missing .env files are silently skipped using `[ -f file ] && source file`. When `false`, sessions will error if an env file doesn't exist. |
+| `exit_to_shell` | bool | `false` | When `true`, exiting a built-in agent (e.g. `/exit` from Claude Code) drops the pane back to an interactive shell at the same cwd instead of dying / auto-restarting. Lets you do shell-only work (`aws-vault exec`, `direnv`) then `claude --resume` the same session. Opt-in; the session id is preserved so resume targets the same conversation. Per-session override via the session record. Excludes sandboxed sessions. Issue #1161. |
 
 ### Sourcing order
 

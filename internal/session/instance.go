@@ -299,6 +299,13 @@ type Instance struct {
 	// survive the bash -c wrapper.
 	ExtraArgs []string `json:"extra_args,omitempty"`
 
+	// ExitToShell is the per-session override for the [shell] exit_to_shell
+	// toggle (issue #1161). nil → inherit the global config default (off);
+	// non-nil → force on/off for this session regardless of config. When on
+	// and the tool is a built-in agent, the spawn command is wrapped so that
+	// exiting the agent drops the pane to an interactive shell at the same cwd.
+	ExitToShell *bool `json:"exit_to_shell,omitempty"`
+
 	// StartupQuery is the claude-code positional "startup query" (#725,
 	// v1.7.67). Set from the new-session dialog's "Start query" field and
 	// emitted as a single shell-quoted positional arg on the claude
@@ -6759,11 +6766,80 @@ func (i *Instance) wrapForSandbox(command string) (string, string, error) {
 	return wrappedCmd, containerName, nil
 }
 
+// builtinAgentTools are the first-party agent CLIs agent-deck launches as a
+// pane's initial process and whose clean exit (e.g. `/exit`) can fall back to
+// an interactive shell when exit_to_shell is enabled (issue #1161).
+var builtinAgentTools = map[string]bool{
+	"claude":   true,
+	"gemini":   true,
+	"opencode": true,
+	"codex":    true,
+	"copilot":  true,
+	"cursor":   true,
+	"hermes":   true,
+	"crush":    true,
+}
+
+// isBuiltinAgentTool reports whether tool is a first-party agent (or a custom
+// tool wrapping claude/codex). Custom non-agent commands and "shell" are not
+// agents and must never be exit-to-shell wrapped.
+func isBuiltinAgentTool(tool string) bool {
+	if builtinAgentTools[tool] {
+		return true
+	}
+	return IsClaudeCompatible(tool) || IsCodexCompatible(tool)
+}
+
+// exitToShellEnabled resolves the exit-to-shell toggle for this instance.
+// Per-session override (Instance.ExitToShell) wins; otherwise the global
+// [shell] exit_to_shell config flag applies. Default is OFF (opt-in). #1161.
+func (i *Instance) exitToShellEnabled() bool {
+	if i.ExitToShell != nil {
+		return *i.ExitToShell
+	}
+	cfg, _ := LoadUserConfig()
+	return cfg != nil && cfg.Shell.GetExitToShell()
+}
+
+// wrapExitToShell rewrites a built-in agent's spawn command so the pane falls
+// back to an interactive shell at the same cwd when the agent exits, restoring
+// the pre-#503 exit→shell→resume workflow (issue #1161, Option A).
+//
+// The transform is:
+//
+//	<agent cmd>; exec "$SHELL" -i
+//
+// with the agent's own `exec ` launcher neutralised — claude execs itself for
+// job control, which would replace the wrapping bash and prevent the trailing
+// shell exec from ever running. Only the first `exec ` (the launcher) is
+// stripped; any later "exec " lives inside a shell-quoted startup-query suffix.
+// Agents that do not exec (gemini, codex, …) are unaffected by the strip and
+// simply get the suffix appended.
+//
+// No-op when the flag is off, the command is empty, the session is sandboxed
+// (docker exec owns the in-container process), or the tool is not a built-in
+// agent. Resume is unaffected: i.ClaudeSessionID is captured in Go before the
+// command is built, so the `--session-id`/`--resume` id still targets the same
+// session after the shell detour.
+func (i *Instance) wrapExitToShell(command string) string {
+	if command == "" || i.IsSandboxed() || !i.exitToShellEnabled() || !isBuiltinAgentTool(i.Tool) {
+		return command
+	}
+	rewritten := strings.Replace(command, "exec ", "", 1)
+	return rewritten + `; exec "$SHELL" -i`
+}
+
 // prepareCommand applies the full command wrapping chain: user wrapper → sandbox → ignore-suspend.
 // Returns the wrapped command, the sandbox container name (empty if not sandboxed), and an error.
 // All code paths that launch or respawn a tmux pane should use this instead of calling
 // applyWrapper/wrapForSandbox/wrapIgnoreSuspend individually.
 func (i *Instance) prepareCommand(cmd string) (string, string, error) {
+	// Exit-to-shell wrap FIRST, on the bare agent command, so the agent's own
+	// `exec ` launcher is still visible to neutralise and the trailing shell
+	// exec stays the outermost statement before any user-wrapper / bash -c /
+	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
+	cmd = i.wrapExitToShell(cmd)
+
 	// Apply the user wrapper FIRST so that extra args folded into a
 	// "{command} --flag1 --flag2" wrapper template become part of the string
 	// that the bash -c wrap protects. Previously the order was reversed
