@@ -3,6 +3,7 @@ package update
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -382,35 +383,6 @@ func FetchReleaseByTag(tag string) (*Release, error) {
 	}
 
 	return &release, nil
-}
-
-// DownloadAndExtractBinary downloads a release tarball and returns the binary bytes.
-func DownloadAndExtractBinary(downloadURL string) ([]byte, error) {
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Get(downloadURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	tmpFile, err := os.CreateTemp("", "agent-deck-update-*.tar.gz")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err = io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return nil, fmt.Errorf("failed to save download: %w", err)
-	}
-	tmpFile.Close()
-
-	return extractBinaryFromTarGz(tmpPath)
 }
 
 // CompareVersions compares two semantic versions
@@ -800,15 +772,27 @@ func FormatChangelogForDisplay(entries []ChangelogEntry) string {
 	return sb.String()
 }
 
-// extractBinaryFromTarGz extracts the agent-deck binary from a .tar.gz file
+// extractBinaryFromTarGz extracts the agent-deck binary from a .tar.gz file.
 func extractBinaryFromTarGz(tarPath string) ([]byte, error) {
 	file, err := os.Open(tarPath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	return extractBinaryFromTarGzReader(file)
+}
 
-	gzr, err := gzip.NewReader(file)
+// extractBinaryFromTarGzBytes extracts the agent-deck binary from an in-memory
+// .tar.gz, used by the verified-download path so the archive bytes can be
+// SHA-256'd before extraction (#1206).
+func extractBinaryFromTarGzBytes(data []byte) ([]byte, error) {
+	return extractBinaryFromTarGzReader(bytes.NewReader(data))
+}
+
+// extractBinaryFromTarGzReader extracts the agent-deck binary from a gzipped
+// tar stream.
+func extractBinaryFromTarGzReader(r io.Reader) ([]byte, error) {
+	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, err
 	}

@@ -82,18 +82,13 @@ func (r *SSHRunner) OpenStream(ctx context.Context, args ...string) (io.WriteClo
 	if r.openStreamFn != nil {
 		return r.openStreamFn(ctx, args...)
 	}
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, nil, err
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-	sshArgs := []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
-	}
+	sshArgs := r.sshBaseArgs(remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	stdin, err := cmd.StdinPipe()
@@ -127,19 +122,13 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	if r.runFn != nil {
 		return r.runFn(ctx, args...)
 	}
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, err
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	remoteCmd := r.buildRemoteCommand(args...)
-
-	sshArgs := []string{
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		"-o", "ConnectTimeout=10",
-		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
-	}
+	sshArgs := r.sshBaseArgs(remoteCmd)
 
 	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	var stdout, stderr bytes.Buffer
@@ -159,18 +148,12 @@ func (r *SSHRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 // PTY in sync when the local terminal is resized, and sends SIGWINCH to
 // self on detach so Bubble Tea re-queries the terminal size.
 func (r *SSHRunner) Attach(sessionID string) error {
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return err
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
-	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
-
-	sshArgs := []string{
-		"-tt", // force remote PTY
-		"-o", "ControlMaster=auto",
-		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
-		"-o", "ControlPersist=600",
-		r.Host,
-		remoteCmd,
-	}
+	sshArgs := r.buildAttachArgs(sessionID)
 
 	cmd := exec.Command("ssh", sshArgs...)
 
@@ -414,6 +397,9 @@ func (r *SSHRunner) FetchCostSummary(ctx context.Context) (*costs.RemoteCostSumm
 
 // DetectPlatform returns the remote host's OS and architecture (e.g., "linux", "amd64").
 func (r *SSHRunner) DetectPlatform(ctx context.Context) (goos, goarch string, err error) {
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return "", "", err
+	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
 	// Run uname on the remote to detect OS and machine architecture
@@ -466,6 +452,9 @@ const defaultRemoteInstallSubpath = ".local/bin/agent-deck"
 func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []byte) ([]byte, error) {
 	if r.remoteExecFn != nil {
 		return r.remoteExecFn(ctx, remoteCmd, stdin)
+	}
+	if err := ValidateSSHHost(r.Host); err != nil {
+		return nil, err
 	}
 	_ = os.MkdirAll(sshControlDir, 0700)
 
@@ -626,17 +615,64 @@ func (r *SSHRunner) InstallBinary(ctx context.Context, binaryData []byte, expect
 	return fmt.Errorf("post-deploy verification failed: remote does not report v%s at %s or on $PATH", want, path)
 }
 
-// sshBaseArgs returns common SSH args for running a raw command on the remote.
-func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
+// sshConnOpts returns the SSH -o options shared by every connection agent-deck
+// makes. They are the single source of truth for agent-deck's host-key stance:
+//
+//   - Host-key checking is left at ssh's secure default. agent-deck NEVER passes
+//     StrictHostKeyChecking=no and NEVER points UserKnownHostsFile at /dev/null,
+//     so an unknown or changed host key surfaces ssh's "Host key verification
+//     failed" error (verified against the user's ~/.ssh/known_hosts) instead of
+//     being silently trusted — MITM protection.
+//   - BatchMode=yes makes that failure fast and non-interactive on EVERY path
+//     (run, stream, deploy, and attach), so an unknown key or a missing
+//     credential errors clearly instead of hanging on a prompt.
+//   - ConnectTimeout bounds the dial.
+//
+// See the README "Remote Instances" section for the documented assumption.
+func (r *SSHRunner) sshConnOpts() []string {
 	return []string{
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + sshControlDir + "/%r@%h:%p",
 		"-o", "ControlPersist=600",
 		"-o", "ConnectTimeout=10",
 		"-o", "BatchMode=yes",
-		r.Host,
-		remoteCmd,
 	}
+}
+
+// ValidateSSHHost rejects host strings ssh would misinterpret as options rather
+// than a destination. A host beginning with "-" (e.g. "-oProxyCommand=…") is
+// argument injection: passed as a discrete argv element, ssh parses it as a
+// flag and can be coerced into running an arbitrary local command. Whitespace
+// and empty hosts are rejected too. Hosts come from the user's own config, but
+// this closes the option-injection vector cheaply (#1206).
+func ValidateSSHHost(host string) error {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return fmt.Errorf("ssh host is empty")
+	}
+	if strings.HasPrefix(h, "-") {
+		return fmt.Errorf("invalid ssh host %q: must not begin with '-' (ssh would parse it as an option)", host)
+	}
+	if strings.ContainsAny(h, " \t\r\n") {
+		return fmt.Errorf("invalid ssh host %q: must not contain whitespace", host)
+	}
+	return nil
+}
+
+// sshBaseArgs returns common SSH args for running a raw command on the remote.
+func (r *SSHRunner) sshBaseArgs(remoteCmd string) []string {
+	return append(r.sshConnOpts(), r.Host, remoteCmd)
+}
+
+// buildAttachArgs builds the ssh argv for an interactive attach. It shares
+// sshConnOpts() with every other path so the host-key/BatchMode stance is
+// identical (#1206 regression: Attach() previously omitted BatchMode and
+// ConnectTimeout, so an unknown host key could hang on a prompt instead of
+// failing fast). "-tt" forces a remote PTY.
+func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
+	remoteCmd := r.buildRemoteCommand("session", "attach", sessionID)
+	args := append([]string{"-tt"}, r.sshConnOpts()...)
+	return append(args, r.Host, remoteCmd)
 }
 
 // CreateSession creates and starts a new session on the remote, returning its ID.

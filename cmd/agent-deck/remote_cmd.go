@@ -582,17 +582,13 @@ func installOnRemote(runner *session.SSHRunner, ctx context.Context) error {
 		return fmt.Errorf("failed to fetch release info: %w", err)
 	}
 
-	// Get download URL for the remote's platform
-	downloadURL := update.GetAssetURLForPlatform(release, goos, goarch)
-	if downloadURL == "" {
-		return fmt.Errorf("no release binary available for %s/%s", goos, goarch)
-	}
-
-	// Download and extract the binary
-	fmt.Printf("  Downloading %s/%s binary...\n", goos, goarch)
-	binaryData, err := update.DownloadAndExtractBinary(downloadURL)
+	// Download, verify SHA-256 against the release's checksums.txt, and extract.
+	// We NEVER pipe an unverified artifact to a remote: a missing checksums.txt,
+	// a missing entry, or a hash mismatch aborts the deploy (#1206).
+	fmt.Printf("  Downloading + verifying %s/%s binary...\n", goos, goarch)
+	binaryData, err := update.DownloadVerifiedBinary(release, goos, goarch)
 	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		return fmt.Errorf("download/verify failed: %w", err)
 	}
 
 	// Deploy to remote and verify the remote actually runs the new version

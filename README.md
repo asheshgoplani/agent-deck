@@ -707,6 +707,11 @@ agent-deck remote update dev      # specific remote
 
 Remote configuration is stored under `[remotes]` in `~/.agent-deck/config.toml`. All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
 
+#### Security
+
+- **SSH host-key stance.** agent-deck verifies remote host keys against your `~/.ssh/known_hosts` using OpenSSH's secure default — it never sets `StrictHostKeyChecking=no` and never points `UserKnownHostsFile` at `/dev/null`. Every connection (list, attach, deploy) runs with `BatchMode=yes`, so an **unknown or changed host key fails fast** with a clear `Host key verification failed` error instead of silently trusting the host or hanging on a prompt. Add each remote to `known_hosts` first (e.g. `ssh user@host` once interactively, or `ssh-keyscan`), and authenticate with keys/an agent (BatchMode disables interactive password prompts). A changed host key is treated as a potential MITM and refused until you resolve it.
+- **Verified binary deploys.** `agent-deck remote update` downloads the GitHub release archive and verifies its **SHA-256 against the release's published `checksums.txt`** before deploying. A missing `checksums.txt`, a missing entry, or a hash mismatch aborts the deploy — an unverified or tampered artifact is never piped to a remote.
+
 ### Reaching services running inside remote sessions
 
 If you run a dev server, REPL, or web UI inside a remote session and want to reach it from your local browser, use **[Tailscale](https://tailscale.com)** rather than ad-hoc SSH port forwarding. Tailscale gives every machine on your tailnet a direct IP, so a service on `localhost:3000` of your remote box is reachable at `http://<remote-tailnet-ip>:3000` from your laptop with no `-L`/`-R` setup, no port collisions when multiple sessions share a remote, and no ControlMaster edge cases.
