@@ -1482,9 +1482,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				return d, nil
 			case " ", "enter":
 				// Space: apply highlighted entry + close dropdown (stay in form).
+				// #1190: selecting the synthetic "✎ Type custom path…" entry
+				// (cursor 0) must land the user in the focused path input so they
+				// can type — it must NOT advance focus to the next field. Only
+				// Enter on a real suggestion (cursor > 0) applies + advances.
+				customSelected := d.pathSuggestionCursor == 0
 				d.ApplyHighlightedSuggestion()
 				d.DismissSuggestions()
-				if msg.String() == "enter" {
+				if msg.String() == "enter" && !customSelected {
 					d.moveFocus(1)
 				}
 				return d, nil
@@ -1519,9 +1524,13 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 				}
 				return d, nil
 			case " ", "enter":
+				// #1190: selecting the synthetic "✎ Type custom model ID…" entry
+				// (cursor 0) keeps focus on the model input so the user can type;
+				// only Enter on a real suggestion (cursor > 0) applies + advances.
+				customSelected := d.modelSuggestionCursor == 0
 				d.ApplyHighlightedModelSuggestion()
 				d.DismissModelSuggestions()
-				if msg.String() == "enter" {
+				if msg.String() == "enter" && !customSelected {
 					d.moveFocus(1)
 				}
 				return d, nil
