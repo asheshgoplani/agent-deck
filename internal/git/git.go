@@ -492,6 +492,49 @@ func parseWorktreeList(output string) []Worktree {
 	return worktrees
 }
 
+// IsLinkedWorktree reports whether path is a git LINKED (secondary) worktree —
+// i.e. one that agent-deck (or the user) created with `git worktree add`, as
+// opposed to the repository's main working tree or a non-repo directory.
+//
+// A linked worktree's git directory lives at <repo>/.git/worktrees/<id> (its
+// parent is named "worktrees"), whereas the main working tree's git directory
+// is <repo>/.git. This distinction is the only safe, location-independent way
+// to tell an agent-deck-managed worktree from the user's original repository:
+// worktree placement is user-configurable (sibling, <repo>/.worktrees, or a
+// custom template), so a fixed "managed directory" prefix check is unreliable.
+//
+// Used as the load-bearing guard against issue #1200 (deleting the original
+// repo on dismiss of a worktree_reuse session). Any error or ambiguity returns
+// false, so callers fail safe (skip deletion) rather than risk data loss.
+func IsLinkedWorktree(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	// Primary signal: a live linked worktree's git dir is <repo>/.git/worktrees/<id>
+	// (parent named "worktrees"). The main working tree's git dir is <repo>/.git.
+	// rev-parse succeeding is authoritative, so we trust its verdict either way.
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "--absolute-git-dir").Output(); err == nil {
+		if gitDir := strings.TrimSpace(string(out)); gitDir != "" {
+			return filepath.Base(filepath.Dir(gitDir)) == "worktrees"
+		}
+	}
+	// Fallback for an ORPHANED linked worktree whose admin entry under
+	// <repo>/.git/worktrees/<id> was already removed (rev-parse then fails): the
+	// directory's own .git is still a regular FILE "gitdir: <...>/worktrees/<id>".
+	// The main working tree's .git is a DIRECTORY, so this never matches it —
+	// the original repo stays protected (#1200) while stale worktrees clean up.
+	info, err := os.Lstat(filepath.Join(path, ".git"))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(path, ".git"))
+	if err != nil {
+		return false
+	}
+	gitdir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+	return filepath.Base(filepath.Dir(gitdir)) == "worktrees"
+}
+
 // RemoveWorktree removes a worktree from the repository.
 // If force is true, it will remove even if there are uncommitted changes.
 // When force is true and git fails (e.g. "Directory not empty" due to
@@ -525,6 +568,16 @@ func RemoveWorktree(repoDir, worktreePath string, force bool) error {
 		// submodule's git history.
 		if isGitDir(worktreePath) {
 			return fmt.Errorf("refusing to remove %q: path is a git directory, not a working tree (likely a stale session row from before the submodule path-normalization fix)", worktreePath)
+		}
+		// #1200 (data loss): the os.RemoveAll fallback must only ever delete a
+		// genuine LINKED worktree. A worktree_reuse session points WorktreePath
+		// at the repository's MAIN working tree (the user's original repo); git
+		// refuses `worktree remove` on it, and without this guard the fallback
+		// would os.RemoveAll the entire repository. Refuse anything that is not
+		// a linked worktree (the main tree, or a non-worktree path) — better to
+		// leak a directory than to destroy the user's repo.
+		if !IsLinkedWorktree(worktreePath) {
+			return fmt.Errorf("refusing to remove %q: not a linked git worktree (main working tree or non-worktree path) — declining os.RemoveAll to avoid deleting the original repository (#1200)", worktreePath)
 		}
 		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
 			return fmt.Errorf("failed to remove worktree directory: %w (git error: %s)", rmErr, strings.TrimSpace(string(output)))

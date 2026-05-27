@@ -9307,11 +9307,17 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		if isWorktree {
-			if err := git.RemoveWorktree(worktreeRepoRoot, worktreePath, true); err != nil {
+			// #1200: route worktree teardown through the session guard so a
+			// worktree_reuse session (WorktreePath == the user's original repo)
+			// is never os.RemoveAll'd. Only genuine agent-deck-created linked
+			// worktrees are removed; a reused repo is left intact and merely
+			// dropped from the registry.
+			snap := &session.Instance{WorktreePath: worktreePath, WorktreeRepoRoot: worktreeRepoRoot}
+			switch removed, err := session.RemoveSessionWorktree(snap); {
+			case err != nil:
 				uiLog.Warn("worktree_remove_err", slog.String("path", worktreePath), slog.String("err", err.Error()))
-			}
-			if err := git.PruneWorktrees(worktreeRepoRoot); err != nil {
-				uiLog.Warn("worktree_prune_err", slog.String("repo", worktreeRepoRoot), slog.String("err", err.Error()))
+			case !removed:
+				uiLog.Info("worktree_remove_skipped", slog.String("path", worktreePath), slog.String("repo", worktreeRepoRoot), slog.String("reason", "reused or non-linked worktree (#1200 guard)"))
 			}
 		}
 		if isMultiRepo {
