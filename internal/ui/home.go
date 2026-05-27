@@ -546,6 +546,10 @@ type Home struct {
 	insertBuf           strings.Builder
 	insertFlushPending  bool
 	insertBatchDuration time.Duration
+	// insertPreviewRefreshPending guards the fast preview-refresh tick armed
+	// after an insert keystroke (#1131). Only one tick is in flight at a time;
+	// see scheduleInsertPreviewRefresh.
+	insertPreviewRefreshPending bool
 	// openInNewWindowSink is an optional override used by tests to capture
 	// Shift+Enter dispatches without spawning a real iTerm2 window. When
 	// nil, the dispatch calls terminal.OpenSessionInNewWindow directly.
@@ -3885,6 +3889,32 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case insertPreviewRefreshMsg:
+		// #1131: fast echo path. After an insert keystroke this fires ~60ms
+		// later and re-fetches the focused session's preview, BYPASSING the
+		// 2s previewCacheTTL gate in the tickMsg handler — that gate was why a
+		// typed character could take up to ~2s to appear. Local sessions only;
+		// remote previews stay on their SSH-throttled cadence to avoid
+		// hammering the link per keystroke.
+		h.insertPreviewRefreshPending = false
+		if !h.insertMode {
+			return h, nil
+		}
+		inst, key, winIdx := h.selectedPreviewTarget()
+		if inst == nil || key == "" {
+			return h, nil
+		}
+		h.previewCacheMu.Lock()
+		alreadyFetching := h.previewFetchingID == key
+		if !alreadyFetching {
+			h.previewFetchingID = key
+		}
+		h.previewCacheMu.Unlock()
+		if alreadyFetching {
+			return h, nil
+		}
+		return h, h.fetchPreview(inst, key, winIdx)
+
 	case loadSessionsMsg:
 		// Clear loading indicators and store file mtime for external change detection
 		h.reloadMu.Lock()
@@ -6128,7 +6158,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Insert mode (#1069): short-circuit before any normal-mode handling.
 	// Keystrokes are sent to the focused session's tmux pane; Esc exits.
 	if h.insertMode {
-		return h.handleInsertModeKey(msg)
+		model, cmd := h.handleInsertModeKey(msg)
+		// #1131: after any insert keystroke, arm a fast preview refresh so the
+		// user's echo appears in ~60ms instead of waiting up to the 2s
+		// background tick. Skip once the keystroke exited insert mode (Esc) —
+		// the normal tick cadence resumes there. scheduleInsertPreviewRefresh
+		// self-guards against stacking ticks during a typing burst.
+		if h2, ok := model.(*Home); ok && h2.insertMode {
+			return h2, tea.Batch(cmd, h2.scheduleInsertPreviewRefresh())
+		}
+		return model, cmd
 	}
 
 	raw := msg.String()

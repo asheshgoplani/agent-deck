@@ -28,6 +28,19 @@ const defaultInsertBatchDuration = 15 * time.Millisecond
 // the focused session.
 type insertFlushMsg struct{}
 
+// insertPreviewEchoDelay is how long after an insert keystroke we refresh the
+// preview pane (#1131). It must be long enough for tmux to execute the
+// send-keys and the pane program to echo (~3ms measured end-to-end in
+// internal/tmux), with margin, yet short enough to feel instant. The previous
+// behaviour only refreshed on the 2s background tick, so a typed character
+// could take up to ~2s to appear in the preview — the reported lag.
+const insertPreviewEchoDelay = 60 * time.Millisecond
+
+// insertPreviewRefreshMsg is dispatched by the tick scheduled after an insert
+// keystroke. Its handler re-fetches the focused session's preview, bypassing
+// the normal 2s previewCacheTTL so the user sees their own typing promptly.
+type insertPreviewRefreshMsg struct{}
+
 // Insert mode (#1069 feature 1, by @ddorman-dn): vim-style modal type-through
 // for the TUI. After pressing `I` on a focused session, subsequent keystrokes
 // are forwarded directly to that session's tmux pane via send-keys, instead of
@@ -246,6 +259,19 @@ func (h *Home) scheduleInsertFlush() tea.Cmd {
 	h.insertFlushPending = true
 	d := h.insertBatchDuration
 	return tea.Tick(d, func(time.Time) tea.Msg { return insertFlushMsg{} })
+}
+
+// scheduleInsertPreviewRefresh returns a tea.Cmd that fires insertPreviewRefreshMsg
+// after insertPreviewEchoDelay, unless one is already pending. The pending
+// guard means a burst of keystrokes arms a single refresh tick rather than one
+// per key; once the tick fires (and the flag clears) the next keystroke re-arms
+// it, giving a steady ~60ms echo cadence while the user is actively typing.
+func (h *Home) scheduleInsertPreviewRefresh() tea.Cmd {
+	if h.insertPreviewRefreshPending {
+		return nil
+	}
+	h.insertPreviewRefreshPending = true
+	return tea.Tick(insertPreviewEchoDelay, func(time.Time) tea.Msg { return insertPreviewRefreshMsg{} })
 }
 
 // flushInsertBuf dispatches any buffered runes to the focused session as a
