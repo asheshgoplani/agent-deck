@@ -908,8 +908,20 @@ func resolveTargetPath(projectPath, targetPath string) string {
 }
 
 func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachment) error {
-	targetPath := resolveTargetPath(projectPath, attachment.TargetPath)
-	skillDir, ok := managedProjectSkillsDirForTarget(attachment.TargetPath)
+	return safeRemoveManagedTarget(projectPath, attachment.TargetPath)
+}
+
+// safeRemoveManagedTarget removes targetRel (resolved against projectPath) only
+// when it is contained in a managed project-skills dir, then RemoveAll's it.
+// A non-managed, absolute, or "../"-escaping target is REFUSED and never removed
+// — the same containment guard #1200 added for worktree deletion. Every
+// os.RemoveAll that operates on a manifest-derived TargetPath (attach detach +
+// the migration branches in attachSkillCandidate / reconcileProjectSkills) must
+// route through here so a tampered manifest can't trigger deletion outside the
+// project skills dir. Audit M3.
+func safeRemoveManagedTarget(projectPath, targetRel string) error {
+	targetPath := resolveTargetPath(projectPath, targetRel)
+	skillDir, ok := managedProjectSkillsDirForTarget(targetRel)
 	if !ok {
 		return fmt.Errorf("refusing to remove path outside managed project skills dirs: %s", targetPath)
 	}
@@ -917,10 +929,7 @@ func removeAttachmentTarget(projectPath string, attachment ProjectSkillAttachmen
 	if !isContainedIn(base, targetPath) {
 		return fmt.Errorf("refusing to remove path outside project skills dir: %s", targetPath)
 	}
-	if err := os.RemoveAll(targetPath); err != nil {
-		return err
-	}
-	return nil
+	return os.RemoveAll(targetPath)
 }
 
 func buildAttachment(tool string, candidate SkillCandidate, mode string) ProjectSkillAttachment {
@@ -1044,8 +1053,10 @@ func attachSkillCandidate(projectPath, tool string, candidate SkillCandidate) (*
 			if err != nil {
 				return nil, err
 			}
-			if err := os.RemoveAll(currentTargetPath); err != nil {
-				_ = os.RemoveAll(desiredTargetPath)
+			// Audit M3: guard the manifest-derived currentTargetPath removal so a
+			// tampered TargetPath can't delete outside the project skills dir.
+			if err := safeRemoveManagedTarget(projectPath, existing.TargetPath); err != nil {
+				_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
 				return nil, err
 			}
 			existing.TargetPath = desiredTargetRel
@@ -1310,8 +1321,9 @@ func ApplyProjectSkills(projectPath, tool string, desired []SkillCandidate) erro
 					if err != nil {
 						return err
 					}
-					if err := os.RemoveAll(currentTargetPath); err != nil {
-						_ = os.RemoveAll(desiredTargetPath)
+					// Audit M3: guard the manifest-derived currentTargetPath removal.
+					if err := safeRemoveManagedTarget(projectPath, current.TargetPath); err != nil {
+						_ = safeRemoveManagedTarget(projectPath, desiredTargetRel)
 						return err
 					}
 					current.TargetPath = desiredTargetRel

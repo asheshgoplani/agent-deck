@@ -881,7 +881,10 @@ func (i *Instance) buildBashExportPrefix() string {
 	if IsClaudeConfigDirExplicitForInstance(i) {
 		// Issue #922 (reporter @bautrey): see applyWorkerScratchOverride.
 		configDir := i.applyWorkerScratchOverride(GetClaudeConfigDirForInstance(i))
-		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
+		// shellescape: the resolved config_dir lands in the same `bash -c`
+		// payload as the quoted AGENTDECK_RESOLVED_* exports below; a config_dir
+		// containing ;/$() would otherwise inject. Audit F2.
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", shellescape.Quote(configDir))
 	}
 	prefix += i.buildResolvedAccountHintExports()
 	return prefix
@@ -936,7 +939,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// Instance-level flags (not from ClaudeOptions)
 	// --add-dir: Grant subagent access to parent's project directory (for worktrees, etc.)
 	if i.ParentProjectPath != "" {
-		flags = append(flags, fmt.Sprintf("--add-dir %s", i.ParentProjectPath))
+		// shellescape: directory names may legally contain $()/`/;/space; the
+		// path is re-parsed by the inner `bash -c` (see bashCWrap), so quote it
+		// like --model below. Audit F1.
+		flags = append(flags, "--add-dir "+shellescape.Quote(i.ParentProjectPath))
 	}
 
 	// Multi-repo: pass all project paths via --add-dir (deduplicated, excluding cwd)
@@ -952,7 +958,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 				continue
 			}
 			seen[real] = true
-			flags = append(flags, fmt.Sprintf("--add-dir %s", p))
+			flags = append(flags, "--add-dir "+shellescape.Quote(p)) // audit F1
 		}
 	}
 
@@ -980,7 +986,7 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// each listed plugin channel. Persisted on Instance.Channels and refreshed
 	// on every Start/Restart/resume because every command-build flows here.
 	if len(i.Channels) > 0 {
-		flags = append(flags, fmt.Sprintf("--channels %s", strings.Join(i.Channels, ",")))
+		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
 	}
 
 	// User-supplied extra args: each token is shellescape-quoted before
