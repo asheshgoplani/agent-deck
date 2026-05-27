@@ -38,23 +38,43 @@ preflight, and the delivery verifier, so the round trip is genuine. The default
 send path against a real agent is covered by the Tier N round trips.
 
 ### MCP actually loads in an agent
-Tier F (a later wave) proves the `.mcp.json` is written with the correct shape.
-Proving a real agent honors the attachment needs a real agent to introspect its
-own tool list (for example `/mcp`), so it is Tier N.
+Wave 2 proves the `.mcp.json` is written and removed with the correct shape
+(`TestCapability_MCP_AttachDetach`, capability id `mcp-attach`). Proving a real
+agent honors the attachment needs a real agent to introspect its own tool list
+(for example `/mcp`), so the `mcp-loads` capability stays Tier N.
 
 ### Remote over SSH
 `remote add` / `remote sessions` need an SSH endpoint. Loopback SSH
 (`ssh localhost` to a second `HOME`) can promote this to Tier F if the CI image
 allows it; the default is Tier N against a real host.
 
-## Not yet covered in Wave 1 (planned later waves)
+## Wave 2 gaps
+
+### Live tmux delivery of a conductor notification into a real pane
+Wave 2 verifies the conductor comms backbone through the binary up to the
+notifier's delivery decision: the real Stop-hook handler detects the worker
+completion sentinel and persists a done outcome, and `notify-daemon --once`
+turns that into a distinct finished event (`TestCapability_Conductor_FinishedSignal`,
+issue #1186) and de-duplicates a repeated idle transition across polls
+(`TestCapability_Conductor_Dedup`, issue #1187). The notifier's actual
+`send-keys` into a live parent pane goes through `SendSessionMessageReliable`,
+whose timeout / Ctrl+C-resend behaviour is tuned for real agents; that final
+hop is exercised by the `internal/session` notifier unit tests (which inject a
+controllable sender) rather than re-driven here. The capability test asserts on
+the persisted hook status file and the `transition-notifier.log` event, which
+are the deterministic, disk-backed effects.
+
+### Web mutation endpoints via httptest
+The optional Wave 2 item (a PATCH/session web endpoint exercised through
+`httptest`) is not built in this wave. It is not a determinism gap; it is simply
+deferred. The web surface for these capabilities is covered by the existing
+`tests/web/` suite; a capability-tier httptest mutation card is a later add.
+
+## Not yet covered (planned later waves)
 
 These are not gaps in the "cannot be deterministic" sense; they are simply not
 built yet. They are scheduled per the strategy build plan:
 
-- Conductor finished-signal (#1186) and EVENT dedup (#1187) end to end (Wave 2).
-- Web mutation endpoints and the terminal bridge via httptest (Wave 2).
-- MCP attach / detach `.mcp.json` assertions (Wave 2).
-- Worktree create + finish against a throwaway git repo (Wave 2).
-- Groups / profiles isolation and the offline multi-tool readiness-detector
-  golden-fixture test (Wave 3).
+- Real-agent round trips for claude/codex/gemini/opencode (Tier N nightly).
+- Remote over SSH against a real or loopback endpoint (Tier N nightly).
+- Web mutation endpoints and the terminal bridge via httptest (later wave).

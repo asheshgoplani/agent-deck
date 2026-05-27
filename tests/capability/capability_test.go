@@ -108,7 +108,9 @@ func (c *capSandbox) list(t *testing.T) []sessionRow {
 	t.Helper()
 	out := c.run(t, "list", "--json")
 	out = strings.TrimSpace(out)
-	if out == "" || out == "null" {
+	// With zero sessions the CLI prints a human "No sessions found" line rather
+	// than an empty JSON array, so treat any non-JSON output as no rows.
+	if out == "" || out == "null" || (!strings.HasPrefix(out, "[") && !strings.HasPrefix(out, "{")) {
 		return nil
 	}
 	var rows []sessionRow

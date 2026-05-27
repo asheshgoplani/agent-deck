@@ -65,13 +65,13 @@
 <div class="wrap">
 <header class="page">
   <h1>agent-deck Capability E2E Dashboard</h1>
-  <div class="date">Generated 2026-05-26T12:57:08Z</div>
+  <div class="date">Generated 2026-05-27T18:36:36Z</div>
   <p class="pitch">One card per capability agent-deck promises a user can do. Each fast-gate capability is verified by a test that performs the real action through the compiled binary on an isolated tmux socket and asserts on the real effect: registry rows or live pane content. Nightly capabilities need real agents, keys, or network and run out of band.</p>
 </header>
 
 <section class="summary">
-  <div class="stat"><div class="label">Capabilities</div><div class="value">11</div></div>
-  <div class="stat"><div class="label">Green</div><div class="value">8</div></div>
+  <div class="stat"><div class="label">Capabilities</div><div class="value">18</div></div>
+  <div class="stat"><div class="label">Green</div><div class="value">15</div></div>
   <div class="stat"><div class="label">Failed</div><div class="value">0</div></div>
   <div class="stat"><div class="label">Nightly only</div><div class="value">3</div></div>
   <div class="stat"><div class="label">Not yet covered</div><div class="value">0</div></div>
@@ -86,13 +86,13 @@
     <h3>Register a session</h3>
     <p class="how">We run the add command to register a new session, then read the saved registry back. We confirm the row exists with the title, tool, group, and folder we asked for.</p>
     <p class="assert">Pass when: new registry row carries the given title, tool, group, and working directory</p>
-    <div class="meta">Tier F . Runtime: 3.2s . TestCapability_Lifecycle_Add</div>
+    <div class="meta">Tier F . Runtime: 0.2s . TestCapability_Lifecycle_Add</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Profile: default
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3250... c564c62a-177
+cap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3841... 18761039-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -102,7 +102,7 @@ Total: 1 sessions</pre></div>
     <h3>Start a session</h3>
     <p class="how">We register a session and start it. We then ask the throwaway tmux server whether a live pane actually appeared, and confirm the registry flips the session to an active state.</p>
     <p class="assert">Pass when: a real tmux pane appears on the isolated socket and status becomes active</p>
-    <div class="meta">Tier F . Runtime: 1.6s . TestCapability_Lifecycle_Start</div>
+    <div class="meta">Tier F . Runtime: 1.8s . TestCapability_Lifecycle_Start</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">IDLE (1):
   ○ cap-start        shell      -                      ~/project
@@ -121,7 +121,7 @@ Total: 1 sessions in profile &#39;default&#39;</pre></div>
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-stop             001             /tmp/TestCapability_Lifecycle_Stop824... c370a25d-177
+cap-stop             001             /tmp/TestCapability_Lifecycle_Stop156... 5f61729b-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -131,7 +131,7 @@ Total: 1 sessions</pre></div>
     <h3>Restart a session</h3>
     <p class="how">We start a session and restart it. We confirm exactly one pane exists afterward (no accidental duplicate) and the session is active again.</p>
     <p class="assert">Pass when: exactly one pane remains after restart and status is active (guards the #30 double-spawn)</p>
-    <div class="meta">Tier F . Runtime: 2.9s . TestCapability_Lifecycle_Restart</div>
+    <div class="meta">Tier F . Runtime: 2.8s . TestCapability_Lifecycle_Restart</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">IDLE (1):
   ○ cap-restart      shell      -                      ~/project
@@ -144,7 +144,7 @@ Total: 1 sessions in profile &#39;default&#39;</pre></div>
     <h3>Remove a session</h3>
     <p class="how">We confirm a stopped session can be removed and disappears from the registry, and that removing a still-running session is refused unless forced, so it is not destroyed by accident.</p>
     <p class="assert">Pass when: stopped session leaves the registry; a running session is refused without force</p>
-    <div class="meta">Tier F . Runtime: 11.2s . TestCapability_Lifecycle_Rm</div>
+    <div class="meta">Tier F . Runtime: 11.3s . TestCapability_Lifecycle_Rm</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck session remove cap-rm-running
 Error: session &#39;cap-rm-running&#39; is in state &#39;starting&#39;; only stopped/error sessions may be removed without --force
@@ -154,7 +154,7 @@ Profile: default
 
 TITLE                GROUP           PATH                                     ID
 --------------------------------------------------------------------------------------------
-cap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm14158... 925d8bd4-177
+cap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm21683... c04ab467-177
 
 Total: 1 sessions</pre></div>
   </div>
@@ -164,7 +164,7 @@ Total: 1 sessions</pre></div>
     <h3>Launch in one step</h3>
     <p class="how">We use the single launch command, which creates, starts, and messages a session at once, pointed at the stand-in echo agent. We confirm the registry row exists and the echoed message shows up on screen.</p>
     <p class="assert">Pass when: one launch command creates the row, starts the pane, and the echoed message appears</p>
-    <div class="meta">Tier F . Runtime: 7.2s . TestCapability_Lifecycle_Launch</div>
+    <div class="meta">Tier F . Runtime: 7.1s . TestCapability_Lifecycle_Launch</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PINGLAUNCH-cap-e2e-token
 ECHO:PINGLAUNCH-cap-e2e-token</pre></div>
@@ -191,7 +191,7 @@ Error: session &#39;cap-fork&#39; is not a Claude session (tool: shell)</pre></d
     <h3>Send a message to an agent and read its reply</h3>
     <p class="how">We launch a tiny stand-in agent that simply repeats whatever you say. We send it a unique message through the normal send command, then read the screen back. If the screen shows the echoed message we know it reached the agent and a reply came out the other side.</p>
     <p class="assert">Pass when: the pane shows ECHO:&lt;token&gt; after a real send, proving readiness, send-keys, and capture read-back</p>
-    <div class="meta">Tier F . Runtime: 5.7s . TestCapability_Agent_EchoRoundTrip</div>
+    <div class="meta">Tier F . Runtime: 6.4s . TestCapability_Agent_EchoRoundTrip</div>
     <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">ECHOBOT READY &gt; PING-TestCapability_Agent_EchoRoundTrip
 ECHO:PING-TestCapability_Agent_EchoRoundTrip</pre></div>
@@ -222,6 +222,33 @@ ECHO:PING-TestCapability_Agent_EchoRoundTrip</pre></div>
 <h2>MCP</h2>
 <div class="cards">
   
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Attach and detach an MCP</h3>
+    <p class="how">We register a stub tool server, attach it to a session, and read the session&#39;s .mcp.json file back to confirm the entry was written. We then detach it and confirm the entry is gone. We also confirm attaching an unknown server is refused and never writes a broken config.</p>
+    <p class="assert">Pass when: .mcp.json gains the server entry on attach and loses it on detach; an unknown server is refused</p>
+    <div class="meta">Tier F . Runtime: 0.2s . TestCapability_MCP_AttachDetach</div>
+    <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck mcp attached cap-mcp
+Session: cap-mcp
+
+LOCAL (~/project/.mcp.json):
+  • stubmcp
+
+.mcp.json on disk:
+{
+  &#34;mcpServers&#34;: {
+    &#34;stubmcp&#34;: {
+      &#34;type&#34;: &#34;stdio&#34;,
+      &#34;command&#34;: &#34;true&#34;,
+      &#34;args&#34;: [
+        &#34;--noop&#34;
+      ]
+    }
+  }
+}</pre></div>
+  </div>
+  
   <div class="card grey">
     <div class="status"><span class="dot grey"></span>NIGHTLY</div>
     <h3>MCP actually loads in the agent</h3>
@@ -230,6 +257,142 @@ ECHO:PING-TestCapability_Agent_EchoRoundTrip</pre></div>
     <div class="meta">Tier N . Runtime: not measured</div>
     <div class="chips"><span class="chip">Real-agent</span><span class="chip">Needs-creds</span><span class="chip">Needs-network</span></div>
     
+  </div>
+  
+</div>
+
+<h2>Worktrees</h2>
+<div class="cards">
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Create and finish a git worktree</h3>
+    <p class="how">Against a throwaway git repo, we create a session on a new branch in its own worktree and confirm the worktree directory really exists on disk. We then run finish, and confirm the worktree and branch are removed, the session is gone, and the ORIGINAL repository is untouched.</p>
+    <p class="assert">Pass when: the worktree dir is created on its own branch, then finish removes it and the session while leaving the source repo intact (the #1200 data-loss guard)</p>
+    <div class="meta">Tier F . Runtime: 0.3s . TestCapability_Worktree_CreateFinish</div>
+    <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck worktree info cap-wt   (after add --worktree -b)
+Session:        cap-wt
+Branch:         feature/capfeature
+Worktree Path:  ~/repo/.worktrees/feature-capfeature
+Main Repo:      ~/repo
+Status:         exists
+
+$ agent-deck list   (after worktree finish: session gone, repo intact)
+No sessions found in profile &#39;default&#39;.</pre></div>
+  </div>
+  
+</div>
+
+<h2>Groups and profiles</h2>
+<div class="cards">
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Organize sessions into groups</h3>
+    <p class="how">We create sessions in two different groups and confirm that filtering the registry by group returns exactly that group&#39;s members, with no session bleeding across groups.</p>
+    <p class="assert">Pass when: each group lists exactly its own sessions; no cross-group leakage</p>
+    <div class="meta">Tier F . Runtime: 0.3s . TestCapability_Groups_Filtering</div>
+    <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">Groups:
+
+NAME                 SESSIONS   STATUS
+--------------------------------------------------
+alpha                2          ○ 2
+beta                 1          ○ 1
+
+Total: 2 groups, 3 sessions</pre></div>
+  </div>
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Keep profiles isolated</h3>
+    <p class="how">We add one session under the default profile and another under a separate profile, then list each profile. We confirm neither profile can see the other&#39;s session.</p>
+    <p class="assert">Pass when: a session in one profile is invisible to the other (no cross-profile data bleed)</p>
+    <div class="meta">Tier F . Runtime: 0.4s . TestCapability_Profiles_Isolation</div>
+    <div class="chips"><span class="chip">Local-isolated</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck list   (default profile)
+Profile: default
+
+TITLE                GROUP           PATH                                     ID
+--------------------------------------------------------------------------------------------
+in-default           001             /tmp/TestCapability_Profiles_Isolatio... 7eca0dea-177
+
+Total: 1 sessions
+
+$ agent-deck -p capalt list   (isolated profile)
+Profile: capalt
+
+TITLE                GROUP           PATH                                     ID
+--------------------------------------------------------------------------------------------
+in-capalt            001             /tmp/TestCapability_Profiles_Isolatio... 625039ff-177
+
+Total: 1 sessions</pre></div>
+  </div>
+  
+</div>
+
+<h2>Multi-tool</h2>
+<div class="cards">
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Bring multiple tool kinds to readiness</h3>
+    <p class="how">We launch two distinct stand-in tools and confirm each one reaches an active state AND echoes back the unique message we sent it, proving the launch and readiness machinery is not tied to a single tool.</p>
+    <p class="assert">Pass when: two different tools each reach active and echo their token back</p>
+    <div class="meta">Tier F . Runtime: 14.1s . TestCapability_MultiTool_Readiness</div>
+    <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">tool &#34;echobot&#34; (cap-tool-a):
+ECHOBOT READY &gt; PINGA-cap-e2e
+ECHO:PINGA-cap-e2e
+
+tool &#34;parrot&#34; (cap-tool-b):
+ECHOBOT READY &gt; PINGB-cap-e2e
+ECHO:PINGB-cap-e2e</pre></div>
+  </div>
+  
+</div>
+
+<h2>Conductor comms backbone</h2>
+<div class="cards">
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>Worker reports it finished</h3>
+    <p class="how">A worker prints a completion sentinel on its last turn. We run the real Stop-hook handler and confirm it records a done outcome (status and summary), then run the notifier daemon and confirm it emits a distinct finished signal to the parent instead of an ambiguous waiting. An ordinary turn with no sentinel records no completion.</p>
+    <p class="assert">Pass when: the Stop-hook persists done status=ok, and the daemon emits a finished event carrying that outcome (issue #1186)</p>
+    <div class="meta">Tier F . Runtime: 2.1s . TestCapability_Conductor_FinishedSignal</div>
+    <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">hook status file (what the Stop-hook persisted):
+{
+  &#34;status&#34;: &#34;waiting&#34;,
+  &#34;event&#34;: &#34;Stop&#34;,
+  &#34;done_status&#34;: &#34;ok&#34;,
+  &#34;done_summary&#34;: &#34;capability wave2 shipped&#34;
+}
+
+finished event emitted by notify-daemon (the [DONE] signal to the parent):
+child_title: cap-child
+child_session_id: 0a81e066-1779906947
+kind: finished
+done_status: ok
+done_summary: capability wave2 shipped</pre></div>
+  </div>
+  
+  <div class="card green">
+    <div class="status"><span class="dot green"></span>PASS</div>
+    <h3>An idle worker does not re-notify</h3>
+    <p class="how">We make a worker transition once, then run the notifier daemon twice over the same idle worker. We confirm exactly one notification is produced across both passes, proving the de-duplication ledger persists between polls.</p>
+    <p class="assert">Pass when: two daemon passes over the same idle child emit exactly one event (issue #1187 dedup)</p>
+    <div class="meta">Tier F . Runtime: 0.3s . TestCapability_Conductor_Dedup</div>
+    <div class="chips"><span class="chip">Local-isolated</span><span class="chip">Deterministic-stub</span></div>
+    <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">two `notify-daemon --once` passes over the same idle child
+emitted exactly one transition event (the second was deduped):
+
+child_title: dd-child
+child_session_id: 5b085245-1779906947
+from_status: running
+to_status: idle</pre></div>
   </div>
   
 </div>

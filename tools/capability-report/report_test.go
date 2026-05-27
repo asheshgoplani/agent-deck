@@ -23,6 +23,14 @@ func sampleResults() map[string]testResult {
 		"TestCapability_Lifecycle_Launch":    {status: StatusPass, elapsed: 7.1},
 		"TestCapability_Lifecycle_Fork":      {status: StatusPass, elapsed: 0.1},
 		"TestCapability_Agent_EchoRoundTrip": {status: StatusPass, elapsed: 5.7},
+		// Wave 2 fast-gate capabilities.
+		"TestCapability_MCP_AttachDetach":         {status: StatusPass, elapsed: 2.8},
+		"TestCapability_Worktree_CreateFinish":    {status: StatusPass, elapsed: 5.5},
+		"TestCapability_Groups_Filtering":         {status: StatusPass, elapsed: 1.0},
+		"TestCapability_Profiles_Isolation":       {status: StatusPass, elapsed: 1.1},
+		"TestCapability_MultiTool_Readiness":      {status: StatusPass, elapsed: 15.8},
+		"TestCapability_Conductor_FinishedSignal": {status: StatusPass, elapsed: 3.0},
+		"TestCapability_Conductor_Dedup":          {status: StatusPass, elapsed: 0.4},
 	}
 }
 
@@ -50,9 +58,10 @@ not-json build noise
 func TestBuildManifest_StatusesAndSummary(t *testing.T) {
 	m := BuildManifest(sampleResults(), fixedTime)
 
-	// Eight fast-gate capabilities pass; the Tier N rows are nightly.
-	if m.Summary.Green != 8 {
-		t.Errorf("Green = %d, want 8", m.Summary.Green)
+	// All fifteen fast-gate capabilities pass (Wave 1 + Wave 2); the Tier N
+	// rows are nightly.
+	if m.Summary.Green != 15 {
+		t.Errorf("Green = %d, want 15", m.Summary.Green)
 	}
 	if m.Summary.Failed != 0 {
 		t.Errorf("Failed = %d, want 0", m.Summary.Failed)

@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-05-26T12:57:08Z",
+  "generated_at": "2026-05-27T18:36:36Z",
   "summary": {
-    "total": 11,
-    "green": 8,
+    "total": 18,
+    "green": 15,
     "failed": 0,
     "nightly_only": 3,
     "not_covered": 0
@@ -20,8 +20,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Add",
       "status": "pass",
-      "runtime_seconds": 3.23,
-      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3250... c564c62a-177\n\nTotal: 1 sessions"
+      "runtime_seconds": 0.25,
+      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-add              capgrp          /tmp/TestCapability_Lifecycle_Add3841... 18761039-177\n\nTotal: 1 sessions"
     },
     {
       "id": "start",
@@ -35,7 +35,7 @@
       ],
       "test_name": "TestCapability_Lifecycle_Start",
       "status": "pass",
-      "runtime_seconds": 1.64,
+      "runtime_seconds": 1.76,
       "snapshot": "IDLE (1):\n  ○ cap-start        shell      -                      ~/project\n\nTotal: 1 sessions in profile 'default'"
     },
     {
@@ -50,8 +50,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Stop",
       "status": "pass",
-      "runtime_seconds": 1.62,
-      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-stop             001             /tmp/TestCapability_Lifecycle_Stop824... c370a25d-177\n\nTotal: 1 sessions"
+      "runtime_seconds": 1.55,
+      "snapshot": "Profile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-stop             001             /tmp/TestCapability_Lifecycle_Stop156... 5f61729b-177\n\nTotal: 1 sessions"
     },
     {
       "id": "restart",
@@ -65,7 +65,7 @@
       ],
       "test_name": "TestCapability_Lifecycle_Restart",
       "status": "pass",
-      "runtime_seconds": 2.88,
+      "runtime_seconds": 2.81,
       "snapshot": "IDLE (1):\n  ○ cap-restart      shell      -                      ~/project\n\nTotal: 1 sessions in profile 'default'"
     },
     {
@@ -80,8 +80,8 @@
       ],
       "test_name": "TestCapability_Lifecycle_Rm",
       "status": "pass",
-      "runtime_seconds": 11.22,
-      "snapshot": "$ agent-deck session remove cap-rm-running\nError: session 'cap-rm-running' is in state 'starting'; only stopped/error sessions may be removed without --force\n\n$ agent-deck list   (after stopping and removing cap-rm-stopped)\nProfile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm14158... 925d8bd4-177\n\nTotal: 1 sessions"
+      "runtime_seconds": 11.32,
+      "snapshot": "$ agent-deck session remove cap-rm-running\nError: session 'cap-rm-running' is in state 'starting'; only stopped/error sessions may be removed without --force\n\n$ agent-deck list   (after stopping and removing cap-rm-stopped)\nProfile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\ncap-rm-running       001             /tmp/TestCapability_Lifecycle_Rm21683... c04ab467-177\n\nTotal: 1 sessions"
     },
     {
       "id": "launch",
@@ -96,7 +96,7 @@
       ],
       "test_name": "TestCapability_Lifecycle_Launch",
       "status": "pass",
-      "runtime_seconds": 7.22,
+      "runtime_seconds": 7.12,
       "snapshot": "ECHOBOT READY \u003e PINGLAUNCH-cap-e2e-token\nECHO:PINGLAUNCH-cap-e2e-token"
     },
     {
@@ -127,7 +127,7 @@
       ],
       "test_name": "TestCapability_Agent_EchoRoundTrip",
       "status": "pass",
-      "runtime_seconds": 5.74,
+      "runtime_seconds": 6.4,
       "snapshot": "ECHOBOT READY \u003e PING-TestCapability_Agent_EchoRoundTrip\nECHO:PING-TestCapability_Agent_EchoRoundTrip"
     },
     {
@@ -161,6 +161,22 @@
       "runtime_seconds": 0
     },
     {
+      "id": "mcp-attach",
+      "group": "MCP",
+      "title": "Attach and detach an MCP",
+      "how_we_test": "We register a stub tool server, attach it to a session, and read the session's .mcp.json file back to confirm the entry was written. We then detach it and confirm the entry is gone. We also confirm attaching an unknown server is refused and never writes a broken config.",
+      "assertion": ".mcp.json gains the server entry on attach and loses it on detach; an unknown server is refused",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_MCP_AttachDetach",
+      "status": "pass",
+      "runtime_seconds": 0.19,
+      "snapshot": "$ agent-deck mcp attached cap-mcp\nSession: cap-mcp\n\nLOCAL (~/project/.mcp.json):\n  • stubmcp\n\n.mcp.json on disk:\n{\n  \"mcpServers\": {\n    \"stubmcp\": {\n      \"type\": \"stdio\",\n      \"command\": \"true\",\n      \"args\": [\n        \"--noop\"\n      ]\n    }\n  }\n}"
+    },
+    {
       "id": "mcp-loads",
       "group": "MCP",
       "title": "MCP actually loads in the agent",
@@ -174,6 +190,99 @@
       ],
       "status": "nightly",
       "runtime_seconds": 0
+    },
+    {
+      "id": "worktree",
+      "group": "Worktrees",
+      "title": "Create and finish a git worktree",
+      "how_we_test": "Against a throwaway git repo, we create a session on a new branch in its own worktree and confirm the worktree directory really exists on disk. We then run finish, and confirm the worktree and branch are removed, the session is gone, and the ORIGINAL repository is untouched.",
+      "assertion": "the worktree dir is created on its own branch, then finish removes it and the session while leaving the source repo intact (the #1200 data-loss guard)",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Worktree_CreateFinish",
+      "status": "pass",
+      "runtime_seconds": 0.33,
+      "snapshot": "$ agent-deck worktree info cap-wt   (after add --worktree -b)\nSession:        cap-wt\nBranch:         feature/capfeature\nWorktree Path:  ~/repo/.worktrees/feature-capfeature\nMain Repo:      ~/repo\nStatus:         exists\n\n$ agent-deck list   (after worktree finish: session gone, repo intact)\nNo sessions found in profile 'default'."
+    },
+    {
+      "id": "groups",
+      "group": "Groups and profiles",
+      "title": "Organize sessions into groups",
+      "how_we_test": "We create sessions in two different groups and confirm that filtering the registry by group returns exactly that group's members, with no session bleeding across groups.",
+      "assertion": "each group lists exactly its own sessions; no cross-group leakage",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Groups_Filtering",
+      "status": "pass",
+      "runtime_seconds": 0.28,
+      "snapshot": "Groups:\n\nNAME                 SESSIONS   STATUS\n--------------------------------------------------\nalpha                2          ○ 2\nbeta                 1          ○ 1\n\nTotal: 2 groups, 3 sessions"
+    },
+    {
+      "id": "profiles",
+      "group": "Groups and profiles",
+      "title": "Keep profiles isolated",
+      "how_we_test": "We add one session under the default profile and another under a separate profile, then list each profile. We confirm neither profile can see the other's session.",
+      "assertion": "a session in one profile is invisible to the other (no cross-profile data bleed)",
+      "tier": "F",
+      "chips": [
+        "Local-isolated"
+      ],
+      "test_name": "TestCapability_Profiles_Isolation",
+      "status": "pass",
+      "runtime_seconds": 0.44,
+      "snapshot": "$ agent-deck list   (default profile)\nProfile: default\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\nin-default           001             /tmp/TestCapability_Profiles_Isolatio... 7eca0dea-177\n\nTotal: 1 sessions\n\n$ agent-deck -p capalt list   (isolated profile)\nProfile: capalt\n\nTITLE                GROUP           PATH                                     ID\n--------------------------------------------------------------------------------------------\nin-capalt            001             /tmp/TestCapability_Profiles_Isolatio... 625039ff-177\n\nTotal: 1 sessions"
+    },
+    {
+      "id": "multitool",
+      "group": "Multi-tool",
+      "title": "Bring multiple tool kinds to readiness",
+      "how_we_test": "We launch two distinct stand-in tools and confirm each one reaches an active state AND echoes back the unique message we sent it, proving the launch and readiness machinery is not tied to a single tool.",
+      "assertion": "two different tools each reach active and echo their token back",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_MultiTool_Readiness",
+      "status": "pass",
+      "runtime_seconds": 14.06,
+      "snapshot": "tool \"echobot\" (cap-tool-a):\nECHOBOT READY \u003e PINGA-cap-e2e\nECHO:PINGA-cap-e2e\n\ntool \"parrot\" (cap-tool-b):\nECHOBOT READY \u003e PINGB-cap-e2e\nECHO:PINGB-cap-e2e"
+    },
+    {
+      "id": "conductor-finished",
+      "group": "Conductor comms backbone",
+      "title": "Worker reports it finished",
+      "how_we_test": "A worker prints a completion sentinel on its last turn. We run the real Stop-hook handler and confirm it records a done outcome (status and summary), then run the notifier daemon and confirm it emits a distinct finished signal to the parent instead of an ambiguous waiting. An ordinary turn with no sentinel records no completion.",
+      "assertion": "the Stop-hook persists done status=ok, and the daemon emits a finished event carrying that outcome (issue #1186)",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_Conductor_FinishedSignal",
+      "status": "pass",
+      "runtime_seconds": 2.06,
+      "snapshot": "hook status file (what the Stop-hook persisted):\n{\n  \"status\": \"waiting\",\n  \"event\": \"Stop\",\n  \"done_status\": \"ok\",\n  \"done_summary\": \"capability wave2 shipped\"\n}\n\nfinished event emitted by notify-daemon (the [DONE] signal to the parent):\nchild_title: cap-child\nchild_session_id: 0a81e066-1779906947\nkind: finished\ndone_status: ok\ndone_summary: capability wave2 shipped"
+    },
+    {
+      "id": "conductor-dedup",
+      "group": "Conductor comms backbone",
+      "title": "An idle worker does not re-notify",
+      "how_we_test": "We make a worker transition once, then run the notifier daemon twice over the same idle worker. We confirm exactly one notification is produced across both passes, proving the de-duplication ledger persists between polls.",
+      "assertion": "two daemon passes over the same idle child emit exactly one event (issue #1187 dedup)",
+      "tier": "F",
+      "chips": [
+        "Local-isolated",
+        "Deterministic-stub"
+      ],
+      "test_name": "TestCapability_Conductor_Dedup",
+      "status": "pass",
+      "runtime_seconds": 0.32,
+      "snapshot": "two `notify-daemon --once` passes over the same idle child\nemitted exactly one transition event (the second was deduped):\n\nchild_title: dd-child\nchild_session_id: 5b085245-1779906947\nfrom_status: running\nto_status: idle"
     }
   ]
 }
