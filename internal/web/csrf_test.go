@@ -8,7 +8,7 @@ import (
 )
 
 func TestCSRF_AllowsSameOriginPost(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -23,7 +23,7 @@ func TestCSRF_AllowsSameOriginPost(t *testing.T) {
 }
 
 func TestCSRF_BlocksCrossOriginPost(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -38,7 +38,7 @@ func TestCSRF_BlocksCrossOriginPost(t *testing.T) {
 }
 
 func TestCSRF_BlocksTextPlainCrossOrigin(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -54,7 +54,7 @@ func TestCSRF_BlocksTextPlainCrossOrigin(t *testing.T) {
 }
 
 func TestCSRF_AllowsGetWithCrossOrigin(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -69,7 +69,7 @@ func TestCSRF_AllowsGetWithCrossOrigin(t *testing.T) {
 }
 
 func TestCSRF_AllowsNoOriginNoReferer(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -83,7 +83,7 @@ func TestCSRF_AllowsNoOriginNoReferer(t *testing.T) {
 }
 
 func TestCSRF_AllowsSameOriginRefererFallback(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -98,7 +98,7 @@ func TestCSRF_AllowsSameOriginRefererFallback(t *testing.T) {
 }
 
 func TestCSRF_BlocksCrossOriginReferer(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -113,7 +113,7 @@ func TestCSRF_BlocksCrossOriginReferer(t *testing.T) {
 }
 
 func TestCSRF_BlocksDeleteCrossOrigin(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -128,7 +128,7 @@ func TestCSRF_BlocksDeleteCrossOrigin(t *testing.T) {
 }
 
 func TestCSRF_BlocksInvalidOriginURL(t *testing.T) {
-	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := NewServer(Config{ListenAddr: "127.0.0.1:0"}).csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

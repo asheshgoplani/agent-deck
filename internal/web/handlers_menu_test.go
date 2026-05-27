@@ -137,7 +137,10 @@ func TestMenuEndpointAuthorizedWithBearerToken(t *testing.T) {
 	}
 }
 
-func TestSessionEndpointAuthorizedWithQueryToken(t *testing.T) {
+// Report #5: the API authorizes via the Authorization: Bearer header. The
+// token is no longer accepted from the query string on HTTP API requests (it
+// leaks to logs/history/proxies); see TestAuth_QueryTokenRejectedOnAPI.
+func TestSessionEndpointAuthorizedWithHeaderToken(t *testing.T) {
 	srv := NewServer(Config{
 		ListenAddr: "127.0.0.1:0",
 		Token:      "secret-token",
@@ -157,7 +160,8 @@ func TestSessionEndpointAuthorizedWithQueryToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-123?token=secret-token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/session/sess-123", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

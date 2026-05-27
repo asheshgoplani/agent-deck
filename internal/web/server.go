@@ -19,11 +19,15 @@ import (
 
 // Config defines runtime options for the web server.
 type Config struct {
-	ListenAddr          string
-	Profile             string
-	ReadOnly            bool
-	WebMutations        bool // When false, POST/PATCH/DELETE endpoints return 403
-	Token               string
+	ListenAddr   string
+	Profile      string
+	ReadOnly     bool
+	WebMutations bool // When false, POST/PATCH/DELETE endpoints return 403
+	Token        string
+	// InsecureBind explicitly acknowledges binding a non-loopback address
+	// with no auth token (an unauthenticated RCE surface). Without it the
+	// server refuses to start in that configuration. See bind.go / report #1.
+	InsecureBind        bool
 	MenuData            MenuDataLoader
 	PushVAPIDPublicKey  string
 	PushVAPIDPrivateKey string
@@ -186,12 +190,17 @@ func NewServer(cfg Config) *Server {
 		}
 
 		resp := map[string]any{
-			"ok":           true,
-			"profile":      cfg.Profile,
-			"readOnly":     cfg.ReadOnly,
-			"webMutations": cfg.WebMutations,
-			"version":      buildVersion(),
-			"time":         time.Now().UTC().Format(time.RFC3339),
+			"ok":   true,
+			"time": time.Now().UTC().Format(time.RFC3339),
+		}
+		// Report #6: only disclose profile/version/mode detail to authorized
+		// callers. When no token is configured (default loopback dev) every
+		// request is authorized, so behavior is unchanged for normal users.
+		if s.authorizeRequest(r) {
+			resp["profile"] = cfg.Profile
+			resp["readOnly"] = cfg.ReadOnly
+			resp["webMutations"] = cfg.WebMutations
+			resp["version"] = buildVersion()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
@@ -238,7 +247,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("DELETE /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
 	mux.HandleFunc("PATCH /api/sessions/{id}/mcps/{name}", s.handleSessionMCPsRouter)
 
-	handler := withRecover(csrfProtect(mux))
+	handler := withRecover(s.csrfProtect(mux))
 
 	s.httpServer = &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -264,6 +273,12 @@ func (s *Server) Handler() http.Handler {
 // Start starts the HTTP server and blocks until shutdown or error.
 // Returns nil on graceful shutdown.
 func (s *Server) Start() error {
+	// Defense-in-depth: refuse to bind an unauthenticated non-loopback
+	// address even if a caller bypassed the CLI flag check. See report #1.
+	if err := s.checkBindSecurity(); err != nil {
+		return err
+	}
+
 	webLog := logging.ForComponent(logging.CompWeb)
 	if watcher, err := session.NewStatusFileWatcher(func() {
 		s.notifyMenuChanged()

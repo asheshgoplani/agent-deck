@@ -708,6 +708,9 @@ func TestSessionUndoUnauthorized(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/undelete", nil)
+	// Same-origin so the request clears CSRF (fail-closed when a token is set)
+	// and reaches the auth check — the behavior under test.
+	req.Header.Set("Origin", "http://example.com")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 

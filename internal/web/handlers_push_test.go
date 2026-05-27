@@ -182,6 +182,9 @@ func TestPushSubscribeUnauthorizedWhenTokenEnabled(t *testing.T) {
 	srv.push = newFakePushService(true)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/push/subscribe", strings.NewReader(`{}`))
+	// Same-origin so the request clears CSRF (fail-closed when a token is set)
+	// and reaches the auth check — the behavior under test.
+	req.Header.Set("Origin", "http://example.com")
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
 
