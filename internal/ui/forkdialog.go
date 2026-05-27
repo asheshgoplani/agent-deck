@@ -28,6 +28,7 @@ type ForkDialog struct {
 
 	// Worktree support
 	worktreeEnabled bool
+	worktreeToggled bool // true once the user explicitly toggled the worktree checkbox (vs config default_enabled); see #1185.
 	branchInput     textinput.Model
 	branchPicker    *BranchPickerDialog
 	isGitRepo       bool
@@ -112,6 +113,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 
 	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
+	d.worktreeToggled = false
 	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
 
@@ -191,6 +193,14 @@ func (d *ForkDialog) SetSize(width, height int) {
 // ToggleWorktree toggles the worktree checkbox
 func (d *ForkDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
+	d.worktreeToggled = true // user made an explicit choice; see #1185.
+}
+
+// IsWorktreeExplicit reports whether the worktree state reflects an explicit
+// user choice (the checkbox was toggled) rather than the config default
+// (`[worktree] default_enabled`). See #1185.
+func (d *ForkDialog) IsWorktreeExplicit() bool {
+	return d.worktreeToggled
 }
 
 // IsWorktreeEnabled returns whether worktree mode is enabled

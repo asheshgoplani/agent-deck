@@ -187,6 +187,7 @@ type NewDialog struct {
 	modelLineOffset       int      // Content line where model suggestions overlay should appear.
 	// Worktree support.
 	worktreeEnabled bool
+	worktreeToggled bool // true once the user explicitly toggled the worktree checkbox (vs config default_enabled); see #1185.
 	branchInput     textinput.Model
 	branchAutoSet   bool   // true if branch was auto-derived from session name.
 	branchPrefix    string // configured prefix for auto-generated branch names.
@@ -223,6 +224,7 @@ type dialogSnapshot struct {
 	modelInput       string
 	sandboxEnabled   bool
 	worktreeEnabled  bool
+	worktreeToggled  bool
 	branch           string
 	branchAutoSet    bool
 	claudeOptions    *session.ClaudeOptions
@@ -390,6 +392,7 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	d.updateToolOptions()
 	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
+	d.worktreeToggled = false
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
 	d.branchPrefix = "feature/" // default; overridden below if config provides one.
@@ -628,6 +631,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		modelInput:       d.modelInput.Value(),
 		sandboxEnabled:   d.sandboxEnabled,
 		worktreeEnabled:  d.worktreeEnabled,
+		worktreeToggled:  d.worktreeToggled,
 		branch:           d.branchInput.Value(),
 		branchAutoSet:    d.branchAutoSet,
 		claudeOptions:    claudeOpts,
@@ -648,6 +652,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	d.modelInput.SetValue(s.modelInput)
 	d.sandboxEnabled = s.sandboxEnabled
 	d.worktreeEnabled = s.worktreeEnabled
+	d.worktreeToggled = s.worktreeToggled
 	d.branchInput.SetValue(s.branch)
 	d.branchAutoSet = s.branchAutoSet
 	if s.claudeOptions != nil {
@@ -741,6 +746,7 @@ func (d *NewDialog) previewRecentSession(rs *statedb.RecentSessionRow) {
 
 	// Reset worktree (ephemeral, never pre-filled)
 	d.worktreeEnabled = false
+	d.worktreeToggled = false
 	d.branchInput.SetValue("")
 	d.branchAutoSet = false
 
@@ -933,10 +939,20 @@ func (d *NewDialog) GetValues() (name, path, command string) {
 // When enabling, auto-populates the branch name from the session name.
 func (d *NewDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
+	d.worktreeToggled = true // user made an explicit choice; see #1185.
 	if d.worktreeEnabled {
 		d.autoBranchFromName()
 	}
 	d.rebuildFocusTargets()
+}
+
+// IsWorktreeExplicit reports whether the worktree state reflects an explicit
+// user choice (the checkbox was toggled) rather than the config default
+// (`[worktree] default_enabled`). Used by #1185 to decide whether a worktree on
+// a non-repo dir should fail loudly (explicit) or fall back to a normal
+// session (default).
+func (d *NewDialog) IsWorktreeExplicit() bool {
+	return d.worktreeToggled
 }
 
 // autoBranchFromName sets the branch input to "<prefix><session-name>" if the

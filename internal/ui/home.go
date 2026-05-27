@@ -5678,34 +5678,24 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Resolve worktree target if enabled; actual worktree creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			// Validate path is a git repo OR a bare-repo project root (#742 /
-			// #715): IsGitRepoOrBareProjectRoot accepts a directory that
-			// contains a nested .bare/ even though the directory itself has
-			// no .git. Downstream GetWorktreeBaseRoot + CreateWorktreeWithSetup
-			// handle both layouts transparently.
-			if !git.IsGitRepoOrBareProjectRoot(path) {
-				h.newDialog.SetError("Path is not a git repository")
+			// resolveWorktreeTarget validates the path is a git repo OR a
+			// bare-repo project root (#742 / #715) and implements the #1185
+			// fallback: a worktree enabled by config default (not an explicit
+			// user toggle) on a non-repo dir falls back to a normal session
+			// instead of erroring, while an explicit worktree still fails loud.
+			wtPath, repoRoot, fallback, errMsg := resolveWorktreeTarget(path, branchName, h.newDialog.IsWorktreeExplicit())
+			if errMsg != "" {
+				h.newDialog.SetError(errMsg)
 				return h, nil
 			}
-
-			repoRoot, err := git.GetWorktreeBaseRoot(path)
-			if err != nil {
-				h.newDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
-				return h, nil
+			if fallback {
+				// #1185: create a normal session on this non-repo dir.
+				worktreeEnabled = false
+				branchName = ""
+			} else {
+				worktreePath = wtPath
+				worktreeRepoRoot = repoRoot
 			}
-
-			// Generate worktree path using configured location/template
-			wtSettings := session.GetWorktreeSettings()
-			worktreePath = git.WorktreePath(git.WorktreePathOptions{
-				Branch:    branchName,
-				Location:  wtSettings.DefaultLocation,
-				RepoDir:   repoRoot,
-				SessionID: git.GeneratePathID(),
-				Template:  wtSettings.Template(),
-			})
-
-			// Store repo root for later use
-			worktreeRepoRoot = repoRoot
 		}
 
 		// Build generic toolOptionsJSON from tool-specific options
@@ -8372,35 +8362,25 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				source := item.Session
 
 				// Resolve worktree target if enabled; actual creation runs in async command.
+				// Bare-repo project roots must pass — same contract as the
+				// new-session path (#742). #1185: a worktree enabled by config
+				// default (not an explicit toggle) on a non-repo dir falls back
+				// to a normal fork instead of erroring.
 				if worktreeEnabled && branchName != "" {
-					// Bare-repo project roots must pass — same contract as
-					// the new-session path (#742).
-					if !git.IsGitRepoOrBareProjectRoot(source.ProjectPath) {
-						h.forkDialog.SetError("Path is not a git repository")
+					worktreePath, repoRoot, fallback, errMsg := resolveWorktreeTarget(source.ProjectPath, branchName, h.forkDialog.IsWorktreeExplicit())
+					if errMsg != "" {
+						h.forkDialog.SetError(errMsg)
 						return h, nil
 					}
-					repoRoot, err := git.GetWorktreeBaseRoot(source.ProjectPath)
-					if err != nil {
-						h.forkDialog.SetError(fmt.Sprintf("Failed to get repo root: %v", err))
-						return h, nil
+					if !fallback {
+						if opts == nil {
+							opts = &session.ClaudeOptions{}
+						}
+						opts.WorkDir = worktreePath
+						opts.WorktreePath = worktreePath
+						opts.WorktreeRepoRoot = repoRoot
+						opts.WorktreeBranch = branchName
 					}
-
-					wtSettings := session.GetWorktreeSettings()
-					worktreePath := git.WorktreePath(git.WorktreePathOptions{
-						Branch:    branchName,
-						Location:  wtSettings.DefaultLocation,
-						RepoDir:   repoRoot,
-						SessionID: git.GeneratePathID(),
-						Template:  wtSettings.Template(),
-					})
-					if opts == nil {
-						opts = &session.ClaudeOptions{}
-					}
-
-					opts.WorkDir = worktreePath
-					opts.WorktreePath = worktreePath
-					opts.WorktreeRepoRoot = repoRoot
-					opts.WorktreeBranch = branchName
 				}
 
 				parentID := h.forkDialog.GetParentSessionID()
