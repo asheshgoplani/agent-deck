@@ -38,6 +38,8 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/terminal"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 	"github.com/asheshgoplani/agent-deck/internal/update"
+	"github.com/asheshgoplani/agent-deck/internal/vcs"
+	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/watcher"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -8686,18 +8688,26 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			return sessionCreatedMsg{err: fmt.Errorf("cannot create session: %w", err), tempID: tempID}
 		}
 
+		var worktreeBackend vcs.Backend
 		if worktreePath != "" && worktreeRepoRoot != "" && worktreeBranch != "" && !multiRepoEnabled {
 			// Single-repo worktree: create here. Multi-repo worktrees are handled below.
 			//
+			// Detect the VCS so jj repos get `jj workspace add` instead of `git worktree add`.
+			backend, err := vcsbackend.Detect(worktreeRepoRoot)
+			if err != nil {
+				return sessionCreatedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), tempID: tempID}
+			}
+			worktreeBackend = backend
+
 			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := git.GetWorktreeForBranch(worktreeRepoRoot, worktreeBranch); err == nil && existingPath != "" {
+			if existingPath, err := backend.GetWorktreeForBranch(worktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", worktreeBranch), slog.String("path", existingPath))
 				worktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create parent directory: %w", err), tempID: tempID}
 				}
-				if err := createWorktreeWithSetupAndLog(worktreeRepoRoot, worktreePath, worktreeBranch); err != nil {
+				if err := createWorktreeWithSetupAndLog(backend, worktreePath, worktreeBranch); err != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create worktree: %w", err), tempID: tempID}
 				}
 			}
@@ -8719,6 +8729,9 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst.WorktreePath = worktreePath
 			inst.WorktreeRepoRoot = worktreeRepoRoot
 			inst.WorktreeBranch = worktreeBranch
+			if worktreeBackend != nil {
+				inst.WorktreeType = string(worktreeBackend.Type())
+			}
 		}
 
 		applyCreateSessionToolOverrides(inst, tool, geminiYoloMode)
@@ -8849,12 +8862,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	}
 }
 
-// createWorktreeWithSetupAndLog creates a worktree, runs .worktreeinclude and
-// worktree-setup.sh, and logs setup failures. Returns only the creation error;
+// createWorktreeWithSetupAndLog creates a worktree via the supplied backend.
+// For git backends it also runs .worktreeinclude and worktree-setup.sh; for
+// jujutsu backends only the workspace is created (setup-script behavior is
+// git-only per the vcsbackend convention). Returns only the creation error;
 // setup failures are non-fatal and logged to uiLog.
-func createWorktreeWithSetupAndLog(repoRoot, wtPath, branch string) error {
+func createWorktreeWithSetupAndLog(backend vcs.Backend, wtPath, branch string) error {
 	var buf bytes.Buffer
-	setupErr, err := git.CreateWorktreeWithSetup(repoRoot, wtPath, branch, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+	setupErr, err := vcsbackend.CreateWorktreeWithSetup(backend, wtPath, branch, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
 	if err != nil {
 		return err
 	}
@@ -9227,15 +9242,21 @@ func (h *Home) forkSessionCmdWithOptions(
 			// Worktree creation can be slow on large repos; keep it in async cmd path
 			// so the TUI remains responsive.
 			//
+			// Detect the VCS so jj repos get `jj workspace add` instead of `git worktree add`.
+			backend, err := vcsbackend.Detect(opts.WorktreeRepoRoot)
+			if err != nil {
+				return sessionForkedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), sourceID: sourceID}
+			}
+
 			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := git.GetWorktreeForBranch(opts.WorktreeRepoRoot, opts.WorktreeBranch); err == nil && existingPath != "" {
+			if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))
 				opts.WorktreePath = existingPath
 			} else {
 				if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("failed to create directory: %w", err), sourceID: sourceID}
 				}
-				if err := createWorktreeWithSetupAndLog(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch); err != nil {
+				if err := createWorktreeWithSetupAndLog(backend, opts.WorktreePath, opts.WorktreeBranch); err != nil {
 					return sessionForkedMsg{err: fmt.Errorf("worktree creation failed: %w", err), sourceID: sourceID}
 				}
 			}
