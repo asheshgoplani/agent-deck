@@ -37,6 +37,9 @@ var checkInterval = DefaultCheckInterval
 // apiBaseURL is the base URL for GitHub API calls. Overridable in tests.
 var apiBaseURL = "https://api.github.com"
 
+// detectHomebrewManagedInstall is a test seam for self-update install paths.
+var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
+
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
 	if hours > 0 {
@@ -508,7 +511,7 @@ func PerformUpdate(downloadURL string) error {
 		return fmt.Errorf("no download URL available for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 
-	execPath, upgradeCmd, managed, err := DetectHomebrewManagedInstall()
+	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
 	if err != nil {
 		return fmt.Errorf("failed to detect install type: %w", err)
 	}
@@ -552,6 +555,32 @@ func PerformUpdate(downloadURL string) error {
 		return fmt.Errorf("failed to extract: %w", err)
 	}
 
+	return installSelfUpdateBinary(execPath, binaryData)
+}
+
+// PerformVerifiedUpdate downloads, verifies, extracts, and installs a release
+// binary for the requested platform. It fails closed: checksum download,
+// missing-entry, or hash mismatch errors occur before the installed binary is
+// touched.
+func PerformVerifiedUpdate(release *Release, goos, goarch string) error {
+	execPath, upgradeCmd, managed, err := detectHomebrewManagedInstall()
+	if err != nil {
+		return fmt.Errorf("failed to detect install type: %w", err)
+	}
+	if managed {
+		return fmt.Errorf("homebrew-managed install detected at %s; use `%s`", execPath, upgradeCmd)
+	}
+
+	fmt.Printf("Downloading and verifying %s/%s release binary...\n", goos, goarch)
+	binaryData, err := DownloadVerifiedBinary(release, goos, goarch)
+	if err != nil {
+		return fmt.Errorf("download/verify failed: %w", err)
+	}
+
+	return installSelfUpdateBinary(execPath, binaryData)
+}
+
+func installSelfUpdateBinary(execPath string, binaryData []byte) error {
 	// Create temp file for new binary
 	newBinaryPath := execPath + ".new"
 	if err := os.WriteFile(newBinaryPath, binaryData, 0755); err != nil {

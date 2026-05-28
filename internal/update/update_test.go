@@ -262,6 +262,120 @@ func TestFetchReleaseByTag(t *testing.T) {
 	})
 }
 
+func TestPerformVerifiedUpdate_MatchingChecksumInstalls(t *testing.T) {
+	oldBinary := []byte("old-agent-deck")
+	newBinary := []byte("new-agent-deck")
+	execPath := selfUpdateTestTarget(t, oldBinary)
+
+	archive := makeTarGz(t, newBinary)
+	checksums := []byte(sha256hex(archive) + "  agent-deck_1.2.3_linux_amd64.tar.gz\n")
+	rel, cleanup := selfUpdateReleaseServer(t, archive, checksums, http.StatusOK)
+	defer cleanup()
+
+	err := PerformVerifiedUpdate(rel, "linux", "amd64")
+	require.NoError(t, err)
+
+	installed, err := os.ReadFile(execPath)
+	require.NoError(t, err)
+	assert.Equal(t, newBinary, installed)
+}
+
+func TestPerformVerifiedUpdate_MissingChecksumEntryLeavesBinaryUntouched(t *testing.T) {
+	oldBinary := []byte("old-agent-deck")
+	newBinary := []byte("new-agent-deck")
+	execPath := selfUpdateTestTarget(t, oldBinary)
+
+	archive := makeTarGz(t, newBinary)
+	checksums := []byte(sha256hex(archive) + "  agent-deck_1.2.3_windows_amd64.tar.gz\n")
+	rel, cleanup := selfUpdateReleaseServer(t, archive, checksums, http.StatusOK)
+	defer cleanup()
+
+	err := PerformVerifiedUpdate(rel, "linux", "amd64")
+	require.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "no published sha-256 checksum")
+
+	installed, readErr := os.ReadFile(execPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, oldBinary, installed)
+}
+
+func TestPerformVerifiedUpdate_MismatchedChecksumLeavesBinaryUntouched(t *testing.T) {
+	oldBinary := []byte("old-agent-deck")
+	newBinary := []byte("new-agent-deck")
+	execPath := selfUpdateTestTarget(t, oldBinary)
+
+	archive := makeTarGz(t, newBinary)
+	checksums := []byte(sha256hex([]byte("different archive")) + "  agent-deck_1.2.3_linux_amd64.tar.gz\n")
+	rel, cleanup := selfUpdateReleaseServer(t, archive, checksums, http.StatusOK)
+	defer cleanup()
+
+	err := PerformVerifiedUpdate(rel, "linux", "amd64")
+	require.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "mismatch")
+
+	installed, readErr := os.ReadFile(execPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, oldBinary, installed)
+}
+
+func TestPerformVerifiedUpdate_ChecksumsDownloadFailureLeavesBinaryUntouched(t *testing.T) {
+	oldBinary := []byte("old-agent-deck")
+	newBinary := []byte("new-agent-deck")
+	execPath := selfUpdateTestTarget(t, oldBinary)
+
+	archive := makeTarGz(t, newBinary)
+	rel, cleanup := selfUpdateReleaseServer(t, archive, nil, http.StatusNotFound)
+	defer cleanup()
+
+	err := PerformVerifiedUpdate(rel, "linux", "amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checksums.txt")
+	assert.Contains(t, err.Error(), "status 404")
+
+	installed, readErr := os.ReadFile(execPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, oldBinary, installed)
+}
+
+func selfUpdateTestTarget(t *testing.T, initial []byte) string {
+	t.Helper()
+
+	t.Setenv("HOME", t.TempDir())
+	execPath := filepath.Join(t.TempDir(), "agent-deck")
+	require.NoError(t, os.WriteFile(execPath, initial, 0o755))
+
+	orig := detectHomebrewManagedInstall
+	detectHomebrewManagedInstall = func() (string, string, bool, error) {
+		return execPath, "", false, nil
+	}
+	t.Cleanup(func() { detectHomebrewManagedInstall = orig })
+
+	return execPath
+}
+
+func selfUpdateReleaseServer(t *testing.T, archive, checksums []byte, checksumsStatus int) (*Release, func()) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/agent-deck_1.2.3_linux_amd64.tar.gz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(archive)
+	})
+	mux.HandleFunc("/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(checksumsStatus)
+		_, _ = w.Write(checksums)
+	})
+	srv := httptest.NewServer(mux)
+
+	rel := &Release{
+		TagName: "v1.2.3",
+		Assets: []Asset{
+			{Name: "agent-deck_1.2.3_linux_amd64.tar.gz", BrowserDownloadURL: srv.URL + "/agent-deck_1.2.3_linux_amd64.tar.gz"},
+			{Name: ChecksumsAssetName, BrowserDownloadURL: srv.URL + "/checksums.txt"},
+		},
+	}
+	return rel, srv.Close
+}
+
 func TestHomebrewUpgradeHint(t *testing.T) {
 	tests := []struct {
 		name     string
