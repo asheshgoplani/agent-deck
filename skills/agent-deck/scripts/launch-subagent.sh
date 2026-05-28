@@ -71,6 +71,7 @@ CURRENT_JSON=$(agent-deck session current --json 2>/dev/null | grep -v '^20')
 PARENT=$(echo "$CURRENT_JSON" | jq -r '.session')
 PROFILE=$(echo "$CURRENT_JSON" | jq -r '.profile')
 PARENT_PATH=$(echo "$CURRENT_JSON" | jq -r '.path')
+PARENT_GROUP=$(echo "$CURRENT_JSON" | jq -r '.group // empty')
 
 if [ -z "$PARENT" ] || [ "$PARENT" = "null" ]; then
     echo "Error: Not in an agent-deck session" >&2
@@ -90,6 +91,7 @@ mkdir -p "$WORK_DIR"
 
 # Launch session and send initial prompt in one command
 LAUNCH_CMD=(agent-deck -p "$PROFILE" launch "$WORK_DIR" -t "$TITLE" --parent "$PARENT" -c "$TOOL" -m "$PROMPT")
+[ -n "$PARENT_GROUP" ] && LAUNCH_CMD+=(-g "$PARENT_GROUP")
 for mcp in "${MCPS[@]}"; do
     LAUNCH_CMD+=(--mcp "$mcp")
 done
