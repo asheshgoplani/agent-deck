@@ -2039,6 +2039,14 @@ func (s *Session) Start(command string) error {
 	return nil
 }
 
+// hasSessionProbeTimeout bounds a `tmux has-session` existence probe. A tmux
+// server that is briefly busy (e.g. tearing down another session) can make the
+// probe hang; rather than block a status poll — or, worse, mistake the stall
+// for a dead session — we cap it and treat a timeout as indeterminate (assume
+// the session still exists and let a later poll resolve it). Overridable in
+// tests.
+var hasSessionProbeTimeout = 2 * time.Second
+
 // Exists checks if the tmux session exists
 // Uses cached session list when available (refreshed by RefreshExistingSessions)
 // Falls back to direct tmux call if cache is stale
@@ -2061,9 +2069,18 @@ func (s *Session) Exists() bool {
 	}
 
 	// Cache is stale (or skipped for an isolated socket): fall back to a
-	// direct tmux check on the session's own socket.
-	cmd := s.tmuxCmd("has-session", "-t", s.Name)
-	return cmd.Run() == nil
+	// direct tmux check on the session's own socket. Bound it: a server that
+	// is briefly busy can make the probe hang, and a probe that never answers
+	// is indeterminate — assume the session still exists rather than reporting
+	// it dead (which would flip a live session to StatusError). Only a probe
+	// that actually completes with a non-success status means "gone".
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	err := s.tmuxCmdContext(ctx, "has-session", "-t", s.Name).Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return true // probe timed out: indeterminate, assume still alive
+	}
+	return err == nil
 }
 
 // IsPaneDead returns true if the session's pane process has exited.

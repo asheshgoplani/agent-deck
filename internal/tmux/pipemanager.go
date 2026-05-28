@@ -357,6 +357,20 @@ func (pm *PipeManager) forwardOutputEvents(sessionName string, pipe *ControlPipe
 	}
 }
 
+// shouldConcludeSessionGone decides whether a failed has-session probe during
+// reconnect means the session is permanently gone, or just a transient miss to
+// retry. A tmux server that is briefly busy (e.g. tearing down another session)
+// can make the probe report absent for a session that is actually alive, so a
+// single early miss must not delete the pipe. Only a probe still absent on the
+// final attempt — after the retry/backoff window lets contention clear —
+// concludes the session is gone.
+func shouldConcludeSessionGone(probeFoundSession bool, attempt, maxRetries int) bool {
+	if probeFoundSession {
+		return false
+	}
+	return attempt >= maxRetries-1
+}
+
 // watchPipe monitors a pipe and attempts reconnection when it dies.
 // Uses exponential backoff: 2s, 4s, 8s, 16s, 30s max.
 // Stops retrying if the tmux session no longer exists.
@@ -402,7 +416,8 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 		// default server for a session that lives on an isolated agent-deck
 		// socket would answer "no" and silently delete a healthy pipe.
 		reconnectSocket := pipe.socketName
-		if !tmuxSessionExistsOnSocket(reconnectSocket, sessionName) {
+		exists := tmuxSessionExistsOnSocket(reconnectSocket, sessionName)
+		if shouldConcludeSessionGone(exists, attempt, maxRetries) {
 			pipeLog.Debug("pipe_reconnect_session_gone",
 				slog.String("session", sessionName),
 				slog.String("socket", reconnectSocket))
@@ -410,6 +425,20 @@ func (pm *PipeManager) watchPipe(sessionName string, pipe *ControlPipe) {
 			delete(pm.pipes, sessionName)
 			pm.mu.Unlock()
 			return
+		}
+		if !exists {
+			// Probe reported absent but this may be transient tmux-server
+			// contention, not a real death. Back off and retry rather than
+			// deleting a pipe whose session is still alive (the cascade where
+			// one torn-down session flips its neighbors to error).
+			pipeLog.Debug("pipe_reconnect_probe_miss_retry",
+				slog.String("session", sessionName),
+				slog.Int("attempt", attempt+1))
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
 		}
 
 		err := pm.Connect(sessionName, reconnectSocket)
