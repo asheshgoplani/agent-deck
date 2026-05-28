@@ -1572,6 +1572,12 @@ Environment=HOME=__HOME__
 WantedBy=default.target
 `
 
+// systemdTransitionNotifierServiceTemplate runs the always-on completion
+// notifier. RuntimeMaxSec (issue #1214 STEP 1) bounds how long any single
+// daemon process can live: combined with Restart=always it forces a periodic
+// recycle onto the current binary, so the daemon can never run stale code even
+// if the in-process version watcher is somehow bypassed. The watcher recycles
+// promptly on upgrade; this is the backstop.
 const systemdTransitionNotifierServiceTemplate = `[Unit]
 Description=Agent Deck Transition Notifier
 After=network.target
@@ -1581,6 +1587,7 @@ Type=simple
 ExecStart=__AGENT_DECK__ notify-daemon
 Restart=always
 RestartSec=5
+RuntimeMaxSec=86400
 WorkingDirectory=__HOME__
 StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__

@@ -98,11 +98,37 @@ func (d *TransitionDaemon) SyncOnce(_ context.Context) time.Duration {
 		if interval < nextInterval {
 			nextInterval = interval
 		}
+		// Issue #1214: replay any durable task-worker completion record whose
+		// parent was down/busy when the worker exited. Restart-safe and
+		// exactly-once via the record's Acked flag.
+		d.ReplayUnackedCompletions(profile)
 	}
 
 	d.maybeSweepInboxTTL()
 
 	return nextInterval
+}
+
+// ReplayUnackedCompletions re-delivers durable task-worker completion records
+// (issue #1214) that have not yet been acknowledged — the wrapper wrote the
+// record but no live parent was reachable to wake (conductor down/busy at exit).
+// On a successful wake the record is acked so it never fires again. This is the
+// restart-durability half of the kernel-exit mechanism: a completion that
+// happened while the conductor was offline is delivered exactly once when it
+// returns, with no double-wake.
+func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
+	recs, err := LoadCompletionRecords(profile)
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		if rec.Acked || strings.TrimSpace(rec.Status) == "" {
+			continue
+		}
+		if d.notifier.DeliverCompletion(rec) {
+			_ = AckCompletion(rec.Profile, rec.ChildID)
+		}
+	}
 }
 
 // maybeSweepInboxTTL invokes SweepInboxByTTL when more than
@@ -250,6 +276,17 @@ func (d *TransitionDaemon) emitDoneSignals(profile string, byID map[string]*Inst
 	notifyEnabled := GetNotificationsSettings().GetTransitionEventsEnabled()
 	for id, hs := range hookStatuses {
 		if hs == nil || strings.TrimSpace(hs.DoneStatus) == "" {
+			continue
+		}
+		// Issue #1214: a task worker run one-shot under the completion wrapper
+		// owns its own done signal via the kernel-exit path (cmd.Wait ->
+		// durable record -> active wake). Stand down from poll-inference for it
+		// — the freshness window + lastDone dedup that simulate exactly-once
+		// over a polled file are exactly what the kernel exit replaces. The
+		// claim record exists for the whole run, so this also wins the race
+		// against the worker's own Stop hook. Interactive sessions (no record)
+		// keep the path below unchanged.
+		if CompletionRecordExists(profile, id) {
 			continue
 		}
 		if !hs.UpdatedAt.IsZero() && time.Since(hs.UpdatedAt) > hookFreshWindow {
@@ -433,6 +470,12 @@ func (d *TransitionDaemon) emitHookTransitionCandidates(
 	for id, candidate := range candidates {
 		inst := byID[id]
 		if !notifyEnabled || !instanceAcceptsTransitionEvents(inst) {
+			continue
+		}
+		// Issue #1214: the completion wrapper owns a task worker's terminal
+		// signal; suppress poll-inferred candidates for it. Interactive
+		// sessions (no completion record) are unaffected.
+		if CompletionRecordExists(profile, id) {
 			continue
 		}
 
