@@ -748,9 +748,19 @@ func softKillProcessGroup(pgid int, grace time.Duration) bool {
 // tmux `-L <name>` selector (Session.SocketName / Instance.TmuxSocketName);
 // pass "" for the default server. All callers (watchPipe reconnect loop,
 // public HasSession/HasSessionOnSocket in tmux.go) go through this.
+//
+// The probe is bounded by hasSessionProbeTimeout: a tmux server that is briefly
+// busy can make `has-session` stall, and a stalled probe is indeterminate — we
+// assume the session still exists (return true) rather than blocking the caller
+// or reporting a live session as gone. A probe that completes is trusted.
 func tmuxSessionExistsOnSocket(socketName, name string) bool {
-	cmd := tmuxExec(socketName, "has-session", "-t", name)
-	return cmd.Run() == nil
+	ctx, cancel := context.WithTimeout(context.Background(), hasSessionProbeTimeout)
+	defer cancel()
+	err := tmuxExecContext(ctx, socketName, "has-session", "-t", name).Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return true // probe timed out: indeterminate, assume the session still exists
+	}
+	return err == nil
 }
 
 // --- Global singleton ---

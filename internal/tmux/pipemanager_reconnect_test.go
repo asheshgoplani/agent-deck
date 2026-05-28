@@ -1,6 +1,11 @@
 package tmux
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 // TestShouldConcludeSessionGone_RetriesEarlyMisses guards the reconnect cascade
 // fix: when a pipe dies and the reconnect loop probes whether the session still
@@ -29,5 +34,29 @@ func TestShouldConcludeSessionGone_RetriesEarlyMisses(t *testing.T) {
 	// Still absent on the final attempt: now we conclude it is gone.
 	if !shouldConcludeSessionGone(false, maxRetries-1, maxRetries) {
 		t.Fatal("a probe still absent on the final attempt must conclude the session is gone")
+	}
+}
+
+// TestTmuxSessionExistsOnSocket_ProbeTimeoutIsNotTreatedAsAbsent guards the
+// reconnect-path companion to the Session.Exists() timeout fix. watchPipe()
+// probes existence via tmuxSessionExistsOnSocket(); if tmux stalls, an
+// unbounded probe blocks the reconnect goroutine before the retry/backoff
+// logic can run. The probe must be bounded and treat a timeout as
+// indeterminate — report the session as still present, not gone.
+func TestTmuxSessionExistsOnSocket_ProbeTimeoutIsNotTreatedAsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nsleep 1\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	restore := hasSessionProbeTimeout
+	hasSessionProbeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { hasSessionProbeTimeout = restore })
+
+	if !tmuxSessionExistsOnSocket("agent-deck-reconnect-timeout-test", "busy-session") {
+		t.Fatal("tmuxSessionExistsOnSocket returned false when the has-session probe timed out; " +
+			"a stalled probe is indeterminate and must not be treated as a dead session")
 	}
 }
