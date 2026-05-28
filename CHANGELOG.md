@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.43] - 2026-05-28
+
+### Added
+
+- **Opt-in kernel-exact task-worker completion** ([#1215](https://github.com/asheshgoplani/agent-deck/issues/1215)). A one-shot task worker's exit is caught exactly-once and wakes the launching session reliably, replacing poll-inference for that path. Interactive sessions are unchanged.
+
+### Fixed
+
+- **notify-daemon can no longer run stale code** ([#1215](https://github.com/asheshgoplani/agent-deck/issues/1215)). A `RuntimeMaxSec` recycle plus a version self-check stop the daemon from silently running old code — the cause of notification fixes not taking effect.
+
 ## [1.9.42] - 2026-05-28
 
 ### Fixed
