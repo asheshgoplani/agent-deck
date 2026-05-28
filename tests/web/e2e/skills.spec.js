@@ -9,14 +9,14 @@
 import { test, expect } from '@playwright/test'
 
 async function gotoSkills(page) {
-  await page.goto('/')
-  await page.waitForSelector('.sess', { timeout: 5000 })
-  // Click the first session row (sess-001 / agent-deck — has alpha attached
-  // in the fixture seed).
-  await page.locator('.sess').first().click()
-  // Activate the Skills tab in the top navigation.
-  await page.getByRole('button', { name: /^skills$/i }).click()
-  await page.waitForSelector('[data-testid="skills-pane"]', { timeout: 5000 })
+  // Open the seeded session directly. In narrow headless viewports the
+  // sidebar is collapsed/hidden, so the seeded .sess rows exist but are not
+  // visible enough for Playwright's default wait/click predicates.
+  await page.addInitScript(() => {
+    localStorage.setItem('agentdeck.tab', JSON.stringify('skills'))
+  })
+  await page.goto('/s/sess-001')
+  await expect(page.locator('[data-testid="skills-pane"]')).toBeVisible({ timeout: 5000 })
 }
 
 test.describe('skills management', () => {
