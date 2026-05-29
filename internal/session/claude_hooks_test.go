@@ -66,6 +66,50 @@ func TestInjectClaudeHooks_Fresh(t *testing.T) {
 	}
 }
 
+// TestStopHookIsSynchronousForActivation guards the issue #1225/#1226 ACTIVATION:
+// the Stop hook must install SYNCHRONOUSLY so Claude Code consults the hook's
+// stdout {decision:"block",reason} and injects busy-parent completions. An async
+// Stop hook makes Claude ignore stdout, so the durable-outbox engine ships inert.
+// The flip is provably safe for non-conductor sessions via the DrainForStopHook
+// InboxHasPending fast path (see TestB12_StopHook_LeafSessionNeverBlocksNorWritesLedger).
+func TestStopHookIsSynchronousForActivation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if _, err := InjectClaudeHooks(tmpDir); err != nil {
+		t.Fatalf("InjectClaudeHooks failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("Failed to read settings.json: %v", err)
+	}
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("Failed to parse settings: %v", err)
+	}
+
+	var hooks map[string]json.RawMessage
+	if err := json.Unmarshal(settings["hooks"], &hooks); err != nil {
+		t.Fatalf("Failed to parse hooks: %v", err)
+	}
+
+	var matchers []claudeHookMatcher
+	if err := json.Unmarshal(hooks["Stop"], &matchers); err != nil {
+		t.Fatalf("Failed to parse Stop matchers: %v", err)
+	}
+	if len(matchers) == 0 || len(matchers[0].Hooks) == 0 {
+		t.Fatal("Stop has no hooks")
+	}
+
+	hook := matchers[0].Hooks[0]
+	if hook.Async {
+		t.Error("Stop hook must be synchronous (Async should be false) so Claude Code reads the busy-parent {decision:\"block\"} — see issue #1225/#1226 activation")
+	}
+	if hook.Command != agentDeckHookCommand {
+		t.Errorf("Stop hook command = %q, want %q", hook.Command, agentDeckHookCommand)
+	}
+}
+
 func TestPreCompactHookIsSynchronous(t *testing.T) {
 	tmpDir := t.TempDir()
 

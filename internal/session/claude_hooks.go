@@ -42,15 +42,16 @@ var hookEventConfigs = []struct {
 }{
 	{Event: "SessionStart", Async: true},
 	{Event: "UserPromptSubmit", Async: true},
-	// Stop stays ASYNC in this PR (#1225 ships inert). The ACTIVATION PR flips it
-	// to sync so Claude Code reads the {decision:"block"} the hook emits to inject
-	// busy-parent completions. Audit B12 flagged a GLOBAL sync flip as the top
-	// risk; the scope is enforced at RUNTIME, not per-session install: DrainForStopHook
-	// fast-returns (no block, ZERO ledger writes) for any session without a pending
-	// inbox — i.e. every non-conductor/leaf session — so the flip is provably inert
-	// for them. The MaxStopHookBlocks loop guard is crash-safe (B4) and fails safe on
-	// an absent stop_hook_active flag (B8). See the scoped activation note in the PR.
-	{Event: "Stop", Async: true},
+	// Issue #1225/#1226 ACTIVATION: Stop is SYNCHRONOUS so Claude Code reads the
+	// {decision:"block",reason} the hook emits to inject busy-parent completions.
+	// Audit B12 (global-flip risk) is mitigated by RUNTIME scope, not a per-session
+	// install (hooks are per config-dir, shared by conductor + workers):
+	//   - DrainForStopHook fast-returns with no block and ZERO ledger writes for any
+	//     session with an empty inbox (every leaf/non-conductor session) — inert flip.
+	//   - The MaxStopHookBlocks loop guard is crash-safe (B4) and fails safe on an
+	//     absent stop_hook_active flag (B8), so it cannot be defeated into a loop.
+	// Canary one conductor before flipping fleet-wide (GAP §5).
+	{Event: "Stop", Async: false},
 	// PermissionRequest is synchronous so the hook handler's stdout decision is
 	// consulted by Claude Code. In headless / /remote-control contexts an async
 	// hook with no UI fallback caused silent deny; the sync hook plus an

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.44] - 2026-05-29
+
+### Added
+
+- **Durable per-parent outbox for inter-agent completions** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). Child completions are committed to a durable, per-parent outbox (`~/.agent-deck/inboxes/<parent>.jsonl`) and drained by the parent on its own schedule, replacing the push-into-tmux model that silently lost completions to an always-busy conductor. At-least-once delivery with exactly-once effects (last-wins per child, consumed-turn dedup ledger); survives parent busy-ness, restart, and compaction.
+
+### Changed
+
+- **Activated the durable-outbox comms engine** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). The conductor Stop hook is now **synchronous** so Claude Code reads the `{decision:"block"}` the hook emits and injects busy-parent completions at the next turn boundary, and `agent-deck inbox drain self` is the first step of every conductor heartbeat (the idle-conductor fallback). The Stop-sync flip is **conductor-scoped at runtime**, not globally: a session with an empty inbox (every leaf/non-conductor session) fast-returns with no block and zero ledger writes, so the flip is inert for them. The loop guard is crash-safe and fails safe on an absent `stop_hook_active` flag. Roll out canary-first to one conductor. Zero billed inference — the hook is a Go handler, no `claude -p`.
+
+### Fixed
+
+- **Work-profile 401 `/login` loop on session spawn/restart** ([#1222](https://github.com/asheshgoplani/agent-deck/issues/1222) / [#1224](https://github.com/asheshgoplani/agent-deck/pull/1224)). The scratch `.credentials.json` symlink is re-asserted on spawn and on start/restart, stopping the work-profile credential loss that forced a re-login loop.
+
 ## [1.9.43] - 2026-05-28
 
 ### Added

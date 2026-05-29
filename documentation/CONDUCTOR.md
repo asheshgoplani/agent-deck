@@ -163,7 +163,22 @@ If you enabled heartbeat at setup (it is enabled by default), agent-deck install
 [HEARTBEAT]
 ```
 
-The conductor is instructed to respond with either:
+The first action on every heartbeat is to drain its inbox:
+
+```bash
+agent-deck inbox drain self
+```
+
+This pulls any child completions that landed in the conductor's durable outbox
+(`~/.agent-deck/inboxes/<id>.jsonl`) while it was busy. Delivery is pull, not push
+(issue [#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) /
+[#1226](https://github.com/asheshgoplani/agent-deck/issues/1226)): a child that
+finishes mid-turn commits its completion to disk rather than typing into the
+conductor's pane. The conductor's synchronous Stop hook drains the same queue at
+each turn boundary (the busy-conductor path); this heartbeat drain is the
+idle-conductor fallback. Together they guarantee no completion is missed.
+
+The conductor then responds with either:
 
 ```
 [STATUS] {one-line summary of current state}

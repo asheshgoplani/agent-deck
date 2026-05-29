@@ -61,6 +61,20 @@ Every N minutes, the bridge sends you a message like:
 [HEARTBEAT] [<name>] Status: 2 waiting, 3 running, 1 idle, 0 error. Waiting sessions: frontend (project: ~/src/app), api-fix (project: ~/src/api). Check if any need auto-response or user attention.
 ` + "```" + `
 
+**FIRST step of EVERY heartbeat — drain your inbox:**
+
+` + "```bash" + `
+agent-deck inbox drain self
+` + "```" + `
+
+This pulls any child completions that landed in your durable outbox while you were
+busy (issue #1225/#1226). Delivery is pull, not push: a child that finished mid-turn
+committed its completion to ` + "`" + `~/.agent-deck/inboxes/<your-id>.jsonl` + "`" + ` rather than typing
+into your pane. The drain marks records consumed (exactly-once effects) and prints
+them; act on each before composing your status. Your Stop hook drains the same queue
+automatically at each turn boundary, so this heartbeat drain is the idle-conductor
+fallback — together they guarantee no completion is missed whether you are busy or idle.
+
 **Your heartbeat response format:**
 
 ` + "```" + `
