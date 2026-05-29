@@ -31,6 +31,11 @@ type hookPayload struct {
 	SessionID     string          `json:"session_id"`
 	Source        string          `json:"source"`
 	Matcher       json.RawMessage `json:"matcher,omitempty"`
+	// StopHookActive is Claude Code's flag: true when this Stop is a
+	// continuation induced by a previous Stop-hook block. Issue #1225 uses it
+	// to bound consecutive inbox-drain blocks so the conductor cannot loop
+	// forever (resets the budget on a genuine user turn boundary).
+	StopHookActive bool `json:"stop_hook_active"`
 }
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
@@ -166,6 +171,25 @@ func handleHookHandler() {
 	// unchanged.
 	if payload.HookEventName == "PermissionRequest" && parentIsDSP() {
 		fmt.Println(`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","permissionDecision":"allow"}}`)
+	}
+
+	// Issue #1225: on the Stop edge (the turn boundary), a parent drains its
+	// durable per-parent outbox and injects any pending child completions via
+	// {decision:"block",reason} — so a BUSY conductor still receives every
+	// completion at its very next free turn, with zero forced interrupts and
+	// zero loss. No-op when the inbox is empty (the common case for non-parent
+	// sessions), and bounded by a max-consecutive-block guard so it can't loop.
+	//
+	// NOTE: Claude Code only reads this decision when the Stop hook runs
+	// SYNCHRONOUSLY. The install flips the conductor's Stop hook to sync — see
+	// the maintainer note in the PR. Emitting here is harmless under the legacy
+	// async install (Claude ignores stdout) and activates once sync lands.
+	if payload.HookEventName == "Stop" {
+		if dec, blocked, derr := session.DrainForStopHook(instanceID, payload.StopHookActive); derr == nil && blocked {
+			if out, mErr := json.Marshal(dec); mErr == nil {
+				fmt.Println(string(out))
+			}
+		}
 	}
 }
 
