@@ -35,7 +35,20 @@ type hookPayload struct {
 	// continuation induced by a previous Stop-hook block. Issue #1225 uses it
 	// to bound consecutive inbox-drain blocks so the conductor cannot loop
 	// forever (resets the budget on a genuine user turn boundary).
-	StopHookActive bool `json:"stop_hook_active"`
+	//
+	// Audit B8: a *bool (not bool) so we can distinguish ABSENT from explicit
+	// false. A missing field must NOT be read as "fresh user turn" (which would
+	// reset the loop guard every Stop); resolveStopHookActive fails safe to true.
+	StopHookActive *bool `json:"stop_hook_active"`
+}
+
+// resolveStopHookActive fails safe (audit B8): an absent stop_hook_active is
+// treated as active=true (this Stop counts against the MaxStopHookBlocks budget)
+// rather than false (which would reset the budget). Only an EXPLICIT false — a
+// genuine user turn boundary that Claude Code is asserting — resets the guard.
+// This keeps the loop bounded even if Claude Code ever omits the field.
+func resolveStopHookActive(p hookPayload) bool {
+	return p.StopHookActive == nil || *p.StopHookActive
 }
 
 // hookStatusFile is the JSON written to ~/.agent-deck/hooks/{instance_id}.json
@@ -185,7 +198,7 @@ func handleHookHandler() {
 	// the maintainer note in the PR. Emitting here is harmless under the legacy
 	// async install (Claude ignores stdout) and activates once sync lands.
 	if payload.HookEventName == "Stop" {
-		if dec, blocked, derr := session.DrainForStopHook(instanceID, payload.StopHookActive); derr == nil && blocked {
+		if dec, blocked, derr := session.DrainForStopHook(instanceID, resolveStopHookActive(payload)); derr == nil && blocked {
 			if out, mErr := json.Marshal(dec); mErr == nil {
 				fmt.Println(string(out))
 			}

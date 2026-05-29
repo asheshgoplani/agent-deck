@@ -42,6 +42,14 @@ var hookEventConfigs = []struct {
 }{
 	{Event: "SessionStart", Async: true},
 	{Event: "UserPromptSubmit", Async: true},
+	// Stop stays ASYNC in this PR (#1225 ships inert). The ACTIVATION PR flips it
+	// to sync so Claude Code reads the {decision:"block"} the hook emits to inject
+	// busy-parent completions. Audit B12 flagged a GLOBAL sync flip as the top
+	// risk; the scope is enforced at RUNTIME, not per-session install: DrainForStopHook
+	// fast-returns (no block, ZERO ledger writes) for any session without a pending
+	// inbox — i.e. every non-conductor/leaf session — so the flip is provably inert
+	// for them. The MaxStopHookBlocks loop guard is crash-safe (B4) and fails safe on
+	// an absent stop_hook_active flag (B8). See the scoped activation note in the PR.
 	{Event: "Stop", Async: true},
 	// PermissionRequest is synchronous so the hook handler's stdout decision is
 	// consulted by Claude Code. In headless / /remote-control contexts an async

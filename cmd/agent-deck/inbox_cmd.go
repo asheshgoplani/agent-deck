@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // handleInbox is the dispatch entry for `agent-deck inbox <session-id>`. It
-// drains the per-conductor inbox file populated by the transition notifier
-// when in-process retries exhaust against a busy parent. Reading truncates;
-// callers should expect at-most-once delivery (consumer-side dedup, not
-// producer-side, intentional — see internal/session/inbox.go).
+// drains the per-conductor inbox file that the transition notifier commits
+// completions to (issue #1225). The bare form is the legacy raw read+truncate
+// (at-most-once); the `drain` subcommand is the durable consumer path. See
+// internal/session/inbox.go.
 func handleInbox(args []string) {
 	if err := runInbox(os.Stdout, args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -70,16 +71,17 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("inbox drain", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit the drained events as a JSON array")
 	fs.Usage = func() {
-		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] <session-id>")
+		fmt.Fprintln(stdout, "Usage: agent-deck inbox drain [--json] [<session-id>|self]")
+		fmt.Fprintln(stdout, "With no id (or 'self'), drains the caller's own session.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	sessionID, err := resolveDrainTarget(fs.Args())
+	if err != nil {
 		fs.Usage()
-		return fmt.Errorf("expected exactly one session id argument")
+		return err
 	}
-	sessionID := fs.Arg(0)
 
 	events, err := session.DrainInboxForParent(sessionID)
 	if err != nil {
@@ -96,6 +98,44 @@ func runInboxDrain(stdout io.Writer, args []string) error {
 
 	printInboxEvents(stdout, events)
 	return nil
+}
+
+// resolveDrainTarget returns the session id to drain. With no positional arg,
+// or the literal "self", it resolves the caller's OWN session (audit B7) — the
+// conductor template runs `agent-deck inbox drain self` as heartbeat step 1.
+func resolveDrainTarget(args []string) (string, error) {
+	switch len(args) {
+	case 0:
+		return resolveSelfSessionID()
+	case 1:
+		if strings.EqualFold(strings.TrimSpace(args[0]), "self") {
+			return resolveSelfSessionID()
+		}
+		return args[0], nil
+	default:
+		return "", fmt.Errorf("expected at most one session id argument")
+	}
+}
+
+// resolveSelfSessionID resolves the caller's own session id robustly across
+// worktree / sandbox / cron contexts (audit B7). It prefers AGENTDECK_INSTANCE_ID
+// (always injected into agent-deck-managed sessions, and the only signal that
+// survives when there is no tmux — worktrees, sandboxes, cron heartbeats), then
+// AGENT_DECK_SESSION_ID, and only falls back to the tmux session name last.
+func resolveSelfSessionID() (string, error) {
+	for _, v := range []string{
+		os.Getenv("AGENTDECK_INSTANCE_ID"),
+		os.Getenv("AGENT_DECK_SESSION_ID"),
+	} {
+		if s := strings.TrimSpace(v); s != "" {
+			return s, nil
+		}
+	}
+	if s := strings.TrimSpace(GetCurrentSessionID()); s != "" {
+		return s, nil
+	}
+	return "", fmt.Errorf("no session id given and could not resolve the current session " +
+		"(set AGENTDECK_INSTANCE_ID, run inside an agent-deck tmux session, or pass an explicit id)")
 }
 
 func printInboxEvents(stdout io.Writer, events []session.TransitionNotificationEvent) {

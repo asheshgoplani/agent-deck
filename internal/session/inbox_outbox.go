@@ -1,16 +1,31 @@
 package session
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+)
+
+// Dead-letter / terminal-drop reasons (audit B5). Without distinguishing these,
+// an orphan, a removed child, a removed/cross-profile parent, and an intentional
+// no-notify all collapsed to the same silent path, so an operator could not tell
+// a misconfiguration from a benign suppression. The reason is stamped on the
+// event and written to both the dead-letter record and the missed-log line.
+const (
+	deadLetterReasonUnresolvable  = "unresolvable"   // generic / parent found but not live
+	deadLetterReasonChildMissing  = "child_removed"  // child gone between commit and resolve
+	deadLetterReasonParentMissing = "parent_removed" // ParentSessionID set but parent not in this profile (removed or cross-profile)
+	deadLetterReasonOrphan        = "orphan"         // child has no ParentSessionID (logged once via orphan log)
+	deadLetterReasonNoNotify      = "no_notify"      // child opted out — intentional, not a failure
+	deadLetterReasonSelfConductor = "self_conductor" // top-level/self-pointing conductor — intentional
 )
 
 // Issue #1225: the durable per-parent outbox is the PRIMARY delivery channel,
@@ -20,6 +35,27 @@ import (
 // side: last-wins-per-child commit, the turn_fingerprint for exactly-once
 // consumer effects, and the bounded dead-letter path that replaces the
 // dropped_no_target ~1/sec runaway with a terminal state logged once.
+
+// maxDoneSummaryBytes bounds the per-record completion summary (audit B6). A
+// worker's DoneSummary is sourced from a sentinel with no inherent size limit;
+// without a cap a worker that dumps a large log into it could grow a single
+// JSONL line past the scanner cap and fail the entire drain. 32 KB is generous
+// for a human-readable completion summary while keeping the line scannable.
+const maxDoneSummaryBytes = 32 * 1024
+
+// capDoneSummary truncates an over-long completion summary to maxDoneSummaryBytes,
+// appending a marker so an operator sees the summary was clipped. Truncation is
+// byte-based (a multi-byte rune at the boundary is tolerated — the marker makes
+// the clip obvious and JSON marshalling escapes any partial bytes safely).
+func capDoneSummary(s string) string {
+	if len(s) <= maxDoneSummaryBytes {
+		return s
+	}
+	const marker = "…[truncated]"
+	// keep is a positive compile-time constant (marker << maxDoneSummaryBytes).
+	keep := maxDoneSummaryBytes - len(marker)
+	return s[:keep] + marker
+}
 
 // inboxWireEvent is the on-disk JSONL shape: the event plus the legacy "fp"
 // fingerprint used by the producer-side dedup in WriteInboxEvent. Defined once
@@ -80,6 +116,12 @@ func CommitToInbox(parentSessionID string, event TransitionNotificationEvent) er
 	if strings.TrimSpace(parentSessionID) == "" {
 		return errors.New("inbox commit: empty parent session id")
 	}
+	// Audit B6: cap DoneSummary at the producer so a worker dumping a large log
+	// into its summary can't grow a JSONL line past the scanner cap and fail the
+	// drain. The turn_fingerprint is derived AFTER capping so the fingerprint is
+	// stable for a given (capped) summary. The injected reason only ever shows a
+	// one-line summary anyway, so the truncated prefix is sufficient signal.
+	event.DoneSummary = capDoneSummary(event.DoneSummary)
 	if event.TurnFingerprint == "" {
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
@@ -123,6 +165,13 @@ func appendInboxLineLocked(path string, event TransitionNotificationEvent) error
 	}
 	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	// Audit B2: fsync the append before reporting success. CommitToInbox is the
+	// PRIMARY delivery path; without this a crash after Write returns but before
+	// the kernel flushes loses the record while the producer believes it
+	// committed. Completions are low-frequency, so the flush cost is negligible.
+	if err := f.Sync(); err != nil {
 		return err
 	}
 	seen, ok := inboxFingerprintCache[path]
@@ -206,27 +255,43 @@ func (s *DeadLetterSink) writeMissedOnce(event TransitionNotificationEvent) {
 	if strings.TrimSpace(s.missedPath) == "" {
 		return
 	}
+	// Audit B4: the missed-log line is the operator's ONE signal that a
+	// completion was dropped (unresolvable target). A silent failure to write it
+	// leaves zero visibility, so surface every error path here.
+	reason := strings.TrimSpace(event.DeadLetterReason)
+	if reason == "" {
+		reason = deadLetterReasonUnresolvable
+	}
 	if err := os.MkdirAll(filepath.Dir(s.missedPath), 0o755); err != nil {
+		commsLog.Warn("dead_letter_missed_log_mkdir_failed",
+			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
 	entry := map[string]any{
 		"ts":       time.Now().Format(time.RFC3339Nano),
 		"target":   event.TargetSessionID,
 		"child":    event.ChildSessionID,
-		"reason":   "dead_letter_unresolvable",
+		"reason":   reason,
 		"attempts": event.Attempts,
 		"fp":       EventFingerprint(event),
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
+		commsLog.Warn("dead_letter_missed_log_marshal_failed",
+			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
 	f, err := os.OpenFile(s.missedPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
+		commsLog.Warn("dead_letter_missed_log_open_failed",
+			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
 		return
 	}
 	defer f.Close()
-	_, _ = f.Write(append(line, '\n'))
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		commsLog.Warn("dead_letter_missed_log_write_failed",
+			slog.String("child", event.ChildSessionID), slog.String("error", err.Error()))
+	}
 }
 
 // writeDeadLetter appends a record to the child's dead-letter JSONL file.
@@ -247,8 +312,13 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.Write(append(line, '\n'))
-	return err
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		return err
+	}
+	// Audit B2: fsync the dead-letter append. Dead-letter is the operator's
+	// terminal forensic trail for an unresolvable completion; it must survive a
+	// crash, same as the primary inbox append.
+	return f.Sync()
 }
 
 // --- unified producer commit (shared by interactive + one-shot) -------------
@@ -259,15 +329,15 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 // caller should retry later rather than dead-letter). An empty parentID with
 // transient=false means the event is terminally undeliverable (orphan, removed
 // child, self-pointing conductor, no-notify) and should be dead-lettered.
-func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parentID string, transient bool) {
+func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parentID string, transient bool, reason string) {
 	storage, err := NewStorageWithProfile(event.Profile)
 	if err != nil {
-		return "", true
+		return "", true, ""
 	}
 	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
-		return "", true
+		return "", true, ""
 	}
 	byID := make(map[string]*Instance, len(instances))
 	for _, inst := range instances {
@@ -275,27 +345,39 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 	}
 
 	child := byID[event.ChildSessionID]
-	if child == nil || child.NoTransitionNotify {
-		return "", false
+	if child == nil {
+		// Child removed between commit/observe and resolve — terminal, but the
+		// operator should know a completion was dropped (audit B5).
+		return "", false, deadLetterReasonChildMissing
+	}
+	if child.NoTransitionNotify {
+		return "", false, deadLetterReasonNoNotify
 	}
 	// Top-level conductor self-suppress (issue #824 cause B): the root is not
 	// an orphan, drop silently.
 	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
-		return "", false
+		return "", false, deadLetterReasonSelfConductor
 	}
 	// Orphan-on-creation guard (issue #805 cause A): log one WARN per orphan.
 	if strings.TrimSpace(child.ParentSessionID) == "" {
 		n.logOrphanOnce(event, child.ID)
-		return "", false
+		return "", false, deadLetterReasonOrphan
 	}
 	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
-		return "", false
+		return "", false, deadLetterReasonSelfConductor
+	}
+	// Parent referenced but not present in this profile's registry: removed
+	// mid-flight, or the child's parent lives in a DIFFERENT profile (we only
+	// load event.Profile's registry). Either way it's terminal — but distinguish
+	// it so the operator isn't left guessing (audit B5).
+	if byID[strings.TrimSpace(child.ParentSessionID)] == nil {
+		return "", false, deadLetterReasonParentMissing
 	}
 	parent := resolveParentNotificationTarget(child, byID)
 	if parent == nil {
-		return "", false
+		return "", false, deadLetterReasonUnresolvable
 	}
-	return parent.ID, false
+	return parent.ID, false, ""
 }
 
 // commitEventToInbox is the unified producer entry point: it resolves the
@@ -303,13 +385,13 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 // Returns committed=true when the record durably landed; transient=true when a
 // retryable error (storage/fs) occurred. committed=false, transient=false means
 // terminally undeliverable — the caller dead-letters.
-func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEvent) (committed bool, transient bool) {
-	parentID, t := n.resolveParentIDForInbox(event)
+func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEvent) (committed bool, transient bool, reason string) {
+	parentID, t, reason := n.resolveParentIDForInbox(event)
 	if t {
-		return false, true
+		return false, true, ""
 	}
 	if parentID == "" {
-		return false, false
+		return false, false, reason
 	}
 	event.TargetSessionID = parentID
 	event.TargetKind = "parent"
@@ -318,33 +400,44 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		event.TurnFingerprint = TurnFingerprint(event)
 	}
 	if err := CommitToInbox(parentID, event); err != nil {
-		return false, true
+		return false, true, ""
 	}
 	n.logEvent(event)
-	return true, false
+	return true, false, ""
 }
 
 // ReadDeadLetter returns the dead-lettered records for a child (empty if none).
+//
+// Audit B3: corrupt lines are SKIPPED (matching ReadAndTruncateInbox), not
+// fatal. Dead-letter is the operator's last-resort forensic trail; one
+// garbled/truncated line must not hide every valid record after it. The scanner
+// uses the raised line cap so a fat (capped) summary still reads back.
 func ReadDeadLetter(childSessionID string) ([]TransitionNotificationEvent, error) {
-	path := DeadLetterPathFor(childSessionID)
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(DeadLetterPathFor(childSessionID))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
+	defer f.Close()
+
 	var out []TransitionNotificationEvent
-	for _, ln := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln == "" {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
-		ev, err := decodeInboxLine([]byte(ln))
-		if err != nil {
-			return out, fmt.Errorf("dead-letter decode: %w", err)
+		ev, derr := decodeInboxLine([]byte(line))
+		if derr != nil {
+			continue // skip corrupt lines rather than blinding the operator to the rest
 		}
 		out = append(out, ev)
+	}
+	if err := scanner.Err(); err != nil {
+		return out, err
 	}
 	return out, nil
 }

@@ -13,19 +13,85 @@ import (
 )
 
 // Per-conductor inbox: a JSONL file at
-// <agent-deck-dir>/inboxes/<parent-session-id>.jsonl that holds transition
-// events the in-process retry path could not deliver. The conductor consumes
-// it on its next idle pass via `agent-deck inbox <session>` and the file is
-// truncated atomically so the same event is never re-delivered (loss is
-// preferable to flood once it's in the consumer's hands).
+// <agent-deck-dir>/inboxes/<parent-session-id>.jsonl — the durable per-parent
+// outbox a conductor DRAINS at its own turn boundary (Stop hook) and on
+// heartbeat (issue #1225). Two producers commit here (interactive
+// running→waiting and one-shot run-task kernel-exit).
+//
+// Delivery contract (audit B1): the #1225 drain (DrainInboxForParent /
+// DrainForStopHook in inbox_consumer.go) is AT-LEAST-ONCE WITH DEDUP — records
+// are staged to an in-flight WAL before the inbox is truncated and the
+// turn_fingerprint consumed-ledger collapses any re-delivered duplicate, so a
+// crash re-delivers rather than loses. The legacy raw path below
+// (WriteInboxEvent + ReadAndTruncateInbox, exposed as `agent-deck inbox <id>`)
+// is the older at-most-once read+truncate used only for ad-hoc inspection;
+// prefer the drain path for guaranteed delivery.
 //
 // Append-only writes guarantee that concurrent producers (the notifier
-// daemon plus any ad-hoc CLI dispatcher) cannot clobber each other; the
-// rename-on-truncate pattern keeps the read+clear pair atomic relative to
-// any concurrent writer that opens with O_APPEND between the read and the
-// rename.
+// daemon plus any ad-hoc CLI dispatcher) cannot clobber each other; inboxWriteMu
+// is held across the read+remove so the legacy truncate is atomic relative to
+// any concurrent WriteInboxEvent/CommitToInbox.
 
 var inboxWriteMu sync.Mutex // serializes appends to a single inbox file
+
+// maxInboxLineBytes caps a single JSONL line when scanning inbox / WAL /
+// dead-letter files. Audit B6: the old 1 MB cap silently truncated (and failed
+// the whole drain on) an oversized event — a DoneSummary that swallowed a large
+// worker log could exceed it. Raised to 16 MB so a fat-but-bounded summary
+// scans cleanly; the producer also caps DoneSummary (see maxDoneSummaryBytes)
+// so a line never reaches this ceiling in practice.
+const maxInboxLineBytes = 16 * 1024 * 1024
+
+// writeFileDurable writes data to path atomically and durably: a temp file is
+// written and fsync'd, then renamed over path, then the parent directory is
+// fsync'd so both the file contents and the rename survive a crash/power loss.
+// This is the durability primitive behind the at-least-once drain (audit B1):
+// the in-flight WAL must be on disk before the inbox is removed, and the
+// consumed ledger must be on disk before the WAL is dropped.
+func writeFileDurable(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// Best-effort directory fsync so the rename itself is durable. Some
+	// filesystems reject directory fsync (EINVAL/ENOTSUP); treat that as benign
+	// since the data fsync + atomic rename already give the core guarantee.
+	fsyncDir(dir)
+	return nil
+}
+
+// fsyncDir best-effort fsyncs a directory so a preceding rename is durable.
+func fsyncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	_ = d.Sync()
+}
 
 // inboxFingerprintCache holds, per inbox file path, the set of event
 // fingerprints already persisted. Populated lazily on first write to a path
@@ -72,7 +138,8 @@ func sanitizeInboxName(id string) string {
 // Fingerprint dedup: events that share an EventFingerprint with one already
 // persisted in the file are silently skipped. This is the producer-side
 // guard for issue #824 (the same logical event persisted multiple times).
-// Consumers still get at-most-once delivery via ReadAndTruncateInbox.
+// The #1225 drain path layers turn_fingerprint dedup on top for at-least-once
+// delivery with exactly-once effects (see inbox_consumer.go).
 func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) error {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return errors.New("inbox: empty parent session id")
@@ -119,6 +186,11 @@ func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) 
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		return err
 	}
+	// Audit B2: fsync the append so a crash after Write cannot lose a record the
+	// producer reported as committed.
+	if err := f.Sync(); err != nil {
+		return err
+	}
 	seen[fp] = struct{}{}
 	return nil
 }
@@ -138,7 +210,7 @@ func loadInboxFingerprintsLocked(path string) map[string]struct{} {
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -156,6 +228,15 @@ func loadInboxFingerprintsLocked(path string) map[string]struct{} {
 			fp = EventFingerprint(probe.TransitionNotificationEvent)
 		}
 		out[fp] = struct{}{}
+	}
+	// Audit B6: a scanner error (e.g. an oversized line at the raised cap, or a
+	// read fault) must not silently yield an INCOMPLETE dedup set — that would
+	// let WriteInboxEvent re-append events the file already holds. On error we
+	// reset to the empty set: a fresh full scan failed, so treat dedup state as
+	// unknown rather than partially-known. The caller's write still proceeds;
+	// worst case is a duplicate the drain's turn_fingerprint dedup collapses.
+	if err := scanner.Err(); err != nil {
+		return map[string]struct{}{}
 	}
 	return out
 }
@@ -297,7 +378,7 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 	var kept [][]byte
 	var dropped int
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		if len(strings.TrimSpace(string(raw))) == 0 {
@@ -372,11 +453,14 @@ func rewriteInboxLocked(path string, shouldDrop func(TransitionNotificationEvent
 // the file. Returns an empty slice (not an error) when the inbox doesn't
 // exist or holds no parseable lines.
 //
-// The read+truncate pair is not atomic against a concurrent writer: a write
-// that lands between os.Open and os.Remove is lost. This is acceptable for
-// the conductor's expected drain cadence (seconds) but documented so callers
-// don't expect at-least-once semantics across producer/consumer races. When
-// strict atomicity matters, callers should externally serialize.
+// This is the LEGACY raw at-most-once path (exposed as `agent-deck inbox <id>`
+// for ad-hoc inspection). The read+remove pair IS atomic against concurrent
+// WriteInboxEvent/CommitToInbox — inboxWriteMu is held across Open→Remove, so a
+// producer cannot interleave a write between them. What it does NOT provide is
+// crash durability: a process death after the file is removed but before the
+// caller acts loses the records. For the guaranteed at-least-once-with-dedup
+// contract use DrainInboxForParent / DrainForStopHook (inbox_consumer.go), which
+// stage to an in-flight WAL before truncating.
 func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent, error) {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return nil, errors.New("inbox: empty parent session id")
@@ -397,7 +481,7 @@ func ReadAndTruncateInbox(parentSessionID string) ([]TransitionNotificationEvent
 
 	var out []TransitionNotificationEvent
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxInboxLineBytes)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {

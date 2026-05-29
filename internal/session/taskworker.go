@@ -288,7 +288,9 @@ func (n *TransitionNotifier) DeliverCompletion(rec CompletionRecord) bool {
 	if isConductorSessionTitle(event.ChildTitle) {
 		return false
 	}
-	committed, _ := n.commitEventToInbox(event)
+	// The replay path (ReplayUnackedCompletions) handles the not-committed case
+	// via the bounded dead-letter sink, so the terminal reason is discarded here.
+	committed, _, _ := n.commitEventToInbox(event)
 	return committed
 }
 

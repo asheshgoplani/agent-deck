@@ -80,6 +80,13 @@ type TransitionNotificationEvent struct {
 	// before the record is moved to the dead-letter store (issue #1225). Bounds
 	// the old dropped_no_target ~1/sec runaway to a terminal state.
 	Attempts int `json:"attempts,omitempty"`
+
+	// DeadLetterReason records WHY a record was terminally undeliverable (audit
+	// B5): orphan, child_removed, parent_removed (incl. cross-profile),
+	// no_notify, self_conductor, or unresolvable. Empty for delivered records.
+	// Flows to the dead-letter record and the operator-visible missed-log line so
+	// a misconfiguration is distinguishable from a benign suppression.
+	DeadLetterReason string `json:"dead_letter_reason,omitempty"`
 }
 
 // transitionKindFinished marks a TransitionNotificationEvent as a worker-
@@ -123,6 +130,13 @@ type TransitionNotifier struct {
 	missedMu   sync.Mutex
 	missedSeen map[string]bool
 
+	// terminalMu guards terminalSeen, the (child|reason) set for synchronous
+	// terminal drops (audit B5). Keyed per child+reason (not per event) so a
+	// chatty child whose parent was removed logs ONCE per reason, not once per
+	// transition — same anti-flood discipline as the orphan log.
+	terminalMu   sync.Mutex
+	terminalSeen map[string]bool
+
 	// outputHashDedupTTLOverride lets tests shrink the issue #1142
 	// output-hash dedup window without waiting hours of wall-clock time.
 	// Zero means "use defaultOutputHashDedupTTL". Production never sets
@@ -161,9 +175,40 @@ func NewTransitionNotifier() *TransitionNotifier {
 		},
 		orphanWarned: map[string]bool{},
 		missedSeen:   map[string]bool{},
+		terminalSeen: map[string]bool{},
 	}
 	n.loadState()
 	return n
+}
+
+// terminalDrop records a synchronously-determined terminal-undeliverable event
+// (audit B5/B9). Intentional suppressions (no_notify, self_conductor) are silent
+// and orphan is already logged once at resolve time, so those return early.
+// Every other reason (child_removed, parent_removed/cross-profile, unresolvable)
+// gets an operator-visible missed-log line AND a dead-letter record, deduped
+// once per (child|reason) so a chatty child can't flood. This is what makes a
+// dropped completion visible instead of silent.
+func (n *TransitionNotifier) terminalDrop(event TransitionNotificationEvent, reason string) {
+	switch reason {
+	case "", deadLetterReasonNoNotify, deadLetterReasonSelfConductor, deadLetterReasonOrphan:
+		return
+	}
+	key := strings.TrimSpace(event.ChildSessionID) + "|" + reason
+	n.terminalMu.Lock()
+	if n.terminalSeen == nil {
+		n.terminalSeen = map[string]bool{}
+	}
+	if n.terminalSeen[key] {
+		n.terminalMu.Unlock()
+		return
+	}
+	n.terminalSeen[key] = true
+	n.terminalMu.Unlock()
+
+	event.DeadLetterReason = reason
+	event.Attempts = MaxUnresolvedAttempts // terminal: not a transient retry
+	n.logMissed(event, reason)
+	_ = writeDeadLetter(event)
 }
 
 // Close is retained for API compatibility with callers that defer cleanup of a
@@ -247,7 +292,7 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 
 	// Issue #1225: commit the transition to the parent's durable outbox instead
 	// of gating delivery on the parent being idle.
-	committed, transient := n.commitEventToInbox(event)
+	committed, transient, reason := n.commitEventToInbox(event)
 	if committed {
 		n.markNotified(event)
 		event.DeliveryResult = transitionDeliveryCommitted
@@ -260,10 +305,12 @@ func (n *TransitionNotifier) NotifyTransition(event TransitionNotificationEvent)
 		event.DeliveryResult = transitionDeliveryFailed
 		return event
 	}
-	// Terminally undeliverable (orphan / removed child / self-conductor): dead-
-	// letter once instead of looping dropped_no_target every poll.
-	n.deadLetterSink().RecordUnresolvable(event)
+	// Terminally undeliverable: surface WHY (audit B5) — child_removed,
+	// parent_removed/cross-profile, etc. get an operator-visible log + dead-letter
+	// once; orphan/no_notify/self_conductor are handled silently/at resolve time.
+	n.terminalDrop(event, reason)
 	event.DeliveryResult = transitionDeliveryDropped
+	event.DeadLetterReason = reason
 	return event
 }
 
@@ -293,7 +340,7 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) T
 	}
 
 	// Issue #1225: commit the finished event to the parent's durable outbox.
-	committed, transient := n.commitEventToInbox(event)
+	committed, transient, reason := n.commitEventToInbox(event)
 	if committed {
 		event.DeliveryResult = transitionDeliveryCommitted
 		return event
@@ -302,8 +349,9 @@ func (n *TransitionNotifier) NotifyFinished(event TransitionNotificationEvent) T
 		event.DeliveryResult = transitionDeliveryFailed
 		return event
 	}
-	n.deadLetterSink().RecordUnresolvable(event)
+	n.terminalDrop(event, reason)
 	event.DeliveryResult = transitionDeliveryDropped
+	event.DeadLetterReason = reason
 	return event
 }
 
