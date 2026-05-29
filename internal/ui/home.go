@@ -32,6 +32,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
+	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/sysinfo"
@@ -7862,9 +7863,8 @@ func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 			return
 		}
 		tmuxName := ts.Name
-		socket := inst.TmuxSocketName
 		go func() {
-			if err := tmux.Exec(socket, "send-keys", "-t", tmuxName, msg, "Enter").Run(); err != nil {
+			if err := deliverToConductorPane(ts, msg); err != nil {
 				uiLog.Warn("dispatch_watcher_event_send_failed",
 					slog.String("tmux_session", tmuxName),
 					slog.String("error", err.Error()))
@@ -7872,6 +7872,101 @@ func (h *Home) dispatchWatcherEvent(evt watcher.Event) {
 		}()
 		return
 	}
+}
+
+// deliverToConductorPane sends msg into a conductor's tmux pane and verifies it
+// was actually submitted, then returns. A raw single
+// `send-keys <msg> Enter` races the inner agent's input handler: tmux 3.2+ wraps the
+// literal text in bracketed-paste markers (\e[200~…\e[201~) and the trailing
+// Enter lands in the same PTY buffer as the paste-end marker, so async TUIs
+// (Ink/Node.js, curses, ratatui) can swallow it — the message is typed into the composer but never sent. That
+// is exactly how routed messages get silently dropped once this native
+// send-keys path is the sole delivery route (no external bridge).
+//
+// Two layers, agent-agnostic where possible:
+//   - SendKeysAndEnter separates the literal text from a delayed Enter, which
+//     fixes the paste/Enter race for any bracketed-paste TUI.
+//   - A verify loop confirms submission. The tool-agnostic signal is the
+//     session status flipping to "active" (the status detector handles both
+//     claude and codex), proving the agent accepted the input and began work.
+//     For an introspectable composer (claude's prompt marker) it additionally
+//     re-presses Enter while the message is still shown unsent and treats a
+//     cleared composer as submitted; agents without composer introspection get
+//     a small bounded number of fallback Enters in case the delayed Enter was
+//     dropped.
+//
+// Best-effort: returns an error only when no submission signal is seen within
+// the budget, so the caller can log the drop instead of failing silently.
+// Intended to run inside a goroutine.
+func deliverToConductorPane(p conductorPane, msg string) error {
+	return deliverToConductorPaneTuned(p, msg, 40, 250*time.Millisecond)
+}
+
+// conductorPane is the slice of *tmux.Session that reliable delivery needs.
+// Declaring it as an interface keeps the verify-retry loop unit-testable with a
+// fake pane (mirrors the sendRetryTarget interface used by the CLI send path).
+type conductorPane interface {
+	SendKeysAndEnter(string) error
+	SendEnter() error
+	CapturePaneFresh() (string, error)
+	GetStatus() (string, error)
+}
+
+// blindEnterCap bounds the fallback Enter presses for agents whose composer is
+// not introspectable, so a message that was actually delivered (and the agent
+// has since gone idle) is not spammed with empty submissions.
+const blindEnterCap = 3
+
+// deliverToConductorPaneTuned is deliverToConductorPane with the verify budget
+// exposed for tests; production callers use the default budget (~10s).
+func deliverToConductorPaneTuned(p conductorPane, msg string, maxChecks int, checkDelay time.Duration) error {
+	if err := p.SendKeysAndEnter(msg); err != nil {
+		return err
+	}
+	sawUnsent := false
+	blindEnters := 0
+	for i := 0; i < maxChecks; i++ {
+		if checkDelay > 0 {
+			time.Sleep(checkDelay)
+		}
+
+		// Tool-agnostic success: the status detector recognizes claude and codex
+		// "active", so a transition to active proves the Enter was accepted and
+		// the agent began processing the message.
+		if status, err := p.GetStatus(); err == nil && status == "active" {
+			return nil
+		}
+
+		raw, err := p.CapturePaneFresh()
+		if err != nil {
+			continue
+		}
+		content := tmux.StripANSI(raw)
+
+		switch {
+		case send.HasUnsentComposerPrompt(content, msg):
+			// Introspectable composer still holds the message: the trailing
+			// Enter was swallowed, so re-press it. Surface a tmux rejection
+			// immediately rather than letting it masquerade as a timeout.
+			sawUnsent = true
+			if err := p.SendEnter(); err != nil {
+				return fmt.Errorf("retry enter: %w", err)
+			}
+		case sawUnsent || send.HasCurrentComposerPrompt(content):
+			// The composer previously held the message and is now clear, or a
+			// composer is rendered without our message: submitted.
+			return nil
+		case blindEnters < blindEnterCap:
+			// No composer introspection (e.g. codex/cursor) and not yet active.
+			// Re-press Enter a bounded number of times in case the delayed Enter
+			// was dropped, then defer to the status signal above.
+			blindEnters++
+			if err := p.SendEnter(); err != nil {
+				return fmt.Errorf("retry enter: %w", err)
+			}
+		}
+	}
+	return fmt.Errorf("watcher dispatch not confirmed submitted (status never active, composer still pending) after %s", time.Duration(maxChecks)*checkDelay)
 }
 
 // dispatchHealthAlert sends a health alert message to the conductor session associated
@@ -7912,9 +8007,12 @@ func (h *Home) dispatchHealthAlert(state watcher.HealthState) {
 			ts := inst.GetTmuxSession()
 			if ts != nil && ts.Name != "" {
 				tmuxName := ts.Name
-				socket := inst.TmuxSocketName
 				go func() {
-					_ = tmux.Exec(socket, "send-keys", "-t", tmuxName, alertMsg, "Enter").Run()
+					if err := deliverToConductorPane(ts, alertMsg); err != nil {
+						uiLog.Warn("dispatch_health_alert_send_failed",
+							slog.String("tmux_session", tmuxName),
+							slog.String("error", err.Error()))
+					}
 				}()
 			}
 			break
