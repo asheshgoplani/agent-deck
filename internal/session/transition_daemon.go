@@ -127,6 +127,25 @@ func (d *TransitionDaemon) ReplayUnackedCompletions(profile string) {
 		}
 		if d.notifier.DeliverCompletion(rec) {
 			_ = AckCompletion(rec.Profile, rec.ChildID)
+			continue
+		}
+		// Not committed: the parent is unresolvable (e.g. removed) or a
+		// transient error. Count it against the bounded dead-letter budget so
+		// an unresolvable completion is dead-lettered to a terminal state after
+		// MaxUnresolvedAttempts polls instead of replaying ~1/sec forever
+		// (issue #1225 — the dropped_no_target runaway). Acking after
+		// dead-letter is safe: the record is durably parked, not lost.
+		ev := TransitionNotificationEvent{
+			ChildSessionID: rec.ChildID,
+			ChildTitle:     rec.Title,
+			Profile:        rec.Profile,
+			Kind:           transitionKindFinished,
+			DoneStatus:     rec.Status,
+			DoneSummary:    rec.Summary,
+			Timestamp:      time.Now(),
+		}
+		if d.notifier.deadLetterSink().RecordUnresolvable(ev) {
+			_ = AckCompletion(rec.Profile, rec.ChildID)
 		}
 	}
 }
@@ -214,14 +233,6 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 			}
 		}
 	}
-
-	// Drain any transitions that were deferred in a prior poll because the
-	// target was StatusRunning. This runs before the initialized-guard so
-	// that each invocation (including `notify-daemon --once`) still retries
-	// persisted queue entries. Without this, deferred events are lost
-	// forever: the child's new status ends up in d.lastStatus below, so the
-	// next poll sees waiting→waiting (no transition) and never retries.
-	d.notifier.DrainRetryQueue(profile)
 
 	if !d.initialized[profile] {
 		// Cover fast transitions that completed before we observed a running snapshot.

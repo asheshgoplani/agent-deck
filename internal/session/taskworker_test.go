@@ -3,8 +3,6 @@ package session
 import (
 	"os"
 	"os/exec"
-	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,13 +93,6 @@ func TestTaskWorker_DeliverCompletion_WakesIdleParentExactlyOnce(t *testing.T) {
 
 	n := NewTransitionNotifier()
 	t.Cleanup(n.Close)
-	var sent atomic.Int32
-	var gotTarget, gotMsg string
-	n.sender = func(_ /*profile*/, targetID, message string) error {
-		sent.Add(1)
-		gotTarget, gotMsg = targetID, message
-		return nil
-	}
 
 	rec := CompletionRecord{
 		ChildID: childID,
@@ -110,17 +101,30 @@ func TestTaskWorker_DeliverCompletion_WakesIdleParentExactlyOnce(t *testing.T) {
 		Status:  "ok",
 		Summary: "feature shipped",
 	}
+	// Issue #1225: DeliverCompletion commits to the parent's durable outbox and
+	// returns true when the record durably landed (safe to ack).
 	if !n.DeliverCompletion(rec) {
-		t.Fatalf("DeliverCompletion returned not-delivered for a live parent")
+		t.Fatalf("DeliverCompletion returned not-committed for a live parent")
 	}
-	if got := sent.Load(); got != 1 {
-		t.Fatalf("idle parent woken %d times, want exactly 1", got)
+
+	inbox := readInboxLines(t, parentID)
+	if len(inbox) != 1 {
+		t.Fatalf("idle parent inbox has %d records, want exactly 1: %+v", len(inbox), inbox)
 	}
-	if gotTarget != parentID {
-		t.Errorf("woke %q, want parent %q", gotTarget, parentID)
+	if inbox[0].TargetSessionID != parentID {
+		t.Errorf("committed to %q, want parent %q", inbox[0].TargetSessionID, parentID)
 	}
-	if !strings.Contains(gotMsg, "[DONE]") || !strings.Contains(gotMsg, "status=ok") {
-		t.Errorf("wake message missing done outcome: %q", gotMsg)
+	if inbox[0].Kind != transitionKindFinished || inbox[0].DoneStatus != "ok" {
+		t.Errorf("record missing done outcome: kind=%q status=%q", inbox[0].Kind, inbox[0].DoneStatus)
+	}
+
+	// A second identical commit must NOT add a duplicate pending record
+	// (per-child last-wins keeps exactly one).
+	if !n.DeliverCompletion(rec) {
+		t.Fatalf("second DeliverCompletion returned not-committed")
+	}
+	if got := readInboxLines(t, parentID); len(got) != 1 {
+		t.Fatalf("last-wins: inbox has %d records after second commit, want 1", len(got))
 	}
 }
 
@@ -197,32 +201,32 @@ func TestTaskWorker_ReplayUnacked_DeliversOncePerChildAcrossRestart(t *testing.T
 	}
 
 	d := NewTransitionDaemon()
-	var sent atomic.Int32
-	d.notifier.sender = func(_, _, _ string) error { sent.Add(1); return nil }
 	t.Cleanup(d.notifier.Close)
 
-	// Parent still down: replay must NOT deliver (record stays unacked).
+	// Parent still down: replay must NOT commit (record stays unacked, nothing
+	// resolves to a parent inbox).
 	d.ReplayUnackedCompletions(profile)
 	d.notifier.Flush()
-	if got := sent.Load(); got != 0 {
-		t.Fatalf("parent down: woke %d times, want 0", got)
+	if got := readInboxLines(t, parentID); len(got) != 0 {
+		t.Fatalf("parent down: inbox has %d records, want 0", len(got))
 	}
 
 	// Conductor restarts (parent row resolvable again).
 	addParentRow(t, profile, parentID, childID)
 
-	// First replay after restart delivers exactly once.
+	// First replay after restart commits exactly once to the parent inbox.
 	d.ReplayUnackedCompletions(profile)
 	d.notifier.Flush()
-	if got := sent.Load(); got != 1 {
-		t.Fatalf("after restart: woke %d times, want exactly 1", got)
+	if got := readInboxLines(t, parentID); len(got) != 1 {
+		t.Fatalf("after restart: inbox has %d records, want exactly 1", len(got))
 	}
 
-	// Subsequent replays must NOT re-fire (record is acked).
+	// Subsequent replays must NOT re-commit (record is acked); last-wins also
+	// guarantees at most one pending record per child regardless.
 	d.ReplayUnackedCompletions(profile)
 	d.notifier.Flush()
-	if got := sent.Load(); got != 1 {
-		t.Fatalf("no-double-wake: woke %d times after re-replay, want 1", got)
+	if got := readInboxLines(t, parentID); len(got) != 1 {
+		t.Fatalf("no-double-wake: inbox has %d records after re-replay, want 1", len(got))
 	}
 }
 

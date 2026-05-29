@@ -40,7 +40,7 @@ func TestRm_SweepsConductorInboxes(t *testing.T) {
 			Timestamp:       time.Now().Add(time.Duration(idx) * time.Second),
 			TargetSessionID: conductors[idx%len(conductors)],
 			TargetKind:      "conductor",
-			DeliveryResult:  transitionDeliveryDeferred,
+			DeliveryResult:  "deferred_target_busy",
 		}
 	}
 

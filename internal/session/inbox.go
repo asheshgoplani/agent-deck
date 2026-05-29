@@ -35,9 +35,9 @@ var inboxWriteMu sync.Mutex // serializes appends to a single inbox file
 // the file on the first write per path within a process, so a fresh process
 // won't re-append events the previous process already wrote.
 //
-// Issue #824: scheduleBusyRetry's exhaustion path was firing repeatedly
-// for the same logical event, producing 13 duplicate JSONL lines for a
-// single transition. The cache + lazy file scan reduces those to one.
+// Issue #824: a single logical event was being persisted repeatedly,
+// producing 13 duplicate JSONL lines for one transition. The cache + lazy
+// file scan reduces those to one.
 var inboxFingerprintCache = map[string]map[string]struct{}{}
 
 // InboxDir returns the directory that holds per-parent inbox files.
@@ -71,9 +71,8 @@ func sanitizeInboxName(id string) string {
 //
 // Fingerprint dedup: events that share an EventFingerprint with one already
 // persisted in the file are silently skipped. This is the producer-side
-// guard for issue #824 (scheduleBusyRetry firing the same exhaustion path
-// for the same logical event multiple times). Consumers still get
-// at-most-once delivery via ReadAndTruncateInbox.
+// guard for issue #824 (the same logical event persisted multiple times).
+// Consumers still get at-most-once delivery via ReadAndTruncateInbox.
 func WriteInboxEvent(parentSessionID string, event TransitionNotificationEvent) error {
 	if strings.TrimSpace(parentSessionID) == "" {
 		return errors.New("inbox: empty parent session id")
@@ -172,11 +171,10 @@ func ResetInboxFingerprintCacheForTest() {
 
 // defaultInboxTTL is the age past which a persisted inbox entry is swept
 // by SweepInboxByTTL. Issue #962 variant (running-session): without a
-// TTL, deferred_target_busy entries for children that never see another
-// transition accumulate unboundedly. Seven days is the same horizon the
-// deferred-queue uses for "old enough to give up on" semantics, scaled
-// up from minutes to days because the inbox is the operator-facing
-// drain rather than the in-process retry path.
+// TTL, persisted entries for children that never see another transition
+// accumulate unboundedly. Seven days is a generous "old enough to give up
+// on" horizon, sized in days because the inbox is the operator-facing
+// drain that a conductor may not visit for a while.
 const defaultInboxTTL = 7 * 24 * time.Hour
 
 // InboxTTL returns the configured age past which persisted inbox events
@@ -235,9 +233,8 @@ func SweepInboxByTuple(parentSessionID, childSessionID, fromStatus, toStatus str
 // Issue #962 variant: defense-in-depth alongside SweepInboxByTuple. The
 // tuple sweep relies on a future successful transition for the same
 // (child, from, to) to clear stale entries. Children that complete and
-// never transition again would otherwise leave their last
-// deferred_target_busy entry in the inbox forever. The TTL puts a hard
-// ceiling on inbox growth.
+// never transition again would otherwise leave their last persisted
+// entry in the inbox forever. The TTL puts a hard ceiling on inbox growth.
 func SweepInboxByTTL(maxAge time.Duration) (int, error) {
 	if maxAge <= 0 {
 		return 0, errors.New("inbox TTL sweep: non-positive maxAge")

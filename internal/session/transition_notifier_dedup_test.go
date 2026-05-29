@@ -5,19 +5,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // Bug 1 / Layer 1 — fingerprint dedup.
 //
-// Issue #824 reproduced: scheduleBusyRetry's exhaustion path called
-// WriteInboxEvent and logMissed for the same logical event repeatedly,
-// producing 13 duplicate inbox JSONL lines and 7 duplicate notifier-missed
-// entries within a few seconds. The fix fingerprints by
-// sha256(child_id|from|to|timestamp.UnixNano()) and skips the write when
-// the same fingerprint has already been persisted.
+// Issue #824 reproduced: the same logical event was persisted via
+// WriteInboxEvent and logMissed repeatedly, producing 13 duplicate inbox JSONL
+// lines and 7 duplicate notifier-missed entries within a few seconds. The fix
+// fingerprints by sha256(child_id|from|to|timestamp.UnixNano()) and skips the
+// write when the same fingerprint has already been persisted.
 
 // TestDedup_InboxSameFingerprintOnce calls WriteInboxEvent twice with the
 // same event (identical child, from, to, timestamp). The inbox must contain
@@ -129,23 +127,19 @@ func TestDedup_InboxFingerprintSurvivesProcessRestart(t *testing.T) {
 	}
 }
 
-// TestDedup_MissedLogSameFingerprintOnce: an exhausted-busy event that fires
-// scheduleBusyRetry repeatedly (because deferred queue keeps reattempting)
-// must produce exactly one notifier-missed.log line per (fingerprint, reason)
-// pair, not seven.
+// TestDedup_MissedLogSameFingerprintOnce: the same logical event logged to
+// notifier-missed.log repeatedly must produce exactly one line per
+// (fingerprint, reason) pair, not seven.
 func TestDedup_MissedLogSameFingerprintOnce(t *testing.T) {
 	dir := t.TempDir()
 	n := &TransitionNotifier{
-		statePath:   filepath.Join(dir, "state.json"),
-		logPath:     filepath.Join(dir, "transition-notifier.log"),
-		missedPath:  filepath.Join(dir, "notifier-missed.log"),
-		queuePath:   filepath.Join(dir, "queue.json"),
-		orphanPath:  filepath.Join(dir, "notifier-orphans.log"),
-		sendTimeout: 200 * time.Millisecond,
+		statePath:  filepath.Join(dir, "state.json"),
+		logPath:    filepath.Join(dir, "transition-notifier.log"),
+		missedPath: filepath.Join(dir, "notifier-missed.log"),
+		orphanPath: filepath.Join(dir, "notifier-orphans.log"),
 		state: transitionNotifyState{
 			Records: map[string]transitionNotifyRecord{},
 		},
-		targetSlots: map[string]chan struct{}{},
 	}
 
 	ts := time.Unix(1700000200, 0).UTC()
@@ -198,16 +192,15 @@ func countNonBlankLines(s string) int {
 
 // Bug 2 / Layer 2 — top-level conductor self-suppress.
 //
-// PR #807's check at the prepareDispatch level only catches the case where
-// the loaded child's parent_session_id equals its own id. The real top-level
+// PR #807's parent-resolution check only catches the case where the loaded
+// child's parent_session_id equals its own id. The real top-level
 // case in production is `parent_session_id = ""` AND the loaded Instance's
 // title starts with `conductor-`. That child must self-suppress without an
 // orphan WARN, since it isn't an orphan — it's the root.
 
 // TestSelfSuppress_TopLevelConductorWithEmptyParent: a real top-level
 // conductor (empty parent, conductor- prefix on the loaded instance title)
-// must drop without writing to notifier-orphans.log AND without invoking the
-// sender.
+// must drop without writing to notifier-orphans.log.
 func TestSelfSuppress_TopLevelConductorWithEmptyParent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -242,11 +235,6 @@ func TestSelfSuppress_TopLevelConductorWithEmptyParent(t *testing.T) {
 	}
 
 	n := NewTransitionNotifier()
-	var sent atomic.Int32
-	n.sender = func(profile, targetID, message string) error {
-		sent.Add(1)
-		return nil
-	}
 
 	// Critically: ChildTitle on the event is intentionally EMPTY here, so the
 	// outer line-211 title-prefix check is bypassed. The fix must still
@@ -264,9 +252,6 @@ func TestSelfSuppress_TopLevelConductorWithEmptyParent(t *testing.T) {
 
 	if result.DeliveryResult != transitionDeliveryDropped {
 		t.Fatalf("top-level conductor (empty parent) must self-suppress with dropped, got %q", result.DeliveryResult)
-	}
-	if got := sent.Load(); got != 0 {
-		t.Fatalf("self-suppress must not invoke sender, got %d sends", got)
 	}
 
 	// The crucial regression: orphan log must NOT be written. A top-level
@@ -317,11 +302,6 @@ func TestSelfSuppress_TopLevelConductorWithParentMatchingSelf(t *testing.T) {
 	}
 
 	n := NewTransitionNotifier()
-	var sent atomic.Int32
-	n.sender = func(profile, targetID, message string) error {
-		sent.Add(1)
-		return nil
-	}
 
 	ev := TransitionNotificationEvent{
 		ChildSessionID: conductor.ID,
@@ -337,236 +317,8 @@ func TestSelfSuppress_TopLevelConductorWithParentMatchingSelf(t *testing.T) {
 	if result.DeliveryResult != transitionDeliveryDropped {
 		t.Fatalf("self-pointing conductor must drop, got %q", result.DeliveryResult)
 	}
-	if got := sent.Load(); got != 0 {
-		t.Fatalf("self-pointing conductor must not invoke sender, got %d sends", got)
-	}
 	orphanData, err := os.ReadFile(transitionNotifierOrphanLogPath())
 	if err == nil && strings.Contains(string(orphanData), conductor.ID) {
 		t.Fatalf("self-pointing conductor must NOT be logged as orphan, got: %s", orphanData)
-	}
-}
-
-// Bug 3 / Layer 3 — terminal state for exhausted events.
-//
-// Once an event has been persisted to the inbox (via scheduleBusyRetry's
-// exhaustion path), its fingerprint is "terminated": it must be removed from
-// the deferred queue, and any subsequent EnqueueDeferred for the same
-// fingerprint must be refused. Otherwise the queue drains the same logical
-// event indefinitely, producing the 7-times-in-16-seconds re-fire loop in
-// the production trace.
-
-// TestQueue_ExhaustedEventRemovedFromDeferredQueue: enqueue an event, run
-// scheduleBusyRetry to exhaustion, then assert the deferred queue no longer
-// contains it.
-func TestQueue_ExhaustedEventRemovedFromDeferredQueue(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("AGENT_DECK_HOME", "")
-	t.Setenv("AGENT_DECK_PROFILE", "")
-	ClearUserConfigCache()
-	t.Cleanup(func() {
-		ClearUserConfigCache()
-		ResetInboxFingerprintCacheForTest()
-	})
-	ResetInboxFingerprintCacheForTest()
-
-	dir := t.TempDir()
-	n := &TransitionNotifier{
-		statePath:   filepath.Join(dir, "state.json"),
-		logPath:     filepath.Join(dir, "transition-notifier.log"),
-		missedPath:  filepath.Join(dir, "notifier-missed.log"),
-		queuePath:   filepath.Join(dir, "queue.json"),
-		orphanPath:  filepath.Join(dir, "notifier-orphans.log"),
-		sendTimeout: 200 * time.Millisecond,
-		state: transitionNotifyState{
-			Records: map[string]transitionNotifyRecord{},
-		},
-		targetSlots: map[string]chan struct{}{},
-		busyBackoff: []time.Duration{2 * time.Millisecond, 4 * time.Millisecond, 6 * time.Millisecond},
-	}
-	n.availability = func(profile, targetID string) bool { return false } // always busy
-	n.sender = func(profile, targetID, message string) error { return nil }
-
-	ts := time.Unix(1700000300, 0).UTC()
-	ev := TransitionNotificationEvent{
-		ChildSessionID:  "child-exhausts",
-		ChildTitle:      "worker",
-		Profile:         "_test",
-		FromStatus:      "running",
-		ToStatus:        "waiting",
-		Timestamp:       ts,
-		TargetSessionID: "parent-exhausts",
-		TargetKind:      "parent",
-	}
-
-	n.EnqueueDeferred(ev)
-	if got := len(n.snapshotQueueForTest()); got != 1 {
-		t.Fatalf("queue precondition: expected 1 entry pre-exhaust, got %d", got)
-	}
-
-	n.scheduleBusyRetry(ev)
-	n.Flush()
-
-	if got := len(n.snapshotQueueForTest()); got != 0 {
-		t.Fatalf("exhausted event must be removed from deferred queue, got %d entries", got)
-	}
-}
-
-// TestQueue_SuccessfulRetryMarksTerminated: v1.7.75 follow-up to #825.
-//
-// The exhaustion path of scheduleBusyRetry calls markTerminated. The success
-// path historically did not — so when 5 daemon polls during a busy window
-// spawned 5 parallel scheduleBusyRetry goroutines (NotifyTransition's deferred
-// branch skips markNotified, so isDuplicate doesn't gate them), all 5 raced
-// to deliver once the parent freed up and the user got the [EVENT] line 5
-// times. Concrete production trace: child 384aa29c-1777532624 with 5 deferred
-// + 5 sent records at the same wall-clock timestamp.
-//
-// The fix: success path also marks terminated, so the daemon's next poll
-// can't re-enqueue the same fingerprint via EnqueueDeferred.
-func TestQueue_SuccessfulRetryMarksTerminated(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("AGENT_DECK_HOME", "")
-	t.Setenv("AGENT_DECK_PROFILE", "")
-	ClearUserConfigCache()
-	t.Cleanup(func() {
-		ClearUserConfigCache()
-		ResetInboxFingerprintCacheForTest()
-	})
-	ResetInboxFingerprintCacheForTest()
-
-	dir := t.TempDir()
-	n := &TransitionNotifier{
-		statePath:   filepath.Join(dir, "state.json"),
-		logPath:     filepath.Join(dir, "transition-notifier.log"),
-		missedPath:  filepath.Join(dir, "notifier-missed.log"),
-		queuePath:   filepath.Join(dir, "queue.json"),
-		orphanPath:  filepath.Join(dir, "notifier-orphans.log"),
-		sendTimeout: 200 * time.Millisecond,
-		state: transitionNotifyState{
-			Records: map[string]transitionNotifyRecord{},
-		},
-		targetSlots: map[string]chan struct{}{},
-		busyBackoff: []time.Duration{2 * time.Millisecond, 4 * time.Millisecond, 6 * time.Millisecond},
-	}
-	// Parent is busy on the first availability check, free thereafter. This
-	// reproduces the production scenario where the parent is busy at dispatch
-	// time and frees up before the backoff schedule exhausts.
-	var availChecks atomic.Int32
-	n.availability = func(profile, targetID string) bool {
-		return availChecks.Add(1) > 1
-	}
-	var sendCount atomic.Int32
-	n.sender = func(profile, targetID, message string) error {
-		sendCount.Add(1)
-		return nil
-	}
-
-	ts := time.Unix(1700000500, 0).UTC()
-	ev := TransitionNotificationEvent{
-		ChildSessionID:  "child-success-terminate",
-		ChildTitle:      "worker",
-		Profile:         "_test",
-		FromStatus:      "running",
-		ToStatus:        "waiting",
-		Timestamp:       ts,
-		TargetSessionID: "parent-success-terminate",
-		TargetKind:      "parent",
-	}
-
-	// Mirror the production sequence: deferred path enqueues the event AND
-	// kicks off the in-process retry goroutine.
-	n.EnqueueDeferred(ev)
-	if got := len(n.snapshotQueueForTest()); got != 1 {
-		t.Fatalf("precondition: expected 1 entry pre-retry, got %d", got)
-	}
-
-	n.scheduleBusyRetry(ev)
-	n.Flush()
-
-	if got := sendCount.Load(); got != 1 {
-		t.Fatalf("expected exactly 1 successful send, got %d", got)
-	}
-
-	if got := len(n.snapshotQueueForTest()); got != 0 {
-		t.Fatalf("queue must be empty after successful retry, got %d entries", got)
-	}
-
-	if !n.isTerminated(ev) {
-		t.Fatalf("fingerprint must be in terminated set after successful retry; this is the v1.7.75 follow-up to #825")
-	}
-
-	// The daemon's next poll re-discovers the same waiting child and calls
-	// EnqueueDeferred. Without the success-path markTerminated, this re-adds
-	// the entry and a 2nd scheduleBusyRetry goroutine fires another [EVENT]
-	// to the parent's pane.
-	n.EnqueueDeferred(ev)
-	if got := len(n.snapshotQueueForTest()); got != 0 {
-		t.Fatalf("2nd retry attempt must not re-fire: terminated fingerprint must block re-add, got %d entries", got)
-	}
-}
-
-// TestQueue_TerminatedFingerprintBlocksReAdd: after an event has exhausted
-// retries and persisted to the inbox, a subsequent EnqueueDeferred for the
-// same fingerprint must be a no-op. Without this guard the daemon's poll
-// loop will keep re-pushing exhausted events into the queue, producing the
-// re-fire spam observed in production.
-func TestQueue_TerminatedFingerprintBlocksReAdd(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("AGENT_DECK_HOME", "")
-	t.Setenv("AGENT_DECK_PROFILE", "")
-	ClearUserConfigCache()
-	t.Cleanup(func() {
-		ClearUserConfigCache()
-		ResetInboxFingerprintCacheForTest()
-	})
-	ResetInboxFingerprintCacheForTest()
-
-	dir := t.TempDir()
-	n := &TransitionNotifier{
-		statePath:   filepath.Join(dir, "state.json"),
-		logPath:     filepath.Join(dir, "transition-notifier.log"),
-		missedPath:  filepath.Join(dir, "notifier-missed.log"),
-		queuePath:   filepath.Join(dir, "queue.json"),
-		orphanPath:  filepath.Join(dir, "notifier-orphans.log"),
-		sendTimeout: 200 * time.Millisecond,
-		state: transitionNotifyState{
-			Records: map[string]transitionNotifyRecord{},
-		},
-		targetSlots: map[string]chan struct{}{},
-		busyBackoff: []time.Duration{2 * time.Millisecond, 4 * time.Millisecond, 6 * time.Millisecond},
-	}
-	n.availability = func(profile, targetID string) bool { return false }
-	n.sender = func(profile, targetID, message string) error { return nil }
-
-	ts := time.Unix(1700000400, 0).UTC()
-	ev := TransitionNotificationEvent{
-		ChildSessionID:  "child-terminated",
-		ChildTitle:      "worker",
-		Profile:         "_test",
-		FromStatus:      "running",
-		ToStatus:        "waiting",
-		Timestamp:       ts,
-		TargetSessionID: "parent-terminated",
-		TargetKind:      "parent",
-	}
-
-	n.scheduleBusyRetry(ev)
-	n.Flush()
-
-	// Sanity: queue is empty post-exhaust.
-	if got := len(n.snapshotQueueForTest()); got != 0 {
-		t.Fatalf("post-exhaust queue must be empty, got %d", got)
-	}
-
-	// The bug: the daemon's next poll re-discovers the same transition and
-	// calls EnqueueDeferred. Without a terminated set this re-adds the entry,
-	// re-fires retries, and re-persists to inbox.
-	n.EnqueueDeferred(ev)
-
-	if got := len(n.snapshotQueueForTest()); got != 0 {
-		t.Fatalf("terminated fingerprint must block re-add to deferred queue, got %d entries", got)
 	}
 }

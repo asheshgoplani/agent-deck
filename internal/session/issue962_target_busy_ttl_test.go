@@ -18,83 +18,6 @@ import (
 // entries spanning 4 days (7 unique children) growing unbounded on every
 // busy day.
 
-// TestTransitionNotifier_TargetBusyEntries_CleanedOnSuccess_RegressionFor962Variant
-// asserts: an inbox entry persisted for (child, from, to) is removed
-// when a later successful delivery covers the same tuple. The hook is
-// SweepInboxByTuple, invoked from the success paths in the notifier.
-func TestTransitionNotifier_TargetBusyEntries_CleanedOnSuccess_RegressionFor962Variant(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("AGENT_DECK_HOME", "")
-	t.Setenv("AGENT_DECK_PROFILE", "")
-	ClearUserConfigCache()
-	ResetInboxFingerprintCacheForTest()
-	t.Cleanup(func() {
-		ClearUserConfigCache()
-		ResetInboxFingerprintCacheForTest()
-	})
-
-	parent := "parent-962-variant-success"
-	// Simulate the exhausted-busy-retries history: an earlier transition
-	// of the same (child, from, to) already landed in the inbox.
-	earlier := TransitionNotificationEvent{
-		ChildSessionID:  "pepper",
-		ChildTitle:      "pepper",
-		Profile:         "_test",
-		FromStatus:      "running",
-		ToStatus:        "waiting",
-		Timestamp:       time.Now().Add(-2 * time.Hour),
-		TargetSessionID: parent,
-		TargetKind:      "parent",
-		DeliveryResult:  transitionDeliveryDeferred,
-	}
-	if err := WriteInboxEvent(parent, earlier); err != nil {
-		t.Fatalf("WriteInboxEvent earlier: %v", err)
-	}
-
-	// An unrelated entry must survive the tuple-targeted sweep.
-	other := earlier
-	other.ChildSessionID = "garlic"
-	other.Timestamp = time.Now().Add(-1 * time.Hour)
-	if err := WriteInboxEvent(parent, other); err != nil {
-		t.Fatalf("WriteInboxEvent other: %v", err)
-	}
-
-	// A new live transition for the same (child=pepper, running→waiting)
-	// successfully reaches the now-idle target. The notifier must sweep
-	// the inbox for entries matching this tuple as part of the success
-	// path.
-	n := newInboxTestNotifier(t, home)
-	n.busyBackoff = []time.Duration{5 * time.Millisecond}
-	n.availability = func(profile, targetID string) bool { return true }
-	n.sender = func(profile, targetID, message string) error { return nil }
-
-	live := earlier
-	live.Timestamp = time.Now() // fresh fingerprint, not "terminated"
-	n.scheduleBusyRetry(live)
-	n.Flush()
-
-	remaining, err := ReadAndTruncateInbox(parent)
-	if err != nil {
-		t.Fatalf("ReadAndTruncateInbox: %v", err)
-	}
-	for _, ev := range remaining {
-		if ev.ChildSessionID == "pepper" && ev.FromStatus == "running" && ev.ToStatus == "waiting" {
-			t.Fatalf("expected inbox entry for (pepper, running, waiting) removed after successful redelivery; still present: %+v", ev)
-		}
-	}
-	// The unrelated (garlic) entry must survive.
-	var survived bool
-	for _, ev := range remaining {
-		if ev.ChildSessionID == "garlic" {
-			survived = true
-			break
-		}
-	}
-	if !survived {
-		t.Fatalf("tuple sweep must not drop unrelated inbox entries; got %d entries: %+v", len(remaining), remaining)
-	}
-}
 
 // TestTransitionNotifier_TargetBusyEntries_TTLEnforced_RegressionFor962Variant
 // asserts: inbox entries persisted longer ago than the configured TTL
@@ -126,7 +49,7 @@ func TestTransitionNotifier_TargetBusyEntries_TTLEnforced_RegressionFor962Varian
 		Timestamp:       time.Now().Add(-10 * 24 * time.Hour),
 		TargetSessionID: parent,
 		TargetKind:      "parent",
-		DeliveryResult:  transitionDeliveryDeferred,
+		DeliveryResult:  "deferred_target_busy",
 	}
 	if err := WriteInboxEvent(parent, stale); err != nil {
 		t.Fatalf("WriteInboxEvent stale: %v", err)
@@ -185,7 +108,7 @@ func TestTransitionNotifier_SweepInboxByTuple_DropsMatching(t *testing.T) {
 			Timestamp:       time.Now().Add(-ago),
 			TargetSessionID: parent,
 			TargetKind:      "parent",
-			DeliveryResult:  transitionDeliveryDeferred,
+			DeliveryResult:  "deferred_target_busy",
 		}
 	}
 	rows := []TransitionNotificationEvent{
@@ -260,7 +183,7 @@ func TestTransitionNotifier_SweepInboxByTTL_EnvVarOverride(t *testing.T) {
 		ToStatus:        "waiting",
 		Timestamp:       time.Now().Add(-2 * time.Hour),
 		TargetSessionID: parent,
-		DeliveryResult:  transitionDeliveryDeferred,
+		DeliveryResult:  "deferred_target_busy",
 	}
 	if err := WriteInboxEvent(parent, old); err != nil {
 		t.Fatalf("WriteInboxEvent: %v", err)

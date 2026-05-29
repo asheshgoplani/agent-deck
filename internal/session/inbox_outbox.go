@@ -251,6 +251,79 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 	return err
 }
 
+// --- unified producer commit (shared by interactive + one-shot) -------------
+
+// resolveParentIDForInbox loads the registry and applies the
+// suppression/orphan/conductor guards, returning the resolved parent id to
+// commit to. transient is true on a storage error (the
+// caller should retry later rather than dead-letter). An empty parentID with
+// transient=false means the event is terminally undeliverable (orphan, removed
+// child, self-pointing conductor, no-notify) and should be dead-lettered.
+func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parentID string, transient bool) {
+	storage, err := NewStorageWithProfile(event.Profile)
+	if err != nil {
+		return "", true
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		return "", true
+	}
+	byID := make(map[string]*Instance, len(instances))
+	for _, inst := range instances {
+		byID[inst.ID] = inst
+	}
+
+	child := byID[event.ChildSessionID]
+	if child == nil || child.NoTransitionNotify {
+		return "", false
+	}
+	// Top-level conductor self-suppress (issue #824 cause B): the root is not
+	// an orphan, drop silently.
+	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
+		return "", false
+	}
+	// Orphan-on-creation guard (issue #805 cause A): log one WARN per orphan.
+	if strings.TrimSpace(child.ParentSessionID) == "" {
+		n.logOrphanOnce(event, child.ID)
+		return "", false
+	}
+	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
+		return "", false
+	}
+	parent := resolveParentNotificationTarget(child, byID)
+	if parent == nil {
+		return "", false
+	}
+	return parent.ID, false
+}
+
+// commitEventToInbox is the unified producer entry point: it resolves the
+// parent and commits the event to the durable per-parent outbox (last-wins).
+// Returns committed=true when the record durably landed; transient=true when a
+// retryable error (storage/fs) occurred. committed=false, transient=false means
+// terminally undeliverable — the caller dead-letters.
+func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEvent) (committed bool, transient bool) {
+	parentID, t := n.resolveParentIDForInbox(event)
+	if t {
+		return false, true
+	}
+	if parentID == "" {
+		return false, false
+	}
+	event.TargetSessionID = parentID
+	event.TargetKind = "parent"
+	event.DeliveryResult = transitionDeliveryCommitted
+	if event.TurnFingerprint == "" {
+		event.TurnFingerprint = TurnFingerprint(event)
+	}
+	if err := CommitToInbox(parentID, event); err != nil {
+		return false, true
+	}
+	n.logEvent(event)
+	return true, false
+}
+
 // ReadDeadLetter returns the dead-lettered records for a child (empty if none).
 func ReadDeadLetter(childSessionID string) ([]TransitionNotificationEvent, error) {
 	path := DeadLetterPathFor(childSessionID)

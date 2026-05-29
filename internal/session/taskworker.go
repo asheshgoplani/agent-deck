@@ -259,33 +259,28 @@ func RunTaskWorker(childID, profile, title string, cmd *exec.Cmd) (CompletionRec
 // the retry queue/inbox for a busy parent). A dropped/failed result — e.g. the
 // parent (conductor) is down or unresolvable — returns false so the durable
 // record stays unacked for replay. Pending (unfinished) records are ignored.
+// DeliverCompletion commits a finished one-shot worker's completion to the
+// parent's durable per-parent outbox (issue #1225). It returns true ONLY when
+// the record durably landed in the inbox — i.e. it is safe to ack the durable
+// completion record. It returns false when the parent was unresolvable or a
+// transient error occurred, so the completion record stays unacked and the
+// daemon's replay re-attempts it (and dead-letters after a bounded budget).
+//
+// This removes the old ack-on-defer bug (taskworker.go:301): a record is no
+// longer acked when it merely reached a volatile in-process retry queue; it is
+// acked only once provably committed to the durable inbox.
 func (n *TransitionNotifier) DeliverCompletion(rec CompletionRecord) bool {
 	if strings.TrimSpace(rec.Status) == "" {
 		return false // still running; nothing to deliver
 	}
-	return n.deliverFinishedSync(TransitionNotificationEvent{
-		ChildSessionID: rec.ChildID,
-		ChildTitle:     rec.Title,
-		Profile:        rec.Profile,
-		DoneStatus:     rec.Status,
-		DoneSummary:    rec.Summary,
+	event := TransitionNotificationEvent{
+		ChildSessionID: strings.TrimSpace(rec.ChildID),
+		ChildTitle:     strings.TrimSpace(rec.Title),
+		Profile:        strings.TrimSpace(rec.Profile),
+		Kind:           transitionKindFinished,
+		DoneStatus:     strings.ToLower(strings.TrimSpace(rec.Status)),
+		DoneSummary:    strings.TrimSpace(rec.Summary),
 		Timestamp:      time.Now(),
-	})
-}
-
-// deliverFinishedSync is the synchronous sibling of NotifyFinished. The wrapper
-// is a short-lived process about to exit, so it cannot rely on the async send
-// goroutine; this resolves the parent and sends inline, reusing prepareDispatch
-// for parent resolution, conductor/orphan suppression, and the busy-defer queue.
-func (n *TransitionNotifier) deliverFinishedSync(event TransitionNotificationEvent) bool {
-	event.Kind = transitionKindFinished
-	event.Profile = strings.TrimSpace(event.Profile)
-	event.ChildTitle = strings.TrimSpace(event.ChildTitle)
-	event.ChildSessionID = strings.TrimSpace(event.ChildSessionID)
-	event.DoneStatus = strings.ToLower(strings.TrimSpace(event.DoneStatus))
-	event.DoneSummary = strings.TrimSpace(event.DoneSummary)
-	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now()
 	}
 	if event.ChildSessionID == "" || event.Profile == "" {
 		return false
@@ -293,27 +288,8 @@ func (n *TransitionNotifier) deliverFinishedSync(event TransitionNotificationEve
 	if isConductorSessionTitle(event.ChildTitle) {
 		return false
 	}
-
-	plan := n.prepareDispatch(event)
-	if plan.finalized {
-		n.logEvent(plan.event)
-		// Busy parent: enqueued to the retry queue/inbox -> accepted.
-		return plan.event.DeliveryResult == transitionDeliveryDeferred
-	}
-
-	send := n.sender
-	if send == nil {
-		send = SendSessionMessageReliable
-	}
-	e := plan.event
-	if err := send(event.Profile, plan.event.TargetSessionID, plan.message); err != nil {
-		e.DeliveryResult = transitionDeliveryFailed
-		n.logEvent(e)
-		return false
-	}
-	e.DeliveryResult = transitionDeliverySent
-	n.logEvent(e)
-	return true
+	committed, _ := n.commitEventToInbox(event)
+	return committed
 }
 
 // ShouldRecycleForVersion reports whether a long-lived daemon should exit so

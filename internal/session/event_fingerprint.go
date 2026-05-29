@@ -14,11 +14,11 @@ import (
 // fingerprint and are deduplicated by the inbox writer and the
 // notifier-missed log.
 //
-// Keying on Timestamp.UnixNano() is load-bearing: scheduleBusyRetry and the
-// deferred-queue drain both fire from the same TransitionNotificationEvent,
-// so the timestamp set by the daemon when it first observed the flip is
-// stable across retry attempts. time.Now() at write-emit time would NOT be
-// stable and would silently break dedup.
+// Keying on Timestamp.UnixNano() is load-bearing: the daemon stamps the event
+// once when it first observes the flip and that same TransitionNotificationEvent
+// is reused for the producer commit, so the timestamp is stable across
+// re-observations. time.Now() at write-emit time would NOT be stable and would
+// silently break dedup.
 //
 // The fingerprint is a hex SHA-256 so it can safely be embedded in a JSON
 // string field without escaping concerns and is cheap to grep for.

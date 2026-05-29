@@ -33,8 +33,8 @@ import (
 // Each rewrite is atomic (temp file + rename). A no-op for absent files,
 // empty inboxes, or inboxes that contain no matching lines.
 //
-// Issue #910 — without this sweep, the conductor replays
-// deferred_target_busy events for children that have been removed.
+// Issue #910 — without this sweep, the conductor replays persisted inbox
+// events for children that have been removed.
 func SweepInboxesForChildSession(childSessionID string) (int, error) {
 	if strings.TrimSpace(childSessionID) == "" {
 		return 0, errors.New("inbox sweep: empty child session id")
@@ -49,6 +49,25 @@ func SweepInboxesForChildSession(childSessionID string) (int, error) {
 		return 0, err
 	}
 
+	totalDropped, err := sweepInboxFilesForChild(dir, entries, childSessionID)
+	if err != nil {
+		return totalDropped, err
+	}
+
+	// Issue #1225: sweep the rest of the child's outbox footprint so a reused id
+	// can't inherit stale state and per-parent ledgers don't leak. Best-effort —
+	// these never fail the rm.
+	_ = os.Remove(DeadLetterPathFor(childSessionID)) // dead-lettered records
+	ForgetConsumedTurnsForChild(childSessionID)       // consumed-turn ledgers
+	ResetStopBlockBudget(childSessionID)              // Stop-hook block budget (if it was a parent)
+
+	return totalDropped, nil
+}
+
+// sweepInboxFilesForChild rewrites every inbox file dropping the child's lines,
+// holding inboxWriteMu for the duration. Split out so the broader outbox-artifact
+// cleanup in SweepInboxesForChildSession runs without the inbox lock held.
+func sweepInboxFilesForChild(dir string, entries []os.DirEntry, childSessionID string) (int, error) {
 	inboxWriteMu.Lock()
 	defer inboxWriteMu.Unlock()
 
