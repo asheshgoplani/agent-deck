@@ -50,3 +50,14 @@ func TestFormatWatcherDispatchMsg_FallsBackToSubject(t *testing.T) {
 		t.Errorf("fallback: want %q, got %q", want, msg)
 	}
 }
+
+// TestFormatWatcherDispatchMsg_RemoteSessionNotApplicable documents, per the
+// internal/ui RemoteSession guideline, why this TUI change needs no
+// RemoteSession-specific coverage.
+func TestFormatWatcherDispatchMsg_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: dispatchWatcherEvent delivers to the conductor's " +
+		"tmux pane via send-keys independent of the viewer's local/remote session; " +
+		"formatWatcherDispatchMsg is a pure event->string fn. No RemoteSession-specific " +
+		"formatting exists to cover (mirrors dispatchHealthAlert). Covered by " +
+		"TestFormatWatcherDispatchMsg_UsesFullBody / _FallsBackToSubject.")
+}
