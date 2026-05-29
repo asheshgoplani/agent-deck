@@ -3152,6 +3152,12 @@ func (i *Instance) sendMessageWhenReady(message string) error {
 				return fmt.Errorf("failed to send message: %w", err)
 			}
 
+			// Codex exposes no "active"/composer markers, so the verify loop
+			// below false-negatives and Enter-spams it; skip it for codex (#1205).
+			if IsCodexCompatible(i.Tool) {
+				return nil
+			}
+
 			// Verify the agent accepted Enter and began processing.
 			// Strategy:
 			// - If unsent prompt is visible, press Enter again immediately.

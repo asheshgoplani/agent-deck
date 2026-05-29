@@ -2016,7 +2016,7 @@ func handleSessionSend(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		if err := sendWithRetry(tmuxSess, message, false); err != nil {
+		if err := sendWithRetry(tmuxSess, message, session.IsCodexCompatible(inst.Tool)); err != nil {
 			out.Error(fmt.Sprintf("failed to send message: %v", err), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -2232,7 +2232,7 @@ func sendNoWait(target sendRetryTarget, tool, message string) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
-	return sendWithRetryTarget(target, message, false, noWaitSendOptions())
+	return sendWithRetryTarget(target, message, session.IsCodexCompatible(tool), noWaitSendOptions())
 }
 
 type sendRetryTarget interface {
