@@ -10,6 +10,35 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func TestDisplaySettings_GetIncludeCwdPrefix(t *testing.T) {
+	var d DisplaySettings
+	if !d.GetIncludeCwdPrefix() {
+		t.Fatal("default GetIncludeCwdPrefix() = false, want true (preserve historical prefix)")
+	}
+
+	f := false
+	d.IncludeCwdPrefix = &f
+	if d.GetIncludeCwdPrefix() {
+		t.Fatal("GetIncludeCwdPrefix() with explicit false = true, want false")
+	}
+
+	tr := true
+	d.IncludeCwdPrefix = &tr
+	if !d.GetIncludeCwdPrefix() {
+		t.Fatal("GetIncludeCwdPrefix() with explicit true = false, want true")
+	}
+}
+
+func TestDisplaySettings_IncludeCwdPrefix_TOML(t *testing.T) {
+	var cfg UserConfig
+	if _, err := toml.Decode("[display]\ninclude_cwd_prefix = false\n", &cfg); err != nil {
+		t.Fatalf("toml decode: %v", err)
+	}
+	if cfg.Display.GetIncludeCwdPrefix() {
+		t.Fatal("include_cwd_prefix=false in TOML did not disable the prefix")
+	}
+}
+
 func TestGetCodexCommand_DefaultAndConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")

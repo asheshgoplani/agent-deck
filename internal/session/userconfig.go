@@ -1792,6 +1792,12 @@ type DisplaySettings struct {
 	// Valid statuses: "running", "waiting", "idle", "error", "starting",
 	// "stopped".
 	ActiveFilterExcludes []string `toml:"active_filter_excludes"`
+
+	// IncludeCwdPrefix controls whether the terminal/pane title is prefixed
+	// with "[<cwd-basename>]" (e.g. "[my-project] feature work"). Default true
+	// preserves the historical format; set false to show only the session
+	// title. Consumed by the tmux set-titles-string builder.
+	IncludeCwdPrefix *bool `toml:"include_cwd_prefix"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter
@@ -1846,6 +1852,15 @@ func (d DisplaySettings) GetFullRepaint() bool {
 		return true
 	}
 	return d.FullRepaint
+}
+
+// GetIncludeCwdPrefix reports whether the "[<cwd-basename>]" title prefix is
+// shown. Defaults to true to preserve the historical title format.
+func (d DisplaySettings) GetIncludeCwdPrefix() bool {
+	if d.IncludeCwdPrefix == nil {
+		return true
+	}
+	return *d.IncludeCwdPrefix
 }
 
 // Default user config (empty maps)

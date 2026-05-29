@@ -2867,6 +2867,36 @@ func TestBuildTerminalTitleArgs(t *testing.T) {
 	}
 }
 
+func TestBuildTerminalTitleArgs_CwdPrefixHidden(t *testing.T) {
+	parse := func(args []string) map[string]string {
+		m := make(map[string]string)
+		for i, a := range args {
+			if a == "set-option" && i+4 < len(args) {
+				m[args[i+3]] = args[i+4]
+			}
+		}
+		return m
+	}
+
+	s := &Session{
+		Name:        "test-sess",
+		DisplayName: "feature work",
+		WorkDir:     "/tmp/agent-deck",
+	}
+
+	// Default preserves the historical "[<project>] <title>" format.
+	if got := parse(s.buildTerminalTitleArgs())["set-titles-string"]; got != "[#{@agentdeck_project_name}] #{@agentdeck_display_name}" {
+		t.Fatalf("default set-titles-string = %q, want bracketed cwd prefix", got)
+	}
+
+	// [display] include_cwd_prefix = false drops the "[<project>] " prefix.
+	SetHideCwdPrefixInTitle(true)
+	t.Cleanup(func() { SetHideCwdPrefixInTitle(false) })
+	if got := parse(s.buildTerminalTitleArgs())["set-titles-string"]; got != "#{@agentdeck_display_name}" {
+		t.Fatalf("hidden set-titles-string = %q, want display name only", got)
+	}
+}
+
 func TestConfigureTerminalTitle(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")

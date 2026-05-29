@@ -978,6 +978,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.defaultFilter = cfg.Display.GetDefaultFilter()
 		h.activeFilterLabel = cfg.Display.ActiveFilterLabel
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
+		tmux.SetHideCwdPrefixInTitle(!cfg.Display.GetIncludeCwdPrefix())
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()

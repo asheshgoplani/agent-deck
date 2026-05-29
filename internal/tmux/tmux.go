@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2122,6 +2123,19 @@ func (s *Session) buildStatusBarArgs() []string {
 	return args
 }
 
+// hideCwdPrefixInTitle, when true, drops the "[<project>] " prefix from the
+// terminal title (set-titles-string). Default false preserves the historical
+// "[<project>] <name>" format. Set once at startup from the user config's
+// [display] include_cwd_prefix via SetHideCwdPrefixInTitle.
+var hideCwdPrefixInTitle atomic.Bool
+
+// SetHideCwdPrefixInTitle configures whether the terminal title includes the
+// "[<cwd-basename>]" prefix. Pass true to drop it (display.include_cwd_prefix =
+// false). Safe to call concurrently; intended to run once at startup.
+func SetHideCwdPrefixInTitle(hide bool) {
+	hideCwdPrefixInTitle.Store(hide)
+}
+
 // buildTerminalTitleArgs returns the tmux command args for configuring the outer
 // terminal title shown by clients such as iTerm2. Session metadata user options
 // are always refreshed so custom title formats can reuse them.
@@ -2139,7 +2153,11 @@ func (s *Session) buildTerminalTitleArgs() []string {
 		defaults = append(defaults, option{key: "set-titles", value: "on"})
 	}
 	if _, overridden := s.OptionOverrides["set-titles-string"]; !overridden {
-		defaults = append(defaults, option{key: "set-titles-string", value: "[#{@agentdeck_project_name}] #{@agentdeck_display_name}"})
+		titleStr := "[#{@agentdeck_project_name}] #{@agentdeck_display_name}"
+		if hideCwdPrefixInTitle.Load() {
+			titleStr = "#{@agentdeck_display_name}"
+		}
+		defaults = append(defaults, option{key: "set-titles-string", value: titleStr})
 	}
 
 	args := make([]string, 0, len(defaults)*6)
