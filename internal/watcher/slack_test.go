@@ -556,3 +556,27 @@ func TestSlack_Listen_StopNoLeaks(t *testing.T) {
 	}
 	// goleak.VerifyNone checks for leaked goroutines via defer
 }
+
+// TestSlack_NormalizeV2_BodyIsFullText pins the slack-truncation fix: the
+// Subject is the (first-line, 200-byte) label, but Body carries the COMPLETE
+// multi-line message text so the conductor bridge forwards the whole thing.
+func TestSlack_NormalizeV2_BodyIsFullText(t *testing.T) {
+	full := "first line\nsecond line\nтретья строка"
+	payload := slackV2Payload{
+		Type:        "message",
+		V:           2,
+		Channel:     "C0AABSF5GKD",
+		User:        "U12345",
+		TS:          "1712345678.123456",
+		TextPreview: full,
+	}
+	a := &SlackAdapter{}
+	evt := a.normalizeV2(ntfyMessage{Time: 1712345678}, payload, []byte("{}"))
+
+	if evt.Subject != "first line" {
+		t.Errorf("Subject: want first line only, got %q", evt.Subject)
+	}
+	if evt.Body != full {
+		t.Errorf("Body: want full text %q, got %q", full, evt.Body)
+	}
+}

@@ -167,7 +167,7 @@ func TestUpdateWatcherEventRoutedTo_RetriesOnBusy(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveWatcher: %v", err)
 	}
-	if _, err := db.SaveWatcherEvent("w1", "k1", "s", "subj", "", "", 100); err != nil {
+	if _, err := db.SaveWatcherEvent("w1", "k1", "s", "subj", "", "", "", 100); err != nil {
 		t.Fatalf("SaveWatcherEvent: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestPruneWatcherEvents_RetriesOnBusy(t *testing.T) {
 		t.Fatalf("SaveWatcher: %v", err)
 	}
 	for i := 0; i < 6; i++ {
-		if _, err := db.SaveWatcherEvent("w1", fmt.Sprintf("k%d", i), "s", "sub", "", "", 1000); err != nil {
+		if _, err := db.SaveWatcherEvent("w1", fmt.Sprintf("k%d", i), "s", "sub", "", "", "", 1000); err != nil {
 			t.Fatalf("seed event: %v", err)
 		}
 	}

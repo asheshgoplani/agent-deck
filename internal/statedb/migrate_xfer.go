@@ -267,7 +267,7 @@ func (s *StateDB) DeleteCostEventsForSession(sessionID string) error {
 func (s *StateDB) LoadWatcherEventsForSession(sessionID string) ([]*WatcherEventRow, error) {
 	rows, err := s.db.Query(`
 		SELECT id, watcher_id, dedup_key, sender, subject, routed_to,
-			session_id, triage_session_id, created_at
+			session_id, triage_session_id, body, created_at
 		FROM watcher_events WHERE session_id = ? OR triage_session_id = ?
 	`, sessionID, sessionID)
 	if err != nil {
@@ -280,7 +280,7 @@ func (s *StateDB) LoadWatcherEventsForSession(sessionID string) ([]*WatcherEvent
 		var createdAt int64
 		if err := rows.Scan(
 			&r.ID, &r.WatcherID, &r.DedupKey, &r.Sender, &r.Subject, &r.RoutedTo,
-			&r.SessionID, &r.TriageSessionID, &createdAt,
+			&r.SessionID, &r.TriageSessionID, &r.Body, &createdAt,
 		); err != nil {
 			return nil, err
 		}
@@ -303,11 +303,11 @@ func (s *StateDB) InsertWatcherEventRow(ev *WatcherEventRow) error {
 		_, err := s.db.Exec(`
 			INSERT OR IGNORE INTO watcher_events (
 				watcher_id, dedup_key, sender, subject, routed_to,
-				session_id, triage_session_id, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				session_id, triage_session_id, body, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			ev.WatcherID, ev.DedupKey, ev.Sender, ev.Subject, ev.RoutedTo,
-			ev.SessionID, ev.TriageSessionID, createdAt,
+			ev.SessionID, ev.TriageSessionID, ev.Body, createdAt,
 		)
 		return err
 	})

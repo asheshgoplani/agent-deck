@@ -120,6 +120,7 @@ type WatcherEventRow struct {
 	RoutedTo        string
 	SessionID       string
 	TriageSessionID string
+	Body            string
 	CreatedAt       time.Time
 }
 
@@ -394,6 +395,7 @@ func (s *StateDB) Migrate() error {
 			routed_to         TEXT NOT NULL DEFAULT '',
 			session_id        TEXT NOT NULL DEFAULT '',
 			triage_session_id TEXT NOT NULL DEFAULT '',
+			body              TEXT NOT NULL DEFAULT '',
 			created_at        INTEGER NOT NULL,
 			UNIQUE(watcher_id, dedup_key)
 		)
@@ -415,6 +417,11 @@ func (s *StateDB) Migrate() error {
 	alterMigrations := []string{
 		"ALTER TABLE instances ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE watcher_events ADD COLUMN triage_session_id TEXT NOT NULL DEFAULT ''",
+		// Slack-truncation fix: full message text alongside the (first-line,
+		// 200-byte) subject label, so the conductor bridge can forward the
+		// complete message instead of a truncated subject. Default '' keeps
+		// pre-fix rows readable (bridge falls back to subject when body is '').
+		"ALTER TABLE watcher_events ADD COLUMN body TEXT NOT NULL DEFAULT ''",
 		// v7 (issue #687, v1.7.50): per-session tmux socket isolation.
 		// Default '' keeps the pre-v1.7.50 behavior for existing rows.
 		"ALTER TABLE instances ADD COLUMN tmux_socket_name TEXT NOT NULL DEFAULT ''",
@@ -1279,14 +1286,14 @@ func (s *StateDB) LoadWatchers() ([]*WatcherRow, error) {
 // write lock even with WAL + busy_timeout if the driver surfaces BUSY before
 // the backoff completes. Retries are cheap because the operation is
 // idempotent (INSERT OR IGNORE).
-func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedTo, sessionID string, maxEvents int) (bool, error) {
+func (s *StateDB) SaveWatcherEvent(watcherID, dedupKey, sender, subject, routedTo, sessionID, body string, maxEvents int) (bool, error) {
 	var result sql.Result
 	if err := withBusyRetry(func() error {
 		var err error
 		result, err = s.db.Exec(`
-			INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`, watcherID, dedupKey, sender, subject, routedTo, sessionID, time.Now().Unix())
+			INSERT OR IGNORE INTO watcher_events (watcher_id, dedup_key, sender, subject, routed_to, session_id, body, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, watcherID, dedupKey, sender, subject, routedTo, sessionID, body, time.Now().Unix())
 		return err
 	}); err != nil {
 		return false, err
@@ -1418,7 +1425,7 @@ func (s *StateDB) LoadWatcherByName(name string) (*WatcherRow, error) {
 // LoadWatcherEvents returns up to limit events for the given watcher, ordered most recent first.
 func (s *StateDB) LoadWatcherEvents(watcherID string, limit int) ([]WatcherEventRow, error) {
 	rows, err := s.db.Query(`
-		SELECT id, watcher_id, dedup_key, sender, subject, routed_to, session_id, created_at
+		SELECT id, watcher_id, dedup_key, sender, subject, routed_to, session_id, body, created_at
 		FROM watcher_events WHERE watcher_id = ?
 		ORDER BY created_at DESC LIMIT ?
 	`, watcherID, limit)
@@ -1430,7 +1437,7 @@ func (s *StateDB) LoadWatcherEvents(watcherID string, limit int) ([]WatcherEvent
 	for rows.Next() {
 		var e WatcherEventRow
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.WatcherID, &e.DedupKey, &e.Sender, &e.Subject, &e.RoutedTo, &e.SessionID, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.WatcherID, &e.DedupKey, &e.Sender, &e.Subject, &e.RoutedTo, &e.SessionID, &e.Body, &createdAt); err != nil {
 			return nil, err
 		}
 		e.CreatedAt = time.Unix(createdAt, 0)

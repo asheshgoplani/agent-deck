@@ -350,6 +350,7 @@ func (e *Engine) writerLoop() {
 				env.event.Subject,
 				routedTo,
 				"", // sessionID: populated later when session is launched
+				env.event.Body,
 				e.cfg.MaxEventsPerWatcher,
 			)
 

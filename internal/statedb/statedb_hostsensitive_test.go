@@ -35,7 +35,7 @@ func TestWatcherEventDedup(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			inserted, err := db.SaveWatcherEvent("w1", "same-dedup-key", "sender@test.com", "subject", "conductor-a", "", 500)
+			inserted, err := db.SaveWatcherEvent("w1", "same-dedup-key", "sender@test.com", "subject", "conductor-a", "", "", 500)
 			if err != nil {
 				t.Errorf("goroutine %d: SaveWatcherEvent error: %v", idx, err)
 				return

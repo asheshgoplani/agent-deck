@@ -72,7 +72,7 @@ func TestUpdateWatcherEventRoutedTo_ConcurrentUpdatesSucceed(t *testing.T) {
 	const events = 8
 	for i := 0; i < events; i++ {
 		dedup := fmt.Sprintf("dk-%d", i)
-		if _, err := db.SaveWatcherEvent("w1", dedup, "alice", "subj", "", "", 1000); err != nil {
+		if _, err := db.SaveWatcherEvent("w1", dedup, "alice", "subj", "", "", "", 1000); err != nil {
 			t.Fatalf("SaveWatcherEvent: %v", err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestSaveWatcherEvent_PruneBoundsTable(t *testing.T) {
 	const inserted = 50
 	for i := 0; i < inserted; i++ {
 		dedup := fmt.Sprintf("p-%d", i)
-		if _, err := db.SaveWatcherEvent("wp", dedup, "alice", "s", "", "", maxEvents); err != nil {
+		if _, err := db.SaveWatcherEvent("wp", dedup, "alice", "s", "", "", "", maxEvents); err != nil {
 			t.Fatalf("SaveWatcherEvent: %v", err)
 		}
 	}

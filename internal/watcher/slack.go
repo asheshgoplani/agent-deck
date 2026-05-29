@@ -177,10 +177,15 @@ func (a *SlackAdapter) normalizeV2(msg ntfyMessage, payload slackV2Payload, rawL
 	}
 
 	evt := Event{
-		Source:         "slack",
-		Sender:         fmt.Sprintf("slack:%s", payload.Channel),
-		Subject:        subject,
-		Body:           msg.Message,
+		Source:  "slack",
+		Sender:  fmt.Sprintf("slack:%s", payload.Channel),
+		Subject: subject,
+		// Body carries the full message text (the worker's text_preview),
+		// not the raw ntfy envelope, so downstream consumers (the conductor
+		// bridge, triage prompt) get the complete multi-line message rather
+		// than the first-line/200-byte `subject` label. The raw payload is
+		// still preserved separately in RawPayload.
+		Body:           payload.TextPreview,
 		Timestamp:      time.Unix(msg.Time, 0),
 		RawPayload:     json.RawMessage(rawLine),
 		CustomDedupKey: fmt.Sprintf("slack-%s-%s", payload.Channel, payload.TS),

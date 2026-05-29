@@ -1447,7 +1447,7 @@ func TestUpdateWatcherEventRoutedTo(t *testing.T) {
 
 	// Insert an event with empty routed_to via SaveWatcherEvent.
 	dedupKey := "dedup-abc-123"
-	inserted, err := db.SaveWatcherEvent("w1", dedupKey, "sender@example.com", "Test Subject", "", "", 500)
+	inserted, err := db.SaveWatcherEvent("w1", dedupKey, "sender@example.com", "Test Subject", "", "", "", 500)
 	if err != nil {
 		t.Fatalf("SaveWatcherEvent: %v", err)
 	}
@@ -1571,5 +1571,35 @@ func TestMigrate_OldSchema_AddTriageSessionID(t *testing.T) {
 	// Idempotence: calling Migrate() a second time must not fail.
 	if err := db.Migrate(); err != nil {
 		t.Fatalf("second Migrate() call failed (idempotence): %v", err)
+	}
+}
+
+// TestSaveWatcherEvent_BodyRoundTrip pins the slack-truncation fix: the full
+// message body persists to watcher_events.body and reads back intact, even
+// when it contains newlines and multi-byte UTF-8.
+func TestSaveWatcherEvent_BodyRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.SaveWatcher(&WatcherRow{
+		ID: "w1", Name: "body-roundtrip-watcher", Type: "slack",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("SaveWatcher: %v", err)
+	}
+	body := "first line\nsecond line\nтретья строка — полный текст"
+	if _, err := db.SaveWatcherEvent("w1", "dk-body-1", "slack:D0", "first line", "conductor-x", "", body, 500); err != nil {
+		t.Fatalf("SaveWatcherEvent: %v", err)
+	}
+	rows, err := db.LoadWatcherEvents("w1", 10)
+	if err != nil {
+		t.Fatalf("LoadWatcherEvents: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	if rows[0].Body != body {
+		t.Errorf("Body round-trip: want %q, got %q", body, rows[0].Body)
+	}
+	if rows[0].Subject != "first line" {
+		t.Errorf("Subject: want %q, got %q", "first line", rows[0].Subject)
 	}
 }
