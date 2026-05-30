@@ -18,6 +18,10 @@ import (
 //  4. Tool-specific env_file ([claude].env_file, [gemini].env_file, [tools.X].env_file)
 //  5. Inline env vars from [tools.X].env
 //  6. Conductor-specific env from meta.json (highest priority, overrides tool env)
+//
+// Note: This does NOT handle [shell].launch_shell wrapping — that happens at the
+// prepareCommand layer (instance.go) after env sourcing, so the login shell reads
+// its rc files first and THEN sources the env files/init_script inline.
 func (i *Instance) buildEnvSourceCommand() string {
 	var sources []string
 

@@ -306,6 +306,15 @@ type Instance struct {
 	// exiting the agent drops the pane to an interactive shell at the same cwd.
 	ExitToShell *bool `json:"exit_to_shell,omitempty"`
 
+	// LaunchShell is the per-session override for the [shell] launch_shell
+	// toggle (issue #1218). nil → inherit the global config default (off);
+	// non-nil → force on/off for this session regardless of config. When on,
+	// the spawn command is wrapped with "$SHELL -l -c '<cmd>'" so that
+	// environment variables from ~/.zshrc, ~/.bashrc etc. are available to
+	// the agent process. This solves MCP config {env:VAR} failures when
+	// launching from the TUI without going through the user's shell.
+	LaunchShell *bool `json:"launch_shell,omitempty"`
+
 	// StartupQuery is the claude-code positional "startup query" (#725,
 	// v1.7.67). Set from the new-session dialog's "Start query" field and
 	// emitted as a single shell-quoted positional arg on the claude
@@ -6835,6 +6844,54 @@ func (i *Instance) wrapExitToShell(command string) string {
 	return rewritten + `; exec "$SHELL" -i`
 }
 
+// launchShellEnabled returns whether the session should wrap agent commands
+// with a login shell to inherit environment variables from shell rc files.
+// Checks per-session override first, then falls back to global [shell].launch_shell config.
+func (i *Instance) launchShellEnabled() bool {
+	if i.LaunchShell != nil {
+		return *i.LaunchShell
+	}
+	cfg, _ := LoadUserConfig()
+	return cfg != nil && cfg.Shell.GetLaunchShell()
+}
+
+// wrapLaunchShell wraps the command with a login shell invocation so that
+// environment variables from ~/.zshrc, ~/.bashrc, etc. are available to the
+// agent process (issue #1218).
+//
+// The transform is:
+//
+//	$SHELL -l -c '<command>'
+//
+// where $SHELL is the user's configured shell (e.g. /bin/zsh, /bin/bash).
+// The -l flag makes it a login shell, which sources profile/rc files.
+//
+// This solves the issue where OpenCode MCP configs with {env:VAR} references
+// fail when launched from the TUI because agent-deck spawns the agent directly
+// without going through the user's interactive shell environment.
+//
+// No-op when the flag is off, the command is empty, the session is sandboxed
+// (container already handles environment), or for shell tools (to avoid
+// double-wrapping). SSH remote sessions are also excluded because the remote
+// SSH invocation should handle the login shell setup.
+func (i *Instance) wrapLaunchShell(command string) string {
+	if command == "" || i.IsSandboxed() || !i.launchShellEnabled() {
+		return command
+	}
+	// Don't wrap shell sessions or SSH sessions
+	if i.Tool == "shell" || i.SSHHost != "" {
+		return command
+	}
+	// Get the shell from environment, default to bash
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	// Escape single quotes in the command for safe shell quoting
+	escaped := strings.ReplaceAll(command, "'", "'\"'\"'")
+	return fmt.Sprintf("%s -l -c '%s'", shell, escaped)
+}
+
 // prepareCommand applies the full command wrapping chain: user wrapper → sandbox → ignore-suspend.
 // Returns the wrapped command, the sandbox container name (empty if not sandboxed), and an error.
 // All code paths that launch or respawn a tmux pane should use this instead of calling
@@ -6846,7 +6903,13 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
 	cmd = i.wrapExitToShell(cmd)
 
-	// Apply the user wrapper FIRST so that extra args folded into a
+	// Launch-shell wrap SECOND, before user wrapper, so the login shell sources
+	// rc files and then executes the complete command (with exit-to-shell suffix
+	// if enabled). This ensures env vars from ~/.zshrc etc. are available to the
+	// agent and any trailing shell (issue #1218). No-op unless opt-in.
+	cmd = i.wrapLaunchShell(cmd)
+
+	// Apply the user wrapper THIRD so that extra args folded into a
 	// "{command} --flag1 --flag2" wrapper template become part of the string
 	// that the bash -c wrap protects. Previously the order was reversed
 	// (bash -c wrap then wrapper substitution), which produced
