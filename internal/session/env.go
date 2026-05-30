@@ -20,8 +20,8 @@ import (
 //  6. Conductor-specific env from meta.json (highest priority, overrides tool env)
 //
 // Note: This does NOT handle [shell].launch_shell wrapping — that happens at the
-// prepareCommand layer (instance.go) after env sourcing, so the login shell reads
-// its rc files first and THEN sources the env files/init_script inline.
+// prepareCommand layer (instance.go) after env sourcing, so the shell startup
+// files run first and THEN the env files/init_script are sourced inline.
 func (i *Instance) buildEnvSourceCommand() string {
 	var sources []string
 

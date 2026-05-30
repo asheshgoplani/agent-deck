@@ -46,7 +46,7 @@ env_files = ["~/.agent-deck.env", ".env"]   # .env files to source for ALL sessi
 init_script = "~/.agent-deck/init.sh"       # Script or command to run before each session
 ignore_missing_env_files = true             # Silently skip missing .env files (default: true)
 exit_to_shell = false                       # Drop to an interactive shell when an agent exits (default: false)
-launch_shell = false                        # Wrap commands with login shell to inherit env vars (default: false)
+launch_shell = false                        # Wrap commands with interactive shell startup to inherit env vars (default: false)
 ```
 
 | Key | Type | Default | Description |
@@ -55,7 +55,7 @@ launch_shell = false                        # Wrap commands with login shell to 
 | `init_script` | string | `""` | Shell script or inline command to run before each session. Useful for direnv, nvm, pyenv, etc. File paths (starting with `/`, `~/`, `./`, `../`) are sourced; anything else is treated as an inline command. |
 | `ignore_missing_env_files` | bool | `true` | When `true`, missing .env files are silently skipped using `[ -f file ] && source file`. When `false`, sessions will error if an env file doesn't exist. |
 | `exit_to_shell` | bool | `false` | When `true`, exiting a built-in agent (e.g. `/exit` from Claude Code) drops the pane back to an interactive shell at the same cwd instead of dying / auto-restarting. Lets you do shell-only work (`aws-vault exec`, `direnv`) then `claude --resume` the same session. Opt-in; the session id is preserved so resume targets the same conversation. Per-session override via the session record. Excludes sandboxed sessions. Issue #1161. |
-| `launch_shell` | bool | `false` | When `true`, wraps agent spawn commands with `$SHELL -l -c '<command>'` so that environment variables from `~/.zshrc`, `~/.bashrc`, etc. are available to the agent process. This solves the issue where OpenCode MCP configs with `{env:VAR}` references fail when launched from the TUI because agents don't inherit the interactive shell's environment. The login shell sources rc files before executing the agent. Opt-in; the default OFF preserves direct spawn behavior. Per-session override via the session record. Excludes sandboxed and SSH sessions. Issue #1218. |
+| `launch_shell` | bool | `false` | When `true`, wraps agent spawn commands with an interactive shell startup (`$SHELL -il -c '<command>'`; bash also sources `~/.bashrc`) so that environment variables from `~/.zshrc`, `~/.bashrc`, etc. are available to the agent process. This helps when agents launched from the TUI do not inherit the interactive shell's environment. For the most reliable cross-platform behavior, prefer putting shared variables in `~/.agent-deck.env` via `env_files`. Opt-in; the default OFF preserves direct spawn behavior. Per-session override via the session record. Excludes sandboxed and SSH sessions. Issue #1218. |
 
 ### Sourcing order
 

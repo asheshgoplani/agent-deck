@@ -727,11 +727,12 @@ type ShellSettings struct {
 	// docs/decisions/1161-exit-to-shell-then-resume.md.
 	ExitToShell *bool `toml:"exit_to_shell"`
 
-	// LaunchShell, when true, wraps agent spawn commands with a login shell
-	// so that environment variables from ~/.zshrc, ~/.bashrc etc. are available
-	// to the agent process. This solves the issue where OpenCode MCP configs
-	// with {env:VAR} references fail when launched from the TUI because the
-	// agent doesn't inherit the interactive shell's environment.
+	// LaunchShell, when true, wraps agent spawn commands with an interactive
+	// shell invocation so that environment variables from ~/.zshrc, ~/.bashrc
+	// etc. are available to the agent process. This solves the issue where
+	// OpenCode MCP configs with {env:VAR} references fail when launched from
+	// the TUI because the agent doesn't inherit the interactive shell's
+	// environment.
 	// Default: false (opt-in). Issue #1218.
 	LaunchShell *bool `toml:"launch_shell"`
 }
@@ -753,9 +754,9 @@ func (s *ShellSettings) GetExitToShell() bool {
 	return *s.ExitToShell
 }
 
-// GetLaunchShell returns whether agent commands should be wrapped with a login
-// shell to inherit environment variables from shell rc files, defaulting to
-// false (opt-in). Issue #1218.
+// GetLaunchShell returns whether agent commands should be wrapped with a shell
+// invocation that loads startup files before launch, defaulting to false
+// (opt-in). Issue #1218.
 func (s *ShellSettings) GetLaunchShell() bool {
 	if s.LaunchShell == nil {
 		return false // Default: OFF (preserve current direct spawn behavior)

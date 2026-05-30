@@ -7117,7 +7117,7 @@ func (i *Instance) wrapExitToShell(command string) string {
 }
 
 // launchShellEnabled returns whether the session should wrap agent commands
-// with a login shell to inherit environment variables from shell rc files.
+// with a shell invocation that loads startup files before launching the agent.
 // Checks per-session override first, then falls back to global [shell].launch_shell config.
 func (i *Instance) launchShellEnabled() bool {
 	if i.LaunchShell != nil {
@@ -7127,16 +7127,17 @@ func (i *Instance) launchShellEnabled() bool {
 	return cfg != nil && cfg.Shell.GetLaunchShell()
 }
 
-// wrapLaunchShell wraps the command with a login shell invocation so that
-// environment variables from ~/.zshrc, ~/.bashrc, etc. are available to the
-// agent process (issue #1218).
+// wrapLaunchShell wraps the command with an interactive shell invocation so
+// that environment variables from ~/.zshrc, ~/.bashrc, etc. are available to
+// the agent process (issue #1218).
 //
 // The transform is:
 //
-//	$SHELL -l -c '<command>'
+//	$SHELL -il -c '<command>'
 //
 // where $SHELL is the user's configured shell (e.g. /bin/zsh, /bin/bash).
-// The -l flag makes it a login shell, which sources profile/rc files.
+// For bash, ~/.bashrc is sourced explicitly before the command because
+// interactive login bash does not read it automatically.
 //
 // This solves the issue where OpenCode MCP configs with {env:VAR} references
 // fail when launched from the TUI because agent-deck spawns the agent directly
@@ -7161,7 +7162,10 @@ func (i *Instance) wrapLaunchShell(command string) string {
 	}
 	// Escape single quotes in the command for safe shell quoting
 	escaped := strings.ReplaceAll(command, "'", "'\"'\"'")
-	return fmt.Sprintf("%s -l -c '%s'", shell, escaped)
+	if filepath.Base(shell) == "bash" {
+		return fmt.Sprintf("%s -il -c 'if [ -f ~/.bashrc ]; then source ~/.bashrc; fi; %s'", shell, escaped)
+	}
+	return fmt.Sprintf("%s -il -c '%s'", shell, escaped)
 }
 
 // prepareCommand applies the full command wrapping chain: user wrapper → sandbox → ignore-suspend.
@@ -7175,10 +7179,11 @@ func (i *Instance) prepareCommand(cmd string) (string, string, error) {
 	// SSH layering. No-op unless opt-in for a built-in agent (issue #1161).
 	cmd = i.wrapExitToShell(cmd)
 
-	// Launch-shell wrap SECOND, before user wrapper, so the login shell sources
-	// rc files and then executes the complete command (with exit-to-shell suffix
-	// if enabled). This ensures env vars from ~/.zshrc etc. are available to the
-	// agent and any trailing shell (issue #1218). No-op unless opt-in.
+	// Launch-shell wrap SECOND, before user wrapper, so the interactive shell
+	// loads its startup files and then executes the complete command (with
+	// exit-to-shell suffix if enabled). This ensures env vars from ~/.zshrc,
+	// ~/.bashrc, etc. are available to the agent and any trailing shell
+	// (issue #1218). No-op unless opt-in.
 	cmd = i.wrapLaunchShell(cmd)
 
 	// Apply the user wrapper THIRD so that extra args folded into a

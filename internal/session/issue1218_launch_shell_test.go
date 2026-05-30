@@ -1,19 +1,29 @@
 package session
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
-// Issue #1218: OpenCode session doesn't inherit ZSH env vars. When starting
-// OpenCode directly from the TUI, env vars from ~/.zshrc aren't available to
-// the agent process, causing MCP configs with {env:VAR} references to fail.
-// The fix wraps agent commands with "$SHELL -l -c '<cmd>'" when the
-// [shell].launch_shell config is enabled, so the login shell sources rc files
-// before executing the agent.
+// Issue #1218: OpenCode session doesn't inherit shell-defined env vars. When
+// starting OpenCode directly from the TUI, env vars from ~/.zshrc or ~/.bashrc
+// aren't available to the agent process, causing MCP configs with {env:VAR}
+// references to fail. The fix wraps agent commands with an interactive shell
+// invocation when [shell].launch_shell is enabled so shell startup files run
+// before the agent command.
 //
-// These tests pin the contract: flag ON wraps with login shell, flag OFF is
+// These tests pin the contract: flag ON wraps with interactive shell startup,
+// flag OFF is
 // unchanged, sandbox/SSH/shell sessions are excluded, and both per-session
 // and global config levels work correctly.
 
@@ -36,39 +46,96 @@ func launchShellTestEnv(t *testing.T) {
 	})
 }
 
-// --- Happy path: flag ON wraps with login shell ---
+func runLaunchShellCommand(t *testing.T, wrapped, shell string) string {
+	t.Helper()
 
-func TestLaunchShell_OpenCodeWrappedWhenEnabled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", wrapped)
+	cmd.Env = append(os.Environ(),
+		"HOME="+os.Getenv("HOME"),
+		"SHELL="+shell,
+		"PS1=",
+		"PROMPT=",
+	)
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatalf("pty.Start: %v", err)
+	}
+	defer func() { _ = ptmx.Close() }()
+
+	out, readErr := io.ReadAll(ptmx)
+	waitErr := cmd.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("wrapped command timed out: %s", wrapped)
+	}
+	if readErr != nil {
+		var pathErr *os.PathError
+		if !errors.As(readErr, &pathErr) || !errors.Is(pathErr.Err, syscall.EIO) {
+			t.Fatalf("read wrapped command output: %v", readErr)
+		}
+	}
+	if waitErr != nil {
+		t.Fatalf("wrapped command failed: %v\noutput:\n%s", waitErr, out)
+	}
+	return string(out)
+}
+
+func requireLaunchShellBinary(t *testing.T, shell string) {
+	t.Helper()
+	if _, err := os.Stat(shell); err != nil {
+		t.Skipf("%s not available: %v", shell, err)
+	}
+}
+
+// --- Happy path: flag ON loads shell startup files ---
+
+func TestLaunchShell_ZshRCLoadedWhenEnabled(t *testing.T) {
 	launchShellTestEnv(t)
+	requireLaunchShellBinary(t, "/bin/zsh")
+	os.Setenv("SHELL", "/bin/zsh")
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".zshrc"), []byte("export AGENT_DECK_LAUNCH_SHELL_TEST=zshrc\n"), 0644); err != nil {
+		t.Fatalf("write .zshrc: %v", err)
+	}
 
 	inst := NewInstanceWithTool("ls-opencode", t.TempDir(), "opencode")
 	inst.LaunchShell = boolPtr(true)
 
-	raw := "opencode --model claude-3.5-sonnet"
+	raw := `printf '__AGENT_DECK__%s__' "$AGENT_DECK_LAUNCH_SHELL_TEST"`
 	wrapped := inst.wrapLaunchShell(raw)
 
-	if !strings.HasPrefix(wrapped, "/bin/zsh -l -c '") {
-		t.Fatalf("wrapped command must start with '/bin/zsh -l -c ', got:\n%s", wrapped)
+	if !strings.HasPrefix(wrapped, "/bin/zsh -il -c '") {
+		t.Fatalf("wrapped command must start with '/bin/zsh -il -c ', got:\n%s", wrapped)
 	}
-	if !strings.Contains(wrapped, "opencode") {
-		t.Fatalf("wrapped command must contain original command, got:\n%s", wrapped)
+	if out := runLaunchShellCommand(t, wrapped, "/bin/zsh"); !strings.Contains(out, "__AGENT_DECK__zshrc__") {
+		t.Fatalf("wrapped command must load ~/.zshrc, output:\n%s", out)
 	}
 }
 
-func TestLaunchShell_ClaudeWrappedWhenEnabled(t *testing.T) {
+func TestLaunchShell_BashRCLoadedWhenEnabled(t *testing.T) {
 	launchShellTestEnv(t)
+	requireLaunchShellBinary(t, "/bin/bash")
+	os.Setenv("SHELL", "/bin/bash")
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".bashrc"), []byte("export AGENT_DECK_LAUNCH_SHELL_TEST=bashrc\n"), 0644); err != nil {
+		t.Fatalf("write .bashrc: %v", err)
+	}
 
 	inst := NewInstanceWithTool("ls-claude", t.TempDir(), "claude")
 	inst.LaunchShell = boolPtr(true)
 
-	raw := "claude --session-id test-123"
+	raw := `printf '__AGENT_DECK__%s__' "$AGENT_DECK_LAUNCH_SHELL_TEST"`
 	wrapped := inst.wrapLaunchShell(raw)
 
-	if !strings.HasPrefix(wrapped, "/bin/zsh -l -c '") {
-		t.Fatalf("wrapped command must start with '/bin/zsh -l -c ', got:\n%s", wrapped)
+	if !strings.HasPrefix(wrapped, "/bin/bash -il -c '") {
+		t.Fatalf("wrapped command must start with '/bin/bash -il -c ', got:\n%s", wrapped)
 	}
-	if !strings.Contains(wrapped, "claude") {
-		t.Fatalf("wrapped command must contain original command, got:\n%s", wrapped)
+	if !strings.Contains(wrapped, "source ~/.bashrc;") {
+		t.Fatalf("wrapped command must source ~/.bashrc, got:\n%s", wrapped)
+	}
+	if out := runLaunchShellCommand(t, wrapped, "/bin/bash"); !strings.Contains(out, "__AGENT_DECK__bashrc__") {
+		t.Fatalf("wrapped command must load ~/.bashrc, output:\n%s", out)
 	}
 }
 
@@ -86,7 +153,7 @@ func TestLaunchShell_DisabledLeavesCommandUnchanged(t *testing.T) {
 	if wrapped != raw {
 		t.Fatalf("flag OFF must not alter the command.\n raw:     %s\n wrapped: %s", raw, wrapped)
 	}
-	if strings.Contains(wrapped, "-l -c") {
+	if strings.Contains(wrapped, "-il -c") {
 		t.Fatalf("flag OFF must not add shell wrapper, got:\n%s", wrapped)
 	}
 }
@@ -174,7 +241,7 @@ func TestLaunchShell_IntegrationWithPrepareCommand(t *testing.T) {
 		t.Fatalf("prepareCommand failed: %v", err)
 	}
 
-	if !strings.Contains(prepared, "-l -c") {
+	if !strings.Contains(prepared, "-il -c") {
 		t.Fatalf("prepareCommand must apply launch_shell wrap, got:\n%s", prepared)
 	}
 }
@@ -205,7 +272,7 @@ launch_shell = true
 	raw := "opencode"
 	wrapped := inst.wrapLaunchShell(raw)
 
-	if !strings.Contains(wrapped, "-l -c") {
+	if !strings.Contains(wrapped, "-il -c") {
 		t.Fatalf("global config launch_shell=true must wrap command, got:\n%s", wrapped)
 	}
 }
@@ -236,7 +303,7 @@ launch_shell = false
 	raw := "opencode"
 	wrapped := inst.wrapLaunchShell(raw)
 
-	if !strings.Contains(wrapped, "-l -c") {
+	if !strings.Contains(wrapped, "-il -c") {
 		t.Fatalf("per-session override must take precedence over global config, got:\n%s", wrapped)
 	}
 }
@@ -253,8 +320,11 @@ func TestLaunchShell_DefaultsToBashdWhenSHELLUnset(t *testing.T) {
 	raw := "opencode"
 	wrapped := inst.wrapLaunchShell(raw)
 
-	if !strings.HasPrefix(wrapped, "/bin/bash -l -c '") {
+	if !strings.HasPrefix(wrapped, "/bin/bash -il -c '") {
 		t.Fatalf("when SHELL is unset, should default to /bin/bash, got:\n%s", wrapped)
+	}
+	if !strings.Contains(wrapped, "source ~/.bashrc;") {
+		t.Fatalf("default bash wrapper must source ~/.bashrc, got:\n%s", wrapped)
 	}
 }
 
@@ -278,7 +348,7 @@ func TestLaunchShell_CombinedWithExitToShell(t *testing.T) {
 	if !strings.Contains(prepared, `exec "$SHELL" -i`) {
 		t.Fatalf("must have exit-to-shell suffix, got:\n%s", prepared)
 	}
-	if !strings.Contains(prepared, "-l -c") {
+	if !strings.Contains(prepared, "-il -c") {
 		t.Fatalf("must have launch-shell wrapper, got:\n%s", prepared)
 	}
 }
