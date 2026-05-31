@@ -324,20 +324,22 @@ func writeDeadLetter(event TransitionNotificationEvent) error {
 // --- unified producer commit (shared by interactive + one-shot) -------------
 
 // resolveParentIDForInbox loads the registry and applies the
-// suppression/orphan/conductor guards, returning the resolved parent id to
-// commit to. transient is true on a storage error (the
-// caller should retry later rather than dead-letter). An empty parentID with
-// transient=false means the event is terminally undeliverable (orphan, removed
-// child, self-pointing conductor, no-notify) and should be dead-lettered.
-func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parentID string, transient bool, reason string) {
+// suppression/orphan/conductor guards, returning the resolved parent instance to
+// commit to (the instance — not just its id — so the caller can idle-gate a
+// wake-nudge against the same freshly-resolved status without a second tmux
+// probe). transient is true on a storage error (the caller should retry later
+// rather than dead-letter). A nil parent with transient=false means the event is
+// terminally undeliverable (orphan, removed child, self-pointing conductor,
+// no-notify) and should be dead-lettered.
+func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificationEvent) (parent *Instance, transient bool, reason string) {
 	storage, err := NewStorageWithProfile(event.Profile)
 	if err != nil {
-		return "", true, ""
+		return nil, true, ""
 	}
 	defer storage.Close()
 	instances, _, err := storage.LoadWithGroups()
 	if err != nil {
-		return "", true, ""
+		return nil, true, ""
 	}
 	byID := make(map[string]*Instance, len(instances))
 	for _, inst := range instances {
@@ -348,36 +350,36 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 	if child == nil {
 		// Child removed between commit/observe and resolve — terminal, but the
 		// operator should know a completion was dropped (audit B5).
-		return "", false, deadLetterReasonChildMissing
+		return nil, false, deadLetterReasonChildMissing
 	}
 	if child.NoTransitionNotify {
-		return "", false, deadLetterReasonNoNotify
+		return nil, false, deadLetterReasonNoNotify
 	}
 	// Top-level conductor self-suppress (issue #824 cause B): the root is not
 	// an orphan, drop silently.
 	if strings.TrimSpace(child.ParentSessionID) == "" && isConductorSessionTitle(child.Title) {
-		return "", false, deadLetterReasonSelfConductor
+		return nil, false, deadLetterReasonSelfConductor
 	}
 	// Orphan-on-creation guard (issue #805 cause A): log one WARN per orphan.
 	if strings.TrimSpace(child.ParentSessionID) == "" {
 		n.logOrphanOnce(event, child.ID)
-		return "", false, deadLetterReasonOrphan
+		return nil, false, deadLetterReasonOrphan
 	}
 	if strings.TrimSpace(child.ParentSessionID) == child.ID && isConductorSessionTitle(child.Title) {
-		return "", false, deadLetterReasonSelfConductor
+		return nil, false, deadLetterReasonSelfConductor
 	}
 	// Parent referenced but not present in this profile's registry: removed
 	// mid-flight, or the child's parent lives in a DIFFERENT profile (we only
 	// load event.Profile's registry). Either way it's terminal — but distinguish
 	// it so the operator isn't left guessing (audit B5).
 	if byID[strings.TrimSpace(child.ParentSessionID)] == nil {
-		return "", false, deadLetterReasonParentMissing
+		return nil, false, deadLetterReasonParentMissing
 	}
-	parent := resolveParentNotificationTarget(child, byID)
+	parent = resolveParentNotificationTarget(child, byID)
 	if parent == nil {
-		return "", false, deadLetterReasonUnresolvable
+		return nil, false, deadLetterReasonUnresolvable
 	}
-	return parent.ID, false, ""
+	return parent, false, ""
 }
 
 // commitEventToInbox is the unified producer entry point: it resolves the
@@ -386,13 +388,14 @@ func (n *TransitionNotifier) resolveParentIDForInbox(event TransitionNotificatio
 // retryable error (storage/fs) occurred. committed=false, transient=false means
 // terminally undeliverable — the caller dead-letters.
 func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEvent) (committed bool, transient bool, reason string) {
-	parentID, t, reason := n.resolveParentIDForInbox(event)
+	parent, t, reason := n.resolveParentIDForInbox(event)
 	if t {
 		return false, true, ""
 	}
-	if parentID == "" {
+	if parent == nil {
 		return false, false, reason
 	}
+	parentID := parent.ID
 	event.TargetSessionID = parentID
 	event.TargetKind = "parent"
 	event.DeliveryResult = transitionDeliveryCommitted
@@ -403,6 +406,12 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		return false, true, ""
 	}
 	n.logEvent(event)
+	// Issue #1225 Tier-2: now that the record durably landed, wake an IDLE parent
+	// to drain it immediately instead of on its next ~14-min heartbeat. This is
+	// the event-driven trigger — fired the moment the completion is committed,
+	// not on a poll. Best-effort and non-fatal: a dropped nudge is harmless
+	// because this same record is still drained on the parent's next turn.
+	n.fireWakeNudge(parent, event)
 	return true, false, ""
 }
 

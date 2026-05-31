@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.45] - 2026-05-30
+
+### Added
+
+- **Near-instant idle-conductor completion delivery (wake-nudge wired)** ([#1225](https://github.com/asheshgoplani/agent-deck/issues/1225) / [#1226](https://github.com/asheshgoplani/agent-deck/pull/1226)). The durable outbox shipped in v1.9.44 is correct (no loss, exactly-once) but an **idle** conductor only drained on its next heartbeat — up to ~14 min of latency. The `WakeNudger` (built but previously unwired) is now triggered from the single producer commit chokepoint (`commitEventToInbox`), which both producers funnel through: the interactive `running→waiting` path and the one-shot `run-task` kernel-exit path. The moment a completion durably lands in a parent's inbox, an **idle** conductor is woken to drain it — collapsing the idle worst case from ~14 min to **sub-second**. The nudge is event-driven (fired on commit, not polled), conductor-scoped, idle-gated (never sends into a busy pane — a send-keys there only queues, the exact failure the pull model avoids), debounced per-parent (~500ms, coalesces a burst of simultaneous completions into one wake without delaying the first), and **best-effort/fire-and-forget**: a dropped or failed nudge is harmless because the same durable record is still drained on the parent's next Stop/heartbeat (wake ≠ deliver). A busy parent is intentionally left to drain at its next turn boundary — the physical floor for a busy Claude pane — so the nudge adds no noise there. Zero billed inference.
+
 ## [1.9.44] - 2026-05-29
 
 ### Added

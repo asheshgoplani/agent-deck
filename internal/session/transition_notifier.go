@@ -151,6 +151,14 @@ type TransitionNotifier struct {
 	// Lazily initialized against missedPath via deadLetterSink().
 	dlMu   sync.Mutex
 	dlSink *DeadLetterSink
+
+	// wake is the issue #1225 Tier-2 wake-nudge wiring: after a record durably
+	// lands in a parent's inbox, commitEventToInbox fires a debounced, idle-only,
+	// best-effort send-keys to wake that parent so it drains the MOMENT the
+	// completion is committed instead of on its next ~14-min heartbeat. nil
+	// disables nudging (correctness unaffected — the record still drains on the
+	// next turn). Tests inject a spy wiring; production gets defaultWakeNudgeWiring.
+	wake *wakeNudgeWiring
 }
 
 // deadLetterSink returns the notifier's bounded dead-letter sink, initialized
@@ -176,6 +184,7 @@ func NewTransitionNotifier() *TransitionNotifier {
 		orphanWarned: map[string]bool{},
 		missedSeen:   map[string]bool{},
 		terminalSeen: map[string]bool{},
+		wake:         defaultWakeNudgeWiring(),
 	}
 	n.loadState()
 	return n
