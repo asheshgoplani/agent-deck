@@ -64,7 +64,13 @@ func main() {
 		MenuData:     store,
 	})
 	server.SetMutator(store)
-	server.SetMCPManager(newFixtureMCPManager())
+	// Hold the MCP manager on the store so /__fixture/reset clears its
+	// in-memory attachments too. Without this, attachments leak across the
+	// serially-run mcps.spec.js cases (and across Playwright retries, which
+	// re-run the whole serial block), breaking the "fresh fixture" and
+	// "un-attached → 404" assertions.
+	store.mcpMgr = newFixtureMCPManager()
+	server.SetMCPManager(store.mcpMgr)
 	// Without this, GET /api/skills falls back to defaultSkillsService, which
 	// scans the host's real ~/.agent-deck/skills + ~/.claude/skills via
 	// session.ListAvailableSkills() — so the seeded alpha/beta/gamma catalog is
@@ -124,6 +130,7 @@ type fixtureStore struct {
 	startupToken string // echoed at /__fixture/whoami for spawn verification
 	catalog      []session.SkillCandidate
 	attached     map[string][]session.ProjectSkillAttachment // by projectPath
+	mcpMgr       *fixtureMCPManager                          // reset alongside the store on /__fixture/reset
 
 	// undoStack tracks recently-deleted sessions for ctrl+z undo. Capped
 	// at 10 entries (FIFO eviction) to match the TUI Home.undoStack.
@@ -487,6 +494,9 @@ func (s *fixtureStore) adminHandler() http.Handler {
 			return
 		}
 		s.seed()
+		if s.mcpMgr != nil {
+			s.mcpMgr.Reset()
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/__fixture/snapshot", func(w http.ResponseWriter, r *http.Request) {

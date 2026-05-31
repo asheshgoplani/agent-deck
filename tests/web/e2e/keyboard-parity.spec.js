@@ -52,7 +52,9 @@ test.describe('keyboard parity (#780)', () => {
     await expect(overlay).toBeVisible()
     // It must list the bindings; just check a couple of known labels.
     await expect(overlay).toContainText('Move focus down')
-    await expect(overlay).toContainText('Stop focused session')
+    // Shift+D was reworded "Stop" → "Close focused session" in #1129 (5b0dae2a:
+    // non-destructive close, keeps metadata); the overlay label followed suit.
+    await expect(overlay).toContainText('Close focused session')
     // Pressing ? again toggles it back off.
     await page.keyboard.press('?')
     await expect(overlay).toHaveCount(0)
@@ -141,10 +143,12 @@ test.describe('keyboard parity (#780)', () => {
     await page.keyboard.down('Shift')
     await page.keyboard.press('D')
     await page.keyboard.up('Shift')
-    // ConfirmDialog shows the stop-session message.
+    // ConfirmDialog shows the close-session message. #1129 (5b0dae2a) reworked
+    // Shift+D into a non-destructive "Close session" (kill process, keep
+    // metadata), so the dialog copy is "Close session …" not "Stop session".
     const dialog = page.locator('.overlay .dialog, [role="dialog"]').first()
     await expect(dialog).toBeVisible()
-    await expect(dialog).toContainText(/stop session/i)
+    await expect(dialog).toContainText(/close session/i)
   })
 
   test('q closes an open modal', async ({ page }) => {
