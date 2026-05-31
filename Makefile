@@ -94,14 +94,24 @@ run:
 
 # Install to /usr/local/bin (requires sudo)
 install: build
+	sudo rm -f /usr/local/bin/$(BINARY_NAME)
 	sudo cp $(BUILD_DIR)/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+	@# macOS (Apple Silicon) SIGKILLs a binary whose ad-hoc signature was
+	@# invalidated by an in-place overwrite. rm+cp gives a fresh inode and the
+	@# re-sign guarantees a valid signature. No-op on other platforms.
+	@if [ "$$(uname)" = "Darwin" ]; then sudo codesign --force --sign - /usr/local/bin/$(BINARY_NAME); fi
 	@echo "✅ Installed to /usr/local/bin/$(BINARY_NAME)"
 	@echo "Run 'agent-deck' to start"
 
 # Install to user's local bin (no sudo required)
 install-user: build
 	mkdir -p $(HOME)/.local/bin
+	rm -f $(HOME)/.local/bin/$(BINARY_NAME)
 	cp $(BUILD_DIR)/$(BINARY_NAME) $(HOME)/.local/bin/$(BINARY_NAME)
+	@# macOS (Apple Silicon) SIGKILLs a binary whose ad-hoc signature was
+	@# invalidated by an in-place overwrite. rm+cp gives a fresh inode and the
+	@# re-sign guarantees a valid signature. No-op on other platforms.
+	@if [ "$$(uname)" = "Darwin" ]; then codesign --force --sign - $(HOME)/.local/bin/$(BINARY_NAME); fi
 	@echo "✅ Installed to $(HOME)/.local/bin/$(BINARY_NAME)"
 	@echo "Make sure $(HOME)/.local/bin is in your PATH"
 	@echo "Run 'agent-deck' to start"
