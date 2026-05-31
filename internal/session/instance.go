@@ -4372,6 +4372,20 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 				return recovered, nil
 			}
 		}
+
+		// Disk scan: the tmux env var is fixed at launch, so after a /clear or
+		// compaction it points at a stale, empty transcript. Find the newest
+		// transcript on disk that carries a real assistant reply. Mirrors the
+		// Gemini syncGeminiSessionFromDisk fallback below.
+		if id, recovered := i.findLatestClaudeTranscriptOnDisk(); recovered != nil {
+			i.ClaudeSessionID = id
+			i.ClaudeDetectedAt = time.Now()
+			// Sync back to tmux so subsequent reads (and restarts) stay current.
+			if i.tmuxSession != nil && i.tmuxSession.Exists() {
+				_ = i.tmuxSession.SetEnvironment("CLAUDE_SESSION_ID", id)
+			}
+			return recovered, nil
+		}
 	}
 
 	// Gemini-specific recovery path (mirrors Claude recovery above)
@@ -4486,6 +4500,70 @@ func (i *Instance) getClaudeLastResponse() (*ResponseOutput, error) {
 	return parseClaudeLastAssistantMessage(data, filepath.Base(sessionFile))
 }
 
+// findLatestClaudeTranscriptOnDisk scans the instance's Claude project directory
+// for the most recently modified transcript that carries a real (non-sidechain)
+// assistant message, returning its session ID and parsed response.
+//
+// This recovers from a stale CLAUDE_SESSION_ID: when a Claude session rolls over
+// (/clear or compaction starts a NEW transcript), the tmux env var — fixed at
+// launch — still points at the OLD, now-empty transcript. Without this fallback
+// the read path drops to raw tmux-pane parsing, which leaks tool output (e.g. a
+// `list --json` dump) into conductor chat replies. Mirrors the Gemini
+// syncGeminiSessionFromDisk fallback.
+//
+// Returns ("", nil) when no suitable transcript is found.
+func (i *Instance) findLatestClaudeTranscriptOnDisk() (string, *ResponseOutput) {
+	configDir := GetClaudeConfigDir()
+
+	resolvedPath := i.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
+		resolvedPath = resolved
+	}
+	projectDir := filepath.Join(configDir, "projects", ConvertToClaudeDirName(resolvedPath))
+
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return "", nil
+	}
+
+	type candidate struct {
+		id  string
+		mod time.Time
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			id:  strings.TrimSuffix(e.Name(), ".jsonl"),
+			mod: info.ModTime(),
+		})
+	}
+
+	// Newest first; the current conversation is the most recently written file
+	// that still contains a real assistant reply.
+	sort.Slice(candidates, func(a, b int) bool {
+		return candidates[a].mod.After(candidates[b].mod)
+	})
+
+	for _, c := range candidates {
+		data, err := os.ReadFile(filepath.Join(projectDir, c.id+".jsonl"))
+		if err != nil {
+			continue
+		}
+		resp, err := parseClaudeLastAssistantMessage(data, c.id+".jsonl")
+		if err == nil && resp != nil && strings.TrimSpace(resp.Content) != "" {
+			return c.id, resp
+		}
+	}
+	return "", nil
+}
+
 // parseClaudeLastAssistantMessage parses a Claude JSONL file to extract the last assistant message
 func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOutput, error) {
 	// JSONL record structure (same as global_search.go)
@@ -4494,10 +4572,11 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		Content json.RawMessage `json:"content"`
 	}
 	type claudeRecord struct {
-		SessionID string          `json:"sessionId"`
-		Type      string          `json:"type"`
-		Message   json.RawMessage `json:"message"`
-		Timestamp string          `json:"timestamp"`
+		SessionID   string          `json:"sessionId"`
+		Type        string          `json:"type"`
+		Message     json.RawMessage `json:"message"`
+		Timestamp   string          `json:"timestamp"`
+		IsSidechain bool            `json:"isSidechain"`
 	}
 
 	var lastAssistantContent string
@@ -4518,6 +4597,12 @@ func parseClaudeLastAssistantMessage(data []byte, sessionID string) (*ResponseOu
 		var record claudeRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			continue // Skip malformed lines
+		}
+
+		// Skip subagent sidechain records: the conversation's "last response"
+		// is the parent agent's reply, not a Task subagent's output.
+		if record.IsSidechain {
+			continue
 		}
 
 		// Capture session ID
