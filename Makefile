@@ -132,10 +132,14 @@ test:
 
 # Run hard-gated walltime regression tests (Track B). Honors PERF_BUDGET_MULTIPLIER
 # (default 1.0 locally; CI sets 2.0). See docs/perf-budget-suite.md.
+#
+# ./... (not just ./cmd/agent-deck/...) so Tier 1 TestPerf_* added in any
+# package — internal/statedb, internal/session — are exercised locally, matching
+# the perf-smoke.yml CI gate which already runs the whole module.
 test-perf:
 	PERF_BUDGET_MULTIPLIER=$${PERF_BUDGET_MULTIPLIER:-1.0} \
 		go test -run '^TestPerf_' -race -v -count=1 -timeout 120s \
-		./cmd/agent-deck/...
+		./...
 
 # Run advisory benchmarks (Track A). No -race — race overhead distorts ns/op.
 # Output is for trending; not a CI gate.
