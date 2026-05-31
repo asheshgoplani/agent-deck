@@ -34,6 +34,32 @@ import (
 
 var inboxWriteMu sync.Mutex // serializes appends to a single inbox file
 
+// fsyncFile is the seam through which the durable-write primitive
+// (writeFileDurable) and its directory-fsync helper (fsyncDir) flush to disk.
+// Production points it at (*os.File).Sync — a plain pass-through, zero overhead.
+//
+// It exists so the Tier 2 count-assertion perf tests (docs/perf-budget-suite.md)
+// can gate the drain's I/O PATTERN on COUNTS rather than walltime. Disk fsync
+// latency varies ~100× across SSD / HDD / cloud volumes and is un-normalizable,
+// so "we now fsync once per record instead of once per batch" can only be caught
+// by counting syncs — which requires a seam the test can wrap. The companion
+// Tier 1 WARM walltime gate stubs this to a no-op so it measures pure CPU +
+// Go-runtime cost with disk speed factored out (the doc's tmpfs/in-memory
+// requirement). See SetFsyncHookForTest and internal/testutil.FsyncCounter.
+var fsyncFile = (*os.File).Sync
+
+// SetFsyncHookForTest swaps the durable-write fsync seam and returns a restore
+// func (defer it). The two perf gates added for the durable per-parent outbox
+// use it: the Tier 2 test wraps it with a counter to assert N messages drain in
+// a CONSTANT number of fsyncs, and the Tier 1 WARM walltime test no-ops it to
+// isolate in-process Go cost from disk. Production never calls it. Package tests
+// run serially (no t.Parallel on the perf tests), so the global swap is safe.
+func SetFsyncHookForTest(fn func(*os.File) error) func() {
+	prev := fsyncFile
+	fsyncFile = fn
+	return func() { fsyncFile = prev }
+}
+
 // maxInboxLineBytes caps a single JSONL line when scanning inbox / WAL /
 // dead-letter files. Audit B6: the old 1 MB cap silently truncated (and failed
 // the whole drain on) an oversized event — a DoneSummary that swallowed a large
@@ -63,7 +89,7 @@ func writeFileDurable(path string, data []byte, perm os.FileMode) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := fsyncFile(f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return err
@@ -90,7 +116,7 @@ func fsyncDir(dir string) {
 		return
 	}
 	defer d.Close()
-	_ = d.Sync()
+	_ = fsyncFile(d)
 }
 
 // inboxFingerprintCache holds, per inbox file path, the set of event

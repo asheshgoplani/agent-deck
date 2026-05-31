@@ -14,8 +14,13 @@ Any PR modifying performance-sensitive lifecycle paths MUST run:
 ```bash
 GOTOOLCHAIN=go1.25.10 PERF_BUDGET_MULTIPLIER=2.0 \
   go test -run '^TestPerf_' -race -count=1 -timeout 120s \
-  ./cmd/agent-deck/...
+  ./...
 ```
+
+Scope is `./...` (not just `cmd/agent-deck/...`) so a `TestPerf_*` added in any
+package is exercised — the mandate covers the whole module (`**/*_perf_test.go`)
+and the durable-outbox drain gate lives in `internal/session`. `make test-perf`
+and `.github/workflows/perf-smoke.yml` both use this scope.
 
 CI runs this as `.github/workflows/perf-smoke.yml`. Only the `perf-tests` job is a hard gate; `perf-bench-trend` is advisory (`continue-on-error: true`) and may show red without blocking merge.
 
