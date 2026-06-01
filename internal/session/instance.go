@@ -107,6 +107,13 @@ type Instance struct {
 	// `--title-lock` on add/launch or `session set-title-lock`.
 	TitleLocked bool `json:"title_locked,omitempty"`
 
+	// AutoName, when true, marks Title as a machine-generated adjective-noun
+	// handle (from a --quick / TUI-Q create). The TUI then displays the
+	// session's live Claude task description (tmux pane title) in place of the
+	// handle. Any explicit rename clears this so the user-chosen name is shown
+	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	AutoName bool `json:"auto_name,omitempty"`
+
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
