@@ -140,7 +140,7 @@ func TestSetupWizard_ToolOptions(t *testing.T) {
 	wizard := NewSetupWizard()
 
 	// Verify tool options
-	expectedTools := []string{"claude", "gemini", "opencode", "codex", "pi", "shell", "copilot", "crush", "cursor", "hermes"}
+	expectedTools := []string{"claude", "gemini", "opencode", "codex", "pi", "shell", "copilot", "crush", "cursor", "hermes", "grok"}
 	if len(wizard.toolOptions) != len(expectedTools) {
 		t.Errorf("Tool options count: got %d, want %d", len(wizard.toolOptions), len(expectedTools))
 	}
