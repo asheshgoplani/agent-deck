@@ -13934,17 +13934,6 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
-	// the list conveys top vs bottom; the emoji conveys "this is pinned".
-	displayTitle := inst.Title
-	if inst.Pin != session.PinNone {
-		displayTitle = "📌 " + displayTitle
-	}
-	// Maestro (fleet supervisor): ⬢ glyph leads the title.
-	if isMaestro {
-		displayTitle = "⬢ " + displayTitle
-	}
-	title := titleStyle.Render(displayTitle)
 	tool := toolStyle.Render(" " + instTool)
 
 	// Supervisor badge for the maestro row.
@@ -14066,6 +14055,38 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
+	// Auto-named quick sessions display Claude's live task description (the
+	// tmux pane title) in place of the random handle. instState.paneTitle is
+	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
+	// paneTitle) falls back to the handle automatically.
+	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
+	// the list conveys top vs bottom; the emoji conveys "this is pinned".
+	// Prepended before the AutoName truncation budget so width accounting below
+	// stays correct.
+	if inst.Pin != session.PinNone {
+		displayTitle = "📌 " + displayTitle
+	}
+	// Maestro (fleet supervisor): ⬢ glyph leads the title.
+	if isMaestro {
+		displayTitle = "⬢ " + displayTitle
+	}
+	if inst.AutoName && instState.paneTitle != "" && h.width > 0 {
+		// Task descriptions can be long; truncate to the row's free width so the
+		// tool label and badges stay on-row. Keep the reserved terms below in
+		// sync with the row format that follows.
+		reserved := cellWidth(baseIndent) + cellWidth(selectionPrefix) +
+			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
+			cellWidth(yoloBadge) + cellWidth(worktreeBadge) + cellWidth(sandboxBadge) +
+			cellWidth(multiRepoBadge) + cellWidth(sshBadge)
+		budget := h.width - reserved - 1 // -1 trailing margin
+		if budget > 0 && cellWidth(displayTitle) > budget {
+			displayTitle = cellTruncate(displayTitle, budget, "…")
+		}
+	}
+	title := titleStyle.Render(displayTitle)
+
 	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
 	row := fmt.Sprintf(
 		"%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
@@ -14093,7 +14114,7 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" {
+	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.AutoName {
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
