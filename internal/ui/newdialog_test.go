@@ -2123,3 +2123,28 @@ func TestNewDialog_CtrlW_BranchField(t *testing.T) {
 		t.Errorf("branchInput after ctrl+w = %q, want %q", got, want)
 	}
 }
+
+// Tests the overlay placement math. Dropdowns are placed relative
+// to the associated dialog's top-left corner.
+func TestDialogOrigin(t *testing.T) {
+	tests := []struct {
+		name                           string
+		termW, termH, dialogW, dialogH int
+		wantRow, wantCol               int
+	}{
+		{"fits centered", 120, 50, 80, 30, 10, 20},
+		{"taller than terminal clamps row", 120, 25, 80, 30, 0, 20},
+		{"wider than terminal clamps col", 60, 50, 80, 30, 10, 0},
+		{"larger than terminal both clamp", 60, 25, 80, 30, 0, 0},
+		{"exact fit", 80, 30, 80, 30, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			row, col := dialogOrigin(tt.termW, tt.termH, tt.dialogW, tt.dialogH)
+			if row != tt.wantRow || col != tt.wantCol {
+				t.Errorf("dialogOrigin(%d,%d,%d,%d) = (row %d, col %d), want (row %d, col %d)",
+					tt.termW, tt.termH, tt.dialogW, tt.dialogH, row, col, tt.wantRow, tt.wantCol)
+			}
+		})
+	}
+}
