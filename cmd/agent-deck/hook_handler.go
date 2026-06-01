@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,6 +32,13 @@ type hookPayload struct {
 	SessionID     string          `json:"session_id"`
 	Source        string          `json:"source"`
 	Matcher       json.RawMessage `json:"matcher,omitempty"`
+	// Cwd is the session's working directory (PROJECT_DIR) as reported by
+	// Claude Code on each hook event. Issue #1233: when a running session's
+	// registered worktree is renamed/removed, this points at a path that no
+	// longer exists; we use it to degrade gracefully rather than erroring on
+	// every tool call. Empty when the agent doesn't send a cwd (older Claude
+	// Code) — treated as "present" so behavior is unchanged.
+	Cwd string `json:"cwd"`
 	// StopHookActive is Claude Code's flag: true when this Stop is a
 	// continuation induced by a previous Stop-hook block. Issue #1225 uses it
 	// to bound consecutive inbox-drain blocks so the conductor cannot loop
@@ -126,6 +134,17 @@ func handleHookHandler() {
 
 	var payload hookPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
+		return
+	}
+
+	// Issue #1233: gracefully degrade when the session's working directory
+	// (PROJECT_DIR / cwd) has been renamed or removed out from under a running
+	// session — e.g. a git worktree renamed while the session is live. Rather
+	// than emitting a FATAL-class error on every single tool call, log a single
+	// WARN (deduped per instance+path) that points at the moved path and
+	// suggests `agent-deck session move`, then soft-skip this invocation.
+	if projectDirMissing(payload.Cwd) {
+		warnProjectDirMissingOnce(instanceID, payload.Cwd)
 		return
 	}
 
@@ -312,6 +331,45 @@ func isTerminalHookEvent(event string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// projectDirMissing reports whether cwd is a non-empty path that no longer
+// exists on disk. An empty cwd (older Claude Code, or hook events that omit
+// one) returns false — we can't tell, so behavior stays unchanged. Stat errors
+// other than "not exist" (e.g. permission) also return false: only a confirmed
+// missing directory triggers the degrade path.
+func projectDirMissing(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	_, err := os.Stat(cwd)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// warnProjectDirMissingOnce logs a single WARN for a missing project dir and
+// records a marker so subsequent hook invocations for the same instance+path
+// stay silent. Because each hook runs as a fresh process, the "once" guard is
+// an on-disk marker (next to the hook status files) whose contents are the
+// missing path: if the session is later repointed to a different (also-missing)
+// path, the mismatch lets it warn again instead of being silenced by a stale
+// marker.
+func warnProjectDirMissingOnce(instanceID, cwd string) {
+	hooksDir := getHooksDir()
+	markerPath := filepath.Join(hooksDir, filepath.Base(instanceID)+".projectdir-missing")
+
+	if existing, err := os.ReadFile(markerPath); err == nil && strings.TrimSpace(string(existing)) == cwd {
+		return // already warned for this exact missing path
+	}
+
+	hookHandlerLog.Warn("hook_projectdir_missing",
+		slog.String("instance", instanceID),
+		slog.String("project_dir", cwd),
+		slog.String("suggestion", "run `agent-deck session move <id|title> <new-path>` to repoint the session at its moved worktree"),
+	)
+
+	if err := os.MkdirAll(hooksDir, 0o700); err == nil {
+		_ = os.WriteFile(markerPath, []byte(cwd), 0o600)
 	}
 }
 
