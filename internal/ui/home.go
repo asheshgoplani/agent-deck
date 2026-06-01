@@ -3083,6 +3083,20 @@ type sessionRenderState struct {
 	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
 }
 
+// displaySessionTitle returns the label to render for a session row. For an
+// auto-named quick session (AutoName) with a non-empty pane title, it returns
+// the live Claude task description; otherwise it returns the session's own
+// Title (the CLI handle or a user/Claude-chosen name).
+//
+// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
+// idle/just-started, so the session falls back to its handle.
+func displaySessionTitle(inst *session.Instance, paneTitle string) string {
+	if inst.AutoName && paneTitle != "" {
+		return paneTitle
+	}
+	return inst.Title
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
