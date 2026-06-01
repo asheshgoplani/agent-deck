@@ -258,15 +258,16 @@ type Home struct {
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor              int            // Selected item index in flatItems
-	viewOffset          int            // First visible item index (for scrolling)
-	previewScrollOffset int            // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
-	isAttaching         atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter        session.Status // Filter sessions by status ("" = all, or specific status)
-	groupScope          string         // Limit TUI to a specific group path ("" = all groups)
-	initialSelect       string         // Session ID or title to preselect on first load (#709). Does NOT scope groups.
-	initialSelectDone   bool           // Guard so preselection only fires once
-	previewMode         PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
+	cursor              int                   // Selected item index in flatItems
+	viewOffset          int                   // First visible item index (for scrolling)
+	previewScrollOffset int                   // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
+	isAttaching         atomic.Bool           // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter        session.Status        // Filter sessions by status ("" = all, or specific status)
+	groupScope          string                // Limit TUI to a specific group path ("" = all groups)
+	initialSelect       string                // Session ID or title to preselect on first load (#709). Does NOT scope groups.
+	initialSelectDone   bool                  // Guard so preselection only fires once
+	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
+	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -610,6 +611,7 @@ type uiState struct {
 	CursorGroupPath string `json:"cursor_group_path,omitempty"`
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
+	GroupViewMode   int    `json:"group_view_mode,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -1622,6 +1624,41 @@ func (h *Home) moveCursorToSession(sessionID string) {
 	}
 }
 
+// skipDivider nudges the cursor off a non-selectable divider row in the given
+// direction (+1 = down, -1 = up). Dividers only ever sit between two non-empty
+// sections, so they are never at a list edge nor adjacent to another divider;
+// a single step in the travel direction always lands on a selectable row. The
+// extra scan is defensive only.
+func (h *Home) skipDivider(dir int) {
+	n := len(h.flatItems)
+	if n == 0 {
+		return
+	}
+	if h.cursor < 0 {
+		h.cursor = 0
+	}
+	if h.cursor >= n {
+		h.cursor = n - 1
+	}
+	if h.flatItems[h.cursor].Type != session.ItemTypeDivider {
+		return
+	}
+	h.cursor += dir
+	if h.cursor < 0 {
+		h.cursor = 0
+	}
+	if h.cursor >= n {
+		h.cursor = n - 1
+	}
+	// Defensive: if somehow still on a divider, scan toward a selectable row.
+	for h.cursor < n-1 && h.flatItems[h.cursor].Type == session.ItemTypeDivider {
+		h.cursor++
+	}
+	for h.cursor > 0 && h.flatItems[h.cursor].Type == session.ItemTypeDivider {
+		h.cursor--
+	}
+}
+
 // moveCursorToGroup moves the cursor to the flat item matching the given group path.
 func (h *Home) moveCursorToGroup(path string) {
 	for i, fi := range h.flatItems {
@@ -1772,6 +1809,17 @@ func (h *Home) rebuildFlatItems() {
 			}
 		}
 		h.flatItems = scoped
+	}
+
+	// Partition into top/bottom sections by view mode (active-on-top / populated-on-top).
+	// Runs after filtering/scoping but before window injection so windows follow
+	// their parent session into whichever section it lands in.
+	if h.groupViewMode != session.GroupViewNormal {
+		// Activity is computed from the full tree (collapse-agnostic) so a
+		// collapsed-but-populated group's header is placed by its real contents,
+		// not by the (absent) session rows under a collapsed header.
+		activity := h.groupTree.GroupActivityMap()
+		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
 	// Inject window items after sessions that have 2+ windows
@@ -6381,12 +6429,13 @@ func (h *Home) handleJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		if result.matched {
 			h.cursor = result.index
+			h.skipDivider(1) // never land on a non-selectable divider
 			h.syncViewport()
 			h.jumpMode = false
 			h.jumpBuffer = ""
 			// For sessions/windows/remotes: attach directly.
 			// For groups: just move cursor (user can press Enter to toggle).
-			item := h.flatItems[result.index]
+			item := h.flatItems[h.cursor]
 			if item.Type != session.ItemTypeGroup && item.Type != session.ItemTypeRemoteGroup {
 				return h.handleMainKey(tea.KeyMsg{Type: tea.KeyEnter})
 			}
@@ -6465,6 +6514,10 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		itemIndex := h.mouseYToItemIndex(msg.Y)
 		if itemIndex < 0 || itemIndex >= len(h.flatItems) {
+			return h, nil
+		}
+		// Dividers are non-selectable: clicking one does nothing.
+		if h.flatItems[itemIndex].Type == session.ItemTypeDivider {
 			return h, nil
 		}
 
@@ -6634,6 +6687,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewScrollOffset = 0
 		if h.cursor > 0 {
 			h.cursor--
+			h.skipDivider(-1)
 			h.syncViewport()
 			h.markNavigationActivity()
 			// PERFORMANCE: Debounced preview fetch - waits 150ms for navigation to settle
@@ -6646,6 +6700,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewScrollOffset = 0
 		if h.cursor < len(h.flatItems)-1 {
 			h.cursor++
+			h.skipDivider(1)
 			h.syncViewport()
 			h.markNavigationActivity()
 			// PERFORMANCE: Debounced preview fetch - waits 150ms for navigation to settle
@@ -6664,6 +6719,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6681,6 +6737,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6695,6 +6752,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6712,6 +6770,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6719,6 +6778,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "home": // Jump to first item
 		h.cursor = 0
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6729,6 +6789,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -7646,6 +7707,34 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle preview mode (cycle: both → output-only → analytics-only → both)
 		h.previewMode = (h.previewMode + 1) % 3
 		return h, nil
+
+	case "t":
+		// Cycle list partition: normal → active-on-top → populated-on-top → normal.
+		// Preserve the cursor's session/group across the rebuild.
+		var keepSessionID, keepGroupPath string
+		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+			switch it := h.flatItems[h.cursor]; it.Type {
+			case session.ItemTypeSession:
+				if it.Session != nil {
+					keepSessionID = it.Session.ID
+				}
+			case session.ItemTypeWindow:
+				keepSessionID = it.WindowSessionID
+			case session.ItemTypeGroup:
+				keepGroupPath = it.Path
+			}
+		}
+		h.groupViewMode = session.GroupViewMode((int(h.groupViewMode) + 1) % session.GroupViewModeCount)
+		h.rebuildFlatItems()
+		if keepSessionID != "" {
+			h.moveCursorToSession(keepSessionID)
+		} else if keepGroupPath != "" {
+			h.moveCursorToGroup(keepGroupPath)
+		}
+		h.skipDivider(1)
+		h.syncViewport()
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
 
 	case "y":
 		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
@@ -9277,8 +9366,9 @@ func (h *Home) saveUIState() {
 	}
 
 	state := uiState{
-		PreviewMode:  int(h.previewMode),
-		StatusFilter: string(h.statusFilter),
+		PreviewMode:   int(h.previewMode),
+		StatusFilter:  string(h.statusFilter),
+		GroupViewMode: int(h.groupViewMode),
 	}
 
 	// Capture cursor position
@@ -9329,9 +9419,13 @@ func (h *Home) loadUIState() {
 		return
 	}
 
-	// Apply preview mode and status filter immediately
+	// Apply preview mode, status filter, and group view mode immediately
 	h.previewMode = PreviewMode(state.PreviewMode)
 	h.statusFilter = session.Status(state.StatusFilter)
+	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
+	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
+		h.groupViewMode = session.GroupViewNormal
+	}
 
 	// Defer cursor restoration until flatItems are populated
 	h.pendingCursorRestore = &state
@@ -13485,7 +13579,7 @@ func (h *Home) renderSessionList(width, height int) string {
 
 	for i := h.viewOffset; i < len(h.flatItems) && visibleCount < maxVisible; i++ {
 		item := h.flatItems[i]
-		if h.jumpMode && i < len(jumpHints) {
+		if h.jumpMode && i < len(jumpHints) && item.Type != session.ItemTypeDivider {
 			// Render item to temp buffer, then overlay hint badge at name position
 			var itemBuf strings.Builder
 			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
@@ -13603,7 +13697,31 @@ func (h *Home) renderItem(
 		h.renderRemoteGroupItem(b, item, selected)
 	case session.ItemTypeRemoteSession:
 		h.renderRemoteSessionItem(b, item, selected)
+	case session.ItemTypeDivider:
+		h.renderDivider(b, item)
 	}
+}
+
+// renderDivider renders the non-selectable separator between view-mode sections
+// (e.g. running-on-top). It draws a dim horizontal rule with an optional caption.
+func (h *Home) renderDivider(b *strings.Builder, item session.Item) {
+	width := h.sessionsPaneWidth() - 4
+	if width < 12 {
+		width = 12
+	}
+	var line string
+	if item.DividerLabel != "" {
+		text := "─ " + item.DividerLabel + " "
+		remaining := width - cellWidth(text)
+		if remaining < 0 {
+			remaining = 0
+		}
+		line = "  " + text + strings.Repeat("─", remaining)
+	} else {
+		line = "  " + strings.Repeat("─", width)
+	}
+	b.WriteString(DimStyle.Render(line))
+	b.WriteString("\n")
 }
 
 // renderGroupItem renders a group header
@@ -16841,7 +16959,7 @@ func (h *Home) renderFilterBarHint() string {
 		return dim.Render(c)
 	}
 
-	return dim.Render("  ") +
+	hint := dim.Render("  ") +
 		mark("!", h.statusFilter == session.StatusRunning) +
 		mark("@", h.statusFilter == session.StatusWaiting) +
 		mark("#", h.statusFilter == session.StatusIdle) +
@@ -16853,4 +16971,12 @@ func (h *Home) renderFilterBarHint() string {
 		dim.Render(" open • ") +
 		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) +
 		dim.Render(" archived")
+
+	// View-mode indicator (running-on-top / populated-on-top), only when active.
+	if h.groupViewMode != session.GroupViewNormal {
+		hint += dim.Render(" • ") + mark("t", true) + dim.Render(" "+h.groupViewMode.Label())
+	} else {
+		hint += dim.Render(" • ") + mark("t", false) + dim.Render(" view")
+	}
+	return hint
 }

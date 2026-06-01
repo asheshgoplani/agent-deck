@@ -26,6 +26,7 @@ const (
 	ItemTypeRemoteGroup
 	ItemTypeRemoteSession
 	ItemTypeWindow
+	ItemTypeDivider // Non-selectable separator between view-mode sections (running-on-top, etc.)
 )
 
 // Item represents a single item in the flattened group tree view
@@ -51,6 +52,7 @@ type Item struct {
 	CreatingID          string             // Non-empty for placeholder items (worktree creation in progress)
 	CreatingTitle       string             // Display title for creating placeholder
 	CreatingTool        string             // Tool for creating placeholder
+	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
 // Group represents a group of sessions

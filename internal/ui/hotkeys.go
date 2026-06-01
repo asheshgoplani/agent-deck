@@ -25,6 +25,7 @@ const (
 	hotkeyPluginManager    = "plugin_manager"
 	hotkeySkillsManager    = "skills_manager"
 	hotkeyTogglePreview    = "toggle_preview"
+	hotkeyCycleGroupView   = "cycle_group_view"
 	hotkeyMarkUnread       = "mark_unread"
 	hotkeyQuickApprove     = "quick_approve"
 	hotkeyToggleYolo       = "toggle_yolo"
@@ -66,6 +67,7 @@ var hotkeyActionOrder = []string{
 	hotkeyPluginManager,
 	hotkeySkillsManager,
 	hotkeyTogglePreview,
+	hotkeyCycleGroupView,
 	hotkeyMarkUnread,
 	hotkeyQuickApprove,
 	hotkeyToggleYolo,
@@ -107,6 +109,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyPluginManager:    "L",
 	hotkeySkillsManager:    "s",
 	hotkeyTogglePreview:    "v",
+	hotkeyCycleGroupView:   "t",
 	hotkeyMarkUnread:       "u",
 	hotkeyQuickApprove:     "a",
 	hotkeyToggleYolo:       "y",
