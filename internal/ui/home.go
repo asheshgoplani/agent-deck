@@ -4268,6 +4268,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for id, title := range h.pendingTitleChanges {
 					if inst := h.getInstanceByID(id); inst != nil && inst.Title != title {
 						inst.Title = title
+						inst.AutoName = false // re-applied pending title is a genuine rename; keep the user-chosen name
 						inst.SyncTmuxDisplayName()
 						applied = true
 						uiLog.Info("pending_rename_reapplied",
