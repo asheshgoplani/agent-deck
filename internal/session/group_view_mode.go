@@ -169,6 +169,32 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 		}
 	}
 
+	// Pass 1.5 (populated-on-top only): sink genuinely-empty subgroups of a
+	// populated parent into the bottom "empty groups" section. The parent's
+	// sessions stay on top, but the empty subgroup belongs with the other empties
+	// below the divider. To keep it from rendering orphaned (indented with no
+	// header above it), mark its full populated-ancestor chain as having a bottom
+	// row so each ancestor header is re-shown (duplicated) in the bottom, nesting
+	// the subgroup under a real parent. Empties with no populated ancestor are left
+	// untouched and fall through to the Pass 2 default (sink as a lone header).
+	if mode == GroupViewPopulatedTop {
+		var sink []string
+		for _, it := range items {
+			if it.Type != ItemTypeGroup {
+				continue
+			}
+			if hasTopRow[it.Path] || hasBottomRow[it.Path] || activity[it.Path].HasAny {
+				continue // has rows, or collapsed-but-populated -> not empty
+			}
+			if hasMarkedAncestor(hasTopRow, it.Path) {
+				sink = append(sink, it.Path)
+			}
+		}
+		for _, p := range sink {
+			markAncestorPaths(hasBottomRow, p)
+		}
+	}
+
 	// Pass 2: split items into the two sections.
 	top := make([]Item, 0, len(items))
 	bottom := make([]Item, 0, len(items))

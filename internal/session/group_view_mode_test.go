@@ -150,13 +150,14 @@ func TestPartitionPopulatedTopParentOfPopulatedSubgroupStaysTop(t *testing.T) {
 	}
 }
 
-func TestPartitionPopulatedTopEmptySubgroupStaysNestedUnderPopulatedParent(t *testing.T) {
+func TestPartitionPopulatedTopEmptySubgroupSinksWithDuplicatedParent(t *testing.T) {
 	// "proj" has a direct session AND an empty subgroup "proj/scratch".
-	// The populated parent stays on top "with all its contents, unsplit", so the
-	// empty subgroup must stay nested under it — NOT get ripped out and dumped in
-	// the bottom "empty groups" section, where it would render indented (level 1)
-	// with no parent header above it (orphaned, grouping lost). Only the
-	// genuinely-empty top-level group "trash" sinks.
+	// In populated-on-top the populated parent's sessions stay on top, but its
+	// empty subgroup belongs in the bottom "empty groups" section alongside other
+	// empties. To keep the empty subgroup from rendering orphaned (indented with
+	// no header above it), the populated parent header is re-shown (duplicated) in
+	// the bottom so the subgroup nests under a real parent. The genuinely-empty
+	// top-level group "trash" sinks as its own header.
 	items := []Item{
 		groupItem("proj"),
 		sessItem("1", StatusIdle, "proj"),
@@ -165,12 +166,35 @@ func TestPartitionPopulatedTopEmptySubgroupStaysNestedUnderPopulatedParent(t *te
 	}
 	got := summarize(PartitionByViewMode(items, GroupViewPopulatedTop, nil))
 	want := []string{
-		"G:proj", "S:1", "G:proj/scratch",
+		"G:proj", "S:1",
 		"---",
+		"G:proj", "G:proj/scratch", // parent duplicated as header, subgroup nested
 		"G:trash",
 	}
 	if !eqSlice(got, want) {
-		t.Fatalf("empty subgroup must stay nested under populated parent:\n got=%v\nwant=%v", got, want)
+		t.Fatalf("empty subgroup must sink with duplicated parent:\n got=%v\nwant=%v", got, want)
+	}
+}
+
+func TestPartitionPopulatedTopEmptySubgroupDuplicatesFullAncestorChain(t *testing.T) {
+	// Deeper nesting: "a/b" is populated (holds the only session); "a/b/c" is an
+	// empty subgroup. The empty subgroup sinks to the bottom, and the entire
+	// populated ancestor chain ("a" then "a/b") is re-shown as headers so "a/b/c"
+	// nests correctly rather than rendering at level 2 with nothing above it.
+	items := []Item{
+		groupItem("a"),
+		groupItem("a/b"),
+		sessItem("1", StatusIdle, "a/b"),
+		{Type: ItemTypeGroup, Path: "a/b/c", Level: 2}, // empty subgroup
+	}
+	got := summarize(PartitionByViewMode(items, GroupViewPopulatedTop, nil))
+	want := []string{
+		"G:a", "G:a/b", "S:1",
+		"---",
+		"G:a", "G:a/b", "G:a/b/c",
+	}
+	if !eqSlice(got, want) {
+		t.Fatalf("full ancestor chain must be duplicated in bottom:\n got=%v\nwant=%v", got, want)
 	}
 }
 
