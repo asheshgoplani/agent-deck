@@ -16,6 +16,7 @@ const TOOL_LABELS = {
 const MODEL_ID_CATALOG = {
   claude: [
     { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
     { value: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
     { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 alias' },
     { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 pinned' },
@@ -62,6 +63,7 @@ const MODEL_ID_CATALOG = {
     { value: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     { value: 'openai/o3', label: 'OpenAI o3' },
     { value: 'anthropic/claude-sonnet-4-6', label: 'Anthropic Claude Sonnet 4.6' },
+    { value: 'anthropic/claude-opus-4-8', label: 'Anthropic Claude Opus 4.8' },
     { value: 'anthropic/claude-opus-4-7', label: 'Anthropic Claude Opus 4.7' },
     { value: 'anthropic/claude-haiku-4-5', label: 'Anthropic Claude Haiku 4.5' },
   ],

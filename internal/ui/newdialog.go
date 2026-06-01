@@ -784,6 +784,7 @@ func knownModelIDsForTool(tool string) []string {
 	case session.IsClaudeCompatible(tool):
 		return []string{
 			"claude-sonnet-4-6",
+			"claude-opus-4-8",
 			"claude-opus-4-7",
 			"claude-haiku-4-5",
 			"claude-haiku-4-5-20251001",
@@ -810,6 +811,7 @@ func knownModelIDsForTool(tool string) []string {
 			"openai/gpt-5",
 			"openai/o3",
 			"anthropic/claude-sonnet-4-6",
+			"anthropic/claude-opus-4-8",
 			"anthropic/claude-opus-4-7",
 			"anthropic/claude-haiku-4-5",
 		}

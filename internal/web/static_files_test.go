@@ -170,6 +170,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"gpt-5.3-codex",
 		"o3-pro",
 		"claude-sonnet-4-6",
+		"claude-opus-4-8",
 		"claude-opus-4-7",
 		"claude-haiku-4-5-20251001",
 		"gemini-3.1-pro-preview",
@@ -177,6 +178,7 @@ func TestCreateSessionDialogUsesModelIDCatalog(t *testing.T) {
 		"gemini-2.5-flash-lite",
 		"openai/gpt-5.5",
 		"anthropic/claude-sonnet-4-6",
+		"anthropic/claude-opus-4-8",
 		"Custom model ID",
 	} {
 		if !strings.Contains(body, want) {
