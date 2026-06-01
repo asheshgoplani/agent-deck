@@ -27,6 +27,36 @@ func cellWidth(s string) int {
 	return ansi.StringWidth(s)
 }
 
+// fitCellWidth returns s truncated or space-padded so it occupies exactly width
+// terminal cells. Used by clampViewToViewport so each frame overwrites the full
+// row and incremental redraw does not leave ghost characters (issue #607) —
+// avoids tea.ClearScreen / flicker on iTerm2.
+func fitCellWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	w := cellWidth(s)
+	if w > width {
+		return cellTruncate(s, width, "")
+	}
+	if w < width {
+		return s + strings.Repeat(" ", width-w)
+	}
+	return s
+}
+
+// fitLinesToWidth applies fitCellWidth to each line of a multi-line string.
+func fitLinesToWidth(content string, width int) string {
+	if width <= 0 || content == "" {
+		return content
+	}
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = fitCellWidth(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // cellTruncate returns a prefix of s whose cellWidth is <= width, appending
 // tail (also measured by cellWidth) if any truncation occurred.
 //

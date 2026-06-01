@@ -276,3 +276,21 @@ func Test_Issue937v2_CellTruncate_PreservesAnsiBoundariesAndKeycap(t *testing.T)
 		})
 	}
 }
+
+// Test_clampViewToViewport_PadsEveryRow ensures the final frame pads narrow lines.
+func Test_clampViewToViewport_PadsEveryRow(t *testing.T) {
+	const width, height = 30, 3
+	in := strings.Join([]string{
+		strings.Repeat("X", width),
+		"short",
+		"",
+	}, "\n")
+	out := clampViewToViewport(in, width, height)
+	lines := strings.Split(out, "\n")
+	if len(lines) != height {
+		t.Fatalf("want %d lines, got %d", height, len(lines))
+	}
+	if got := cellWidth(lines[1]); got != width {
+		t.Fatalf("line 1 cellWidth = %d; want %d (must pad, not only truncate)", got, width)
+	}
+}

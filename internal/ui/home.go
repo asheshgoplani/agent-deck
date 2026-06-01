@@ -10842,65 +10842,19 @@ func clampViewToViewport(content string, width, height int) string {
 	}
 
 	for i, line := range lines {
-		// #937 v2: cellWidth/cellTruncate (not ansi.*) so this final
-		// viewport-clamp safety net sees keycap clusters at their true
-		// terminal cell count. Any line that slips past upstream gates
-		// with a #️⃣ 0️⃣–9️⃣ *️⃣ glyph would otherwise overflow into the
-		// next row here — exactly @jennings's pane-content drift report.
-		if cellWidth(line) > width {
-			lines[i] = cellTruncate(line, width, "")
-		}
+		// Pad/truncate to exactly width cells so incremental redraw does not
+		// leave stale glyphs when a shorter line replaces a longer one (#607).
+		lines[i] = fitCellWidth(line, width)
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-// ensureExactWidth ensures each line in content has exactly the specified visual width.
-// This is essential for proper horizontal panel alignment in lipgloss.JoinHorizontal.
-//
-// CRITICAL: Uses lipgloss.Width() for measurement to stay consistent with
-// lipgloss.JoinHorizontal's internal width calculation. Using a different
-// measurement (e.g. runewidth.StringWidth after custom ANSI stripping) can
-// disagree by even 1 character, causing JoinHorizontal to pad all lines to
-// the wider measurement. This makes the joined output exceed terminal width,
-// lines wrap, and Bubble Tea's renderer loses cursor tracking — producing
-// duplicated/stacked content (the "scrolling artifact" bug).
-//
-// Behavior:
-//   - Measures width using lipgloss.Width (same as JoinHorizontal)
-//   - Pads short lines with spaces to reach target width
-//   - Truncates long lines using lipgloss.MaxWidth (preserves ANSI where possible)
-//   - Guarantees every line is exactly `width` visual characters
+// ensureExactWidth ensures each line occupies exactly width terminal cells.
+// Uses cellWidth/fitCellWidth (#937) so panel rows overwrite the full line on
+// incremental redraw (#607); lipgloss.Width can under-count emoji/keycaps.
 func ensureExactWidth(content string, width int) string {
-	if width <= 0 {
-		return content
-	}
-
-	lines := strings.Split(content, "\n")
-	result := make([]string, len(lines))
-
-	for i, line := range lines {
-		// Measure visual width using lipgloss (same measurement as JoinHorizontal)
-		displayWidth := lipgloss.Width(line)
-
-		if displayWidth == width {
-			result[i] = line
-		} else if displayWidth < width {
-			// Pad with spaces to reach target width
-			result[i] = line + strings.Repeat(" ", width-displayWidth)
-		} else {
-			// Line too wide — truncate using lipgloss for consistent ANSI handling
-			truncated := lipgloss.NewStyle().MaxWidth(width).Render(line)
-			// Verify and pad if truncation left it short
-			truncWidth := lipgloss.Width(truncated)
-			if truncWidth < width {
-				truncated += strings.Repeat(" ", width-truncWidth)
-			}
-			result[i] = truncated
-		}
-	}
-
-	return strings.Join(result, "\n")
+	return fitLinesToWidth(content, width)
 }
 
 // renderDualColumnLayout renders side-by-side panels for wide terminals (80+ cols)
