@@ -6152,6 +6152,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parentSessionID,
 			parentProjectPath,
 			tempID,
+			false, // not auto-named — user went through the full create dialog
 		)
 
 	case msg.String() == "esc":
@@ -8145,6 +8146,7 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		parentSessionID,
 		parentProjectPath,
 		"", // no placeholder — non-worktree sessions are fast
+		false, // not auto-named
 	)
 }
 
@@ -9350,6 +9352,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
 	tempID string,
+	autoName bool,
 ) tea.Cmd {
 	return func() tea.Msg {
 		uiLog.Info("create_session_start",
@@ -9398,6 +9401,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
+		inst.AutoName = autoName // quick-create paths pass true; see render substitution
 
 		// Set worktree fields if provided
 		if worktreePath != "" {
@@ -9860,7 +9864,8 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
-		"", // no placeholder
+		"",   // no placeholder
+		true, // quick-create → auto-named handle
 	)
 }
 
@@ -9943,6 +9948,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, nil,
 		"", "",
 		"",
+		true, // quick-create → auto-named handle
 	)
 }
 
