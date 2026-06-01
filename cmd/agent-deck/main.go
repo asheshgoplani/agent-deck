@@ -1515,6 +1515,13 @@ func handleAdd(profile string, args []string) {
 		newInstance = session.NewInstance(sessionTitle, path)
 	}
 
+	// Quick mode generated a machine-named adjective-noun handle; mark it so the
+	// TUI shows Claude's live task description in place of the random name. This
+	// mirrors the exact condition used above to generate sessionTitle.
+	if isQuick && !userProvidedTitle {
+		newInstance.AutoName = true
+	}
+
 	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50). The
 	// `--tmux-socket` flag beats `[tmux].socket_name`. Whitespace-only
 	// values fall back to the config default via the GetSocketName trim
