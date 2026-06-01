@@ -1,0 +1,80 @@
+# Nightly pre-release build published on every push to main.
+#
+# Uses `goreleaser release --snapshot --skip=publish` to produce cross-platform
+# archives, then replaces the GitHub "nightly" pre-release with the fresh
+# artifacts. No version tag is required and the Homebrew tap is not updated.
+#
+# The `nightly` tag/release is recreated on each run so it always points at
+# the latest main commit.
+
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Only one nightly build runs at a time; a newer push cancels any in-flight run.
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # zoxide backs the quick-open picker tests (#693, v1.7.54).
+      - name: Install zoxide
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zoxide
+          zoxide --version
+
+      - name: Run tests
+        run: go test -race -timeout 20m ./...
+
+      - name: Build snapshot archives
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          args: release --snapshot --skip=publish --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Snapshot mode never pushes to the tap, but goreleaser still
+          # evaluates env-var templates in .goreleaser.yml.
+          HOMEBREW_TAP_GITHUB_TOKEN: nightly-placeholder
+
+      - name: Publish nightly pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Remove the previous nightly release and its lightweight tag so the
+          # new release can reuse the same tag name.
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+
+          ARTIFACTS=$(find dist/ \( -name '*.tar.gz' -o -name 'checksums.txt' \) | sort)
+
+          gh release create nightly \
+            --prerelease \
+            --title "Nightly ($(date -u +'%Y-%m-%d'))" \
+            --notes "Automated nightly build from \`main\` at commit \`${{ github.sha }}\`.
+
+          > [!WARNING]
+          > This is a **pre-release** build and may be unstable. Use a tagged release for production." \
+            $ARTIFACTS
