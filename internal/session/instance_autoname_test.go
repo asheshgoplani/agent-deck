@@ -6,8 +6,14 @@ import (
 	"testing"
 )
 
-// TestAutoNameRoundTrip pins that AutoName persists through the same
-// json.Marshal → json.Unmarshal path Storage.Save/Load uses.
+// TestAutoNameRoundTrip pins that AutoName survives a json.Marshal →
+// json.Unmarshal round-trip of the Instance struct itself.
+//
+// NOTE: this is NOT the persistence path. Storage.Save/Load go through
+// InstanceData → statedb.InstanceRow → SQLite columns, not Instance's own JSON
+// tags. This test passing while that SQLite path dropped the field is exactly
+// how the "auto name lost on reopen" bug shipped. The real persistence
+// round-trip is covered by TestStorageSaveWithGroups_PersistsAutoName.
 func TestAutoNameRoundTrip(t *testing.T) {
 	inst := NewInstance("lively-fjord", t.TempDir())
 	inst.AutoName = true

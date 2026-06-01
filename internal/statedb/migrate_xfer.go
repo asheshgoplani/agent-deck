@@ -20,14 +20,14 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 	row := &InstanceRow{}
 	var createdUnix, accessedUnix, archivedUnix int64
 	var toolDataStr string
-	var isConductorInt, noTransitionNotifyInt, titleLockedInt int
+	var isConductorInt, noTransitionNotifyInt, titleLockedInt, autoNameInt int
 	err := s.db.QueryRow(`
 		SELECT id, title, project_path, group_path, sort_order,
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		FROM instances WHERE id = ?
 	`, id).Scan(
 		&row.ID, &row.Title, &row.ProjectPath, &row.GroupPath, &row.Order,
@@ -35,7 +35,7 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 		&createdUnix, &accessedUnix,
 		&row.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 		&row.WorktreePath, &row.WorktreeRepo, &row.WorktreeBranch, &row.Account,
-		&archivedUnix, &toolDataStr, &titleLockedInt,
+		&archivedUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &row.AutoNameDescription, &row.Pin,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -53,6 +53,7 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 	row.IsConductor = isConductorInt != 0
 	row.NoTransitionNotify = noTransitionNotifyInt != 0
 	row.TitleLocked = titleLockedInt != 0
+	row.AutoName = autoNameInt != 0
 	row.ToolData = json.RawMessage(toolDataStr)
 	return row, nil
 }
@@ -65,7 +66,7 @@ func (s *StateDB) LoadInstanceChildren(parentID string) ([]*InstanceRow, error) 
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		FROM instances WHERE parent_session_id = ? ORDER BY sort_order
 	`, parentID)
 	if err != nil {
@@ -91,7 +92,7 @@ func (s *StateDB) LoadInstancesByGroup(groupPath string) ([]*InstanceRow, error)
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		FROM instances WHERE group_path = ? ORDER BY sort_order
 	`, groupPath)
 	if err != nil {
@@ -114,14 +115,14 @@ func scanInstanceRow(rows *sql.Rows) (*InstanceRow, error) {
 	r := &InstanceRow{}
 	var createdUnix, accessedUnix, archivedUnix int64
 	var toolDataStr string
-	var isConductorInt, noTransitionNotifyInt, titleLockedInt int
+	var isConductorInt, noTransitionNotifyInt, titleLockedInt, autoNameInt int
 	if err := rows.Scan(
 		&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
 		&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
 		&createdUnix, &accessedUnix,
 		&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 		&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-		&archivedUnix, &toolDataStr, &titleLockedInt,
+		&archivedUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription, &r.Pin,
 	); err != nil {
 		return nil, err
 	}
@@ -135,6 +136,7 @@ func scanInstanceRow(rows *sql.Rows) (*InstanceRow, error) {
 	r.IsConductor = isConductorInt != 0
 	r.NoTransitionNotify = noTransitionNotifyInt != 0
 	r.TitleLocked = titleLockedInt != 0
+	r.AutoName = autoNameInt != 0
 	r.ToolData = json.RawMessage(toolDataStr)
 	return r, nil
 }
@@ -159,6 +161,10 @@ func (s *StateDB) InsertInstanceRow(inst *InstanceRow) error {
 	if inst.TitleLocked {
 		titleLockedInt = 1
 	}
+	autoNameInt := 0
+	if inst.AutoName {
+		autoNameInt = 1
+	}
 	return withBusyRetry(func() error {
 		_, err := s.db.Exec(`
 			INSERT OR REPLACE INTO instances (
@@ -167,15 +173,15 @@ func (s *StateDB) InsertInstanceRow(inst *InstanceRow) error {
 				created_at, last_accessed,
 				parent_session_id, is_conductor, no_transition_notify,
 				worktree_path, worktree_repo, worktree_branch, account,
-				archived_at, tool_data, title_locked
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 			inst.CreatedAt.Unix(), instLastAccessedUnix(inst),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription, inst.Pin,
 		)
 		return err
 	})
