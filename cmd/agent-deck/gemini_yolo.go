@@ -23,8 +23,18 @@ func applyCLIYoloOverride(inst *session.Instance, enabled bool) error {
 		if err := inst.SetCodexOptions(opts); err != nil {
 			return err
 		}
+	case "grok":
+		yolo := true
+		opts := inst.GetGrokOptions()
+		if opts == nil {
+			opts = &session.GrokOptions{}
+		}
+		opts.YoloMode = &yolo
+		if err := inst.SetGrokOptions(opts); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("--yolo only works with Gemini or Codex sessions")
+		return fmt.Errorf("--yolo only works with Gemini, Codex, or Grok sessions")
 	}
 	return nil
 }

@@ -529,6 +529,7 @@ func initStyles() {
 		"shell":    lipgloss.NewStyle().Foreground(ColorText),
 		"opencode": lipgloss.NewStyle().Foreground(ColorText),
 		"crush":    lipgloss.NewStyle().Foreground(ColorPurple),
+		"grok":     lipgloss.NewStyle().Foreground(ColorText),
 	}
 
 	// DefaultToolStyle
@@ -610,6 +611,8 @@ func ToolIcon(tool string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "grok":
+		return "✕"
 	case "pi":
 		return IconPi
 	case "shell":
@@ -637,6 +640,8 @@ func ToolColor(tool string) lipgloss.Color {
 		return ColorAccent // Blue for Cursor
 	case "hermes":
 		return ColorYellow // Gold for Hermes Agent
+	case "grok":
+		return ColorText // Neutral for xAI Grok (monochrome brand)
 	case "pi":
 		return ColorAccent
 	case "aider":

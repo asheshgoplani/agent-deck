@@ -12,6 +12,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[codex] Section](#codex-section)
 - [[copilot] Section](#copilot-section)
 - [[hermes] Section](#hermes-section)
+- [[grok] Section](#grok-section)
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
 - [[logs] Section](#logs-section)
@@ -219,6 +220,27 @@ yolo_mode = false
 Status detection: process-alive/dead only. Content-sniffing planned for future release.
 
 When using a different Codex home, prefer an inline command such as `CODEX_HOME=~/.codex-work codex` or export `CODEX_HOME` before starting agent-deck. Shell aliases are allowed, but agent-deck cannot infer `CODEX_HOME` hidden inside an alias for resume-file discovery.
+
+## [grok] Section
+
+xAI Grok Build CLI integration settings ([docs.x.ai/build](https://docs.x.ai/build/overview)). Grok is a Claude-Code-style interactive TUI; default model is `grok-build`.
+
+```toml
+[grok]
+command = "grok"
+env_file = "~/.grok.env"
+yolo_mode = false
+default_model = "grok-build"
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | `"grok"` | Override the binary/invocation. Supports flags. |
+| `env_file` | string | `""` | A .env file sourced for Grok sessions only. See [Path Resolution](#path-resolution). |
+| `yolo_mode` | bool | `false` | Maps to `grok --always-approve` (auto-approve all tool calls). |
+| `default_model` | string | `""` | Model for new sessions, passed as `grok -m <model>`. Empty = Grok CLI default. |
+
+Status detection: busy/prompt content patterns captured from the real Grok TUI. Resume is not yet wired (deferred — Grok session-ID extraction is not verified).
 
 ## [docker] Section
 
@@ -550,7 +572,7 @@ env = { API_KEY = "token", BASE_URL = "https://api.example.com" }
 | `env_file` | string | No | A .env file sourced for this tool only. Sourced after global `[shell].env_files`. See [Path Resolution](#path-resolution). |
 | `env` | map | No | Inline environment variables exported for this tool. These take highest priority, overriding both `[shell].env_files` and `env_file`. Values are single-quoted to prevent shell expansion. |
 
-**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, cursor=📝, shell=🐚
+**Built-in icons:** claude=🤖, gemini=✨, opencode=🌐, codex=💻, copilot=🐙, hermes=☤, grok=✕, cursor=📝, shell=🐚
 
 ## Path Resolution
 

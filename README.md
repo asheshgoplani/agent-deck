@@ -563,6 +563,7 @@ Agent Deck works with any terminal-based AI tool:
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
 | **Hermes Agent** | Organization, launch |
+| **Grok** (xAI grok-build) | Status detection, organization, launch |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
 ### Cost Tracking Dashboard

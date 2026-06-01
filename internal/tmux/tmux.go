@@ -537,7 +537,7 @@ func SupportsHyperlinks() bool {
 }
 
 // Tool detection patterns (used by DetectTool for initial tool identification)
-var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi"}
+var toolDetectionOrder = []string{"claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "grok", "pi"}
 
 var toolDetectionPatterns = map[string][]*regexp.Regexp{
 	"claude": {
@@ -575,6 +575,11 @@ var toolDetectionPatterns = map[string][]*regexp.Regexp{
 		// Hermes Agent CLI (github.com/NousResearch/hermes-agent).
 		regexp.MustCompile(`(?i)\bhermes\s+agent\b`),
 		regexp.MustCompile(`(?i)\bnous\s*research\b`),
+	},
+	"grok": {
+		// xAI Grok Build CLI — "Grok Build" is the composer border label
+		// present in every TUI frame (https://docs.x.ai/build/overview).
+		regexp.MustCompile(`(?i)\bgrok\s+build\b`),
 	},
 	"pi": {
 		regexp.MustCompile(`(?mi)^\s*pi>\s*`),
@@ -614,6 +619,8 @@ func detectToolFromCommand(command string) string {
 			return "cursor"
 		case "hermes":
 			return "hermes"
+		case "grok":
+			return "grok"
 		case "pi":
 			return "pi"
 		}
@@ -636,6 +643,8 @@ func detectToolFromCommand(command string) string {
 		return "cursor"
 	case strings.Contains(cmdLower, "hermes"):
 		return "hermes"
+	case strings.Contains(cmdLower, "grok"):
+		return "grok"
 	case strings.Contains(cmdLower, " pi ") || strings.HasPrefix(cmdLower, "pi "):
 		return "pi"
 	default:

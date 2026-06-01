@@ -282,6 +282,8 @@ func (i *Instance) getToolEnvFile() string {
 		return config.Crush.EnvFile
 	case "hermes":
 		return config.Hermes.EnvFile
+	case "grok":
+		return config.Grok.EnvFile
 	default:
 		// Check custom tools
 		if def := GetToolDef(i.Tool); def != nil {

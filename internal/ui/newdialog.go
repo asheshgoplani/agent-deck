@@ -248,7 +248,7 @@ func displayCommandPreset(cmd string) string {
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
 func buildPresetCommands() []string {
-	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
+	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes", "grok"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
@@ -836,6 +836,11 @@ func knownModelIDsForTool(tool string) []string {
 			"o3-pro",
 			"o3",
 		}
+	case tool == "grok":
+		return []string{
+			"grok-build",
+			"grok-code-fast-1",
+		}
 	default:
 		return nil
 	}
@@ -1076,6 +1081,8 @@ func (d *NewDialog) updateModelPlaceholder() {
 		d.modelInput.Placeholder = "openai/gpt-5.5"
 	case session.IsCodexCompatible(cmd):
 		d.modelInput.Placeholder = "gpt-5.5"
+	case cmd == "grok":
+		d.modelInput.Placeholder = "grok-build"
 	default:
 		d.modelInput.Placeholder = "tool default"
 	}

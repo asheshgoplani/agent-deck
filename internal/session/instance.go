@@ -2777,6 +2777,8 @@ func (i *Instance) Start() error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "grok":
+		command = i.buildGrokCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -2981,6 +2983,8 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildCursorCommand(i.Command, false)
 	case i.Tool == "hermes":
 		command = i.buildHermesCommand(i.Command)
+	case i.Tool == "grok":
+		command = i.buildGrokCommand(i.Command)
 	default:
 		// Check if this is a custom tool with session resume config
 		if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -5407,6 +5411,8 @@ func (i *Instance) Restart() error {
 			command = i.buildCursorCommand(i.Command, true)
 		case i.Tool == "hermes":
 			command = i.buildHermesCommand(i.Command)
+		case i.Tool == "grok":
+			command = i.buildGrokCommand(i.Command)
 		default:
 			// Check if this is a custom tool with session resume config
 			if toolDef := GetToolDef(i.Tool); toolDef != nil {
@@ -5640,7 +5646,7 @@ func (i *Instance) SetGeminiModel(model string) error {
 // SupportsLaunchModel reports whether a newly-created session can receive an
 // explicit model override through Agent Deck's generic session creation path.
 func SupportsLaunchModel(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool)
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "opencode" || IsCodexCompatible(tool) || tool == "grok"
 }
 
 // ApplyLaunchModel stores a per-session model override in the tool-specific
@@ -5679,6 +5685,14 @@ func (i *Instance) ApplyLaunchModel(model string) error {
 		}
 		opts.Model = model
 		return i.SetCodexOptions(opts)
+	case i.Tool == "grok":
+		opts := i.GetGrokOptions()
+		if opts == nil {
+			userConfig, _ := LoadUserConfig()
+			opts = NewGrokOptions(userConfig)
+		}
+		opts.Model = model
+		return i.SetGrokOptions(opts)
 	default:
 		return fmt.Errorf("model selection is not supported for tool %q", i.Tool)
 	}
@@ -6784,6 +6798,7 @@ var builtinAgentTools = map[string]bool{
 	"cursor":   true,
 	"hermes":   true,
 	"crush":    true,
+	"grok":     true,
 }
 
 // isBuiltinAgentTool reports whether tool is a first-party agent (or a custom

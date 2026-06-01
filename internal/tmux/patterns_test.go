@@ -138,6 +138,44 @@ func TestDefaultRawPatterns_Pi(t *testing.T) {
 	}
 }
 
+func TestDefaultRawPatterns_Grok(t *testing.T) {
+	raw := DefaultRawPatterns("grok")
+	if raw == nil {
+		t.Fatal("expected non-nil for grok")
+	}
+	if len(raw.BusyPatterns) == 0 {
+		t.Error("grok should have busy patterns")
+	}
+	if len(raw.PromptPatterns) == 0 {
+		t.Error("grok should have prompt patterns")
+	}
+
+	// Verified busy markers (captured from the real TUI).
+	wantBusy := map[string]bool{
+		"Ctrl+c:cancel": false, "Ctrl+Enter:interject": false,
+		"Thinking…": false, "Responding…": false, "Connecting MCPs": false,
+	}
+	for _, p := range raw.BusyPatterns {
+		if _, ok := wantBusy[p]; ok {
+			wantBusy[p] = true
+		}
+	}
+	for p, found := range wantBusy {
+		if !found {
+			t.Errorf("grok busy patterns missing %q", p)
+		}
+	}
+
+	// Regression guard (2026-05-31 grok-wait-fix): "Grok Build" is the
+	// always-present composer label and must NOT be a prompt marker, or
+	// hasPromptIndicator reports "waiting" too early and races the reply.
+	for _, p := range raw.PromptPatterns {
+		if p == "Grok Build" {
+			t.Error(`grok prompt patterns must NOT include "Grok Build" (wait-fix regression)`)
+		}
+	}
+}
+
 func TestDefaultRawPatterns_Unknown(t *testing.T) {
 	raw := DefaultRawPatterns("unknowntool")
 	if raw != nil {

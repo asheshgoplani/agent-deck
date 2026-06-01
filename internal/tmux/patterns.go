@@ -122,6 +122,35 @@ func DefaultRawPatterns(toolName string) *RawPatterns {
 				`re:(?m)^\s*›\s`,
 			},
 		}
+	case "grok":
+		// xAI Grok Build CLI (https://docs.x.ai/build/overview) — a
+		// Claude-Code-style TUI. Patterns captured from the real v0.2.14 TUI
+		// and verified end-to-end (3x --wait round-trips + a live conductor
+		// turn). GetStatus checks busy BEFORE prompt, which is what keeps
+		// these prompt markers safe.
+		//
+		// "Grok Build" (the composer border label) is DELIBERATELY excluded
+		// from PromptPatterns: it is present in every frame — including the
+		// post-submit, pre-reply transient — so using it as a ready marker
+		// reports "waiting" too early and races the reply render in
+		// waitForCompletion. The fresh home screen carries "New worktree";
+		// the post-turn settled footer carries "Shift+Tab:mode" /
+		// "Ctrl+.:shortcuts"; "Enter:send" appears once text is queued.
+		return &RawPatterns{
+			BusyPatterns: []string{
+				"Ctrl+c:cancel",
+				"Ctrl+Enter:interject",
+				"Thinking…",
+				"Responding…",
+				"Connecting MCPs",
+			},
+			PromptPatterns: []string{
+				"New worktree",
+				"Ctrl+.:shortcuts",
+				"Shift+Tab:mode",
+				"Enter:send",
+			},
+		}
 	case "shell":
 		return &RawPatterns{
 			PromptPatterns: []string{"$ ", "# ", "% "},

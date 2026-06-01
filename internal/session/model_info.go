@@ -36,6 +36,10 @@ func (i *Instance) LaunchModelID() string {
 		if opts := i.GetCodexOptions(); opts != nil {
 			return strings.TrimSpace(opts.Model)
 		}
+	case i.Tool == "grok":
+		if opts := i.GetGrokOptions(); opts != nil {
+			return strings.TrimSpace(opts.Model)
+		}
 	}
 
 	return ""

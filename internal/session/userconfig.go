@@ -108,6 +108,9 @@ type UserConfig struct {
 	// Hermes defines Hermes Agent CLI integration settings
 	Hermes HermesSettings `toml:"hermes"`
 
+	// Grok defines xAI Grok Build CLI integration settings
+	Grok GrokSettings `toml:"grok"`
+
 	// Worktree defines git worktree preferences
 	Worktree WorktreeSettings `toml:"worktree"`
 
@@ -1101,6 +1104,27 @@ type CrushSettings struct {
 	// YoloMode enables --yolo flag for Crush sessions (auto-accept all
 	// permission prompts). Default: false
 	YoloMode bool `toml:"yolo_mode"`
+}
+
+// GrokSettings defines xAI Grok Build CLI configuration.
+// Binary: `grok` from xAI (https://docs.x.ai/build/overview). Claude-Code-style
+// interactive TUI. Key flags: -m/--model, --always-approve, --cwd.
+type GrokSettings struct {
+	// Command overrides the default binary/invocation for Grok sessions.
+	// Supports flags (e.g., "grok --reasoning-effort high"). Default: "grok"
+	Command string `toml:"command"`
+
+	// EnvFile is a .env file specific to Grok sessions (sourced before the
+	// `grok` command runs, like [gemini].env_file). Optional.
+	EnvFile string `toml:"env_file"`
+
+	// YoloMode enables --always-approve for Grok sessions (auto-approve all
+	// tool calls). Default: false
+	YoloMode bool `toml:"yolo_mode"`
+
+	// DefaultModel is the model to use for new Grok sessions (e.g.,
+	// "grok-build"). If empty, the Grok CLI uses its own default.
+	DefaultModel string `toml:"default_model"`
 }
 
 // WorktreeSettings contains git worktree preferences.
@@ -2224,13 +2248,17 @@ func GetToolCommand(toolName string) string {
 		if config.Hermes.Command != "" {
 			return config.Hermes.Command
 		}
+	case "grok":
+		if config.Grok.Command != "" {
+			return config.Grok.Command
+		}
 	}
 	return toolName
 }
 
 func isBuiltinToolName(toolName string) bool {
 	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi", "shell", "aider":
+	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "grok", "pi", "shell", "aider":
 		return true
 	default:
 		return false
@@ -2262,6 +2290,8 @@ func GetToolIcon(toolName string) string {
 		return "📝"
 	case "hermes":
 		return "☤"
+	case "grok":
+		return "✕"
 	case "pi":
 		return "π"
 	case "shell":
@@ -2813,6 +2843,15 @@ func CreateExampleConfig() error {
 # [profiles.work.codex]
 # config_dir = "~/.codex-work"
 # Enable --yolo (bypass approvals and sandbox) by default (default: false)
+# yolo_mode = true
+
+# Grok Build CLI integration (xAI)
+# [grok]
+# Grok CLI command or alias to use (default: "grok")
+# command = "grok"
+# Default model for new sessions (default: Grok CLI's own default, grok-build)
+# default_model = "grok-build"
+# Enable --always-approve (auto-approve all tool calls) by default (default: false)
 # yolo_mode = true
 
 # Log file management

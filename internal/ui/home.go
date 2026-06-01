@@ -7166,7 +7166,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case "y":
-		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
+		// Toggle YOLO mode for Gemini, Codex, or Grok sessions (requires restart)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -7205,6 +7205,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					opts.YoloMode = &newYolo
 					_ = inst.SetCodexOptions(opts)
+					toggled = true
+
+				case "grok":
+					currentYolo := false
+					opts := inst.GetGrokOptions()
+					if opts != nil && opts.YoloMode != nil {
+						currentYolo = *opts.YoloMode
+					} else {
+						userConfig, _ := session.LoadUserConfig()
+						if userConfig != nil {
+							currentYolo = userConfig.Grok.YoloMode
+						}
+					}
+					newYolo := !currentYolo
+					if opts == nil {
+						opts = &session.GrokOptions{}
+					}
+					opts.YoloMode = &newYolo
+					_ = inst.SetGrokOptions(opts)
 					toggled = true
 				}
 
@@ -8908,6 +8927,8 @@ func createSessionTool(command string) (string, string) {
 		command = "cursor agent"
 	case "hermes":
 		tool = "hermes"
+	case "grok":
+		tool = "grok"
 	default:
 		if toolDef := session.GetToolDef(command); toolDef != nil {
 			tool = command
