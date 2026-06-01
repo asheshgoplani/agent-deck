@@ -107,6 +107,18 @@ func markAncestorPaths(m map[string]bool, path string) {
 	}
 }
 
+// hasMarkedAncestor reports whether any strict ancestor of path (its proper
+// prefixes, split on "/") is marked in m. Excludes path itself.
+func hasMarkedAncestor(m map[string]bool, path string) bool {
+	parts := strings.Split(path, "/")
+	for i := 1; i < len(parts); i++ {
+		if m[strings.Join(parts[:i], "/")] {
+			return true
+		}
+	}
+	return false
+}
+
 // PartitionByViewMode re-orders an already-flattened item list into a top
 // section and a bottom section separated by an ItemTypeDivider row.
 //
@@ -171,7 +183,24 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 				act := activity[it.Path]
 				switch {
 				case !act.HasAny:
-					bottom = append(bottom, it) // genuinely empty -> sink
+					// Genuinely empty group (no sessions in its subtree). It must
+					// render nested under a parent header, never orphaned with an
+					// indent but nothing above it. Place it in whichever section its
+					// nearest populated ancestor lives:
+					//   - active-on-top: the parent re-appears in the BOTTOM with its
+					//     idle remainder, so nest there (check bottom first).
+					//   - populated-on-top: the parent is unsplit in the TOP ("all its
+					//     contents, unsplit"), so nest there.
+					//   - no populated ancestor (whole top-level subtree empty): sink
+					//     to the bottom "empty groups" section.
+					switch {
+					case hasMarkedAncestor(hasBottomRow, it.Path):
+						bottom = append(bottom, it)
+					case hasMarkedAncestor(hasTopRow, it.Path):
+						top = append(top, it)
+					default:
+						bottom = append(bottom, it)
+					}
 				case mode == GroupViewActiveTop && !act.HasActive:
 					bottom = append(bottom, it) // collapsed, all-inactive -> sink
 				default:

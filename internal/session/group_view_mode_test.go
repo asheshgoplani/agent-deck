@@ -150,6 +150,53 @@ func TestPartitionPopulatedTopParentOfPopulatedSubgroupStaysTop(t *testing.T) {
 	}
 }
 
+func TestPartitionPopulatedTopEmptySubgroupStaysNestedUnderPopulatedParent(t *testing.T) {
+	// "proj" has a direct session AND an empty subgroup "proj/scratch".
+	// The populated parent stays on top "with all its contents, unsplit", so the
+	// empty subgroup must stay nested under it — NOT get ripped out and dumped in
+	// the bottom "empty groups" section, where it would render indented (level 1)
+	// with no parent header above it (orphaned, grouping lost). Only the
+	// genuinely-empty top-level group "trash" sinks.
+	items := []Item{
+		groupItem("proj"),
+		sessItem("1", StatusIdle, "proj"),
+		{Type: ItemTypeGroup, Path: "proj/scratch", Level: 1}, // empty subgroup
+		groupItem("trash"),                                    // empty top-level
+	}
+	got := summarize(PartitionByViewMode(items, GroupViewPopulatedTop, nil))
+	want := []string{
+		"G:proj", "S:1", "G:proj/scratch",
+		"---",
+		"G:trash",
+	}
+	if !eqSlice(got, want) {
+		t.Fatalf("empty subgroup must stay nested under populated parent:\n got=%v\nwant=%v", got, want)
+	}
+}
+
+func TestPartitionActiveTopEmptySubgroupNestsUnderReshownParent(t *testing.T) {
+	// "p" has one running + one idle session AND an empty subgroup "p/empty".
+	// Active-top splits "p": running session up top, idle remainder + the empty
+	// subgroup down in the "idle / done" section, both nested under the re-shown
+	// "p" header. The empty subgroup must follow its parent into the bottom — not
+	// get hoisted to the top away from any header.
+	items := []Item{
+		groupItem("p"),
+		sessItem("1", StatusRunning, "p"),
+		sessItem("2", StatusIdle, "p"),
+		{Type: ItemTypeGroup, Path: "p/empty", Level: 1}, // empty subgroup
+	}
+	got := summarize(PartitionByViewMode(items, GroupViewActiveTop, nil))
+	want := []string{
+		"G:p", "S:1",
+		"---",
+		"G:p", "S:2", "G:p/empty",
+	}
+	if !eqSlice(got, want) {
+		t.Fatalf("empty subgroup must nest under re-shown parent in bottom:\n got=%v\nwant=%v", got, want)
+	}
+}
+
 func TestPartitionPopulatedTopNoEmptyGroupsIsIdentity(t *testing.T) {
 	items := []Item{
 		groupItem("a"),
