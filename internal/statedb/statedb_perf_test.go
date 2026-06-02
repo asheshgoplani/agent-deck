@@ -292,7 +292,7 @@ func TestPerf_StateDB_WatcherEventIngest(t *testing.T) {
 		prefill,
 		func() {
 			for i := 0; i < perfWatcherIngestBatch; i++ {
-				inserted, err := db.SaveWatcherEvent(watcherID, fmt.Sprintf("batch-%05d", i), "sender@example.com", "subj", "", "", perfWatcherSteadyState)
+				inserted, err := db.SaveWatcherEvent(watcherID, fmt.Sprintf("batch-%05d", i), "sender@example.com", "subj", "", "", "", perfWatcherSteadyState)
 				if err != nil {
 					t.Fatalf("SaveWatcherEvent: %v", err)
 				}
