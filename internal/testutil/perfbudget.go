@@ -164,11 +164,27 @@ func TrimmedMeanWarm(fn func()) time.Duration {
 // fresh fixture per iteration (e.g. a populated tree before timing
 // DeleteAll). Setup and op share state via closure capture in the caller.
 //
-// COLD variant — no GC manipulation. For warm work needing setup,
-// compose: temporarily disable GC yourself or call runtime.GC() inside
-// setup before each timed op.
+// COLD variant — no GC manipulation. For WARM work that also needs a
+// per-iteration fixture, use TrimmedMeanWarmWithSetup instead: pairing
+// WarmBudget's tighter base×3 gate with this COLD measurement is unsound,
+// because the GC noise WarmBudget assumes away is not actually controlled.
 func TrimmedMeanWithSetup(setup, op func()) time.Duration {
 	return trimmedMeanCore(false, setup, op)
+}
+
+// TrimmedMeanWarmWithSetup is TrimmedMeanWithSetup with controlled GC: it
+// runs setup() before each timed op() (excluded from the timing window) and,
+// like TrimmedMeanWarm, forces a runtime.GC() before each timed iteration and
+// disables auto-GC during the timed window via debug.SetGCPercent(-1),
+// restoring the original setting on return.
+//
+// This is the correct partner for WarmBudget when the timed primitive mutates
+// state and therefore needs a fresh fixture per iteration (e.g. insert/delete
+// against a DB, or a prune over a pre-filled table). TrimmedMeanWithSetup is
+// the COLD variant and does NOT control GC, so pairing it with WarmBudget's
+// tighter base×3 gate would measure GC noise the budget assumes away.
+func TrimmedMeanWarmWithSetup(setup, op func()) time.Duration {
+	return trimmedMeanCore(true, setup, op)
 }
 
 func trimmedMeanCore(controlGC bool, setup, op func()) time.Duration {
