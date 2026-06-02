@@ -370,6 +370,26 @@ func (s *Storage) DeleteInstance(id string) error {
 	return nil
 }
 
+// WriteAutoNameDescription persists a single auto-named session's last captured
+// Claude task description via a targeted column update — no whole-row rewrite,
+// no full-table reconcile (see statedb.WriteAutoNameDescription). This lets the
+// archive path snapshot the display name without a full save.
+func (s *Storage) WriteAutoNameDescription(id, description string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	if err := s.db.WriteAutoNameDescription(id, description); err != nil {
+		return fmt.Errorf("failed to persist auto-name description for %s: %w", id, err)
+	}
+
+	_ = s.db.Touch()
+	return nil
+}
+
 // InstanceExists returns true iff a row with the given id is currently
 // persisted. Used by RemoveSessionAndVerify to confirm a DELETE actually
 // landed (issue #909).
