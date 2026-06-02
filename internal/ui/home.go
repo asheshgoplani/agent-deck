@@ -10844,7 +10844,7 @@ func clampViewToViewport(content string, width, height int) string {
 	for i, line := range lines {
 		// Pad/truncate to exactly width cells so incremental redraw does not
 		// leave stale glyphs when a shorter line replaces a longer one (#607).
-		lines[i] = fitCellWidth(line, width)
+		lines[i] = fitCellWidthErase(line, width)
 	}
 
 	return strings.Join(lines, "\n")
@@ -11827,8 +11827,7 @@ func (h *Home) renderSessionList(width, height int) string {
 
 	// Show "more above" indicator if scrolled down
 	if h.viewOffset > 0 {
-		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d above", h.viewOffset)))
-		b.WriteString("\n")
+		writeListLine(&b, DimStyle.Render(fmt.Sprintf("  ⋮ +%d above", h.viewOffset)), width)
 		maxVisible-- // Account for the indicator line
 	}
 
@@ -11844,7 +11843,7 @@ func (h *Home) renderSessionList(width, height int) string {
 		if h.jumpMode && i < len(jumpHints) {
 			// Render item to temp buffer, then overlay hint badge at name position
 			var itemBuf strings.Builder
-			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot)
+			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
 			raw := itemBuf.String()
 			hint := jumpHints[i]
 			isMatch := h.jumpBuffer == "" || strings.HasPrefix(hint, h.jumpBuffer)
@@ -11854,17 +11853,22 @@ func (h *Home) renderSessionList(width, height int) string {
 				itemName := jumpItemName(item)
 				// Overlay hint on the first line, preserve rest exactly
 				if idx := strings.Index(raw, "\n"); idx >= 0 {
-					b.WriteString(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName))
+					b.WriteString(fitCellWidthErase(h.overlayJumpHint(raw[:idx], hint, h.jumpBuffer, itemName), width))
 					b.WriteString(raw[idx:]) // includes \n and any subsequent lines
 				} else {
-					b.WriteString(h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName))
+					writeListLine(&b, h.overlayJumpHint(raw, hint, h.jumpBuffer, itemName), width)
 				}
 			} else {
 				// Non-matching: render normally (no dimming to preserve layout)
-				b.WriteString(raw)
+				if idx := strings.Index(raw, "\n"); idx >= 0 {
+					b.WriteString(fitCellWidthErase(raw[:idx], width))
+					b.WriteString(raw[idx:])
+				} else {
+					writeListLine(&b, strings.TrimSuffix(raw, "\n"), width)
+				}
 			}
 		} else {
-			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot)
+			h.renderItem(&b, item, i == h.cursor, i, groupStats, snapshot, width)
 		}
 		visibleCount++
 	}
@@ -11872,11 +11876,11 @@ func (h *Home) renderSessionList(width, height int) string {
 	// Show "more below" indicator if there are more items
 	remaining := len(h.flatItems) - (h.viewOffset + visibleCount)
 	if remaining > 0 {
-		b.WriteString(DimStyle.Render(fmt.Sprintf("  ⋮ +%d below", remaining)))
+		writeListLine(&b, DimStyle.Render(fmt.Sprintf("  ⋮ +%d below", remaining)), width)
 	}
 
 	// Height padding is handled by ensureExactHeight() in View() for consistency
-	return fitLinesToWidth(b.String(), width)
+	return b.String()
 }
 
 type groupRenderStats struct {
@@ -11934,6 +11938,15 @@ func (h *Home) buildGroupRenderStats(snapshot map[string]sessionRenderState) map
 	return stats
 }
 
+// writeListLine writes one session-list row padded to width cells plus EL (#607).
+func writeListLine(b *strings.Builder, line string, width int) {
+	if width > 0 {
+		line = fitCellWidthErase(line, width)
+	}
+	b.WriteString(line)
+	b.WriteString("\n")
+}
+
 // renderItem renders a single item (group or session) for the left panel
 func (h *Home) renderItem(
 	b *strings.Builder,
@@ -11942,22 +11955,23 @@ func (h *Home) renderItem(
 	itemIndex int,
 	groupStats map[string]groupRenderStats,
 	snapshot map[string]sessionRenderState,
+	listWidth int,
 ) {
 	switch item.Type {
 	case session.ItemTypeGroup:
-		h.renderGroupItem(b, item, selected, itemIndex, groupStats)
+		h.renderGroupItem(b, item, selected, itemIndex, groupStats, listWidth)
 	case session.ItemTypeSession:
 		if item.CreatingID != "" {
-			h.renderCreatingSessionItem(b, item, selected)
+			h.renderCreatingSessionItem(b, item, selected, listWidth)
 		} else {
-			h.renderSessionItem(b, item, selected, snapshot)
+			h.renderSessionItem(b, item, selected, snapshot, listWidth)
 		}
 	case session.ItemTypeWindow:
-		h.renderWindowItem(b, item, selected)
+		h.renderWindowItem(b, item, selected, listWidth)
 	case session.ItemTypeRemoteGroup:
-		h.renderRemoteGroupItem(b, item, selected)
+		h.renderRemoteGroupItem(b, item, selected, listWidth)
 	case session.ItemTypeRemoteSession:
-		h.renderRemoteSessionItem(b, item, selected)
+		h.renderRemoteSessionItem(b, item, selected, listWidth)
 	}
 }
 
@@ -11969,6 +11983,7 @@ func (h *Home) renderGroupItem(
 	selected bool,
 	itemIndex int,
 	groupStats map[string]groupRenderStats,
+	listWidth int,
 ) {
 	group := item.Group
 
@@ -12031,8 +12046,7 @@ func (h *Home) renderGroupItem(
 		countStr,
 		statusStr,
 	)
-	b.WriteString(row)
-	b.WriteString("\n")
+	writeListLine(b, row, listWidth)
 }
 
 // Tree drawing characters for visual hierarchy
@@ -12099,33 +12113,26 @@ func (h *Home) renderCreatingSessionItem(
 	b *strings.Builder,
 	item session.Item,
 	selected bool,
+	listWidth int,
 ) {
 	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	spinner := spinnerFrames[h.animationFrame]
 
-	// Selection styling
+	selPrefix := "  "
 	if selected {
-		b.WriteString(lipgloss.NewStyle().
-			Foreground(ColorAccent).
-			Bold(true).
-			Render("▸ "))
-	} else {
-		b.WriteString("  ")
+		selPrefix = lipgloss.NewStyle().Foreground(ColorAccent).Bold(true).Render("▸ ")
 	}
-
-	// Tree connector
+	treePrefix := ""
 	if item.Level > 0 {
-		b.WriteString(TreeConnectorStyle.Render("├── "))
+		treePrefix = TreeConnectorStyle.Render("├── ")
 	}
-
-	// Spinner + title
 	spinnerStyle := lipgloss.NewStyle().Foreground(ColorPurple)
 	titleStyle := lipgloss.NewStyle().Foreground(ColorText).Italic(true)
-	b.WriteString(spinnerStyle.Render(spinner))
-	b.WriteString(" ")
-	b.WriteString(titleStyle.Render(item.CreatingTitle))
-	b.WriteString(lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true).Render(" (creating worktree...)"))
-	b.WriteString("\n")
+	row := selPrefix + treePrefix +
+		spinnerStyle.Render(spinner) + " " +
+		titleStyle.Render(item.CreatingTitle) +
+		lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true).Render(" (creating worktree...)")
+	writeListLine(b, row, listWidth)
 }
 
 func (h *Home) renderSessionItem(
@@ -12133,6 +12140,7 @@ func (h *Home) renderSessionItem(
 	item session.Item,
 	selected bool,
 	snapshot map[string]sessionRenderState,
+	listWidth int,
 ) {
 	inst := item.Session
 
@@ -12365,7 +12373,7 @@ func (h *Home) renderSessionItem(
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
 	if selected && instState.paneTitle != "" {
-		remaining := h.width - cellWidth(row) - 2 // -2 for trailing margin
+		remaining := listWidth - cellWidth(row) - 2 // -2 for trailing margin
 		if remaining > 10 {
 			pt := instState.paneTitle
 			if cellWidth(pt) > remaining {
@@ -12375,12 +12383,11 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	b.WriteString(row)
-	b.WriteString("\n")
+	writeListLine(b, row, listWidth)
 }
 
 // renderWindowItem renders a single window item (child of a session) for the left panel
-func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	treeStyle := TreeConnectorStyle
 
 	// Base indent — windows are children of sessions.
@@ -12441,8 +12448,7 @@ func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected 
 		winName,
 		toolBadge,
 	)
-	b.WriteString(row)
-	b.WriteString("\n")
+	writeListLine(b, row, listWidth)
 }
 
 // renderLaunchingState renders the animated launching/resuming indicator for sessions
@@ -12540,7 +12546,7 @@ func (h *Home) renderRemotePreview(item session.Item, width, height int) string 
 }
 
 // renderRemoteGroupItem renders a remote group header (e.g., "remotes/dev")
-func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	// Count sessions for this remote
 	h.remoteSessionsMu.RLock()
 	count := 0
@@ -12559,13 +12565,14 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+	row := fmt.Sprintf("%s%s %s%s%s",
 		selPrefix,
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
 		countStyle.Render(fmt.Sprintf(" (%d)", count)),
 		h.renderRemoteLatencyMarker(item.RemoteName, selected),
-	))
+	)
+	writeListLine(b, row, listWidth)
 }
 
 // renderRemoteLatencyMarker returns the colored ` — Xms` (or ` — offline`)
@@ -12611,7 +12618,7 @@ func (h *Home) renderRemoteLatencyMarker(remoteName string, selected bool) strin
 }
 
 // renderRemoteSessionItem renders a single remote session row
-func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, selected bool) {
+func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, selected bool, listWidth int) {
 	rs := item.RemoteSession
 	if rs == nil {
 		return
@@ -12668,13 +12675,14 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s  %s %s %s%s\n",
+	row := fmt.Sprintf("%s  %s %s %s%s",
 		selPrefix,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
 		toolStr,
-	))
+	)
+	writeListLine(b, row, listWidth)
 }
 
 func (h *Home) renderLaunchingState(inst *session.Instance, width int, startTime time.Time) string {

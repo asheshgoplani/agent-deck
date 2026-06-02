@@ -67,7 +67,7 @@ func renderSingleSessionRow(t *testing.T, inst *session.Instance) string {
 	}
 
 	var b strings.Builder
-	h.renderSessionItem(&b, item, false, snapshot)
+	h.renderSessionItem(&b, item, false, snapshot, h.width)
 	return b.String()
 }
 

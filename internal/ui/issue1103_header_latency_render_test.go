@@ -38,7 +38,7 @@ func TestIssue1103_Header_ShowsLatencyMs_ForConnectedRemote(t *testing.T) {
 		RemoteName: "dev",
 	}
 	var b strings.Builder
-	home.renderRemoteGroupItem(&b, item, false)
+	home.renderRemoteGroupItem(&b, item, false, 80)
 	rendered := b.String()
 
 	if !strings.Contains(stripANSILatency(rendered), "remotes/dev") {
@@ -79,7 +79,7 @@ func TestIssue1103_Header_ColorByThreshold(t *testing.T) {
 				RemoteName: "dev",
 			}
 			var b strings.Builder
-			home.renderRemoteGroupItem(&b, item, false)
+			home.renderRemoteGroupItem(&b, item, false, 80)
 			got := b.String()
 
 			// Build the expected styled fragment with the same lipgloss style
@@ -111,7 +111,7 @@ func TestIssue1103_Header_OfflineRendersOfflineMarker(t *testing.T) {
 		RemoteName: "dev",
 	}
 	var b strings.Builder
-	home.renderRemoteGroupItem(&b, item, false)
+	home.renderRemoteGroupItem(&b, item, false, 80)
 	rendered := stripANSILatency(b.String())
 
 	if !strings.Contains(rendered, "— offline") {
@@ -138,7 +138,7 @@ func TestIssue1103_Header_NeverMeasured_SuppressesMarker(t *testing.T) {
 		RemoteName: "dev",
 	}
 	var b strings.Builder
-	home.renderRemoteGroupItem(&b, item, false)
+	home.renderRemoteGroupItem(&b, item, false, 80)
 	rendered := stripANSILatency(b.String())
 
 	if strings.Contains(rendered, " — ") {

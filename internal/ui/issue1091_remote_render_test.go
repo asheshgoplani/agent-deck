@@ -46,7 +46,7 @@ func TestIssue1091_RemoteSession_ToolColorMatchesLocal(t *testing.T) {
 	}
 
 	var b strings.Builder
-	home.renderRemoteSessionItem(&b, item, false)
+	home.renderRemoteSessionItem(&b, item, false, 80)
 	rendered := b.String()
 
 	// What a local claude session would render for the " claude" tool label.
@@ -101,7 +101,7 @@ func TestIssue1091_RemoteSession_ToolColorAllTools(t *testing.T) {
 			}
 
 			var b strings.Builder
-			home.renderRemoteSessionItem(&b, item, false)
+			home.renderRemoteSessionItem(&b, item, false, 80)
 			rendered := b.String()
 
 			expectedToolLabel := GetToolStyle(tool).Render(" " + tool)
@@ -140,7 +140,7 @@ func TestIssue1091_RemoteSession_SelectedStateUnchanged(t *testing.T) {
 	}
 
 	var b strings.Builder
-	home.renderRemoteSessionItem(&b, item, true) // selected=true
+	home.renderRemoteSessionItem(&b, item, true, 80) // selected=true
 	rendered := b.String()
 
 	expectedToolLabel := SessionStatusSelStyle.Render(" claude")

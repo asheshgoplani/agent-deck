@@ -27,6 +27,11 @@ func cellWidth(s string) int {
 	return ansi.StringWidth(s)
 }
 
+// ansiEraseLineEnd clears from the cursor to the end of the current line (EL).
+// Appended after padded rows so iTerm2 incremental redraw does not leave stale
+// glyphs when a shorter line replaces a longer one (#607), without ClearScreen.
+const ansiEraseLineEnd = "\x1b[K"
+
 // fitCellWidth returns s truncated or space-padded so it occupies exactly width
 // terminal cells. Used by clampViewToViewport so each frame overwrites the full
 // row and incremental redraw does not leave ghost characters (issue #607) —
@@ -43,6 +48,15 @@ func fitCellWidth(s string, width int) string {
 		return s + strings.Repeat(" ", width-w)
 	}
 	return s
+}
+
+// fitCellWidthErase is fitCellWidth plus EL so terminals clear trailing cells on
+// the row even when width math and lipgloss disagree by a cell or two.
+func fitCellWidthErase(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return fitCellWidth(s, width) + ansiEraseLineEnd
 }
 
 // fitLinesToWidth applies fitCellWidth to each line of a multi-line string.
