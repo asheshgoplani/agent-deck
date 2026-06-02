@@ -252,6 +252,16 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 		}
 	}
 
+	// Invariant: every group placed in the bottom section must have its full
+	// ancestor chain present above it in that section, or it renders orphaned —
+	// indented under nothing (the "flat" symptom). Pass 1.5 re-shows ancestors
+	// only when the empty child has a *visible-row* (hasTopRow) ancestor; a parent
+	// populated solely via the activity map (sessions hidden by collapse or a
+	// status filter) is hoisted to the top but never re-shown in the bottom,
+	// leaving its empty children stranded. Normalize here rather than extending
+	// the hasTopRow-vs-activity detection piecemeal.
+	bottom = ensureBottomAncestorsPresent(bottom, items)
+
 	// Nothing to partition: one side empty -> behave like normal view.
 	if len(top) == 0 || len(bottom) == 0 {
 		return items
@@ -261,5 +271,43 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 	out = append(out, top...)
 	out = append(out, Item{Type: ItemTypeDivider, DividerLabel: mode.dividerLabel()})
 	out = append(out, bottom...)
+	return out
+}
+
+// ensureBottomAncestorsPresent walks the bottom-section rows in order and, before
+// each group whose ancestor path-chain is incomplete, re-inserts the missing
+// ancestor group headers (top-down, at their real Level) taken from the original
+// flattened list. This duplicates an ancestor header that already lives in the
+// top section — the intended design for view-mode partitioning — so every nested
+// group renders under its parent. Ancestors already present in the bottom are
+// left untouched (no duplication); ancestors absent from the source list (e.g.
+// nil activity in pure tests) are skipped.
+func ensureBottomAncestorsPresent(bottom, source []Item) []Item {
+	groupByPath := make(map[string]Item, len(source))
+	for _, it := range source {
+		if it.Type == ItemTypeGroup {
+			groupByPath[it.Path] = it
+		}
+	}
+
+	out := make([]Item, 0, len(bottom))
+	seen := make(map[string]bool, len(bottom))
+	for _, it := range bottom {
+		if it.Type == ItemTypeGroup {
+			parts := strings.Split(it.Path, "/")
+			for i := 1; i < len(parts); i++ {
+				anc := strings.Join(parts[:i], "/")
+				if seen[anc] {
+					continue
+				}
+				if ancItem, ok := groupByPath[anc]; ok {
+					out = append(out, ancItem)
+					seen[anc] = true
+				}
+			}
+			seen[it.Path] = true
+		}
+		out = append(out, it)
+	}
 	return out
 }
