@@ -162,6 +162,7 @@ type NewDialog struct {
 	claudeOptions         *ClaudeOptionsPanel // Claude-specific options (concrete for value extraction).
 	geminiOptions         *YoloOptionsPanel   // Gemini YOLO panel (concrete for value extraction).
 	codexOptions          *YoloOptionsPanel   // Codex YOLO panel (concrete for value extraction).
+	hermesOptions         *YoloOptionsPanel   // Hermes YOLO panel (concrete for value extraction).
 	toolOptions           OptionsPanel        // Currently active tool options panel (nil if none).
 	focusTargets          []focusTarget       // Ordered list of active focusable elements.
 	focusIndex            int                 // Index into focusTargets.
@@ -230,6 +231,7 @@ type dialogSnapshot struct {
 	claudeOptions    *session.ClaudeOptions
 	geminiYolo       bool
 	codexYolo        bool
+	hermesYolo       bool
 	multiRepoEnabled bool
 	multiRepoPaths   []string
 	conductorCursor  int
@@ -330,6 +332,7 @@ func NewNewDialog() *NewDialog {
 		claudeOptions:   NewClaudeOptionsPanel(),
 		geminiOptions:   NewYoloOptionsPanel("Gemini", "YOLO mode - auto-approve all"),
 		codexOptions:    NewYoloOptionsPanel("Codex", "YOLO mode - bypass approvals and sandbox"),
+		hermesOptions:   NewYoloOptionsPanel("Hermes", "YOLO mode - auto-approve all tool calls"),
 		focusIndex:      0,
 		visible:         false,
 		presetCommands:  buildPresetCommands(),
@@ -418,9 +421,11 @@ func (d *NewDialog) ShowInGroup(groupPath, groupName, defaultPath string, conduc
 	// Initialize tool options from global config.
 	d.geminiOptions.SetDefaults(false)
 	d.codexOptions.SetDefaults(false)
+	d.hermesOptions.SetDefaults(false)
 	if userConfig, err := session.LoadUserConfig(); err == nil && userConfig != nil {
 		d.geminiOptions.SetDefaults(userConfig.Gemini.YoloMode)
 		d.codexOptions.SetDefaults(userConfig.Codex.YoloMode)
+		d.hermesOptions.SetDefaults(userConfig.Hermes.YoloMode)
 		d.claudeOptions.SetDefaults(userConfig)
 		d.sandboxEnabled = userConfig.Docker.DefaultEnabled
 		d.worktreeEnabled = userConfig.Worktree.DefaultEnabled
@@ -637,6 +642,7 @@ func (d *NewDialog) saveSnapshot() *dialogSnapshot {
 		claudeOptions:    claudeOpts,
 		geminiYolo:       d.geminiOptions.GetYoloMode(),
 		codexYolo:        d.codexOptions.GetYoloMode(),
+		hermesYolo:       d.hermesOptions.GetYoloMode(),
 		multiRepoEnabled: d.multiRepoEnabled,
 		multiRepoPaths:   append([]string{}, d.multiRepoPaths...),
 		conductorCursor:  d.conductorCursor,
@@ -660,6 +666,7 @@ func (d *NewDialog) restoreSnapshot(s *dialogSnapshot) {
 	}
 	d.geminiOptions.SetDefaults(s.geminiYolo)
 	d.codexOptions.SetDefaults(s.codexYolo)
+	d.hermesOptions.SetDefaults(s.hermesYolo)
 	d.multiRepoEnabled = s.multiRepoEnabled
 	d.multiRepoPaths = append([]string{}, s.multiRepoPaths...)
 	d.multiRepoPathCursor = 0
@@ -992,6 +999,11 @@ func (d *NewDialog) GetCodexYoloMode() bool {
 	return d.codexOptions.GetYoloMode()
 }
 
+// GetHermesYoloMode returns the Hermes YOLO mode state
+func (d *NewDialog) GetHermesYoloMode() bool {
+	return d.hermesOptions.GetYoloMode()
+}
+
 // IsSandboxEnabled returns whether Docker sandbox mode is enabled.
 func (d *NewDialog) IsSandboxEnabled() bool {
 	return d.sandboxEnabled
@@ -1280,6 +1292,8 @@ func (d *NewDialog) updateToolOptions() {
 		d.toolOptions = d.geminiOptions
 	case cmd == "codex":
 		d.toolOptions = d.codexOptions
+	case cmd == "hermes":
+		d.toolOptions = d.hermesOptions
 	default:
 		d.toolOptions = nil
 	}
@@ -1295,6 +1309,7 @@ func (d *NewDialog) updateFocus() {
 	d.claudeOptions.Blur()
 	d.geminiOptions.Blur()
 	d.codexOptions.Blur()
+	d.hermesOptions.Blur()
 
 	// Reset dropdown and soft-select state when focus changes.
 	d.pathSoftSelected = false
@@ -1971,7 +1986,7 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 		case "y":
 			if !d.isTextInputFocused() {
 				selectedCmd := d.GetSelectedCommand()
-				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex") && d.toolOptions != nil {
+				if cur == focusCommand && (selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes") && d.toolOptions != nil {
 					d.toolOptions.Update(msg)
 					return d, nil
 				}
@@ -2528,7 +2543,7 @@ func (d *NewDialog) View() string {
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
-		if selectedCmd == "gemini" || selectedCmd == "codex" {
+		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
 			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ Enter create │ Esc cancel"
 		} else {
 			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ Enter create │ Esc cancel"

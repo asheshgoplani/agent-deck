@@ -405,6 +405,8 @@ type ProfileCodexSettings struct {
 type GroupSettings struct {
 	// Claude defines Claude Code overrides for a specific group.
 	Claude GroupClaudeSettings `toml:"claude"`
+	// Hermes defines Hermes overrides for a specific group.
+	Hermes GroupHermesSettings `toml:"hermes"`
 }
 
 // GroupClaudeSettings defines group-specific Claude overrides.
@@ -414,6 +416,16 @@ type GroupClaudeSettings struct {
 
 	// EnvFile overrides [claude].env_file for sessions in this group.
 	EnvFile string `toml:"env_file"`
+}
+
+// GroupHermesSettings defines group-specific Hermes overrides.
+type GroupHermesSettings struct {
+	Command      string `toml:"command"`
+	EnvFile      string `toml:"env_file"`
+	YoloMode     bool   `toml:"yolo_mode"`
+	GatewayURL   string `toml:"gateway_url"`
+	DashboardURL string `toml:"dashboard_url"`
+	APITokenEnv  string `toml:"api_token_env"`
 }
 
 // ConductorOverrides defines per-conductor configuration overrides.
@@ -428,6 +440,8 @@ type GroupClaudeSettings struct {
 type ConductorOverrides struct {
 	// Claude defines Claude Code overrides for a specific conductor.
 	Claude ConductorClaudeSettings `toml:"claude"`
+	// Hermes defines Hermes overrides for a specific conductor.
+	Hermes ConductorHermesSettings `toml:"hermes"`
 }
 
 // ConductorClaudeSettings defines conductor-specific Claude overrides.
@@ -441,6 +455,16 @@ type ConductorClaudeSettings struct {
 	// EnvFile is sourced before claude exec for this conductor.
 	// Matches CFG-03 semantics — missing file logs a warning, does not block.
 	EnvFile string `toml:"env_file"`
+}
+
+// ConductorHermesSettings defines conductor-specific Hermes overrides.
+type ConductorHermesSettings struct {
+	Command      string `toml:"command"`
+	EnvFile      string `toml:"env_file"`
+	YoloMode     bool   `toml:"yolo_mode"`
+	GatewayURL   string `toml:"gateway_url"`
+	DashboardURL string `toml:"dashboard_url"`
+	APITokenEnv  string `toml:"api_token_env"`
 }
 
 // MCPPoolSettings defines HTTP MCP pool configuration
@@ -939,6 +963,21 @@ func (c *UserConfig) GetGroupClaudeEnvFile(groupPath string) string {
 	return ""
 }
 
+// GetGroupHermesEnvFile returns the group-specific Hermes env file, walking
+// ancestor groups when the exact path has no override. Mirrors
+// GetGroupClaudeEnvFile's inheritance semantics.
+func (c *UserConfig) GetGroupHermesEnvFile(groupPath string) string {
+	if c == nil || groupPath == "" || c.Groups == nil {
+		return ""
+	}
+	for p := groupPath; p != ""; p = getParentPath(p) {
+		if groupCfg, ok := c.Groups[p]; ok && groupCfg.Hermes.EnvFile != "" {
+			return groupCfg.Hermes.EnvFile
+		}
+	}
+	return ""
+}
+
 // GetConductorClaudeConfigDir returns the conductor-specific Claude config
 // directory, if configured. Keyed by conductor name (Instance.Title minus
 // "conductor-" prefix — single source of truth is conductorNameFromInstance
@@ -968,6 +1007,19 @@ func (c *UserConfig) GetConductorClaudeEnvFile(name string) string {
 		return ""
 	}
 	return conductorCfg.Claude.EnvFile
+}
+
+// GetConductorHermesEnvFile returns the conductor-specific Hermes env_file,
+// if configured. Mirrors GetConductorClaudeEnvFile.
+func (c *UserConfig) GetConductorHermesEnvFile(name string) string {
+	if c == nil || name == "" || c.Conductors == nil {
+		return ""
+	}
+	conductorCfg, ok := c.Conductors[name]
+	if !ok || conductorCfg.Hermes.EnvFile == "" {
+		return ""
+	}
+	return conductorCfg.Hermes.EnvFile
 }
 
 // GetDangerousMode returns whether dangerous mode is enabled, defaulting to true
@@ -1108,6 +1160,18 @@ type HermesSettings struct {
 	// YoloMode enables --yolo flag for Hermes sessions (auto-approve all tool calls).
 	// Default: false
 	YoloMode bool `toml:"yolo_mode"`
+	// GatewayURL is the WebSocket URL of the Hermes gateway for health checks.
+	// Default: "" (no gateway health check)
+	GatewayURL string `toml:"gateway_url"`
+	// DashboardURL is the Hermes dashboard API endpoint.
+	// Default: "" (dashboard integration disabled)
+	DashboardURL string `toml:"dashboard_url"`
+	// APITokenEnv is the environment variable name containing the Hermes API token.
+	// Default: "" (uses HERMES_API_TOKEN if set)
+	APITokenEnv string `toml:"api_token_env"`
+	// WorkspaceDir is the base directory for Hermes shared workspace sessions.
+	// Default: "" (uses os.TempDir()/hermes-workspaces)
+	WorkspaceDir string `toml:"workspace_dir"`
 }
 
 // CrushSettings defines charmbracelet/crush CLI configuration (Issue #940).

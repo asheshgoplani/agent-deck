@@ -44,7 +44,10 @@ type MCPItem struct {
 	HasServerCfg bool   // True if HTTP MCP has [mcps.X.server] config
 }
 
-// MCPDialog handles MCP management for Claude, Gemini, and Cursor Agent CLI sessions
+// MCPDialog handles MCP management for Claude, Gemini, and Cursor Agent CLI sessions.
+// Hermes uses its own ~/.hermes/config.yaml `mcp_servers:` schema (user-scoped,
+// YAML) which is not compatible with Claude's project-scoped .mcp.json — it is
+// excluded from the MCP trigger in home.go (see ToolSupportsMCPManager).
 type MCPDialog struct {
 	visible     bool
 	width       int

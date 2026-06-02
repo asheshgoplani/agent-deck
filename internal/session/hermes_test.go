@@ -2,6 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -244,5 +247,72 @@ func TestBuildHermesCommand_Passthrough(t *testing.T) {
 	got := inst.buildHermesCommand("hermes --special-flag")
 	if !strings.HasSuffix(got, "hermes --special-flag") {
 		t.Errorf("buildHermesCommand passthrough = %q, want suffix \"hermes --special-flag\"", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gateway health check tests
+// ---------------------------------------------------------------------------
+
+func TestIsHermesGatewayReachable_EmptyURL(t *testing.T) {
+	if IsHermesGatewayReachable("") {
+		t.Error("IsHermesGatewayReachable(\"\") = true, want false")
+	}
+}
+
+func TestIsHermesGatewayReachable_InvalidURL(t *testing.T) {
+	// Port 1 almost certainly has no listener; the connection should be refused.
+	if IsHermesGatewayReachable("http://127.0.0.1:1") {
+		t.Error("IsHermesGatewayReachable(\"http://127.0.0.1:1\") = true, want false")
+	}
+}
+
+func TestIsHermesGatewayReachable_ReachableServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if !IsHermesGatewayReachable(srv.URL) {
+		t.Errorf("IsHermesGatewayReachable(%q) = false, want true (200 OK)", srv.URL)
+	}
+}
+
+func TestIsHermesGatewayReachable_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	if IsHermesGatewayReachable(srv.URL) {
+		t.Errorf("IsHermesGatewayReachable(%q) = true, want false (500 >= 500 means unreachable)", srv.URL)
+	}
+}
+
+func TestIsHermesGatewayReachable_ServerRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound) // 302
+	}))
+	defer srv.Close()
+
+	if !IsHermesGatewayReachable(srv.URL) {
+		t.Errorf("IsHermesGatewayReachable(%q) = false, want true (302 < 500)", srv.URL)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shared workspace tests
+// ---------------------------------------------------------------------------
+
+func TestHermesSharedWorkspaceDir_NonEmpty(t *testing.T) {
+	if HermesSharedWorkspaceDir() == "" {
+		t.Error("HermesSharedWorkspaceDir() returned empty string, want non-empty")
+	}
+}
+
+func TestHermesSharedWorkspaceDir_IsAbsolute(t *testing.T) {
+	dir := HermesSharedWorkspaceDir()
+	if !filepath.IsAbs(dir) {
+		t.Errorf("HermesSharedWorkspaceDir() = %q, want absolute path", dir)
 	}
 }

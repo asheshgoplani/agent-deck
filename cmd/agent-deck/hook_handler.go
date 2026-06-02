@@ -90,6 +90,15 @@ func mapEventToStatus(event string) string {
 		return "running" // Gemini received user input and is processing
 	case "AfterAgent":
 		return "waiting" // Gemini completed response, back to waiting
+	// Hermes shell hook events
+	case "pre_tool_call":
+		return "running" // Hermes is executing a tool call
+	case "post_tool_call":
+		return "waiting" // Hermes finished a tool call, back at prompt
+	case "on_session_start":
+		return "waiting" // Hermes session started, waiting for first prompt
+	case "on_session_end":
+		return "dead" // Hermes session ended
 	case "UserPromptSubmit":
 		return "running" // User sent prompt, Claude is processing
 	case "Stop":
@@ -326,6 +335,7 @@ func isTerminalHookEvent(event string) bool {
 	// sidecar on ordinary non-terminal "Stop"/turn-complete style events.
 	switch norm {
 	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
+		"onsessionend", // Hermes: on_session_end normalized
 		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
 		"threaddone", "threadexit", "threadexited":
 		return true

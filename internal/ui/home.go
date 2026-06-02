@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1170,6 +1171,36 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 			}
 			if !prompted {
 				h.pendingHooksPrompt = true
+			}
+		}
+	}
+
+	// Hermes shell hooks: auto-inject silently if the hermes binary is available.
+	// No user prompt needed — config.yaml is Hermes's own config file, not a
+	// shared settings file. The shared hook watcher (h.hookWatcher) covers all
+	// tools, so start it here if Claude hooks didn't already start it.
+	if hermesCmd := strings.TrimSpace(session.GetToolCommand("hermes")); hermesCmd != "" {
+		// GetToolCommand may return a full command string with arguments
+		// (e.g. "hermes --gateway-url=..."). LookPath needs the binary name only.
+		// Trim first because Fields("") and Fields("   ") both return [], and
+		// indexing [0] on an empty slice panics.
+		if hermesFields := strings.Fields(hermesCmd); len(hermesFields) > 0 {
+			hermesBin := hermesFields[0]
+			if _, err := exec.LookPath(hermesBin); err == nil {
+				hermesConfigDir := session.GetHermesConfigDir()
+				if !session.CheckHermesHooksInstalled(hermesConfigDir) {
+					if _, err := session.InjectHermesHooks(hermesConfigDir); err != nil {
+						uiLog.Warn("hermes_hooks_inject_failed", slog.String("error", err.Error()))
+					} else {
+						uiLog.Info("hermes_hooks_installed", slog.String("config_dir", hermesConfigDir))
+					}
+				}
+				if h.hookWatcher == nil {
+					if hookWatcher, err := session.NewStatusFileWatcher(nil); err == nil {
+						h.hookWatcher = hookWatcher
+						go hookWatcher.Start()
+					}
+				}
 			}
 		}
 	}
@@ -3228,7 +3259,7 @@ func (h *Home) backgroundStatusUpdate() {
 	// Feed hook statuses from watcher to instances (enables hook fast path in UpdateStatus)
 	if h.hookWatcher != nil {
 		for _, inst := range instances {
-			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
+			if session.IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" || inst.Tool == "hermes" {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
@@ -5754,6 +5785,10 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			yolo := h.newDialog.GetCodexYoloMode()
 			codexOpts := &session.CodexOptions{YoloMode: &yolo}
 			toolOptionsJSON, _ = session.MarshalToolOptions(codexOpts)
+		} else if command == "hermes" {
+			yolo := h.newDialog.GetHermesYoloMode()
+			hermesOpts := &session.HermesOptions{YoloMode: &yolo}
+			toolOptionsJSON, _ = session.MarshalToolOptions(hermesOpts)
 		}
 
 		parentSessionID := h.newDialog.GetParentSessionID()
@@ -7216,6 +7251,25 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					opts.YoloMode = &newYolo
 					_ = inst.SetCodexOptions(opts)
+					toggled = true
+
+				case "hermes":
+					currentYolo := false
+					opts := inst.GetHermesOptions()
+					if opts != nil && opts.YoloMode != nil {
+						currentYolo = *opts.YoloMode
+					} else {
+						userConfig, _ := session.LoadUserConfig()
+						if userConfig != nil {
+							currentYolo = userConfig.Hermes.YoloMode
+						}
+					}
+					newYolo := !currentYolo
+					if opts == nil {
+						opts = &session.HermesOptions{}
+					}
+					opts.YoloMode = &newYolo
+					_ = inst.SetHermesOptions(opts)
 					toggled = true
 				}
 
@@ -12447,6 +12501,16 @@ func (h *Home) renderSessionItem(
 		if opts := inst.GetCodexOptions(); opts != nil && opts.YoloMode != nil && *opts.YoloMode {
 			showYolo = true
 		}
+	} else if instTool == "hermes" {
+		// Mirror the toggle path's resolution: per-session override wins; otherwise
+		// fall back to the global [hermes].yolo_mode in user config. Without the
+		// fallback the badge lies about state for sessions launched with YOLO via
+		// global config but no per-session override.
+		if opts := inst.GetHermesOptions(); opts != nil && opts.YoloMode != nil {
+			showYolo = *opts.YoloMode
+		} else if cfg, _ := session.LoadUserConfig(); cfg != nil && cfg.Hermes.YoloMode {
+			showYolo = true
+		}
 	}
 	if showYolo {
 		yoloStyle := lipgloss.NewStyle().Foreground(ColorYellow).Bold(true)
@@ -13137,13 +13201,16 @@ func (h *Home) renderSessionInfoCard(inst *session.Instance, width, height int) 
 	// Tool
 	b.WriteString(fmt.Sprintf("%s %s\n", labelStyle.Render("Tool:"), valueStyle.Render(cardTool)))
 
-	// Session ID (if available) - Claude, Gemini, or OpenCode
+	// Session ID (if available) - Claude, Gemini, OpenCode, or generic (Hermes/custom tools)
 	sessionID := inst.ClaudeSessionID
 	if sessionID == "" {
 		sessionID = inst.GeminiSessionID
 	}
 	if sessionID == "" {
 		sessionID = inst.OpenCodeSessionID
+	}
+	if sessionID == "" {
+		sessionID = inst.GetGenericSessionID()
 	}
 	if sessionID != "" {
 		shortID := sessionID
