@@ -2,7 +2,12 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // HermesOptions holds launch options for Hermes Agent CLI sessions.
@@ -100,3 +105,89 @@ func (i *Instance) buildHermesCommand(baseCommand string) string {
 
 	return envPrefix + cmd
 }
+
+// IsHermesGatewayReachable performs a basic reachable check against the
+// configured GatewayURL from HermesSettings. Returns true if a simple
+// HTTP request succeeds within timeout. Keeps existing process-alive logic
+// untouched; this augments status detection when gateway URL is available.
+func IsHermesGatewayReachable(gatewayURL string) bool {
+	if gatewayURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get(gatewayURL)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 500
+}
+
+// HermesSharedWorkspaceDir returns the base directory Hermes uses for
+// shared workspace sessions enabling multi-agent handoff visibility.
+// If the user config specifies a WorkspaceDir, that is used; otherwise
+// it falls back to a platform-appropriate temp directory.
+func HermesSharedWorkspaceDir() string {
+	if config, _ := LoadUserConfig(); config != nil && config.Hermes.WorkspaceDir != "" {
+		return config.Hermes.WorkspaceDir
+	}
+	return filepath.Join(os.TempDir(), "hermes-workspaces")
+}
+
+// hermesDefaultGatewayPort is the port hermes gateway always listens on.
+// See gateway/platforms/api_server.py: DEFAULT_PORT = 8642.
+const hermesDefaultGatewayPort = 8642
+
+// hermesGatewayStateFile is the JSON file hermes writes while its gateway is running.
+const hermesGatewayStateFile = "gateway_state.json"
+
+// hermesGatewayState is a minimal subset of gateway_state.json.
+type hermesGatewayState struct {
+	GatewayState string `json:"gateway_state"`
+}
+
+// isHermesGatewayRunning checks ~/.hermes/gateway_state.json to see if
+// the hermes gateway process believes it is running. This is a lightweight
+// signal that avoids a network round-trip; callers should still probe the
+// URL before trusting the result.
+func isHermesGatewayRunning() bool {
+	p := filepath.Join(GetHermesConfigDir(), hermesGatewayStateFile)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	var state hermesGatewayState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false
+	}
+	return state.GatewayState == "running"
+}
+
+// DiscoverHermesGatewayURL auto-detects the hermes gateway URL.
+// It checks gateway_state.json first (cheap), then probes the well-known
+// local address. Returns "" if the gateway does not appear to be reachable.
+func DiscoverHermesGatewayURL() string {
+	if !isHermesGatewayRunning() {
+		return ""
+	}
+	candidate := fmt.Sprintf("http://127.0.0.1:%d", hermesDefaultGatewayPort)
+	if IsHermesGatewayReachable(candidate) {
+		return candidate
+	}
+	return ""
+}
+
+// GetHermesGatewayURL returns the hermes gateway URL. It first checks the
+// explicit gateway_url in agent-deck's config; if unset, it attempts
+// auto-discovery via DiscoverHermesGatewayURL so users who run the hermes
+// gateway get session health detection without any manual configuration.
+func GetHermesGatewayURL() string {
+	config, err := LoadUserConfig()
+	if err == nil && config != nil {
+		if url := strings.TrimSpace(config.Hermes.GatewayURL); url != "" {
+			return url
+		}
+	}
+	return DiscoverHermesGatewayURL()
+}
+

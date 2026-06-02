@@ -21,6 +21,7 @@ const (
 	projectSkillsManifest    = "skills.toml"
 	projectClaudeSkillsDir   = ".claude/skills"
 	projectAgentsSkillsDir   = ".agents/skills"
+	projectHermesSkillsDir   = ".hermes/skills"
 	defaultSkillSourcePool   = "pool"
 	defaultSkillSourceClaude = "claude-global"
 )
@@ -116,7 +117,7 @@ func skillIDForAttachment(a ProjectSkillAttachment) string {
 }
 
 func knownProjectSkillsDirs() []string {
-	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir}
+	return []string{projectClaudeSkillsDir, projectAgentsSkillsDir, projectHermesSkillsDir}
 }
 
 // SupportsProjectSkills reports whether the runtime supports project skill materialization.
@@ -128,7 +129,7 @@ func SupportsProjectSkills(tool string) bool {
 // ShouldRestartProjectSkills reports whether agent-deck should auto-restart the session
 // after project skill changes for this runtime.
 func ShouldRestartProjectSkills(tool string) bool {
-	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "codex"
+	return IsClaudeCompatible(tool) || tool == "gemini" || tool == "codex" || tool == "hermes"
 }
 
 // GetProjectSkillsDir returns the runtime-managed project skill directory.
@@ -138,6 +139,8 @@ func GetProjectSkillsDir(tool string) (string, bool) {
 		return projectClaudeSkillsDir, true
 	case tool == "gemini" || tool == "codex" || tool == "pi":
 		return projectAgentsSkillsDir, true
+	case tool == "hermes":
+		return projectHermesSkillsDir, true
 	default:
 		return "", false
 	}

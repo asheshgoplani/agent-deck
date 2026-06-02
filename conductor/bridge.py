@@ -1897,7 +1897,7 @@ async def main():
         )
     )
 
-    # Run both concurrently
+    # Run all concurrently
     tasks = [heartbeat_task]
     if telegram_dp and telegram_bot:
         tasks.append(asyncio.create_task(telegram_dp.start_polling(telegram_bot)))

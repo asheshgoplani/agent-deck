@@ -349,6 +349,10 @@ type Instance struct {
 	// Set by MCP dialog Apply() to avoid race condition where Apply writes
 	// config then Restart immediately overwrites it with different pool state
 	SkipMCPRegenerate bool `json:"-"` // Don't persist, transient flag
+
+	// Gateway health cache for Hermes sessions (volatile, not persisted).
+	hermesGatewayCheckedAt time.Time
+	hermesGatewayOK        bool
 }
 
 // SandboxConfig holds per-session Docker sandbox settings.
@@ -3320,7 +3324,7 @@ func (i *Instance) UpdateStatus() error {
 
 	// COLD LOAD: CLI doesn't run StatusFileWatcher, so hookStatus is always empty.
 	// Read the hook file from disk once to give CLI the same fast path as the TUI.
-	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini") {
+	if i.hookStatus == "" && (IsClaudeCompatible(i.Tool) || i.Tool == "codex" || i.Tool == "gemini" || i.Tool == "hermes") {
 		if hs := readHookStatusFile(i.ID); hs != nil {
 			i.hookStatus = hs.Status
 			i.hookEvent = hs.Event
@@ -3339,7 +3343,7 @@ func (i *Instance) UpdateStatus() error {
 	// Freshness is tool- and state-specific (e.g. Codex running vs waiting).
 	// When this path is stale/missing, control naturally falls through to tmux
 	// polling and tool-specific session sync (tmux env/process-files/disk).
-	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini") &&
+	if (IsClaudeCompatible(i.Tool) || IsCodexCompatible(i.Tool) || i.Tool == "gemini" || i.Tool == "hermes") &&
 		i.hookStatus != "" &&
 		time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus) {
 		switch i.hookStatus {
@@ -3393,6 +3397,29 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		}
+		// A1: For Hermes, run the gateway reachability check even on the fast path.
+		// Without this, a dead gateway can still report running/waiting for the full
+		// hook freshness window because the check at line ~3453 is skipped.
+		if i.Tool == "hermes" && (i.Status == StatusRunning || i.Status == StatusWaiting) {
+			if config, _ := LoadUserConfig(); config != nil && config.Hermes.GatewayURL != "" {
+				gatewayURL := config.Hermes.GatewayURL
+				if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+					i.mu.Unlock()
+					reachable := IsHermesGatewayReachable(gatewayURL)
+					i.mu.Lock()
+					// Mirror the stale-stop guard from the tmux path: a concurrent
+					// Kill() may have published StatusStopped while we were unlocked.
+					if i.Status == StatusStopped {
+						return nil
+					}
+					i.hermesGatewayCheckedAt = time.Now()
+					i.hermesGatewayOK = reachable
+				}
+				if !i.hermesGatewayOK {
+					i.Status = StatusError
+				}
+			}
+		}
 		return nil
 	}
 
@@ -3433,6 +3460,30 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusError
 	default:
 		i.Status = StatusError
+	}
+
+	// Hermes: augment status with gateway health when GatewayURL is configured.
+	// Check is throttled to 30s to avoid 1.5s HTTP delays on every status tick.
+	if i.Tool == "hermes" && i.Status != StatusStopped && i.Status != StatusError {
+		if config, _ := LoadUserConfig(); config != nil && config.Hermes.GatewayURL != "" {
+			gatewayURL := config.Hermes.GatewayURL
+			if time.Since(i.hermesGatewayCheckedAt) > 30*time.Second {
+				// A2: A concurrent Kill() may publish StatusStopped while we are
+				// unlocked for the HTTP probe; re-check after reacquiring the lock
+				// and skip the write to avoid clobbering the stop.
+				i.mu.Unlock()
+				reachable := IsHermesGatewayReachable(gatewayURL)
+				i.mu.Lock()
+				if i.Status == StatusStopped {
+					return nil
+				}
+				i.hermesGatewayCheckedAt = time.Now()
+				i.hermesGatewayOK = reachable
+			}
+			if !i.hermesGatewayOK {
+				i.Status = StatusError
+			}
+		}
 	}
 
 	// Update tool detection dynamically (enables fork when wrapped tools start).
@@ -6127,6 +6178,32 @@ func (i *Instance) SetCodexOptions(opts *CodexOptions) error {
 	return nil
 }
 
+// GetHermesOptions returns Hermes-specific options from ToolOptionsJSON, or nil if not set.
+func (i *Instance) GetHermesOptions() *HermesOptions {
+	if len(i.ToolOptionsJSON) == 0 {
+		return nil
+	}
+	opts, err := UnmarshalHermesOptions(i.ToolOptionsJSON)
+	if err != nil {
+		return nil
+	}
+	return opts
+}
+
+// SetHermesOptions stores Hermes-specific options into ToolOptionsJSON.
+func (i *Instance) SetHermesOptions(opts *HermesOptions) error {
+	if opts == nil {
+		i.ToolOptionsJSON = nil
+		return nil
+	}
+	data, err := MarshalToolOptions(opts)
+	if err != nil {
+		return err
+	}
+	i.ToolOptionsJSON = data
+	return nil
+}
+
 // GetOpenCodeOptions returns OpenCode-specific options, or nil if not set
 func (i *Instance) GetOpenCodeOptions() *OpenCodeOptions {
 	if len(i.ToolOptionsJSON) == 0 {
@@ -6190,13 +6267,15 @@ func (i *Instance) RefreshLiveSessionIDs() {
 }
 
 // GetMCPInfo returns MCP server information for this session
-// Returns nil if not a Claude or Gemini session
+// Returns nil if not a Claude, Gemini, or Hermes session
 func (i *Instance) GetMCPInfo() *MCPInfo {
 	switch {
 	case IsClaudeCompatible(i.Tool):
 		return GetMCPInfo(i.ProjectPath)
 	case i.Tool == "gemini":
 		return GetGeminiMCPInfo(i.ProjectPath)
+	case i.Tool == "hermes":
+		return GetHermesMCPInfo(i.ProjectPath)
 	default:
 		return nil
 	}

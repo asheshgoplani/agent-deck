@@ -44,7 +44,9 @@ type MCPItem struct {
 	HasServerCfg bool   // True if HTTP MCP has [mcps.X.server] config
 }
 
-// MCPDialog handles MCP management for Claude and Gemini sessions
+// MCPDialog handles MCP management for Claude and Gemini sessions.
+// Hermes does not use .mcp.json or Claude config, so it is intentionally
+// excluded from the MCP trigger in home.go and never passed here.
 type MCPDialog struct {
 	visible     bool
 	width       int
