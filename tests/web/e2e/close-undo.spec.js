@@ -94,7 +94,9 @@ test.describe('non-destructive close + undo delete', () => {
     expect(undo3.status()).toBe(404)
   })
 
-  test('Shift+D in the UI triggers the close action (not delete)', async ({ page, request }) => {
+  test('Shift+D in the UI triggers the close action (not delete)', async ({ page, request, viewport }) => {
+    // desktop-only: keyboard nav (`j`) + Shift+D act on sidebar `.sess` rows, collapsed on the phone touch-first layout (<768px). The sibling API tests above stay phone-applicable.
+    test.skip((viewport?.width || 1280) < 768, 'phone viewport: keyboard-driven close is desktop/tablet only')
     await page.goto('/')
     await page.waitForSelector('.sess', { timeout: 5000 })
 

@@ -103,6 +103,8 @@ test.describe('children endpoint: API surface', () => {
 })
 
 test.describe('children panel: UI rendering', () => {
+  // desktop-only: the right-rail CHILDREN card is not rendered on the phone touch-first layout (<768px) — the right rail (and sidebar `.sess` rows) is collapsed.
+  test.skip(({ viewport }) => (viewport?.width || 1280) < 768, 'phone viewport: children panel is desktop/tablet only')
   test.beforeEach(async ({ request }) => {
     await request.post('/__fixture/reset')
   })

@@ -137,6 +137,8 @@ test.describe('MCP management — REST API parity', () => {
 })
 
 test.describe('MCP management — UI', () => {
+  // desktop-only: the MCP tab nav + management pane live in the desktop shell (#app-root-grid), not rendered on the phone touch-first layout (<768px).
+  test.skip(({ viewport }) => (viewport?.width || 1280) < 768, 'phone viewport: MCP management UI is desktop/tablet only')
   test.beforeEach(async ({ request }) => {
     await resetFixture(request)
   })
