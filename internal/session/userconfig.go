@@ -54,6 +54,13 @@ type UserConfig struct {
 	// Default: true (nil = true)
 	ManageMCPJson *bool `toml:"manage_mcp_json"`
 
+	// SyncTitle controls whether agent-deck overwrites a session's Title with the
+	// agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697).
+	// Tool-agnostic, global switch. Set false to keep the title you gave the session.
+	// The per-session TitleLocked flag remains available as a finer-grained override.
+	// Default: true (nil = true)
+	SyncTitle *bool `toml:"sync_title"`
+
 	// MCPs defines available MCP servers for the MCP Manager
 	// These can be attached/detached per-project via the MCP Manager (M key)
 	MCPs map[string]MCPDef `toml:"mcps"`
@@ -810,6 +817,16 @@ func (c *UserConfig) GetShowAnalytics() bool {
 // GetShowNotes returns whether to show notes section, defaulting to false
 func (c *UserConfig) GetShowNotes() bool {
 	return c.Preview.GetShowNotes()
+}
+
+// GetSyncTitle returns whether agent-deck may overwrite a session Title with the
+// agent's own session-name. Tool-agnostic. Defaults to true (nil = true) so
+// existing installs keep the current behavior; set sync_title = false to opt out.
+func (c *UserConfig) GetSyncTitle() bool {
+	if c.SyncTitle == nil {
+		return true
+	}
+	return *c.SyncTitle
 }
 
 // ClaudeSettings defines Claude Code configuration

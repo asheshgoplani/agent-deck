@@ -44,10 +44,11 @@ const (
 	SettingStatsShowNetwork
 	SettingStatsShowGPU
 	SettingStatsShowLoad
+	SettingSyncTitle
 )
 
 // Total number of navigable settings.
-const settingsCount = 28
+const settingsCount = 29
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -81,7 +82,8 @@ type SettingsPanel struct {
 	showOutput          bool
 	showAnalytics       bool
 	showNotes           bool
-	notesOutputSplit    int // percentage 10-90 (displayed as %, stored as 0.10-0.90)
+	syncTitle           bool // global: let the agent rename the session (off = keep your title)
+	notesOutputSplit    int  // percentage 10-90 (displayed as %, stored as 0.10-0.90)
 	maintenanceEnabled  bool
 	statsEnabled        bool
 	statsRefreshSecs    int
@@ -142,6 +144,7 @@ func NewSettingsPanel() *SettingsPanel {
 		recentDays:          90,
 		showOutput:          true,  // Default: output ON (shows launch animation)
 		showAnalytics:       false, // Default: analytics OFF (opt-in)
+		syncTitle:           true,  // Default: title sync ON (matches GetSyncTitle default)
 		notesOutputSplit:    33,    // Default: 33%
 		statsEnabled:        true,  // Default: stats ON
 		statsRefreshSecs:    5,     // Default: 5 seconds
@@ -283,6 +286,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.showOutput = config.GetShowOutput()
 	s.showAnalytics = config.GetShowAnalytics()
 	s.showNotes = config.GetShowNotes()
+
+	// Session settings
+	s.syncTitle = config.GetSyncTitle()
 	split := config.Preview.GetNotesOutputSplit()
 	s.notesOutputSplit = int(split * 100)
 	if s.notesOutputSplit < 10 {
@@ -402,6 +408,10 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	showNotes := s.showNotes
 	config.Preview.ShowNotes = &showNotes
 	config.Preview.NotesOutputSplit = float64(s.notesOutputSplit) / 100.0
+
+	// Session settings
+	syncTitle := s.syncTitle
+	config.SyncTitle = &syncTitle
 
 	// Maintenance settings.
 	config.Maintenance.Enabled = s.maintenanceEnabled
@@ -637,6 +647,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowNotes:
 		s.showNotes = !s.showNotes
+		return true
+
+	case SettingSyncTitle:
+		s.syncTitle = !s.syncTitle
 		return true
 
 	case SettingMaintenanceEnabled:
@@ -1009,6 +1023,19 @@ func (s *SettingsPanel) View() string {
 
 	content.WriteString(netCol + gpuCol + loadCol + "\n\n")
 
+	// SESSIONS
+	content.WriteString(sectionStyle.Render("SESSIONS"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox(
+		"Sync session title",
+		s.syncTitle,
+	) + " - Let the agent rename the session (off = keep your title)"
+	if s.cursor == int(SettingSyncTitle) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1070,6 +1097,7 @@ func (s *SettingsPanel) View() string {
 			48, // SettingStatsShowNetwork (row with GPU, Load)
 			48, // SettingStatsShowGPU
 			48, // SettingStatsShowLoad
+			51, // SettingSyncTitle (SESSIONS section, after stats)
 		}
 		cursorLine := cursorToLine[s.cursor]
 

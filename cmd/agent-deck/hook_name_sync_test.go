@@ -312,3 +312,92 @@ func TestApplyClaudeTitleSync_NoopWhenTitleLocked(t *testing.T) {
 		t.Errorf("TitleLocked lost across storage round-trip: got false, want true")
 	}
 }
+
+// writeAgentDeckConfig seeds ~/.agent-deck/config.toml under the test HOME.
+func writeAgentDeckConfig(t *testing.T, home, toml string) {
+	t.Helper()
+	dir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .agent-deck: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+}
+
+// titleAfterSync seeds one Claude session + one agent-deck instance under the
+// given profile, runs applyClaudeTitleSync, and returns the post-sync Title.
+func titleAfterSync(t *testing.T, home, profile, sid, claudeName, startTitle string) string {
+	t.Helper()
+	writeClaudeSessionFile(t, filepath.Join(home, ".claude"), 4242, map[string]any{
+		"pid":       4242,
+		"sessionId": sid,
+		"name":      claudeName,
+	})
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+
+	projectDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inst := &session.Instance{
+		ID:          "inst-sync",
+		Title:       startTitle,
+		Tool:        "claude",
+		ProjectPath: projectDir,
+		Command:     "claude",
+	}
+	if err := storage.Save([]*session.Instance{inst}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	applyClaudeTitleSync("inst-sync", sid)
+
+	loaded, err := storage.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	for _, i := range loaded {
+		if i.ID == "inst-sync" {
+			return i.Title
+		}
+	}
+	t.Fatal("instance disappeared")
+	return ""
+}
+
+// TestApplyClaudeTitleSync_NoopWhenSyncDisabled: the global, tool-agnostic
+// switch (config sync_title = false) must block Claude's session-name from
+// overwriting the agent-deck title — for any session, without needing a
+// per-session TitleLocked. Companion to the #697 per-session test above.
+func TestApplyClaudeTitleSync_NoopWhenSyncDisabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_PROFILE", "sync_test_disabled")
+	writeAgentDeckConfig(t, home, "sync_title = false\n")
+
+	got := titleAfterSync(t, home, "sync_test_disabled", "sid-off", "auto-generated-summary", "loupe")
+	if got != "loupe" {
+		t.Errorf("post-sync Title = %q, want %q (sync_title=false must block sync)", got, "loupe")
+	}
+}
+
+// TestApplyClaudeTitleSync_SyncsWhenEnabled is the positive control: with
+// sync_title explicitly true (the default), the title still syncs — guards
+// against the gate accidentally short-circuiting the normal path.
+func TestApplyClaudeTitleSync_SyncsWhenEnabled(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENTDECK_PROFILE", "sync_test_enabled")
+	writeAgentDeckConfig(t, home, "sync_title = true\n")
+
+	got := titleAfterSync(t, home, "sync_test_enabled", "sid-on", "renamed-by-user", "loupe")
+	if got != "renamed-by-user" {
+		t.Errorf("post-sync Title = %q, want %q (sync_title=true must allow sync)", got, "renamed-by-user")
+	}
+}

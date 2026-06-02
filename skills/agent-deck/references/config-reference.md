@@ -28,7 +28,13 @@ All options for `~/.agent-deck/config.toml`.
 
 ```toml
 default_tool = "claude"   # Pre-selected tool when creating sessions
+sync_title   = true       # Let agents rename sessions from their session-name
 ```
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
+| `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. The per-session title-lock (`agent-deck session set-title-lock <id> on`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 
 ## [shell] Section
 

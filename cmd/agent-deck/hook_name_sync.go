@@ -67,6 +67,16 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 		return
 	}
 
+	// Global, tool-agnostic switch (config: sync_title = false). When the user
+	// has disabled title sync, agent-deck never overwrites a session Title with
+	// the agent's own session-name — for any tool. The per-session TitleLocked
+	// flag (checked below) stays as a finer-grained override.
+	// NOTE: this is currently the only title-sync path; any future non-Claude
+	// session-name sync MUST honor GetSyncTitle() the same way.
+	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil && !cfg.GetSyncTitle() {
+		return
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
