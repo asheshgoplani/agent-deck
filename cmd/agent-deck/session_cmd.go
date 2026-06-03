@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -594,6 +595,23 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 	}
 }
 
+// sessionForkBeforeStartHook is nil in production. Tests assign it to inspect
+// the fully-prepared fork before tmux Start() mutates the environment. When
+// the hook is set, handleSessionFork invokes it and returns immediately —
+// no tmux session, no persistence, no Start(). This lets contract tests
+// assert option propagation without spawning real sessions.
+var sessionForkBeforeStartHook func(parent *session.Instance, forked *session.Instance, state git.WorktreeStateOptions)
+
+// branchCleanupHint builds the trailing "&& git branch -D ..." fragment of
+// the manual-cleanup hint shown when fork-with-state cleanup partially fails.
+// Returns empty string when the branch wasn't created by this operation.
+func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
+	if !createdBranch {
+		return ""
+	}
+	return fmt.Sprintf(" && git -C %s branch -D %s", repoRoot, branchName)
+}
+
 // handleSessionFork forks a Claude session
 func handleSessionFork(profile string, args []string) {
 	fs := flag.NewFlagSet("session fork", flag.ExitOnError)
@@ -720,11 +738,47 @@ func handleSessionFork(profile string, args []string) {
 		worktreeType = string(backend.Type())
 		repoRoot := backend.RepoDir()
 
+		// --with-state* is git-specific: it anchors the new worktree at the
+		// parent's HEAD and materializes the parent's index/stash. Enforce the
+		// git requirement HERE, before the git-direct collision gate and the
+		// parent-HEAD anchoring below. This early guard — not the call routing —
+		// is what makes those git-direct calls jujutsu-safe: a jujutsu backend
+		// can never reach them. (The late jujutsu branch below keeps a
+		// belt-and-suspenders rejection for non-state paths.)
+		if wantState && backend.Type() != vcs.TypeGit {
+			out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+
 		// Apply configured branch prefix before validation/existence checks
 		wtSettings := session.GetWorktreeSettings()
 		wtBranch = wtSettings.ApplyBranchPrefix(wtBranch)
 
-		if !createNewBranch && !backend.BranchExists(wtBranch) {
+		// Destination gate (BUG-01/08). With-state forks create a NEW branch
+		// anchored at the parent's HEAD, so they must refuse any pre-existing
+		// branch or worktree — one well-defined collision gate, evaluated before
+		// path computation and the legacy reuse check. Non-with-state forks keep
+		// upstream's "branch must already exist (use -b to create)" contract.
+		// These two are mutually exclusive: with-state requires the branch ABSENT,
+		// the else-branch requires it PRESENT — never flatten them.
+		if wantState {
+			if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
+				var collErr *git.DestinationCollisionError
+				if errors.As(err, &collErr) {
+					switch collErr.Kind {
+					case git.CollisionWorktreeExists:
+						out.Error(fmt.Sprintf("branch '%s' already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path), ErrCodeInvalidOperation)
+					case git.CollisionBranchExists:
+						out.Error(fmt.Sprintf("branch '%s' already exists; choose a new destination branch for --with-state", collErr.Branch), ErrCodeInvalidOperation)
+					default:
+						out.Error(collErr.Error(), ErrCodeInvalidOperation)
+					}
+					os.Exit(1)
+				}
+				out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		} else if !createNewBranch && !backend.BranchExists(wtBranch) {
 			out.Error(fmt.Sprintf("branch '%s' does not exist (use -b to create)", wtBranch), ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
@@ -736,11 +790,19 @@ func handleSessionFork(profile string, args []string) {
 			Template:  wtSettings.Template(),
 		})
 
-		// Check for an existing worktree for this branch before creating a new one
-		if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
-			fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
-			worktreePath = existingPath
-		} else {
+		// Check for an existing worktree for this branch before creating a new
+		// one. Routed through the backend so jujutsu reuse keeps working. The
+		// with-state path is validated above and must NEVER reuse a worktree, so
+		// the reuse assignment is gated on !wantState (BUG-01/08).
+		reuseExistingWorktree := false
+		if !wantState {
+			if existingPath, err := backend.GetWorktreeForBranch(wtBranch); err == nil && existingPath != "" {
+				fmt.Fprintf(os.Stderr, "Reusing existing worktree at %s for branch %s\n", existingPath, wtBranch)
+				worktreePath = existingPath
+				reuseExistingWorktree = true
+			}
+		}
+		if !reuseExistingWorktree {
 			if _, statErr := os.Stat(worktreePath); statErr == nil {
 				out.Error(fmt.Sprintf("worktree path already exists: %s", worktreePath), ErrCodeInvalidOperation)
 				os.Exit(1)
@@ -751,28 +813,96 @@ func handleSessionFork(profile string, args []string) {
 				os.Exit(1)
 			}
 
-			// --with-state* is git-specific (uses index/stash). Reject for jujutsu.
-			if backend.Type() == vcs.TypeGit {
-				setupErr, err := git.CreateWorktreeWithStateAndSetup(
-					repoRoot, worktreePath, wtBranch,
-					git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored},
-					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
-				if err != nil {
-					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
+			var setupErr error
+			if wantState {
+				// git-only, guaranteed by the early guard above.
+				//
+				// Mid-op refusal: surface an actionable error BEFORE creating the
+				// worktree, so the user sees the exact abort command for their
+				// parent instead of MaterializeWipFromParent's terse backstop
+				// wording (which fires AFTER worktree creation and triggers
+				// cleanup-on-error). The backstop in materialize_wip.go's
+				// refuseUnsafeParentState still covers detectErr != nil cases — we
+				// fall through silently there.
+				if kind, detectErr := git.DetectInProgressOperation(inst.ProjectPath); detectErr == nil && kind != "" {
+					abortCmd := map[string]string{
+						"rebase":      "git rebase --abort",
+						"merge":       "git merge --abort",
+						"cherry-pick": "git cherry-pick --abort",
+						"revert":      "git revert --abort",
+						"bisect":      "git bisect reset",
+					}[kind]
+					out.Error(fmt.Sprintf("parent session is mid-%s; finish or abort the %s before forking with state (cd %s && %s)",
+						kind, kind, inst.ProjectPath, abortCmd), ErrCodeInvalidOperation)
 					os.Exit(1)
 				}
-				if setupErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
+
+				if git.HasSubmodules(inst.ProjectPath) {
+					fmt.Fprintln(os.Stderr, "Warning: submodules detected — copied as files, not recursed (parent's submodule states preserved)")
+				}
+
+				// Capture parent's HEAD so linked-worktree parents anchor correctly.
+				parentHead, hcErr := git.HeadCommit(inst.ProjectPath)
+				if hcErr != nil {
+					out.Error(fmt.Sprintf("failed to resolve parent session HEAD: %v", hcErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				createdBranch, cwErr := git.CreateWorktreeAtStartPoint(repoRoot, worktreePath, wtBranch, parentHead)
+				if cwErr != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+
+				// Materialize parent state, with cleanup-on-error.
+				if matErr := git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
+					var cleanupErrs []string
+					if rmErr := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run(); rmErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+					}
+					if createdBranch {
+						if brErr := exec.Command("git", "-C", repoRoot, "branch", "-D", wtBranch).Run(); brErr != nil {
+							cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+						}
+					}
+					if len(cleanupErrs) == 0 {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; new worktree cleaned up", matErr), ErrCodeInvalidOperation)
+					} else {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s%s",
+							matErr,
+							strings.Join(cleanupErrs, "; "),
+							worktreePath,
+							branchCleanupHint(createdBranch, repoRoot, wtBranch),
+						), ErrCodeInvalidOperation)
+					}
+					os.Exit(1)
+				}
+
+				// Continue upstream's wrapper tail: worktreeinclude + setup hook.
+				if inclErr := git.ProcessWorktreeInclude(repoRoot, worktreePath, os.Stderr); inclErr != nil {
+					fmt.Fprintf(os.Stderr, "worktreeinclude: %v\n", inclErr)
+				}
+				setupErr = git.RunWorktreeSetupAfterCreate(repoRoot, worktreePath, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			} else if backend.Type() == vcs.TypeGit {
+				// Non-with-state git path: upstream's combined wrapper unchanged.
+				var cwErr error
+				setupErr, cwErr = git.CreateWorktreeWithStateAndSetup(
+					repoRoot, worktreePath, wtBranch,
+					git.WorktreeStateOptions{},
+					os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+				if cwErr != nil {
+					out.Error(fmt.Sprintf("worktree creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
 				}
 			} else {
-				if wantState {
-					out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
-					os.Exit(1)
-				}
+				// Non-git backend (jujutsu): with-state already rejected above.
 				if err := backend.CreateWorktree(worktreePath, wtBranch); err != nil {
 					out.Error(fmt.Sprintf("worktree creation failed: %v", err), ErrCodeInvalidOperation)
 					os.Exit(1)
 				}
+			}
+			if setupErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: worktree setup script failed: %v\n", setupErr)
 			}
 		}
 
@@ -798,6 +928,14 @@ func handleSessionFork(profile string, args []string) {
 	// Apply sandbox config if requested.
 	if *sandbox {
 		forkedInst.Sandbox = session.NewSandboxConfig(*sandboxImage)
+	}
+
+	// Test seam: when set, capture the fully-prepared fork before tmux Start()
+	// mutates the environment and return early. Production runs leave the hook
+	// nil, so this is a no-op outside of tests.
+	if sessionForkBeforeStartHook != nil {
+		sessionForkBeforeStartHook(inst, forkedInst, git.WorktreeStateOptions{WithState: wantState, WithIgnored: *withStateGitignored})
+		return
 	}
 
 	// Start the forked session

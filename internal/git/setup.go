@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -118,12 +119,25 @@ type WorktreeStateOptions struct {
 // Materialization happens BEFORE worktreeinclude processing and the setup
 // script so both observe the realized state, per @smorin's spec.
 func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, state WorktreeStateOptions, stdout, stderr io.Writer, setupTimeout time.Duration) (setupErr error, err error) {
+	createdBranch := !BranchExists(repoDir, branchName)
 	if err = CreateWorktree(repoDir, worktreePath, branchName); err != nil {
 		return nil, err
 	}
 
 	if state.WithState {
 		if matErr := MaterializeWipFromParent(repoDir, worktreePath, state.WithIgnored); matErr != nil {
+			var cleanupErrs []string
+			if rmErr := RemoveWorktree(repoDir, worktreePath, true); rmErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+			}
+			if createdBranch {
+				if brErr := DeleteBranch(resolveGitInvocationDir(repoDir), branchName, true); brErr != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+				}
+			}
+			if len(cleanupErrs) > 0 {
+				return nil, fmt.Errorf("materialize parent state: %w; cleanup failed: %s", matErr, strings.Join(cleanupErrs, "; "))
+			}
 			return nil, fmt.Errorf("materialize parent state: %w", matErr)
 		}
 	}
@@ -132,19 +146,27 @@ func CreateWorktreeWithStateAndSetup(repoDir, worktreePath, branchName string, s
 		fmt.Fprintf(stderr, "worktreeinclude: %v\n", inclErr)
 	}
 
+	return RunWorktreeSetupAfterCreate(repoDir, worktreePath, stdout, stderr, setupTimeout), nil
+}
+
+// RunWorktreeSetupAfterCreate runs the worktree setup script for an
+// already-created worktree. Extracted from CreateWorktreeWithStateAndSetup
+// so the fork-with-state path can sequence Create → Materialize → Setup
+// with per-step error handling. Returns the script's exit error; nil if no
+// script. Caller is responsible for ProcessWorktreeInclude if desired.
+func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io.Writer, setupTimeout time.Duration) error {
 	scriptPath, scriptMode := FindWorktreeSetupScript(repoDir)
 	if scriptPath == "" {
-		return nil, nil
+		return nil
 	}
-
 	fmt.Fprintln(stderr, "Running worktree setup script...")
 	start := time.Now()
-	setupErr = RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
+	setupErr := RunWorktreeSetupScript(scriptPath, scriptMode, repoDir, worktreePath, stdout, stderr, setupTimeout)
 	elapsed := time.Since(start).Round(100 * time.Millisecond)
 	if setupErr != nil {
 		fmt.Fprintf(stderr, "Worktree setup script failed after %s: %v\n", elapsed, setupErr)
 	} else {
 		fmt.Fprintf(stderr, "Worktree setup script completed in %s\n", elapsed)
 	}
-	return setupErr, nil
+	return setupErr
 }

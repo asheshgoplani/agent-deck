@@ -1270,3 +1270,98 @@ func TestIntegration_WorktreeNesting(t *testing.T) {
 	t.Logf("Correct path:  %s", actualWt2)
 	t.Logf("Wrong path:    %s (would have been nested)", wrongWt2)
 }
+
+func TestCreateWorktreeAtStartPoint_UsesExplicitParentHead(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "base")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTestRepo(t, base)
+
+	parentWT := filepath.Join(root, "parent-wt")
+	if err := CreateWorktree(base, parentWT, "parent-branch"); err != nil {
+		t.Fatalf("CreateWorktree parent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parentWT, "README.md"), []byte("parent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, parentWT, "commit", "-am", "parent change")
+
+	baseHead := strings.TrimSpace(runGit(t, base, "rev-parse", "HEAD"))
+	parentHead, err := HeadCommit(parentWT)
+	if err != nil {
+		t.Fatalf("HeadCommit: %v", err)
+	}
+	if baseHead == parentHead {
+		t.Fatal("setup invalid: base and parent HEAD should differ")
+	}
+
+	forkWT := filepath.Join(root, "fork-wt")
+	createdBranch, err := CreateWorktreeAtStartPoint(base, forkWT, "fork/from-parent", parentHead)
+	if err != nil {
+		t.Fatalf("CreateWorktreeAtStartPoint: %v", err)
+	}
+	if !createdBranch {
+		t.Fatal("CreateWorktreeAtStartPoint returned createdBranch=false for a new branch")
+	}
+	forkHead := strings.TrimSpace(runGit(t, forkWT, "rev-parse", "HEAD"))
+	if forkHead != parentHead {
+		t.Fatalf("fork HEAD = %s, want parent HEAD %s (base HEAD %s)", forkHead, parentHead, baseHead)
+	}
+}
+
+func TestHeadCommit_IgnoresGitWarningsOnStderr(t *testing.T) {
+	binDir := t.TempDir()
+	gitPath := filepath.Join(binDir, "git")
+	const want = "0123456789abcdef0123456789abcdef01234567"
+	script := `#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--git-dir" ]; then
+  printf '.git\n'
+  exit 0
+fi
+if [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "--verify" ]; then
+  printf '` + want + `\n'
+  printf 'git: warning: confstr() failed; using /tmp instead\n' >&2
+  exit 0
+fi
+printf 'unexpected git invocation: %s\n' "$*" >&2
+exit 1
+`
+	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+oldPath)
+
+	got, err := HeadCommit(t.TempDir())
+	if err != nil {
+		t.Fatalf("HeadCommit returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("HeadCommit returned %q, want stdout-only commit %q", got, want)
+	}
+}
+
+func TestCreateWorktreeAtStartPoint_RejectsExistingBranch(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "base")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTestRepo(t, base)
+	parentHead, _ := HeadCommit(base)
+	runGit(t, base, "branch", "fork/existing")
+
+	createdBranch, err := CreateWorktreeAtStartPoint(base, filepath.Join(root, "fork-wt"), "fork/existing", parentHead)
+	if err == nil {
+		t.Fatal("expected existing branch to be rejected")
+	}
+	if createdBranch {
+		t.Fatal("createdBranch should be false when branch already existed")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected already-exists error, got %v", err)
+	}
+}
