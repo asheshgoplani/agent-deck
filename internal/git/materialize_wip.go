@@ -13,8 +13,10 @@ import (
 
 // MaterializeWipFromParent copies the working-tree state of parentDir (staged
 // changes, unstaged edits, and untracked files) into childDir, which must be a
-// freshly-created worktree pointing at parentDir's HEAD. When includeIgnored
-// is true, gitignored files are also copied.
+// freshly-created worktree pointing at parentDir's HEAD. parentDir may be any
+// path inside the parent worktree; state is materialized from the worktree root
+// so copied paths remain repository-relative. When includeIgnored is true,
+// gitignored files are also copied.
 //
 // Contract:
 //   - parentDir is treated read-only — no stash push, no add, no index mutation.
@@ -25,23 +27,28 @@ import (
 //
 // Implements issue #1029 (--with-state / --with-state-and-gitignored).
 func MaterializeWipFromParent(parentDir, childDir string, includeIgnored bool) error {
-	if err := refuseUnsafeParentState(parentDir); err != nil {
+	parentRoot, err := GetRepoRoot(parentDir)
+	if err != nil {
+		return fmt.Errorf("resolve parent worktree root: %w", err)
+	}
+
+	if err := refuseUnsafeParentState(parentRoot); err != nil {
 		return err
 	}
 
 	// 1. Apply parent's STAGED diff (vs HEAD) into child's index + working tree.
-	if err := applyDiffFromParent(parentDir, childDir, true /* cached */); err != nil {
+	if err := applyDiffFromParent(parentRoot, childDir, true /* cached */); err != nil {
 		return fmt.Errorf("materialize staged: %w", err)
 	}
 
 	// 2. Apply parent's UNSTAGED diff (working tree vs index) into child's
 	//    working tree only.
-	if err := applyDiffFromParent(parentDir, childDir, false /* cached */); err != nil {
+	if err := applyDiffFromParent(parentRoot, childDir, false /* cached */); err != nil {
 		return fmt.Errorf("materialize unstaged: %w", err)
 	}
 
 	// 3. Copy untracked files (and gitignored on opt-in).
-	if err := copyUntrackedFromParent(parentDir, childDir, includeIgnored); err != nil {
+	if err := copyUntrackedFromParent(parentRoot, childDir, includeIgnored); err != nil {
 		return fmt.Errorf("materialize untracked: %w", err)
 	}
 
