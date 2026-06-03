@@ -103,9 +103,7 @@ func TestMaterializeWipFromParent_FromSubdirectoryKeepsRepoRelativeUntrackedPath
 
 	mustHaveWipFile(t, child, "a/new-a.txt", "untracked a\n")
 	mustHaveWipFile(t, child, "b/new-b.txt", "untracked b\n")
-	if _, err := os.Stat(filepath.Join(child, "new-a.txt")); !os.IsNotExist(err) {
-		t.Fatalf("subdir-relative untracked file was copied to worktree root: %v", err)
-	}
+	mustNotHaveWipFile(t, child, "new-a.txt")
 }
 
 func TestMaterializeWipFromParent_FromSubdirectoryKeepsRepoRelativeIgnoredPaths(t *testing.T) {
@@ -133,9 +131,7 @@ func TestMaterializeWipFromParent_FromSubdirectoryKeepsRepoRelativeIgnoredPaths(
 
 	mustHaveWipFile(t, child, "a/secrets.env", "ignored a\n")
 	mustHaveWipFile(t, child, "b/secrets.env", "ignored b\n")
-	if _, err := os.Stat(filepath.Join(child, "secrets.env")); !os.IsNotExist(err) {
-		t.Fatalf("subdir-relative ignored file was copied to worktree root: %v", err)
-	}
+	mustNotHaveWipFile(t, child, "secrets.env")
 }
 
 func writeWipFile(t *testing.T, dir, rel, content string) {
@@ -175,6 +171,15 @@ func mustHaveWipFile(t *testing.T, dir, rel, want string) {
 	t.Helper()
 	if got := readWipFile(t, dir, rel); got != want {
 		t.Fatalf("%s content mismatch.\nwant: %q\ngot:  %q", rel, want, got)
+	}
+}
+
+func mustNotHaveWipFile(t *testing.T, dir, rel string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(dir, rel)); err == nil {
+		t.Fatalf("%s unexpectedly exists in %s", rel, dir)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat %s in %s: %v", rel, dir, err)
 	}
 }
 
