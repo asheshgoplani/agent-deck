@@ -1923,6 +1923,11 @@ type DisplaySettings struct {
 	// preserves the historical format; set false to show only the session
 	// title. Consumed by the tmux set-titles-string builder.
 	IncludeCwdPrefix *bool `toml:"include_cwd_prefix"`
+
+	// ShowSessionTimestamps appends a dim "Nm ago" badge to every session row.
+	// Default: false — opt-in to avoid crowding existing badges. See
+	// renderSessionItem for the timestamp source.
+	ShowSessionTimestamps bool `toml:"show_session_timestamps"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter

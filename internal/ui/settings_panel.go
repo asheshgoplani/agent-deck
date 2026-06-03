@@ -46,10 +46,11 @@ const (
 	SettingStatsShowGPU
 	SettingStatsShowLoad
 	SettingSyncTitle
+	SettingShowSessionTimestamps
 )
 
 // Total number of navigable settings.
-const settingsCount = 30
+const settingsCount = 31
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -96,6 +97,8 @@ type SettingsPanel struct {
 	statsShowNetwork    bool
 	statsShowGPU        bool
 	statsShowLoad       bool
+
+	showSessionTimestamps bool
 
 	// Text input state
 	editingText bool
@@ -325,6 +328,9 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 	s.statsShowNetwork = showSet["network"]
 	s.statsShowGPU = showSet["gpu"]
 	s.statsShowLoad = showSet["load"]
+
+	// Display settings
+	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
 }
 
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
@@ -451,6 +457,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		showStats = append(showStats, "load")
 	}
 	config.SystemStats.Show = showStats
+
+	// Display settings
+	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
 
 	// Preserve original MCPs, Tools, and Docker settings.
 	if s.originalConfig != nil {
@@ -695,6 +704,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingStatsShowLoad:
 		s.statsShowLoad = !s.statsShowLoad
+		return true
+
+	case SettingShowSessionTimestamps:
+		s.showSessionTimestamps = !s.showSessionTimestamps
 		return true
 	}
 
@@ -1059,6 +1072,16 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	// DISPLAY
+	content.WriteString(sectionStyle.Render("DISPLAY"))
+	content.WriteString("\n")
+
+	line = s.renderCheckbox("Show session timestamps", s.showSessionTimestamps) + " - Last activity per row"
+	if s.cursor == int(SettingShowSessionTimestamps) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1122,6 +1145,7 @@ func (s *SettingsPanel) View() string {
 			51, // SettingStatsShowGPU
 			51, // SettingStatsShowLoad
 			54, // SettingSyncTitle (SESSIONS section, after stats)
+			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
 		}
 		cursorLine := cursorToLine[s.cursor]
 
