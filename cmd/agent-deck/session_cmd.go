@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
+
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/profile"
@@ -609,7 +611,7 @@ func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
 	if !createdBranch {
 		return ""
 	}
-	return fmt.Sprintf(" && git -C %s branch -D %s", repoRoot, branchName)
+	return fmt.Sprintf(" && git -C %s branch -D %s", shellescape.Quote(repoRoot), shellescape.Quote(branchName))
 }
 
 // handleSessionFork forks a Claude session
@@ -871,7 +873,7 @@ func handleSessionFork(profile string, args []string) {
 						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s%s",
 							matErr,
 							strings.Join(cleanupErrs, "; "),
-							worktreePath,
+							shellescape.Quote(worktreePath),
 							branchCleanupHint(createdBranch, repoRoot, wtBranch),
 						), ErrCodeInvalidOperation)
 					}

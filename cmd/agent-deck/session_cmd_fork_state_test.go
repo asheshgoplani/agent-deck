@@ -332,3 +332,27 @@ func TestSessionForkBeforeStartHook_NilInProduction(t *testing.T) {
 			"(a previous test leaked an assignment without restoring nil)")
 	}
 }
+
+// TestBranchCleanupHint_ShellQuotesPathAndBranch guards that the manual-cleanup
+// hint is copy-paste-safe: repo root and branch names containing spaces or
+// shell metacharacters must be quoted so the printed `git -C ... branch -D ...`
+// fragment runs as a single argument each rather than word-splitting.
+func TestBranchCleanupHint_ShellQuotesPathAndBranch(t *testing.T) {
+	if got := branchCleanupHint(false, "/repo", "feature/x"); got != "" {
+		t.Fatalf("expected empty hint when branch was not created, got %q", got)
+	}
+
+	got := branchCleanupHint(true, "/home/u/my repo", "feature/has space")
+	if strings.Contains(got, "git -C /home/u/my repo ") {
+		t.Errorf("repo root with a space was not quoted in hint: %q", got)
+	}
+	if strings.Contains(got, "branch -D feature/has space") {
+		t.Errorf("branch name with a space was not quoted in hint: %q", got)
+	}
+	if !strings.Contains(got, "'/home/u/my repo'") {
+		t.Errorf("expected repo root single-quoted, got %q", got)
+	}
+	if !strings.Contains(got, "'feature/has space'") {
+		t.Errorf("expected branch name single-quoted, got %q", got)
+	}
+}
