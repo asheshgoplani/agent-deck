@@ -573,8 +573,17 @@ func (r *SSHRunner) DeployBinary(ctx context.Context, binaryData []byte, remoteP
 		dir = remotePath[:idx]
 	}
 
-	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod +x %s",
-		shellQuote(dir), shellQuote(remotePath), shellQuote(remotePath))
+	// Stage to a sibling temp file and atomically rename it into place rather
+	// than redirecting onto remotePath directly. agent-deck keeps a long-lived
+	// `session attach` process running from remotePath, so truncating it in
+	// place (`cat > remotePath`) makes the kernel reject the write with ETXTBSY
+	// ("text file busy"). rename(2) only repoints the directory entry, so it
+	// succeeds while the old binary is still executing (the running process
+	// keeps the now-unlinked inode); the next launch picks up the new binary.
+	tmpPath := remotePath + ".new"
+	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod +x %s && mv -f %s %s",
+		shellQuote(dir), shellQuote(tmpPath), shellQuote(tmpPath),
+		shellQuote(tmpPath), shellQuote(remotePath))
 
 	deployCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
