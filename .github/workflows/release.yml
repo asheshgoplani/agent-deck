@@ -226,6 +226,6 @@ jobs:
 
       - name: Attest build provenance
         timeout-minutes: 10
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist-attest/*'
