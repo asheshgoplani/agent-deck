@@ -2210,37 +2210,18 @@ func isShellEnvAssignment(token string) bool {
 // GetToolDef returns a tool definition from user config
 // Returns nil if tool is not defined
 func GetToolDef(toolName string) *ToolDef {
-	config, err := LoadUserConfig()
-	if err != nil || config == nil {
-		return nil
-	}
-
-	if def, ok := config.Tools[toolName]; ok {
-		return &def
-	}
-	return nil
+	// Delegates to the registry's custom-tool lookup. GetCustom returns nil for
+	// built-in names (their shadowing custom entries are rejected at registry
+	// init), preserving this function's long-standing "nil for built-ins"
+	// contract that callers branch on. See Registry.GetCustom / Registry.Get.
+	return currentRegistry().GetCustom(toolName)
 }
 
 // GetCustomToolNames returns sorted custom tool names from config.toml,
 // excluding names that shadow built-in tools (claude, gemini, opencode, codex, pi, shell, cursor, aider).
 // Returns nil if no custom tools are configured.
 func GetCustomToolNames() []string {
-	config, err := LoadUserConfig()
-	if err != nil || config == nil || len(config.Tools) == 0 {
-		return nil
-	}
-
-	var names []string
-	for name := range config.Tools {
-		if !isBuiltinToolName(name) {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
-		return nil
-	}
-	sort.Strings(names)
-	return names
+	return currentRegistry().CustomNames()
 }
 
 // GetToolCommand returns the configured command override for a builtin tool,
@@ -2280,12 +2261,7 @@ func GetToolCommand(toolName string) string {
 }
 
 func isBuiltinToolName(toolName string) bool {
-	switch toolName {
-	case "claude", "gemini", "opencode", "codex", "copilot", "crush", "cursor", "hermes", "pi", "shell", "aider":
-		return true
-	default:
-		return false
-	}
+	return currentRegistry().IsBuiltin(toolName)
 }
 
 // GetToolIcon returns the icon for a tool (custom or built-in)
