@@ -220,6 +220,15 @@ type UISettings struct {
 	// cadence that reconciles the list. Valid range: 5-300. Default: 15s,
 	// tightening the visibility latency reported on v1.9.30.
 	RemoteSessionRefreshSecs int `toml:"remote_session_refresh_secs"`
+
+	// ShowOnlyInstalledTools, when true, hides tools from the new-session
+	// dialogs (TUI + web) whose command does not resolve on the host PATH
+	// (issue #1259). Default false: no PATH probing happens and the dialogs are
+	// byte-identical to before. shell is always shown; if nothing else resolves
+	// the dialog falls back to showing all tools plus a one-line hint. This is a
+	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
+	// tool.
+	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.

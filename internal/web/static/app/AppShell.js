@@ -28,6 +28,7 @@ import {
   selectedIdSignal, createSessionDialogSignal, confirmDialogSignal,
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
   profilesSignal, systemStatsSignal,
+  toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
@@ -127,12 +128,24 @@ export function AppShell() {
   }, [])
 
   // WEB-P0-4 prevention layer: hydrate webMutations gate from /api/settings.
+  // Also hydrates the show_only_installed_tools filter (issue #1259) so the
+  // new-session dialog can hide tools whose command is not on PATH.
   useEffect(() => {
     fetch('/api/settings')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (data && typeof data.webMutations === 'boolean') {
+        if (!data) return
+        if (typeof data.webMutations === 'boolean') {
           mutationsEnabledSignal.value = data.webMutations
+        }
+        if (typeof data.toolFilter === 'boolean') {
+          toolFilterSignal.value = data.toolFilter
+        }
+        if (Array.isArray(data.visibleTools)) {
+          visibleToolsSignal.value = data.visibleTools
+        }
+        if (typeof data.toolFilterFallback === 'boolean') {
+          toolFilterFallbackSignal.value = data.toolFilterFallback
         }
       })
       .catch(() => {})

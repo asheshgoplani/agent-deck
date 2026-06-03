@@ -249,12 +249,17 @@ func displayCommandPreset(cmd string) string {
 
 // buildPresetCommands returns the list of commands for the picker,
 // including any custom tools from config.toml.
+//
+// When show_only_installed_tools is on (issue #1259) the list is filtered down
+// to tools whose command resolves on PATH; "" (shell) is always kept. With the
+// flag off FilterVisibleToolNames is a no-op, so the list is byte-identical to
+// before.
 func buildPresetCommands() []string {
 	presets := []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
 	if customTools := session.GetCustomToolNames(); len(customTools) > 0 {
 		presets = append(presets, customTools...)
 	}
-	return presets
+	return session.FilterVisibleToolNames(presets)
 }
 
 // buildInheritedSettings returns display pairs for non-default Docker config values.
@@ -2348,7 +2353,18 @@ func (d *NewDialog) View() string {
 		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
 	}
 	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, cmdButtons...))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+
+	// show_only_installed_tools empty-fallback hint (issue #1259): when the
+	// filter is on but nothing other than shell resolved on PATH we show the full
+	// list instead of trapping the user, and explain why here.
+	if session.ToolFilterFallbackActive() {
+		hintStyle := lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true)
+		content.WriteString("  ")
+		content.WriteString(hintStyle.Render("No tools matched PATH; showing all. Set show_only_installed_tools = false to silence."))
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
 
 	// Custom command input (only if shell is selected)
 	if d.commandCursor == 0 {

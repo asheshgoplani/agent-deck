@@ -1,6 +1,9 @@
 package session
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -32,17 +35,73 @@ type Registry struct {
 	order    []string               // built-in precedence order, drives Match()
 	builtins map[string]builtinTool // name -> built-in record
 	custom   map[string]ToolDef     // name -> user-defined tool (shadows dropped)
+
+	// --- show_only_installed_tools filter state (issue #1259) ---
+	// These are populated ONLY when the filter is enabled at Init. With the
+	// filter off they stay zero-valued and every visibility method short-circuits
+	// to "show everything", so the default path is byte-identical to before.
+	filterInstalled bool            // the flag was on at Init (probe ran)
+	installed       map[string]bool // name -> command resolved on PATH (shell always true)
+	fallback        bool            // filter on AND nothing but shell resolved -> show all + hint
 }
 
 var registryLog = logging.ForComponent(logging.CompSession)
+
+// lookPathFn and statFn are indirections over exec.LookPath / os.Stat so tests
+// can simulate a host where specific commands are (or are not) on PATH without
+// mutating the real environment. Production code uses the real implementations.
+var (
+	lookPathFn = exec.LookPath
+	statFn     = os.Stat
+)
+
+// probeInstalled reports whether a tool command resolves on the host.
+//
+//   - Absolute paths are checked with os.Stat (the binary must exist on disk).
+//   - Commands that contain whitespace and are NOT absolute paths are inline
+//     shell expressions or wrapper invocations (e.g. `bash -c "..."` or
+//     `my-wrapper claude`); splitting and probing the wrapper is more work than
+//     it's worth and would surprise users with intentional wrapper setups, so we
+//     treat them as installed (issue #1259).
+//   - Everything else is a bare command name, resolved with exec.LookPath.
+func probeInstalled(command string) bool {
+	cmd := strings.TrimSpace(command)
+	if cmd == "" {
+		return false
+	}
+	if filepath.IsAbs(cmd) {
+		_, err := statFn(cmd)
+		return err == nil
+	}
+	if strings.ContainsAny(cmd, " \t") {
+		return true
+	}
+	_, err := lookPathFn(cmd)
+	return err == nil
+}
 
 // Init builds a Registry from the static built-ins plus the supplied custom
 // tools (typically config.Tools from LoadUserConfig). Custom entries whose name
 // shadows a built-in are dropped with a warning (precedence rule (a)).
 //
 // Init is the single explicit constructor — tests build registries directly via
-// Init(map[string]ToolDef{...}) rather than poking package globals.
+// Init(map[string]ToolDef{...}) rather than poking package globals. It builds an
+// UNFILTERED registry (show_only_installed_tools off): no PATH probing happens,
+// so behavior is byte-identical to before issue #1259.
 func Init(custom map[string]ToolDef) *Registry {
+	return InitFiltered(custom, false)
+}
+
+// InitFiltered builds a Registry, optionally running the show_only_installed_tools
+// probe (issue #1259). When showOnlyInstalled is false the probe is skipped
+// ENTIRELY — not "probe then ignore" — so the default path makes zero LookPath
+// calls and is byte-identical to Init's prior behavior.
+//
+// Caching policy: the probe runs only here, at construction time. The process
+// registry (currentRegistry) rebuilds whenever the cached *UserConfig pointer
+// changes, so a mid-session config edit re-probes on the next dialog open. There
+// is deliberately no separate timer/refresh path (issue #1259 caching note).
+func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool) *Registry {
 	r := &Registry{
 		builtins: make(map[string]builtinTool),
 		custom:   make(map[string]ToolDef),
@@ -60,7 +119,47 @@ func Init(custom map[string]ToolDef) *Registry {
 		}
 		r.custom[name] = def
 	}
+
+	if showOnlyInstalled {
+		r.runInstalledProbe()
+	}
 	return r
+}
+
+// runInstalledProbe resolves every registered tool's command against the host
+// PATH and records the result. It is the only place the probe runs. shell is
+// hardcoded installed (the catch-all; bash/sh is universal and we never want to
+// trap users with an empty dialog). When nothing but shell resolves the empty
+// fallback engages and visibility reverts to "show all" + a hint.
+func (r *Registry) runInstalledProbe() {
+	r.filterInstalled = true
+	r.installed = make(map[string]bool, len(r.order)+len(r.custom))
+	nonShellInstalled := 0
+
+	for _, name := range r.order {
+		if name == "shell" {
+			r.installed[name] = true // shell is always shown
+			continue
+		}
+		// A built-in's command is its bare name (matches Registry.All / detectTool).
+		ok := probeInstalled(name)
+		r.installed[name] = ok
+		if ok {
+			nonShellInstalled++
+		}
+	}
+	for name, def := range r.custom {
+		// Probe the custom entry's OWN command. For compatible_with tools this is
+		// the user's wrapper binary, NOT the parent built-in — a missing wrapper is
+		// hidden even though the built-in it's compatible with resolves.
+		ok := probeInstalled(def.Command)
+		r.installed[name] = ok
+		if ok {
+			nonShellInstalled++
+		}
+	}
+
+	r.fallback = nonShellInstalled == 0
 }
 
 // IsBuiltin reports whether name is one of the canonical built-in tools.
@@ -157,6 +256,68 @@ func (r *Registry) All() []ToolDef {
 	return out
 }
 
+// --- show_only_installed_tools visibility surface (issue #1259) --------------
+//
+// This is a PRESENTATION-layer concern applied AFTER Match()/All() resolve. The
+// match/resolution logic from #1261 is untouched; the CLI dispatch path never
+// consults these methods, so `agent-deck launch -c <hidden-tool>` still works.
+
+// IsVisible reports whether a tool name should appear in the new-session dialogs.
+// It returns true (show everything) when the filter is off or the empty-fallback
+// is active. "shell" (and its empty-command alias "") is always visible.
+func (r *Registry) IsVisible(name string) bool {
+	if !r.filterInstalled || r.fallback {
+		return true
+	}
+	if name == "" || name == "shell" {
+		return true
+	}
+	return r.installed[name]
+}
+
+// FilterActive reports whether the show_only_installed_tools filter is on,
+// regardless of whether the empty-fallback engaged.
+func (r *Registry) FilterActive() bool {
+	return r.filterInstalled
+}
+
+// FilterFallback reports the empty-fallback state: the filter is on but nothing
+// other than shell resolved on PATH, so the dialogs show the full list plus a
+// one-line hint instead of trapping the user with an empty selection.
+func (r *Registry) FilterFallback() bool {
+	return r.fallback
+}
+
+// Visible returns the built-in ToolDefs that should be shown in dialogs, in
+// precedence order. With the filter off (or in fallback) it equals All().
+func (r *Registry) Visible() []ToolDef {
+	out := make([]ToolDef, 0, len(r.order))
+	for _, name := range r.order {
+		if !r.IsVisible(name) {
+			continue
+		}
+		bt := r.builtins[name]
+		out = append(out, ToolDef{Command: bt.Name, Icon: bt.Icon})
+	}
+	return out
+}
+
+// FilterVisibleNames returns names with hidden tools removed. The empty command
+// "" (shell) is always kept. With the filter off (or in fallback) the input is
+// returned unchanged, preserving each call site's existing ordering byte-for-byte.
+func (r *Registry) FilterVisibleNames(names []string) []string {
+	if !r.filterInstalled || r.fallback {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if r.IsVisible(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // --- process-wide accessor ---------------------------------------------------
 //
 // The package-level helpers below back the retargeted call sites. The registry
@@ -185,16 +346,63 @@ func currentRegistry() *Registry {
 	}
 
 	var custom map[string]ToolDef
+	showOnlyInstalled := false
 	if cfg != nil {
 		custom = cfg.Tools
+		showOnlyInstalled = cfg.UI.ShowOnlyInstalledTools
 	}
-	registryCache = Init(custom)
+	registryCache = InitFiltered(custom, showOnlyInstalled)
 	registryCacheCfg = cfg
 	return registryCache
 }
 
 // MatchTool resolves a command string to a tool name using the process
 // registry. It is the exported seam that cmd/agent-deck's detectTool() wraps.
+//
+// NOTE: Match never consults the show_only_installed_tools filter — resolution
+// is display-independent, so the CLI dispatch path keeps spawning tools that the
+// dialogs would hide (issue #1259 non-goal: display filter only, not a gate).
 func MatchTool(cmd string) string {
 	return currentRegistry().Match(cmd)
+}
+
+// --- process-wide show_only_installed_tools accessors (issue #1259) ----------
+//
+// These back the new-session dialog call sites. They read the cached registry,
+// so they reflect the current config and re-probe only when config changes.
+
+// FilterVisibleToolNames removes tools hidden by show_only_installed_tools from
+// names. The empty command "" (shell) is always kept. With the flag off it
+// returns names unchanged (byte-identical default behavior).
+func FilterVisibleToolNames(names []string) []string {
+	return currentRegistry().FilterVisibleNames(names)
+}
+
+// VisibleToolNames returns the names of every tool (built-in + custom) that
+// passes the show_only_installed_tools filter, in built-in-precedence order then
+// sorted custom names. With the flag off it returns the full set. Used by the
+// web new-session dialog to intersect its static tool list.
+func VisibleToolNames() []string {
+	r := currentRegistry()
+	names := make([]string, 0, len(r.order)+len(r.custom))
+	for _, d := range r.Visible() {
+		names = append(names, d.Command)
+	}
+	for _, n := range r.CustomNames() {
+		if r.IsVisible(n) {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+// ToolFilterActive reports whether show_only_installed_tools is enabled.
+func ToolFilterActive() bool {
+	return currentRegistry().FilterActive()
+}
+
+// ToolFilterFallbackActive reports whether the empty-fallback engaged (filter on,
+// nothing but shell resolved) so dialogs can surface the "showing all" hint.
+func ToolFilterFallbackActive() bool {
+	return currentRegistry().FilterFallback()
 }

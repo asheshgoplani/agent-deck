@@ -139,6 +139,16 @@ export const toastHistoryOpenSignal = signal(false)
 // /api/settings and assigns the real value.
 export const mutationsEnabledSignal = signal(true)
 
+// show_only_installed_tools filter (issue #1259), hydrated from /api/settings
+// alongside webMutations. toolFilterSignal: the flag is on. visibleToolsSignal:
+// the set of tool names that resolved on PATH; the new-session dialog intersects
+// its static tool list against this when the filter is on. toolFilterFallback:
+// nothing but shell resolved, so the dialog shows all tools plus a hint. Defaults
+// keep the dialog showing every tool until the real values arrive.
+export const toolFilterSignal = signal(false)
+export const visibleToolsSignal = signal([])
+export const toolFilterFallbackSignal = signal(false)
+
 // POL-1 (Phase 9, plan 01): sidebar load state for skeleton render gate.
 // Initialized false; flipped to true on the first /api/menu response OR the
 // first SSE `menu` snapshot in main.js. Never flips back — once the sidebar

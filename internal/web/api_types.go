@@ -97,6 +97,15 @@ type SettingsResponse struct {
 	ReadOnly     bool   `json:"readOnly"`
 	WebMutations bool   `json:"webMutations"`
 	Version      string `json:"version"`
+
+	// show_only_installed_tools filter (issue #1259). ToolFilter reports the
+	// flag is on; VisibleTools lists the tool names that resolved on PATH (the
+	// web dialog intersects its static list against this); ToolFilterFallback
+	// reports the empty-fallback so the dialog shows a "showing all" hint. With
+	// the flag off ToolFilter is false and the dialog ignores the other fields.
+	ToolFilter         bool     `json:"toolFilter"`
+	VisibleTools       []string `json:"visibleTools"`
+	ToolFilterFallback bool     `json:"toolFilterFallback"`
 }
 
 // ProfilesResponse is returned by GET /api/profiles.

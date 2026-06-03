@@ -17,11 +17,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Tool-visibility filter (issue #1259) is read from the process registry at
+	// request time, so it reflects the current config (re-probed only when config
+	// changes — see currentRegistry). It is a display filter only.
 	writeJSON(w, http.StatusOK, SettingsResponse{
-		Profile:      s.cfg.Profile,
-		ReadOnly:     s.cfg.ReadOnly,
-		WebMutations: s.cfg.WebMutations,
-		Version:      buildVersion(),
+		Profile:            s.cfg.Profile,
+		ReadOnly:           s.cfg.ReadOnly,
+		WebMutations:       s.cfg.WebMutations,
+		Version:            buildVersion(),
+		ToolFilter:         session.ToolFilterActive(),
+		VisibleTools:       session.VisibleToolNames(),
+		ToolFilterFallback: session.ToolFilterFallbackActive(),
 	})
 }
 

@@ -33,6 +33,13 @@ type builtinTool struct {
 	// for short ambiguous names like "pi" where Contains would false-match
 	// "epic"/"tapioca". Mirrors detectTool()'s hasCommandToken() arm.
 	detectTokens []string
+
+	// Installed reports whether this tool's command resolved on the host PATH at
+	// registry-init time. It is ONLY populated when the show_only_installed_tools
+	// filter is on (issue #1259); with the filter off the probe is skipped
+	// entirely and this stays false (unused), so the default path is byte-identical
+	// to before. "shell" is always marked installed regardless of the probe.
+	Installed bool
 }
 
 // builtinTools returns the canonical built-ins in the EXACT precedence order of

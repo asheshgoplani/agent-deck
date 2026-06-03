@@ -3,7 +3,10 @@
 // `.field` / `.seg-row` / `.btn` classes from app.css.
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
-import { createSessionDialogSignal, mutationsEnabledSignal } from './state.js'
+import {
+  createSessionDialogSignal, mutationsEnabledSignal,
+  toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
+} from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 
@@ -118,6 +121,15 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
+  // show_only_installed_tools filter (issue #1259): when the flag is on (and the
+  // empty-fallback did NOT engage), intersect the static tool list against the
+  // server's PATH-resolved set. shell is always kept. With the flag off, or in
+  // fallback, every tool is shown — byte-identical to before.
+  const toolFilterOn = toolFilterSignal.value && !toolFilterFallbackSignal.value
+  const visibleToolSet = new Set(visibleToolsSignal.value)
+  const shownTools = toolFilterOn
+    ? TOOLS.filter(t => t === 'shell' || visibleToolSet.has(t))
+    : TOOLS
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -143,12 +155,18 @@ export function CreateSessionDialog() {
           <div class="field">
             <label>TOOL</label>
             <div class="seg-row">
-              ${TOOLS.map(t => html`
+              ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
                         onClick=${() => selectTool(t)}>${TOOL_LABELS[t] || t}</button>
               `)}
             </div>
+            ${toolFilterFallbackSignal.value && html`
+              <div style="font-family: var(--mono); font-size: 11px; color: var(--tn-comment, #888);
+                          margin-top: 6px;">
+                No tools matched PATH; showing all. Set <code>show_only_installed_tools = false</code> to silence.
+              </div>
+            `}
           </div>
           ${modelIDs.length > 0 && html`
             <div class="field">
