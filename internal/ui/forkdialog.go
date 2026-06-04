@@ -46,7 +46,7 @@ type ForkDialog struct {
 	worktreeToggled bool // true once the user explicitly toggled the worktree checkbox (vs config default_enabled); see #1185.
 	branchInput     textinput.Model
 	branchPicker    *BranchPickerDialog
-	isGitRepo       bool
+	worktreeCapable bool
 	// Fork-with-state (PR-B): carry the parent's working-tree state into the
 	// new worktree. Nested under worktree; gitignored nested under with-state.
 	withStateEnabled       bool
@@ -204,7 +204,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	d.withStateEnabled = false
 	d.withStateAndGitignored = false
 	d.sandboxEnabled = false
-	d.isGitRepo = git.IsGitRepo(projectPath)
+	d.worktreeCapable = git.IsGitRepoOrBareProjectRoot(projectPath)
 
 	// Conductor parent selector
 	d.conductorSessions = conductors
@@ -453,7 +453,7 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 
 		case "w":
 			// Toggle worktree when on group field (only if git repo).
-			if d.currentFocus() == forkFocusGroup && d.isGitRepo {
+			if d.currentFocus() == forkFocusGroup && d.worktreeCapable {
 				d.ToggleWorktree()
 				if d.worktreeEnabled {
 					d.setFocus(forkFocusBranch)
@@ -656,7 +656,7 @@ func (d *ForkDialog) View() string {
 
 	// Worktree checkbox and branch input (only for git repos)
 	worktreeSection := ""
-	if d.isGitRepo {
+	if d.worktreeCapable {
 		checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
 		checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 

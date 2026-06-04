@@ -2,6 +2,7 @@ package ui
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,35 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestForkDialog_WorktreeControlsVisibleForBareProjectRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	projectRoot := t.TempDir()
+	bareDir := filepath.Join(projectRoot, ".bare")
+	if err := exec.Command("git", "init", "--bare", bareDir).Run(); err != nil {
+		t.Fatalf("git init --bare: %v", err)
+	}
+
+	d := NewForkDialog()
+	d.SetSize(90, 40)
+	d.Show("Bare Root Parent", projectRoot, "", nil, "")
+
+	view := d.View()
+	if !strings.Contains(view, "Create in worktree") {
+		t.Fatalf("bare project root should show worktree controls; view:\n%s", view)
+	}
+
+	// 'w' toggles worktree only while the group field has focus (B2 focus model;
+	// see the toggle-off test below). Move focus before pressing w.
+	d.setFocus(forkFocusGroup)
+	updated, _ := d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if !updated.IsWorktreeEnabled() {
+		t.Fatal("pressing w should enable worktree mode for a bare project root")
+	}
+}
 
 func TestNewForkDialog(t *testing.T) {
 	d := NewForkDialog()
@@ -302,7 +332,7 @@ func TestForkDialog_View_ShowsCarryStateAndHintWhenWorktreeOn(t *testing.T) {
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
 	d.worktreeEnabled = true
-	d.isGitRepo = true
+	d.worktreeCapable = true
 	d.updateFocus()
 	view := d.View()
 	if !strings.Contains(view, "Carry parent state") {
@@ -318,7 +348,7 @@ func TestForkDialog_View_HidesCarryStateWhenWorktreeOff(t *testing.T) {
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
 	d.worktreeEnabled = false
-	d.isGitRepo = true
+	d.worktreeCapable = true
 	d.updateFocus()
 	if strings.Contains(d.View(), "Carry parent state") {
 		t.Error("worktree-off view must not show the with-state checkbox")
@@ -330,7 +360,7 @@ func TestForkDialog_View_ShowsGitignoredOnlyWhenWithStateOn(t *testing.T) {
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
 	d.worktreeEnabled = true
-	d.isGitRepo = true
+	d.worktreeCapable = true
 	d.updateFocus()
 	if strings.Contains(d.View(), "Include gitignored files") {
 		t.Error("gitignored checkbox must be hidden when with-state off")
@@ -580,7 +610,7 @@ func TestForkDialog_Focus_DanglingIndexReadsSafely(t *testing.T) {
 func TestForkDialog_Focus_ToggleWorktreeOffViaW_ReclampsIndex(t *testing.T) {
 	d := NewForkDialog()
 	d.Show("Test", "/path", "group", nil, "")
-	d.isGitRepo = true
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 
 	// Focus the group field (where 'w' toggles worktree), then disable it.

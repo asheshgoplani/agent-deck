@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8611,8 +8612,13 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				parentID := h.forkDialog.GetParentSessionID()
 				parentPath := h.forkDialog.GetParentProjectPath()
+				sandboxEnabled := h.forkDialog.IsSandboxEnabled()
+				forkState := git.WorktreeStateOptions{
+					WithState:   h.forkDialog.IsWithStateEnabled(),
+					WithIgnored: h.forkDialog.IsWithStateAndGitignoredEnabled(),
+				}
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled(), parentID, parentPath)
+				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, sandboxEnabled, forkState, parentID, parentPath)
 			}
 		}
 		h.forkDialog.Hide()
@@ -9393,10 +9399,42 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	return nil
 }
 
+type forkWithStateWorktreeDeps struct {
+	statPath                  func(string) (os.FileInfo, error)
+	mkdirAll                  func(string, os.FileMode) error
+	validateDestination       func(string, string) error
+	detectInProgressOperation func(string) (string, error)
+	hasSubmodules             func(string) bool
+	headCommit                func(string) (string, error)
+	createAtStartPoint        func(string, string, string, string) (bool, error)
+	materialize               func(string, string, bool) error
+	processInclude            func(string, string, io.Writer) error
+	runSetup                  func(string, string, io.Writer, io.Writer, time.Duration) error
+	removeWorktree            func(string, string, bool) error
+	deleteBranch              func(string, string, bool) error
+}
+
+func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
+	return forkWithStateWorktreeDeps{
+		statPath:                  os.Stat,
+		mkdirAll:                  os.MkdirAll,
+		validateDestination:       git.ValidateForkWithStateDestination,
+		detectInProgressOperation: git.DetectInProgressOperation,
+		hasSubmodules:             git.HasSubmodules,
+		headCommit:                git.HeadCommit,
+		createAtStartPoint:        git.CreateWorktreeAtStartPoint,
+		materialize:               git.MaterializeWipFromParent,
+		processInclude:            git.ProcessWorktreeInclude,
+		runSetup:                  git.RunWorktreeSetupAfterCreate,
+		removeWorktree:            git.RemoveWorktree,
+		deleteBranch:              git.DeleteBranch,
+	}
+}
+
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, parentSessionID, parentProjectPath)
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, git.WorktreeStateOptions{}, parentSessionID, parentProjectPath)
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, Claude options, and optional sandbox.
@@ -9406,10 +9444,15 @@ func (h *Home) forkSessionCmdWithOptions(
 	title, groupPath string,
 	opts *session.ClaudeOptions,
 	sandboxEnabled bool,
+	forkState git.WorktreeStateOptions,
 	parentSessionID, parentProjectPath string,
 ) tea.Cmd {
 	if source == nil {
 		return nil
+	}
+
+	if forkState.WithIgnored {
+		forkState.WithState = true
 	}
 
 	// Track source session as "forking" for immediate UI feedback
@@ -9433,8 +9476,24 @@ func (h *Home) forkSessionCmdWithOptions(
 				return sessionForkedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), sourceID: sourceID}
 			}
 
-			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
+			// With-state forks are git-only and never reuse an existing worktree;
+			// otherwise check for an existing worktree for this branch before
+			// creating a new one.
+			if forkState.WithState {
+				if backend.Type() != vcs.TypeGit {
+					return sessionForkedMsg{err: fmt.Errorf("--with-state is only supported for git repositories"), sourceID: sourceID}
+				}
+				if err := forkWithStateWorktree(
+					source.ProjectPath,
+					opts.WorktreeRepoRoot,
+					opts.WorktreePath,
+					opts.WorktreeBranch,
+					forkState,
+					defaultForkWithStateWorktreeDeps(),
+				); err != nil {
+					return sessionForkedMsg{err: err, sourceID: sourceID}
+				}
+			} else if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))
 				opts.WorktreePath = existingPath
 			} else {
@@ -9519,6 +9578,91 @@ func (h *Home) forkSessionCmdWithOptions(
 
 		return sessionForkedMsg{instance: inst, sourceID: sourceID}
 	}
+}
+
+// forkWithStateWorktree creates the fork's worktree, anchors it to the parent
+// session's HEAD, and materializes the parent's working-tree state, mirroring
+// the CLI safeguards from #1263. Defined after forkSessionCmdWithOptions so the
+// call site (not this definition) is the structurally-first reference.
+func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, state git.WorktreeStateOptions, deps forkWithStateWorktreeDeps) error {
+	if state.WithIgnored {
+		state.WithState = true
+	}
+	if !state.WithState {
+		return errors.New("forkWithStateWorktree called without WithState")
+	}
+	// Destination collision is the more actionable refusal, so check it before
+	// the local path-existence guard (mirrors #1263's CLI precedence).
+	if err := deps.validateDestination(repoRoot, branch); err != nil {
+		var collErr *git.DestinationCollisionError
+		if errors.As(err, &collErr) {
+			switch collErr.Kind {
+			case git.CollisionWorktreeExists:
+				return fmt.Errorf("branch %q already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path)
+			case git.CollisionBranchExists:
+				return fmt.Errorf("branch %q already exists; choose a new destination branch for --with-state", collErr.Branch)
+			}
+		}
+		return fmt.Errorf("failed to validate destination: %w", err)
+	}
+	if _, statErr := deps.statPath(worktreePath); statErr == nil {
+		return fmt.Errorf("worktree path already exists: %s", worktreePath)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat worktree path: %w", statErr)
+	}
+	if kind, detectErr := deps.detectInProgressOperation(parentPath); detectErr == nil && kind != "" {
+		abortCmd := map[string]string{
+			"rebase":      "git rebase --abort",
+			"merge":       "git merge --abort",
+			"cherry-pick": "git cherry-pick --abort",
+			"revert":      "git revert --abort",
+			"bisect":      "git bisect reset",
+		}[kind]
+		return fmt.Errorf("parent session is mid-%s; finish or abort the %s before forking with state (cd %s && %s)", kind, kind, parentPath, abortCmd)
+	}
+	if err := deps.mkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if deps.hasSubmodules(parentPath) {
+		uiLog.Warn("fork_with_state_submodules_detected", slog.String("parent", parentPath))
+	}
+	parentHead, err := deps.headCommit(parentPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve parent session HEAD: %w", err)
+	}
+	createdBranch, err := deps.createAtStartPoint(repoRoot, worktreePath, branch, parentHead)
+	if err != nil {
+		return fmt.Errorf("worktree creation failed: %w", err)
+	}
+	if err := deps.materialize(parentPath, worktreePath, state.WithIgnored); err != nil {
+		var cleanupErrs []string
+		if rmErr := deps.removeWorktree(repoRoot, worktreePath, true); rmErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+		}
+		if createdBranch {
+			if brErr := deps.deleteBranch(repoRoot, branch, true); brErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+			}
+		}
+		if len(cleanupErrs) == 0 {
+			return fmt.Errorf("failed to materialize parent state: %w; new worktree cleaned up", err)
+		}
+		branchHint := ""
+		if createdBranch {
+			branchHint = fmt.Sprintf(" && git -C %s branch -D %s", repoRoot, branch)
+		}
+		return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup required: rm -rf %s%s", err, strings.Join(cleanupErrs, "; "), worktreePath, branchHint)
+	}
+	if err := deps.processInclude(repoRoot, worktreePath, io.Discard); err != nil {
+		uiLog.Warn("fork_with_state_worktreeinclude_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	if err := deps.runSetup(repoRoot, worktreePath, io.Discard, io.Discard, session.GetWorktreeSettings().SetupTimeout()); err != nil {
+		// Non-fatal: the worktree and parent state are already created. Mirror
+		// #1263's CLI, which warns on a failed setup script rather than failing
+		// the whole fork.
+		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	return nil
 }
 
 // sessionDeletedMsg signals that a session was deleted
