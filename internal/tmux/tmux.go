@@ -4785,9 +4785,22 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 	return cmd.Run()
 }
 
+const ackSignalLegacyMarker = ".ack-signal-legacy"
+
 // GetAckSignalPath returns the path to the acknowledgment signal file
 func GetAckSignalPath() (string, error) {
-	return agentpaths.EffectiveDataPath("ack-signal", "ack-signal")
+	return agentpaths.EffectiveDataPath("ack-signal", "ack-signal", ackSignalLegacyMarker)
+}
+
+func preserveLegacyAckSignalPath(signalFile string) {
+	legacyDir, err := agentpaths.LegacyDir()
+	if err != nil {
+		return
+	}
+	if filepath.Clean(signalFile) != filepath.Join(legacyDir, "ack-signal") {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(legacyDir, ackSignalLegacyMarker), []byte{}, 0o600)
 }
 
 // ReadAndClearAckSignal reads the session ID from the signal file and deletes it.
@@ -4804,6 +4817,7 @@ func ReadAndClearAckSignal() string {
 	}
 
 	// Delete the file immediately after reading
+	preserveLegacyAckSignalPath(signalFile)
 	_ = os.Remove(signalFile)
 
 	return strings.TrimSpace(string(data))

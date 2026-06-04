@@ -49,6 +49,21 @@ func TestXDGPaths_LegacyAckSignalFallbackIsCategorySpecific(t *testing.T) {
 	require.Equal(t, filepath.Join(base, "badge-updates"), BadgeUpdatesDir())
 }
 
+func TestXDGPaths_LegacyAckSignalFallbackSurvivesSignalConsumption(t *testing.T) {
+	home, _ := isolateTmuxXDGPaths(t)
+
+	legacyDir := filepath.Join(home, ".agent-deck")
+	legacyAck := filepath.Join(legacyDir, "ack-signal")
+	require.NoError(t, os.MkdirAll(legacyDir, 0o700))
+	require.NoError(t, os.WriteFile(legacyAck, []byte("session-id"), 0o600))
+
+	require.Equal(t, "session-id", ReadAndClearAckSignal())
+
+	ackPath, err := GetAckSignalPath()
+	require.NoError(t, err)
+	require.Equal(t, legacyAck, ackPath)
+}
+
 func TestXDGPaths_UnrelatedLegacyMarkerDoesNotForceTmuxPaths(t *testing.T) {
 	home, data := isolateTmuxXDGPaths(t)
 	base := filepath.Join(data, "agent-deck")
