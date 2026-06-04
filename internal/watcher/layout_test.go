@@ -54,11 +54,18 @@ func effectiveAgentDeckDir(t *testing.T) string {
 	return filepath.Dir(watcherDir)
 }
 
+func isolateWatcherLayoutHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+}
+
 // TestLayout_FreshInstallCreatesLayout verifies that ScaffoldWatcherLayout creates
 // watcher/{CLAUDE.md, POLICY.md, LEARNINGS.md, clients.json} under the effective
 // XDG data dir when the directory does not yet exist.
 func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	if err := ScaffoldWatcherLayout(); err != nil {
 		t.Fatalf("ScaffoldWatcherLayout: %v", err)
@@ -83,7 +90,7 @@ func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
 // and idempotent re-run.
 func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	t.Run("happy_path", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 		buf := captureLog(t)
 
 		deck := legacyAgentDeckDir(t)
@@ -147,7 +154,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("collision", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 		buf := captureLog(t)
 
 		deck := legacyAgentDeckDir(t)
@@ -179,7 +186,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("symlink_attack", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
 		deck := legacyAgentDeckDir(t)
 		if err := os.MkdirAll(deck, 0o755); err != nil {
@@ -202,7 +209,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("idempotent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
 		deck := legacyAgentDeckDir(t)
 		legacyDir := filepath.Join(deck, "watchers")
@@ -225,7 +232,7 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 // TestLayout_SymlinkResolves verifies that after migration, the compatibility symlink
 // allows reads through watchers/clients.json that resolve to watcher/clients.json.
 func TestLayout_SymlinkResolves(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	deck := legacyAgentDeckDir(t)
 	// Seed clients.json in the legacy location.
@@ -259,7 +266,7 @@ func TestLayout_SymlinkResolves(t *testing.T) {
 // TestLayout_StateRoundtrip verifies SaveState/LoadState round-trip all WatcherState fields,
 // and that LoadState returns (nil, nil) when state.json is absent.
 func TestLayout_StateRoundtrip(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	original := &WatcherState{
@@ -309,7 +316,7 @@ func TestLayout_StateRoundtrip(t *testing.T) {
 // TestLayout_EventLogAppendAtomic verifies AppendEventLog writes complete lines,
 // and that concurrent appends do not produce torn lines.
 func TestLayout_EventLogAppendAtomic(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	entries := []string{
 		"## 2026-04-16T12:00:00Z - webhook: evt1",
@@ -351,7 +358,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 	// Concurrency sub-test: 2 goroutines × 50 appends = 100 total lines, no torn lines.
 	t.Run("concurrent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
 		lineRe := regexp.MustCompile(`^## .+$`)
 		var wg sync.WaitGroup
@@ -397,7 +404,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 // TestLayout_HotReloadSafe verifies LoadState always reads from disk (no in-process cache).
 func TestLayout_HotReloadSafe(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	stateV1 := &WatcherState{LastEventTS: t0, ErrorCount: 1, AdapterHealthy: true}
@@ -430,7 +437,7 @@ func TestLayout_HotReloadSafe(t *testing.T) {
 // TestLayout_Integration_ThreeEvents simulates writerLoop calling AppendEventLog + SaveState
 // three times and checks that task-log.md has 3 lines and LastEventTS equals the third event's ts.
 func TestLayout_Integration_ThreeEvents(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	// Seed meta.json for "alpha".
 	deck := effectiveAgentDeckDir(t)
@@ -486,7 +493,7 @@ func TestLayout_Integration_ThreeEvents(t *testing.T) {
 
 // TestLayout_WatcherDir_RejectsMaliciousNames verifies T-21-PI: path traversal names are rejected.
 func TestLayout_WatcherDir_RejectsMaliciousNames(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	cases := []struct {
 		name    string

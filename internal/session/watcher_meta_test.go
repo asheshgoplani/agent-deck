@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+func testWatcherHome(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", "")
+	return tmpDir
+}
+
 func testWatcherNameDir(t *testing.T, name string) string {
 	t.Helper()
 	dir, err := WatcherNameDir(name)
@@ -18,8 +26,7 @@ func testWatcherNameDir(t *testing.T, name string) string {
 
 func TestWatcherMetaRoundTrip(t *testing.T) {
 	// Use a temp HOME directory to avoid touching real ~/.agent-deck
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	testWatcherHome(t)
 
 	meta := &WatcherMeta{
 		Name:      "test-watcher",
@@ -54,8 +61,7 @@ func TestWatcherMetaRoundTrip(t *testing.T) {
 }
 
 func TestWatcherMetaSaveValidation(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	testWatcherHome(t)
 
 	// nil meta should error
 	if err := SaveWatcherMeta(nil); err == nil {
@@ -69,8 +75,7 @@ func TestWatcherMetaSaveValidation(t *testing.T) {
 }
 
 func TestWatcherMetaLoadBackfillsName(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	testWatcherHome(t)
 
 	// Save a meta with a name, then manually edit to remove the name field
 	meta := &WatcherMeta{
@@ -101,8 +106,7 @@ func TestWatcherMetaLoadBackfillsName(t *testing.T) {
 // round-trip through Save/Load and that empty values omit from JSON so that
 // legacy Phase 13/14 watchers (webhook, ntfy, github, slack) still parse cleanly.
 func TestWatcherMetaRoundTrip_GmailFields(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	testWatcherHome(t)
 
 	expiry := time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	meta := &WatcherMeta{
@@ -151,8 +155,7 @@ func TestWatcherMetaRoundTrip_GmailFields(t *testing.T) {
 // exactly meta.json on disk with no .tmp file remnant, and that a stale
 // .tmp file left behind by a previous crashed run is overwritten cleanly.
 func TestSaveWatcherMeta_AtomicWrite(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	testWatcherHome(t)
 
 	meta := &WatcherMeta{
 		Name:      "atomic-test",
@@ -199,8 +202,7 @@ func TestSaveWatcherMeta_AtomicWrite(t *testing.T) {
 }
 
 func TestWatcherDirHelpers(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	tmpDir := testWatcherHome(t)
 
 	dir, err := WatcherDir()
 	if err != nil {

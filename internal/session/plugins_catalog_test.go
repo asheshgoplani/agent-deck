@@ -27,9 +27,9 @@ import (
 func withTempHome(t *testing.T) string {
 	t.Helper()
 	temp := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", temp)
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
+	t.Setenv("HOME", temp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(temp, "xdg-config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(temp, "xdg-data"))
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
 	return temp

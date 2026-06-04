@@ -68,6 +68,7 @@ func TestEnsureWorkerScratchConfigDir_DisablesTelegramPlugin(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 
 	inst := &Instance{
 		ID:    "00000000-0000-0000-0000-000000000001",
@@ -166,6 +167,7 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwner_AlwaysGetsScratch(t *testing.
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	t.Setenv("CLAUDE_CONFIG_DIR", source)
 
 	inst := &Instance{
@@ -218,6 +220,7 @@ func TestEnsureWorkerScratchConfigDir_ChannelOwner_GlobalAntipattern_GetsScratch
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	t.Setenv("CLAUDE_CONFIG_DIR", source)
 
 	inst := &Instance{
@@ -303,6 +306,7 @@ func TestBuildClaudeCommand_UsesWorkerScratchConfigDir(t *testing.T) {
 	withTelegramConductorPresent(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	profile := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)
