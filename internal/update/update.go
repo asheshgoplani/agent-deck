@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
-	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 const (
@@ -41,11 +40,20 @@ var apiBaseURL = "https://api.github.com"
 // detectHomebrewManagedInstall is a test seam for self-update install paths.
 var detectHomebrewManagedInstall = DetectHomebrewManagedInstall
 
+// bridgeScriptInstaller refreshes the conductor bridge script. It is injected
+// by the CLI layer so this package stays independent of internal/session.
+var bridgeScriptInstaller func() error
+
 // SetCheckInterval sets the update check interval from config
 func SetCheckInterval(hours int) {
 	if hours > 0 {
 		checkInterval = time.Duration(hours) * time.Hour
 	}
+}
+
+// SetBridgeScriptInstaller configures the bridge.py installer used after updates.
+func SetBridgeScriptInstaller(installer func() error) {
+	bridgeScriptInstaller = installer
 }
 
 // Release represents a GitHub release
@@ -851,13 +859,10 @@ func extractBinaryFromTarGzReader(r io.Reader) ([]byte, error) {
 // UpdateBridgePy refreshes the installed bridge.py from the embedded runtime template.
 // This keeps bridge behavior in sync with the currently running binary.
 func UpdateBridgePy() error {
-	// Get the conductor directory
-	home, err := os.UserHomeDir()
+	conductorDir, err := agentpaths.EffectiveDataPath("conductor", "conductor")
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return fmt.Errorf("failed to resolve conductor directory: %w", err)
 	}
-
-	conductorDir := filepath.Join(home, ".agent-deck", "conductor")
 	bridgePath := filepath.Join(conductorDir, "bridge.py")
 
 	// Check if conductor directory exists
@@ -880,7 +885,10 @@ func UpdateBridgePy() error {
 	}
 
 	// Install latest bridge template from embedded runtime.
-	if err := session.InstallBridgeScript(); err != nil {
+	if bridgeScriptInstaller == nil {
+		return fmt.Errorf("bridge.py installer is not configured")
+	}
+	if err := bridgeScriptInstaller(); err != nil {
 		return fmt.Errorf("failed to install bridge.py: %w", err)
 	}
 
