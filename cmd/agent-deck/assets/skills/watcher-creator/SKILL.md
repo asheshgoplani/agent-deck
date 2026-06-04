@@ -35,13 +35,13 @@ Ask the user which source they want to receive events from. Present the five opt
 Once the user picks a type, ask for the settings specific to that adapter (see the per-type sections below). Ask for each required setting one at a time to avoid overwhelming the user.
 
 Also ask:
-- **Watcher name**: A short lowercase identifier (e.g., `my-webhook`, `github-alerts`). This becomes the directory name under `~/.agent-deck/watcher/`.
+- **Watcher name**: A short lowercase identifier (e.g., `my-webhook`, `github-alerts`). This becomes the directory name under the effective watcher data dir (`$XDG_DATA_HOME/agent-deck/watcher` for new users; legacy `~/.agent-deck/watcher` remains in use when existing watcher state is present).
 - **Conductor**: Which conductor session this watcher should route events to by default (the `conductor` field in `clients.json`).
 - **Group**: Which group the conductor session lives in (the `group` field in `clients.json`).
 
 ### Step 3: Generate a watcher.toml block
 
-Produce a TOML configuration block for the user to save as `~/.agent-deck/watcher/<name>/watcher.toml`.
+Produce a TOML configuration block for the user to save as `$XDG_DATA_HOME/agent-deck/watcher/<name>/watcher.toml`, or the legacy `~/.agent-deck/watcher/<name>/watcher.toml` if agent-deck is already using legacy watcher state.
 
 Example for webhook:
 ```toml
@@ -165,8 +165,8 @@ The Gmail adapter delivers normalized events from a Gmail account via Google Clo
 - `subscription` (string): Full Pub/Sub subscription resource name: `projects/<project-id>/subscriptions/<sub-name>`.
 
 **Optional settings:**
-- `credentials_path` (string): Path to the OAuth client credentials JSON file (downloaded from Google Cloud Console). Default: `~/.agent-deck/watcher/<name>/credentials.json`.
-- `token_path` (string): Path to the persisted OAuth token JSON. Default: `~/.agent-deck/watcher/<name>/token.json`.
+- `credentials_path` (string): Path to the OAuth client credentials JSON file (downloaded from Google Cloud Console). Default: `<effective watcher data dir>/<name>/credentials.json`.
+- `token_path` (string): Path to the persisted OAuth token JSON. Default: `<effective watcher data dir>/<name>/token.json`.
 - `labels` (string): Comma-separated Gmail label filter (e.g., `"INBOX,UNREAD"`). If absent, all messages pass through.
 - `account` (string): Informational Gmail address for display purposes.
 
@@ -212,7 +212,7 @@ Great, let me help you set up a GitHub watcher.
 **Skill response:**
 Here is your configuration.
 
-Save this as `~/.agent-deck/watcher/github-myrepo/watcher.toml`:
+Save this as `$XDG_DATA_HOME/agent-deck/watcher/github-myrepo/watcher.toml` for a new install, or under legacy `~/.agent-deck/watcher/github-myrepo/watcher.toml` if agent-deck is already using legacy watcher state:
 ```toml
 [watcher]
 name = "github-myrepo"
@@ -228,7 +228,7 @@ conductor = "main-conductor"
 group = "dev"
 ```
 
-Add this entry to `~/.agent-deck/watcher/clients.json` (key is `<your-github-username>@github.com`):
+Add this entry to `$XDG_DATA_HOME/agent-deck/watcher/clients.json` (key is `<your-github-username>@github.com`), or the legacy watcher `clients.json` if that is the effective watcher data dir:
 ```json
 {
   "octocat@github.com": {
@@ -255,7 +255,7 @@ Configure GitHub to send webhooks to `http://<your-server>:18461/github`.
 
 This skill is read-only (D-22): it guides you through configuration and emits commands to run, but it does NOT execute `agent-deck watcher create` itself. Copy and run the commands shown above in your terminal.
 
-All five adapter types (webhook, ntfy, github, slack, gmail) route incoming events through the same engine. Events are matched against `~/.agent-deck/watcher/clients.json` by sender. Unknown senders are sent to triage in Phase 18+.
+All five adapter types (webhook, ntfy, github, slack, gmail) route incoming events through the same engine. Events are matched against `<effective watcher data dir>/clients.json` by sender. Unknown senders are sent to triage in Phase 18+.
 
 Install this skill to your pool with:
 ```

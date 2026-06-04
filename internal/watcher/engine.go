@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/logging"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/statedb"
 )
 
@@ -40,11 +41,11 @@ type EngineConfig struct {
 	Clock Clock
 
 	// TriageDir is the directory where triage session results are written.
-	// Defaults to $HOME/.agent-deck/triage/ when empty.
+	// Defaults to the effective agent-deck XDG data triage dir when empty.
 	TriageDir string
 
 	// ClientsPath is the path to clients.json for triage hot-reload.
-	// Defaults to $HOME/.agent-deck/watcher/clients.json when empty.
+	// Defaults to the effective agent-deck XDG data watcher clients.json when empty.
 	ClientsPath string
 
 	// Profile is the agent-deck profile flag passed to spawned triage sessions.
@@ -131,14 +132,14 @@ func NewEngine(cfg EngineConfig) *Engine {
 		cfg.Clock = realClock{}
 	}
 	if cfg.TriageDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			cfg.TriageDir = filepath.Join(home, ".agent-deck", "triage")
+		if dir, err := session.TriageDir(); err == nil {
+			cfg.TriageDir = dir
 		}
 	}
 	if cfg.ClientsPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
+		if dir, err := LayoutDir(); err == nil {
 			// Singular "watcher" per REQ-WF-6. Legacy "watchers/" is served via compatibility symlink created by MigrateLegacyWatchersDir.
-			cfg.ClientsPath = filepath.Join(home, ".agent-deck", "watcher", "clients.json")
+			cfg.ClientsPath = filepath.Join(dir, "clients.json")
 		}
 	}
 	if cfg.Profile == "" {

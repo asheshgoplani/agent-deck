@@ -360,11 +360,7 @@ func normalizeConductorProfile(profile string) string {
 
 // ConductorDir returns the base conductor directory (~/.agent-deck/conductor)
 func ConductorDir() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "conductor"), nil
+	return dataPath("conductor", "conductor")
 }
 
 // ConductorNameDir returns the directory for a named conductor (~/.agent-deck/conductor/<name>)
@@ -1451,8 +1447,8 @@ func LaunchdPlistPath() (string, error) {
 // PATH (so pyenv/asdf-selected interpreters win), then common absolute paths.
 func findPython3() string {
 	// Prefer the conductor venv python which has bridge dependencies installed.
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		venvPython := filepath.Join(homeDir, ".agent-deck", "conductor", "venv", "bin", "python3")
+	if conductorDir, err := ConductorDir(); err == nil {
+		venvPython := filepath.Join(conductorDir, "venv", "bin", "python3")
 		if _, err := os.Stat(venvPython); err == nil {
 			return venvPython
 		}
@@ -1730,16 +1726,12 @@ func GenerateTransitionNotifierLaunchdPlist() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	agentDeckDir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
 	agentDeckPath := FindAgentDeck()
 	execPath := "agent-deck"
 	if agentDeckPath != "" {
 		execPath = agentDeckPath
 	}
-	logPath := filepath.Join(agentDeckDir, "logs", "transition-notifier.log")
+	logPath := transitionNotifyLogPath()
 
 	plist := strings.ReplaceAll(transitionNotifierPlistTemplate, "__AGENT_DECK__", execPath)
 	plist = strings.ReplaceAll(plist, "__LOG_PATH__", logPath)
@@ -1763,16 +1755,12 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	agentDeckDir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
 	agentDeckPath := FindAgentDeck()
 	execPath := "agent-deck"
 	if agentDeckPath != "" {
 		execPath = agentDeckPath
 	}
-	logPath := filepath.Join(agentDeckDir, "logs", "transition-notifier.log")
+	logPath := transitionNotifyLogPath()
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)

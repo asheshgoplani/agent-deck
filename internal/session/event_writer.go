@@ -23,11 +23,11 @@ type StatusEvent struct {
 
 // GetEventsDir returns the path to the events directory.
 func GetEventsDir() string {
-	home, err := os.UserHomeDir()
+	path, err := dataPath("events", "events")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "events")
+		return tempAgentDeckPath("events")
 	}
-	return filepath.Join(home, ".agent-deck", "events")
+	return path
 }
 
 // WriteStatusEvent atomically writes a status event to the events directory.

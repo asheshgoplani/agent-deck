@@ -19,11 +19,7 @@ type WatcherMeta struct {
 
 // WatcherDir returns the base directory for all watchers (~/.agent-deck/watcher).
 func WatcherDir() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "watcher"), nil
+	return dataPath("watcher", "watcher", "watchers")
 }
 
 // WatcherNameDir returns the directory for a named watcher (~/.agent-deck/watcher/<name>).

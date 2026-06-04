@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Runtime and watcher durable state paths now use `$XDG_DATA_HOME/agent-deck` for new installs, with category-specific legacy fallback for existing `~/.agent-deck` state. Hooks, events, inboxes, runtime ledgers, logs, locks, conductor state, watcher state, triage output, and worker scratch no longer fall back to legacy just because an unrelated legacy marker exists.
+
 ## [1.9.47] - 2026-06-03
 
 ### Fixed

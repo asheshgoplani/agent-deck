@@ -272,6 +272,9 @@ func TestEnsureWorkerScratchConfigDir_NonClaudeToolSkipped(t *testing.T) {
 // setup. The scratch settings.json always pins it false.
 func TestEnsureWorkerScratchConfigDir_TelegramAbsentStillPinsDisabled(t *testing.T) {
 	withTelegramConductorPresent(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	source := t.TempDir()
 	_ = os.WriteFile(filepath.Join(source, "settings.json"), []byte(`{"enabledPlugins":{"superpowers@claude-plugins-official":true}}`), 0o644)
 

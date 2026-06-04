@@ -107,7 +107,7 @@ Four adapter types ship in the box:
 ### Example: a GitHub watcher in three commands
 
 ```bash
-# 1. Create the watcher (writes ~/.agent-deck/watcher/gh-alerts/).
+# 1. Create the watcher (writes $XDG_DATA_HOME/agent-deck/watcher/gh-alerts/ on new installs).
 agent-deck watcher create github --name gh-alerts \
   --secret "$GITHUB_WEBHOOK_SECRET"
 
@@ -160,8 +160,9 @@ agent-deck watcher create slack --name team-slack --topic <random-long-string>
 
 ## Routing: telling the watcher which conductor to ring
 
-Every watcher writes its routing rules to
-`~/.agent-deck/watcher/<name>/clients.json`:
+Watcher routing rules live in the effective watcher data dir
+(`$XDG_DATA_HOME/agent-deck/watcher/clients.json` for new users, or legacy
+`~/.agent-deck/watcher/clients.json` when existing watcher state is present):
 
 ```json
 {
@@ -253,11 +254,10 @@ credentials. They are the canonical examples of the polling pattern:
   conductor pre-loads the docs / attendees / Slack channel for the
   meeting and hands you the briefing on Telegram.
 
-The full identities live in `~/.agent-deck/watcher/gmail-watcher/` and
-`~/.agent-deck/watcher/meeting-watcher/` on the maintainer's machine —
-copy the layout (`meta.json`, `state.json`, `task-log.md`,
-`LEARNINGS.md`), substitute your own credentials, point at your own
-conductor.
+The full identities live under the maintainer's effective watcher data dir
+(`watcher/gmail-watcher/` and `watcher/meeting-watcher/`) — copy the layout
+(`meta.json`, `state.json`, `task-log.md`, `LEARNINGS.md`), substitute your own
+credentials, point at your own conductor.
 
 ---
 
@@ -304,7 +304,7 @@ wedges too. Cascading failure. Always use `--no-wait` in a polling loop.
 ### 4. "ntfy topic leaked into a public config"
 
 ntfy has no auth beyond topic-secrecy. Keep topic names in
-`~/.agent-deck/watcher/<name>/watcher.toml` or env vars — never in
+`<effective watcher data dir>/<name>/watcher.toml` or env vars — never in
 tracked files.
 
 ### 5. "GitHub watcher silently drops events"

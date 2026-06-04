@@ -41,11 +41,11 @@ var consumedTurnsMu sync.Mutex
 
 // ConsumedTurnsDir holds per-parent consumed-fingerprint ledgers.
 func ConsumedTurnsDir() string {
-	dir, err := GetAgentDeckDir()
+	dir, err := runtimeDataPath("consumed-turns")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "consumed-turns")
+		return tempAgentDeckPath("runtime", "consumed-turns")
 	}
-	return filepath.Join(dir, "runtime", "consumed-turns")
+	return dir
 }
 
 func consumedTurnsPathFor(parentID string) string {
@@ -217,11 +217,11 @@ func fileHasContent(path string) bool {
 // records staged for a drain, written before the inbox is truncated and dropped
 // only after the consumed ledger is finalized.
 func inboxInflightDir() string {
-	dir, err := GetAgentDeckDir()
+	dir, err := runtimeDataPath("inbox-inflight")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "inbox-inflight")
+		return tempAgentDeckPath("runtime", "inbox-inflight")
 	}
-	return filepath.Join(dir, "runtime", "inbox-inflight")
+	return dir
 }
 
 func inboxInflightPathFor(parentID string) string {

@@ -6,10 +6,12 @@ Agent sessions inspecting this directory will find the layout and CLI reference 
 
 ## Layout
 
-The singular watcher root mirrors `~/.agent-deck/conductor/`:
+The singular watcher root mirrors the conductor data directory. New installs use
+`$XDG_DATA_HOME/agent-deck/watcher/`; hosts with existing watcher state keep the
+legacy `~/.agent-deck/watcher/` root.
 
 ```
-~/.agent-deck/watcher/
+$XDG_DATA_HOME/agent-deck/watcher/
   HERMES.md        — this file (shared knowledge base)
   POLICY.md        — behavior rules (escalation, dedup, retry, health thresholds)
   LEARNINGS.md     — cross-watcher patterns accumulated over time
@@ -50,10 +52,10 @@ agent-deck watcher test <name>
 
 ## Why This Folder Shape
 
-Watcher state mirrors the conductor pattern (`~/.agent-deck/conductor/`) for consistency:
+Watcher state mirrors the conductor data-directory pattern for consistency:
 both subsystems use a singular directory root with shared top-level files and
 per-instance subdirectories. This makes the layout predictable and tooling reusable.
 
 The legacy `~/.agent-deck/watchers/` path is preserved as a relative compatibility
-symlink pointing to `watcher/`. Existing tooling that reads `watchers/` continues
-to work without modification.
+symlink pointing to `watcher/` when legacy watcher state is in use. Existing
+tooling that reads `watchers/` continues to work without modification.

@@ -687,22 +687,15 @@ func TestConductorStatusJSON_ZeroActivityOmitted(t *testing.T) {
 // --- Symlink-based CLAUDE.md tests ---
 
 func TestInstallSharedClaudeMD_Default(t *testing.T) {
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	t.Setenv("HOME", t.TempDir())
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
 
-	// Backup existing file if present
-	var backup []byte
-	if content, err := os.ReadFile(claudeMDPath); err == nil {
-		backup = content
-		defer func() { _ = os.WriteFile(claudeMDPath, backup, 0o644) }()
-	} else {
-		defer os.Remove(claudeMDPath)
-	}
-
 	// Test installing default template
-	err := InstallSharedClaudeMD("")
+	err = InstallSharedClaudeMD("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -744,6 +737,7 @@ func TestInstallSharedClaudeMD_Default(t *testing.T) {
 }
 
 func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 	customPath := filepath.Join(tmpDir, "my-shared-claude.md")
 
@@ -752,30 +746,14 @@ func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
 		t.Fatalf("failed to create custom file: %v", err)
 	}
 
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
 
-	// Backup existing file/symlink if present
-	var backupContent []byte
-	var backupLink string
-	if linkDest, err := os.Readlink(claudeMDPath); err == nil {
-		backupLink = linkDest
-	} else if content, err := os.ReadFile(claudeMDPath); err == nil {
-		backupContent = content
-	}
-	t.Cleanup(func() {
-		os.Remove(claudeMDPath) // Remove whatever the test created (symlink or file)
-		if backupLink != "" {
-			_ = os.Symlink(backupLink, claudeMDPath)
-		} else if backupContent != nil {
-			_ = os.WriteFile(claudeMDPath, backupContent, 0o644)
-		}
-	})
-
 	// Test installing with custom path (creates symlink)
-	err := InstallSharedClaudeMD(customPath)
+	err = InstallSharedClaudeMD(customPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -811,7 +789,11 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 		t.Fatalf("InstallSharedClaudeMD returned error: %v", err)
 	}
 
-	target := filepath.Join(tmpHome, ".agent-deck", "conductor", "CLAUDE.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	target := filepath.Join(conductorDir, "CLAUDE.md")
 	linkDest, err := os.Readlink(target)
 	if err != nil {
 		t.Fatalf("expected symlink at %q: %v", target, err)
