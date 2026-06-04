@@ -2584,6 +2584,25 @@ func (i *Instance) GetGenericSessionID() string {
 	return sessionID
 }
 
+// DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
+// instance's tool, mirroring the per-tool branching in the right-pane render
+// so a copy of the preview info carries the same ID the user sees. Returns ""
+// when no session ID is known for the tool.
+func (i *Instance) DisplaySessionID() string {
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		return i.ClaudeSessionID
+	case i.Tool == "gemini":
+		return i.GeminiSessionID
+	case i.Tool == "opencode":
+		return i.OpenCodeSessionID
+	case i.Tool == "codex":
+		return i.CodexSessionID
+	default:
+		return i.GetGenericSessionID()
+	}
+}
+
 // CanRestartGeneric returns true if a custom tool can be restarted with session resume
 func (i *Instance) CanRestartGeneric() bool {
 	toolDef := GetToolDef(i.Tool)
