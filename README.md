@@ -528,7 +528,7 @@ agent-deck watcher status <name>       # detail view including recent events
 agent-deck watcher test   <name>       # fire a synthetic event to verify routing
 ```
 
-Routing rules live in the effective watcher data dir (`$XDG_DATA_HOME/agent-deck/watcher/clients.json` for new users, or legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present). Edit it to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
+Routing rules live in the effective watcher data dir (`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` for new users, or legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present). Edit it to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
 
 **Conversational setup (recommended for first-time use):**
 

@@ -7,11 +7,11 @@ Agent sessions inspecting this directory will find the layout and CLI reference 
 ## Layout
 
 The singular watcher root mirrors the conductor data directory. New installs use
-`$XDG_DATA_HOME/agent-deck/watcher/`; hosts with existing watcher state keep the
+`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/`; hosts with existing watcher state keep the
 legacy `~/.agent-deck/watcher/` root.
 
 ```
-$XDG_DATA_HOME/agent-deck/watcher/
+${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/
   HERMES.md        — this file (shared knowledge base)
   POLICY.md        — behavior rules (escalation, dedup, retry, health thresholds)
   LEARNINGS.md     — cross-watcher patterns accumulated over time

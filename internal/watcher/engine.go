@@ -134,12 +134,18 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if cfg.TriageDir == "" {
 		if dir, err := session.TriageDir(); err == nil {
 			cfg.TriageDir = dir
+		} else {
+			logger.Warn("watcher_triage_dir_lookup_failed", slog.String("error", err.Error()))
+			cfg.TriageDir = filepath.Join(os.TempDir(), ".agent-deck", "triage")
 		}
 	}
 	if cfg.ClientsPath == "" {
 		if dir, err := LayoutDir(); err == nil {
 			// Singular "watcher" per REQ-WF-6. Legacy "watchers/" is served via compatibility symlink created by MigrateLegacyWatchersDir.
 			cfg.ClientsPath = filepath.Join(dir, "clients.json")
+		} else {
+			logger.Warn("watcher_clients_path_lookup_failed", slog.String("error", err.Error()))
+			cfg.ClientsPath = filepath.Join(os.TempDir(), ".agent-deck", "watcher", "clients.json")
 		}
 	}
 	if cfg.Profile == "" {

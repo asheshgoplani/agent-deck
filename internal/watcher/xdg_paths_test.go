@@ -100,3 +100,27 @@ func TestXDGDataTask4_WatcherEngineDefaultsUseXDGDataHome(t *testing.T) {
 		t.Fatalf("Engine ClientsPath = %q, want %q", engine.cfg.ClientsPath, wantClients)
 	}
 }
+
+func TestXDGDataTask4_WatcherEngineDefaultsUseExplicitFallbackOnPathErrors(t *testing.T) {
+	home, _ := setupWatcherXDGPathEnv(t)
+	badXDGDataHome := filepath.Join(home, "xdg-data-file")
+	if err := os.WriteFile(badXDGDataHome, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", badXDGDataHome, err)
+	}
+	t.Setenv("XDG_DATA_HOME", badXDGDataHome)
+
+	engine := NewEngine(EngineConfig{})
+
+	if engine.cfg.TriageDir == "" {
+		t.Fatal("Engine TriageDir must not be empty when XDG path resolution fails")
+	}
+	if engine.cfg.ClientsPath == "" {
+		t.Fatal("Engine ClientsPath must not be empty when XDG path resolution fails")
+	}
+	if got, want := engine.cfg.TriageDir, filepath.Join(os.TempDir(), ".agent-deck", "triage"); got != want {
+		t.Fatalf("Engine TriageDir fallback = %q, want %q", got, want)
+	}
+	if got, want := engine.cfg.ClientsPath, filepath.Join(os.TempDir(), ".agent-deck", "watcher", "clients.json"); got != want {
+		t.Fatalf("Engine ClientsPath fallback = %q, want %q", got, want)
+	}
+}

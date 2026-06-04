@@ -1731,7 +1731,10 @@ func GenerateTransitionNotifierLaunchdPlist() (string, error) {
 	if agentDeckPath != "" {
 		execPath = agentDeckPath
 	}
-	logPath := transitionNotifyLogPath()
+	logPath, err := logDataPath("transition-notifier.log")
+	if err != nil {
+		return "", fmt.Errorf("transition notifier log path: %w", err)
+	}
 
 	plist := strings.ReplaceAll(transitionNotifierPlistTemplate, "__AGENT_DECK__", execPath)
 	plist = strings.ReplaceAll(plist, "__LOG_PATH__", logPath)
@@ -1760,7 +1763,10 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 	if agentDeckPath != "" {
 		execPath = agentDeckPath
 	}
-	logPath := transitionNotifyLogPath()
+	logPath, err := logDataPath("transition-notifier.log")
+	if err != nil {
+		return "", fmt.Errorf("transition notifier log path: %w", err)
+	}
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)

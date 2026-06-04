@@ -12,7 +12,7 @@ Defaults:
 - Triage sessions are rate-limited to 5 per hour per engine instance.
 - Events exceeding the rate limit are queued (capacity 16); excess events are
   marked `triage-dropped` in the event log.
-- Triage results are written to `$XDG_DATA_HOME/agent-deck/triage/<dedup_key>/result.json`
+- Triage results are written to `${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/triage/<dedup_key>/result.json`
   on new installs (or legacy `~/.agent-deck/triage/...` when existing triage
   state is present)
   and applied to `clients.json` by the triage reaper.

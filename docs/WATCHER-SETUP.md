@@ -107,7 +107,7 @@ Four adapter types ship in the box:
 ### Example: a GitHub watcher in three commands
 
 ```bash
-# 1. Create the watcher (writes $XDG_DATA_HOME/agent-deck/watcher/gh-alerts/ on new installs).
+# 1. Create the watcher (writes ${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/gh-alerts/ on new installs).
 agent-deck watcher create github --name gh-alerts \
   --secret "$GITHUB_WEBHOOK_SECRET"
 
@@ -161,7 +161,7 @@ agent-deck watcher create slack --name team-slack --topic <random-long-string>
 ## Routing: telling the watcher which conductor to ring
 
 Watcher routing rules live in the effective watcher data dir
-(`$XDG_DATA_HOME/agent-deck/watcher/clients.json` for new users, or legacy
+(`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` for new users, or legacy
 `~/.agent-deck/watcher/clients.json` when existing watcher state is present):
 
 ```json

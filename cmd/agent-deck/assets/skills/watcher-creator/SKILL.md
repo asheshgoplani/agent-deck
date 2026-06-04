@@ -35,13 +35,13 @@ Ask the user which source they want to receive events from. Present the five opt
 Once the user picks a type, ask for the settings specific to that adapter (see the per-type sections below). Ask for each required setting one at a time to avoid overwhelming the user.
 
 Also ask:
-- **Watcher name**: A short lowercase identifier (e.g., `my-webhook`, `github-alerts`). This becomes the directory name under the effective watcher data dir (`$XDG_DATA_HOME/agent-deck/watcher` for new users; legacy `~/.agent-deck/watcher` remains in use when existing watcher state is present).
+- **Watcher name**: A short lowercase identifier (e.g., `my-webhook`, `github-alerts`). This becomes the directory name under the effective watcher data dir (`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher` for new users; legacy `~/.agent-deck/watcher` remains in use when existing watcher state is present).
 - **Conductor**: Which conductor session this watcher should route events to by default (the `conductor` field in `clients.json`).
 - **Group**: Which group the conductor session lives in (the `group` field in `clients.json`).
 
 ### Step 3: Generate a watcher.toml block
 
-Produce a TOML configuration block for the user to save as `$XDG_DATA_HOME/agent-deck/watcher/<name>/watcher.toml`, or the legacy `~/.agent-deck/watcher/<name>/watcher.toml` if agent-deck is already using legacy watcher state.
+Produce a TOML configuration block for the user to save as `${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/<name>/watcher.toml`, or the legacy `~/.agent-deck/watcher/<name>/watcher.toml` if agent-deck is already using legacy watcher state.
 
 Example for webhook:
 ```toml
@@ -212,7 +212,7 @@ Great, let me help you set up a GitHub watcher.
 **Skill response:**
 Here is your configuration.
 
-Save this as `$XDG_DATA_HOME/agent-deck/watcher/github-myrepo/watcher.toml` for a new install, or under legacy `~/.agent-deck/watcher/github-myrepo/watcher.toml` if agent-deck is already using legacy watcher state:
+Save this as `${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/github-myrepo/watcher.toml` for a new install, or under legacy `~/.agent-deck/watcher/github-myrepo/watcher.toml` if agent-deck is already using legacy watcher state:
 ```toml
 [watcher]
 name = "github-myrepo"
@@ -228,7 +228,7 @@ conductor = "main-conductor"
 group = "dev"
 ```
 
-Add this entry to `$XDG_DATA_HOME/agent-deck/watcher/clients.json` (key is `<your-github-username>@github.com`), or the legacy watcher `clients.json` if that is the effective watcher data dir:
+Add this entry to `${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` (key is `<your-github-username>@github.com`), or the legacy watcher `clients.json` if that is the effective watcher data dir:
 ```json
 {
   "octocat@github.com": {

@@ -450,7 +450,7 @@ Full conversational setup flow is available as a separate skill:
 agent-deck watcher install-skill watcher-creator
 ```
 
-After running the install command, read the installed `watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring the effective watcher data dir's `clients.json` routing (`$XDG_DATA_HOME/agent-deck/watcher/clients.json` for new users; legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present).
+After running the install command, read the installed `watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring the effective watcher data dir's `clients.json` routing (`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` for new users; legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present).
 
 See `agent-deck watcher --help` for the full command surface and per-adapter examples.
 

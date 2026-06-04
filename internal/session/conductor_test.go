@@ -687,7 +687,9 @@ func TestConductorStatusJSON_ZeroActivityOmitted(t *testing.T) {
 // --- Symlink-based CLAUDE.md tests ---
 
 func TestInstallSharedClaudeMD_Default(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	conductorDir, err := ConductorDir()
 	if err != nil {
 		t.Fatalf("ConductorDir: %v", err)
@@ -737,7 +739,9 @@ func TestInstallSharedClaudeMD_Default(t *testing.T) {
 }
 
 func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	tmpDir := t.TempDir()
 	customPath := filepath.Join(tmpDir, "my-shared-claude.md")
 
@@ -779,6 +783,7 @@ func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
 func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	customPath := filepath.Join(t.TempDir(), "my-shared-claude.md")
 	if err := os.WriteFile(customPath, []byte("# shared rules\n"), 0o644); err != nil {
@@ -800,6 +805,23 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	}
 	if linkDest != customPath {
 		t.Fatalf("symlink destination = %q, want %q", linkDest, customPath)
+	}
+}
+
+func TestGenerateTransitionNotifierDaemons_SurfaceLogPathErrors(t *testing.T) {
+	home := t.TempDir()
+	badXDGDataHome := filepath.Join(home, "xdg-data-file")
+	if err := os.WriteFile(badXDGDataHome, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", badXDGDataHome, err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", badXDGDataHome)
+
+	if _, err := GenerateTransitionNotifierLaunchdPlist(); err == nil {
+		t.Fatal("GenerateTransitionNotifierLaunchdPlist() error = nil, want log path lookup error")
+	}
+	if _, err := GenerateSystemdTransitionNotifierService(); err == nil {
+		t.Fatal("GenerateSystemdTransitionNotifierService() error = nil, want log path lookup error")
 	}
 }
 
