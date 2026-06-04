@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,17 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrRefusingEmptySweep is returned by SaveInstances when it is asked to
+// persist an EMPTY instance set while the instances table still holds rows.
+//
+// S1 data-loss safeguard (added after the 2026-06-04 incident, the third of
+// its class): SaveInstances' DELETE+re-insert sweep used to run an
+// unconditional `DELETE FROM instances` for an empty payload, so a stray
+// SaveInstances([]) wiped the live profile index. Refusing the destructive
+// empty sweep turns silent data loss into a loud, recoverable error. Callers
+// that genuinely intend to empty the table must use ClearAllInstances.
+var ErrRefusingEmptySweep = errors.New("statedb: refusing to wipe populated instances table with an empty SaveInstances payload (use ClearAllInstances to intentionally clear)")
 
 // withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
 // ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
@@ -623,9 +635,21 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 
 	// Delete rows not in the new list to prevent deleted sessions from reappearing.
 	if len(insts) == 0 {
-		if _, err := tx.Exec("DELETE FROM instances"); err != nil {
+		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+		// whole table. If rows already exist this is almost certainly a bug in
+		// the caller (a stray empty save), not an intentional clear — refuse it
+		// rather than silently destroying the index. Intentional clears go
+		// through ClearAllInstances. An empty payload on an already-empty table
+		// is a benign no-op.
+		var existing int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
 			return err
 		}
+		if existing > 0 {
+			return ErrRefusingEmptySweep
+		}
+		// Already empty: nothing to delete, nothing to insert.
+		return tx.Commit()
 	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
@@ -689,6 +713,18 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	}
 
 	return tx.Commit()
+}
+
+// ClearAllInstances is the explicit escape hatch for intentionally emptying the
+// instances table. SaveInstances([]) refuses to wipe a populated table (S1
+// data-loss safeguard, ErrRefusingEmptySweep); callers that truly mean to clear
+// every row must call this method so the destructive intent is unambiguous and
+// greppable. It is a no-op on an already-empty table.
+func (s *StateDB) ClearAllInstances() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM instances")
+		return err
+	})
 }
 
 // LoadInstances returns all instances ordered by sort_order.
