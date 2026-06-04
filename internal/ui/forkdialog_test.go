@@ -295,6 +295,119 @@ func TestForkDialog_ToggleWithStateOff_ClearsGitignored(t *testing.T) {
 	}
 }
 
+// ===== Fork-with-state rendering + keys (PR-B Task B3) =====
+
+func TestForkDialog_View_ShowsCarryStateAndHintWhenWorktreeOn(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.isGitRepo = true
+	d.updateFocus()
+	view := d.View()
+	if !strings.Contains(view, "Carry parent state") {
+		t.Errorf("worktree-on view should show 'Carry parent state'; view:\n%s", view)
+	}
+	if !strings.Contains(view, "creates a NEW branch at parent HEAD") {
+		t.Errorf("view should show the new-branch hint; view:\n%s", view)
+	}
+}
+
+func TestForkDialog_View_HidesCarryStateWhenWorktreeOff(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = false
+	d.isGitRepo = true
+	d.updateFocus()
+	if strings.Contains(d.View(), "Carry parent state") {
+		t.Error("worktree-off view must not show the with-state checkbox")
+	}
+}
+
+func TestForkDialog_View_ShowsGitignoredOnlyWhenWithStateOn(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.isGitRepo = true
+	d.updateFocus()
+	if strings.Contains(d.View(), "Include gitignored files") {
+		t.Error("gitignored checkbox must be hidden when with-state off")
+	}
+	d.ToggleWithState()
+	if !strings.Contains(d.View(), "Include gitignored files") {
+		t.Error("gitignored checkbox must show when with-state on")
+	}
+}
+
+func TestForkDialog_Space_TogglesFocusedCarryState(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.setFocus(forkFocusCarryState)
+	if d.currentFocusName() != "carryState" {
+		t.Fatalf("precondition: focus should be carryState, got %s", d.currentFocusName())
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !d.IsWithStateEnabled() {
+		t.Error("Space on carryState should enable with-state")
+	}
+}
+
+func TestForkDialog_Space_TogglesFocusedGitignored(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	d.setFocus(forkFocusGitignored)
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if !d.IsWithStateAndGitignoredEnabled() {
+		t.Error("Space on gitignored should enable gitignored")
+	}
+}
+
+func TestForkDialog_Y_TogglesWithStateFromGroup(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.setFocus(forkFocusGroup)
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if !d.IsWithStateEnabled() {
+		t.Error("y on the group row should toggle with-state on")
+	}
+}
+
+func TestForkDialog_I_TogglesGitignoredFromGroup(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	d.setFocus(forkFocusGroup)
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if !d.IsWithStateAndGitignoredEnabled() {
+		t.Error("i on the group row should toggle gitignored on")
+	}
+}
+
+func TestForkDialog_I_TypeableInBranchField(t *testing.T) {
+	// Decision 3: i/y must remain typeable in text inputs (branch names contain 'i').
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeEnabled = true
+	d.setFocus(forkFocusBranch)
+	d.branchInput.SetValue("")
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if d.branchInput.Value() != "i" {
+		t.Errorf("i should be typeable in the branch field, got %q", d.branchInput.Value())
+	}
+}
+
 // TestForkDialog_NameInput_AcceptsUnderscore verifies that typing '_' into the
 // name input reaches the textinput buffer (regression test for BUG-02).
 func TestForkDialog_NameInput_AcceptsUnderscore(t *testing.T) {

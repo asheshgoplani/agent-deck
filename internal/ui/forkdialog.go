@@ -486,9 +486,45 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 				return d, nil
 			}
 
+		case "y":
+			// Shortcut: toggle carry-parent-state. Intercepted only on the group
+			// row (like w/s) or the checkbox itself, so it stays typeable in the
+			// name/branch inputs.
+			if f := d.currentFocus(); f == forkFocusGroup || f == forkFocusCarryState {
+				d.ToggleWithState()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
+
+		case "i":
+			// Shortcut: toggle include-gitignored.
+			if f := d.currentFocus(); f == forkFocusGroup || f == forkFocusGitignored {
+				d.ToggleWithStateAndGitignored()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
+
 		case " ", "left", "right":
-			// Delegate space/arrow keys to options panel if focused there
-			if d.currentFocus() == forkFocusOptions {
+			// Space toggles the focused with-state checkbox; space/arrows inside
+			// the options panel are delegated.
+			switch d.currentFocus() {
+			case forkFocusCarryState:
+				if msg.String() == " " {
+					d.ToggleWithState()
+					d.clampFocus()
+					d.updateFocus()
+				}
+				return d, nil
+			case forkFocusGitignored:
+				if msg.String() == " " {
+					d.ToggleWithStateAndGitignored()
+					d.clampFocus()
+					d.updateFocus()
+				}
+				return d, nil
+			case forkFocusOptions:
 				return d, d.optionsPanel.Update(msg)
 			}
 		}
@@ -648,6 +684,30 @@ func (d *ForkDialog) View() string {
 			worktreeSection += "  " + d.branchInput.View() + "\n"
 			if d.branchPicker != nil && d.branchPicker.IsVisible() {
 				worktreeSection += "  " + strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  ") + "\n"
+			}
+
+			// Fork-with-state: carry parent state, with nested gitignored (PR-B B3).
+			carryCb := "[ ]"
+			if d.withStateEnabled {
+				carryCb = "[x]"
+			}
+			if d.currentFocus() == forkFocusCarryState {
+				worktreeSection += "\n" + checkboxActiveStyle.Render(fmt.Sprintf("  ▶ %s Carry parent state (y)", carryCb)) + "\n"
+			} else {
+				worktreeSection += "\n" + checkboxStyle.Render(fmt.Sprintf("    %s Carry parent state (y)", carryCb)) + "\n"
+			}
+			worktreeSection += checkboxStyle.Render("      ↳ creates a NEW branch at parent HEAD") + "\n"
+
+			if d.withStateEnabled {
+				gitignoredCb := "[ ]"
+				if d.withStateAndGitignored {
+					gitignoredCb = "[x]"
+				}
+				if d.currentFocus() == forkFocusGitignored {
+					worktreeSection += checkboxActiveStyle.Render(fmt.Sprintf("    ▶ %s Include gitignored files (i)", gitignoredCb)) + "\n"
+				} else {
+					worktreeSection += checkboxStyle.Render(fmt.Sprintf("      %s Include gitignored files (i)", gitignoredCb)) + "\n"
+				}
 			}
 		}
 	}
