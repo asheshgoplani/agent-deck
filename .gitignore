@@ -67,3 +67,5 @@ __pycache__/
 # Claude harness (per-session state, never committed)
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+docs/superpowers/
