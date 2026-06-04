@@ -28,6 +28,14 @@ type fakeMutator struct {
 	renameGroupFn    func(groupPath, newName string) error
 	deleteGroupFn    func(groupPath string) error
 	finishWorktreeFn func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
+	editSessionFn    func(id string, patch SessionPatch) error
+	moveToGroupFn    func(id, groupPath string) error
+	moveGroupFn      func(src, dest string) error
+	archiveFn        func(id string) error
+	unarchiveFn      func(id string) error
+	restartFreshFn   func(id string) error
+	markUnreadFn     func(id string) error
+	approveFn        func(id string) error
 }
 
 func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
@@ -119,6 +127,62 @@ func (f *fakeMutator) FinishWorktree(id string, opts WorktreeFinishOptions) (Wor
 		return WorktreeFinishResult{}, fmt.Errorf("finishWorktree not configured")
 	}
 	return f.finishWorktreeFn(id, opts)
+}
+
+func (f *fakeMutator) EditSession(id string, patch SessionPatch) error {
+	if f.editSessionFn == nil {
+		return fmt.Errorf("editSession not configured")
+	}
+	return f.editSessionFn(id, patch)
+}
+
+func (f *fakeMutator) MoveSessionToGroup(id, groupPath string) error {
+	if f.moveToGroupFn == nil {
+		return fmt.Errorf("moveSessionToGroup not configured")
+	}
+	return f.moveToGroupFn(id, groupPath)
+}
+
+func (f *fakeMutator) MoveGroup(src, dest string) error {
+	if f.moveGroupFn == nil {
+		return fmt.Errorf("moveGroup not configured")
+	}
+	return f.moveGroupFn(src, dest)
+}
+
+func (f *fakeMutator) ArchiveSession(id string) error {
+	if f.archiveFn == nil {
+		return fmt.Errorf("archiveSession not configured")
+	}
+	return f.archiveFn(id)
+}
+
+func (f *fakeMutator) UnarchiveSession(id string) error {
+	if f.unarchiveFn == nil {
+		return fmt.Errorf("unarchiveSession not configured")
+	}
+	return f.unarchiveFn(id)
+}
+
+func (f *fakeMutator) RestartSessionFresh(id string) error {
+	if f.restartFreshFn == nil {
+		return fmt.Errorf("restartSessionFresh not configured")
+	}
+	return f.restartFreshFn(id)
+}
+
+func (f *fakeMutator) MarkUnread(id string) error {
+	if f.markUnreadFn == nil {
+		return fmt.Errorf("markUnread not configured")
+	}
+	return f.markUnreadFn(id)
+}
+
+func (f *fakeMutator) ApproveSession(id string) error {
+	if f.approveFn == nil {
+		return fmt.Errorf("approveSession not configured")
+	}
+	return f.approveFn(id)
 }
 
 func TestSessionsCollectionGET(t *testing.T) {
@@ -725,6 +789,557 @@ func TestSessionUndoUnauthorized(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("undo unauthorized: expected 401, got %d", rr.Code)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Generic session edit (PATCH /api/sessions/{id}). One endpoint backs the
+// TUI EditSessionDialog: rename ({title}), move-to-group ({groupPath}), edit
+// settings ({color,notes,channels,...}), and edit notes inline ({notes}).
+// Closes four MISSING rows in tests/web/PARITY_MATRIX.md.
+// ----------------------------------------------------------------------------
+
+// TestSessionPatchGroupPathMovesSession verifies the unified PATCH routes a
+// {groupPath} body through MoveSessionToGroup (group membership lives in the
+// group tree, not via session.SetField). With no toolOptions/gemini fields,
+// EditSession is NOT invoked — the move is the only side effect.
+func TestSessionPatchGroupPathMovesSession(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var moveID, moveGroup string
+	var editCalled bool
+	srv.mutator = &fakeMutator{
+		moveToGroupFn: func(id, groupPath string) error {
+			moveID = id
+			moveGroup = groupPath
+			return nil
+		},
+		editSessionFn: func(id string, patch SessionPatch) error {
+			editCalled = true
+			return nil
+		},
+	}
+
+	body := strings.NewReader(`{"groupPath":"archive"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch groupPath: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if moveID != "sess-1" || moveGroup != "archive" {
+		t.Errorf("patch groupPath: move saw id=%q group=%q, want sess-1/archive", moveID, moveGroup)
+	}
+	if editCalled {
+		t.Errorf("patch groupPath: EditSession must not be called when only groupPath is set")
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-1"`) {
+		t.Errorf("patch groupPath: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+// TestSessionPatchToolOptionsAndGemini verifies the fork-only direct-write
+// fields (toolOptions raw JSON + gemini model/yolo) route through EditSession,
+// and that a combined request also runs the typed SetField fields via
+// UpdateSession — toolOptions applied first so skip/auto compose on top.
+func TestSessionPatchToolOptionsAndGemini(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotPatch SessionPatch
+	var updateCalled bool
+	srv.mutator = &fakeMutator{
+		editSessionFn: func(id string, patch SessionPatch) error {
+			gotPatch = patch
+			return nil
+		},
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			updateCalled = true
+			return []string{session.FieldSkipPermissions}, true, nil
+		},
+	}
+
+	body := strings.NewReader(`{"toolOptions":{"tool":"claude"},"geminiModel":"gemini-2.5-pro","geminiYolo":true,"skipPermissions":true}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch toolOptions/gemini: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotPatch.ToolOptions == nil {
+		t.Errorf("patch: EditSession saw nil ToolOptions, want raw JSON")
+	}
+	if gotPatch.GeminiModel == nil || *gotPatch.GeminiModel != "gemini-2.5-pro" {
+		t.Errorf("patch: EditSession saw geminiModel=%v, want gemini-2.5-pro", gotPatch.GeminiModel)
+	}
+	if gotPatch.GeminiYolo == nil || !*gotPatch.GeminiYolo {
+		t.Errorf("patch: EditSession saw geminiYolo=%v, want true", gotPatch.GeminiYolo)
+	}
+	if !updateCalled {
+		t.Errorf("patch: typed skipPermissions field must still route through UpdateSession")
+	}
+	// toolOptions + geminiModel are launch-affecting → restartRequired must be true.
+	if !strings.Contains(rr.Body.String(), `"restartRequired":true`) {
+		t.Errorf("patch: expected restartRequired=true, got: %s", rr.Body.String())
+	}
+}
+
+func TestSessionPatchBadBody(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{}
+
+	body := strings.NewReader(`{not json`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("patch bad body: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionPatchMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	body := strings.NewReader(`{"title":"x"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("patch (mutations disabled): expected 403, got %d", rr.Code)
+	}
+}
+
+func TestSessionPatchMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		updateSessionFn: func(id string, updates map[string]string) ([]string, bool, error) {
+			return nil, false, fmt.Errorf("save failed")
+		},
+	}
+
+	body := strings.NewReader(`{"notes":"x"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/sessions/sess-1", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("patch (mutator err): expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Archive / unarchive (POST + DELETE /api/sessions/{id}/archive).
+// Mirrors the TUI 'A' hotkey (home.go:7237) and CLI `session archive`.
+// POST archives (sets ArchivedAt=now); DELETE same path unarchives (clears it).
+// ----------------------------------------------------------------------------
+
+func TestSessionArchivePost200(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		archiveFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "sess-1" {
+		t.Errorf("POST archive: mutator saw id=%q, want sess-1", gotID)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-1"`) {
+		t.Errorf("POST archive: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+func TestSessionUnarchiveDelete200(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		unarchiveFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-2/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "sess-2" {
+		t.Errorf("DELETE archive: mutator saw id=%q, want sess-2", gotID)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-2"`) {
+		t.Errorf("DELETE archive: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+func TestSessionDeleteBareNotUnarchive(t *testing.T) {
+	// Regression: DELETE /api/sessions/{id} (no /archive) must call DeleteSession,
+	// NOT UnarchiveSession. The two DELETE branches are disjoint by action string.
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var deleteCalled bool
+	srv.mutator = &fakeMutator{
+		deleteSessionFn: func(id string) error {
+			deleteCalled = true
+			return nil
+		},
+		unarchiveFn: func(id string) error {
+			t.Errorf("DELETE /api/sessions/{id} must not invoke UnarchiveSession")
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-3", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bare DELETE: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !deleteCalled {
+		t.Errorf("bare DELETE: expected DeleteSession to be invoked")
+	}
+}
+
+func TestSessionArchiveMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("archive disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionArchiveNilMutator(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("archive nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionArchiveMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		archiveFn: func(id string) error {
+			return fmt.Errorf("session not found: %s", id)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/missing/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("archive error: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnarchiveMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("unarchive disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnarchiveNilMutator(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/sess-1/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unarchive nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnarchiveMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		unarchiveFn: func(id string) error {
+			return fmt.Errorf("session not found: %s", id)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/missing/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("unarchive error: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Micro-action endpoints (POST /api/sessions/{id}/restart-fresh|unread|approve).
+// Mirror the TUI 'T' (restart fresh), 'u' (mark unread), and quick-approve
+// hotkeys (home.go:7310, 7331). Each is a POST switch case inheriting the
+// block-level mutations/rate-limit/nil-mutator guards.
+// ----------------------------------------------------------------------------
+
+func TestSessionRestartFreshPost200(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		restartFreshFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/restart-fresh", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST restart-fresh: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "sess-1" {
+		t.Errorf("POST restart-fresh: mutator saw id=%q, want sess-1", gotID)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-1"`) {
+		t.Errorf("POST restart-fresh: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+func TestSessionRestartFreshMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/restart-fresh", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("restart-fresh disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionRestartFreshNilMutator(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/restart-fresh", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("restart-fresh nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionRestartFreshMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		restartFreshFn: func(id string) error {
+			return fmt.Errorf("session not found: %s", id)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/missing/restart-fresh", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("restart-fresh error: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnreadPost200(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		markUnreadFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/unread", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST unread: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "sess-1" {
+		t.Errorf("POST unread: mutator saw id=%q, want sess-1", gotID)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-1"`) {
+		t.Errorf("POST unread: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+func TestSessionUnreadMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/unread", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("unread disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnreadNilMutator(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/unread", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unread nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionUnreadMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		markUnreadFn: func(id string) error {
+			return fmt.Errorf("session not found: %s", id)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/missing/unread", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("unread error: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionApprovePost200(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		approveFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/approve", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST approve: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "sess-1" {
+		t.Errorf("POST approve: mutator saw id=%q, want sess-1", gotID)
+	}
+	if !strings.Contains(rr.Body.String(), `"sessionId":"sess-1"`) {
+		t.Errorf("POST approve: response missing sessionId: %s", rr.Body.String())
+	}
+}
+
+func TestSessionApproveMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/approve", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("approve disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionApproveNilMutator(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/sess-1/approve", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("approve nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionApproveMutatorError(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		approveFn: func(id string) error {
+			return fmt.Errorf("quick-approve is only available for Claude-compatible sessions")
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/missing/approve", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("approve error: expected 500, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

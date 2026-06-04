@@ -206,6 +206,11 @@ func (s *fixtureStore) seed() {
 			WorktreePath:       "/tmp/worktrees/sess-001",
 			WorktreeRepoRoot:   "/srv/agent-deck",
 			WorktreeBranch:     "feat/fixture",
+			Archived:           true,
+			ArchivedAt:         now.Add(-24 * time.Hour),
+			AutoName:           true,
+			TaskDescription:    "Add login endpoint",
+			WorktreeType:       "git",
 			TitleLocked:        true,
 			NoTransitionNotify: true,
 			LoadedMCPNames:     []string{"exa", "filesystem"},
@@ -499,6 +504,137 @@ func (s *fixtureStore) FinishWorktree(id string, opts web.WorktreeFinishOptions)
 		Merged:        merged,
 		BranchDeleted: branchDeleted,
 	}, nil
+}
+
+// EditSession applies non-nil patch fields to the in-memory MenuSession,
+// mirroring the production WebMutator (and parityStore). GroupPath is ignored
+// here — group membership is moved via MoveSessionToGroup.
+func (s *fixtureStore) EditSession(id string, patch web.SessionPatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	if patch.Title != nil {
+		sess.Title = *patch.Title
+		sess.AutoName = false
+	}
+	if patch.Color != nil {
+		sess.Color = *patch.Color
+	}
+	if patch.Notes != nil {
+		sess.Notes = *patch.Notes
+	}
+	if patch.Channels != nil {
+		sess.Channels = *patch.Channels
+	}
+	if patch.ExtraArgs != nil {
+		sess.ExtraArgs = *patch.ExtraArgs
+	}
+	if patch.ToolOptions != nil {
+		sess.ToolOptionsJSON = *patch.ToolOptions
+	}
+	if patch.GeminiModel != nil {
+		sess.GeminiModel = *patch.GeminiModel
+	}
+	if patch.GeminiYolo != nil {
+		sess.GeminiYoloMode = patch.GeminiYolo
+	}
+	return nil
+}
+
+// MoveSessionToGroup updates the in-memory session's GroupPath.
+func (s *fixtureStore) MoveSessionToGroup(id, groupPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.GroupPath = groupPath
+	return nil
+}
+
+// ArchiveSession sets Archived=true and records ArchivedAt on the in-memory
+// MenuSession, mirroring the TUI 'A' hotkey semantics.
+func (s *fixtureStore) ArchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.Archived = true
+	sess.ArchivedAt = time.Now()
+	return nil
+}
+
+// UnarchiveSession clears the archive state on the in-memory MenuSession.
+func (s *fixtureStore) UnarchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.Archived = false
+	sess.ArchivedAt = time.Time{}
+	return nil
+}
+
+// RestartSessionFresh transitions the session to Running, mirroring
+// RestartSession (the fixture does not model the tool-session binding).
+func (s *fixtureStore) RestartSessionFresh(id string) error {
+	return s.transition(id, session.StatusRunning)
+}
+
+// MarkUnread flips the in-memory MenuSession to Waiting (idle→waiting),
+// mirroring the TUI 'u' hotkey semantics.
+func (s *fixtureStore) MarkUnread(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.Status = session.StatusWaiting
+	return nil
+}
+
+// ApproveSession has no live tmux pane in the fixture, so it is a no-op that
+// only validates the session exists.
+func (s *fixtureStore) ApproveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	return nil
+}
+
+// MoveGroup reparents the named group under destParentPath in the in-memory
+// groups map. Only updates the moved group's own key/Path; subgroups are not
+// deep-rewritten (sufficient for the fixture — group reparent is not in the
+// parity matrix).
+func (s *fixtureStore) MoveGroup(sourcePath, destParentPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[sourcePath]
+	if !ok {
+		return fmt.Errorf("group %q not found", sourcePath)
+	}
+	baseName := g.Name
+	var newPath string
+	if destParentPath == "" {
+		newPath = baseName
+	} else {
+		newPath = destParentPath + "/" + baseName
+	}
+	delete(s.groups, sourcePath)
+	g.Path = newPath
+	s.groups[newPath] = g
+	return nil
 }
 
 func (s *fixtureStore) transition(id string, to session.Status) error {

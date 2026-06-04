@@ -8,7 +8,35 @@ const repoRoot = resolve(import.meta.dirname, '..', '..')
 // values are absolute paths. Bare specifiers used by component sources
 // (which live outside tests/web/) wouldn't otherwise find this node_modules.
 const req = createRequire(import.meta.url)
-const aliasFor = (spec) => req.resolve(spec)
+
+// aliasFor MUST return the package's ESM build (the `import` export condition),
+// not its CJS build. `require.resolve()` follows the `require` condition and
+// returns the CJS dist (e.g. preact/dist/preact.js). That is fine until a unit
+// test RENDERS a component: @preact/signals patches preact's hook `options` at
+// import time, and that patch only takes effect when @preact/signals and preact
+// (and preact/hooks) share ONE module instance. Mixing the CJS preact (via the
+// alias) with the ESM preact that @preact/signals/htm import internally yields
+// two `options` objects, so the signals hook integration reads hook state off
+// the wrong component and throws `Cannot read properties of undefined (__$f)`.
+// Resolving every alias to the ESM build keeps a single shared instance.
+//
+// Implementation: resolve the spec's CJS dist (the `require` condition, the
+// historic behavior) then swap `.js` -> `.mjs` to reach the sibling ESM build.
+// This works because every preact-ecosystem package here ships `<name>.js`
+// (CJS) and `<name>.mjs` (ESM) side by side in the same dir; we fall back to
+// the CJS dist if no `.mjs` exists.
+const aliasFor = (spec) => {
+  const cjs = req.resolve(spec)
+  const mjs = cjs.replace(/\.js$/, '.mjs')
+  // Only prefer the .mjs when it actually exists (defensive against a package
+  // that ships only CJS); fall back to the CJS dist otherwise.
+  try {
+    req.resolve(mjs)
+    return mjs
+  } catch (_) {
+    return cjs
+  }
+}
 
 export default defineConfig({
   // Vite root stays at tests/web/ so node_modules resolution works for
@@ -45,10 +73,19 @@ export default defineConfig({
     // straight to the installed file. Sub-imports inside those files
     // (e.g. signals.module.js → preact/hooks) re-resolve via the same
     // alias map, so transitive resolution works without breakage.
+    //
+    // ORDER MATTERS: Vite alias uses prefix matching with first-match-wins.
+    // The specific `preact/hooks` and `preact/jsx-runtime` keys MUST precede
+    // the bare `preact` entry, otherwise `preact/hooks` matches `preact` first
+    // and gets rewritten to <preact-file>/hooks (unresolvable). This only
+    // surfaces when a unit test imports a component module that imports
+    // `preact/hooks` directly (e.g. EditSessionDialog.js); prior tests only
+    // imported hook-free modules (api.js/state.js/dataModel.js) so the bug
+    // stayed latent.
     alias: {
-      'preact': aliasFor('preact'),
       'preact/hooks': aliasFor('preact/hooks'),
       'preact/jsx-runtime': aliasFor('preact/jsx-runtime'),
+      'preact': aliasFor('preact'),
       'htm/preact': aliasFor('htm/preact'),
       '@preact/signals': aliasFor('@preact/signals'),
       '@preact/signals-core': aliasFor('@preact/signals-core'),

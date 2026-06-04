@@ -270,7 +270,7 @@ export function CostDashboard() {
           <div class="delta">based on 7-day avg</div>
         </div>
       </div>
-      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px;">
+      <div class="cost-charts">
         <div class="chart-card">
           <div class="title">Daily spend · last 30 days</div>
           <canvas ref=${dailyCanvasRef}></canvas>

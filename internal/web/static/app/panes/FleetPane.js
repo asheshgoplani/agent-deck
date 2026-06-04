@@ -5,10 +5,10 @@
 import { html } from 'htm/preact'
 import { useMemo } from 'preact/hooks'
 import { menuModelSignal } from '../dataModel.js'
-import { selectedIdSignal } from '../state.js'
+import { selectedIdSignal, createSessionDialogSignal, mutationsEnabledSignal } from '../state.js'
 import { activeTabSignal } from '../uiState.js'
 
-function GroupCard({ name, items, onSelect }) {
+function GroupCard({ name, path, items, onSelect }) {
   const running = items.filter(s => s.status === 'running').length
   const waiting = items.filter(s => s.status === 'waiting').length
   const errors  = items.filter(s => s.status === 'error').length
@@ -19,6 +19,9 @@ function GroupCard({ name, items, onSelect }) {
         <span class="t">${name}</span>
         <span class="health"><span class=${`d ${dominant || 'idle'}`}/></span>
         <span class="cost"></span>
+        ${mutationsEnabledSignal.value && html`
+          <button class="gc-new" title=${`New session in ${name}`} aria-label="New session in group"
+                  onClick=${() => (createSessionDialogSignal.value = { groupPath: path })}>+</button>`}
       </div>
       <div class="gc-tiles">
         ${items.slice(0, 6).map(s => html`
@@ -78,7 +81,7 @@ export function FleetPane() {
               ${groups.map(g => {
                 const items = byGroup[g.path] || []
                 if (items.length === 0) return null
-                return html`<${GroupCard} key=${g.path} name=${g.label} items=${items} onSelect=${onSelect}/>`
+                return html`<${GroupCard} key=${g.path} name=${g.label} path=${g.path} items=${items} onSelect=${onSelect}/>`
               })}
             </div>`}
       </div>

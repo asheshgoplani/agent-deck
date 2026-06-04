@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/buildinfo"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -24,6 +25,10 @@ type Config struct {
 	ReadOnly     bool
 	WebMutations bool // When false, POST/PATCH/DELETE endpoints return 403
 	Token        string
+	// Commit is the build's git hash, injected via -ldflags by main and
+	// surfaced through GET /api/settings. Empty falls back to the embedded
+	// VCS revision (see internal/buildinfo).
+	Commit string
 	// InsecureBind explicitly acknowledges binding a non-loopback address
 	// with no auth token (an unauthenticated RCE surface). Without it the
 	// server refuses to start in that configuration. See bind.go / report #1.
@@ -132,6 +137,29 @@ type SessionMutator interface {
 	// the id doesn't resolve and ErrNotAWorktree when the session exists
 	// but lacks worktree metadata. See issue #1126.
 	FinishWorktree(sessionID string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
+	// EditSession applies a partial field update to a session. A nil patch
+	// field leaves that field unchanged. Setting Title clears AutoName.
+	EditSession(sessionID string, patch SessionPatch) error
+	// MoveSessionToGroup moves a session to another group (by group path)
+	// and persists. Mirrors the TUI M/shift+m group-move.
+	MoveSessionToGroup(sessionID, groupPath string) error
+	// MoveGroup reparents a group (and its subgroups/sessions) under
+	// destParentPath ("" = root) and persists. Mirrors CLI `group change`.
+	MoveGroup(sourcePath, destParentPath string) error
+	// ArchiveSession sets the session aside (sets ArchivedAt=now) and persists.
+	// Mirrors the TUI 'A' hotkey / CLI `session archive`.
+	ArchiveSession(sessionID string) error
+	// UnarchiveSession clears ArchivedAt and persists.
+	UnarchiveSession(sessionID string) error
+	// RestartSessionFresh restarts a session discarding its existing tool-session
+	// binding (no --resume). Mirrors the TUI 'T' hotkey.
+	RestartSessionFresh(sessionID string) error
+	// MarkUnread marks a session unread (idle→waiting): resets the acknowledged
+	// flag (persisted) and forces a status re-check. Mirrors the TUI 'u' hotkey.
+	MarkUnread(sessionID string) error
+	// ApproveSession sends "1"+Enter to a Claude-compatible session's tmux pane
+	// without attaching (quick-approve). Mirrors the TUI quick-approve hotkey.
+	ApproveSession(sessionID string) error
 }
 
 // Server wraps an HTTP server for Agent Deck web mode.
@@ -209,6 +237,7 @@ func NewServer(cfg Config) *Server {
 			resp["readOnly"] = cfg.ReadOnly
 			resp["webMutations"] = cfg.WebMutations
 			resp["version"] = buildVersion()
+			resp["commit"] = buildinfo.Commit(cfg.Commit)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)

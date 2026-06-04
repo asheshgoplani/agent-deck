@@ -1,6 +1,10 @@
 package web
 
-import "github.com/asheshgoplani/agent-deck/internal/session"
+import (
+	"encoding/json"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
+)
 
 // Error code constants for API error responses.
 const (
@@ -25,15 +29,37 @@ type CreateSessionRequest struct {
 	ModelID     string `json:"modelId,omitempty"`
 }
 
+// SessionPatch is the body for PATCH /api/sessions/{id}. All fields optional;
+// a nil pointer means "leave unchanged". Setting Title also clears AutoName
+// (mirrors the TUI rename — a user-chosen name replaces the auto handle).
+// GroupPath moves the session to another group (group membership lives in the
+// group tree, not the instance, so it is applied via MoveSessionToGroup).
+type SessionPatch struct {
+	Title       *string          `json:"title,omitempty"`
+	Color       *string          `json:"color,omitempty"`
+	Notes       *string          `json:"notes,omitempty"`
+	Channels    *[]string        `json:"channels,omitempty"`
+	ExtraArgs   *[]string        `json:"extraArgs,omitempty"`
+	ToolOptions *json.RawMessage `json:"toolOptions,omitempty"`
+	GeminiModel *string          `json:"geminiModel,omitempty"`
+	GeminiYolo  *bool            `json:"geminiYolo,omitempty"`
+	GroupPath   *string          `json:"groupPath,omitempty"`
+}
+
 // CreateGroupRequest is the body for POST /api/groups.
 type CreateGroupRequest struct {
 	Name       string `json:"name"`
 	ParentPath string `json:"parentPath,omitempty"`
 }
 
-// RenameGroupRequest is the body for PATCH /api/groups/:path.
+// RenameGroupRequest is the body for PATCH /api/groups/{path}. Either renames
+// the group ({name}) OR reparents it ({parentPath}) — the two are mutually
+// exclusive in a single request because a reparent changes the group's path,
+// which would stale a same-request rename's path lookup. parentPath is a pointer
+// so "" (move to root) is distinguishable from absent.
 type RenameGroupRequest struct {
-	Name string `json:"name"`
+	Name       string  `json:"name,omitempty"`
+	ParentPath *string `json:"parentPath,omitempty"`
 }
 
 // UpdateSessionRequest is the body for PATCH /api/sessions/{id}. Every field
@@ -44,6 +70,15 @@ type RenameGroupRequest struct {
 //
 // Field names mirror session.Field* constants so the handler can dispatch
 // directly through session.SetField without a translation table.
+//
+// The SetField-backed fields (above the divider) flow through session.SetField,
+// which validates them and reports a restart policy. The fields below the
+// divider are applied directly to the instance (session.SetField has no entry
+// for them): GroupPath moves the session in the group tree (MoveSessionToGroup),
+// while ToolOptions/GeminiModel/GeminiYolo are written via SessionPatch/
+// EditSession. ToolOptions is applied BEFORE SkipPermissions/AutoMode so a
+// request carrying both composes correctly — the typed bools flip their key
+// inside the freshly-set ClaudeOptions blob rather than being clobbered by it.
 type UpdateSessionRequest struct {
 	Title           *string `json:"title,omitempty"`
 	Notes           *string `json:"notes,omitempty"`
@@ -54,6 +89,12 @@ type UpdateSessionRequest struct {
 	Channels        *string `json:"channels,omitempty"`
 	SkipPermissions *bool   `json:"skipPermissions,omitempty"`
 	AutoMode        *bool   `json:"autoMode,omitempty"`
+
+	// Applied outside session.SetField (see doc comment above).
+	GroupPath   *string          `json:"groupPath,omitempty"`
+	ToolOptions *json.RawMessage `json:"toolOptions,omitempty"`
+	GeminiModel *string          `json:"geminiModel,omitempty"`
+	GeminiYolo  *bool            `json:"geminiYolo,omitempty"`
 }
 
 // UpdateSessionResponse confirms a PATCH succeeded. RestartRequired is true
@@ -97,6 +138,7 @@ type SettingsResponse struct {
 	ReadOnly     bool   `json:"readOnly"`
 	WebMutations bool   `json:"webMutations"`
 	Version      string `json:"version"`
+	Commit       string `json:"commit"`
 
 	// show_only_installed_tools filter (issue #1259). ToolFilter reports the
 	// flag is on; VisibleTools lists the tool names that resolved on PATH (the

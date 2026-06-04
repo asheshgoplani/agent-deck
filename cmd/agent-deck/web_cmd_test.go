@@ -35,6 +35,14 @@ func (noopMutator) DeleteGroup(string) error         { return nil }
 func (noopMutator) FinishWorktree(string, web.WorktreeFinishOptions) (web.WorktreeFinishResult, error) {
 	return web.WorktreeFinishResult{}, nil
 }
+func (noopMutator) EditSession(string, web.SessionPatch) error { return nil }
+func (noopMutator) MoveSessionToGroup(string, string) error    { return nil }
+func (noopMutator) MoveGroup(string, string) error             { return nil }
+func (noopMutator) ArchiveSession(string) error                { return nil }
+func (noopMutator) UnarchiveSession(string) error              { return nil }
+func (noopMutator) RestartSessionFresh(string) error           { return nil }
+func (noopMutator) MarkUnread(string) error                    { return nil }
+func (noopMutator) ApproveSession(string) error                { return nil }
 
 // Compile-time guard that ui.WebMutator continues to satisfy
 // web.SessionMutator. Catches accidental signature drift between the two

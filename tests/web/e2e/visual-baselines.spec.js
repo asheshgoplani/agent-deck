@@ -56,4 +56,24 @@ test.describe('visual baselines', () => {
     await page.waitForTimeout(300)
     await expect(page).toHaveScreenshot('home-empty.png', { fullPage: false })
   })
+
+  test('phone: session view with details disclosure', async ({ page, viewport }) => {
+    test.skip((viewport?.width || 1280) > 720, 'phone-only: mobile session view layout')
+    await page.goto('/')
+    await waitForAppMount(page)
+    await page.evaluate(() => localStorage.setItem('agentdeck.tab', JSON.stringify('terminal')))
+    await page.reload(); await waitForAppMount(page)
+    await page.waitForTimeout(300)
+    await expect(page).toHaveScreenshot('session.png', { fullPage: false })
+  })
+
+  test('phone: new-session dialog', async ({ page, viewport }) => {
+    test.skip((viewport?.width || 1280) > 720, 'phone-only: mobile dialog layout')
+    await page.goto('/')
+    await waitForAppMount(page)
+    await page.evaluate(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' })) })
+    await page.waitForTimeout(200)
+    await expect(page.locator('.dialog')).toBeVisible()
+    await expect(page).toHaveScreenshot('new-session.png', { fullPage: false })
+  })
 })

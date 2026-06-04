@@ -55,7 +55,24 @@ function projectSession(item) {
     events1h: 0,
     meta: '',
     raw: s,
+    // Hierarchy / archive / naming fields (added for web↔TUI parity, Task 7)
+    level: item.level || 0,
+    isSubSession: !!item.isSubSession,
+    parentSessionId: s.parentSessionId || '',
+    archived: !!s.archived,
+    archivedAt: s.archivedAt || '',
+    autoName: !!s.autoName,
+    taskDescription: s.taskDescription || '',
+    worktreeType: s.worktreeType || '',
   }
+}
+
+// displaySessionTitle returns the row label: for an auto-named quick session
+// (autoName) it prefers the live Claude task description; otherwise the title.
+// Mirrors the TUI displaySessionTitle. Degrades to the handle when taskDescription
+// is empty (cold pane cache), per design.
+export function displaySessionTitle(s) {
+  return s && s.autoName && s.taskDescription ? s.taskDescription : (s ? s.title : '')
 }
 
 function projectGroup(item) {
@@ -98,5 +115,21 @@ export const menuModelSignal = computed(() => {
   groups.sort((a, b) => a.order - b.order)
   const byGroup = {}
   for (const s of sessions) (byGroup[s.group] ||= []).push(s)
-  return { groups, sessions, byGroup }
+  // Build ordered items array preserving the raw interleaved order + level so
+  // the Sidebar (Task 8) can render nested subgroups/sub-sessions with
+  // client-side collapse. Sessions are re-projected here (cheap) with cost
+  // hydration matching the `sessions` path above.
+  const orderedItems = []
+  for (const it of items) {
+    if (!it) continue
+    if (it.type === 'group') {
+      orderedItems.push({ type: 'group', level: it.level || 0, group: projectGroup(it) })
+    } else if (it.type === 'session') {
+      const ps = projectSession(it)
+      const c = costs[ps.id]
+      if (typeof c === 'number') ps.cost = c
+      orderedItems.push({ type: 'session', level: it.level || 0, isSubSession: !!it.isSubSession, session: ps })
+    }
+  }
+  return { groups, sessions, byGroup, items: orderedItems }
 })

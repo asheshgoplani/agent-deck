@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/asheshgoplani/agent-deck/internal/buildinfo"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -25,6 +26,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		ReadOnly:           s.cfg.ReadOnly,
 		WebMutations:       s.cfg.WebMutations,
 		Version:            buildVersion(),
+		Commit:             buildinfo.Commit(s.cfg.Commit),
 		ToolFilter:         session.ToolFilterActive(),
 		VisibleTools:       session.VisibleToolNames(),
 		ToolFilterFallback: session.ToolFilterFallbackActive(),

@@ -529,6 +529,137 @@ func (s *parityStore) DeleteGroup(groupPath string) error {
 	return nil
 }
 
+// EditSession applies non-nil patch fields to the in-memory MenuSession.
+// GroupPath is intentionally ignored (handled by MoveSessionToGroup) so the
+// store mirrors the production WebMutator semantics.
+func (s *parityStore) EditSession(id string, patch SessionPatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	if patch.Title != nil {
+		sess.Title = *patch.Title
+		sess.AutoName = false
+	}
+	if patch.Color != nil {
+		sess.Color = *patch.Color
+	}
+	if patch.Notes != nil {
+		sess.Notes = *patch.Notes
+	}
+	if patch.Channels != nil {
+		sess.Channels = *patch.Channels
+	}
+	if patch.ExtraArgs != nil {
+		sess.ExtraArgs = *patch.ExtraArgs
+	}
+	if patch.ToolOptions != nil {
+		sess.ToolOptionsJSON = *patch.ToolOptions
+	}
+	if patch.GeminiModel != nil {
+		sess.GeminiModel = *patch.GeminiModel
+	}
+	if patch.GeminiYolo != nil {
+		sess.GeminiYoloMode = patch.GeminiYolo
+	}
+	return nil
+}
+
+// MoveSessionToGroup updates the in-memory session's GroupPath.
+func (s *parityStore) MoveSessionToGroup(id, groupPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	sess.GroupPath = groupPath
+	return nil
+}
+
+// ArchiveSession sets Archived=true and records ArchivedAt on the in-memory
+// MenuSession, mirroring the TUI 'A' hotkey semantics.
+func (s *parityStore) ArchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	sess.Archived = true
+	sess.ArchivedAt = s.now()
+	return nil
+}
+
+// UnarchiveSession clears the archive state on the in-memory MenuSession.
+func (s *parityStore) UnarchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	sess.Archived = false
+	sess.ArchivedAt = time.Time{}
+	return nil
+}
+
+// RestartSessionFresh transitions the session to Running, mirroring
+// RestartSession (the test double does not model the tool-session binding).
+func (s *parityStore) RestartSessionFresh(id string) error {
+	return s.transition(id, session.StatusRunning)
+}
+
+// MarkUnread flips the in-memory MenuSession to Waiting (idle→waiting),
+// mirroring the TUI 'u' hotkey semantics.
+func (s *parityStore) MarkUnread(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	sess.Status = session.StatusWaiting
+	return nil
+}
+
+// ApproveSession has no live tmux pane in the test double, so it is a no-op
+// that only validates the session exists.
+func (s *parityStore) ApproveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.sessions[id]; !ok {
+		return errNotFound(id)
+	}
+	return nil
+}
+
+// MoveGroup reparents the named group under destParentPath in the in-memory
+// groups map. Only updates the moved group's own key/Path; subgroups are not
+// deep-rewritten (sufficient for the test double — group reparent is not in
+// the parity matrix).
+func (s *parityStore) MoveGroup(sourcePath, destParentPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[sourcePath]
+	if !ok {
+		return errNotFound(sourcePath)
+	}
+	baseName := g.Name
+	var newPath string
+	if destParentPath == "" {
+		newPath = baseName
+	} else {
+		newPath = destParentPath + "/" + baseName
+	}
+	delete(s.groups, sourcePath)
+	g.Path = newPath
+	s.groups[newPath] = g
+	return nil
+}
+
 func (s *parityStore) transition(id string, to session.Status) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

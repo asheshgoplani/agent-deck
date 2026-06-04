@@ -26,13 +26,13 @@ import { Icon, ICONS } from './icons.js'
 import { menuModelSignal } from './dataModel.js'
 import {
   selectedIdSignal, createSessionDialogSignal, confirmDialogSignal,
-  groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
-  profilesSignal, systemStatsSignal,
+  groupNameDialogSignal, editSessionDialogSignal, mutationsEnabledSignal,
+  infoDrawerOpenSignal, profilesSignal, systemStatsSignal, sidebarOpenSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
-  railSignal, profileSignal,
+  railSignal, profileSignal, showArchivedSignal,
 } from './uiState.js'
 import { CreateSessionDialog } from './CreateSessionDialog.js'
 import { EditSessionDialog } from './EditSessionDialog.js'
@@ -98,6 +98,16 @@ function WorkHead() {
 function Panes({ tab }) {
   return html`
     <div style=${{ display: tab === 'terminal' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+      ${/* Mobile-only: mount the session-details disclosure (a SECOND RightRail)
+           only at phone widths. On desktop/tablet it is display:none anyway, and
+           mounting it would put a 2nd RightRail in the DOM — breaking tests that
+           query RightRail content unscoped (e.g. children-panel's `.card`). The
+           721px CSS rule remains as defense-in-depth. */
+        (typeof window !== 'undefined' && window.innerWidth <= 720) && html`
+        <details class="mobile-detail">
+          <summary>Session details</summary>
+          <div class="mobile-detail-body"><${RightRail}/></div>
+        </details>`}
       <${TerminalPane}/>
     </div>
     ${tab === 'fleet'     && html`<${FleetPane}/>`}
@@ -118,6 +128,7 @@ export function AppShell() {
   const confirmData = confirmDialogSignal.value
   const groupNameData = groupNameDialogSignal.value
   const drawerOpen = infoDrawerOpenSignal.value
+  const sidebarOpen = sidebarOpenSignal.value
 
   // Hide the vanilla .app div from the legacy boot path (kept for back-compat
   // until we delete it).
@@ -182,6 +193,36 @@ export function AppShell() {
     return () => { cancelled = true; clearInterval(id) }
   }, [])
 
+  // Mobile soft-keyboard tracking. When the on-screen keyboard opens, the
+  // visual viewport shrinks below the layout viewport. Publish the delta as
+  // --keyboard-inset (consumed by .app padding-bottom in styles.src.css) and
+  // flag body.kbd-open so the floating bottom nav can hide (it would otherwise
+  // float mid-screen above the keyboard).
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null
+    if (!vv) return
+    const apply = () => {
+      const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+      document.documentElement.style.setProperty('--keyboard-inset', inset + 'px')
+      document.body.classList.toggle('kbd-open', inset > 80)
+    }
+    apply()
+    vv.addEventListener('resize', apply)
+    vv.addEventListener('scroll', apply)
+    return () => {
+      vv.removeEventListener('resize', apply)
+      vv.removeEventListener('scroll', apply)
+      document.documentElement.style.removeProperty('--keyboard-inset')
+      document.body.classList.remove('kbd-open')
+    }
+  }, [])
+
+  // Drive the mobile drawer purely from CSS via a body class.
+  useEffect(() => {
+    document.body.classList.toggle('drawer-open', sidebarOpen)
+    return () => document.body.classList.remove('drawer-open')
+  }, [sidebarOpen])
+
   // Global keyboard shortcuts — TUI parity, issue #780.
   // Top-10 bindings combined with the existing Web-only ones (Ctrl+K, ]).
   // Guard: any key that isn't a modal-bound modifier combo must NOT fire
@@ -217,7 +258,9 @@ export function AppShell() {
       createSessionDialogSignal.value = false
       confirmDialogSignal.value = null
       groupNameDialogSignal.value = null
+      editSessionDialogSignal.value = null
       infoDrawerOpenSignal.value = false
+      sidebarOpenSignal.value = false
     }
     const onKey = (e) => {
       const t = e.target
@@ -235,6 +278,18 @@ export function AppShell() {
         return
       }
       if (inField) return
+
+      // Dialog-open guard: mutating keys must NOT fire while any dialog is open,
+      // even if focus isn't currently in an input field.
+      const dialogOpen = !!(createSessionDialogSignal.value || confirmDialogSignal.value || groupNameDialogSignal.value || editSessionDialogSignal.value)
+
+      // Ctrl/Cmd+A — toggle show-archived (placed after inField return so it
+      // does NOT hijack native select-all inside inputs).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        showArchivedSignal.value = !showArchivedSignal.value
+        return
+      }
 
       // Shift+Enter: open focused session in new browser tab (web equivalent
       // of the TUI's iTerm "new tab" affordance, issue #1077). Check this
@@ -265,18 +320,37 @@ export function AppShell() {
           selectedIdSignal.value = s.id
           activeTabSignal.value = 'terminal'
         }
-      } else if (e.key === 'n' && mutationsEnabledSignal.value) {
+      } else if (e.key === 'n') {
+        if (!mutationsEnabledSignal.value || dialogOpen) return
         createSessionDialogSignal.value = true
       } else if (e.key === 'r') {
-        // Web has no session-rename API yet (matrix gap); surface the gap
-        // honestly instead of silently no-op'ing.
+        // Open the EditSessionDialog for rename + all session fields.
+        if (!mutationsEnabledSignal.value || dialogOpen) return
         const s = focusedSession()
-        if (s) addToast(`Rename "${s.title}": use the TUI (web rename API not implemented yet)`, 'info')
+        if (s) editSessionDialogSignal.value = { sessionId: s.id }
+      } else if (e.key === 'A') {
+        // Shift+A — archive / unarchive toggle. Mirrors TUI's 'A'.
+        if (!mutationsEnabledSignal.value || dialogOpen) return
+        const s = focusedSession()
+        if (!s) return
+        e.preventDefault()
+        const req = s.archived ? apiFetch('DELETE', `/api/sessions/${s.id}/archive`) : apiFetch('POST', `/api/sessions/${s.id}/archive`)
+        req.catch(() => {})
+      } else if (e.key === 'M') {
+        // Shift+M — move focused session (opens edit dialog which has group selector).
+        if (!mutationsEnabledSignal.value || dialogOpen) return
+        const s = focusedSession()
+        if (s) editSessionDialogSignal.value = { sessionId: s.id }
+      } else if (e.key === 'u') {
+        // Mark focused session unread. Mirrors TUI's 'u'.
+        if (!mutationsEnabledSignal.value || dialogOpen) return
+        const s = focusedSession()
+        if (s) { e.preventDefault(); apiFetch('POST', `/api/sessions/${s.id}/unread`).catch(() => {}) }
       } else if (e.key === 'D') {
         // Shift+D — non-destructive close of focused session. Mirrors
         // TUI's `D` (closeSession): kills the tmux process but keeps the
         // session record so a later start/restart can resurrect it.
-        if (!mutationsEnabledSignal.value) return
+        if (!mutationsEnabledSignal.value || dialogOpen) return
         const s = focusedSession()
         if (!s) return
         confirmDialogSignal.value = {
@@ -288,7 +362,7 @@ export function AppShell() {
         // Mirrors TUI's ctrl+z (Home.undoStack). The server enforces the
         // configurable undo window (default 30s) and returns 404 once
         // the entry expires; surface the result as a toast either way.
-        if (!mutationsEnabledSignal.value) return
+        if (!mutationsEnabledSignal.value || dialogOpen) return
         e.preventDefault()
         apiFetch('POST', '/api/sessions/undelete')
           .then(resp => {
@@ -321,6 +395,7 @@ export function AppShell() {
     <div id="app-root-grid" class="app">
       <${Topbar}/>
       <${Sidebar}/>
+      <div class="drawer-backdrop" onClick=${() => (sidebarOpenSignal.value = false)}/>
       <div class="main">
         <${WorkHead}/>
         <div class="work-body">

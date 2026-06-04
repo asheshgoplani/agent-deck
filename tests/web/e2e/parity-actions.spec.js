@@ -18,17 +18,30 @@ const MATRIX = loadMatrix()
 
 // Pinned row counts. If the matrix grows or shrinks, these MUST be updated
 // in the same PR — the failure is the point.
-const EXPECTED_ACTION_ROWS = 48
+const EXPECTED_ACTION_ROWS = 49
 // Probeable = MISSING rows that inferMissingProbe() maps to a URL. Decremented
 // as endpoints land and their matrix rows flip MISSING → Present:
 //   15 (PR-A #804) → 9 (#1124 skills+MCP, 6 closed) → 7 (#1129 Close + Undo
-//   Delete, 2 closed) → 6 (#1126/#1153 Finish worktree, 1 closed) → 5 (#1132
-//   PATCH /sessions/{id} + Edit dialog, "Edit session settings" closed).
+//   Delete, 2 closed) → 6 (#1126/#1153 Finish worktree, 1 closed) → 2 (generic
+//   edit PATCH /api/sessions/{id}, 4 closed) → 0 (Task 6 micro-actions).
 // #1129 flipped the close/undelete rows but missed this decrement (9→7), so the
 // pin was stuck 2 high and the suite went red on every later PR. Re-baselined to
-// the true count: Restart fresh, Rename session, Move session to group, Edit
-// notes inline, Mark session unread.
-const EXPECTED_PROBEABLE_MISSING = 5
+// the true count. The generic edit PATCH closed Rename session, Move session to
+// group, Edit session settings, and Edit notes inline at once. Archive/unarchive
+// (Task 5) added one implemented row (+1 action, EXPECTED_ACTION_ROWS 48→49).
+// Task 6 added the restart-fresh/unread/approve micro-action endpoints, flipping
+// Restart fresh + Mark session unread out of MISSING (Quick approve was never
+// probeable — no inferMissingProbe map entry). No probeable-missing session
+// actions remain.
+//
+// Merge note (upstream #1132): upstream added its own narrower PATCH
+// /api/sessions/{id} that only closed "Edit session settings" (pinning this at
+// 5). The merge unified both into one handler — UpdateSession (SetField) +
+// EditSession (toolOptions/gemini) + MoveSessionToGroup (groupPath) — which
+// keeps all four generic-edit closures above, so the count stays 0. Verified by
+// running helpers/parity-matrix.js over the resolved matrix (49 rows, 0
+// probeable-missing).
+const EXPECTED_PROBEABLE_MISSING = 0
 
 test.describe.configure({ mode: 'serial' })
 

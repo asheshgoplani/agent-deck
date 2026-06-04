@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,5 +156,183 @@ func TestGroupDeleteDefaultGroupReturns400(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "cannot delete default group") {
 		t.Errorf("expected default group protection message, got: %s", rr.Body.String())
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Group reparent (PATCH /api/groups/{path} with parentPath field).
+// ----------------------------------------------------------------------------
+
+func TestGroupReparentPATCHOK(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotSrc, gotDest string
+	var renameCalled bool
+	srv.mutator = &fakeMutator{
+		moveGroupFn: func(src, dest string) error {
+			gotSrc = src
+			gotDest = dest
+			return nil
+		},
+		renameGroupFn: func(groupPath, newName string) error {
+			renameCalled = true
+			return nil
+		},
+	}
+
+	body := strings.NewReader(`{"parentPath":"B"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reparent: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotSrc != "A" || gotDest != "B" {
+		t.Errorf("reparent: MoveGroup called with (%q,%q), want (A,B)", gotSrc, gotDest)
+	}
+	if renameCalled {
+		t.Errorf("reparent: RenameGroup should NOT be invoked when parentPath is set")
+	}
+	if !strings.Contains(rr.Body.String(), `"reparentedTo":"B"`) {
+		t.Errorf("reparent: response missing reparentedTo: %s", rr.Body.String())
+	}
+}
+
+func TestGroupReparentToRootPATCHOK(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotSrc, gotDest string
+	srv.mutator = &fakeMutator{
+		moveGroupFn: func(src, dest string) error {
+			gotSrc = src
+			gotDest = dest
+			return nil
+		},
+	}
+
+	// parentPath:"" (empty string pointer) means move to root.
+	body := strings.NewReader(`{"parentPath":""}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reparent to root: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotSrc != "A" || gotDest != "" {
+		t.Errorf("reparent to root: MoveGroup called with (%q,%q), want (A,\"\")", gotSrc, gotDest)
+	}
+}
+
+func TestGroupRenamePATCHRegressionAfterReparent(t *testing.T) {
+	// Regression: name-only rename must still work when parentPath is absent.
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var moveGroupCalled bool
+	var gotNewName string
+	srv.mutator = &fakeMutator{
+		renameGroupFn: func(groupPath, newName string) error {
+			gotNewName = newName
+			return nil
+		},
+		moveGroupFn: func(src, dest string) error {
+			moveGroupCalled = true
+			return nil
+		},
+	}
+
+	body := strings.NewReader(`{"name":"newname"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rename regression: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotNewName != "newname" {
+		t.Errorf("rename regression: RenameGroup called with name=%q, want newname", gotNewName)
+	}
+	if moveGroupCalled {
+		t.Errorf("rename regression: MoveGroup should NOT be invoked when only name is set")
+	}
+}
+
+func TestGroupPatchNeitherNameNorParentPath400(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{}
+
+	body := strings.NewReader(`{}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("neither field: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), ErrCodeBadRequest) {
+		t.Errorf("neither field: expected INVALID_REQUEST error, got: %s", rr.Body.String())
+	}
+}
+
+func TestGroupReparentMoveGroupError500(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		moveGroupFn: func(src, dest string) error {
+			return fmt.Errorf("circular move not allowed")
+		},
+	}
+
+	body := strings.NewReader(`{"parentPath":"X"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("move error: expected 500, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), ErrCodeInternalError) {
+		t.Errorf("move error: expected INTERNAL_ERROR, got: %s", rr.Body.String())
+	}
+}
+
+func TestGroupReparentMutationsDisabled403(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: false})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	body := strings.NewReader(`{"parentPath":"B"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("mutations disabled: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGroupReparentNilMutator503(t *testing.T) {
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0", WebMutations: true})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	// mutator intentionally nil
+
+	body := strings.NewReader(`{"parentPath":"B"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/A", body)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil mutator: expected 503, got %d: %s", rr.Code, rr.Body.String())
 	}
 }

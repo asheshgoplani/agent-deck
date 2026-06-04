@@ -9,6 +9,7 @@ import {
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { menuModelSignal } from './dataModel.js'
 
 const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const CUSTOM_MODEL = '__custom__'
@@ -77,11 +78,15 @@ function modelIDsForTool(tool) {
 }
 
 export function CreateSessionDialog() {
+  const dlg = createSessionDialogSignal.value
+  const initialGroup = (dlg && typeof dlg === 'object' && dlg.groupPath) ? dlg.groupPath : ''
+  const { groups } = menuModelSignal.value
   const [title, setTitle] = useState('')
   const [tool, setTool] = useState('claude')
   const [modelId, setModelId] = useState('')
   const [customModel, setCustomModel] = useState('')
   const [path, setPath] = useState('')
+  const [group, setGroup] = useState(initialGroup)
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
@@ -96,6 +101,7 @@ export function CreateSessionDialog() {
     setSubmitting(true)
     try {
       const payload = { title, tool, projectPath: path }
+      if (group) payload.groupPath = group
       const modelId = selectedModelId()
       if (modelId) payload.modelId = modelId
       await apiFetch('POST', '/api/sessions', payload)
@@ -151,6 +157,15 @@ export function CreateSessionDialog() {
           <div class="field">
             <label>WORKING DIR</label>
             <input required value=${path} onInput=${e => setPath(e.target.value)} placeholder="/absolute/path/to/project"/>
+          </div>
+          <div class="field">
+            <label>GROUP</label>
+            <select value=${group} onInput=${e => setGroup(e.target.value)}>
+              <option value="">(no group)</option>
+              ${groups.map(g => html`<option key=${g.path} value=${g.path}>${g.label}</option>`)}
+              ${initialGroup && !groups.some(g => g.path === initialGroup) && html`
+                <option value=${initialGroup}>${initialGroup}</option>`}
+            </select>
           </div>
           <div class="field">
             <label>TOOL</label>

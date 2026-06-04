@@ -10,6 +10,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/statedb"
 	"github.com/asheshgoplani/agent-deck/internal/vcs"
 	"github.com/asheshgoplani/agent-deck/internal/vcsbackend"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -497,6 +498,235 @@ func (m *WebMutator) FinishWorktree(id string, opts web.WorktreeFinishOptions) (
 		Merged:        !opts.NoMerge,
 		BranchDeleted: branchDeleted,
 	}, nil
+}
+
+// EditSession applies a partial field update to a session, mirroring the TUI
+// EditSessionDialog. A nil patch field leaves that field unchanged. Setting
+// Title also clears AutoName (a user-chosen name replaces the auto handle —
+// see home.go rename handling). GroupPath is intentionally ignored here; group
+// membership lives in the group tree and is applied via MoveSessionToGroup.
+//
+// Thread-safety mirrors the established pattern in this file: the instance is
+// found under an RLock, then fields are mutated directly (as CreateSession
+// does with inst.Command). No new per-instance locking is introduced.
+func (m *WebMutator) EditSession(id string, patch web.SessionPatch) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	if patch.Title != nil {
+		inst.Title = *patch.Title
+		inst.AutoName = false
+	}
+	if patch.Color != nil {
+		inst.Color = *patch.Color
+	}
+	if patch.Notes != nil {
+		inst.Notes = *patch.Notes
+	}
+	if patch.Channels != nil {
+		inst.Channels = *patch.Channels
+	}
+	if patch.ExtraArgs != nil {
+		inst.ExtraArgs = *patch.ExtraArgs
+	}
+	if patch.ToolOptions != nil {
+		inst.ToolOptionsJSON = *patch.ToolOptions
+	}
+	if patch.GeminiModel != nil {
+		inst.GeminiModel = *patch.GeminiModel
+	}
+	if patch.GeminiYolo != nil {
+		// Use the setter — it also syncs the tmux env. Direct field writes
+		// would skip that side-effect (instance.go SetGeminiYoloMode).
+		inst.SetGeminiYoloMode(*patch.GeminiYolo)
+	}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// MoveSessionToGroup moves a session to another group (by group path) and
+// persists. Mirrors the TUI M/shift+m group-move handler.
+func (m *WebMutator) MoveSessionToGroup(id, groupPath string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	m.h.groupTree.MoveSessionToGroup(inst, groupPath)
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// ArchiveSession sets the session aside (sets ArchivedAt=now) and persists.
+// Mirrors the TUI 'A' hotkey and the CLI `agent-deck session archive`.
+func (m *WebMutator) ArchiveSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	inst.ArchivedAt = time.Now()
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// UnarchiveSession clears ArchivedAt and persists.
+// Mirrors the TUI 'A' toggle (second press unarchives) and the CLI `agent-deck session unarchive`.
+func (m *WebMutator) UnarchiveSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	inst.ArchivedAt = time.Time{}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// RestartSessionFresh restarts a session discarding its existing tool-session
+// binding (no --resume). Mirrors the TUI 'T' hotkey.
+func (m *WebMutator) RestartSessionFresh(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	return inst.RestartFresh()
+}
+
+// MarkUnread marks a session unread (idle→waiting): resets the acknowledged flag
+// (persisted to SQLite so the web's background refreshStatuses won't overwrite it)
+// and forces a full status re-check. Mirrors the TUI 'u' hotkey.
+func (m *WebMutator) MarkUnread(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		tmuxSess.ResetAcknowledged()
+	}
+	// Persist to SQLite so background sync doesn't overwrite the unread flag.
+	if db := statedb.GetGlobal(); db != nil {
+		_ = db.SetAcknowledged(inst.ID, false)
+	}
+	// Clear idle optimization so UpdateStatus does a full check.
+	inst.ForceNextStatusCheck()
+	_ = inst.UpdateStatus()
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
+}
+
+// ApproveSession sends "1"+Enter to a Claude-compatible session's tmux pane
+// without attaching (quick-approve). Gated to Claude-compatible tools so a stray
+// invocation cannot dump a "1" into a shell/vim session. Mirrors the TUI
+// quick-approve hotkey. No persistence — this only writes to the live pane.
+func (m *WebMutator) ApproveSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	if !session.IsClaudeCompatible(inst.GetToolThreadSafe()) {
+		return fmt.Errorf("quick-approve is only available for Claude-compatible sessions")
+	}
+	tmuxSess := inst.GetTmuxSession()
+	if tmuxSess == nil {
+		return fmt.Errorf("session is not running")
+	}
+	return tmuxSess.SendKeysAndEnter("1")
+}
+
+// MoveGroup reparents a group (and its subgroups/sessions) under destParentPath
+// ("" = root) and persists. Mirrors the CLI `agent-deck group change/reparent`.
+// Delegates all validation (default group, circular, missing dest, collision)
+// to GroupTree.MoveGroupTo and propagates errors directly.
+func (m *WebMutator) MoveGroup(sourcePath, destParentPath string) error {
+	if err := m.h.groupTree.MoveGroupTo(sourcePath, destParentPath); err != nil {
+		return err
+	}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	return storage.SaveWithGroups(instances, m.h.groupTree)
 }
 
 // DeleteGroup deletes a group (and its subgroups), moving sessions to the default

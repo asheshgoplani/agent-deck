@@ -1,6 +1,10 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
+/* Mobile-safe dynamic viewport height. #app-root carries Tailwind's
+   .min-h-screen (min-height:100vh); override it so the visible viewport,
+   not the toolbar-hidden large viewport, drives layout on iOS Safari. */
+#app-root { min-height: 100vh; min-height: 100dvh; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -30,7 +34,15 @@ button { font: inherit; color: inherit; }
     "top top top"
     "side main rail"
     "foot foot foot";
-  height: 100vh;
+  height: 100vh;   /* fallback for engines without dvh */
+  height: 100dvh;
+  /* styles.css sets .app { min-height: var(--app-height) } (=100vh); without
+     this override that min-height would force the grid to the toolbar-hidden
+     large viewport and defeat the 100dvh height above on iOS Safari. */
+  min-height: 100vh;   /* fallback for engines without dvh */
+  min-height: 100dvh;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 body[data-rail="hidden"] .app { grid-template-columns: var(--sidebar-w) 1fr 0; }
 body[data-rail="hidden"] .rightrail { display: none; }
@@ -565,6 +577,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .stat .val { font-size: 26px; font-weight: 700; color: var(--text-hi); font-family: var(--mono); margin-top: 4px; }
 .stat .delta { font-size: 11px; color: var(--tn-green); margin-top: 3px; }
 
+.cost-charts { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
 .chart-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px; }
 .chart-card .title { font-size: 13px; font-weight: 600; color: var(--text-hi); margin-bottom: 12px; }
 .bar-chart { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; align-items: end; height: 170px; padding: 10px 0; border-bottom: 1px solid var(--border); }
@@ -806,6 +819,14 @@ body[data-rail="hidden"] .rightrail { display: none; }
 .gc-head .health .d.waiting { background: var(--tn-yellow); box-shadow: 0 0 8px var(--tn-yellow); }
 .gc-head .health .d.error   { background: var(--tn-red);    box-shadow: 0 0 8px var(--tn-red); }
 .gc-head .cost { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.gc-new, .side-group-new {
+  margin-left: 6px; width: 24px; height: 24px;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: transparent; color: var(--text-dim);
+  font-size: 16px; line-height: 1; cursor: pointer; flex: 0 0 auto;
+}
+.gc-new:hover, .side-group-new:hover { color: var(--accent); border-color: var(--accent); }
 
 .gc-tiles { display: flex; flex-direction: column; gap: 4px; }
 .tile {
@@ -901,12 +922,51 @@ body[data-rail="hidden"] .rightrail { display: none; }
   body { font-size: 14px; }
   .app {
     grid-template-columns: 0 1fr 0;
-    grid-template-rows: var(--topbar-h) 1fr 56px;
+    grid-template-rows: var(--topbar-h) 1fr calc(56px + env(safe-area-inset-bottom));
+    /* styles.css adds padding-bottom: calc(--keyboard-inset + safe-area)
+       to .app; the fixed mob-tabs + foot row already own the safe area, so
+       keep only the keyboard inset here to avoid double-counting. */
+    padding-bottom: var(--keyboard-inset, 0px);
   }
   body[data-rail="visible"] .app, body[data-rail="hidden"] .app {
     grid-template-columns: 0 1fr 0;
   }
   .sidebar, .rightrail, .footer { display: none; }
+  /* --- mobile session drawer --- */
+  .top-burger {
+    display: inline-grid; place-items: center;
+    width: 36px; height: 36px; margin-right: 4px;
+    border: 1px solid transparent; border-radius: var(--radius);
+    background: transparent; color: var(--text-dim); cursor: pointer;
+  }
+  .top-burger:active { background: var(--card); }
+  .sidebar {
+    display: flex !important;            /* override the hide rule above */
+    position: fixed; top: var(--topbar-h); bottom: 0; left: 0;
+    width: min(86vw, 320px); z-index: 60;
+    transform: translateX(-105%);
+    transition: transform 180ms ease-out;
+    border-right: 1px solid var(--border);
+    box-shadow: 0 14px 28px rgba(0,0,0,0.45);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  body.drawer-open .sidebar { transform: translateX(0); }
+  .drawer-backdrop {
+    display: block; position: fixed; inset: var(--topbar-h) 0 0 0;
+    z-index: 55; background: rgba(0,0,0,0.45);
+    opacity: 0; pointer-events: none; transition: opacity 180ms ease-out;
+  }
+  body.drawer-open .drawer-backdrop { opacity: 1; pointer-events: auto; }
+  .side-nav {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+    padding: 10px; border-top: 1px solid var(--border);
+  }
+  .side-nav-btn {
+    padding: 10px 8px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--card); color: var(--text-dim);
+    font-family: var(--mono); font-size: 12px; cursor: pointer; min-height: 40px;
+  }
+  .side-nav-btn.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
   .top-brand { min-width: 0; padding: 0 12px; }
   .top-brand .brand-text .dim { display: none; }
   .top-mid { padding: 0 8px; gap: 6px; }
@@ -927,6 +987,7 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .fleet-stats .stat { padding: 10px 12px; }
   .fleet-stats .stat .num { font-size: 22px; }
   .fleet-grid { grid-template-columns: 1fr; }
+  .gc-new, .side-group-new { width: 32px; height: 32px; }
   .watcher-strip { grid-template-columns: 1fr; }
   .cgraph-wrap { padding: 4px; }
   .cgraph { height: 220px; }
@@ -934,18 +995,28 @@ body[data-rail="hidden"] .rightrail { display: none; }
   /* terminal mobile */
   .term-wrap { padding: 8px; }
   .term-frame { border-radius: 6px; }
+  .mobile-detail { border-bottom: 1px solid var(--border); background: var(--panel); flex: 0 0 auto; }
+  .mobile-detail > summary {
+    padding: 10px 12px; font-family: var(--mono); font-size: 12px;
+    color: var(--text-dim); cursor: pointer; min-height: 40px; list-style: none;
+  }
+  .mobile-detail[open] > summary { color: var(--text); border-bottom: 1px solid var(--border); }
+  .mobile-detail-body { max-height: 50vh; overflow: auto; }
+  .mobile-detail-body .rightrail { display: flex !important; width: 100%; }
 
   /* mobile bottom tabs */
   .mob-tabs {
     display: grid; grid-template-columns: repeat(4, 1fr);
-    grid-area: foot;
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: calc(56px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
     background: var(--panel);
     border-top: 1px solid var(--border);
     z-index: 40;
   }
   .mob-tab {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 2px; padding: 8px 4px;
+    gap: 2px; padding: 10px 4px;
     background: transparent; border: 0; color: var(--muted);
     font-family: var(--mono); font-size: 10.5px;
     cursor: pointer;
@@ -956,13 +1027,41 @@ body[data-rail="hidden"] .rightrail { display: none; }
   .mob-tab:active { background: var(--card); }
 
   .toast { bottom: 76px; right: 8px; left: 8px; }
-  .dialog, .cmdk { width: calc(100vw - 24px); margin: 12px; }
+  .overlay { padding: 16px 8px; }
+  .dialog, .cmdk { width: calc(100vw - 16px); margin: 8px; max-width: 100%; }
+  .kshort-dialog { min-width: 0; }
+  .cost-charts { grid-template-columns: 1fr; }
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .sr .sr-h { flex-wrap: wrap; gap: 4px; }
+  .sr .sr-h .w { margin-left: 0; }
+  .field select, .field input { font-size: 13px; }
+  .seg-row { flex-wrap: wrap; }
+  /* legibility: bump the smallest mono labels */
+  .side-head .label, .side-chip, .mob-tab { font-size: 12px; }
+  /* touch targets */
+  .icon-btn { width: 40px; height: 40px; }
+  .sess .actions .mini { width: 34px; height: 34px; }
   .tweaks { right: 8px; bottom: 76px; left: 8px; }
+}
+
+@media (max-width: 480px) {
+  .fleet-stats { grid-template-columns: 1fr; }
+  .stat-grid { grid-template-columns: 1fr; }
+  .cgraph { height: 160px; }
+  .term-wrap { padding: 6px; }
+  .work-head .actions { flex-wrap: wrap; }
 }
 
 @media (min-width: 721px) {
   .mob-tabs { display: none !important; }
+  .top-burger { display: none; }
+  .drawer-backdrop { display: none; }
+  .side-nav { display: none; }
+  .mobile-detail { display: none; }
 }
+
+/* Hide the floating bottom nav while the mobile soft keyboard is open. */
+body.kbd-open .mob-tabs { display: none !important; }
 
 
 /* ---------- combo (input + dropdown) ---------- */

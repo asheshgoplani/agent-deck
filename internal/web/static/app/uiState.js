@@ -53,6 +53,12 @@ persist(rightRailPanelsSignal, 'agentdeck.rightRailPanels')
 // Sidebar status filter chips (running/waiting/error/idle).
 export const statusFiltersSignal = signal([])
 
+// Show-archived toggle (web↔TUI parity, Task 8). Default false = archived
+// sessions hidden, matching the TUI's default. When true, archived rows render
+// dimmed with an [archived] badge. Persisted so the choice survives reload.
+export const showArchivedSignal = signal(loadJSON('agentdeck.showArchived', false))
+persist(showArchivedSignal, 'agentdeck.showArchived')
+
 // Mobile bottom tab (mirror of activeTab on phones).
 export const mobileTabSignal = signal('fleet')
 

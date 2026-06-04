@@ -114,6 +114,23 @@ type MenuSession struct {
 	WorktreeRepoRoot string `json:"worktreeRepoRoot,omitempty"`
 	WorktreeBranch   string `json:"worktreeBranch,omitempty"`
 
+	// Archive state (issue: archived sessions must be marked on the wire so the
+	// web client can dim/hide them; filtering is client-side). archivedAt mirrors
+	// LastAccessedAt's omitempty-on-time.Time convention.
+	Archived   bool      `json:"archived,omitempty"`
+	ArchivedAt time.Time `json:"archivedAt,omitempty"`
+
+	// AutoName marks Title as a machine-generated quick-session handle; when set,
+	// the client prefers TaskDescription for the row label. TaskDescription is the
+	// live Claude task description derived from the tmux pane title (cleaned), only
+	// populated for AutoName sessions — degrades to empty when the pane cache is cold.
+	AutoName        bool   `json:"autoName,omitempty"`
+	TaskDescription string `json:"taskDescription,omitempty"`
+
+	// WorktreeType is "git", "jujutsu", or "" (legacy=git) — lets the web show the
+	// worktree VCS type like the TUI.
+	WorktreeType string `json:"worktreeType,omitempty"`
+
 	TitleLocked        bool `json:"titleLocked,omitempty"`
 	NoTransitionNotify bool `json:"noTransitionNotify,omitempty"`
 
@@ -196,6 +213,13 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 	}
 	modelInfo := inst.LaunchModelInfo()
 
+	taskDescription := ""
+	if inst.AutoName && tmuxName != "" {
+		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxName); ok {
+			taskDescription = tmux.CleanPaneTitle(paneInfo.Title)
+		}
+	}
+
 	return &MenuSession{
 		ID:                 inst.ID,
 		Title:              inst.Title,
@@ -238,6 +262,11 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		WorktreePath:       inst.WorktreePath,
 		WorktreeRepoRoot:   inst.WorktreeRepoRoot,
 		WorktreeBranch:     inst.WorktreeBranch,
+		Archived:           inst.IsArchived(),
+		ArchivedAt:         inst.ArchivedAt,
+		AutoName:           inst.AutoName,
+		TaskDescription:    taskDescription,
+		WorktreeType:       inst.WorktreeType,
 		TitleLocked:        inst.TitleLocked,
 		NoTransitionNotify: inst.NoTransitionNotify,
 		LoadedMCPNames:     inst.LoadedMCPNames,

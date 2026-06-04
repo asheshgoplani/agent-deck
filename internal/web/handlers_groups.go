@@ -94,12 +94,21 @@ func (s *Server) handleGroupByPath(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "invalid request body")
 			return
 		}
-		if req.Name == "" {
-			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "name is required")
+		if req.Name == "" && req.ParentPath == nil {
+			writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, "name or parentPath is required")
 			return
 		}
 		if s.mutator == nil {
 			writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
+			return
+		}
+		if req.ParentPath != nil {
+			if err := s.mutator.MoveGroup(groupPath, *req.ParentPath); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				return
+			}
+			s.notifyMenuChanged()
+			writeJSON(w, http.StatusOK, map[string]string{"path": groupPath, "reparentedTo": *req.ParentPath})
 			return
 		}
 		if err := s.mutator.RenameGroup(groupPath, req.Name); err != nil {

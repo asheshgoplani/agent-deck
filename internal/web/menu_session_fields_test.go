@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
 // TestMenuSessionExposesAllEditableFields verifies that every session field
@@ -61,6 +63,11 @@ func TestMenuSessionExposesAllEditableFields(t *testing.T) {
 		WorktreePath:       "/tmp/worktrees/full-1",
 		WorktreeRepoRoot:   "/srv/app",
 		WorktreeBranch:     "feature/full-1",
+		Archived:           true,
+		ArchivedAt:         time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+		AutoName:           true,
+		TaskDescription:    "Add login endpoint",
+		WorktreeType:       "git",
 		TitleLocked:        true,
 		NoTransitionNotify: true,
 		LoadedMCPNames:     []string{"exa", "filesystem"},
@@ -124,6 +131,10 @@ func TestMenuSessionExposesAllEditableFields(t *testing.T) {
 		{"worktreePath", "/tmp/worktrees/full-1"},
 		{"worktreeRepoRoot", "/srv/app"},
 		{"worktreeBranch", "feature/full-1"},
+		{"archived", true},
+		{"autoName", true},
+		{"taskDescription", "Add login endpoint"},
+		{"worktreeType", "git"},
 		{"titleLocked", true},
 		{"noTransitionNotify", true},
 	}
@@ -218,6 +229,7 @@ func TestMenuSessionOmitsZeroValueFields(t *testing.T) {
 		"toolOptions", "sandbox", "sandboxContainer", "sshHost", "sshRemotePath",
 		"multiRepoEnabled", "additionalPaths", "multiRepoTempDir",
 		"multiRepoWorktrees", "worktreePath", "worktreeRepoRoot", "worktreeBranch",
+		"archived", "autoName", "taskDescription", "worktreeType",
 		"titleLocked", "noTransitionNotify", "loadedMcpNames", "geminiAnalytics",
 	}
 	for _, k := range shouldBeOmitted {
@@ -307,6 +319,10 @@ func TestToMenuSessionMapsInstanceFields(t *testing.T) {
 	inst.WorktreePath = "/w/inst-1"
 	inst.WorktreeRepoRoot = "/srv/proj"
 	inst.WorktreeBranch = "feat/x"
+	archivedTime := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	inst.ArchivedAt = archivedTime
+	inst.AutoName = true
+	inst.WorktreeType = "jujutsu"
 	inst.TitleLocked = true
 	inst.NoTransitionNotify = true
 	inst.LoadedMCPNames = []string{"m1"}
@@ -383,6 +399,18 @@ func TestToMenuSessionMapsInstanceFields(t *testing.T) {
 	if ms.WorktreePath != "/w/inst-1" || ms.WorktreeRepoRoot != "/srv/proj" || ms.WorktreeBranch != "feat/x" {
 		t.Errorf("Worktree fields not copied")
 	}
+	if !ms.Archived {
+		t.Errorf("Archived not set (IsArchived() should return true when ArchivedAt is non-zero)")
+	}
+	if !ms.ArchivedAt.Equal(archivedTime) {
+		t.Errorf("ArchivedAt = %v, want %v", ms.ArchivedAt, archivedTime)
+	}
+	if !ms.AutoName {
+		t.Errorf("AutoName not copied")
+	}
+	if ms.WorktreeType != "jujutsu" {
+		t.Errorf("WorktreeType = %q, want jujutsu", ms.WorktreeType)
+	}
 	if !ms.TitleLocked || !ms.NoTransitionNotify {
 		t.Errorf("Boolean flags not copied")
 	}
@@ -391,5 +419,129 @@ func TestToMenuSessionMapsInstanceFields(t *testing.T) {
 	}
 	if ms.GeminiAnalytics == nil || ms.GeminiAnalytics.InputTokens != 1 {
 		t.Errorf("GeminiAnalytics not copied")
+	}
+}
+
+// TestToMenuSessionArchivedFields verifies that archived sessions carry
+// Archived=true and a non-zero ArchivedAt on the wire, while non-archived
+// sessions omit both.
+func TestToMenuSessionArchivedFields(t *testing.T) {
+	t.Run("archived session marks wire fields", func(t *testing.T) {
+		inst := session.NewInstanceWithGroupAndTool("archived-sess", "/srv/proj", "work", "claude")
+		archivedAt := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+		inst.ArchivedAt = archivedAt
+
+		ms := toMenuSession(inst)
+
+		if !ms.Archived {
+			t.Errorf("expected Archived=true for session with non-zero ArchivedAt")
+		}
+		if !ms.ArchivedAt.Equal(archivedAt) {
+			t.Errorf("ArchivedAt = %v, want %v", ms.ArchivedAt, archivedAt)
+		}
+	})
+
+	t.Run("non-archived session omits archived fields", func(t *testing.T) {
+		inst := session.NewInstanceWithGroupAndTool("active-sess", "/srv/proj", "work", "claude")
+		// ArchivedAt is zero-value
+
+		ms := toMenuSession(inst)
+
+		if ms.Archived {
+			t.Errorf("expected Archived=false for non-archived session")
+		}
+		if !ms.ArchivedAt.IsZero() {
+			t.Errorf("expected zero ArchivedAt for non-archived session, got %v", ms.ArchivedAt)
+		}
+	})
+}
+
+// TestToMenuSessionAutoNameFields verifies AutoName and TaskDescription
+// population in toMenuSession.
+func TestToMenuSessionAutoNameFields(t *testing.T) {
+	t.Run("AutoName=true with warm pane cache populates TaskDescription", func(t *testing.T) {
+		const tmuxSessName = "agentdeck_claude-autoname_test001"
+		const rawTitle = "Add login endpoint"
+
+		tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
+			tmuxSessName: {Title: rawTitle},
+		})
+
+		inst := session.NewInstanceWithGroupAndTool("qk-adjective-noun", "/srv/proj", "work", "claude")
+		inst.AutoName = true
+		inst.SetTmuxSessionForTest(&tmux.Session{Name: tmuxSessName})
+
+		ms := toMenuSession(inst)
+
+		if !ms.AutoName {
+			t.Errorf("expected AutoName=true")
+		}
+		want := tmux.CleanPaneTitle(rawTitle)
+		if want == "" {
+			t.Fatal("test title cleaned to empty — choose a non-generic title string")
+		}
+		if ms.TaskDescription != want {
+			t.Errorf("TaskDescription = %q, want %q", ms.TaskDescription, want)
+		}
+	})
+
+	t.Run("AutoName=true with no pane cache produces empty TaskDescription", func(t *testing.T) {
+		// No SeedPaneInfoCacheForTest call — cache is cold for this session name.
+		inst := session.NewInstanceWithGroupAndTool("qk-cold-cache", "/srv/proj", "work", "claude")
+		inst.AutoName = true
+		inst.SetTmuxSessionForTest(&tmux.Session{Name: "agentdeck_claude-nocache_cold0001"})
+
+		ms := toMenuSession(inst)
+
+		if !ms.AutoName {
+			t.Errorf("expected AutoName=true")
+		}
+		if ms.TaskDescription != "" {
+			t.Errorf("expected empty TaskDescription when cache cold, got %q", ms.TaskDescription)
+		}
+	})
+
+	t.Run("AutoName=false skips TaskDescription even if pane cache is warm", func(t *testing.T) {
+		const tmuxSessName = "agentdeck_claude-noauto_test002"
+		tmux.SeedPaneInfoCacheForTest(t, map[string]tmux.PaneInfo{
+			tmuxSessName: {Title: "Some task"},
+		})
+
+		inst := session.NewInstanceWithGroupAndTool("manual-title", "/srv/proj", "work", "claude")
+		// AutoName stays false (default)
+		inst.SetTmuxSessionForTest(&tmux.Session{Name: tmuxSessName})
+
+		ms := toMenuSession(inst)
+
+		if ms.AutoName {
+			t.Errorf("expected AutoName=false")
+		}
+		if ms.TaskDescription != "" {
+			t.Errorf("expected empty TaskDescription for non-AutoName session, got %q", ms.TaskDescription)
+		}
+	})
+}
+
+// TestToMenuSessionWorktreeType verifies WorktreeType is copied from Instance.
+func TestToMenuSessionWorktreeType(t *testing.T) {
+	cases := []struct {
+		name         string
+		worktreeType string
+	}{
+		{"git worktree", "git"},
+		{"jujutsu worktree", "jujutsu"},
+		{"empty (legacy/default)", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inst := session.NewInstanceWithGroupAndTool("wt-sess", "/srv/proj", "work", "claude")
+			inst.WorktreeType = tc.worktreeType
+
+			ms := toMenuSession(inst)
+
+			if ms.WorktreeType != tc.worktreeType {
+				t.Errorf("WorktreeType = %q, want %q", ms.WorktreeType, tc.worktreeType)
+			}
+		})
 	}
 }

@@ -22,18 +22,19 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | Start session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/start` | `StartSession` | `handlers_sessions_test.go` | Resumes stopped/idle session |
 | Stop session | `internal/ui/home.go:6284` (via dialog/menu) | POST `/api/sessions/{id}/stop` | `StopSession` | `handlers_sessions_test.go` | Kills running tmux session |
 | Restart session | `internal/ui/home.go:6473` (`R` key) | POST `/api/sessions/{id}/restart` | `RestartSession` | `handlers_sessions_test.go` | Recreate tmux with resume |
-| Restart fresh | `internal/ui/home.go:6494` (`T` key) | MISSING | `RestartSessionFresh` | N/A | Discards tool binding, no web equivalent |
+| Restart fresh | `internal/ui/home.go:6494` (`T` key) | POST `/api/sessions/{id}/restart-fresh` | `RestartSessionFresh` | `handlers_sessions_test.go` | Restarts discarding the tool-session binding (no --resume) |
 | Delete session | `internal/ui/home.go:6302` (`d` key) | DELETE `/api/sessions/{id}` | `DeleteSession` | `handlers_sessions_test.go` | Kills + removes from storage |
 | Close session | `internal/ui/home.go:6318` (`D` key) | POST `/api/sessions/{id}/close` | `CloseSession` | `handlers_sessions_test.go`, `tests/web/e2e/close-undo.spec.js` | Non-destructive close (stops process, keeps metadata); Shift+D in web UI |
 | Fork session | `internal/ui/home.go:5979` (`f` key, quick) | POST `/api/sessions/{id}/fork` | `ForkSession` | `handlers_sessions_test.go` | Creates fork with resume command |
 | Fork with dialog | `internal/ui/home.go:5997` (`F`/`shift+f`) | POST `/api/sessions/{id}/fork` | `ForkSession` | `handlers_sessions_test.go` | Dialog allows custom title + group |
-| Rename session | `internal/ui/home.go:6119` (`r` key) | MISSING | N/A | N/A | Title edit via GroupDialog |
+| Rename session | `internal/ui/home.go:6119` (`r` key) | PATCH `/api/sessions/{id}` | `EditSession` | `handlers_sessions_test.go` | Body `{title}` — also clears AutoName (user name replaces auto handle). Part of the generic edit PATCH. |
+| Archive / unarchive session | `internal/ui/home.go:7237` (`A` key) | POST `/api/sessions/{id}/archive` | `ArchiveSession` / `UnarchiveSession` | `handlers_sessions_test.go` | Toggle. POST archives (sets ArchivedAt); DELETE same path unarchives. Archived rows marked on wire (`MenuSession.archived`), hidden client-side by default. |
 | Undo delete | `internal/ui/home.go:6572` (`ctrl+z`) | POST `/api/sessions/undelete` | `UndoDelete` | `handlers_sessions_test.go`, `tests/web/e2e/close-undo.spec.js` | Chrome-style undo within 30s window (web.DefaultUndoWindow); Ctrl+Z in web UI |
 | **GROUP OPERATIONS** |
 | Create group | `internal/ui/home.go:6094` (`g` key) | POST `/api/groups` | `CreateGroup` | `handlers_groups_test.go` | Root or as subgroup |
 | Rename group | `internal/ui/home.go:6119` (`r` key, group) | PATCH `/api/groups/{path}` | `RenameGroup` | `handlers_groups_test.go` | Via GroupDialog |
 | Delete group | `internal/ui/home.go:6302` (`d` key, group) | DELETE `/api/groups/{path}` | `DeleteGroup` | `handlers_groups_test.go` | Moves children to default group |
-| Move session to group | `internal/ui/home.go:6028` (`M`/`shift+m`) | MISSING | N/A | N/A | TUI-only via GroupDialog move mode |
+| Move session to group | `internal/ui/home.go:6028` (`M`/`shift+m`) | PATCH `/api/sessions/{id}` | `MoveSessionToGroup` | `handlers_sessions_test.go` | Body `{groupPath}` — applied via group tree (not instance) on the generic edit PATCH. |
 | **MCP MANAGEMENT** |
 | Attach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | POST `/api/sessions/{id}/mcps/{name}` | `MCPManager.Attach` | `handlers_mcps_test.go` | Body `{scope?}`; default scope=local; writes `.mcp.json` via session helpers |
 | Detach MCP | `internal/ui/home.go:5965` (`m` key → MCPDialog) | DELETE `/api/sessions/{id}/mcps/{name}` | `MCPManager.Detach` | `handlers_mcps_test.go` | Body `{scope?}`; scope auto-detected if omitted |
@@ -45,14 +46,14 @@ Every keyboard action in the TUI that mutates state or navigates must have a web
 | List skills (catalog) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | GET `/api/skills` | `SkillsPane.js` catalog column | `tests/web/e2e/skills.spec.js` | Mirrors `session.ListAvailableSkills` |
 | List skills (attached) | `internal/ui/home.go:6015` (`s` key → SkillDialog) | GET `/api/sessions/{id}/skills` | `SkillsPane.js` attached column | `tests/web/e2e/skills.spec.js` | Mirrors `session.GetAttachedProjectSkills(projectPath)` |
 | **SETTINGS & DISPLAY** |
-| Edit session settings | `internal/ui/home.go:5953` (`P`/`shift+p` → EditSessionDialog) | PATCH `/api/sessions/{id}` | `UpdateSession` (delegates to `session.SetField`) | `handlers_sessions_test.go` + `tests/web/e2e/edit-session.spec.js` | Title, color, notes, tool, extra-args, plugins, channels, skip-permissions, auto-mode. Returns `restartRequired` for restart-policy fields. Web UI: `EditSessionDialog.js` + Sidebar Edit button. |
+| Edit session settings | `internal/ui/home.go:5953` (`P`/`shift+p` → EditSessionDialog) | PATCH `/api/sessions/{id}` | `UpdateSession` (`session.SetField`) + `EditSession` (toolOptions/gemini) + `MoveSessionToGroup` (groupPath) | `handlers_sessions_test.go` + `tests/web/e2e/edit-session.spec.js` | One generic edit PATCH: title, color, notes, tool, extra-args, plugins, channels, skip-permissions, auto-mode (via SetField — returns `restartRequired` for restart-policy fields), plus `toolOptions`, `geminiModel`, `geminiYolo`, and `groupPath` (move). Pointer fields distinguish absent from set. Web UI: `EditSessionDialog.js` + Sidebar Edit/Move buttons. |
 | Edit multi-repo paths | `internal/ui/home.go:5942` (`p` → EditPathsDialog) | MISSING | N/A | N/A | Multi-repo session paths |
-| Edit notes inline | `internal/ui/home.go:6548` (`e` key) | MISSING | N/A | N/A | TUI-only textarea editor |
+| Edit notes inline | `internal/ui/home.go:6548` (`e` key) | PATCH `/api/sessions/{id}` | `EditSession` | `handlers_sessions_test.go` | Covered by the generic edit PATCH with body `{notes}`. |
 | Toggle YOLO mode | `internal/ui/home.go:6418` (`y` key) | MISSING | N/A | N/A | Gemini/Codex only; requires restart |
 | Open settings panel | `internal/ui/home.go:6148` (`S` key) | GET `/api/settings` | N/A | `handlers_settings_test.go` | Read-only; displays profile, version |
 | **WORKFLOW & NAVIGATION** |
-| Mark session unread | `internal/ui/home.go:6366` (`u` key) | MISSING | N/A | N/A | idle → waiting transition |
-| Quick approve | `internal/ui/home.go:6387` (default hotkey) | MISSING | N/A | N/A | Send "1"+Enter without attach |
+| Mark session unread | `internal/ui/home.go:6366` (`u` key) | POST `/api/sessions/{id}/unread` | `MarkUnread` | `handlers_sessions_test.go` | idle → waiting; resets acknowledged flag (persisted) + forces status re-check |
+| Quick approve | `internal/ui/home.go:6387` (default hotkey) | POST `/api/sessions/{id}/approve` | `ApproveSession` | `handlers_sessions_test.go` | Sends "1"+Enter to a Claude-compatible session's tmux pane without attach |
 | Copy output | `internal/ui/home.go:6511` (`c` key) | MISSING | N/A | N/A | Last AI response → clipboard |
 | Copy session info | `internal/ui/home.go:6521` (`C`/`shift+c`) | MISSING | N/A | N/A | Repo/path/branch → clipboard |
 | Send output to session | `internal/ui/home.go:6532` (`x` key) | MISSING | N/A | N/A | TUI session picker dialog |
@@ -141,6 +142,11 @@ Every observable session field shown in the TUI must appear in the web API JSON 
 | **ANALYTICS (Conditional)** |
 | `claude_analytics` | Cost/token panel | MISSING | No `ClaudeAnalytics` struct on `*session.Instance` today |
 | `gemini_analytics` | Cost/token panel | `MenuSession.geminiAnalytics` | ✅ Present |
+| **ARCHIVE & AUTO-NAME** |
+| `archived_at` | Dimmed `[archived]` badge | `MenuSession.archived` + `MenuSession.archivedAt` | ✅ Present; archived rows marked on wire, client hides by default |
+| `auto_name` | Auto-named row label | `MenuSession.autoName` | ✅ Present; Title is a machine handle when set |
+| `task_description` | Auto-named row label | `MenuSession.taskDescription` | ✅ Present; live cleaned pane title, AutoName-only, degrades to empty when cache cold |
+| `worktree_type` | Worktree icon (git/jj) | `MenuSession.worktreeType` | ✅ Present; "git"/"jujutsu"/"" |
 
 ---
 
@@ -161,30 +167,34 @@ tiers:
   (`/api/push/{subscribe,unsubscribe,presence}`). The fixture binary
   intentionally omits the SQLite cost store and the push service; happy-path
   coverage requires fixture wiring deferred to PR-B.
-- **MISSING-stays-missing** (regression guard, 404/405 expected): 15 of the
-  30 MISSING actions have plausible URL patterns probed by
-  `inferMissingProbe()` in `tests/web/helpers/parity-matrix.js`. The other
-  15 are TUI-UX-only (search, copy, jump, help, …) where no plausible web
-  endpoint exists — those rows are matrix-tracked but not URL-probed.
+- **MISSING-stays-missing** (regression guard, 404/405 expected): all
+  URL-probeable session actions have now been implemented, so
+  `EXPECTED_PROBEABLE_MISSING` is 0 in `tests/web/e2e/parity-actions.spec.js`.
+  The remaining MISSING rows are TUI-UX-only (search, copy, jump, help,
+  send-to-session, exec-shell, preview-toggle, …) where no plausible web
+  endpoint exists — those rows stay matrix-tracked but not URL-probed.
 
 ## Summary Statistics
 
 ### Action Parity
-- **Total TUI actions:** 47 (session/group/MCP/skills/settings/workflow/costs/push)
-- **Web endpoints implemented:** 17
-- **MISSING web actions:** 30 (~64% gap)
-- **Key gaps:**
-  - Session settings edits (rename, color, notes, tool options)
-  - MCP/Skill management (no web equivalent)
-  - Content operations (copy, send, search)
-  - Worktree operations
-  - Non-destructive close
-  - Restart fresh (no web)
+- **Total TUI action rows:** 49 — pinned by `EXPECTED_ACTION_ROWS` in
+  `tests/web/e2e/parity-actions.spec.js` (the authoritative count).
+- **URL-probeable MISSING actions:** 0 — pinned by `EXPECTED_PROBEABLE_MISSING`;
+  every session action with a plausible web endpoint is now implemented.
+- **Recently closed gaps** (session-organization + edit parity pass): generic
+  session edit (rename / color / notes / channels / extraArgs / toolOptions /
+  gemini model+yolo) via `PATCH /api/sessions/{id}`; move-to-group (same PATCH
+  `{groupPath}`); archive / unarchive (`POST` / `DELETE /api/sessions/{id}/archive`);
+  restart-fresh, mark-unread, quick-approve; group reparent (`PATCH
+  /api/groups/{path}` `{parentPath}`); and Skills-pane wiring.
+- **Remaining gaps (TUI-UX-only, no web endpoint by design):** content
+  operations (copy live output, send-to-session, search), jump-mode / zoxide,
+  exec-shell, preview-mode toggle.
 
 ### State Field Parity
-- **Total TUI-visible fields:** ~50
-- **Web JSON fields:** 42
-- **MISSING web fields:** 3 (~7% gap) — two transients (`is_fork_awaiting_start`, `skip_mcp_regenerate`) and one not-yet-modeled (`claude_analytics`)
+- **Total TUI-visible fields:** ~54
+- **Web JSON fields:** 46
+- **MISSING web fields:** 3 (~6% gap) — two transients (`is_fork_awaiting_start`, `skip_mcp_regenerate`) and one not-yet-modeled (`claude_analytics`)
 - **Remaining gaps:**
   - `is_fork_awaiting_start`, `skip_mcp_regenerate`: `json:"-"` on `*session.Instance`; nothing to surface
   - `claude_analytics`: no `ClaudeAnalytics` struct on the Instance yet (gemini-only today)

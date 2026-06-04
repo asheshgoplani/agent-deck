@@ -79,13 +79,15 @@ export const createSessionDialogSignal = signal(false)
 // confirmDialogSignal: null or { message: string, onConfirm: function }
 export const confirmDialogSignal = signal(null)
 
-// groupNameDialogSignal: null or { mode: 'create'|'rename', groupPath: string, currentName: string, onSubmit: function }
+// groupNameDialogSignal: null or { mode: 'create'|'rename'|'reparent'|'delete', groupPath?, currentName?, parentPath?, onSubmit? }
 export const groupNameDialogSignal = signal(null)
 
-// editSessionDialogSignal: null or { sessionId: string }
-// Mirrors the TUI EditSessionDialog (internal/ui/edit_session_dialog.go) —
-// opens a modal that PATCHes /api/sessions/{id}. Closes "Edit session
-// settings" MISSING row in tests/web/PARITY_MATRIX.md.
+// editSessionDialogSignal: null or { sessionId: string }. Opened by the Sidebar
+// row actions (Edit…/Move to group…) and the AppShell 'r'/'M' hotkeys; read by
+// the always-mounted EditSessionDialog, which looks the session up in
+// menuModelSignal and PATCHes /api/sessions/{id}. Mirrors the TUI
+// EditSessionDialog (internal/ui/edit_session_dialog.go) and covers rename,
+// move-to-group, settings, and notes in one form.
 export const editSessionDialogSignal = signal(null)
 
 // WebSocket connection state for terminal: 'disconnected' | 'connecting' | 'connected' | 'error'

@@ -6,24 +6,14 @@
 // MCP/Skills/Conductor/Watchers panes render informative placeholders.
 import { html } from 'htm/preact'
 import { Logo, Icon, ICONS } from './icons.js'
+import { NAV_TABS as TABS } from './tabs.js'
 import { menuModelSignal } from './dataModel.js'
-import { connectionSignal, profilesSignal } from './state.js'
+import { connectionSignal, profilesSignal, sidebarOpenSignal } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
   railSignal, profileSignal,
 } from './uiState.js'
 import { ToastHistoryDrawerToggle } from './ToastHistoryDrawer.js'
-
-const TABS = [
-  { id: 'fleet',     label: 'Fleet'     },
-  { id: 'terminal',  label: 'Terminal'  },
-  { id: 'mcp',       label: 'MCPs'      },
-  { id: 'skills',    label: 'Skills'    },
-  { id: 'conductor', label: 'Conductor' },
-  { id: 'watchers',  label: 'Watchers'  },
-  { id: 'costs',     label: 'Costs'     },
-  { id: 'search',    label: 'Search'    },
-]
 
 export function Topbar() {
   const activeTab = activeTabSignal.value
@@ -41,6 +31,12 @@ export function Topbar() {
   return html`
     <header class="topbar">
       <div class="top-brand">
+        <button class="top-burger" aria-label="Toggle sessions"
+                onClick=${() => (sidebarOpenSignal.value = !sidebarOpenSignal.value)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/>
+            <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
         <${Logo}/>
         <div class="brand-text">agent-deck<span class="dim">web</span></div>
       </div>
