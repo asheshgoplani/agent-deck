@@ -37,6 +37,7 @@ import toml
 try:
     from aiogram import Bot, Dispatcher, types
     from aiogram.filters import Command, CommandStart
+    from aiogram.client.session.aiohttp import AiohttpSession
     HAS_AIOGRAM = True
 except ImportError:
     HAS_AIOGRAM = False
@@ -874,7 +875,22 @@ def create_telegram_bot(config: dict):
     if not config["telegram"]["configured"]:
         return None
 
-    bot = Bot(token=config["telegram"]["token"])
+    # Configure aiohttp session with proxy if HTTP_PROXY is set in environment.
+    # Required for environments where direct access to Telegram API is blocked
+    # (e.g. mainland China, corporate networks).
+    # Note: aiogram requires 'aiohttp-socks' for proxy support.
+    proxy_url = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("http_proxy")
+    )
+    if proxy_url:
+        log.info("Using proxy for Telegram bot: %s", proxy_url)
+        session = AiohttpSession(proxy=proxy_url)
+        bot = Bot(token=config["telegram"]["token"], session=session)
+    else:
+        bot = Bot(token=config["telegram"]["token"])
     dp = Dispatcher()
     authorized_user = config["telegram"]["user_id"]
     default_conductor = get_default_conductor()
