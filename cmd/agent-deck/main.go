@@ -325,6 +325,9 @@ func main() {
 		case "uninstall":
 			handleUninstall(args[1:])
 			return
+		case "migrate-paths":
+			handleMigratePaths(args[1:])
+			return
 		case "hook-handler":
 			handleHookHandler()
 			return
@@ -2974,6 +2977,7 @@ func printHelp() {
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
+	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
