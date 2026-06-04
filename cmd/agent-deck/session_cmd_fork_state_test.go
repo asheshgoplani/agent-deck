@@ -31,9 +31,13 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +64,97 @@ func mustExtractHandleSessionFork(t *testing.T) string {
 		t.Fatalf("could not extract handleSessionFork body — file layout changed?")
 	}
 	return body
+}
+
+func mustParseHandleSessionFork(t *testing.T) (*token.FileSet, *ast.FuncDecl) {
+	t.Helper()
+	src, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cmd.go: %v", err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "session_cmd.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse session_cmd.go: %v", err)
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "handleSessionFork" {
+			return fset, fn
+		}
+	}
+	t.Fatal("handleSessionFork function not declared in session_cmd.go")
+	return nil, nil
+}
+
+func isSelectorCall(call *ast.CallExpr, receiver, method string) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != method {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == receiver
+}
+
+func isIdentArg(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func isBoolArg(expr ast.Expr, want bool) bool {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if want {
+		return ident.Name == "true"
+	}
+	return ident.Name == "false"
+}
+
+func stringLiteralArg(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isRemoveWorktreeCleanupCall(call *ast.CallExpr) bool {
+	return isSelectorCall(call, "git", "RemoveWorktree") &&
+		len(call.Args) == 3 &&
+		isIdentArg(call.Args[0], "repoRoot") &&
+		isIdentArg(call.Args[1], "worktreePath") &&
+		isBoolArg(call.Args[2], true)
+}
+
+func isGitWorktreeRemoveExecCommand(call *ast.CallExpr) bool {
+	if !isSelectorCall(call, "exec", "Command") {
+		return false
+	}
+	if len(call.Args) == 0 {
+		return false
+	}
+	first, ok := stringLiteralArg(call.Args[0])
+	if !ok || first != "git" {
+		return false
+	}
+	previousWasWorktree := false
+	for _, arg := range call.Args[1:] {
+		value, ok := stringLiteralArg(arg)
+		if !ok {
+			continue
+		}
+		if previousWasWorktree && value == "remove" {
+			return true
+		}
+		previousWasWorktree = value == "worktree"
+	}
+	return false
 }
 
 func initGitRepoForForkStateTest(t *testing.T, dir string) {
@@ -327,14 +422,29 @@ func TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard(t 
 // helper instead of shelling out directly to `git worktree remove --force`.
 // The helper owns force-mode fallback cleanup, prune, and data-loss guards.
 func TestSessionFork_WithStateCleanupUsesGitRemoveWorktree(t *testing.T) {
-	body := mustExtractHandleSessionFork(t)
-	folded := foldSpaces(body)
+	fset, fn := mustParseHandleSessionFork(t)
 
-	if !strings.Contains(folded, "git.RemoveWorktree(repoRoot, worktreePath, true)") {
-		t.Errorf("handleSessionFork materialization cleanup must use git.RemoveWorktree(repoRoot, worktreePath, true); folded body:\n%s", folded)
+	foundRemoveWorktree := false
+	var rawWorktreeRemoveCalls []token.Position
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if isRemoveWorktreeCleanupCall(call) {
+			foundRemoveWorktree = true
+		}
+		if isGitWorktreeRemoveExecCommand(call) {
+			rawWorktreeRemoveCalls = append(rawWorktreeRemoveCalls, fset.Position(call.Pos()))
+		}
+		return true
+	})
+
+	if !foundRemoveWorktree {
+		t.Error("handleSessionFork materialization cleanup must call git.RemoveWorktree(repoRoot, worktreePath, true)")
 	}
-	if strings.Contains(folded, `exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath)`) {
-		t.Errorf("handleSessionFork materialization cleanup must not shell out directly to git worktree remove; folded body:\n%s", folded)
+	for _, pos := range rawWorktreeRemoveCalls {
+		t.Errorf("handleSessionFork materialization cleanup must not shell out directly to git worktree remove; found raw call at %s", pos)
 	}
 }
 
