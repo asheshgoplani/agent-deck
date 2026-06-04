@@ -29,6 +29,43 @@ import (
 // that genuinely intend to empty the table must use ClearAllInstances.
 var ErrRefusingEmptySweep = errors.New("statedb: refusing to wipe populated instances table with an empty SaveInstances payload (use ClearAllInstances to intentionally clear)")
 
+// backupDBFile copies the live SQLite database file to "<path>.bak" so a
+// destructive sweep is recoverable (S2 data-loss safeguard, 2026-06-04
+// incident). It is best-effort: a failed backup must NOT abort the save (the
+// save is the operation the caller actually asked for; the backup is an
+// insurance copy). To capture a consistent snapshot we checkpoint the WAL into
+// the main file first, then copy. Errors are returned so callers can log them,
+// but the only current caller intentionally ignores the error.
+//
+// No-op (nil) when path is empty (in-memory DB) — there is no file to copy.
+func (s *StateDB) backupDBFile() error {
+	if s.path == "" {
+		return nil
+	}
+	// Fold the WAL back into the main db file so the .bak is self-contained and
+	// doesn't depend on a sidecar -wal that the next write will overwrite.
+	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+
+	src, err := os.ReadFile(s.path)
+	if err != nil {
+		// Nothing to back up (file not created yet) or unreadable; either way,
+		// don't block the save.
+		return err
+	}
+	bak := s.path + ".bak"
+	// 0600: the db may carry session metadata; keep the backup as private as
+	// the original. Write+rename to avoid leaving a torn .bak.
+	tmp := bak + ".tmp"
+	if err := os.WriteFile(tmp, src, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, bak); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 // withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
 // ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
 // immediately; the final BUSY error is returned if every attempt fails.
@@ -74,7 +111,21 @@ const SchemaVersion = 9
 type StateDB struct {
 	db  *sql.DB
 	pid int
+	// path is the on-disk path of the SQLite database file. Retained so
+	// destructive write paths can snapshot the file to "<path>.bak" before a
+	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
+	// incident). Empty for in-memory databases (no file to back up).
+	path string
 }
+
+// backupRowDropThreshold is the minimum number of rows a single
+// saveInstancesOnce sweep must DELETE before it is worth snapshotting the DB
+// file to "<path>.bak". A sweep that drops one or two rows is routine session
+// churn (a session was removed/renamed); backing the file up on every such save
+// would thrash the disk. The 2026-06-04 incident wiped the entire populated
+// table at once, so a meaningful-drop gate catches the catastrophic case while
+// staying quiet during normal operation.
+const backupRowDropThreshold = 3
 
 // InstanceRow represents a session row in the database.
 type InstanceRow struct {
@@ -235,7 +286,7 @@ func Open(dbPath string) (*StateDB, error) {
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
 	}
 
-	return &StateDB{db: db, pid: os.Getpid()}, nil
+	return &StateDB{db: db, pid: os.Getpid(), path: dbPath}, nil
 }
 
 // Close checkpoints WAL and closes the database.
@@ -624,6 +675,36 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 				}
 			}
 			_ = rows.Close()
+		}
+	}
+
+	// S2 data-loss safeguard (2026-06-04 incident): for a NON-empty payload,
+	// the sweep below DELETEs every on-disk row whose id is absent from the new
+	// set. Count that drop FIRST (on the raw handle, before opening the write
+	// transaction — running a wal_checkpoint backup inside an open tx on the
+	// same pool would deadlock). When the drop is meaningful
+	// (>= backupRowDropThreshold), snapshot the DB file to "<path>.bak" so a
+	// buggy-but-non-empty replace (the incident dropped most of the table at
+	// once) stays recoverable. S1 already refuses the fully-empty sweep; S2
+	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
+	// best-effort: a failed copy is logged, never fatal — the caller asked to
+	// save, and the insurance copy must not become a new failure mode.
+	if len(insts) > 0 && s.path != "" {
+		placeholders := make([]string, len(insts))
+		args := make([]any, len(insts))
+		for i, inst := range insts {
+			placeholders[i] = "?"
+			args[i] = inst.ID
+		}
+		var dropCount int
+		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+		// from len(insts); all values flow through args[], never the SQL string.
+		countQuery := "SELECT COUNT(*) FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		if err := s.db.QueryRow(countQuery, args...).Scan(&dropCount); err == nil && dropCount >= backupRowDropThreshold {
+			if bErr := s.backupDBFile(); bErr != nil {
+				slog.Warn("statedb: pre-sweep backup failed (continuing with save)",
+					"path", s.path, "drop_count", dropCount, "err", bErr)
+			}
 		}
 	}
 
