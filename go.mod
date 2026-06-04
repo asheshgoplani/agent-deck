@@ -5,6 +5,7 @@ go 1.25.11
 require (
 	al.essio.dev/pkg/shellescape v1.6.0
 	cloud.google.com/go/pubsub v1.50.2
+	fyne.io/systray v1.12.1
 	github.com/BurntSushi/toml v1.6.0
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/charmbracelet/bubbles v1.0.0

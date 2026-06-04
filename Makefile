@@ -117,6 +117,15 @@ install-user: build
 	@echo "Make sure $(HOME)/.local/bin is in your PATH"
 	@echo "Run 'agent-deck' to start"
 
+# Install the macOS menu-bar app: build, then assemble AgentDeck.app
+# (LSUIElement, no Dock icon) and a login LaunchAgent. macOS only.
+# Honors AGENTDECK_BIN / AGENTDECK_PROFILE / AGENTDECK_MENUBAR_LISTEN.
+menubar-install: build
+	AGENTDECK_BIN="$(abspath $(BUILD_DIR)/$(BINARY_NAME))" bash scripts/menubar-install.sh
+
+menubar-uninstall:
+	bash scripts/menubar-uninstall.sh
+
 # Uninstall from /usr/local/bin
 uninstall:
 	sudo rm -f /usr/local/bin/$(BINARY_NAME)

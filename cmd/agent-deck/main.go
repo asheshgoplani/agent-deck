@@ -324,6 +324,9 @@ func main() {
 		case "costs":
 			handleCosts(profile, args[1:])
 			return
+		case "menubar":
+			runMenubar(profile, args[1:])
+			return
 		case "web":
 			webEnabled = true
 			// Extract --no-tui out of webArgs before buildWebServer's flag set
