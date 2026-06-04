@@ -136,7 +136,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 			cfg.TriageDir = dir
 		} else {
 			logger.Warn("watcher_triage_dir_lookup_failed", slog.String("error", err.Error()))
-			cfg.TriageDir = filepath.Join(os.TempDir(), ".agent-deck", "triage")
+			cfg.TriageDir = filepath.Join(os.TempDir(), "agent-deck", "triage")
 		}
 	}
 	if cfg.ClientsPath == "" {
@@ -145,7 +145,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 			cfg.ClientsPath = filepath.Join(dir, "clients.json")
 		} else {
 			logger.Warn("watcher_clients_path_lookup_failed", slog.String("error", err.Error()))
-			cfg.ClientsPath = filepath.Join(os.TempDir(), ".agent-deck", "watcher", "clients.json")
+			cfg.ClientsPath = filepath.Join(os.TempDir(), "agent-deck", "watcher", "clients.json")
 		}
 	}
 	if cfg.Profile == "" {

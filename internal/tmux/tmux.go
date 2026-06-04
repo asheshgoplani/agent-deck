@@ -1332,7 +1332,7 @@ func (s *Session) LogFile() string {
 func LogDir() string {
 	logDir, err := agentpaths.EffectiveDataPath("logs", "logs")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs")
+		return filepath.Join(os.TempDir(), "agent-deck", "logs")
 	}
 	return logDir
 }

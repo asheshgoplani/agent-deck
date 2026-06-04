@@ -24,6 +24,7 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -3186,7 +3187,7 @@ func handleUninstall(args []string) {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	legacyDir := filepath.Join(homeDir, ".agent-deck")
+	legacyDir, _ := agentpaths.LegacyDir()
 	var foundItems []uninstallFoundItem
 
 	// Check for Homebrew installation

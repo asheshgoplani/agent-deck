@@ -117,10 +117,10 @@ func TestXDGDataTask4_WatcherEngineDefaultsUseExplicitFallbackOnPathErrors(t *te
 	if engine.cfg.ClientsPath == "" {
 		t.Fatal("Engine ClientsPath must not be empty when XDG path resolution fails")
 	}
-	if got, want := engine.cfg.TriageDir, filepath.Join(os.TempDir(), ".agent-deck", "triage"); got != want {
+	if got, want := engine.cfg.TriageDir, filepath.Join(os.TempDir(), "agent-deck", "triage"); got != want {
 		t.Fatalf("Engine TriageDir fallback = %q, want %q", got, want)
 	}
-	if got, want := engine.cfg.ClientsPath, filepath.Join(os.TempDir(), ".agent-deck", "watcher", "clients.json"); got != want {
+	if got, want := engine.cfg.ClientsPath, filepath.Join(os.TempDir(), "agent-deck", "watcher", "clients.json"); got != want {
 		t.Fatalf("Engine ClientsPath fallback = %q, want %q", got, want)
 	}
 }

@@ -809,7 +809,7 @@ func logCostDebug(format string, args ...any) {
 func getCostEventsDir() string {
 	path, err := agentpaths.EffectiveDataPath("cost-events", "cost-events")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "cost-events")
+		return filepath.Join(os.TempDir(), "agent-deck", "cost-events")
 	}
 	return path
 }
