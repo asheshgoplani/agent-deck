@@ -24,6 +24,7 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/asheshgoplani/agent-deck/internal/buildinfo"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -38,6 +39,11 @@ import (
 )
 
 var Version = "1.9.47" // overridden at build time via -ldflags "-X main.Version=..."
+
+// Commit is the git hash of the build, injected via -ldflags
+// "-X main.Commit=...". When empty it falls back to the VCS revision the Go
+// toolchain embeds automatically (see internal/buildinfo).
+var Commit = ""
 
 // Table column widths for list command output
 const (
@@ -59,11 +65,16 @@ func initUpdateSettings() {
 	update.SetCheckInterval(settings.CheckIntervalHours)
 }
 
-// writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
+// writeVersionOutput prints `Agent Deck vX.Y.Z (commit)` to `w`, appending
 // ` (update available: vA.B.C)` when the on-disk cache says the user
 // is behind. Offline — never touches the network. Conductor task #45.
 func writeVersionOutput(w io.Writer, currentVersion string) {
 	fmt.Fprintf(w, "Agent Deck v%s", currentVersion)
+	// Append the build's git hash unless the version string already embeds it
+	// (local `make build` bakes `git describe`, which ends in the short hash).
+	if c := buildinfo.Commit(Commit); c != "" && c != "unknown" && !strings.Contains(currentVersion, c) {
+		fmt.Fprintf(w, " (%s)", c)
+	}
 	info, err := update.CachedUpdateInfo(currentVersion)
 	if err == nil && info != nil && info.Available {
 		fmt.Fprintf(w, " (update available: v%s)", info.LatestVersion)
@@ -410,6 +421,7 @@ func main() {
 
 	// Set version for UI update checking
 	ui.SetVersion(Version)
+	ui.SetCommit(buildinfo.Commit(Commit))
 
 	// Initialize theme from config (resolves "system" to actual dark/light)
 	theme := session.ResolveTheme()

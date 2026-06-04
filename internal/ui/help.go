@@ -407,7 +407,14 @@ func (h *HelpOverlay) View() string {
 	}
 	lines = append(lines, "")
 	lines = append(lines, separatorStyle.Render(strings.Repeat("─", separatorWidth)))
-	lines = append(lines, versionStyle.Render("Agent Deck v"+Version))
+	versionLine := "Agent Deck v" + Version
+	// Append the commit hash unless the version string already embeds it
+	// (local `make build` bakes `git describe` → e.g. v1.9.45-49-gab44d360,
+	// which already ends in the short hash — avoid printing it twice).
+	if Commit != "" && Commit != "unknown" && !strings.Contains(Version, Commit) {
+		versionLine += " (" + Commit + ")"
+	}
+	lines = append(lines, versionStyle.Render(versionLine))
 
 	totalLines := len(lines)
 

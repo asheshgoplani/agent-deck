@@ -1,9 +1,10 @@
-.PHONY: build run install clean dev release-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install
+.PHONY: build run install clean dev release-local test test-perf bench fmt lint ci css tools css-verify test-web test-web-unit test-web-e2e test-web-install menubar-install menubar-uninstall
 
 BINARY_NAME=agent-deck
 BUILD_DIR=./build
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo "dev")
-LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
+COMMIT=$(shell git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT)"
 
 # Tailwind v4 standalone CLI (PERF-01)
 TAILWIND_VERSION=v4.2.2

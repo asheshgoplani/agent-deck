@@ -49,9 +49,18 @@ import (
 // Version is set by main.go for update checking
 var Version = "0.0.0"
 
+// Commit is the short git hash of the build, set by main.go. Empty until
+// SetCommit is called (e.g. in tests) and rendered only when non-empty.
+var Commit = ""
+
 // SetVersion sets the current version for update checking
 func SetVersion(v string) {
 	Version = v
+}
+
+// SetCommit sets the build's git commit hash shown in the help overlay.
+func SetCommit(c string) {
+	Commit = c
 }
 
 // CreatingSession is a lightweight placeholder shown in the UI while
