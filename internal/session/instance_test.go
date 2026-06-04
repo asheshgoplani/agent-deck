@@ -2234,6 +2234,24 @@ func TestInstance_CanFork_OpenCode(t *testing.T) {
 	}
 }
 
+func TestInstance_CanFork_Pi(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	inst := NewInstanceWithTool("test", "/tmp/test", "pi")
+	if inst.CanFork() {
+		t.Error("CanFork() should be false for local Pi sessions before a source JSONL exists")
+	}
+
+	seedLocalPiSessionFile(t, inst)
+	if !inst.CanFork() {
+		t.Error("CanFork() should be true for Pi sessions with Agent Deck Pi JSONL history")
+	}
+
+	inst.ID = ""
+	if inst.CanFork() {
+		t.Error("CanFork() should be false for Pi without an Agent Deck instance ID")
+	}
+}
+
 func TestInstance_CanRestartFresh(t *testing.T) {
 	tests := []struct {
 		name string

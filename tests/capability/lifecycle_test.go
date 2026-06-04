@@ -178,13 +178,13 @@ func TestCapability_Lifecycle_Rm(t *testing.T) {
 		c.run(t, "list"))
 }
 
-// TestCapability_Lifecycle_Fork proves the fork precondition guard: forking a
-// non-Claude session is refused with a clear error and creates no child row.
+// TestCapability_Lifecycle_Fork proves the fork precondition guard: forking an
+// unsupported session is refused with a clear error and creates no child row.
 //
-// The full happy path (a fork that inherits a real Claude conversation, gets a
-// distinct id, and links ParentSessionID) needs a real ClaudeSessionID from a
-// live claude transcript, which is non-deterministic and key-gated. That path
-// is a documented Tier N gap. See docs/testing/capability-gaps.md.
+// The full happy paths (forks that inherit real Claude/Pi conversations, get a
+// distinct id, and link ParentSessionID) need real tool session data, which is
+// non-deterministic and key/tool-gated. Those paths are documented Tier N gaps.
+// See docs/testing/capability-gaps.md.
 func TestCapability_Lifecycle_Fork(t *testing.T) {
 	c := newCapSandbox(t)
 	c.run(t, "add", "-c", "bash", "-t", "cap-fork", c.WorkDir)
@@ -200,7 +200,7 @@ func TestCapability_Lifecycle_Fork(t *testing.T) {
 		t.Fatalf("a refused fork must not create a child registry row")
 	}
 
-	// Display proof: the precondition guard refusing to fork a non-Claude
+	// Display proof: the precondition guard refusing to fork an unsupported
 	// session.
 	snapshot(t, "fork", "$ agent-deck session fork cap-fork\n"+strings.TrimRight(out, "\n"))
 }

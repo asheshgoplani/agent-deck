@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+
 ## [1.9.47] - 2026-06-03
 
 ### Fixed

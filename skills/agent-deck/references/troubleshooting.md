@@ -10,7 +10,7 @@ Common issues and solutions for agent-deck.
 | MCPs not loading | `agent-deck session restart <name>` |
 | CLI changes not in TUI | Press `Ctrl+R` to refresh |
 | Flag not working | Put flags BEFORE arguments |
-| Fork fails | Check session has valid Claude session ID |
+| Fork fails | Check Claude session has a valid session ID, or Pi session has JSONL history under Agent Deck's Pi session dir |
 | Status stuck | Wait 2 seconds or press `u` to mark unread |
 
 ## Common Issues

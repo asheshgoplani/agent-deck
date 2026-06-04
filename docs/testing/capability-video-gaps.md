@@ -19,17 +19,17 @@ live with `session output`, not typed into the tape.
 | `echo-roundtrip` | launch, send token, read reply, teardown | the real `ECHO:PING-DEMO-7f3a` reply from the echobot |
 | `lifecycle-launch` | atomic add + start + send in one command | the registry row plus the echoed launch token |
 | `lifecycle-stop` | start, stop, state flips to stopped | `list` before and after the real `session stop` |
-| `lifecycle-fork` | fork precondition guard | the real refusal error for a non-Claude session |
+| `lifecycle-fork` | fork precondition guard | the real refusal error for an unsupported session |
 
 ## Gaps (not recorded, by design)
 
-### Fork that inherits Claude context
-`lifecycle-fork.tape` shows the precondition guard refusing to fork a non-Claude
+### Fork that inherits tool context
+`lifecycle-fork.tape` shows the precondition guard refusing to fork an unsupported
 session, which is the deterministic half of the capability. The
-context-inheriting happy path needs a real `ClaudeSessionID` from a live,
-key-gated claude transcript and runs `claude --resume`, so it cannot be recorded
-offline. This is the same Tier N gap documented for the asserting test in
-`docs/testing/capability-gaps.md` (Fork that inherits Claude context).
+context-inheriting happy paths need real tool session data — a live
+`ClaudeSessionID` for Claude or a Pi JSONL for `pi --fork` — so they cannot be
+recorded offline. This is the same Tier N gap documented for the asserting test
+in `docs/testing/capability-gaps.md` (Fork that inherits tool context).
 
 ### Real agent round trips (claude, codex, gemini, opencode)
 The `echo-roundtrip` clip uses the deterministic echobot so the reply is stable

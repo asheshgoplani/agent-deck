@@ -103,8 +103,8 @@
       "id": "fork",
       "group": "Session lifecycle",
       "title": "Fork guard",
-      "how_we_test": "Forking is only valid for a Claude session with live context. We confirm forking a non-Claude session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.",
-      "assertion": "forking a non-Claude session is refused and no child row is created",
+      "how_we_test": "Forking is only valid for supported tools with live context (Claude session ID or Pi JSONL). We confirm forking an unsupported session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.",
+      "assertion": "forking an unsupported session is refused and no child row is created",
       "tier": "F",
       "chips": [
         "Local-isolated"
@@ -112,7 +112,7 @@
       "test_name": "TestCapability_Lifecycle_Fork",
       "status": "pass",
       "runtime_seconds": 0.15,
-      "snapshot": "$ agent-deck session fork cap-fork\nError: session 'cap-fork' is not a Claude session (tool: shell)"
+      "snapshot": "$ agent-deck session fork cap-fork\nError: session 'cap-fork' is not a Claude session or Pi session (tool: shell)"
     },
     {
       "id": "send-output-echo",
@@ -148,8 +148,8 @@
     {
       "id": "fork-context",
       "group": "Agent interaction",
-      "title": "Fork inherits Claude context",
-      "how_we_test": "We fork a live Claude session and confirm the child inherits the conversation with a distinct id and a parent link. This needs a real Claude session id from a live transcript, so it runs nightly.",
+      "title": "Fork inherits tool context",
+      "how_we_test": "We fork a live Claude or Pi session and confirm the child inherits the conversation with a distinct id and a parent link. This needs real tool session data from a live transcript, so it runs nightly.",
       "assertion": "child session links the parent and inherits conversation context",
       "tier": "N",
       "chips": [

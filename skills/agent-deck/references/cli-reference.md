@@ -146,17 +146,17 @@ agent-deck session restart <id|title>
 
 Reloads MCPs without losing conversation (Claude/Gemini).
 
-### session fork (Claude only)
+### session fork (Claude and Pi)
 
 ```bash
 agent-deck session fork <id|title> [-t "title"] [-g "group"]
 ```
 
-Creates new session with same Claude conversation.
+Creates a new session with the same conversation context for supported tools.
 
 **Requirements:**
-- Session must be Claude tool
-- Must have valid Claude session ID
+- Claude sessions must have a valid Claude session ID
+- Pi sessions use Agent Deck's per-instance Pi session directory and Pi's native `pi --fork`
 
 ### session attach
 
