@@ -9833,6 +9833,27 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// visible blank-screen delay before tmux attach starts.
 	inst.MarkAccessed()
 
+	// #1114 follow-up: Claude's /rename fires no agent-deck hook, so an idle
+	// session's title and iTerm2 badge can be stale at attach time (the
+	// hook-driven sync only runs on the next turn boundary). Reconcile from the
+	// agent's current Claude session name here — before tmuxSess.Attach() emits
+	// the badge from DisplayName — so detach/reattach reliably refreshes it.
+	if session.IsClaudeCompatible(inst.Tool) {
+		sessionID := session.ReadHookSessionAnchor(inst.ID)
+		if sessionID == "" {
+			sessionID = inst.ClaudeSessionID
+		}
+		if newName, changed := inst.ReconcileTitleFromClaude(sessionID); changed {
+			h.pendingTitleChanges[inst.ID] = newName
+			h.invalidatePreviewCache(inst.ID)
+			h.rebuildFlatItems()
+			h.saveInstances()
+			uiLog.Info("title_reconciled_on_attach",
+				slog.String("session_id", inst.ID),
+				slog.String("title", newName))
+		}
+	}
+
 	// Acknowledge on ATTACH (not detach) - but ONLY if session is waiting (yellow)
 	// This ensures:
 	// - GREEN (running) sessions stay green when attached/detached
