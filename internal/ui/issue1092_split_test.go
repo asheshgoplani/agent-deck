@@ -21,20 +21,18 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// setIsolatedAgentDeckDir gives each test its own ~/.agent-deck so
+// setIsolatedAgentDeckDir gives each test its own XDG config root so
 // SaveUserConfig / LoadUserConfig don't clobber the user's real config
 // or interfere with each other.
-//
-// session.GetAgentDeckDir() resolves via os.UserHomeDir(), which honors
-// HOME on POSIX, so we point HOME at a temp dir and create
-// .agent-deck/ inside it.
 func setIsolatedAgentDeckDir(t *testing.T) string {
 	t.Helper()
 	tmpHome := t.TempDir()
+	xdgConfigHome := filepath.Join(tmpHome, ".config")
 	t.Setenv("HOME", tmpHome)
-	dir := filepath.Join(tmpHome, ".agent-deck")
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	dir := filepath.Join(xdgConfigHome, "agent-deck")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir .agent-deck: %v", err)
+		t.Fatalf("mkdir XDG config dir: %v", err)
 	}
 	// LoadUserConfig caches by mtime; reset between tests.
 	session.ClearUserConfigCache()

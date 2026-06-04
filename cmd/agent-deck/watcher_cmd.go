@@ -305,8 +305,8 @@ func readSecretFile(path string) (string, error) {
 }
 
 // writeGithubWatcherSecret writes the HMAC secret into the [source] table of
-// ~/.agent-deck/watcher/<name>/watcher.toml at 0600 — the location the runtime
-// engine loads it from (internal/ui/home.go loadWatcherSourceSettings). Written
+// the effective watcher/<name>/watcher.toml at 0600, which is the location the
+// runtime engine loads it from (internal/ui/home.go loadWatcherSourceSettings). Written
 // atomically (temp + rename). Port is stored as a TOML string so it decodes into
 // the engine's map[string]string Settings. Audit M2.
 func writeGithubWatcherSecret(dir, secret string, port int) error {
@@ -647,7 +647,7 @@ func handleWatcherTest(profile string, args []string) {
 	router, err := watcher.LoadFromWatcherDir()
 	if err != nil {
 		fmt.Printf("Routing config: not available (%v)\n", err)
-		fmt.Println("  Create ~/.agent-deck/watcher/clients.json to enable routing.")
+		fmt.Printf("  Create %s to enable routing.\n", watcherClientsPathForDisplay())
 		return
 	}
 
@@ -942,7 +942,8 @@ func printWatcherHelp() {
 	fmt.Println("  test <name>                   Route a synthetic event to verify routing config")
 	fmt.Println("  routes [--json]               Show all routing rules from clients.json")
 	fmt.Println("  import <path>                 Migrate bash issue-watcher channels.json to Go watcher config")
-	fmt.Println("  install-skill <skill-name>    Install a skill to ~/.agent-deck/skills/pool/ (e.g. watcher-creator)")
+	skillPoolPath, _ := session.GetSkillPoolPath()
+	fmt.Printf("  install-skill <skill-name>    Install a skill to %s (e.g. watcher-creator)\n", FormatPath(skillPoolPath))
 	fmt.Println()
 	fmt.Println("Examples (one per adapter type):")
 	fmt.Println()
@@ -965,7 +966,7 @@ func printWatcherHelp() {
 	fmt.Println("  agent-deck watcher list              # see health + events/hour")
 	fmt.Println("  agent-deck watcher test <name>       # fire a synthetic event")
 	fmt.Println()
-	fmt.Println("Routing: edit ~/.agent-deck/watcher/<name>/clients.json to pick which")
+	fmt.Printf("Routing: edit %s to pick which\n", watcherClientsPathForDisplay())
 	fmt.Println("conductor / group receives events. See `agent-deck watcher routes` for")
 	fmt.Println("the currently-loaded rules across all watchers.")
 	fmt.Println()
@@ -975,4 +976,12 @@ func printWatcherHelp() {
 	fmt.Println("  # \"Use the watcher-creator skill to set up a GitHub watcher\"")
 	fmt.Println()
 	fmt.Println("Full reference: https://github.com/asheshgoplani/agent-deck#watchers")
+}
+
+func watcherClientsPathForDisplay() string {
+	watcherDir, err := session.WatcherDir()
+	if err != nil {
+		return "${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json"
+	}
+	return FormatPath(filepath.Join(watcherDir, "clients.json"))
 }

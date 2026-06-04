@@ -71,7 +71,8 @@ log "tmux socket: ${TMUX_SOCKET}"
 log "test home: ${TEST_HOME}"
 
 # ---------- setup isolated environment ----------
-mkdir -p "${TEST_HOME}/.agent-deck"
+export XDG_CONFIG_HOME="${TEST_HOME}/.config"
+mkdir -p "${XDG_CONFIG_HOME}/agent-deck"
 mkdir -p "${TMPROOT}/bin"
 mkdir -p "${TMPROOT}/project"
 
@@ -84,7 +85,7 @@ ln -sf "${AGENT_DECK_BIN}" "${TMPROOT}/bin/agent-deck"
 
 # ---------- helpers ----------
 write_config() {
-  cat > "${TEST_HOME}/.agent-deck/config.toml" <<EOF
+  cat > "${XDG_CONFIG_HOME}/agent-deck/config.toml" <<EOF
 [tmux]
 socket_name = "${TMUX_SOCKET}"
 

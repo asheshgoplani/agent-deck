@@ -1008,7 +1008,7 @@ func (m *MCPDialog) renderEmptyStateHelp() string {
 		highlightStyle.Render("No MCPs configured"),
 		"",
 		helpStyle.Render("To add MCPs, edit:"),
-		pathStyle.Render("  ~/.agent-deck/config.toml"),
+		pathStyle.Render("  " + userConfigPathForDisplay()),
 		"",
 		helpStyle.Render("Example:"),
 		helpStyle.Render("  [mcps.example]"),
