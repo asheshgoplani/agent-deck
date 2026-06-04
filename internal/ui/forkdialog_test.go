@@ -311,3 +311,187 @@ func TestForkDialog_NameInput_AcceptsUnderscore(t *testing.T) {
 		t.Errorf("nameInput.Value() = %q after typing '_', want %q", updated.nameInput.Value(), "_")
 	}
 }
+
+// --- Focus-target navigation (PR-B Task B2) ---
+
+// forkConductorInstance builds a minimal conductor *session.Instance for fork
+// dialog tests (mirrors the helper used by newdialog_conductor_test.go).
+func forkConductorInstance(id, name, path string) *session.Instance {
+	return &session.Instance{
+		ID:          id,
+		Title:       "conductor-" + name,
+		GroupPath:   "conductor",
+		ProjectPath: path,
+		Status:      session.StatusWaiting,
+		IsConductor: true,
+	}
+}
+
+// tabOrder drives the dialog with the given key and records currentFocusName()
+// after each step, starting from the initial focus before any key.
+func tabOrder(d *ForkDialog, key tea.KeyMsg, steps int) []string {
+	got := []string{d.currentFocusName()}
+	for i := 0; i < steps; i++ {
+		d, _ = d.Update(key)
+		got = append(got, d.currentFocusName())
+	}
+	return got
+}
+
+func TestForkDialog_Focus_InitialIsName(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	if got := d.currentFocusName(); got != "name" {
+		t.Errorf("initial focus = %q, want %q", got, "name")
+	}
+}
+
+func TestForkDialog_Focus_WorktreeOff_TabOrder(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = false
+
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, 3)
+	want := []string{"name", "group", "options", "options"}
+	if !equalStrs(got, want) {
+		t.Errorf("Tab order = %v, want %v", got, want)
+	}
+}
+
+func TestForkDialog_Focus_WorktreeOff_ShiftTabReverses(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = false
+
+	// Move to options first.
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	d, _ = d.Update(tab)
+	d, _ = d.Update(tab)
+	if got := d.currentFocusName(); got != "options" {
+		t.Fatalf("after 2 tabs focus = %q, want options", got)
+	}
+
+	shiftTab := tea.KeyMsg{Type: tea.KeyShiftTab}
+	d, _ = d.Update(shiftTab)
+	if got := d.currentFocusName(); got != "group" {
+		t.Errorf("after shift+tab focus = %q, want group", got)
+	}
+	d, _ = d.Update(shiftTab)
+	if got := d.currentFocusName(); got != "name" {
+		t.Errorf("after 2 shift+tab focus = %q, want name", got)
+	}
+}
+
+func TestForkDialog_Focus_WorktreeOn_WithStateOff_TabOrder(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, 4)
+	want := []string{"name", "group", "branch", "carryState", "options"}
+	if !equalStrs(got, want) {
+		t.Errorf("Tab order = %v, want %v", got, want)
+	}
+}
+
+func TestForkDialog_Focus_WorktreeOn_WithStateOn_TabOrder(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	if !d.IsWithStateEnabled() {
+		t.Fatal("ToggleWithState should have enabled with-state")
+	}
+
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, 5)
+	want := []string{"name", "group", "branch", "carryState", "gitignored", "options"}
+	if !equalStrs(got, want) {
+		t.Errorf("Tab order = %v, want %v", got, want)
+	}
+}
+
+func TestForkDialog_Focus_Conductor_BetweenGroupAndOptions(t *testing.T) {
+	cs := []*session.Instance{forkConductorInstance("id-1", "alpha", "/a")}
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", cs, "")
+	d.worktreeEnabled = false
+
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, 3)
+	want := []string{"name", "group", "conductor", "options"}
+	if !equalStrs(got, want) {
+		t.Errorf("Tab order with conductor = %v, want %v", got, want)
+	}
+}
+
+func TestForkDialog_Focus_Conductor_WorktreeOn_Order(t *testing.T) {
+	cs := []*session.Instance{forkConductorInstance("id-1", "alpha", "/a")}
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", cs, "")
+	d.worktreeEnabled = true
+
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, 5)
+	want := []string{"name", "group", "conductor", "branch", "carryState", "options"}
+	if !equalStrs(got, want) {
+		t.Errorf("Tab order conductor+worktree = %v, want %v", got, want)
+	}
+}
+
+func TestForkDialog_Focus_DanglingIndexReadsSafely(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+
+	// Land focus on carryState (a worktree-only target).
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	d, _ = d.Update(tab) // group
+	d, _ = d.Update(tab) // branch
+	d, _ = d.Update(tab) // carryState
+	if got := d.currentFocusName(); got != "carryState" {
+		t.Fatalf("setup: focus = %q, want carryState", got)
+	}
+
+	// Collapse the worktree-only targets out from under the cursor without
+	// clamping. Reading focus must not panic and must yield a valid target.
+	d.worktreeEnabled = false
+	got := d.currentFocusName()
+	if got != "name" && got != "group" && got != "options" {
+		t.Errorf("dangling focus read = %q, want a valid surviving target", got)
+	}
+}
+
+func TestForkDialog_Focus_ToggleWorktreeOffViaW_ReclampsIndex(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.isGitRepo = true
+	d.worktreeEnabled = true
+
+	// Focus the group field (where 'w' toggles worktree), then disable it.
+	d.setFocus(forkFocusGroup)
+	w := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}}
+	d, _ = d.Update(w)
+
+	if d.worktreeEnabled {
+		t.Fatal("'w' on group should have toggled worktree off")
+	}
+	// focusIndex must remain within the (now shorter) slice.
+	if d.focusIndex < 0 || d.focusIndex >= len(d.focusTargets()) {
+		t.Errorf("focusIndex %d out of range for %d targets", d.focusIndex, len(d.focusTargets()))
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
