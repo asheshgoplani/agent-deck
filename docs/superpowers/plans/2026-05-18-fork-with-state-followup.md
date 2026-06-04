@@ -638,6 +638,13 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/git/... -run "Issue1029|RegressionFor10
 
 Closes gap 1, plus the TUI portions of gaps 3, 4, and 10.
 
+> **DESIGN DECISIONS (2026-06-04, resolved with @smorin).** These bind B1–B4:
+>
+> 1. **Collision UX — static hint + reject-at-submit.** Always render a static hint line `↳ creates a NEW branch at parent HEAD` under "Carry parent state" (pure text — no git existence check in the dialog). An existing-branch collision is caught at submit by `git.ValidateForkWithStateDestination` → error banner via `h.setError`. No async dialog state.
+> 2. **Labels — `Carry parent state` (y) and `Include gitignored files` (i).** Matches the `--with-state` / `--with-state-and-gitignored` CLI flags.
+> 3. **Shortcuts — keep `y` / `i`.** Verified safe: the dialog's key switch only intercepts a letter when focus is on a toggle target; on the Name/Branch text inputs the key falls through and is typed normally (same pattern as `w`/`s`). No clash, including branch names containing `i` (`fix`, `ui`, `init`).
+> 4. **Toggle model — focus targets + `Space` (the B2 refactor is REQUIRED, not optional).** The two checkboxes are real focus stops in the `focusTargets` slice; `Space`/`Enter` toggles the focused box; `y`/`i` remain as shortcuts. Nested invariants are enforced by skipping disabled targets in the focus order (gitignored skipped unless with-state on; with-state skipped unless worktree on).
+
 ## Task B1 — `ForkDialog` state + getters (gap 1)
 
 **Files:**
@@ -660,6 +667,8 @@ Add `withStateEnabled bool` and `withStateAndGitignored bool` fields. Exported g
 Refactor to use the existing `NewDialog` focus-target pattern: declare `forkFocusTarget` enum, ordered `focusTargets` slice rebuilt on conditional toggles. Replace numeric `focusIndex` arithmetic.
 
 > **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses the numeric `focusIndex` arithmetic this task replaces. Reference commit `dc5d42d2` (B2 focus-target) is salvageable.
+>
+> **Required by Decision 4 (no longer optional).** B3 depends on this: add `carryState` and `gitignored` as focus targets in the rebuilt `focusTargets` slice, each **skipped** when its parent toggle is off (gitignored skipped unless with-state on; with-state skipped unless worktree on). `Space`/`Enter` on a focused target toggles it; `y`/`i` stay as shortcuts.
 
 - [ ] **Step 1-5: Apply focus-target refactor as documented in the deprecated plan's Task 15A**
 - [ ] **Step 6: Commit**
@@ -670,12 +679,18 @@ Refactor to use the existing `NewDialog` focus-target pattern: declare `forkFocu
 - Modify: `internal/ui/forkdialog.go`
 - Modify: `internal/ui/forkdialog_test.go`
 
-Render the two new checkboxes when worktree is on; render the gitignored checkbox nested when with-state is on. Wire `y` and `i` key handlers. Add state-machine tests (toggle requires worktree, toggling worktree off clears with-state, etc.).
+Render the two new checkboxes when worktree is on; render the gitignored checkbox nested when with-state is on. Wire the toggles. Add state-machine tests (toggle requires worktree, toggling worktree off clears with-state, etc.).
 
-> **Still valid (backend-agnostic).** Pure dialog UI; no VCS coupling. Reference commit `ba3ec451` (B3 checkboxes+handlers) is salvageable.
+> **Still valid (backend-agnostic).** Pure dialog UI; no VCS coupling. Reference commit `ba3ec451` (B3 checkboxes+handlers) is salvageable — but reconcile its key handling to the Decision-4 model below.
+>
+> **Per Decisions 1–4 (exact UI contract):**
+> - Checkbox labels are exactly `Carry parent state` and `Include gitignored files`.
+> - Render a static hint line `↳ creates a NEW branch at parent HEAD` directly under "Carry parent state" (no git check — Decision 1).
+> - `Include gitignored files` renders nested (one extra indent) and only when with-state is on.
+> - Toggle via `Space`/`Enter` on the focused checkbox (Decision 4), plus `y`/`i` shortcuts (Decision 3). Shortcuts intercept only when focus is on a toggle target, so they remain typeable in the Name/Branch inputs.
 
-- [ ] **Step 1: Add checkbox rendering in `View()`**
-- [ ] **Step 2: Add `y`/`i` key handlers in `Update()`**
+- [ ] **Step 1: Add checkbox rendering in `View()`** (labels + static hint + nested indent)
+- [ ] **Step 2: Add `Space`/`Enter` toggle on the focused checkbox + `y`/`i` shortcut handlers in `Update()`**
 - [ ] **Step 3: Add state-machine tests in `forkdialog_test.go`**
 - [ ] **Step 4: Run, commit**
 
@@ -779,3 +794,4 @@ Gaps 2, 3-CLI, 4-CLI, 5, 6, 7, 8, 9, 10-CLI are CLOSED by PR #1263. Gap 1 and ga
 - 2026-06-03: FUS-003 — Reconciled the plan with what has landed since 2026-05-18. **PR-A merged as PR #1263** (merge commit `5dc3e912`); the **VCS backend abstraction** (`internal/vcs`, `internal/vcsbackend`, `internal/jujutsu`, `cmd/agent-deck/vcs_helper.go`) and the **materialize-from-repo-root followup #1277** also landed on main. Plan updates: marked all PR-A tasks (A1–A10) complete with a LANDED banner and an as-merged note on A3 (the merged `session_cmd.go` is decomposed and backend-routed — early non-git guard, mutually-exclusive collision gate, backend-routed reuse gated `!wantState`, mid-op actionable messages, submodule warning, HeadCommit stdout-only, cleanup-on-error — superseding the A3 snippet). **Rewrote PR-B Task B4** to route through the backend abstraction on the TUI side (with-state stays git-direct behind an early `backend.Type() == vcs.TypeGit` guard; reuse and the non-state path go through the backend), mirroring #1263. Added salvage guidance for the old PR-B branch (B1–B3 + B5 dialog-UI commits salvageable; B4 must be rewritten). Bumped the toolchain pin from `go1.24.0` to `go1.25.11` throughout (main's `go.mod` now requires Go 1.25.11).
 - 2026-06-04: FUS-004 — Updated PR-B reconstruction references to use the active `worktree/fork-state-tui-followup` worktree and demoted the old PR-B branch to reference-only commit salvage. Confirmed the plan's toolchain references match `go.mod`'s Go 1.25.11 requirement.
 - 2026-06-04: FUS-005 — Reconciled all PR-A task references against checked-in code. Updated A1 for stdout-only `HeadCommit` and its stderr-warning regression test, A2 for collision constants and `GetWorktreeForBranch` error propagation, A3 for branch-prefix/path guards, and A8 for the expanded CLI eval suite that landed with PR #1263.
+- 2026-06-04: FUS-006 — Folded four PR-B UI design decisions (resolved with @smorin) into the B1–B4 task specs: (1) collision UX is a static "creates a NEW branch at parent HEAD" hint + reject-at-submit (no async dialog state); (2) labels are `Carry parent state` / `Include gitignored files`, matching the CLI flags; (3) `y`/`i` shortcuts retained (verified they don't clash with branch-name typing); (4) the B2 focus-target refactor is now REQUIRED — the checkboxes are focus stops toggled with `Space`/`Enter` (plus `y`/`i`), with nested invariants enforced by skipping disabled targets. Added a DESIGN DECISIONS block under the PR-B banner and updated B2/B3 accordingly.

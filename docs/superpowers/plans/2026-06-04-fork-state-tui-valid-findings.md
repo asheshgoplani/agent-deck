@@ -771,7 +771,7 @@ go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|Gitignored
 Add a changelog entry:
 
 ```md
-- 2026-06-04: FUS-006 — Added PR-B audit-finding plan coverage for preserving fork-with-state dialog values through submit, bare-repo project-root worktree visibility, full CLI-safeguard mirroring in TUI with-state submit, and concrete TUI submit-path tests.
+- 2026-06-04: FUS-007 — Added PR-B audit-finding plan coverage for preserving fork-with-state dialog values through submit, bare-repo project-root worktree visibility, full CLI-safeguard mirroring in TUI with-state submit, and concrete TUI submit-path tests. (FUS-006 is the four-UI-decisions fold in the plan/spec.)
 ```
 
 - [ ] **Step 4: Run doc checks**
