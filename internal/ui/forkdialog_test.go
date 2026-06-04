@@ -208,6 +208,93 @@ func TestForkDialog_Show_ClearsError(t *testing.T) {
 	}
 }
 
+// ===== Fork-with-state dialog state (PR-B Task B1) =====
+
+func TestForkDialog_WithState_DefaultsFalseAfterShow(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	if d.IsWithStateEnabled() {
+		t.Error("IsWithStateEnabled should default false after Show")
+	}
+	if d.IsWithStateAndGitignoredEnabled() {
+		t.Error("IsWithStateAndGitignoredEnabled should default false after Show")
+	}
+}
+
+func TestForkDialog_ToggleWithState_NoOpUnlessWorktreeEnabled(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = false
+	d.ToggleWithState()
+	if d.IsWithStateEnabled() {
+		t.Error("ToggleWithState must be a no-op when worktree is disabled")
+	}
+}
+
+func TestForkDialog_ToggleWithState_EnablesWhenWorktreeEnabled(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	if !d.IsWithStateEnabled() {
+		t.Error("ToggleWithState should enable with-state when worktree is on")
+	}
+}
+
+func TestForkDialog_ToggleWorktreeOff_ClearsWithStateAndGitignored(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()              // with-state on
+	d.ToggleWithStateAndGitignored() // gitignored on
+	d.ToggleWorktree()               // worktree off -> must clear nested state
+	if d.IsWorktreeEnabled() {
+		t.Fatal("precondition: worktree should now be off")
+	}
+	if d.IsWithStateEnabled() {
+		t.Error("turning worktree off must clear with-state")
+	}
+	if d.IsWithStateAndGitignoredEnabled() {
+		t.Error("turning worktree off must clear gitignored")
+	}
+}
+
+func TestForkDialog_ToggleGitignored_NoOpUnlessWithStateEnabled(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true // with-state still off
+	d.ToggleWithStateAndGitignored()
+	if d.IsWithStateAndGitignoredEnabled() {
+		t.Error("ToggleWithStateAndGitignored must be a no-op when with-state is off")
+	}
+}
+
+func TestForkDialog_ToggleGitignored_EnablesWhenWithStateEnabled(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	d.ToggleWithStateAndGitignored()
+	if !d.IsWithStateAndGitignoredEnabled() {
+		t.Error("ToggleWithStateAndGitignored should enable gitignored when with-state on")
+	}
+}
+
+func TestForkDialog_ToggleWithStateOff_ClearsGitignored(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeEnabled = true
+	d.ToggleWithState()              // on
+	d.ToggleWithStateAndGitignored() // gitignored on
+	d.ToggleWithState()              // off -> must clear gitignored
+	if d.IsWithStateEnabled() {
+		t.Fatal("precondition: with-state should now be off")
+	}
+	if d.IsWithStateAndGitignoredEnabled() {
+		t.Error("turning with-state off must clear gitignored")
+	}
+}
+
 // TestForkDialog_NameInput_AcceptsUnderscore verifies that typing '_' into the
 // name input reaches the textinput buffer (regression test for BUG-02).
 func TestForkDialog_NameInput_AcceptsUnderscore(t *testing.T) {

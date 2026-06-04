@@ -32,6 +32,10 @@ type ForkDialog struct {
 	branchInput     textinput.Model
 	branchPicker    *BranchPickerDialog
 	isGitRepo       bool
+	// Fork-with-state (PR-B): carry the parent's working-tree state into the
+	// new worktree. Nested under worktree; gitignored nested under with-state.
+	withStateEnabled       bool
+	withStateAndGitignored bool
 	// Docker sandbox support
 	sandboxEnabled bool
 
@@ -114,6 +118,8 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
 	d.worktreeToggled = false
+	d.withStateEnabled = false
+	d.withStateAndGitignored = false
 	d.sandboxEnabled = false
 	d.isGitRepo = git.IsGitRepo(projectPath)
 
@@ -194,6 +200,45 @@ func (d *ForkDialog) SetSize(width, height int) {
 func (d *ForkDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
 	d.worktreeToggled = true // user made an explicit choice; see #1185.
+	if !d.worktreeEnabled {
+		// Worktree off clears the nested with-state selections (with-state
+		// only applies to a freshly created worktree).
+		d.withStateEnabled = false
+		d.withStateAndGitignored = false
+	}
+}
+
+// IsWithStateEnabled reports whether the fork should carry the parent's
+// working-tree state into the new worktree (the --with-state behavior).
+func (d *ForkDialog) IsWithStateEnabled() bool {
+	return d.withStateEnabled
+}
+
+// IsWithStateAndGitignoredEnabled reports whether gitignored files are also
+// carried (the --with-state-and-gitignored behavior).
+func (d *ForkDialog) IsWithStateAndGitignoredEnabled() bool {
+	return d.withStateAndGitignored
+}
+
+// ToggleWithState flips the carry-parent-state selection. No-op unless worktree
+// creation is enabled. Turning it off clears the nested gitignored selection.
+func (d *ForkDialog) ToggleWithState() {
+	if !d.worktreeEnabled {
+		return
+	}
+	d.withStateEnabled = !d.withStateEnabled
+	if !d.withStateEnabled {
+		d.withStateAndGitignored = false
+	}
+}
+
+// ToggleWithStateAndGitignored flips the include-gitignored selection. No-op
+// unless carry-parent-state is enabled.
+func (d *ForkDialog) ToggleWithStateAndGitignored() {
+	if !d.withStateEnabled {
+		return
+	}
+	d.withStateAndGitignored = !d.withStateAndGitignored
 }
 
 // IsWorktreeExplicit reports whether the worktree state reflects an explicit
