@@ -4,9 +4,9 @@
 
 **Goal:** Close the 11 gaps identified after upstream merged #1030 (commit `6a1645eb`) into the fork-with-state feature, split across two PRs.
 
-**Architecture:** Layer on top of upstream's merged API (`MaterializeWipFromParent`, `CreateWorktreeWithStateAndSetup`). Add new helpers in new files; modify the CLI and TUI handlers to wrap upstream's wrapper with our pre-checks and cleanup. Do not refactor or replace upstream's just-merged code.
+**Architecture:** Layer on top of upstream's merged API (`MaterializeWipFromParent`, `CreateWorktreeWithStateAndSetup`). The with-state CLI path is already decomposed by PR #1263, and PR-B mirrors that on the TUI side (`CreateWorktreeAtStartPoint` → `MaterializeWipFromParent` → `RunWorktreeSetupAfterCreate`) behind a git-backend guard; non-state creation stays backend-routed and can continue using the upstream wrapper. Do not refactor or replace upstream's just-merged code.
 
-**Tech Stack:** Go 1.25.10 (pinned via `GOTOOLCHAIN`), bubbletea/lipgloss for TUI, shelling out to `git` for diff/apply/ls-files/worktree/branch ops.
+**Tech Stack:** Go 1.25.11 (pinned via `GOTOOLCHAIN`), bubbletea/lipgloss for TUI, shelling out to `git` for diff/apply/ls-files/worktree/branch ops.
 
 **Spec:** [`docs/superpowers/specs/2026-05-18-fork-with-state-followup-design.md`](../specs/2026-05-18-fork-with-state-followup-design.md)
 **Gap analysis:** [`docs/superpowers/discussions/2026-05-18-post-merge-gap-analysis.md`](../discussions/2026-05-18-post-merge-gap-analysis.md)
@@ -15,7 +15,7 @@
 ## Pre-flight (one-time, before Task 1)
 
 ```bash
-export GOTOOLCHAIN=go1.25.10
+export GOTOOLCHAIN=go1.25.11
 # Verify local main is current: PR-A has LANDED (#1263) and the materialize-from-repo-root
 # followup (#1277) followed it. The original #1030 merge is the older baseline.
 git fetch upstream
@@ -24,10 +24,10 @@ git log --oneline upstream/main | grep -E "1263|1277|1030" | head
 #   5dc3e912 PR #1263 (--with-state CLI: A1–A10), 6a1645eb #1030 (original --with-state)
 
 # Sanity-check upstream's tests pass on local clone
-GOTOOLCHAIN=go1.25.10 go test ./internal/git/... -run "RegressionFor1029|WithState" -race -count=1
+GOTOOLCHAIN=go1.25.11 go test ./internal/git/... -run "RegressionFor1029|WithState" -race -count=1
 ```
 
-Per `CONTRIBUTING.md`, PR-A branches from `main` and is pushed to `smorin/agent-deck` (origin); PR-B does the same but rebases onto `main` after PR-A merges.
+Per `CONTRIBUTING.md`, PR-A branched from `main` and was pushed to `smorin/agent-deck` (origin). PR-B now continues in `worktree/fork-state-tui-followup` on current main after PR-A merged.
 
 ---
 
@@ -36,25 +36,25 @@ Per `CONTRIBUTING.md`, PR-A branches from `main` and is pushed to `smorin/agent-
 | File | Action | PR |
 |---|---|---|
 | `internal/git/git.go` | Modify — add `HeadCommit`, `CreateWorktreeAtStartPoint` | A |
-| `internal/git/git_test.go` | Modify — add `TestCreateWorktreeAtStartPoint_*` tests | A |
-| `internal/git/fork_with_state_destination.go` | Create — `ValidateForkWithStateDestination`, `DestinationCollisionError` | A |
+| `internal/git/git_test.go` | Modify — add `TestCreateWorktreeAtStartPoint_*` and `TestHeadCommit_IgnoresGitWarningsOnStderr` tests | A |
+| `internal/git/fork_with_state_destination.go` | Create — `ValidateForkWithStateDestination`, `DestinationCollisionError`, collision kind constants, `HasSubmodules`, `DetectInProgressOperation` | A |
 | `internal/git/fork_with_state_destination_test.go` | Create — validator tests | A |
-| `internal/git/materialize_wip_invariant_test.go` | Create — parent-untouched invariant test | A |
+| `internal/git/materialize_wip_invariant_test.go` | Create — `TestMaterializeWipFromParent_ParentUntouched` | A |
 | `internal/git/fork_with_state_integration_test.go` | Create — bare-repo + setup-hook observation tests | A |
 | `internal/git/issue1029_edge_test.go` | Modify — add 4 missing mid-op refusal tests | A |
 | `cmd/agent-deck/session_cmd.go` | Modify — parent-HEAD + destination validation + cleanup-on-error + before-start hook | A |
 | `cmd/agent-deck/session_cmd_fork_state_test.go` | Create — CLI contract tests | A |
-| `tests/eval/session/fork_with_state_test.go` | Create — eval smoke for CLI | A |
+| `tests/eval/session/fork_with_state_test.go` | Create — CLI eval suite for real-binary with-state behavior and refusal/warning paths | A |
 | `internal/ui/forkdialog.go` | Modify — sub-checkboxes, focus order, getters | B |
 | `internal/ui/forkdialog_test.go` | Modify — state-machine tests | B |
 | `internal/ui/forkdialog_eval_test.go` | Create — TUI behavioral eval | B |
-| `internal/ui/home.go` | Modify — TUI submit wires collision check + cleanup-on-error | B |
+| `internal/ui/home.go` | Modify — TUI submit wires the git-only decomposed with-state path with collision check + cleanup, while keeping non-state creation backend-routed | B |
 
 ---
 
 # PR-A — Correctness fixes + test hardening (CLI surface)
 
-> ✅ **LANDED — merged as PR #1263 (2026-06-03).** Tasks A1–A10 are complete. The task bodies below are historical; the as-merged implementation differs from the snippets (see the A3 note). Do not re-implement.
+> ✅ **LANDED — merged as PR #1263 (2026-06-03).** Tasks A1–A10 are complete. The task bodies below are historical, with as-merged reconciliation notes added where the checked-in code differs from the draft snippets. Do not re-implement.
 
 Closes gaps 2, 3, 4 (CLI portion), 5, 6, 7, 8, 9, 10 (CLI portion).
 
@@ -65,6 +65,8 @@ Closes gaps 2, 3, 4 (CLI portion), 5, 6, 7, 8, 9, 10 (CLI portion).
 - Modify: `internal/git/git_test.go`
 
 Upstream's `CreateWorktree(repoDir, ...)` creates from invocation dir's HEAD, which is wrong when the parent session lives in a linked worktree. Add two helpers: `HeadCommit(repoDir)` returns the resolved commit at `repoDir`'s HEAD (works for normal repos, linked worktrees, and bare-repo project roots via `resolveGitInvocationDir`); `CreateWorktreeAtStartPoint(repoDir, worktreePath, branch, startPoint)` creates a new branch worktree from an explicit commit, and returns `createdBranch=true` only when git actually created the branch (so cleanup can be proof-based, not intent-based).
+
+> **AS-MERGED NOTE (PR #1263):** `HeadCommit` uses `cmd.Output()` with stderr captured separately, not `CombinedOutput()`, so git warnings on stderr cannot be trimmed into the commit hash. The checked-in tests also include `TestHeadCommit_IgnoresGitWarningsOnStderr`.
 
 - [x] **Step 1: Write failing tests in `internal/git/git_test.go`**
 
@@ -124,7 +126,7 @@ func TestCreateWorktreeAtStartPoint_RejectsExistingBranch(t *testing.T) {
 }
 ```
 
-- [x] **Step 2: Run, confirm FAIL** — `GOTOOLCHAIN=go1.25.10 go test ./internal/git/ -run TestCreateWorktreeAtStartPoint -v` should fail with `undefined: HeadCommit`, `undefined: CreateWorktreeAtStartPoint`.
+- [x] **Step 2: Run, confirm FAIL** — `GOTOOLCHAIN=go1.25.11 go test ./internal/git/ -run TestCreateWorktreeAtStartPoint -v` should fail with `undefined: HeadCommit`, `undefined: CreateWorktreeAtStartPoint`.
 
 - [x] **Step 3: Add helpers in `internal/git/git.go`** (near `CreateWorktree`):
 
@@ -134,9 +136,11 @@ func TestCreateWorktreeAtStartPoint_RejectsExistingBranch(t *testing.T) {
 func HeadCommit(repoDir string) (string, error) {
 	repoDir = resolveGitInvocationDir(repoDir)
 	cmd := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "HEAD^{commit}")
-	output, err := cmd.CombinedOutput()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to resolve HEAD commit: %s: %w", strings.TrimSpace(string(output)), err)
+		return "", fmt.Errorf("failed to resolve HEAD commit: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
@@ -168,7 +172,7 @@ func CreateWorktreeAtStartPoint(repoDir, worktreePath, branchName, startPoint st
 }
 ```
 
-- [x] **Step 4: Run, confirm PASS** — `GOTOOLCHAIN=go1.25.10 go test ./internal/git/ -run TestCreateWorktreeAtStartPoint -v`
+- [x] **Step 4: Run, confirm PASS** — `GOTOOLCHAIN=go1.25.11 go test ./internal/git/ -run TestCreateWorktreeAtStartPoint -v`
 
 - [x] **Step 5: Commit**
 
@@ -185,7 +189,9 @@ git commit -m "feat(git): HeadCommit + CreateWorktreeAtStartPoint for fork-with-
 - Create: `internal/git/fork_with_state_destination.go`
 - Create: `internal/git/fork_with_state_destination_test.go`
 
-Shared `internal/git` helper that returns typed collision errors. Both CLI and TUI handlers call this before invoking upstream's `CreateWorktreeWithStateAndSetup`. Worktree-existence is checked first (more specific error, includes path).
+Shared `internal/git` helper that returns typed collision errors. The CLI calls this before its decomposed with-state path, and the TUI must do the same before `CreateWorktreeAtStartPoint`. Worktree-existence is checked first (more specific error, includes path).
+
+> **AS-MERGED NOTE (PR #1263):** The checked-in validator uses exported collision-kind constants (`CollisionWorktreeExists`, `CollisionBranchExists`) and propagates `GetWorktreeForBranch` failures as `checking existing worktrees: ...`. This task's original snippet ignored that error and used string literals.
 
 - [x] **Step 1: Write failing tests in `internal/git/fork_with_state_destination_test.go`**
 
@@ -218,12 +224,12 @@ func TestValidateForkWithStateDestination_BranchExists(t *testing.T) {
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %T %v, want *DestinationCollisionError", err, err)
 	}
-	if collErr.Kind != "branch_exists" || collErr.Branch != "fork/existing" {
+	if collErr.Kind != CollisionBranchExists || collErr.Branch != "fork/existing" {
 		t.Fatalf("unexpected error: %+v", collErr)
 	}
 }
 
-func TestValidateForkWithStateDestination_WorktreeExists(t *testing.T) {
+func TestValidateForkWithStateDestination_WorktreeExists_TakesPrecedence(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "base")
 	if err := os.MkdirAll(base, 0o755); err != nil { t.Fatal(err) }
@@ -239,7 +245,7 @@ func TestValidateForkWithStateDestination_WorktreeExists(t *testing.T) {
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %T %v, want *DestinationCollisionError", err, err)
 	}
-	if collErr.Kind != "worktree_exists" || collErr.Path == "" {
+	if collErr.Kind != CollisionWorktreeExists || collErr.Path == "" {
 		t.Fatalf("unexpected error: %+v", collErr)
 	}
 }
@@ -254,20 +260,26 @@ package git
 
 import "fmt"
 
+// Recognized values for DestinationCollisionError.Kind.
+const (
+	CollisionWorktreeExists = "worktree_exists"
+	CollisionBranchExists   = "branch_exists"
+)
+
 // DestinationCollisionError is returned by ValidateForkWithStateDestination
 // when the requested destination branch already has a worktree or already
 // exists as a local branch. Callers own user-facing wording.
 type DestinationCollisionError struct {
-	Kind   string // "worktree_exists" or "branch_exists"
+	Kind   string // CollisionWorktreeExists or CollisionBranchExists
 	Branch string
-	Path   string // populated when Kind == "worktree_exists"
+	Path   string // populated when Kind == CollisionWorktreeExists
 }
 
 func (e *DestinationCollisionError) Error() string {
 	switch e.Kind {
-	case "worktree_exists":
+	case CollisionWorktreeExists:
 		return fmt.Sprintf("branch %q already has a worktree at %s", e.Branch, e.Path)
-	case "branch_exists":
+	case CollisionBranchExists:
 		return fmt.Sprintf("branch %q already exists", e.Branch)
 	default:
 		return fmt.Sprintf("destination collision for branch %q", e.Branch)
@@ -278,11 +290,15 @@ func (e *DestinationCollisionError) Error() string {
 // gate for fork-with-state. Worktree-collision is checked first so the more
 // specific error (with path) is surfaced when both conditions are true.
 func ValidateForkWithStateDestination(repoRoot, branch string) error {
-	if path, err := GetWorktreeForBranch(repoRoot, branch); err == nil && path != "" {
-		return &DestinationCollisionError{Kind: "worktree_exists", Branch: branch, Path: path}
+	path, err := GetWorktreeForBranch(repoRoot, branch)
+	if err != nil {
+		return fmt.Errorf("checking existing worktrees: %w", err)
+	}
+	if path != "" {
+		return &DestinationCollisionError{Kind: CollisionWorktreeExists, Branch: branch, Path: path}
 	}
 	if BranchExists(repoRoot, branch) {
-		return &DestinationCollisionError{Kind: "branch_exists", Branch: branch}
+		return &DestinationCollisionError{Kind: CollisionBranchExists, Branch: branch}
 	}
 	return nil
 }
@@ -311,6 +327,7 @@ Strategy: when `wantState` is true, take a custom flow; when false, delegate to 
 > ⚠️ **AS-MERGED NOTE (PR #1263):** The code snippet in this task is **superseded by the merged `cmd/agent-deck/session_cmd.go`**. As merged, the with-state path is **DECOMPOSED and routed through the VCS backend abstraction** (`internal/vcs`, `internal/vcsbackend`, `cmd/agent-deck/vcs_helper.go`'s `detectAndCreateBackend`), not the single literal flow below. Deltas from this snippet, all of which landed:
 > - **Early non-git guard placed BEFORE the git-direct collision gate:** `if wantState && backend.Type() != vcs.TypeGit { reject }`. This is what makes the subsequent git-direct calls jujutsu-safe — with-state is git-only and vcsbackend has no with-state methods.
 > - **Mutually-exclusive collision gate:** `if wantState { ValidateForkWithStateDestination(...) } else if !createNewBranch && !backend.BranchExists(...) { "branch does not exist (use -b)" }`.
+> - **Branch prefix and path guard:** the configured branch prefix is applied before validation, and an already-existing computed worktree path is refused before creation.
 > - **Reuse routed through the backend** via `backend.GetWorktreeForBranch(...)`, gated on `!wantState`.
 > - **Mid-op refusal with actionable abort commands** in the error text; **submodule warning**; **`HeadCommit` written to stdout only**; **cleanup-on-error** carrying a `branchCleanupHint`.
 >
@@ -418,9 +435,9 @@ func RunWorktreeSetupAfterCreate(repoDir, worktreePath string, stdout, stderr io
 }
 ```
 
-- [x] **Step 4: Verify the package compiles** — `GOTOOLCHAIN=go1.25.10 go build ./cmd/agent-deck/...`
+- [x] **Step 4: Verify the package compiles** — `GOTOOLCHAIN=go1.25.11 go build ./cmd/agent-deck/...`
 
-- [x] **Step 5: Run upstream's existing fork tests** — `GOTOOLCHAIN=go1.25.10 go test ./cmd/agent-deck/... ./internal/git/... -run "Fork|WithState|RegressionFor1029" -race -count=1`. Should still pass.
+- [x] **Step 5: Run upstream's existing fork tests** — `GOTOOLCHAIN=go1.25.11 go test ./cmd/agent-deck/... ./internal/git/... -run "Fork|WithState|RegressionFor1029" -race -count=1`. Should still pass.
 
 - [x] **Step 6: Commit**
 
@@ -466,12 +483,14 @@ if sessionForkBeforeStartHook != nil {
 - `TestSessionFork_WithState_RejectsExistingDestinationBranch` — `-w fork/existing --with-state` → error mentions "already exists"
 - `TestSessionFork_WithState_RejectsExistingDestinationWorktree` — pre-create worktree, then `-w fork/used --with-state` → error mentions "already has a worktree"
 - `TestSessionFork_WithStateOptionsPropagatedBeforeStart` — uses `sessionForkBeforeStartHook` to capture the resolved `git.WorktreeStateOptions` plus the forked `*session.Instance`, asserts `state.WithState && state.WithIgnored` and that the forked instance was created on the requested worktree branch (e.g. `fork/with-env`). The flags do **not** live on `session.ClaudeOptions` — upstream's #1030 routes them through the git layer.
+- `TestSessionFork_WithStateHookCapturesResolvedStateBeforeStart` — verifies the hook captures the resolved parent/fork instances and state before `Start()`.
+- `TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard` — source-level guard that the CLI surfaces actionable mid-op abort guidance before worktree creation.
 
 - [x] **Step 3: Add 4 missing mid-op refusal tests in `internal/git/issue1029_edge_test.go`**
 
-Upstream has `TestRefuseUnsafeParentState_Merge` (or similar). Add `_Rebase`, `_CherryPick`, `_Revert`, `_Bisect` — each forces the corresponding mid-op state then asserts `MaterializeWipFromParent` returns an error mentioning the kind.
+Upstream has merge coverage (or similar). Add `TestRefuseUnsafeParentState_Rebase_RegressionForFollowup`, `_CherryPick_RegressionForFollowup`, `_Revert_RegressionForFollowup`, and `_Bisect_RegressionForFollowup` — each forces the corresponding mid-op state then asserts `MaterializeWipFromParent` returns an error mentioning the kind.
 
-- [x] **Step 4: Run** — `GOTOOLCHAIN=go1.25.10 go test ./cmd/agent-deck/... ./internal/git/... -run "SessionFork_WithState|RefuseUnsafeParentState" -race -count=1`
+- [x] **Step 4: Run** — `GOTOOLCHAIN=go1.25.11 go test ./cmd/agent-deck/... ./internal/git/... -run "SessionFork_WithState|RefuseUnsafeParentState" -race -count=1`
 
 - [x] **Step 5: Commit**
 
@@ -576,9 +595,9 @@ Setup script writes the SHA of a parent-WIP file into a marker. Test asserts the
 **Files:**
 - Create: `tests/eval/session/fork_with_state_test.go`
 
-Eval-tagged (`//go:build eval_smoke`) test that runs the compiled `agent-deck` binary against a scratch HOME, a fake `claude` script, and a real git repo. Asserts that `agent-deck session fork <parent> --with-state-and-gitignored -w fork/eval` creates a new destination worktree at the correct path with parent's WIP materialized.
+Eval-tagged (`//go:build eval_smoke`) suite that runs the compiled `agent-deck` binary against a scratch HOME and real git repos. As merged, it covers `TestEval_SessionForkWithState_RealBinary`, `TestEval_SessionForkWithState_RejectsExistingBranch`, `TestEval_SessionForkWithState_RejectsExistingWorktree`, `TestEval_SessionForkWithState_RefusesMidRebaseParent`, and `TestEval_SessionForkWithState_SubmoduleWarning`.
 
-- [x] **Step 1: Write the eval test** — model after existing evals in `tests/eval/session/`
+- [x] **Step 1: Write the eval suite** — model after existing evals in `tests/eval/session/`
 - [x] **Step 2: Run with `-tags eval_smoke`, commit**
 
 ---
@@ -588,9 +607,9 @@ Eval-tagged (`//go:build eval_smoke`) test that runs the compiled `agent-deck` b
 - [x] **Step 1: Run formatter + linter + tests**
 
 ```bash
-GOTOOLCHAIN=go1.25.10 make fmt
-GOTOOLCHAIN=go1.25.10 make lint
-GOTOOLCHAIN=go1.25.10 make test
+GOTOOLCHAIN=go1.25.11 make fmt
+GOTOOLCHAIN=go1.25.11 make lint
+GOTOOLCHAIN=go1.25.11 make test
 ```
 
 - [x] **Step 2: Run the mandate suite** — from the followup spec's `## Mandatory test coverage` section.
@@ -598,7 +617,7 @@ GOTOOLCHAIN=go1.25.10 make test
 - [x] **Step 3: Re-run upstream's existing tests to confirm no regression**
 
 ```bash
-GOTOOLCHAIN=go1.25.10 go test ./internal/git/... -run "Issue1029|RegressionFor1029" -race -count=1
+GOTOOLCHAIN=go1.25.11 go test ./internal/git/... -run "Issue1029|RegressionFor1029" -race -count=1
 ```
 
 - [x] **Step 4: Commit fixes if any**
@@ -615,7 +634,7 @@ GOTOOLCHAIN=go1.25.10 go test ./internal/git/... -run "Issue1029|RegressionFor10
 
 # PR-B — TUI integration (depends on PR-A merge)
 
-> **STATUS (2026-06-03 audit):** PR-B exists on the stale branch `feature/fork-with-state-tui` (commits B1–B5) but is ~188 commits behind main and was built on the old git-direct PR-A base. **Reconstruct onto current main + the VCS backend abstraction.** Salvage the dialog-UI commits (B1–B3, B5 — backend-agnostic); **rewrite B4** against the backend.
+> **STATUS (2026-06-04 audit):** PR-B is being reconstructed in `worktree/fork-state-tui-followup` on current main + the VCS backend abstraction. The old PR-B branch is reference-only: salvage the dialog-UI commits (B1–B3, B5 — backend-agnostic); **rewrite B4** against the backend.
 
 Closes gap 1, plus the TUI portions of gaps 3, 4, and 10.
 
@@ -626,11 +645,11 @@ Closes gap 1, plus the TUI portions of gaps 3, 4, and 10.
 
 Add `withStateEnabled bool` and `withStateAndGitignored bool` fields. Exported getters: `IsWithStateEnabled()`, `IsWithStateAndGitignoredEnabled()`. Toggle methods: `ToggleWithState()`, `ToggleWithStateAndGitignored()`. Nested-state invariants: `ToggleWithState` is a no-op unless worktree is on; `ToggleWorktree` clears with-state if turning off; `ToggleWithStateAndGitignored` is a no-op unless with-state is on; `ToggleWithState` clears gitignored if turning off.
 
-> **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses numeric `focusIndex` and has zero with-state UI, so this task is genuinely absent on main. The stale-branch commit `e573f4f8` (B1 state+getters) is salvageable as-is.
+> **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses numeric `focusIndex` and has zero with-state UI, so this task is genuinely absent on main. Reference commit `e573f4f8` (B1 state+getters) is salvageable as-is.
 
 - [ ] **Step 1: Add fields, exported getters, and toggle methods**
 - [ ] **Step 2: Reset fields in `Show()` and `Hide()`**
-- [ ] **Step 3: Verify compile** — `GOTOOLCHAIN=go1.25.10 go build ./internal/ui/...`
+- [ ] **Step 3: Verify compile** — `GOTOOLCHAIN=go1.25.11 go build ./internal/ui/...`
 - [ ] **Step 4: Commit** — `git commit -m "feat(tui): ForkDialog state + getters for fork-with-state"`
 
 ## Task B2 — `ForkDialog` focus targets (gap 1)
@@ -640,7 +659,7 @@ Add `withStateEnabled bool` and `withStateAndGitignored bool` fields. Exported g
 
 Refactor to use the existing `NewDialog` focus-target pattern: declare `forkFocusTarget` enum, ordered `focusTargets` slice rebuilt on conditional toggles. Replace numeric `focusIndex` arithmetic.
 
-> **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses the numeric `focusIndex` arithmetic this task replaces. The stale-branch commit `dc5d42d2` (B2 focus-target) is salvageable.
+> **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses the numeric `focusIndex` arithmetic this task replaces. Reference commit `dc5d42d2` (B2 focus-target) is salvageable.
 
 - [ ] **Step 1-5: Apply focus-target refactor as documented in the deprecated plan's Task 15A**
 - [ ] **Step 6: Commit**
@@ -653,7 +672,7 @@ Refactor to use the existing `NewDialog` focus-target pattern: declare `forkFocu
 
 Render the two new checkboxes when worktree is on; render the gitignored checkbox nested when with-state is on. Wire `y` and `i` key handlers. Add state-machine tests (toggle requires worktree, toggling worktree off clears with-state, etc.).
 
-> **Still valid (backend-agnostic).** Pure dialog UI; no VCS coupling. The stale-branch commit `ba3ec451` (B3 checkboxes+handlers) is salvageable.
+> **Still valid (backend-agnostic).** Pure dialog UI; no VCS coupling. Reference commit `ba3ec451` (B3 checkboxes+handlers) is salvageable.
 
 - [ ] **Step 1: Add checkbox rendering in `View()`**
 - [ ] **Step 2: Add `y`/`i` key handlers in `Update()`**
@@ -682,7 +701,7 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 
 > **Design decision (mirrors #1263).** The collision check and the with-state worktree creation stay **git-direct** because with-state is git-only, gated behind the early `backend.Type() == vcs.TypeGit` guard; `vcsbackend` has no with-state methods. Reuse and the non-state path route through the **backend** (jujutsu-safe). This is the exact same split PR #1263 made on the CLI side.
 
-> **Salvage note.** Stale-branch commit `25623f6a` (B4 submit handler) was written against the dead git-direct PR-A API and **must be rewritten** against the backend abstraction per the steps above; it is NOT salvageable as-is.
+> **Salvage note.** Reference commit `25623f6a` (B4 submit handler) was written against the dead git-direct PR-A API and **must be rewritten** against the backend abstraction per the steps above; it is NOT salvageable as-is.
 
 - [ ] **Step 1-5: Implement (per the steps above), test, commit**
 
@@ -693,7 +712,7 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 
 Eval-tagged test that renders `ForkDialog`, drives `w → y → i` keystrokes, asserts visible checkbox text appears via substring checks on `View()` output, and asserts the getters report submitted values.
 
-> **Still valid (minor).** Pure dialog-render eval, no backend coupling. The stale-branch commit `fa14d61a` (B5 eval) is salvageable.
+> **Still valid (minor).** Pure dialog-render eval, no backend coupling. Reference commit `fa14d61a` (B5 eval) is salvageable.
 
 - [ ] **Step 1: Write `TestEval_ForkDialog_WithStateVisibleInteraction`**
 - [ ] **Step 2: Commit**
@@ -704,14 +723,14 @@ Eval-tagged test that renders `ForkDialog`, drives `w → y → i` keystrokes, a
 
 ## Task B7 — Open PR-B
 
-- [ ] **Step 1: Reconstruct on current main (this worktree), do NOT rebase the stale branch.** PR-A is already in main (#1263), so there is nothing to wait for. The stale `feature/fork-with-state-tui` branch is ~188 commits behind and built on the dead git-direct base — rebasing it would replay B4 against an API that no longer exists. Cherry-pick/port the salvageable dialog-UI commits (B1–B3 = `e573f4f8`, `dc5d42d2`, `ba3ec451`; B5 = `fa14d61a`) onto current main, then implement the rewritten B4 against the backend abstraction.
+- [ ] **Step 1: Continue in `worktree/fork-state-tui-followup` on current main; do NOT rebase the old PR-B branch.** PR-A is already in main (#1263), so there is nothing to wait for. The old branch was built on the dead git-direct base; rebasing it would replay B4 against an API that no longer exists. Cherry-pick/port the salvageable dialog-UI commits (B1–B3 = `e573f4f8`, `dc5d42d2`, `ba3ec451`; B5 = `fa14d61a`) onto current main, then implement the rewritten B4 against the backend abstraction.
 - [ ] **Step 2: Push + open PR-B** referencing PR-A (#1263) and the followup spec.
 
 ---
 
 ## Mandate verification (post-implementation)
 
-After Tasks A1-A10 and B1-B7 are all complete, run the followup spec's mandate suite (under the pinned `GOTOOLCHAIN=go1.25.10`):
+After Tasks A1-A10 and B1-B7 are all complete, run the followup spec's mandate suite (under the pinned `GOTOOLCHAIN=go1.25.11`):
 
 ```bash
 go test ./internal/git/... -run "Materialize|RefuseUnsafeParentState|ValidateForkWithStateDestination|CreateWorktreeAtStartPoint|HeadCommit|ForkWithState|Issue1029" -race -count=1
@@ -757,4 +776,6 @@ Gaps 2, 3-CLI, 4-CLI, 5, 6, 7, 8, 9, 10-CLI are CLOSED by PR #1263. Gap 1 and ga
 ## Review change log
 
 - 2026-05-19: FUS-002 — Removed stale references to ClaudeOptions.WithState/IncludeGitignored fields. Upstream's #1030 chose a different architecture (flags flow through git.WorktreeStateOptions, not ClaudeOptions). Plan corrected to reflect upstream's actual wiring; A4's CLI contract tests already adapted to the real shape. Dropped the `internal/session/tooloptions.go` file-map row and rewrote the A4 before-start hook signature + the propagation assertion to use `git.WorktreeStateOptions` instead of `*session.ClaudeOptions`.
-- 2026-06-03: FUS-003 — Reconciled the plan with what has landed since 2026-05-18. **PR-A merged as PR #1263** (merge commit `5dc3e912`); the **VCS backend abstraction** (`internal/vcs`, `internal/vcsbackend`, `internal/jujutsu`, `cmd/agent-deck/vcs_helper.go`) and the **materialize-from-repo-root followup #1277** also landed on main. Plan updates: marked all PR-A tasks (A1–A10) complete with a LANDED banner and an as-merged note on A3 (the merged `session_cmd.go` is decomposed and backend-routed — early non-git guard, mutually-exclusive collision gate, backend-routed reuse gated `!wantState`, mid-op actionable messages, submodule warning, HeadCommit stdout-only, cleanup-on-error — superseding the A3 snippet). **Rewrote PR-B Task B4** to route through the backend abstraction on the TUI side (with-state stays git-direct behind an early `backend.Type() == vcs.TypeGit` guard; reuse and the non-state path go through the backend), mirroring #1263. Added salvage guidance for the stale `feature/fork-with-state-tui` branch (B1–B3 + B5 dialog-UI commits salvageable; B4 must be rewritten). Bumped the toolchain pin from `go1.24.0` to `go1.25.10` throughout (main's `go.mod` now requires Go 1.25.10).
+- 2026-06-03: FUS-003 — Reconciled the plan with what has landed since 2026-05-18. **PR-A merged as PR #1263** (merge commit `5dc3e912`); the **VCS backend abstraction** (`internal/vcs`, `internal/vcsbackend`, `internal/jujutsu`, `cmd/agent-deck/vcs_helper.go`) and the **materialize-from-repo-root followup #1277** also landed on main. Plan updates: marked all PR-A tasks (A1–A10) complete with a LANDED banner and an as-merged note on A3 (the merged `session_cmd.go` is decomposed and backend-routed — early non-git guard, mutually-exclusive collision gate, backend-routed reuse gated `!wantState`, mid-op actionable messages, submodule warning, HeadCommit stdout-only, cleanup-on-error — superseding the A3 snippet). **Rewrote PR-B Task B4** to route through the backend abstraction on the TUI side (with-state stays git-direct behind an early `backend.Type() == vcs.TypeGit` guard; reuse and the non-state path go through the backend), mirroring #1263. Added salvage guidance for the old PR-B branch (B1–B3 + B5 dialog-UI commits salvageable; B4 must be rewritten). Bumped the toolchain pin from `go1.24.0` to `go1.25.11` throughout (main's `go.mod` now requires Go 1.25.11).
+- 2026-06-04: FUS-004 — Updated PR-B reconstruction references to use the active `worktree/fork-state-tui-followup` worktree and demoted the old PR-B branch to reference-only commit salvage. Confirmed the plan's toolchain references match `go.mod`'s Go 1.25.11 requirement.
+- 2026-06-04: FUS-005 — Reconciled all PR-A task references against checked-in code. Updated A1 for stdout-only `HeadCommit` and its stderr-warning regression test, A2 for collision constants and `GetWorktreeForBranch` error propagation, A3 for branch-prefix/path guards, and A8 for the expanded CLI eval suite that landed with PR #1263.
