@@ -130,6 +130,31 @@ func TestEffectiveConfigPath_LegacyWinsOnlyWhenXDGFileMissing(t *testing.T) {
 	}
 }
 
+func TestEffectiveConfigPath_XDGStatErrorDoesNotFallBackToLegacy(t *testing.T) {
+	home := setupHome(t)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	legacyPath := filepath.Join(home, ".agent-deck", "config.toml")
+	xdgPath := filepath.Join(home, ".config", AppDirName, "config.toml")
+
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(legacyPath), err)
+	}
+	if err := os.WriteFile(legacyPath, []byte("legacy = true\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", legacyPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(xdgPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(xdgPath), err)
+	}
+	if err := os.Symlink("config.toml", xdgPath); err != nil {
+		t.Fatalf("Symlink(%q) error = %v", xdgPath, err)
+	}
+
+	if got, err := EffectiveConfigPath("config.toml"); err == nil {
+		t.Fatalf("EffectiveConfigPath() = %q, want stat error", got)
+	}
+}
+
 func TestEffectiveDataDir_LegacyWinsOnlyWhenXDGDataMissing(t *testing.T) {
 	home := setupHome(t)
 	t.Setenv("XDG_DATA_HOME", "")
@@ -169,6 +194,57 @@ func TestEffectiveDataDir_LegacyWinsOnlyWhenXDGDataMissing(t *testing.T) {
 	}
 	if got != xdgDataDir {
 		t.Fatalf("EffectiveDataDir() = %q, want XDG data dir %q", got, xdgDataDir)
+	}
+}
+
+func TestEffectiveDataDir_LegacyMarkerWinsWhenXDGBaseExistsWithoutMarker(t *testing.T) {
+	home := setupHome(t)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	legacyDir := filepath.Join(home, ".agent-deck")
+	xdgDataDir := filepath.Join(home, ".local", "share", AppDirName)
+	legacyMarker := filepath.Join(legacyDir, "profiles", "default")
+
+	if err := os.MkdirAll(xdgDataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", xdgDataDir, err)
+	}
+	if err := os.MkdirAll(legacyMarker, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", legacyMarker, err)
+	}
+
+	got, err := EffectiveDataDir("profiles")
+	if err != nil {
+		t.Fatalf("EffectiveDataDir() error = %v", err)
+	}
+	if got != legacyDir {
+		t.Fatalf("EffectiveDataDir() = %q, want legacy dir %q", got, legacyDir)
+	}
+}
+
+func TestEffectiveDataDir_RejectsNonLocalMarkers(t *testing.T) {
+	setupHome(t)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	if got, err := EffectiveDataDir("../profiles"); err == nil {
+		t.Fatalf("EffectiveDataDir() = %q, want error", got)
+	}
+}
+
+func TestEffectiveDataPath_RejectsNonLocalName(t *testing.T) {
+	setupHome(t)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	if got, err := EffectiveDataPath("../escape"); err == nil {
+		t.Fatalf("EffectiveDataPath() = %q, want error", got)
+	}
+}
+
+func TestCachePath_RejectsNonLocalName(t *testing.T) {
+	setupHome(t)
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	if got, err := CachePath("../escape"); err == nil {
+		t.Fatalf("CachePath() = %q, want error", got)
 	}
 }
 

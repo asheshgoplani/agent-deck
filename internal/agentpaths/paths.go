@@ -1,7 +1,9 @@
 package agentpaths
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,9 +54,23 @@ func CacheDir() (string, error) {
 	return xdgDir("XDG_CACHE_HOME", ".cache")
 }
 
-func exists(path string) bool {
+func statExists(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat %q: %w", path, err)
+}
+
+func cleanLocal(name string) (string, error) {
+	cleaned := filepath.Clean(name)
+	if cleaned == "." || !filepath.IsLocal(cleaned) {
+		return "", fmt.Errorf("path must be local: %q", name)
+	}
+	return cleaned, nil
 }
 
 func EffectiveConfigPath(name string) (string, error) {
@@ -62,8 +78,13 @@ func EffectiveConfigPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Config paths are leaf filenames; callers should not pass nested paths here.
 	xdgPath := filepath.Join(configDir, filepath.Base(name))
-	if exists(xdgPath) {
+	ok, err := statExists(xdgPath)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return xdgPath, nil
 	}
 
@@ -72,7 +93,11 @@ func EffectiveConfigPath(name string) (string, error) {
 		return "", err
 	}
 	legacyPath := filepath.Join(legacyDir, filepath.Base(name))
-	if exists(legacyPath) {
+	ok, err = statExists(legacyPath)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return legacyPath, nil
 	}
 
@@ -84,19 +109,42 @@ func EffectiveDataDir(markers ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if exists(dataDir) {
+
+	cleanMarkers := make([]string, 0, len(markers))
+	for _, marker := range markers {
+		if marker == "" {
+			continue
+		}
+		cleanMarker, err := cleanLocal(marker)
+		if err != nil {
+			return "", err
+		}
+		cleanMarkers = append(cleanMarkers, cleanMarker)
+	}
+	if len(cleanMarkers) == 0 {
 		return dataDir, nil
+	}
+
+	for _, marker := range cleanMarkers {
+		ok, err := statExists(filepath.Join(dataDir, marker))
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return dataDir, nil
+		}
 	}
 
 	legacyDir, err := LegacyDir()
 	if err != nil {
 		return "", err
 	}
-	for _, marker := range markers {
-		if marker == "" {
-			continue
+	for _, marker := range cleanMarkers {
+		ok, err := statExists(filepath.Join(legacyDir, marker))
+		if err != nil {
+			return "", err
 		}
-		if exists(filepath.Join(legacyDir, filepath.Clean(marker))) {
+		if ok {
 			return legacyDir, nil
 		}
 	}
@@ -105,17 +153,25 @@ func EffectiveDataDir(markers ...string) (string, error) {
 }
 
 func EffectiveDataPath(name string, markers ...string) (string, error) {
+	cleanName, err := cleanLocal(name)
+	if err != nil {
+		return "", err
+	}
 	dataDir, err := EffectiveDataDir(markers...)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, filepath.Clean(name)), nil
+	return filepath.Join(dataDir, cleanName), nil
 }
 
 func CachePath(name string) (string, error) {
+	cleanName, err := cleanLocal(name)
+	if err != nil {
+		return "", err
+	}
 	cacheDir, err := CacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cacheDir, filepath.Clean(name)), nil
+	return filepath.Join(cacheDir, cleanName), nil
 }
