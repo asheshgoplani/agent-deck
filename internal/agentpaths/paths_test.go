@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+func TestLegacyDir_DefaultsToHomeAgentDeck(t *testing.T) {
+	home := setupHome(t)
+
+	legacyDir, err := LegacyDir()
+	if err != nil {
+		t.Fatalf("LegacyDir() error = %v", err)
+	}
+	if want := filepath.Join(home, ".agent-deck"); legacyDir != want {
+		t.Fatalf("LegacyDir() = %q, want %q", legacyDir, want)
+	}
+}
+
 func TestXDGDirs_DefaultToHomeFallbacks(t *testing.T) {
 	home := setupHome(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -79,6 +91,14 @@ func TestEffectiveConfigPath_LegacyWinsOnlyWhenXDGFileMissing(t *testing.T) {
 	legacyPath := filepath.Join(home, ".agent-deck", "config.toml")
 	xdgPath := filepath.Join(home, ".config", AppDirName, "config.toml")
 
+	got, err := EffectiveConfigPath("config.toml")
+	if err != nil {
+		t.Fatalf("EffectiveConfigPath() error = %v", err)
+	}
+	if got != xdgPath {
+		t.Fatalf("EffectiveConfigPath() = %q, want XDG path %q", got, xdgPath)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(legacyPath), err)
 	}
@@ -86,7 +106,7 @@ func TestEffectiveConfigPath_LegacyWinsOnlyWhenXDGFileMissing(t *testing.T) {
 		t.Fatalf("WriteFile(%q) error = %v", legacyPath, err)
 	}
 
-	got, err := EffectiveConfigPath("config.toml")
+	got, err = EffectiveConfigPath("config.toml")
 	if err != nil {
 		t.Fatalf("EffectiveConfigPath() error = %v", err)
 	}
@@ -119,11 +139,19 @@ func TestEffectiveDataDir_LegacyWinsOnlyWhenXDGDataMissing(t *testing.T) {
 	legacyMarker := filepath.Join(legacyDir, "profiles", "default")
 	xdgMarker := filepath.Join(xdgDataDir, "profiles")
 
+	got, err := EffectiveDataDir("profiles")
+	if err != nil {
+		t.Fatalf("EffectiveDataDir() error = %v", err)
+	}
+	if got != xdgDataDir {
+		t.Fatalf("EffectiveDataDir() = %q, want XDG data dir %q", got, xdgDataDir)
+	}
+
 	if err := os.MkdirAll(legacyMarker, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%q) error = %v", legacyMarker, err)
 	}
 
-	got, err := EffectiveDataDir("profiles")
+	got, err = EffectiveDataDir("profiles")
 	if err != nil {
 		t.Fatalf("EffectiveDataDir() error = %v", err)
 	}
