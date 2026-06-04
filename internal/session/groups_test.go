@@ -270,6 +270,33 @@ func TestSubgroupSortingWithUnrelatedRoots(t *testing.T) {
 	}
 }
 
+func TestUtilityGroupsPinnedToBottom(t *testing.T) {
+	// The default "my-sessions" group is created from an ungrouped instance so
+	// its path matches DefaultGroupPath (CreateGroup("My Sessions") would yield
+	// the distinct path "My-Sessions").
+	tree := NewGroupTree([]*Instance{{ID: "1", Title: "s1", GroupPath: ""}})
+
+	// Created in an order that does NOT match the desired bottom order, to prove
+	// the pins (not creation order) decide placement.
+	tree.CreateGroup("conductor")
+	tree.CreateGroup("doozyx")
+	tree.CreateGroup("fjordbyte")
+
+	items := tree.Flatten()
+
+	roots := []string{}
+	for _, item := range items {
+		if item.Type == ItemTypeGroup && getParentPath(item.Path) == "" {
+			roots = append(roots, item.Path)
+		}
+	}
+
+	n := len(roots)
+	if n < 2 || roots[n-1] != DefaultGroupPath || roots[n-2] != "conductor" {
+		t.Errorf("expected bottom order [..., conductor, %s]; got %v", DefaultGroupPath, roots)
+	}
+}
+
 func TestToggleGroup(t *testing.T) {
 	tree := NewGroupTree([]*Instance{})
 	tree.CreateGroup("Test")
@@ -819,6 +846,65 @@ func TestAddSession(t *testing.T) {
 	if len(tree.Groups["test"].Sessions) != 1 {
 		t.Error("Session should be added to group")
 	}
+}
+
+// TestAddSession_InsertsAboveArchived verifies a newly created session lands
+// above archived rows (which sink to the bottom of the group), not below them.
+func TestAddSession_InsertsAboveArchived(t *testing.T) {
+	now := time.Now()
+	active := &Instance{ID: "a", Title: "active", GroupPath: "test"}
+	archived := &Instance{ID: "z", Title: "archived", GroupPath: "test", ArchivedAt: now}
+	tree := NewGroupTree([]*Instance{active, archived})
+
+	// Precondition: archived sits at the bottom after the actionable sort.
+	got := tree.Groups["test"].Sessions
+	if got[len(got)-1].ID != "z" {
+		t.Fatalf("precondition: archived must sort last; got order %v", titles(got))
+	}
+
+	fresh := &Instance{ID: "n", Title: "new", GroupPath: "test"}
+	tree.AddSession(fresh)
+
+	got = tree.Groups["test"].Sessions
+	// Expected order: active, new, archived — the new row above the archived one.
+	if got[len(got)-1].ID != "z" {
+		t.Fatalf("archived must remain last after AddSession; got %v", titles(got))
+	}
+	var newIdx, archIdx int = -1, -1
+	for i, s := range got {
+		switch s.ID {
+		case "n":
+			newIdx = i
+		case "z":
+			archIdx = i
+		}
+	}
+	if newIdx == -1 || archIdx == -1 || newIdx > archIdx {
+		t.Fatalf("new session must be placed above archived; got %v (new=%d arch=%d)", titles(got), newIdx, archIdx)
+	}
+}
+
+// TestAddSession_ArchivedAppendsLast verifies (re-)adding an archived session
+// still lands at the bottom of the group.
+func TestAddSession_ArchivedAppendsLast(t *testing.T) {
+	active := &Instance{ID: "a", Title: "active", GroupPath: "test"}
+	tree := NewGroupTree([]*Instance{active})
+
+	arch := &Instance{ID: "z", Title: "archived", GroupPath: "test", ArchivedAt: time.Now()}
+	tree.AddSession(arch)
+
+	got := tree.Groups["test"].Sessions
+	if got[len(got)-1].ID != "z" {
+		t.Fatalf("archived session should append last; got %v", titles(got))
+	}
+}
+
+func titles(insts []*Instance) []string {
+	out := make([]string, len(insts))
+	for i, s := range insts {
+		out[i] = s.Title
+	}
+	return out
 }
 
 func TestRemoveSession(t *testing.T) {

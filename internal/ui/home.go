@@ -134,6 +134,14 @@ const (
 	spacingLarge  = 4 // Between major areas (e.g., info sections in preview)
 )
 
+// leftGutterWidth is the fixed cell width reserved at the start of every
+// left-panel row for a root group's hotkey number ("N·"). Reserving it on all
+// rows — even those without a number — keeps per-level indentation honest: a
+// numbered root no longer steals an indent level from its children, so nesting
+// reads consistently whether or not the root carries a hotkey. Must equal the
+// rendered width of the "N·" hotkey label.
+const leftGutterWidth = 2
+
 // Minimum terminal size requirements (reduced for mobile support)
 const (
 	minTerminalWidth  = 40 // Reduced from 80 - supports mobile terminals
@@ -255,15 +263,18 @@ type Home struct {
 	analyticsCacheTime     map[string]time.Time                       // TTL cache: sessionID -> cache timestamp
 
 	// State
-	cursor              int            // Selected item index in flatItems
-	viewOffset          int            // First visible item index (for scrolling)
-	previewScrollOffset int            // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
-	isAttaching         atomic.Bool    // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
-	statusFilter        session.Status // Filter sessions by status ("" = all, or specific status)
-	groupScope          string         // Limit TUI to a specific group path ("" = all groups)
-	initialSelect       string         // Session ID or title to preselect on first load (#709). Does NOT scope groups.
-	initialSelectDone   bool           // Guard so preselection only fires once
-	previewMode         PreviewMode    // What to show in preview pane (both, output-only, analytics-only)
+	cursor              int                   // Selected item index in flatItems
+	viewOffset          int                   // First visible item index (for scrolling)
+	previewScrollOffset int                   // Lines scrolled up from tail in the preview pane (#574). 0 = tail (default). Reset on cursor move.
+	isAttaching         atomic.Bool           // Prevents View() output during attach (fixes Bubble Tea Issue #431) - atomic for thread safety
+	statusFilter        session.Status        // Filter sessions by status ("" = all, or specific status)
+	groupScope          string                // Limit TUI to a specific group path ("" = all groups)
+	initialSelect       string                // Session ID or title to preselect on first load (#709). Does NOT scope groups.
+	initialSelectDone   bool                  // Guard so preselection only fires once
+	previewMode         PreviewMode           // What to show in preview pane (both, output-only, analytics-only)
+	groupViewMode       session.GroupViewMode // List partition: normal, active-on-top, populated-on-top (cycled by hotkey 't')
+	showArchived        bool                  // When true, reveal archived sessions inline (dimmed, sunk); persisted in uiState
+	stickyArchivedID    string                // Just-archived session kept visible+selected so a second 'A' undoes it; cleared on navigate-away (not persisted)
 	err                 error
 	errTime             time.Time  // When error occurred (for auto-dismiss)
 	isReloading         bool       // Visual feedback during auto-reload
@@ -295,6 +306,11 @@ type Home struct {
 	statusWorkerDone    chan struct{}            // Signals worker has stopped
 	lastFullStatusSweep atomic.Int64             // UnixNano timestamp of last full background status sweep
 	lastPersistedStatus map[string]string        // instanceID -> last status written to SQLite
+	// lastPersistedAutoNameDesc tracks the last auto-name description written to
+	// SQLite per instance, so the background loop only issues a targeted write
+	// when the live Claude task description actually changes (mirrors
+	// lastPersistedStatus). Keyed by instance ID.
+	lastPersistedAutoNameDesc map[string]string
 
 	// Issue #1143: auto-stop dormant child sessions via central poll.
 	// Coalesced into the existing 2-second statusWorker tick by way of
@@ -589,6 +605,8 @@ type uiState struct {
 	CursorGroupPath string `json:"cursor_group_path,omitempty"`
 	PreviewMode     int    `json:"preview_mode"`
 	StatusFilter    string `json:"status_filter,omitempty"`
+	GroupViewMode   int    `json:"group_view_mode,omitempty"`
+	ShowArchived    bool   `json:"show_archived,omitempty"`
 }
 
 type selectedItemIdentity struct {
@@ -918,69 +936,70 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	}
 
 	h := &Home{
-		profile:              actualProfile,
-		storage:              storage,
-		storageWarning:       storageWarning,
-		search:               NewSearch(),
-		newDialog:            NewNewDialog(),
-		groupDialog:          NewGroupDialog(),
-		forkDialog:           NewForkDialog(),
-		confirmDialog:        NewConfirmDialog(),
-		helpOverlay:          NewHelpOverlay(),
-		mcpDialog:            NewMCPDialog(),
-		pluginDialog:         NewPluginDialog(),
-		editPathsDialog:      NewEditPathsDialog(),
-		editSessionDialog:    NewEditSessionDialog(),
-		skillDialog:          NewSkillDialog(),
-		setupWizard:          NewSetupWizard(),
-		settingsPanel:        NewSettingsPanel(),
-		analyticsPanel:       NewAnalyticsPanel(),
-		geminiModelDialog:    NewGeminiModelDialog(),
-		sessionPickerDialog:  NewSessionPickerDialog(),
-		worktreeFinishDialog: NewWorktreeFinishDialog(),
-		feedbackDialog:       NewFeedbackDialog(),
-		zoxidePicker:         NewZoxidePicker(),
-		feedbackSender:       feedback.NewSender(),
-		watcherPanel:         NewWatcherPanel(),
-		insertBatchDuration:  defaultInsertBatchDuration,
-		insertOpenKeySender:  defaultInsertOpenKeySender,
-		cursor:               0,
-		initialLoading:       true, // Show splash until sessions load
-		ctx:                  ctx,
-		cancel:               cancel,
-		instances:            []*session.Instance{},
-		instanceByID:         make(map[string]*session.Instance),
-		groupTree:            session.NewGroupTree([]*session.Instance{}),
-		flatItems:            []session.Item{},
-		previewCache:         make(map[string]string),
-		previewCacheTime:     make(map[string]time.Time),
-		analyticsCache:       make(map[string]*session.SessionAnalytics),
-		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
-		analyticsCacheTime:   make(map[string]time.Time),
-		clearOnCompactSent:   make(map[string]time.Time),
-		launchingSessions:    make(map[string]time.Time),
-		resumingSessions:     make(map[string]time.Time),
-		mcpLoadingSessions:   make(map[string]time.Time),
-		forkingSessions:      make(map[string]time.Time),
-		creatingSessions:     make(map[string]*CreatingSession),
-		lastLogActivity:      make(map[string]time.Time),
-		windowsCollapsed:     make(map[string]bool),
-		worktreeDirtyCache:   make(map[string]bool),
-		worktreeDirtyCacheTs: make(map[string]time.Time),
-		statusTrigger:        make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
-		statusWorkerDone:     make(chan struct{}),
-		idleTimeoutWatcher:   session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
-		lastPersistedStatus:  make(map[string]string),
-		logUpdateChan:        make(chan *session.Instance, 100), // Buffered to absorb bursts
-		hotkeys:              make(map[string]string),
-		hotkeyLookup:         make(map[string]string),
-		blockedHotkeys:       make(map[string]bool),
-		notesEditor:          newNotesEditor(),
-		boundKeys:            make(map[string]string),
-		undoStack:            make([]deletedSessionEntry, 0, 10),
-		pendingTitleChanges:  make(map[string]string),
-		debugMode:            logging.IsDebugEnabled(),
-		lastClickIndex:       -1,
+		profile:                   actualProfile,
+		storage:                   storage,
+		storageWarning:            storageWarning,
+		search:                    NewSearch(),
+		newDialog:                 NewNewDialog(),
+		groupDialog:               NewGroupDialog(),
+		forkDialog:                NewForkDialog(),
+		confirmDialog:             NewConfirmDialog(),
+		helpOverlay:               NewHelpOverlay(),
+		mcpDialog:                 NewMCPDialog(),
+		pluginDialog:              NewPluginDialog(),
+		editPathsDialog:           NewEditPathsDialog(),
+		editSessionDialog:         NewEditSessionDialog(),
+		skillDialog:               NewSkillDialog(),
+		setupWizard:               NewSetupWizard(),
+		settingsPanel:             NewSettingsPanel(),
+		analyticsPanel:            NewAnalyticsPanel(),
+		geminiModelDialog:         NewGeminiModelDialog(),
+		sessionPickerDialog:       NewSessionPickerDialog(),
+		worktreeFinishDialog:      NewWorktreeFinishDialog(),
+		feedbackDialog:            NewFeedbackDialog(),
+		zoxidePicker:              NewZoxidePicker(),
+		feedbackSender:            feedback.NewSender(),
+		watcherPanel:              NewWatcherPanel(),
+		insertBatchDuration:       defaultInsertBatchDuration,
+		insertOpenKeySender:       defaultInsertOpenKeySender,
+		cursor:                    0,
+		initialLoading:            true, // Show splash until sessions load
+		ctx:                       ctx,
+		cancel:                    cancel,
+		instances:                 []*session.Instance{},
+		instanceByID:              make(map[string]*session.Instance),
+		groupTree:                 session.NewGroupTree([]*session.Instance{}),
+		flatItems:                 []session.Item{},
+		previewCache:              make(map[string]string),
+		previewCacheTime:          make(map[string]time.Time),
+		analyticsCache:            make(map[string]*session.SessionAnalytics),
+		geminiAnalyticsCache:      make(map[string]*session.GeminiSessionAnalytics),
+		analyticsCacheTime:        make(map[string]time.Time),
+		clearOnCompactSent:        make(map[string]time.Time),
+		launchingSessions:         make(map[string]time.Time),
+		resumingSessions:          make(map[string]time.Time),
+		mcpLoadingSessions:        make(map[string]time.Time),
+		forkingSessions:           make(map[string]time.Time),
+		creatingSessions:          make(map[string]*CreatingSession),
+		lastLogActivity:           make(map[string]time.Time),
+		windowsCollapsed:          make(map[string]bool),
+		worktreeDirtyCache:        make(map[string]bool),
+		worktreeDirtyCacheTs:      make(map[string]time.Time),
+		statusTrigger:             make(chan statusUpdateRequest, 1), // Buffered to avoid blocking
+		statusWorkerDone:          make(chan struct{}),
+		idleTimeoutWatcher:        session.NewIdleTimeoutWatcher(session.IdleTimeoutWatcherConfig{}),
+		lastPersistedStatus:       make(map[string]string),
+		lastPersistedAutoNameDesc: make(map[string]string),
+		logUpdateChan:             make(chan *session.Instance, 100), // Buffered to absorb bursts
+		hotkeys:                   make(map[string]string),
+		hotkeyLookup:              make(map[string]string),
+		blockedHotkeys:            make(map[string]bool),
+		notesEditor:               newNotesEditor(),
+		boundKeys:                 make(map[string]string),
+		undoStack:                 make([]deletedSessionEntry, 0, 10),
+		pendingTitleChanges:       make(map[string]string),
+		debugMode:                 logging.IsDebugEnabled(),
+		lastClickIndex:            -1,
 	}
 	h.sessionRenderSnapshot.Store(make(map[string]sessionRenderState))
 
@@ -1517,6 +1536,11 @@ func (h *Home) restoreState(state reloadState) {
 		}
 	}
 
+	// The clamp above can land the cursor on a non-selectable divider row
+	// (dividers carry a nil Session). Nudge off it so the initial preview shows
+	// a real session rather than the empty state, mirroring j/k navigation.
+	h.skipDivider(1)
+
 	// Restore scroll position (clamped to valid range)
 	if len(h.flatItems) > 0 {
 		h.viewOffset = min(state.viewOffset, len(h.flatItems)-1)
@@ -1545,6 +1569,41 @@ func (h *Home) moveCursorToSession(sessionID string) {
 			h.cursor = i
 			return
 		}
+	}
+}
+
+// skipDivider nudges the cursor off a non-selectable divider row in the given
+// direction (+1 = down, -1 = up). Dividers only ever sit between two non-empty
+// sections, so they are never at a list edge nor adjacent to another divider;
+// a single step in the travel direction always lands on a selectable row. The
+// extra scan is defensive only.
+func (h *Home) skipDivider(dir int) {
+	n := len(h.flatItems)
+	if n == 0 {
+		return
+	}
+	if h.cursor < 0 {
+		h.cursor = 0
+	}
+	if h.cursor >= n {
+		h.cursor = n - 1
+	}
+	if h.flatItems[h.cursor].Type != session.ItemTypeDivider {
+		return
+	}
+	h.cursor += dir
+	if h.cursor < 0 {
+		h.cursor = 0
+	}
+	if h.cursor >= n {
+		h.cursor = n - 1
+	}
+	// Defensive: if somehow still on a divider, scan toward a selectable row.
+	for h.cursor < n-1 && h.flatItems[h.cursor].Type == session.ItemTypeDivider {
+		h.cursor++
+	}
+	for h.cursor > 0 && h.flatItems[h.cursor].Type == session.ItemTypeDivider {
+		h.cursor--
 	}
 }
 
@@ -1667,6 +1726,12 @@ func (h *Home) rebuildFlatItems() {
 		h.flatItems = allItems
 	}
 
+	// Hide archived sessions unless the view toggle is on. Composes with the
+	// status filter above and the group-scope/partition passes below: archived
+	// rows are dropped here (and any group that lost all its rows), so windows
+	// and partitioning only ever see the visible set. Identity when shown.
+	h.flatItems = session.FilterArchived(h.flatItems, h.showArchived, h.stickyArchivedID)
+
 	// Apply group scope filter (composes with status filter above)
 	if h.groupScope != "" {
 		scoped := make([]session.Item, 0, len(h.flatItems))
@@ -1676,6 +1741,17 @@ func (h *Home) rebuildFlatItems() {
 			}
 		}
 		h.flatItems = scoped
+	}
+
+	// Partition into top/bottom sections by view mode (active-on-top / populated-on-top).
+	// Runs after filtering/scoping but before window injection so windows follow
+	// their parent session into whichever section it lands in.
+	if h.groupViewMode != session.GroupViewNormal {
+		// Activity is computed from the full tree (collapse-agnostic) so a
+		// collapsed-but-populated group's header is placed by its real contents,
+		// not by the (absent) session rows under a collapsed header.
+		activity := h.groupTree.GroupActivityMap()
+		h.flatItems = session.PartitionByViewMode(h.flatItems, h.groupViewMode, activity)
 	}
 
 	// Inject window items after sessions that have 2+ windows
@@ -2978,6 +3054,45 @@ type sessionRenderState struct {
 	paneTitle string // Current task description from tmux pane title (stripped of spinner/done markers)
 }
 
+// displaySessionTitle returns the label to render for a session row. For an
+// auto-named quick session (AutoName) it returns, in order of preference: the
+// live Claude task description (paneTitle), the last description we persisted,
+// then the session's own Title. Non-auto-named sessions always return Title
+// (the CLI handle or a user/Claude-chosen name).
+//
+// paneTitle must already be cleaned by cleanPaneTitle: an empty paneTitle means
+// idle/just-started. The persisted-description fallback keeps the meaningful
+// name visible on reopen before the session resumes and re-emits a live title.
+// shouldPersistAutoNameDesc decides whether the background status loop should
+// write a new task description for an auto-named session, given the live
+// (already-cleaned) pane title and the value last persisted for it. It returns
+// the description to write and whether to write at all. Kept as a pure function
+// so the capture branching is testable without a live DB/tmux: the loop itself
+// only runs on a background tick. Rules: only auto-named sessions; never write
+// an empty pane (idle/just-started must not clobber a saved description); skip
+// when unchanged to avoid SQLite write pressure (mirrors the status loop).
+func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (string, bool) {
+	if !autoName || paneTitle == "" || paneTitle == lastPersisted {
+		return "", false
+	}
+	return paneTitle, true
+}
+
+func displaySessionTitle(inst *session.Instance, paneTitle string) string {
+	if inst.AutoName {
+		// Prefer the live task description; fall back to the last one we
+		// persisted so the name still shows on reopen when the session is
+		// stopped/idle (no live pane title); finally fall back to the handle.
+		if paneTitle != "" {
+			return paneTitle
+		}
+		if desc := inst.GetAutoNameDescription(); desc != "" {
+			return desc
+		}
+	}
+	return inst.Title
+}
+
 // cleanPaneTitle strips spinner/done marker characters from a tmux pane title
 // and returns the task description. Returns "" for default/generic titles.
 func cleanPaneTitle(title string) string {
@@ -3074,6 +3189,15 @@ func (h *Home) markNavigationActivity() {
 	h.lastNavigationTime = now
 	h.isNavigating = true
 	h.navigationHotUntil.Store(now.Add(900 * time.Millisecond).UnixNano())
+	// Moving the cursor releases the just-archived sticky row. Rebuild right here
+	// so FilterArchived drops it immediately (showArchived off) — otherwise the
+	// row lingers until some unrelated later rebuild and appears "stuck" for
+	// several keystrokes. A second 'A' only undoes while parked (before navigating).
+	if h.stickyArchivedID != "" {
+		identity := h.captureSelectedItemIdentity()
+		h.stickyArchivedID = ""
+		h.rebuildFlatItemsPreservingSelection(identity)
+	}
 }
 
 func (h *Home) beginAttachReturnGrace(now time.Time) {
@@ -3431,6 +3555,31 @@ func (h *Home) backgroundStatusUpdate() {
 		for id := range h.lastPersistedStatus {
 			if _, ok := currentIDs[id]; !ok {
 				delete(h.lastPersistedStatus, id)
+			}
+		}
+
+		// Persist the live Claude task description for auto-named sessions so the
+		// meaningful name survives an app reopen (it would otherwise live only in
+		// the in-memory render snapshot). The snapshot was refreshed just above,
+		// so getSessionRenderState returns the freshly-cleaned pane title. Only
+		// write on change (mirrors the status loop) and only when non-empty — an
+		// empty/idle pane must not clobber a previously captured description.
+		for _, inst := range instances {
+			desc, write := shouldPersistAutoNameDesc(
+				inst.AutoName,
+				h.getSessionRenderState(inst).paneTitle,
+				h.lastPersistedAutoNameDesc[inst.ID],
+			)
+			if !write {
+				continue
+			}
+			inst.SetAutoNameDescription(desc)
+			_ = db.WriteAutoNameDescription(inst.ID, desc)
+			h.lastPersistedAutoNameDesc[inst.ID] = desc
+		}
+		for id := range h.lastPersistedAutoNameDesc {
+			if _, ok := currentIDs[id]; !ok {
+				delete(h.lastPersistedAutoNameDesc, id)
 			}
 		}
 
@@ -4105,6 +4254,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for id, title := range h.pendingTitleChanges {
 					if inst := h.getInstanceByID(id); inst != nil && inst.Title != title {
 						inst.Title = title
+						inst.AutoName = false // re-applied pending title is a genuine rename; keep the user-chosen name
 						inst.SyncTmuxDisplayName()
 						applied = true
 						uiLog.Info("pending_rename_reapplied",
@@ -4163,6 +4313,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
+					// The restored/leftover cursor can sit on a non-selectable
+					// divider row (present only in non-Normal view modes) — e.g.
+					// when the persisted session is now hidden by the archive
+					// filter and no group path matched, leaving the cursor at a
+					// stale index. Nudge off it so the first preview shows a real
+					// session. No-op when already on a selectable row.
+					h.skipDivider(1)
 					h.pendingCursorRestore = nil
 					h.syncViewport()
 				}
@@ -5873,6 +6030,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			parentSessionID,
 			parentProjectPath,
 			tempID,
+			false, // not auto-named — user went through the full create dialog
 		)
 
 	case "esc":
@@ -6031,12 +6189,13 @@ func (h *Home) handleJumpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		if result.matched {
 			h.cursor = result.index
+			h.skipDivider(1) // never land on a non-selectable divider
 			h.syncViewport()
 			h.jumpMode = false
 			h.jumpBuffer = ""
 			// For sessions/windows/remotes: attach directly.
 			// For groups: just move cursor (user can press Enter to toggle).
-			item := h.flatItems[result.index]
+			item := h.flatItems[h.cursor]
 			if item.Type != session.ItemTypeGroup && item.Type != session.ItemTypeRemoteGroup {
 				return h.handleMainKey(tea.KeyMsg{Type: tea.KeyEnter})
 			}
@@ -6114,6 +6273,10 @@ func (h *Home) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		itemIndex := h.mouseYToItemIndex(msg.Y)
 		if itemIndex < 0 || itemIndex >= len(h.flatItems) {
+			return h, nil
+		}
+		// Dividers are non-selectable: clicking one does nothing.
+		if h.flatItems[itemIndex].Type == session.ItemTypeDivider {
 			return h, nil
 		}
 
@@ -6283,6 +6446,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewScrollOffset = 0
 		if h.cursor > 0 {
 			h.cursor--
+			h.skipDivider(-1)
 			h.syncViewport()
 			h.markNavigationActivity()
 			// PERFORMANCE: Debounced preview fetch - waits 150ms for navigation to settle
@@ -6295,6 +6459,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.previewScrollOffset = 0
 		if h.cursor < len(h.flatItems)-1 {
 			h.cursor++
+			h.skipDivider(1)
 			h.syncViewport()
 			h.markNavigationActivity()
 			// PERFORMANCE: Debounced preview fetch - waits 150ms for navigation to settle
@@ -6313,6 +6478,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6330,6 +6496,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6344,6 +6511,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6361,6 +6529,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6368,6 +6537,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "home": // Jump to first item
 		h.cursor = 0
+		h.skipDivider(1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -6378,6 +6548,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor < 0 {
 			h.cursor = 0
 		}
+		h.skipDivider(-1)
 		h.previewScrollOffset = 0
 		h.syncViewport()
 		h.markNavigationActivity()
@@ -7130,6 +7301,28 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case "A":
+		// Archive the selected session — or unarchive it if already archived.
+		// No confirmation dialog: archive is fully reversible (consistent with
+		// close 'D', which stops a running session the same way).
+		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil {
+				return h, h.toggleArchiveSelected(item.Session)
+			}
+		}
+		return h, nil
+
+	case "ctrl+a":
+		// Toggle visibility of archived sessions (persisted). Preserve the
+		// cursor's session/group identity across the rebuild.
+		identity := h.captureSelectedItemIdentity()
+		h.showArchived = !h.showArchived
+		h.stickyArchivedID = "" // explicit view toggle supersedes the sticky hold
+		h.rebuildFlatItemsPreservingSelection(identity)
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
+
 	case "X":
 		// Status-gated registry-only remove. For stopped/errored sessions only;
 		// use 'd' for destructive delete (kills process + removes worktree).
@@ -7226,6 +7419,34 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle preview mode (cycle: both → output-only → analytics-only → both)
 		h.previewMode = (h.previewMode + 1) % 3
 		return h, nil
+
+	case "t":
+		// Cycle list partition: normal → active-on-top → populated-on-top → normal.
+		// Preserve the cursor's session/group across the rebuild.
+		var keepSessionID, keepGroupPath string
+		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
+			switch it := h.flatItems[h.cursor]; it.Type {
+			case session.ItemTypeSession:
+				if it.Session != nil {
+					keepSessionID = it.Session.ID
+				}
+			case session.ItemTypeWindow:
+				keepSessionID = it.WindowSessionID
+			case session.ItemTypeGroup:
+				keepGroupPath = it.Path
+			}
+		}
+		h.groupViewMode = session.GroupViewMode((int(h.groupViewMode) + 1) % session.GroupViewModeCount)
+		h.rebuildFlatItems()
+		if keepSessionID != "" {
+			h.moveCursorToSession(keepSessionID)
+		} else if keepGroupPath != "" {
+			h.moveCursorToGroup(keepGroupPath)
+		}
+		h.skipDivider(1)
+		h.syncViewport()
+		h.saveUIState()
+		return h, h.fetchSelectedPreview()
 
 	case "y":
 		// Toggle YOLO mode for Gemini or Codex sessions (requires restart)
@@ -7694,7 +7915,8 @@ func (h *Home) confirmCreateDirectory() tea.Cmd {
 		nil,
 		parentSessionID,
 		parentProjectPath,
-		"", // no placeholder — non-worktree sessions are fast
+		"",    // no placeholder — non-worktree sessions are fast
+		false, // not auto-named
 	)
 }
 
@@ -8542,6 +8764,7 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// Find and rename the session (O(1) lookup)
 					if inst := h.getInstanceByID(sessionID); inst != nil {
 						inst.Title = newName
+						inst.AutoName = false // user-typed name replaces the auto handle
 						inst.SyncTmuxDisplayName()
 					}
 					// Store pending title change so it survives reload races.
@@ -8802,8 +9025,10 @@ func (h *Home) saveUIState() {
 	}
 
 	state := uiState{
-		PreviewMode:  int(h.previewMode),
-		StatusFilter: string(h.statusFilter),
+		PreviewMode:   int(h.previewMode),
+		StatusFilter:  string(h.statusFilter),
+		GroupViewMode: int(h.groupViewMode),
+		ShowArchived:  h.showArchived,
 	}
 
 	// Capture cursor position
@@ -8854,9 +9079,14 @@ func (h *Home) loadUIState() {
 		return
 	}
 
-	// Apply preview mode and status filter immediately
+	// Apply preview mode, status filter, and group view mode immediately
 	h.previewMode = PreviewMode(state.PreviewMode)
 	h.statusFilter = session.Status(state.StatusFilter)
+	h.groupViewMode = session.GroupViewMode(state.GroupViewMode)
+	if h.groupViewMode < session.GroupViewNormal || h.groupViewMode >= session.GroupViewModeCount {
+		h.groupViewMode = session.GroupViewNormal
+	}
+	h.showArchived = state.ShowArchived
 
 	// Defer cursor restoration until flatItems are populated
 	h.pendingCursorRestore = &state
@@ -8875,6 +9105,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 	additionalPaths []string,
 	parentSessionID, parentProjectPath string,
 	tempID string,
+	autoName bool,
 ) tea.Cmd {
 	return func() tea.Msg {
 		// Check tmux availability before creating session
@@ -8917,6 +9148,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
+		inst.AutoName = autoName // quick-create paths pass true; see render substitution
 
 		// Set worktree fields if provided
 		if worktreePath != "" {
@@ -9242,7 +9474,8 @@ func (h *Home) quickCreateSession() tea.Cmd {
 		"",         // no explicit model override
 		false, nil, // no multi-repo
 		"", "", // no parent
-		"", // no placeholder
+		"",   // no placeholder
+		true, // quick-create → auto-named handle
 	)
 }
 
@@ -9322,6 +9555,7 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, nil,
 		"", "",
 		"",
+		true, // quick-create → auto-named handle
 	)
 }
 
@@ -9591,6 +9825,101 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 		}
 		return sessionDeletedMsg{deletedID: id, killErr: killErr}
 	}
+}
+
+// toggleArchiveSelected archives the given session, or unarchives it if it is
+// already archived. Archiving stops the process (like close) but keeps all
+// metadata and the worktree, then hides the row when showArchived is off —
+// the cursor falls back to a neighbor via rebuildFlatItemsPreservingSelection.
+// Unarchiving clears the timestamp; the session reappears as stopped.
+// persistArchived writes just the archived_at column for one session straight
+// to storage. Archiving/unarchiving MUST reach disk, but a whole-instances Save
+// is the wrong tool here: the non-force path is skipped/aborted under the reload
+// churn errored/missing-tmux sessions generate (so the archive is silently
+// reverted by the next reload — the user-reported "comes back"), while
+// forceSaveInstances does a full-table reconcile that could drop sessions a
+// concurrent writer (web UI, conductor) created since our last load. The
+// targeted column write mirrors WriteStatus and sidesteps both hazards. Pass a
+// zero time to clear (unarchive).
+func (h *Home) persistArchived(id string, archivedAt time.Time) {
+	if h.storage == nil {
+		return
+	}
+	if err := h.storage.WriteArchived(id, archivedAt); err != nil {
+		uiLog.Warn("archive_persist_failed", slog.String("id", id), slog.String("error", err.Error()))
+	}
+}
+
+// captureAutoNameBeforeStop persists an auto-named session's live Claude task
+// description right before its process is stopped. Auto-named rows render the
+// live tmux pane title; once Kill() tears the process down that live title is
+// gone and displaySessionTitle falls back to the persisted auto-name
+// description. The 2s background status tick is the only other writer, so a
+// session stopped before that tick fires would revert to its bare random
+// handle. Capturing here closes that window for archive (and any future stop
+// path that calls it).
+//
+// No-op unless the session is auto-named with a non-empty live title that
+// differs from what is already stored — an empty/idle pane must never clobber a
+// previously captured description (mirrors shouldPersistAutoNameDesc). Writes
+// the in-memory field (instance-locked) and the DB column via h.storage
+// (mirroring persistArchived, so both halves of the archive mutation reach disk
+// through the same layer); deliberately does NOT touch h.lastPersistedAutoNameDesc,
+// which is owned by the statusWorker goroutine — writing it from the UI goroutine
+// would be a data race.
+func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
+	if inst == nil || !inst.AutoName {
+		return
+	}
+	live := h.getSessionRenderState(inst).paneTitle
+	if live == "" || live == inst.GetAutoNameDescription() {
+		return
+	}
+	inst.SetAutoNameDescription(live)
+	if h.storage == nil {
+		return
+	}
+	if err := h.storage.WriteAutoNameDescription(inst.ID, live); err != nil {
+		uiLog.Warn("autoname_capture_failed",
+			slog.String("id", inst.ID), slog.String("error", err.Error()))
+	}
+}
+
+func (h *Home) toggleArchiveSelected(inst *session.Instance) tea.Cmd {
+	identity := h.captureSelectedItemIdentity()
+
+	if inst.IsArchived() {
+		inst.ArchivedAt = time.Time{}
+		h.stickyArchivedID = "" // no longer archived; drop the sticky-visible hold
+		h.cachedStatusCounts.valid.Store(false)
+		h.rebuildFlatItemsPreservingSelection(identity)
+		h.persistArchived(inst.ID, time.Time{})
+		h.setError(fmt.Errorf("unarchived %q", inst.Title))
+		return h.fetchSelectedPreview()
+	}
+
+	// Capture the live auto-name description before stopping. Auto-named rows
+	// display the live tmux pane title; Kill() tears that down, so without this
+	// the row reverts to its bare random handle (the user-reported "loses the
+	// auto generated name"). See captureAutoNameBeforeStop.
+	h.captureAutoNameBeforeStop(inst)
+
+	// Stop the process first (reuse the close kill path), then mark archived.
+	title := inst.Title
+	_ = inst.Kill() // non-blocking: sets StatusStopped, keeps metadata + worktree
+	inst.ArchivedAt = time.Now()
+	// Keep this row visible+selected even with showArchived off, so pressing the
+	// archive key again immediately undoes it. It hides on the next rebuild once
+	// the cursor navigates away (markNavigationActivity clears the hold).
+	h.stickyArchivedID = inst.ID
+	h.cachedStatusCounts.valid.Store(false)
+	h.invalidatePreviewCache(inst.ID)
+	h.rebuildFlatItemsPreservingSelection(identity)
+	h.persistArchived(inst.ID, inst.ArchivedAt)
+
+	archiveKey := h.actionKey(hotkeyArchiveSession)
+	h.setError(fmt.Errorf("archived %q (%s to undo)", title, archiveKey))
+	return h.fetchSelectedPreview()
 }
 
 // closeSession stops a session process but keeps metadata in list/storage.
@@ -12089,7 +12418,7 @@ func (h *Home) renderSessionList(width, height int) string {
 
 	for i := h.viewOffset; i < len(h.flatItems) && visibleCount < maxVisible; i++ {
 		item := h.flatItems[i]
-		if h.jumpMode && i < len(jumpHints) {
+		if h.jumpMode && i < len(jumpHints) && item.Type != session.ItemTypeDivider {
 			// Render item to temp buffer, then overlay hint badge at name position
 			var itemBuf strings.Builder
 			h.renderItem(&itemBuf, item, i == h.cursor, i, groupStats, snapshot, width)
@@ -12207,7 +12536,31 @@ func (h *Home) renderItem(
 		h.renderRemoteGroupItem(b, item, selected)
 	case session.ItemTypeRemoteSession:
 		h.renderRemoteSessionItem(b, item, selected)
+	case session.ItemTypeDivider:
+		h.renderDivider(b, item)
 	}
+}
+
+// renderDivider renders the non-selectable separator between view-mode sections
+// (e.g. running-on-top). It draws a dim horizontal rule with an optional caption.
+func (h *Home) renderDivider(b *strings.Builder, item session.Item) {
+	width := h.sessionsPaneWidth() - 4
+	if width < 12 {
+		width = 12
+	}
+	var line string
+	if item.DividerLabel != "" {
+		text := "─ " + item.DividerLabel + " "
+		remaining := width - cellWidth(text)
+		if remaining < 0 {
+			remaining = 0
+		}
+		line = "  " + text + strings.Repeat("─", remaining)
+	} else {
+		line = "  " + strings.Repeat("─", width)
+	}
+	b.WriteString(DimStyle.Render(line))
+	b.WriteString("\n")
 }
 
 // renderGroupItem renders a group header
@@ -12221,8 +12574,18 @@ func (h *Home) renderGroupItem(
 ) {
 	group := item.Group
 
-	// Calculate indentation based on nesting level (no tree lines, just spaces)
-	// Uses spacingNormal (2 chars) per level for consistent hierarchy visualization
+	// Fixed-width hotkey gutter, reserved on every row (see leftGutterWidth). It
+	// holds the root group's hotkey number ("N·") when present; otherwise blanks.
+	// Keeping it a constant width means the number no longer eats a level of
+	// indentation, so a numbered root and its children stay properly nested.
+	gutter := strings.Repeat(" ", leftGutterWidth)
+	if item.Level == 0 && !selected && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
+		gutter = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
+	}
+
+	// Calculate indentation based on nesting level (no tree lines, just spaces).
+	// Uses spacingNormal (2 chars) per level for consistent hierarchy
+	// visualization, applied after the hotkey gutter.
 	indent := strings.Repeat(strings.Repeat(" ", spacingNormal), max(0, item.Level))
 
 	// Expand/collapse indicator with filled triangles (using cached styles)
@@ -12238,15 +12601,6 @@ func (h *Home) renderGroupItem(
 			expandIcon = GroupExpandStyle.Render("▾") // Filled triangle for expanded
 		} else {
 			expandIcon = GroupExpandStyle.Render("▸") // Filled triangle for collapsed
-		}
-	}
-
-	// Hotkey indicator (subtle, only for root groups, hidden when selected)
-	// Uses pre-computed RootGroupNum from rebuildFlatItems() - O(1) lookup instead of O(n) loop
-	hotkeyStr := ""
-	if item.Level == 0 && !selected {
-		if item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
-			hotkeyStr = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 		}
 	}
 
@@ -12270,11 +12624,11 @@ func (h *Home) renderGroupItem(
 		statusStr += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", stats.waiting))
 	}
 
-	// Build the row: [indent][hotkey][expand] [name](count) [status]
+	// Build the row: [hotkey gutter][indent][expand] [name](count) [status]
 	row := fmt.Sprintf(
 		"%s%s%s %s%s%s",
+		gutter,
 		indent,
-		hotkeyStr,
 		expandIcon,
 		nameStyle.Render(group.Name),
 		countStr,
@@ -12351,6 +12705,9 @@ func (h *Home) renderCreatingSessionItem(
 ) {
 	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	spinner := spinnerFrames[h.animationFrame]
+
+	// Leading hotkey gutter so creating rows align with group/session rows.
+	b.WriteString(strings.Repeat(" ", leftGutterWidth))
 
 	// Selection styling
 	if selected {
@@ -12481,6 +12838,21 @@ func (h *Home) renderSessionItem(
 		titleStyle = titleStyle.Foreground(lipgloss.Color(inst.Color))
 	}
 
+	// Archived sessions read as "set aside": dim the title and append an
+	// [archived] badge. Placed before the selection block below so a selected
+	// archived row still gets full selection styling.
+	archivedBadge := ""
+	if inst.IsArchived() {
+		if !selected {
+			titleStyle = DimStyle
+		}
+		abStyle := DimStyle
+		if selected {
+			abStyle = SessionStatusSelStyle
+		}
+		archivedBadge = abStyle.Render(" [archived]")
+	}
+
 	// Tool badge with brand-specific color
 	// Claude=orange, Gemini=purple, Codex=cyan, Aider=red
 	toolStyle := GetToolStyle(instTool)
@@ -12505,7 +12877,6 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
 	tool := toolStyle.Render(" " + instTool)
 
 	// YOLO badge for Gemini/Codex sessions with YOLO mode enabled
@@ -12617,9 +12988,33 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
+	// Auto-named quick sessions display Claude's live task description (the
+	// tmux pane title) in place of the random handle. instState.paneTitle is
+	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
+	// paneTitle) falls back to the handle automatically.
+	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	if inst.AutoName && instState.paneTitle != "" && h.width > 0 {
+		// Task descriptions can be long; truncate to the row's free width so the
+		// tool label and badges stay on-row. Keep the reserved terms below in
+		// sync with the row format that follows.
+		reserved := leftGutterWidth + cellWidth(baseIndent) + cellWidth(selectionPrefix) +
+			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
+			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
+			cellWidth(yoloBadge) + cellWidth(worktreeBadge) + cellWidth(sandboxBadge) +
+			cellWidth(multiRepoBadge) + cellWidth(sshBadge)
+		budget := h.width - reserved - 1 // -1 trailing margin
+		if budget > 0 && cellWidth(displayTitle) > budget {
+			displayTitle = cellTruncate(displayTitle, budget, "…")
+		}
+	}
+	title := titleStyle.Render(displayTitle)
+
+	// Build row: [gutter][baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
+	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
+	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -12632,6 +13027,7 @@ func (h *Home) renderSessionItem(
 		sandboxBadge,
 		multiRepoBadge,
 		sshBadge,
+		archivedBadge,
 		timestampBadge,
 	)
 
@@ -12643,7 +13039,7 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if selected && instState.paneTitle != "" {
+	if selected && instState.paneTitle != "" && !inst.AutoName {
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate
@@ -12716,7 +13112,8 @@ func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected 
 	}
 
 	row := fmt.Sprintf(
-		"%s%s%s %s%s%s",
+		"%s%s%s%s %s%s%s",
+		strings.Repeat(" ", leftGutterWidth), // align with group/session hotkey gutter
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -12842,7 +13239,8 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
+		strings.Repeat(" ", leftGutterWidth), // align with group hotkey gutter
 		selPrefix,
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
@@ -12951,7 +13349,8 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s  %s %s %s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s  %s %s %s%s\n",
+		strings.Repeat(" ", leftGutterWidth), // align with group/session hotkey gutter
 		selPrefix,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
@@ -13343,6 +13742,24 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			return h.renderCreatingPreview(creating, width, height)
 		}
 		return ""
+	}
+
+	// Defensive: dividers and any other non-session rows carry a nil Session.
+	// The cursor should never come to rest on one (skipDivider on navigation,
+	// and the restore/clamp below nudges off dividers), but View() must be total
+	// over every flatItems state and must never panic. Mirror the "No Selection"
+	// empty state used when the cursor is out of range.
+	if item.Session == nil {
+		content := renderEmptyStateResponsive(EmptyStateConfig{
+			Icon:     "◇",
+			Title:    "No Selection",
+			Subtitle: "Select a session to preview",
+			Hints:    nil,
+		}, width, height)
+		if statsBlock := h.renderSystemStatsBlock(width); statsBlock != "" {
+			content += "\n" + statsBlock
+		}
+		return content
 	}
 
 	// Session preview
@@ -15279,7 +15696,7 @@ func (h *Home) renderFilterBarHint() string {
 		return dim.Render(c)
 	}
 
-	return dim.Render("  ") +
+	hint := dim.Render("  ") +
 		mark("!", h.statusFilter == session.StatusRunning) +
 		mark("@", h.statusFilter == session.StatusWaiting) +
 		mark("#", h.statusFilter == session.StatusIdle) +
@@ -15289,4 +15706,16 @@ func (h *Home) renderFilterBarHint() string {
 		dim.Render(" all • ") +
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) +
 		dim.Render(" open")
+
+	// View-mode indicator (running-on-top / populated-on-top), only when active.
+	if h.groupViewMode != session.GroupViewNormal {
+		hint += dim.Render(" • ") + mark("t", true) + dim.Render(" "+h.groupViewMode.Label())
+	} else {
+		hint += dim.Render(" • ") + mark("t", false) + dim.Render(" view")
+	}
+
+	// Archived-visibility indicator (ctrl+a).
+	hint += dim.Render(" • ") + mark("^a", h.showArchived) + dim.Render(" archived")
+
+	return hint
 }

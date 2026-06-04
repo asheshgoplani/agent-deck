@@ -95,6 +95,7 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 	case FieldTitle:
 		oldValue = inst.Title
 		inst.Title = value
+		inst.AutoName = false // a user/explicit name replaces the auto handle
 		inst.SyncTmuxDisplayName()
 
 	case FieldPath:

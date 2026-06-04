@@ -128,6 +128,7 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 			return
 		}
 		target.Title = name
+		target.AutoName = false // Claude/user-chosen name replaces the auto handle
 		target.SyncTmuxDisplayName()
 		groupTree := session.NewGroupTreeWithGroups(instances, groups)
 		_ = storage.SaveWithGroups(instances, groupTree)

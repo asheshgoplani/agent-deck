@@ -185,6 +185,9 @@ func (h *HelpOverlay) View() string {
 	pluginKey := h.key(hotkeyPluginManager, "L")
 	skillsKey := h.key(hotkeySkillsManager, "s")
 	previewKey := h.key(hotkeyTogglePreview, "v")
+	groupViewKey := h.key(hotkeyCycleGroupView, "t")
+	archiveKey := h.key(hotkeyArchiveSession, "A")
+	toggleArchivedKey := h.key(hotkeyToggleArchived, "Ctrl+A")
 	unreadKey := h.key(hotkeyMarkUnread, "u")
 	quickApproveKey := h.key(hotkeyQuickApprove, "a")
 	copyKey := h.key(hotkeyCopyOutput, "c")
@@ -241,6 +244,7 @@ func (h *HelpOverlay) View() string {
 				{restartFreshKey, "Restart with new session ID"},
 				{deleteKey, "Delete session"},
 				{closeKey, "Close session process"},
+				{archiveKey, "Archive / unarchive session (toggle)"},
 				{undoKey, "Undo delete"},
 				{moveKey, "Move to group"},
 				{mcpKey, "MCP Manager (Claude/Gemini/Cursor)"},
@@ -294,6 +298,8 @@ func (h *HelpOverlay) View() string {
 				{"/waiting", "Filter waiting"},
 				{"/running", "Filter running"},
 				{"/idle", "Filter idle"},
+				{groupViewKey, "Cycle view: active-on-top / populated-on-top"},
+				{toggleArchivedKey, "Show / hide archived sessions"},
 			},
 		},
 		{

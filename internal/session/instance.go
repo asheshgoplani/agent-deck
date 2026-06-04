@@ -93,6 +93,23 @@ type Instance struct {
 	// `--title-lock` on add/launch or `session set-title-lock`.
 	TitleLocked bool `json:"title_locked,omitempty"`
 
+	// AutoName, when true, marks Title as a machine-generated adjective-noun
+	// handle (from a --quick / TUI-Q create). The TUI then displays the
+	// session's live Claude task description (tmux pane title) in place of the
+	// handle. Any explicit rename clears this so the user-chosen name is shown
+	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	AutoName bool `json:"auto_name,omitempty"`
+
+	// autoNameDescription is the last non-empty Claude task description (the
+	// cleaned tmux pane title) captured for an AutoName session. It is persisted
+	// via the auto_name_description column so the meaningful name survives an
+	// app reopen even when the session is stopped/idle and no live pane title is
+	// available — render order is live pane title → this saved description →
+	// handle. Guarded by i.mu: written from the background status loop, read
+	// during render. Unexported because persistence flows through InstanceData,
+	// not Instance's own JSON tags.
+	autoNameDescription string
+
 	// Git worktree support
 	WorktreePath     string `json:"worktree_path,omitempty"`      // Path to worktree (if session is in worktree)
 	WorktreeRepoRoot string `json:"worktree_repo_root,omitempty"` // Original repo root
@@ -130,6 +147,13 @@ type Instance struct {
 	// and skip the teardown. Zero value means "unknown" (old record or
 	// never started) and callers MUST NOT treat zero as "just now".
 	LastStartedAt time.Time `json:"last_started_at,omitempty"`
+
+	// ArchivedAt is the wall-clock time the session was archived (issue:
+	// archive-sessions). Archiving stops the process (like close) but keeps
+	// all metadata and the git worktree on disk; archived sessions are
+	// hidden from the list by default and revealed via a view toggle. Zero
+	// value means "not archived" — pre-existing records need no migration.
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
 
 	// Claude Code integration
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
@@ -569,6 +593,12 @@ func (inst *Instance) IsSubSession() bool {
 // IsWorktree returns true if this session is running in a git worktree
 func (inst *Instance) IsWorktree() bool {
 	return inst.WorktreePath != ""
+}
+
+// IsArchived returns true if this session has been archived (set aside but
+// retained). Archived sessions are hidden from the list by default.
+func (inst *Instance) IsArchived() bool {
+	return !inst.ArchivedAt.IsZero()
 }
 
 // SetParent sets the parent session ID
@@ -3962,6 +3992,22 @@ func (i *Instance) GetHookStatus() (string, bool) {
 	}
 	fresh := time.Since(i.hookLastUpdate) < hookFastPathFreshnessForTool(i.Tool, i.hookStatus)
 	return i.hookStatus, fresh
+}
+
+// GetAutoNameDescription returns the last captured Claude task description for
+// an AutoName session (empty if none captured yet). Thread-safe.
+func (i *Instance) GetAutoNameDescription() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.autoNameDescription
+}
+
+// SetAutoNameDescription records the latest Claude task description for an
+// AutoName session so it can be persisted and shown on reopen. Thread-safe.
+func (i *Instance) SetAutoNameDescription(desc string) {
+	i.mu.Lock()
+	i.autoNameDescription = desc
+	i.mu.Unlock()
 }
 
 // ClearHookStatus resets the hook-based status and removes the persisted hook

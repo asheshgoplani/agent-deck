@@ -39,6 +39,10 @@ func handleSession(profile string, args []string) {
 		handleSessionStop(profile, args[1:])
 	case "remove":
 		handleSessionRemove(profile, args[1:])
+	case "archive":
+		handleSessionArchive(profile, args[1:])
+	case "unarchive":
+		handleSessionUnarchive(profile, args[1:])
 	case "restart":
 		handleSessionRestart(profile, args[1:])
 	case "revive":
@@ -95,6 +99,8 @@ func printSessionHelp() {
 	fmt.Println("  start <id>              Start a session's tmux process")
 	fmt.Println("  stop <id>               Stop/kill session process")
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
+	fmt.Println("  archive <id|title>     Archive a session (stop + hide; keeps worktree)")
+	fmt.Println("  unarchive <id|title>   Unarchive a session (returns as stopped)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
 	fmt.Println("  fork <id>               Fork Claude session with context")

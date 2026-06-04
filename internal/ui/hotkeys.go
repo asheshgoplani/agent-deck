@@ -16,12 +16,15 @@ const (
 	hotkeyRestartFresh    = "restart_fresh"
 	hotkeyDelete          = "delete"
 	hotkeyCloseSession    = "close_session"
+	hotkeyArchiveSession  = "archive_session"
+	hotkeyToggleArchived  = "toggle_archived"
 	hotkeyUndoDelete      = "undo_delete"
 	hotkeyMoveToGroup     = "move_to_group"
 	hotkeyMCPManager      = "mcp_manager"
 	hotkeyPluginManager   = "plugin_manager"
 	hotkeySkillsManager   = "skills_manager"
 	hotkeyTogglePreview   = "toggle_preview"
+	hotkeyCycleGroupView  = "cycle_group_view"
 	hotkeyMarkUnread      = "mark_unread"
 	hotkeyQuickApprove    = "quick_approve"
 	hotkeyToggleYolo      = "toggle_yolo"
@@ -53,12 +56,15 @@ var hotkeyActionOrder = []string{
 	hotkeyRestartFresh,
 	hotkeyDelete,
 	hotkeyCloseSession,
+	hotkeyArchiveSession,
+	hotkeyToggleArchived,
 	hotkeyUndoDelete,
 	hotkeyMoveToGroup,
 	hotkeyMCPManager,
 	hotkeyPluginManager,
 	hotkeySkillsManager,
 	hotkeyTogglePreview,
+	hotkeyCycleGroupView,
 	hotkeyMarkUnread,
 	hotkeyQuickApprove,
 	hotkeyToggleYolo,
@@ -90,12 +96,15 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyRestartFresh:    "T",
 	hotkeyDelete:          "d",
 	hotkeyCloseSession:    "D",
+	hotkeyArchiveSession:  "A",
+	hotkeyToggleArchived:  "ctrl+a",
 	hotkeyUndoDelete:      "ctrl+z",
 	hotkeyMoveToGroup:     "M",
 	hotkeyMCPManager:      "m",
 	hotkeyPluginManager:   "L",
 	hotkeySkillsManager:   "s",
 	hotkeyTogglePreview:   "v",
+	hotkeyCycleGroupView:  "t",
 	hotkeyMarkUnread:      "u",
 	hotkeyQuickApprove:    "a",
 	hotkeyToggleYolo:      "y",

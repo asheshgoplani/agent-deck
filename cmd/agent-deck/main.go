@@ -1500,6 +1500,13 @@ func handleAdd(profile string, args []string) {
 		newInstance = session.NewInstance(sessionTitle, path)
 	}
 
+	// Quick mode generated a machine-named adjective-noun handle; mark it so the
+	// TUI shows Claude's live task description in place of the random name. This
+	// mirrors the exact condition used above to generate sessionTitle.
+	if isQuick && !userProvidedTitle {
+		newInstance.AutoName = true
+	}
+
 	// Socket-isolation CLI override (issue #687 phase 1, v1.7.50). The
 	// `--tmux-socket` flag beats `[tmux].socket_name`. Whitespace-only
 	// values fall back to the config default via the GetSocketName trim
@@ -1778,11 +1785,28 @@ func handleAdd(profile string, args []string) {
 	}
 }
 
+// excludeArchivedForList returns instances filtered for the top-level list.
+// When include is false (default), archived sessions are dropped; when true,
+// the slice is returned unchanged. Mirrors the TUI's hide-by-default behavior.
+func excludeArchivedForList(instances []*session.Instance, include bool) []*session.Instance {
+	if include {
+		return instances
+	}
+	out := make([]*session.Instance, 0, len(instances))
+	for _, inst := range instances {
+		if !inst.IsArchived() {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
 // handleList lists all sessions
 func handleList(profile string, args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	allProfiles := fs.Bool("all", false, "List sessions from all profiles")
+	includeArchived := fs.Bool("archived", false, "Include archived sessions (excluded by default)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck list [options]")
@@ -1796,6 +1820,7 @@ func handleList(profile string, args []string) {
 		fmt.Println("  agent-deck list                    # List from default profile")
 		fmt.Println("  agent-deck -p work list            # List from 'work' profile")
 		fmt.Println("  agent-deck list --all              # List from all profiles")
+		fmt.Println("  agent-deck list --archived         # Include archived sessions")
 	}
 
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
@@ -1803,7 +1828,7 @@ func handleList(profile string, args []string) {
 	}
 
 	if *allProfiles {
-		handleListAllProfiles(*jsonOutput)
+		handleListAllProfiles(*jsonOutput, *includeArchived)
 		return
 	}
 
@@ -1818,6 +1843,8 @@ func handleList(profile string, args []string) {
 		fmt.Printf("Error: failed to load sessions: %v\n", err)
 		os.Exit(1)
 	}
+
+	instances = excludeArchivedForList(instances, *includeArchived)
 
 	if len(instances) == 0 {
 		fmt.Printf("No sessions found in profile '%s'.\n", storage.Profile())
@@ -1909,7 +1936,7 @@ func handleList(profile string, args []string) {
 }
 
 // handleListAllProfiles lists sessions from all profiles
-func handleListAllProfiles(jsonOutput bool) {
+func handleListAllProfiles(jsonOutput bool, includeArchived bool) {
 	profiles, err := session.ListProfiles()
 	if err != nil {
 		fmt.Printf("Error: failed to list profiles: %v\n", err)
@@ -1945,6 +1972,7 @@ func handleListAllProfiles(jsonOutput bool) {
 			if err != nil {
 				continue
 			}
+			instances = excludeArchivedForList(instances, includeArchived)
 			for _, inst := range instances {
 				allSessions = append(allSessions, sessionJSON{
 					ID:            inst.ID,
@@ -1981,6 +2009,7 @@ func handleListAllProfiles(jsonOutput bool) {
 		if err != nil {
 			continue
 		}
+		instances = excludeArchivedForList(instances, includeArchived)
 
 		if len(instances) == 0 {
 			continue
@@ -2207,6 +2236,7 @@ func handleRename(profile string, args []string) {
 	}
 
 	inst.Title = newTitle
+	inst.AutoName = false // explicit rename → keep the user-chosen name
 	inst.SyncTmuxDisplayName()
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)

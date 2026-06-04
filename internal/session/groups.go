@@ -17,6 +17,14 @@ const DefaultGroupName = "My Sessions"
 // DefaultGroupPath is the normalized path for the default group (used for lookups and protection)
 const DefaultGroupPath = "my-sessions"
 
+// conductorBottomOrder and defaultGroupBottomOrder pin the utility groups to the
+// bottom of the list, in a fixed order: ...other root groups..., conductor, then
+// the default "My Sessions" group as the absolute last. Large sentinels so they
+// always sort after every normal root group regardless of how many exist or how
+// they are reordered.
+const conductorBottomOrder = 1 << 30
+const defaultGroupBottomOrder = conductorBottomOrder + 1
+
 // ItemType represents the type of item in the flattened list
 type ItemType int
 
@@ -26,6 +34,7 @@ const (
 	ItemTypeRemoteGroup
 	ItemTypeRemoteSession
 	ItemTypeWindow
+	ItemTypeDivider // Non-selectable separator between view-mode sections (running-on-top, etc.)
 )
 
 // Item represents a single item in the flattened group tree view
@@ -51,6 +60,7 @@ type Item struct {
 	CreatingID          string             // Non-empty for placeholder items (worktree creation in progress)
 	CreatingTitle       string             // Display title for creating placeholder
 	CreatingTool        string             // Tool for creating placeholder
+	DividerLabel        string             // Label shown on an ItemTypeDivider row (e.g. "idle / done")
 }
 
 // Group represents a group of sessions
@@ -112,6 +122,8 @@ func actionablePriority(s Status) int {
 // recently actionable sessions surface first within a group (issue #857).
 // Key precedence:
 //
+//  0. IsArchived()                 asc  — active sessions first, archived last
+//     (archive-sessions feature)
 //  1. actionablePriority(Status)   asc  — error/waiting/running first
 //  2. LastAccessedAt              desc  — recent attention first
 //  3. Order                        asc  — preserves user-customized
@@ -120,13 +132,21 @@ func actionablePriority(s Status) int {
 //     TestSessionOrderMigration)
 func SortInstancesByActionable(insts []*Instance) {
 	sort.SliceStable(insts, func(i, j int) bool {
+		// Archived sessions always sink to the bottom of the group, ahead of
+		// any status/recency comparison (archive-sessions feature). When the
+		// view hides archived rows this is moot; when it shows them they read
+		// as "set aside" at the end.
+		archivedI, archivedJ := insts[i].IsArchived(), insts[j].IsArchived()
+		if archivedI != archivedJ {
+			return !archivedI // non-archived (false) sorts before archived (true)
+		}
 		pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
 		if pi != pj {
 			return pi < pj
 		}
-		ai, aj := insts[i].LastAccessedAt, insts[j].LastAccessedAt
-		if !ai.Equal(aj) {
-			return ai.After(aj)
+		ai2, aj2 := insts[i].LastAccessedAt, insts[j].LastAccessedAt
+		if !ai2.Equal(aj2) {
+			return ai2.After(aj2)
 		}
 		return insts[i].Order < insts[j].Order
 	})
@@ -262,9 +282,12 @@ func NewGroupTreeWithGroups(instances []*Instance, storedGroups []*GroupData) *G
 func (t *GroupTree) rebuildGroupList() {
 	t.GroupList = make([]*Group, 0, len(t.Groups))
 	for _, g := range t.Groups {
-		// Always pin the "conductor" group to the top
-		if g.Path == "conductor" && g.Order >= 0 {
-			g.Order = -1
+		// Pin utility groups to the bottom: conductor, then "My Sessions" last.
+		switch g.Path {
+		case "conductor":
+			g.Order = conductorBottomOrder
+		case DefaultGroupPath:
+			g.Order = defaultGroupBottomOrder
 		}
 		t.GroupList = append(t.GroupList, g)
 	}
@@ -1228,7 +1251,25 @@ func (t *GroupTree) AddSession(inst *Instance) {
 		t.rebuildGroupList()
 	}
 	inst.Order = len(group.Sessions)
-	group.Sessions = append(group.Sessions, inst)
+
+	// Archived sessions sink to the bottom of their group
+	// (SortInstancesByActionable key 0). A new, non-archived session must land
+	// ABOVE them, so insert it just before the first archived row rather than
+	// blindly appending (which would drop it below the archived set). An
+	// archived session being (re-)added keeps appending at the very end.
+	insertAt := len(group.Sessions)
+	if !inst.IsArchived() {
+		for i, s := range group.Sessions {
+			if s.IsArchived() {
+				insertAt = i
+				break
+			}
+		}
+	}
+	group.Sessions = append(group.Sessions, nil)
+	copy(group.Sessions[insertAt+1:], group.Sessions[insertAt:])
+	group.Sessions[insertAt] = inst
+
 	t.updateGroupDefaultPath(groupPath)
 }
 
