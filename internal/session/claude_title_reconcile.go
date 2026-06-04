@@ -1,0 +1,97 @@
+package session
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/tmux"
+)
+
+// claudeSessionMeta is the subset of ~/.claude/sessions/<PID>.json that
+// agent-deck reads for title sync (issue #572).
+type claudeSessionMeta struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+}
+
+// ClaudeSessionNameIn scans claudeDir/sessions/*.json and returns the trimmed
+// `name` of the entry whose sessionId matches. Empty string when there's no
+// match, no name, or the sessions dir is unreadable.
+//
+// Issue #572: Claude Code writes per-process metadata here when the user starts
+// with `claude --name X` or runs `/rename X` mid-session. claudeDir is an
+// explicit parameter so tests can point it at a temp dir.
+func ClaudeSessionNameIn(claudeDir, sessionID string) string {
+	claudeDir = strings.TrimSpace(claudeDir)
+	sessionID = strings.TrimSpace(sessionID)
+	if claudeDir == "" || sessionID == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Join(claudeDir, "sessions"))
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(claudeDir, "sessions", entry.Name()))
+		if err != nil {
+			continue
+		}
+		var meta claudeSessionMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			continue
+		}
+		if meta.SessionID == sessionID {
+			return strings.TrimSpace(meta.Name)
+		}
+	}
+	return ""
+}
+
+// ClaudeSessionName resolves the user's ~/.claude and returns the Claude
+// session name for sessionID. Empty string on any error or no match.
+func ClaudeSessionName(sessionID string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return ClaudeSessionNameIn(filepath.Join(home, ".claude"), sessionID)
+}
+
+// ReconcileTitleFromClaude refreshes i.Title from the agent's current Claude
+// session name. It is the shared core behind both the hook-event sync (#572)
+// and the on-attach reconcile (#1114 follow-up): Claude's /rename fires no
+// agent-deck hook, so an idle session's title and iTerm2 badge stay stale until
+// the next turn boundary — reconciling on attach makes detach/reattach a
+// reliable manual refresh.
+//
+// Honors the global sync_title switch and the per-session TitleLocked flag (so
+// conductor titles like "SCRUM-351" survive Claude's own /rename). On a real
+// change it mutates the in-memory instance (Title + tmux display name) and
+// drops the iTerm2 badge-update signal so the attach-side WatchBadgeUpdates
+// catch-up re-emits the fresh name instead of clobbering it with the old one.
+//
+// Returns the new name and true iff the title changed; the CALLER is
+// responsible for persisting the instance to storage.
+func (i *Instance) ReconcileTitleFromClaude(sessionID string) (string, bool) {
+	if i == nil || i.TitleLocked {
+		return "", false
+	}
+	if cfg, err := LoadUserConfig(); err == nil && cfg != nil && !cfg.GetSyncTitle() {
+		return "", false
+	}
+	name := ClaudeSessionName(sessionID)
+	if name == "" || name == i.Title {
+		return "", false
+	}
+	i.Title = name
+	i.SyncTmuxDisplayName()
+	if tmuxSess := i.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
+		_ = tmux.WriteBadgeUpdate(tmuxSess.Name, name)
+	}
+	return name, true
+}
