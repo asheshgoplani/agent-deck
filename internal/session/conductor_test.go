@@ -1333,9 +1333,10 @@ func TestCreateSymlinkWithExpansion_MissingSourceError(t *testing.T) {
 // --- Policy MD tests ---
 
 func TestInstallPolicyMD_Default(t *testing.T) {
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	policyPath := filepath.Join(conductorDir, "POLICY.md")
 
 	// Backup existing file if present
@@ -1348,8 +1349,7 @@ func TestInstallPolicyMD_Default(t *testing.T) {
 	}
 
 	// Test installing default template
-	err := InstallPolicyMD("")
-	if err != nil {
+	if err := InstallPolicyMD(""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1616,13 +1616,18 @@ func TestMigrateConductorPolicySplit_PreservesCustomClaudeMD(t *testing.T) {
 func TestInstallLearningsMD(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 
 	err := InstallLearningsMD()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	learningsPath := filepath.Join(tmpHome, ".agent-deck", "conductor", "LEARNINGS.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	learningsPath := filepath.Join(conductorDir, "LEARNINGS.md")
 	content, err := os.ReadFile(learningsPath)
 	if err != nil {
 		t.Fatalf("LEARNINGS.md not created: %v", err)
