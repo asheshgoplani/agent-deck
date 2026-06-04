@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -13,21 +11,8 @@ import (
 func setSettingsPanelHotkeyConfigForTest(t *testing.T, tomlBody string) {
 	t.Helper()
 
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
-
-	configPath := filepath.Join(configDir, session.UserConfigFileName)
-	if err := os.WriteFile(configPath, []byte(tomlBody), 0o600); err != nil {
-		t.Fatalf("failed to write config.toml: %v", err)
-	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
+	homeDir := setXDGTestHome(t)
+	writeXDGTestConfig(t, homeDir, tomlBody)
 }
 
 // toolValueIndex returns the index of value in panel.toolValues (for name-based tests).
