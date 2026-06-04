@@ -1293,7 +1293,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
-		fmt.Println("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in ~/.agent-deck/config.toml")
+		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")

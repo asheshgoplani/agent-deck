@@ -92,7 +92,7 @@ func TestHookHandler_MissingProjectDir_DegradesNotFatal(t *testing.T) {
 	}
 
 	// (3) Soft-skip: no status file is written for the broken session.
-	statusFile := filepath.Join(home, ".agent-deck", "hooks", "inst-1233.json")
+	statusFile := filepath.Join(getHooksDir(), "inst-1233.json")
 	if _, err := os.Stat(statusFile); err == nil {
 		t.Errorf("expected soft-skip (no status file) when project dir is missing, but %s exists", statusFile)
 	}
@@ -122,7 +122,7 @@ func TestHookHandler_PresentProjectDir_NotDegraded(t *testing.T) {
 		t.Errorf("did not expect a missing-project-dir WARN when cwd exists; log:\n%s", body)
 	}
 
-	statusFile := filepath.Join(home, ".agent-deck", "hooks", "inst-ok.json")
+	statusFile := filepath.Join(getHooksDir(), "inst-ok.json")
 	if _, err := os.Stat(statusFile); err != nil {
 		t.Errorf("expected status file to be written when project dir exists: %v", err)
 	}
