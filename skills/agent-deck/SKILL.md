@@ -88,7 +88,7 @@ Status legend: ✅ verified, 🟡 partial, 🔴 known broken, ⚪ unknown. To up
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude conversation |
+| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
@@ -346,7 +346,7 @@ Key constraints:
 | `r/R` | Restart (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
-| `f/F` | Fork Claude session |
+| `f/F` | Fork Claude/Pi session |
 | `d` | Delete |
 | `M` | Move to group |
 

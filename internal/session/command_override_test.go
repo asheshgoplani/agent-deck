@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +11,17 @@ import (
 
 // Tests for the uniform command/env_file override layer.
 // Verifies GetToolCommand, buildCopilotCommand, and getToolEnvFile wiring.
+
+func seedLocalPiSessionFile(t *testing.T, inst *Instance) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("HOME"), ".pi", "agent-deck", inst.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir Pi session dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write Pi session file: %v", err)
+	}
+}
 
 func TestGetToolCommand_NoConfig(t *testing.T) {
 	// With no config file on disk, GetToolCommand should return the bare tool name.
@@ -200,6 +212,83 @@ func TestBuildPiCommand_WrongTool(t *testing.T) {
 	got := inst.buildPiCommand("some-command")
 	if got != "some-command" {
 		t.Errorf("buildPiCommand with wrong tool = %q, want %q", got, "some-command")
+	}
+}
+
+func TestCreateForkedPiInstance_UsesNativeForkAndPersistsBaseCommand(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "pi")
+	parent.ID = "parent-pi-id"
+	parent.GroupPath = "projects/pi"
+	parent.Command = "pi"
+	seedLocalPiSessionFile(t, parent)
+
+	forked, cmd, err := parent.CreateForkedPiInstance("forked", "")
+	if err != nil {
+		t.Fatalf("CreateForkedPiInstance() failed: %v", err)
+	}
+
+	if forked.Tool != "pi" {
+		t.Fatalf("forked.Tool = %q, want pi", forked.Tool)
+	}
+	if forked.GroupPath != "projects/pi" {
+		t.Fatalf("forked.GroupPath = %q, want inherited group", forked.GroupPath)
+	}
+	if forked.Command != "pi" {
+		t.Fatalf("forked.Command = %q, want base command for later --continue restarts", forked.Command)
+	}
+	if !forked.IsForkAwaitingStart {
+		t.Fatal("forked Pi instance should carry IsForkAwaitingStart for first launch")
+	}
+	if forked.ForkStartCommand != cmd {
+		t.Fatalf("ForkStartCommand should hold the first-start fork command")
+	}
+
+	for _, want := range []string{
+		"parent_session_dir=${HOME}/.pi/agent-deck/parent-pi-id",
+		"session_dir=${HOME}/.pi/agent-deck/" + forked.ID,
+		`source_file=$(find "$parent_session_dir" -type f -name '*.jsonl' -exec ls -t {} +`,
+		`AGENTDECK_INSTANCE_ID=` + forked.ID,
+		`pi --fork "$source_file" --session-dir "$session_dir"`,
+	} {
+		if !strings.Contains(cmd, want) {
+			t.Errorf("Pi fork command = %q, want to contain %q", cmd, want)
+		}
+	}
+	if strings.Contains(cmd, "--continue") {
+		t.Fatalf("Pi fork command must not include --continue: %s", cmd)
+	}
+
+	resumeCmd := forked.buildPiCommand(forked.Command)
+	if !strings.Contains(resumeCmd, `pi --continue --session-dir "$session_dir"`) {
+		t.Fatalf("Pi forked instance restart command should resume with --continue, got: %s", resumeCmd)
+	}
+	if strings.Contains(resumeCmd, "--fork") {
+		t.Fatalf("Pi forked instance restart command must not replay --fork, got: %s", resumeCmd)
+	}
+}
+
+func TestCreateForkedPiInstance_WorktreeOptions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	parent := NewInstanceWithTool("parent", "/tmp/project", "pi")
+	parent.ID = "parent-pi-id"
+	seedLocalPiSessionFile(t, parent)
+
+	opts := &ClaudeOptions{
+		WorkDir:          "/tmp/project-wt",
+		WorktreePath:     "/tmp/project-wt",
+		WorktreeRepoRoot: "/tmp/project",
+		WorktreeBranch:   "fork/pi",
+	}
+	forked, _, err := parent.CreateForkedPiInstanceWithOptions("forked", "custom", opts)
+	if err != nil {
+		t.Fatalf("CreateForkedPiInstanceWithOptions() failed: %v", err)
+	}
+	if forked.ProjectPath != "/tmp/project-wt" {
+		t.Fatalf("forked.ProjectPath = %q, want worktree path", forked.ProjectPath)
+	}
+	if forked.WorktreePath != "/tmp/project-wt" || forked.WorktreeRepoRoot != "/tmp/project" || forked.WorktreeBranch != "fork/pi" {
+		t.Fatalf("forked worktree fields not copied: %+v", forked)
 	}
 }
 

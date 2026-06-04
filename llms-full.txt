@@ -82,7 +82,7 @@ One terminal. All your agents. Complete visibility.
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork any Claude conversation instantly. Each fork inherits the full conversation history.
+Try different approaches without losing context. Fork Claude conversations and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
@@ -207,7 +207,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 ```bash
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a Claude session
+agent-deck session fork my-proj   # Fork a Claude/Pi session
 agent-deck mcp attach my-proj exa # Attach MCP to session
 ```
 
@@ -364,7 +364,7 @@ agent-deck session output "Project"
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude conversation |
+| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
@@ -487,7 +487,7 @@ agent-deck remove "Codex Review" && agent-deck remove "Gemini Arch"
 | `r/R` | Restart (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager (Claude) |
-| `f/F` | Fork Claude session |
+| `f/F` | Fork Claude/Pi session |
 | `d` | Delete |
 | `M` | Move to group |
 
@@ -755,17 +755,17 @@ agent-deck session restart <id|title>
 
 Reloads MCPs without losing conversation (Claude/Gemini).
 
-### session fork (Claude only)
+### session fork (Claude and Pi)
 
 ```bash
 agent-deck session fork <id|title> [-t "title"] [-g "group"]
 ```
 
-Creates new session with same Claude conversation.
+Creates a new session with the same conversation context for supported tools.
 
 **Requirements:**
-- Session must be Claude tool
-- Must have valid Claude session ID
+- Claude sessions must have a valid Claude session ID
+- Pi sessions use Agent Deck's per-instance Pi session directory and Pi's native `pi --fork`
 
 ### session attach
 
@@ -1293,7 +1293,7 @@ Common issues and solutions for agent-deck.
 | MCPs not loading | `agent-deck session restart <name>` |
 | CLI changes not in TUI | Press `Ctrl+R` to refresh |
 | Flag not working | Put flags BEFORE arguments |
-| Fork fails | Check session has valid Claude session ID |
+| Fork fails | Check Claude session has a valid session ID, or Pi session has JSONL history under Agent Deck's Pi session dir |
 | Status stuck | Wait 2 seconds or press `u` to mark unread |
 
 ## Common Issues
@@ -1569,8 +1569,8 @@ Complete reference for agent-deck Terminal UI features.
 | `s` | Open Skills Manager (Claude) |
 | `d` | Delete session or group |
 | `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude only) |
-| `F` | Fork with options (Claude only) |
+| `f` | Quick fork (Claude/Pi) |
+| `F` | Fork with options (Claude/Pi) |
 
 ### Group Actions
 

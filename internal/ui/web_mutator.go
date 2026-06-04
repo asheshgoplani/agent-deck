@@ -229,9 +229,7 @@ func (m *WebMutator) pushUndo(inst *session.Instance) {
 	}
 }
 
-// ForkSession forks an existing session using the proper Claude resume command.
-// It uses CreateForkedInstanceWithOptions which builds "claude --resume <session-id>"
-// via buildClaudeForkCommandForTarget, ensuring the fork resumes the parent conversation.
+// ForkSession forks an existing session using the proper tool-specific fork command.
 func (m *WebMutator) ForkSession(id string) (string, error) {
 	m.h.instancesMu.RLock()
 	parent := m.h.instanceByID[id]
@@ -240,9 +238,18 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
 
-	forked, _, err := parent.CreateForkedInstanceWithOptions(
-		parent.Title+" (fork)", parent.GroupPath, nil,
-	)
+	var forked *session.Instance
+	var err error
+	switch parent.Tool {
+	case "opencode":
+		forked, _, err = parent.CreateForkedOpenCodeInstance(parent.Title+" (fork)", parent.GroupPath)
+	case "pi":
+		forked, _, err = parent.CreateForkedPiInstance(parent.Title+" (fork)", parent.GroupPath)
+	default:
+		forked, _, err = parent.CreateForkedInstanceWithOptions(
+			parent.Title+" (fork)", parent.GroupPath, nil,
+		)
+	}
 	if err != nil {
 		return "", fmt.Errorf("fork session: %w", err)
 	}

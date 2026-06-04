@@ -1067,6 +1067,9 @@ func InstallPolicyMD(customPath string) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
 	targetPath := filepath.Join(dir, "POLICY.md")
 
 	if customPath != "" {
@@ -1075,9 +1078,6 @@ func InstallPolicyMD(customPath string) error {
 	}
 
 	// No custom path - write default template (but preserve existing symlink)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
 	if info, err := os.Lstat(targetPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}

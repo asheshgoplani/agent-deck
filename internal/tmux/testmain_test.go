@@ -79,6 +79,13 @@ func TestMain(m *testing.M) {
 		return
 	}
 
+	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5). Placed after
+	// the child-helper guards above (those re-exec as subprocess tools and must
+	// keep the inherited env). See internal/testutil/homeenv.go.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	// Isolate the tmux socket. Without this, `tmux new-session` / `list-sessions` /
 	// `kill-session` calls in test setup & cleanup hit the user's default
 	// /tmp/tmux-<uid>/default socket — destabilizing their live sessions.

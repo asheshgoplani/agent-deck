@@ -173,8 +173,8 @@ ECHO:PINGLAUNCH-cap-e2e-token</pre></div>
   <div class="card green">
     <div class="status"><span class="dot green"></span>PASS</div>
     <h3>Fork guard</h3>
-    <p class="how">Forking is only valid for a Claude session with live context. We confirm forking a non-Claude session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.</p>
-    <p class="assert">Pass when: forking a non-Claude session is refused and no child row is created</p>
+    <p class="how">Forking is only valid for supported tools with live context (Claude session ID or Pi JSONL). We confirm forking an unsupported session is cleanly refused and creates no orphan child row. The full context-inheriting fork is a documented nightly gap.</p>
+    <p class="assert">Pass when: forking an unsupported session is refused and no child row is created</p>
     <div class="meta">Tier F . Runtime: 0.1s . TestCapability_Lifecycle_Fork</div>
     <div class="chips"><span class="chip">Local-isolated</span></div>
     <div class="term"><div class="term-label">What the terminal showed at verification</div><pre class="terminal">$ agent-deck session fork cap-fork
@@ -209,8 +209,8 @@ ECHO:PING-TestCapability_Agent_EchoRoundTrip</pre></div>
   
   <div class="card grey">
     <div class="status"><span class="dot grey"></span>NIGHTLY</div>
-    <h3>Fork inherits Claude context</h3>
-    <p class="how">We fork a live Claude session and confirm the child inherits the conversation with a distinct id and a parent link. This needs a real Claude session id from a live transcript, so it runs nightly.</p>
+    <h3>Fork inherits tool context</h3>
+    <p class="how">We fork a live Claude or Pi session and confirm the child inherits the conversation with a distinct id and a parent link. This needs real tool session data from a live transcript, so it runs nightly.</p>
     <p class="assert">Pass when: child session links the parent and inherits conversation context</p>
     <div class="meta">Tier N . Runtime: not measured</div>
     <div class="chips"><span class="chip">Real-agent</span><span class="chip">Needs-creds</span><span class="chip">Needs-network</span></div>

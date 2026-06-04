@@ -30,8 +30,8 @@ Complete reference for agent-deck Terminal UI features.
 | `s` | Open Skills Manager |
 | `d` | Delete session or group |
 | `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude only) |
-| `F` | Fork with options (Claude only) |
+| `f` | Quick fork (Claude/Pi) |
+| `F` | Fork with options (Claude/Pi) |
 
 ### Group Actions
 

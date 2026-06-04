@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+
 ### Changed
 
 - New installs now use the XDG Base Directory layout: config under `$XDG_CONFIG_HOME/agent-deck` (default `~/.config/agent-deck`), durable state under `$XDG_DATA_HOME/agent-deck` (default `~/.local/share/agent-deck`), and cache/debug files under `$XDG_CACHE_HOME/agent-deck` (default `~/.cache/agent-deck`). Existing `~/.agent-deck` installs continue to work through category-specific legacy fallback.

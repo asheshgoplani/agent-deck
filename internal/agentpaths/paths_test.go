@@ -2,7 +2,9 @@ package agentpaths
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +83,65 @@ func TestXDGDirs_EnvOverrides(t *testing.T) {
 	}
 	if want := filepath.Join(cacheHome, AppDirName); cacheDir != want {
 		t.Fatalf("CacheDir() = %q, want %q", cacheDir, want)
+	}
+}
+
+func osRealHome(t *testing.T) string {
+	t.Helper()
+	u, err := user.Current()
+	if err != nil || u.HomeDir == "" {
+		t.Skip("cannot determine real home directory from OS user database")
+	}
+	return filepath.Clean(u.HomeDir)
+}
+
+func TestConfigDir_RefusesUnderTestOnRealHome(t *testing.T) {
+	real := osRealHome(t)
+	t.Setenv("HOME", real)
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	dir, err := ConfigDir()
+	if err == nil {
+		t.Fatalf("ConfigDir should refuse real-home path under test, got %s nil error", dir)
+	}
+	if !strings.Contains(err.Error(), "real home") {
+		t.Fatalf("error should mention real-home guard, got %v", err)
+	}
+}
+
+func TestLegacyDir_RefusesUnderTestOnRealHome(t *testing.T) {
+	real := osRealHome(t)
+	t.Setenv("HOME", real)
+
+	dir, err := LegacyDir()
+	if err == nil {
+		t.Fatalf("LegacyDir should refuse real-home path under test, got %s nil error", dir)
+	}
+	if !strings.Contains(err.Error(), "real home") {
+		t.Fatalf("error should mention real-home guard, got %v", err)
+	}
+}
+
+func TestUnsafeTestPathWarningDebounced(t *testing.T) {
+	real := osRealHome(t)
+	t.Setenv("HOME", real)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	var buf strings.Builder
+	restore := setUnsafeTestPathWarnSink(&buf)
+	defer restore()
+	resetUnsafeTestPathWarnOnce()
+
+	for i := 0; i < 5; i++ {
+		_, _ = DataDir()
+	}
+
+	got := buf.String()
+	if n := strings.Count(got, "real home"); n != 1 {
+		t.Fatalf("warning should be debounced to exactly 1 emission, got %d:\n%s", n, got)
+	}
+	if !strings.Contains(got, "testutil.IsolateHome") {
+		t.Fatalf("warning should explain the sandbox fix, got %q", got)
 	}
 }
 

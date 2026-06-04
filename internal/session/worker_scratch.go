@@ -254,7 +254,19 @@ func computeAllowList(i *Instance) []string {
 	return out
 }
 
-// WorkerScratchDirRoot returns the path that holds every worker's
+// WorkerScratchDirRoot returns the worker-scratch root resolved against the
+// effective HOME at call time (~/.agent-deck/worker-scratch). It is the
+// exported entry point used by the S5 path-safety guard test so the guard can
+// confirm this sink does not resolve under the real home when un-sandboxed.
+func WorkerScratchDirRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %w", err)
+	}
+	return workerScratchDirRoot(home), nil
+}
+
+// workerScratchDirRoot returns the path that holds every worker's
 // scratch config dir. Callers with a valid home should prefer
 // workerScratchDirFor below which derives this from the effective
 // HOME at call time.

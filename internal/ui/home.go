@@ -6757,7 +6757,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "f":
 		// Quick fork session (same title with " (fork)" suffix)
-		// Only available when session has a valid Claude session ID
+		// Only available when the selected tool supports Agent Deck forking
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -6775,7 +6775,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "F", "shift+f":
 		// Fork with dialog (customize title and group)
-		// Only available when session has a valid Claude session ID
+		// Only available when the selected tool supports Agent Deck forking
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeSession && item.Session != nil {
@@ -9406,7 +9406,7 @@ func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parent
 	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, parentSessionID, parentProjectPath)
 }
 
-// forkSessionCmdWithOptions creates a forked session with the given title, group, Claude options, and optional sandbox.
+// forkSessionCmdWithOptions creates a forked session with the given title, group, shared fork options, and optional sandbox.
 // Shows immediate UI feedback by tracking the source session in forkingSessions.
 func (h *Home) forkSessionCmdWithOptions(
 	source *session.Instance,
@@ -9460,6 +9460,8 @@ func (h *Home) forkSessionCmdWithOptions(
 		switch source.Tool {
 		case "opencode":
 			inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
+		case "pi":
+			inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
 		default:
 			inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
 		}
@@ -9838,6 +9840,27 @@ func (h *Home) attachSession(inst *session.Instance) tea.Cmd {
 	// Do not synchronously save here; saving on attach blocks transition and causes
 	// visible blank-screen delay before tmux attach starts.
 	inst.MarkAccessed()
+
+	// #1114 follow-up: Claude's /rename fires no agent-deck hook, so an idle
+	// session's title and iTerm2 badge can be stale at attach time (the
+	// hook-driven sync only runs on the next turn boundary). Reconcile from the
+	// agent's current Claude session name here — before tmuxSess.Attach() emits
+	// the badge from DisplayName — so detach/reattach reliably refreshes it.
+	if session.IsClaudeCompatible(inst.Tool) {
+		sessionID := session.ReadHookSessionAnchor(inst.ID)
+		if sessionID == "" {
+			sessionID = inst.ClaudeSessionID
+		}
+		if newName, changed := inst.ReconcileTitleFromClaude(sessionID); changed {
+			h.pendingTitleChanges[inst.ID] = newName
+			h.invalidatePreviewCache(inst.ID)
+			h.rebuildFlatItems()
+			h.saveInstances()
+			uiLog.Info("title_reconciled_on_attach",
+				slog.String("session_id", inst.ID),
+				slog.String("title", newName))
+		}
+	}
 
 	// Acknowledge on ATTACH (not detach) - but ONLY if session is waiting (yellow)
 	// This ensures:
@@ -11823,7 +11846,7 @@ func (h *Home) renderHelpBarFull() string {
 			if item.Session != nil && item.Session.CanRestartFresh() && restartFreshKey != "" {
 				primaryHints = append(primaryHints, h.helpKey(restartFreshKey, "Restart Fresh"))
 			}
-			// Only show fork hints if session has a valid Claude session ID
+			// Only show fork hints when the selected tool supports Agent Deck forking.
 			if item.Session != nil && item.Session.CanFork() {
 				if forkKeys != "" {
 					primaryHints = append(primaryHints, h.helpKey(forkKeys, "Fork"))

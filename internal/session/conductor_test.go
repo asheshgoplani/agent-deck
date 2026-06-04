@@ -1391,8 +1391,10 @@ func TestInstallPolicyMD_CustomSymlink(t *testing.T) {
 	}
 
 	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	policyPath := filepath.Join(conductorDir, "POLICY.md")
 
 	// Backup existing file/symlink if present
@@ -1413,7 +1415,7 @@ func TestInstallPolicyMD_CustomSymlink(t *testing.T) {
 	})
 
 	// Test installing with custom path (creates symlink)
-	err := InstallPolicyMD(customPath)
+	err = InstallPolicyMD(customPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1449,8 +1451,9 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 	profile := "default"
 
 	// Clean up after test
-	homeDir, _ := os.UserHomeDir()
-	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
+	if conductorDir, err := ConductorDir(); err == nil {
+		defer os.RemoveAll(filepath.Join(conductorDir, name))
+	}
 
 	// Setup with custom policy path (creates per-conductor symlink)
 	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath, "", nil, "")
@@ -2190,12 +2193,16 @@ func TestBridgeTemplate_DiscordImageUploadSupport(t *testing.T) {
 }
 
 func TestConductorClearOnCompact(t *testing.T) {
-	// Override HOME so LoadConductorMeta reads from our temp dir
+	// Override HOME/XDG data so LoadConductorMeta reads from our temp dir
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 
 	// Create conductor meta with clear_on_compact = true (default)
-	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor", "main")
+	condDir, err := ConductorNameDir("main")
+	if err != nil {
+		t.Fatalf("ConductorNameDir: %v", err)
+	}
 	if err := os.MkdirAll(condDir, 0755); err != nil {
 		t.Fatal(err)
 	}

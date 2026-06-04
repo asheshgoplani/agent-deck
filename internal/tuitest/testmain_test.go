@@ -13,6 +13,12 @@ import (
 // accidental modification of production session data.
 // See CLAUDE.md: "Never delete these TestMain files."
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
+	// See internal/testutil/homeenv.go for the postmortem.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	// Isolate the tmux socket. Smoke tests drive real tmux sessions; without
 	// isolation they hit the user's default socket and destabilize live
 	// agent-deck sessions (2026-04-17 incident).
