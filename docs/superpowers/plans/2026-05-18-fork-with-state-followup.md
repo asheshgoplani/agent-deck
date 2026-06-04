@@ -654,10 +654,10 @@ Add `withStateEnabled bool` and `withStateAndGitignored bool` fields. Exported g
 
 > **Still valid (backend-agnostic).** Main's `forkdialog.go` still uses numeric `focusIndex` and has zero with-state UI, so this task is genuinely absent on main. Reference commit `e573f4f8` (B1 state+getters) is salvageable as-is.
 
-- [ ] **Step 1: Add fields, exported getters, and toggle methods**
-- [ ] **Step 2: Reset fields in `Show()` and `Hide()`**
-- [ ] **Step 3: Verify compile** — `GOTOOLCHAIN=go1.25.11 go build ./internal/ui/...`
-- [ ] **Step 4: Commit** — `git commit -m "feat(tui): ForkDialog state + getters for fork-with-state"`
+- [x] **Step 1: Add fields, exported getters, and toggle methods**
+- [x] **Step 2: Reset fields in `Show()` and `Hide()`**
+- [x] **Step 3: Verify compile** — `GOTOOLCHAIN=go1.25.11 go build ./internal/ui/...`
+- [x] **Step 4: Commit** — `git commit -m "feat(tui): ForkDialog state + getters for fork-with-state"`
 
 ## Task B2 — `ForkDialog` focus targets (gap 1)
 
@@ -670,8 +670,8 @@ Refactor to use the existing `NewDialog` focus-target pattern: declare `forkFocu
 >
 > **Required by Decision 4 (no longer optional).** B3 depends on this: add `carryState` and `gitignored` as focus targets in the rebuilt `focusTargets` slice, each **skipped** when its parent toggle is off (gitignored skipped unless with-state on; with-state skipped unless worktree on). `Space`/`Enter` on a focused target toggles it; `y`/`i` stay as shortcuts.
 
-- [ ] **Step 1-5: Apply focus-target refactor as documented in the deprecated plan's Task 15A**
-- [ ] **Step 6: Commit**
+- [x] **Step 1-5: Apply focus-target refactor as documented in the deprecated plan's Task 15A**
+- [x] **Step 6: Commit**
 
 ## Task B3 — `ForkDialog` rendering + key handlers + tests (gap 1)
 
@@ -689,10 +689,10 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 > - `Include gitignored files` renders nested (one extra indent) and only when with-state is on.
 > - Toggle via `Space`/`Enter` on the focused checkbox (Decision 4), plus `y`/`i` shortcuts (Decision 3). Shortcuts intercept only when focus is on a toggle target, so they remain typeable in the Name/Branch inputs.
 
-- [ ] **Step 1: Add checkbox rendering in `View()`** (labels + static hint + nested indent)
-- [ ] **Step 2: Add `Space`/`Enter` toggle on the focused checkbox + `y`/`i` shortcut handlers in `Update()`**
-- [ ] **Step 3: Add state-machine tests in `forkdialog_test.go`**
-- [ ] **Step 4: Run, commit**
+- [x] **Step 1: Add checkbox rendering in `View()`** (labels + static hint + nested indent)
+- [x] **Step 2: Add `Space`/`Enter` toggle on the focused checkbox + `y`/`i` shortcut handlers in `Update()`**
+- [x] **Step 3: Add state-machine tests in `forkdialog_test.go`**
+- [x] **Step 4: Run, commit**
 
 ## Task B4 — TUI submit wires collision check + cleanup-on-error (gaps 1, 3-TUI, 4-TUI)
 
@@ -705,20 +705,23 @@ Render the two new checkboxes when worktree is on; render the gitignored checkbo
 2. **Thread the with-state booleans** from the dialog getters (`IsWithStateEnabled`, `IsWithStateAndGitignoredEnabled`) into this async `tea.Cmd` closure. NOTE: `forkSessionCmdWithOptions` is also called with `nil` opts from non-dialog paths — guard against `nil` before reading getters (default both booleans to `false`).
 3. **Early non-git guard** (placed BEFORE any git-direct call): if with-state is requested and `backend.Type() != vcs.TypeGit`, return `sessionForkedMsg{err: fmt.Errorf("--with-state is only supported for git repositories"), sourceID: ...}`. This guard is what keeps the git-direct calls below jujutsu-safe.
 4. **Non-state path — unchanged:** reuse via `backend.GetWorktreeForBranch(...)`, else `createWorktreeWithSetupAndLog(backend, ...)`. Do not touch this branch.
-5. **With-state path (git-only, git-direct):**
-   - `git.ValidateForkWithStateDestination(repoRoot, branch)` (collision gate)
-   - `git.HeadCommit(source.ProjectPath)` (parent-HEAD anchor)
-   - `git.CreateWorktreeAtStartPoint(repoRoot, worktreePath, branch, parentHead)`
-   - `git.MaterializeWipFromParent(source.ProjectPath, worktreePath, withIgnored)` **with cleanup-on-error** (force-remove the worktree and, if `createdBranch`, delete the branch)
-   - `git.ProcessWorktreeInclude(...)`
-   - `git.RunWorktreeSetupAfterCreate(...)`
+5. **With-state path (git-only, git-direct)** — implemented as `forkWithStateWorktree` in `home.go`, in this order:
+   - `git.ValidateForkWithStateDestination(repoRoot, branch)` (collision gate; with-state never reuses an existing worktree). Checked **before** the path guard so the more actionable error wins.
+   - Refuse if the computed worktree path already exists.
+   - `git.DetectInProgressOperation(source.ProjectPath)` — actionable abort guidance (rebase/merge/cherry-pick/revert/bisect) before any creation.
+   - `git.HasSubmodules(source.ProjectPath)` warning via `uiLog.Warn` (TUI has no stderr surface here).
+   - `git.HeadCommit(source.ProjectPath)` (parent-HEAD anchor).
+   - `git.CreateWorktreeAtStartPoint(repoRoot, worktreePath, branch, parentHead)`.
+   - `git.MaterializeWipFromParent(source.ProjectPath, worktreePath, withIgnored)` with cleanup-on-error: force-remove the worktree and, if `createdBranch`, delete the branch; if cleanup also fails, return a manual-cleanup hint.
+   - `git.ProcessWorktreeInclude(...)`.
+   - `git.RunWorktreeSetupAfterCreate(...)` — **non-fatal** (warn on failure; the worktree + state already exist, mirroring #1263).
 6. **Return `sessionForkedMsg{err: ..., sourceID: ...}` on every error path** — NOT `os.Exit` (that is the CLI surface only).
 
 > **Design decision (mirrors #1263).** The collision check and the with-state worktree creation stay **git-direct** because with-state is git-only, gated behind the early `backend.Type() == vcs.TypeGit` guard; `vcsbackend` has no with-state methods. Reuse and the non-state path route through the **backend** (jujutsu-safe). This is the exact same split PR #1263 made on the CLI side.
 
 > **Salvage note.** Reference commit `25623f6a` (B4 submit handler) was written against the dead git-direct PR-A API and **must be rewritten** against the backend abstraction per the steps above; it is NOT salvageable as-is.
 
-- [ ] **Step 1-5: Implement (per the steps above), test, commit**
+- [x] **Step 1-5: Implement (per the steps above), test, commit**
 
 ## Task B5 — TUI behavioral eval (gap 10 TUI)
 
@@ -729,17 +732,17 @@ Eval-tagged test that renders `ForkDialog`, drives `w → y → i` keystrokes, a
 
 > **Still valid (minor).** Pure dialog-render eval, no backend coupling. Reference commit `fa14d61a` (B5 eval) is salvageable.
 
-- [ ] **Step 1: Write `TestEval_ForkDialog_WithStateVisibleInteraction`**
-- [ ] **Step 2: Commit**
+- [x] **Step 1: Write `TestEval_ForkDialog_WithStateVisibleInteraction`**
+- [x] **Step 2: Commit**
 
 ## Task B6 — PR-B verification
 
-- [ ] Same as A9: fmt, lint, test, mandate suite, regression check.
+- [x] Same as A9: fmt, lint, test, mandate suite, regression check.
 
 ## Task B7 — Open PR-B
 
-- [ ] **Step 1: Continue in `worktree/fork-state-tui-followup` on current main; do NOT rebase the old PR-B branch.** PR-A is already in main (#1263), so there is nothing to wait for. The old branch was built on the dead git-direct base; rebasing it would replay B4 against an API that no longer exists. Cherry-pick/port the salvageable dialog-UI commits (B1–B3 = `e573f4f8`, `dc5d42d2`, `ba3ec451`; B5 = `fa14d61a`) onto current main, then implement the rewritten B4 against the backend abstraction.
-- [ ] **Step 2: Push + open PR-B** referencing PR-A (#1263) and the followup spec.
+- [x] **Step 1: Continue in `worktree/fork-state-tui-followup` on current main; do NOT rebase the old PR-B branch.** PR-A is already in main (#1263), so there is nothing to wait for. The old branch was built on the dead git-direct base; rebasing it would replay B4 against an API that no longer exists. Cherry-pick/port the salvageable dialog-UI commits (B1–B3 = `e573f4f8`, `dc5d42d2`, `ba3ec451`; B5 = `fa14d61a`) onto current main, then implement the rewritten B4 against the backend abstraction.
+- [x] **Step 2: Push + open PR-B** referencing PR-A (#1263) and the followup spec.
 
 ---
 
@@ -750,13 +753,13 @@ After Tasks A1-A10 and B1-B7 are all complete, run the followup spec's mandate s
 ```bash
 go test ./internal/git/... -run "Materialize|RefuseUnsafeParentState|ValidateForkWithStateDestination|CreateWorktreeAtStartPoint|HeadCommit|ForkWithState|Issue1029" -race -count=1
 go test ./cmd/agent-deck/... -run "SessionFork_WithState" -race -count=1
-go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|GitignoredRequires|Toggling|FocusOrder|RejectsNonGit)" -race -count=1
+go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWith|ToggleGitignored|ToggleWorktreeOff|Focus_|View_|Space_|Y_Toggles|I_Toggles|I_Typeable|WorktreeControlsVisible)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(AcceptsForkState|WithStateRejectsNonGit)|ForkDialogSubmitCapturesWithStateBeforeHide" -race -count=1
 go test -tags eval_smoke ./tests/eval/session/... ./internal/ui/... -run "TestEval_SessionForkWithState|TestEval_ForkDialog_WithState" -race -count=1
 ```
 
-The `RejectsNonGit` alternation covers B4's early non-git guard: a TUI fork submit with with-state requested against a non-git (`backend.Type() != vcs.TypeGit`) repo must surface "--with-state is only supported for git repositories" via `sessionForkedMsg{err}` (mirroring #1263's CLI rejection). Keep the test name consistent between B4 and this regex.
+The UI regex matches the as-implemented PR-B test names (33 tests): B1 state/toggles (`WithState`, `ToggleWith`, `ToggleGitignored`, `ToggleWorktreeOff`), B2 focus order (`Focus_`), B3 render/keys (`View_`, `Space_`, `Y_Toggles`, `I_Toggles`, `I_Typeable`), and B4 submit — `ForkWithStateWorktree_`, `ForkSessionCmdWithOptions_WithStateRejectsNonGit` (the early non-git guard surfacing "--with-state is only supported for git repositories" via `sessionForkedMsg{err}`, mirroring #1263), `ForkSessionCmdWithOptions_AcceptsForkState`, `ForkDialogSubmitCapturesWithStateBeforeHide`, and `WorktreeControlsVisible` (bare-root visibility).
 
-Each command must match at least one test. If any returns "no tests to run," update the spec's regex to match the actual test names.
+Each alternation matches ≥1 test (verified). If a future rename produces "no tests to run" for a branch, update the regex to the actual names.
 
 ---
 
@@ -795,3 +798,4 @@ Gaps 2, 3-CLI, 4-CLI, 5, 6, 7, 8, 9, 10-CLI are CLOSED by PR #1263. Gap 1 and ga
 - 2026-06-04: FUS-004 — Updated PR-B reconstruction references to use the active `worktree/fork-state-tui-followup` worktree and demoted the old PR-B branch to reference-only commit salvage. Confirmed the plan's toolchain references match `go.mod`'s Go 1.25.11 requirement.
 - 2026-06-04: FUS-005 — Reconciled all PR-A task references against checked-in code. Updated A1 for stdout-only `HeadCommit` and its stderr-warning regression test, A2 for collision constants and `GetWorktreeForBranch` error propagation, A3 for branch-prefix/path guards, and A8 for the expanded CLI eval suite that landed with PR #1263.
 - 2026-06-04: FUS-006 — Folded four PR-B UI design decisions (resolved with @smorin) into the B1–B4 task specs: (1) collision UX is a static "creates a NEW branch at parent HEAD" hint + reject-at-submit (no async dialog state); (2) labels are `Carry parent state` / `Include gitignored files`, matching the CLI flags; (3) `y`/`i` shortcuts retained (verified they don't clash with branch-name typing); (4) the B2 focus-target refactor is now REQUIRED — the checkboxes are focus stops toggled with `Space`/`Enter` (plus `y`/`i`), with nested invariants enforced by skipping disabled targets. Added a DESIGN DECISIONS block under the PR-B banner and updated B2/B3 accordingly.
+- 2026-06-04: FUS-007 — Executed doc-3 Task 5: reconciled the mandate UI regex in the plan + spec to the as-implemented PR-B test names (33 tests) — replaced the never-matching `GitignoredRequires`/`Toggling`/`FocusOrder` alternations with `ToggleWith`/`ToggleGitignored`/`ToggleWorktreeOff`/`Focus_`/`View_`/`Space_`/`Y_Toggles`/`I_Toggles`/`I_Typeable`/`WorktreeControlsVisible`/`ForkWithStateWorktree_`/`ForkSessionCmdWithOptions_(AcceptsForkState|WithStateRejectsNonGit)`/`ForkDialogSubmitCapturesWithStateBeforeHide`. Expanded B4 item 5 to the full implemented sequence. Marked PR-B B1–B5 and doc-3 Tasks 1–5 complete (commits f636a301, 1914a2da, ecb91357, 023ca226, 4f18a4ac).

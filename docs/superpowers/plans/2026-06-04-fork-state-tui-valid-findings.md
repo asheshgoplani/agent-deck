@@ -1,6 +1,6 @@
 # Fork-State TUI Valid Findings Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Fix the four still-valid PR-B audit findings: preserve with-state checkbox values through submit, expose worktree/with-state controls for bare-repo project roots, mirror the CLI with-state safeguards in the TUI submit path, and add concrete TUI submit-path coverage.
 
@@ -31,7 +31,7 @@
 - Modify: `internal/ui/forkdialog.go`
 - Modify: `internal/ui/forkdialog_test.go`
 
-- [ ] **Step 1: Write failing bare-root visibility test**
+- [x] **Step 1: Write failing bare-root visibility test**
 
 Add to `internal/ui/forkdialog_test.go`:
 
@@ -65,7 +65,7 @@ func TestForkDialog_WorktreeControlsVisibleForBareProjectRoot(t *testing.T) {
 
 Also add `os/exec` to the test imports if it is not already present.
 
-- [ ] **Step 2: Run test to verify it fails before the fix**
+- [x] **Step 2: Run test to verify it fails before the fix**
 
 Run:
 
@@ -75,7 +75,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run TestForkDialog_WorktreeCont
 
 Expected before implementation: FAIL because `ForkDialog.Show` uses `git.IsGitRepo(projectPath)`, so bare-root project paths do not show the worktree controls.
 
-- [ ] **Step 3: Implement broader worktree-capable predicate**
+- [x] **Step 3: Implement broader worktree-capable predicate**
 
 In `internal/ui/forkdialog.go`, rename the field and use the broader predicate:
 
@@ -115,7 +115,7 @@ if d.worktreeCapable {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -125,7 +125,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkDialog_WorktreeCon
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ui/forkdialog.go internal/ui/forkdialog_test.go
@@ -149,7 +149,7 @@ func (d *ForkDialog) IsWithStateEnabled() bool
 func (d *ForkDialog) IsWithStateAndGitignoredEnabled() bool
 ```
 
-- [ ] **Step 1: Write failing source-structure tests for the handoff**
+- [x] **Step 1: Write failing source-structure tests for the handoff**
 
 Create `internal/ui/fork_state_submit_test.go`:
 
@@ -209,7 +209,7 @@ func TestForkSessionCmdWithOptions_AcceptsForkState(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail before implementation**
+- [x] **Step 2: Run tests to verify they fail before implementation**
 
 Run:
 
@@ -219,7 +219,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkDialogSubmitCaptur
 
 Expected before implementation: FAIL because `forkSessionCmdWithOptions` has no `forkState` parameter and submit reads sandbox after `Hide()`.
 
-- [ ] **Step 3: Capture values before `Hide()` and pass state explicitly**
+- [x] **Step 3: Capture values before `Hide()` and pass state explicitly**
 
 In `internal/ui/home.go`, update the submit path:
 
@@ -264,7 +264,7 @@ if forkState.WithIgnored {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run:
 
@@ -274,7 +274,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkDialogSubmitCaptur
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/ui/home.go internal/ui/fork_state_submit_test.go
@@ -293,7 +293,7 @@ git commit -m "fix(tui): preserve fork-with-state selection through submit"
 - Modify: `internal/ui/home.go`
 - Modify: `internal/ui/fork_state_submit_test.go`
 
-- [ ] **Step 1: Add testable helper dependency type**
+- [x] **Step 1: Add testable helper dependency type**
 
 In `internal/ui/home.go`, near `forkSessionCmdWithOptions`, add:
 
@@ -335,7 +335,7 @@ func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
 
 > **Note (intentional divergence from #1263):** cleanup routes through `git.RemoveWorktree`/`git.DeleteBranch` (injected as deps) rather than #1263's raw `exec.Command("git", ...)`. This is deliberate — it keeps the helper unit-testable via dependency injection and retains `RemoveWorktree`'s `#1200` linked-worktree guard (the freshly-created worktree is always linked, so the guard passes). The error wording (`new worktree cleaned up` / `manual cleanup required: ...`) still matches #1263.
 
-- [ ] **Step 2: Add helper tests for safeguards and cleanup**
+- [x] **Step 2: Add helper tests for safeguards and cleanup**
 
 Append to `internal/ui/fork_state_submit_test.go`:
 
@@ -450,7 +450,7 @@ import (
 )
 ```
 
-- [ ] **Step 3: Run tests to verify they fail before helper implementation**
+- [x] **Step 3: Run tests to verify they fail before helper implementation**
 
 Run:
 
@@ -460,7 +460,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkWithStateWorktree_
 
 Expected before implementation: FAIL with `undefined: forkWithStateWorktree`.
 
-- [ ] **Step 4: Implement `forkWithStateWorktree`**
+- [x] **Step 4: Implement `forkWithStateWorktree`**
 
 Add to `internal/ui/home.go`:
 
@@ -549,7 +549,7 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 
 Ensure `home.go` imports `errors` if not already imported.
 
-- [ ] **Step 5: Wire helper into `forkSessionCmdWithOptions`**
+- [x] **Step 5: Wire helper into `forkSessionCmdWithOptions`**
 
 Inside the worktree block in `forkSessionCmdWithOptions`, after backend detection:
 
@@ -583,7 +583,7 @@ if forkState.WithState {
 
 This explicitly prevents backend reuse under with-state and keeps non-state behavior unchanged.
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run:
 
@@ -593,7 +593,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkWithStateWorktree_
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/ui/home.go internal/ui/fork_state_submit_test.go
@@ -609,7 +609,7 @@ git commit -m "fix(tui): mirror CLI safeguards for fork with state"
 **Files:**
 - Modify: `internal/ui/fork_state_submit_test.go`
 
-- [ ] **Step 1: Add parent-HEAD anchoring test with real git**
+- [x] **Step 1: Add parent-HEAD anchoring test with real git**
 
 Append to `internal/ui/fork_state_submit_test.go`:
 
@@ -679,7 +679,7 @@ func gitOutUI(t *testing.T, dir string, args ...string) string {
 
 Add `os/exec` and `path/filepath` to the imports.
 
-- [ ] **Step 2: Add structural non-git rejection test**
+- [x] **Step 2: Add structural non-git rejection test**
 
 Append:
 
@@ -702,7 +702,7 @@ func TestForkSessionCmdWithOptions_WithStateRejectsNonGitBeforeGitDirectCalls(t 
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run:
 
@@ -712,7 +712,7 @@ GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "TestForkWithStateWorktree_
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/ui/fork_state_submit_test.go
@@ -729,7 +729,7 @@ git commit -m "test(tui): cover fork-with-state submit parent head and non-git g
 - Modify: `docs/superpowers/plans/2026-05-18-fork-with-state-followup.md`
 - Modify: `docs/superpowers/specs/2026-05-18-fork-with-state-followup-design.md`
 
-- [ ] **Step 1: Update B4 checklist**
+- [x] **Step 1: Update B4 checklist**
 
 In `docs/superpowers/plans/2026-05-18-fork-with-state-followup.md`, replace B4's numbered item 5 (the "With-state path (git-only, git-direct)" sequence) with the complete TUI with-state sequence:
 
@@ -746,12 +746,12 @@ In `docs/superpowers/plans/2026-05-18-fork-with-state-followup.md`, replace B4's
    - `git.RunWorktreeSetupAfterCreate(...)`.
 ```
 
-- [ ] **Step 2: Update B4 test mandate**
+- [x] **Step 2: Update B4 test mandate**
 
 In the mandate section, update the UI test regex:
 
 ```bash
-go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|GitignoredRequires|Toggling|FocusOrder)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(WithStateRejectsNonGit|AcceptsForkState)|ForkDialogSubmitCapturesWithStateBeforeHide|WorktreeControlsVisibleForBareProjectRoot" -race -count=1
+go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWith|ToggleGitignored|ToggleWorktreeOff|Focus_|View_|Space_|Y_Toggles|I_Toggles|I_Typeable|WorktreeControlsVisible)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(AcceptsForkState|WithStateRejectsNonGit)|ForkDialogSubmitCapturesWithStateBeforeHide" -race -count=1
 ```
 
 In the explanatory text, list the coverage:
@@ -760,12 +760,12 @@ In the explanatory text, list the coverage:
 The TUI submit mandate covers bare-root visibility, state handoff before `Hide()`, non-git rejection before git-direct calls, destination/path collision refusal, no reuse under with-state, parent-HEAD anchoring, mid-op actionable refusal, materialize cleanup, manual cleanup hints, and the existing dialog state-machine/eval tests.
 ```
 
-- [ ] **Step 3: Update spec mandatory coverage**
+- [x] **Step 3: Update spec mandatory coverage**
 
 In `docs/superpowers/specs/2026-05-18-fork-with-state-followup-design.md`, update the UI command to include the new tests:
 
 ```bash
-go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|GitignoredRequires|Toggling|FocusOrder)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(WithStateRejectsNonGit|AcceptsForkState)|ForkDialogSubmitCapturesWithStateBeforeHide|WorktreeControlsVisibleForBareProjectRoot" -race -count=1
+go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWith|ToggleGitignored|ToggleWorktreeOff|Focus_|View_|Space_|Y_Toggles|I_Toggles|I_Typeable|WorktreeControlsVisible)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(AcceptsForkState|WithStateRejectsNonGit)|ForkDialogSubmitCapturesWithStateBeforeHide" -race -count=1
 ```
 
 Add a changelog entry:
@@ -774,7 +774,7 @@ Add a changelog entry:
 - 2026-06-04: FUS-007 — Added PR-B audit-finding plan coverage for preserving fork-with-state dialog values through submit, bare-repo project-root worktree visibility, full CLI-safeguard mirroring in TUI with-state submit, and concrete TUI submit-path tests. (FUS-006 is the four-UI-decisions fold in the plan/spec.)
 ```
 
-- [ ] **Step 4: Run doc checks**
+- [x] **Step 4: Run doc checks**
 
 Run:
 
@@ -787,7 +787,7 @@ Expected:
 - `rg` returns no matches.
 - `git diff --check` exits 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/plans/2026-05-18-fork-with-state-followup.md docs/superpowers/specs/2026-05-18-fork-with-state-followup-design.md
@@ -801,7 +801,7 @@ git commit -m "docs: tighten PR-B fork-with-state submit plan"
 Run after all tasks:
 
 ```bash
-GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWithState|GitignoredRequires|Toggling|FocusOrder)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(WithStateRejectsNonGit|AcceptsForkState)|ForkDialogSubmitCapturesWithStateBeforeHide|WorktreeControlsVisibleForBareProjectRoot" -race -count=1
+GOTOOLCHAIN=go1.25.11 go test ./internal/ui/... -run "ForkDialog_(WithState|ToggleWith|ToggleGitignored|ToggleWorktreeOff|Focus_|View_|Space_|Y_Toggles|I_Toggles|I_Typeable|WorktreeControlsVisible)|ForkWithStateWorktree_|ForkSessionCmdWithOptions_(AcceptsForkState|WithStateRejectsNonGit)|ForkDialogSubmitCapturesWithStateBeforeHide" -race -count=1
 GOTOOLCHAIN=go1.25.11 go test ./internal/git/... -run "Materialize|RefuseUnsafeParentState|ValidateForkWithStateDestination|CreateWorktreeAtStartPoint|HeadCommit|ForkWithState|Issue1029" -race -count=1
 git diff --check
 ```
