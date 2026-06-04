@@ -185,6 +185,24 @@ func TestGetProfilesDir_XDGWinsWhenProfileMarkerExists(t *testing.T) {
 	}
 }
 
+func TestNeedsMigration_LegacySessionsJSONWinsOverBroadXDGDataMarker(t *testing.T) {
+	home, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	xdgLogsDir := filepath.Join(xdgDataHome, "agent-deck", "logs")
+	if err := os.MkdirAll(xdgLogsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", xdgLogsDir, err)
+	}
+	legacySessionsPath := filepath.Join(home, ".agent-deck", "sessions.json")
+	writeSessionPathFile(t, legacySessionsPath)
+
+	needsMigration, err := NeedsMigration()
+	if err != nil {
+		t.Fatalf("NeedsMigration(): %v", err)
+	}
+	if !needsMigration {
+		t.Fatalf("NeedsMigration() = false, want true for legacy sessions.json even when XDG data has logs marker")
+	}
+}
+
 func TestGetDBPathForProfile_UsesXDGDataHomeForNewUser(t *testing.T) {
 	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
 

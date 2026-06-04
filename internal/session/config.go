@@ -35,6 +35,8 @@ type Config struct {
 }
 
 // GetAgentDeckDir returns the effective agent-deck data directory.
+// It is a broad compatibility wrapper for data/runtime callers, not the
+// config root. Profile/session migrations must use profileDataRootDir().
 func GetAgentDeckDir() (string, error) {
 	return agentpaths.EffectiveDataDir(
 		ProfilesDirName,
@@ -52,6 +54,10 @@ func GetAgentDeckDir() (string, error) {
 	)
 }
 
+func profileDataRootDir() (string, error) {
+	return agentpaths.EffectiveDataDir(ProfilesDirName, "sessions.json")
+}
+
 // GetConfigPath returns the path to the global config file
 func GetConfigPath() (string, error) {
 	return agentpaths.EffectiveConfigPath(ConfigFileName)
@@ -59,7 +65,7 @@ func GetConfigPath() (string, error) {
 
 // GetProfilesDir returns the path to the profiles directory
 func GetProfilesDir() (string, error) {
-	dir, err := agentpaths.EffectiveDataDir(ProfilesDirName, "sessions.json")
+	dir, err := profileDataRootDir()
 	if err != nil {
 		return "", err
 	}
