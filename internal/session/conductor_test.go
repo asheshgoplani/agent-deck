@@ -828,12 +828,17 @@ func TestGenerateTransitionNotifierDaemons_SurfaceLogPathErrors(t *testing.T) {
 func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	if err := InstallSharedConductorInstructions(ConductorAgentCodex, ""); err != nil {
 		t.Fatalf("InstallSharedConductorInstructions returned error: %v", err)
 	}
 
-	target := filepath.Join(tmpHome, ".agent-deck", "conductor", "AGENTS.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	target := filepath.Join(conductorDir, "AGENTS.md")
 	content, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("failed to read AGENTS.md: %v", err)
@@ -849,6 +854,7 @@ func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
 func TestInstallSharedConductorInstructions_AgentsCoexist(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	if err := InstallSharedConductorInstructions(ConductorAgentClaude, ""); err != nil {
 		t.Fatalf("InstallSharedConductorInstructions(claude) returned error: %v", err)
@@ -857,7 +863,10 @@ func TestInstallSharedConductorInstructions_AgentsCoexist(t *testing.T) {
 		t.Fatalf("InstallSharedConductorInstructions(codex) returned error: %v", err)
 	}
 
-	base := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	for _, file := range []string{"CLAUDE.md", "AGENTS.md"} {
 		if _, err := os.Stat(filepath.Join(base, file)); err != nil {
 			t.Fatalf("%s should exist: %v", file, err)
