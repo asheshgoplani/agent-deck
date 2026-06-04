@@ -141,7 +141,7 @@ func TestCheckForUpdate_PopulatesReleasesBehind(t *testing.T) {
 	t.Cleanup(func() { apiBaseURL = origURL })
 
 	// Isolate disk cache so a stale entry on the dev machine doesn't skip the fetch.
-	t.Setenv("HOME", t.TempDir())
+	isolateUpdatePaths(t)
 
 	info, err := CheckForUpdate("1.7.50", true)
 	require.NoError(t, err)
@@ -155,8 +155,7 @@ func TestCheckForUpdate_PopulatesReleasesBehind(t *testing.T) {
 func TestCachedUpdateInfo_OfflineReadFromCache(t *testing.T) {
 	// `agent-deck --version` must be instant — never hit the network.
 	// CachedUpdateInfo reads the on-disk cache directly.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateUpdatePaths(t)
 
 	// No cache yet → (nil, nil).
 	info, err := CachedUpdateInfo("1.7.20")
@@ -187,8 +186,7 @@ func TestCachedUpdateInfo_OfflineReadFromCache(t *testing.T) {
 }
 
 func TestCachedUpdateInfo_EnvSkipReturnsNil(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateUpdatePaths(t)
 	t.Setenv("AGENTDECK_SKIP_UPDATE_CHECK", "1")
 
 	// Even with a populated cache, env var suppresses the result so the
@@ -240,7 +238,7 @@ func TestCheckForUpdate_ReleasesBehindSurvivesCacheRoundtrip(t *testing.T) {
 	origURL := apiBaseURL
 	apiBaseURL = srv.URL
 	t.Cleanup(func() { apiBaseURL = origURL })
-	t.Setenv("HOME", t.TempDir())
+	isolateUpdatePaths(t)
 
 	// Seed cache by a force-check.
 	first, err := CheckForUpdate("1.7.51", true)

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -113,11 +114,7 @@ func isUpdateCheckSkipped() bool {
 
 // getCacheDir returns the cache directory path
 func getCacheDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".agent-deck"), nil
+	return agentpaths.CacheDir()
 }
 
 // loadCache loads the update cache from disk

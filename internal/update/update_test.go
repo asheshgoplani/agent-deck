@@ -156,8 +156,7 @@ func TestFormatChangelogForDisplay(t *testing.T) {
 }
 
 func TestUpdateBridgePy_NoConductorDir(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateUpdatePaths(t)
 
 	err := UpdateBridgePy()
 	require.NoError(t, err)
@@ -168,8 +167,7 @@ func TestUpdateBridgePy_NoConductorDir(t *testing.T) {
 }
 
 func TestUpdateBridgePy_UsesEmbeddedTemplateAndBacksUpExistingFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateUpdatePaths(t)
 
 	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
 	require.NoError(t, os.MkdirAll(condDir, 0o755))
@@ -340,7 +338,7 @@ func TestPerformVerifiedUpdate_ChecksumsDownloadFailureLeavesBinaryUntouched(t *
 func selfUpdateTestTarget(t *testing.T, initial []byte) string {
 	t.Helper()
 
-	t.Setenv("HOME", t.TempDir())
+	isolateUpdatePaths(t)
 	execPath := filepath.Join(t.TempDir(), "agent-deck")
 	require.NoError(t, os.WriteFile(execPath, initial, 0o755))
 

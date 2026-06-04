@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -59,17 +60,16 @@ import (
 const badgeUpdatesDirEnv = "AGENTDECK_BADGE_UPDATES_DIR"
 
 // BadgeUpdatesDir returns the directory where rename-hook signals live.
-// Mirrors GetEventsDir's shape (also under ~/.agent-deck/) so an ops
-// engineer staring at the directory tree sees one consistent pattern.
+// Uses the XDG data directory, falling back to a legacy badge-updates dir.
 func BadgeUpdatesDir() string {
 	if v := strings.TrimSpace(os.Getenv(badgeUpdatesDirEnv)); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
+	dir, err := agentpaths.EffectiveDataPath("badge-updates", "badge-updates")
 	if err != nil {
 		return filepath.Join(os.TempDir(), ".agent-deck", "badge-updates")
 	}
-	return filepath.Join(home, ".agent-deck", "badge-updates")
+	return dir
 }
 
 // WriteBadgeUpdate atomically writes title under tmuxSessionName so the
