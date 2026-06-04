@@ -859,7 +859,7 @@ func handleSessionFork(profile string, args []string) {
 				// Materialize parent state, with cleanup-on-error.
 				if matErr := git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
 					var cleanupErrs []string
-					if rmErr := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath).Run(); rmErr != nil {
+					if rmErr := git.RemoveWorktree(repoRoot, worktreePath, true); rmErr != nil {
 						cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
 					}
 					if createdBranch {

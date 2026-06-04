@@ -322,6 +322,22 @@ func TestSessionFork_WithState_RefusesMidOpWithActionableHint_StructuralGuard(t 
 	}
 }
 
+// TestSessionFork_WithStateCleanupUsesGitRemoveWorktree pins N1: the
+// fork-with-state CLI cleanup path must use the centralized git.RemoveWorktree
+// helper instead of shelling out directly to `git worktree remove --force`.
+// The helper owns force-mode fallback cleanup, prune, and data-loss guards.
+func TestSessionFork_WithStateCleanupUsesGitRemoveWorktree(t *testing.T) {
+	body := mustExtractHandleSessionFork(t)
+	folded := foldSpaces(body)
+
+	if !strings.Contains(folded, "git.RemoveWorktree(repoRoot, worktreePath, true)") {
+		t.Errorf("handleSessionFork materialization cleanup must use git.RemoveWorktree(repoRoot, worktreePath, true); folded body:\n%s", folded)
+	}
+	if strings.Contains(folded, `exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktreePath)`) {
+		t.Errorf("handleSessionFork materialization cleanup must not shell out directly to git worktree remove; folded body:\n%s", folded)
+	}
+}
+
 // TestSessionForkBeforeStartHook_NilInProduction is a belt-and-braces check:
 // the production binary must leave the hook nil so accidental test imports
 // can't inject behavior into a real fork. Tests that need the hook assign
