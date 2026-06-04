@@ -1591,6 +1591,7 @@ func TestRenderHelpBarMinimal(t *testing.T) {
 	home := NewHome()
 	home.width = 55 // Minimal mode (50-69)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	result := home.renderHelpBar()
 
@@ -1611,6 +1612,7 @@ func TestRenderHelpBarMinimalWithSession(t *testing.T) {
 	home := NewHome()
 	home.width = 55 // Minimal mode (50-69)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a session to test context-specific keys
 	testSession := &session.Instance{
@@ -1642,6 +1644,7 @@ func TestRenderHelpBarMinimalWithFreshRestartableSession(t *testing.T) {
 	home := NewHome()
 	home.width = 55
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	testSession := &session.Instance{
 		ID:              "test-456",
@@ -1663,6 +1666,7 @@ func TestRenderHelpBarCompact(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	result := home.renderHelpBar()
 
@@ -1680,6 +1684,7 @@ func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a session with fork capability
 	// ClaudeDetectedAt must be recent for CanFork() to return true
@@ -1718,6 +1723,7 @@ func TestRenderHelpBarCompactWithGroup(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a group
 	home.flatItems = []session.Item{
@@ -1958,6 +1964,7 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	home := NewHome()
 	home.width = 200 // Wide terminal to fit all hints including Undo
 	home.height = 30
+	home.footerMode = session.FooterFull // Undo lives in the verbose bar's secondary hints
 
 	// Add a session to have context (non-Claude to reduce hint count)
 	inst := &session.Instance{ID: "test-1", Title: "Test", Tool: "other"}
@@ -1977,6 +1984,151 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	result = home.renderHelpBar()
 	if !strings.Contains(result, "Undo") {
 		t.Errorf("Help bar should show Undo when undo stack is non-empty\nGot: %q", result)
+	}
+}
+
+// ── Curated footer (default [ui] footer = curated) ─────────────────────────
+
+// curatedHome builds a Home in the curated footer style at a comfortable width.
+func curatedHome() *Home {
+	home := NewHome()
+	home.width = 120
+	home.height = 30
+	home.footerMode = session.FooterCurated
+	return home
+}
+
+func TestCuratedFooterAlwaysEndsWithSettingsThenHelp(t *testing.T) {
+	home := curatedHome()
+	// Live session selected so there is a context hint before settings/help.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+
+	settingsKey := home.actionKey(hotkeySettings)
+	helpKey := home.actionKey(hotkeyHelp)
+	si := strings.LastIndex(result, settingsKey+" ")
+	hi := strings.LastIndex(result, helpKey+" ")
+	if si == -1 {
+		t.Fatalf("curated footer should advertise settings key %q\nGot: %q", settingsKey, result)
+	}
+	if hi == -1 {
+		t.Fatalf("curated footer should advertise help key %q\nGot: %q", helpKey, result)
+	}
+	if !(si < hi) {
+		t.Errorf("settings must come before help as the last two items\nGot: %q", result)
+	}
+	if !strings.Contains(result, "attach") {
+		t.Errorf("curated footer for a live session should show attach\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterLiveSessionShowsAttach(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "⏎ attach") {
+		t.Errorf("live session should advertise Enter attach\nGot: %q", result)
+	}
+	if strings.Contains(result, "restart") {
+		t.Errorf("live session should not advertise restart in curated footer\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterDeadSessionShowsRestart(t *testing.T) {
+	home := curatedHome()
+	// Stopped Claude session with a known session id → restart + restart fresh.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:              "s1",
+			Tool:            "claude",
+			Status:          session.StatusStopped,
+			ClaudeSessionID: "abc",
+		}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "restart") {
+		t.Errorf("dead session should advertise restart\nGot: %q", result)
+	}
+	if !strings.Contains(result, "restart fresh") {
+		t.Errorf("dead restartable session should advertise restart fresh\nGot: %q", result)
+	}
+	if strings.Contains(result, "attach") {
+		t.Errorf("dead session should not advertise attach\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterErrorSessionShowsRestart(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "other", Status: session.StatusError}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "restart") {
+		t.Errorf("errored session should advertise restart\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
+	home := curatedHome()
+
+	// Expanded group → collapse hint.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: true}},
+	}
+	home.cursor = 0
+	if result := home.renderHelpBar(); !strings.Contains(result, "Tab collapse") {
+		t.Errorf("expanded group should advertise Tab collapse\nGot: %q", result)
+	}
+
+	// Collapsed group → expand hint.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: false}},
+	}
+	if result := home.renderHelpBar(); !strings.Contains(result, "Tab expand") {
+		t.Errorf("collapsed group should advertise Tab expand\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterEmptyListShowsNew(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = nil
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "new") {
+		t.Errorf("empty list should advertise new\nGot: %q", result)
+	}
+	// settings + help must still be present and last.
+	if !strings.Contains(result, "help") {
+		t.Errorf("curated footer should always include help\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterJumpMode(t *testing.T) {
+	home := curatedHome()
+	home.jumpMode = true
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "jump") || !strings.Contains(result, "cancel") {
+		t.Errorf("jump mode should advertise jump and cancel\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterIsDefault(t *testing.T) {
+	// A fresh Home with no [ui] footer config defaults to the curated style.
+	if got := (session.UISettings{}).GetFooter(); got != session.FooterCurated {
+		t.Fatalf("default footer = %q, want %q", got, session.FooterCurated)
 	}
 }
 

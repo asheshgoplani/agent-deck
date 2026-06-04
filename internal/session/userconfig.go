@@ -242,6 +242,20 @@ type UISettings struct {
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+
+	// Footer controls the style of the bottom hint bar. Valid values:
+	//   "curated" (default) — lighter, dim inline text advertising only the
+	//                         actions relevant to the selected row, with the
+	//                         settings and help keys always last.
+	//   "full"              — the historic verbose bar: filled key chips,
+	//                         width-adaptive, advertising every action.
+	//   "compact"           — force the abbreviated chip tier regardless of width.
+	//   "minimal"           — force the keys-only tier regardless of width.
+	// Empty or unknown values fall back to "curated". This is purely a
+	// rendering preference (TUI UX initiative, item 1): no keybinding is
+	// added, removed, or changed — only what the footer advertises. Every
+	// action remains reachable by its key and is fully listed under help (?).
+	Footer string `toml:"footer"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -261,6 +275,33 @@ const (
 	ITermOpenAsWindow  = "window"
 	DefaultITermOpenAs = ITermOpenAsTab
 )
+
+// Footer hint-bar styles. See UISettings.Footer.
+const (
+	FooterCurated = "curated"
+	FooterFull    = "full"
+	FooterCompact = "compact"
+	FooterMinimal = "minimal"
+	DefaultFooter = FooterCurated
+)
+
+// GetFooter returns the configured footer style, normalized to one of the
+// known values. Empty or unknown input falls back to DefaultFooter
+// ("curated"). Matching is case-insensitive so users may write "Full" or
+// "MINIMAL" in TOML.
+func (u UISettings) GetFooter() string {
+	switch strings.ToLower(strings.TrimSpace(u.Footer)) {
+	case FooterFull:
+		return FooterFull
+	case FooterCompact:
+		return FooterCompact
+	case FooterMinimal:
+		return FooterMinimal
+	case FooterCurated:
+		return FooterCurated
+	}
+	return DefaultFooter
+}
 
 // GetPreviewPct returns the configured preview percentage, clamped to
 // [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when

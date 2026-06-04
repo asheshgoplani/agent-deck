@@ -2118,3 +2118,45 @@ active_filter_excludes = ["error", "stopped"]
 		t.Errorf("running should not be excluded, got %v", got)
 	}
 }
+
+// TestUISettings_GetFooter covers the [ui] footer style knob (TUI UX
+// initiative, item 1). Unset/unknown values fall back to the curated default;
+// known values are normalized case-insensitively.
+func TestUISettings_GetFooter(t *testing.T) {
+	cases := []struct {
+		name string
+		ui   UISettings
+		want string
+	}{
+		{"unset uses curated default", UISettings{}, FooterCurated},
+		{"explicit curated", UISettings{Footer: "curated"}, FooterCurated},
+		{"full", UISettings{Footer: "full"}, FooterFull},
+		{"compact", UISettings{Footer: "compact"}, FooterCompact},
+		{"minimal", UISettings{Footer: "minimal"}, FooterMinimal},
+		{"case-insensitive", UISettings{Footer: "FULL"}, FooterFull},
+		{"trimmed", UISettings{Footer: "  minimal  "}, FooterMinimal},
+		{"unknown falls back to curated", UISettings{Footer: "bogus"}, FooterCurated},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.ui.GetFooter(); got != tc.want {
+				t.Fatalf("GetFooter() on %+v = %q, want %q", tc.ui, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUISettings_GetFooter_TomlRoundtrip verifies the toml tag wires up.
+func TestUISettings_GetFooter_TomlRoundtrip(t *testing.T) {
+	const cfg = `
+[ui]
+footer = "full"
+`
+	var c UserConfig
+	if _, err := toml.Decode(cfg, &c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := c.UI.GetFooter(); got != FooterFull {
+		t.Errorf("GetFooter() = %q, want %q", got, FooterFull)
+	}
+}
