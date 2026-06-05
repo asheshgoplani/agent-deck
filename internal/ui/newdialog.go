@@ -591,13 +591,39 @@ func (d *NewDialog) IsModelTypeCustomHighlighted() bool {
 
 func (d *NewDialog) shouldHandleEnterLocally() bool {
 	switch d.currentTarget() {
+	// Path/Model open their own dropdown on Enter.
 	case focusPath, focusModel:
+		return true
+	// Name/Branch are free-text fields: Enter advances to the next field rather
+	// than submitting the whole form. Pressing Enter right after typing the
+	// session name is the most common keystroke; it used to silently submit
+	// (path defaults to cwd), skipping path/tool/model selection entirely.
+	// Keeping Enter local here lets the dialog advance focus instead. Submit is
+	// still reachable from non-text rows (checkboxes/conductor) and via Ctrl+S.
+	case focusName, focusBranch:
 		return true
 	case focusMultiRepo:
 		return d.multiRepoEnabled
 	default:
 		return d.suggestionsActive || d.modelSuggestionActive
 	}
+}
+
+// WantsSubmit reports whether the given key is an explicit "create now"
+// shortcut (Ctrl+S) that should submit the form from any field, including the
+// free-text Name/Branch fields where Enter now advances focus instead of
+// submitting. It is intentionally inert while a sub-picker (recent sessions,
+// branch search, path/model dropdowns) is open so the shortcut never fires mid
+// selection.
+func (d *NewDialog) WantsSubmit(msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyCtrlS {
+		return false
+	}
+	if d.IsRecentPickerOpen() || d.IsBranchPickerOpen() ||
+		d.suggestionsActive || d.modelSuggestionActive {
+		return false
+	}
+	return true
 }
 
 func (d *NewDialog) ApplyHighlightedModelSuggestion() {
@@ -1853,6 +1879,15 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
+			// Name/Branch are free-text fields: Enter advances to the next field
+			// instead of submitting the form, so typing a name + Enter no longer
+			// silently creates a session with all defaults. See
+			// shouldHandleEnterLocally for the rationale; home.go forwards Enter
+			// here when that returns true.
+			if cur == focusName || cur == focusBranch {
+				d.moveFocus(1)
+				return d, nil
+			}
 			if cur == focusPath {
 				d.suggestionsActive = true
 				d.suggestionsHidden = false
@@ -2542,7 +2577,7 @@ func (d *NewDialog) View() string {
 	if len(d.recentSessions) > 0 {
 		recentPrefix = "^R recent │ "
 	}
-	helpText := recentPrefix + "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
+	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ ^S create │ Esc cancel"
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
@@ -2555,14 +2590,14 @@ func (d *NewDialog) View() string {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
 		} else {
-			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
+			helpText = "^F branch search │ Tab/Enter next │ ^S create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
 		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
-			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ Enter create │ Esc cancel"
+			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ ^S create │ Esc cancel"
 		} else {
-			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ Enter create │ Esc cancel"
+			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"
 		}
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
@@ -2571,13 +2606,13 @@ func (d *NewDialog) View() string {
 			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
 		}
 	} else if cur == focusConductor {
-		helpText = "↑↓ select parent │ Tab next │ Enter create │ Esc cancel"
+		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
-		helpText = "Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusInherited {
-		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusOptions && d.toolOptions != nil {
-		helpText = "Space/y toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space/y toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	}
 	content.WriteString(helpStyle.Render(helpText))
 

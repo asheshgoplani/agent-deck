@@ -2156,3 +2156,105 @@ func TestDialogOrigin(t *testing.T) {
 		})
 	}
 }
+
+// --- Keyboard navigation improvements (Feedback Hub: smoother new-session nav) ---
+
+// Enter on the Name field must advance focus to the next field, NOT submit the
+// form. shouldHandleEnterLocally must report true so home.go forwards Enter to
+// the dialog rather than running its submit path.
+func TestNewDialog_EnterOnNameAdvancesFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
+	}
+
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() == before {
+		t.Fatalf("Enter on Name did not advance focus (still %v)", d.currentTarget())
+	}
+	if d.currentTarget() != focusMultiRepo {
+		t.Fatalf("focus after Enter on Name = %v, want focusMultiRepo (next field)", d.currentTarget())
+	}
+}
+
+// Enter on the Branch field (worktree enabled) advances focus instead of
+// submitting, matching the Name-field behavior for free-text inputs.
+func TestNewDialog_EnterOnBranchAdvancesFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+	d.ToggleWorktree() // enables worktree -> branch field appears
+
+	idx := d.indexOf(focusBranch)
+	if idx < 0 {
+		t.Fatal("focusBranch should be present when worktree enabled")
+	}
+	d.focusIndex = idx
+	d.updateFocus()
+
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("shouldHandleEnterLocally on Branch = false, want true")
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() == focusBranch {
+		t.Fatal("Enter on Branch did not advance focus")
+	}
+}
+
+// Ctrl+S is recognized as an explicit submit shortcut from a plain text field.
+func TestNewDialog_CtrlSWantsSubmit(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) on Name = false, want true")
+	}
+	// A non-Ctrl+S key must not be treated as submit.
+	if d.WantsSubmit(tea.KeyMsg{Type: tea.KeyEnter}) {
+		t.Fatal("WantsSubmit(Enter) = true, want false")
+	}
+}
+
+// Ctrl+S must be inert while a sub-picker is open so it never fires mid
+// selection (it would otherwise create a session from a half-picked state).
+func TestNewDialog_CtrlSInertWhileDropdownActive(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	d.SetPathSuggestions([]string{"/tmp/a", "/tmp/b"})
+
+	// Open the path suggestions dropdown.
+	d.focusIndex = d.indexOf(focusPath)
+	d.updateFocus()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter}) // focusPath Enter opens dropdown
+	if !d.IsSuggestionsActive() {
+		t.Fatal("path dropdown should be active after Enter on Path")
+	}
+	if d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) while path dropdown active = true, want false")
+	}
+}
+
+// Regression: Tab still advances Name -> next field (unchanged behavior).
+func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.currentTarget() == focusName {
+		t.Fatal("Tab on Name did not advance focus")
+	}
+}

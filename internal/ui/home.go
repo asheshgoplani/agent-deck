@@ -5737,9 +5737,15 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, cmd
 	}
 
-	switch msg.String() {
-	case "enter":
-		if h.newDialog.shouldHandleEnterLocally() {
+	// Ctrl+S is an explicit "create now" shortcut that submits from any field,
+	// including Name/Branch where Enter advances focus instead of submitting.
+	// Route it through the same path as a submitting Enter by falling through to
+	// the submit block below.
+	submitNow := h.newDialog.WantsSubmit(msg)
+
+	switch {
+	case msg.String() == "enter" || submitNow:
+		if !submitNow && h.newDialog.shouldHandleEnterLocally() {
 			var cmd tea.Cmd
 			h.newDialog, cmd = h.newDialog.Update(msg)
 			return h, cmd
@@ -5867,7 +5873,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			tempID,
 		)
 
-	case "esc":
+	case msg.String() == "esc":
 		// #1162: when the model picker dropdown is open, Esc dismisses only the
 		// picker and keeps the new-session form alive (focus stays on the model
 		// field) rather than cancelling the whole flow. Forward to the dialog so
