@@ -577,6 +577,42 @@ func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
 	return nil
 }
 
+// PersistRevivedInstances durably persists status mutations from a revive
+// sweep WITHOUT the full-table rewrite that SaveWithGroups performs.
+//
+// Why this exists (lost-update race fix):
+//
+// `session revive` is a read-process-write cycle: it loads the full instances
+// snapshot, classifies/heals each one (flipping StatusError → StatusRunning),
+// then persists. If it persisted via SaveWithGroups → SaveInstances, that
+// path's `DELETE FROM instances WHERE id NOT IN (<snapshot ids>)` sweep would
+// delete any session a concurrent process (TUI/CLI `add`) inserted AFTER
+// revive loaded its snapshot — the row is silently lost because it was never
+// in revive's stale id set.
+//
+// This method writes each instance via the targeted single-row path
+// (saveSingleInstance → SaveInstance, INSERT OR REPLACE, no DELETE sweep),
+// exactly like InsertSessionAndVerify / RemoveSessionAndVerify. Revive thus
+// only ever touches the specific rows it loaded and can never drop a
+// concurrently-added row. Callers should pass only the instances they
+// actually mutated to minimize write contention, but passing the whole
+// loaded snapshot is also safe — every row is just re-asserted, never swept.
+func (s *Storage) PersistRevivedInstances(instances []*Instance) error {
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		row, err := instanceToRow(inst)
+		if err != nil {
+			return err
+		}
+		if err := s.saveSingleInstance(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // instanceToRow converts a session.Instance into the statedb row shape.
 // Shared by SaveWithGroups (bulk path) and InsertSessionAndVerify
 // (targeted single-row path) so the marshal/normalize logic stays in

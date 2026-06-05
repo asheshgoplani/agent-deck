@@ -27,9 +27,21 @@ func (s ReviveSummary) Format() string {
 // runReviveAll is the testable core: classify all instances, trigger revives,
 // aggregate the summary. Separate from handleSessionRevive so tests can stub
 // the reviver and storage without exec'ing the binary.
-func runReviveAll(instances []*session.Instance, rev *session.Reviver) ReviveSummary {
+//
+// It also returns the subset of instances that were actually revived (status
+// mutated). The caller persists ONLY these via a targeted, sweep-free write so
+// revive can never clobber a session a concurrent process added after the
+// snapshot was loaded (lost-update race fix).
+func runReviveAll(instances []*session.Instance, rev *session.Reviver) (ReviveSummary, []*session.Instance) {
 	outcomes := rev.ReviveAll(instances)
+	byID := make(map[string]*session.Instance, len(instances))
+	for _, inst := range instances {
+		if inst != nil {
+			byID[inst.ID] = inst
+		}
+	}
 	summary := ReviveSummary{}
+	var revived []*session.Instance
 	for _, o := range outcomes {
 		switch o.Class {
 		case session.ClassAlive:
@@ -40,10 +52,13 @@ func runReviveAll(instances []*session.Instance, rev *session.Reviver) ReviveSum
 			summary.Errored++
 			if o.Revived {
 				summary.Revived++
+				if inst := byID[o.InstanceID]; inst != nil {
+					revived = append(revived, inst)
+				}
 			}
 		}
 	}
-	return summary
+	return summary, revived
 }
 
 // handleSessionRevive dispatches `agent-deck session revive [--all|--name <title>]`.
@@ -79,7 +94,7 @@ func handleSessionRevive(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -88,8 +103,9 @@ func handleSessionRevive(profile string, args []string) {
 	rev := session.NewReviver()
 
 	var summary ReviveSummary
+	var revived []*session.Instance
 	if *all {
-		summary = runReviveAll(instances, rev)
+		summary, revived = runReviveAll(instances, rev)
 	} else {
 		inst, errMsg, errCode := ResolveSession(*name, instances)
 		if inst == nil {
@@ -100,13 +116,21 @@ func handleSessionRevive(profile string, args []string) {
 			os.Exit(1)
 			return
 		}
-		summary = runReviveAll([]*session.Instance{inst}, rev)
+		summary, revived = runReviveAll([]*session.Instance{inst}, rev)
 	}
 
-	// Persist any status mutations (e.g., StatusError → StatusRunning on revive).
-	if err := saveSessionData(storage, instances, groups); err != nil {
-		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-		os.Exit(1)
+	// Persist ONLY the rows we actually revived, via a targeted sweep-free
+	// write. Using the full load-modify-write path (saveSessionData →
+	// SaveWithGroups → SaveInstances) would run a `DELETE FROM instances WHERE
+	// id NOT IN (<stale snapshot>)` sweep that silently drops any session a
+	// concurrent `add` inserted after we loaded our snapshot (lost-update
+	// race). PersistRevivedInstances never deletes, so revive cannot clobber
+	// a row it didn't touch.
+	if len(revived) > 0 {
+		if err := storage.PersistRevivedInstances(revived); err != nil {
+			out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 	}
 
 	jsonData := map[string]interface{}{

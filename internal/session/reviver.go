@@ -80,6 +80,19 @@ func NewReviver() *Reviver {
 }
 
 // Classify decides which bucket an instance falls into at scan time.
+//
+// TODO(revive-liveness): after a tmux SERVER restart (OOM/SIGKILL +
+// systemd Restart=on-failure, or a manual restart), a session that is in
+// fact alive under the NEW server can briefly probe as not-found if the
+// has-session call races the server coming back up. Today that yields
+// ClassDead, which is never auto-revived — so a transient miss permanently
+// strands a recoverable session until the user restarts it manually. A fix
+// (single short retry on a confirmed-not-found probe, scoped to revive so it
+// does not add latency to the shared HasSession hot path) is deferred: it is
+// orthogonal to the data-loss race fixed here and carries its own regression
+// risk for the watchPipe reconnect loop that shares the probe. The
+// data-loss-critical half (revive never clobbering concurrently-added rows)
+// is fixed via Storage.PersistRevivedInstances.
 func (r *Reviver) Classify(inst *Instance) RevivalClass {
 	name := instanceTmuxName(inst)
 	if !r.TmuxExists(name, inst.TmuxSocketName) {
