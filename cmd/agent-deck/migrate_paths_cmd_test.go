@@ -78,7 +78,7 @@ func TestMigratePathsCommand_ConflictReportsForceHint(t *testing.T) {
 	if !strings.Contains(combined, "conflict config config.toml already exists at "+xdgConfig) {
 		t.Fatalf("conflict output missing destination:\n%s", combined)
 	}
-	if !strings.Contains(combined, "rerun with --force to overwrite destination files") {
+	if !strings.Contains(combined, "rerun with --force to merge into existing XDG locations") {
 		t.Fatalf("conflict output missing force hint:\n%s", combined)
 	}
 }

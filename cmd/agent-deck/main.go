@@ -3444,34 +3444,48 @@ func handleUninstall(args []string) {
 
 	// 4. XDG and legacy data locations
 	if !*keepData {
-		offeredBackup := false
+		// Data-safety (Blocker 1, 2026-06-04 incident): back up EVERY data
+		// location that will be deleted (XDG config + data + cache + legacy),
+		// not just legacy ~/.agent-deck. Refuse to delete an un-backed-up XDG
+		// location.
+		backupCreated := false
+		if !*yes {
+			fmt.Print("Create a backup of ALL data locations (XDG config/data/cache + legacy) before removing them? [Y/n] ")
+			var response string
+			_, _ = fmt.Scanln(&response)
+			if strings.ToLower(response) != "n" {
+				fmt.Println("Creating backup of all data locations...")
+				backupFile, err := backupUninstallDataLocations(foundItems, homeDir)
+				if err != nil {
+					// Backup failed: do NOT delete data we couldn't archive.
+					fmt.Printf("✗ Backup failed: %v\n", err)
+					fmt.Println("Refusing to delete data locations without a backup.")
+					fmt.Println("Re-run with --keep-data to preserve data, or -y to skip backup and delete anyway.")
+					return
+				}
+				if backupFile != "" {
+					fmt.Printf("✓ Backup created: %s\n", backupFile)
+					backupCreated = true
+				} else {
+					fmt.Println("No real data found to back up (only symlinks/empty locations).")
+				}
+			} else {
+				// User explicitly declined the backup. Confirm they accept the
+				// irreversible deletion of every listed data location.
+				fmt.Print("Skip backup and permanently delete all listed data locations? [y/N] ")
+				var confirm string
+				_, _ = fmt.Scanln(&confirm)
+				if strings.ToLower(confirm) != "y" {
+					fmt.Println("Aborted. Data locations preserved.")
+					return
+				}
+			}
+		}
+		_ = backupCreated
+
 		for _, item := range foundItems {
 			if !isUninstallDataLocation(item.itemType) {
 				continue
-			}
-
-			// Offer the legacy backup once unless -y flag. XDG locations are
-			// listed and removed below, but this tarball only archives
-			// ~/.agent-deck.
-			if !*yes && !offeredBackup {
-				offeredBackup = true
-				fmt.Print("Create backup of legacy ~/.agent-deck only before removing all listed data locations? [Y/n] ")
-				var response string
-				_, _ = fmt.Scanln(&response)
-				if strings.ToLower(response) != "n" {
-					backupFile := filepath.Join(
-						homeDir,
-						fmt.Sprintf("agent-deck-backup-%s.tar.gz", time.Now().Format("20060102-150405")),
-					)
-					fmt.Printf("Creating legacy ~/.agent-deck backup at %s...\n", backupFile)
-
-					cmd := exec.Command("tar", "-czf", backupFile, "-C", homeDir, ".agent-deck")
-					if err := cmd.Run(); err != nil {
-						fmt.Printf("Warning: failed to create backup: %v\n", err)
-					} else {
-						fmt.Printf("✓ Legacy backup created: %s\n", backupFile)
-					}
-				}
 			}
 
 			fmt.Printf("Removing %s...\n", item.path)

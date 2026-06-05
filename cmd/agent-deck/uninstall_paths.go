@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
@@ -107,6 +109,62 @@ func describeUninstallLocation(path string, info os.FileInfo) string {
 
 func isUninstallDataLocation(itemType string) bool {
 	return itemType == "config" || itemType == "data" || itemType == "cache" || itemType == "legacy"
+}
+
+// backupUninstallDataLocations archives EVERY data location that will be
+// deleted (XDG config + data + cache + legacy) into a single tarball before
+// any removal happens. It returns the backup file path on success.
+//
+// Data-safety contract (Blocker 1, 2026-06-04 incident family): the old code
+// tar'd only legacy ~/.agent-deck, then deleted XDG locations too — so an
+// XDG-only install lost data with no backup. This function backs up ALL the
+// real, existing data-location paths so nothing is removed un-backed-up.
+//
+// Symlinks and non-existent paths are skipped (nothing irreplaceable to
+// archive). If there is no real data to back up, it returns ("", nil) so the
+// caller can proceed (deleting empty/symlink locations is safe).
+func backupUninstallDataLocations(items []uninstallFoundItem, homeDir string) (string, error) {
+	// Collect the real (non-symlink, existing) data directories to archive.
+	var paths []string
+	for _, item := range items {
+		if !isUninstallDataLocation(item.itemType) {
+			continue
+		}
+		info, err := os.Lstat(item.path)
+		if err != nil {
+			continue // already gone — nothing to back up
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue // symlink: target lives elsewhere, don't archive blindly
+		}
+		paths = append(paths, filepath.Clean(item.path))
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+
+	backupFile := filepath.Join(
+		homeDir,
+		fmt.Sprintf("agent-deck-backup-%s.tar.gz", time.Now().Format("20060102-150405")),
+	)
+
+	// Archive each path by its full path. -C / keeps absolute-ish layout
+	// (tar strips the leading slash) so config/data/cache/legacy all coexist
+	// in one archive without collisions, even across different roots.
+	args := []string{"-czf", backupFile, "-C", "/"}
+	for _, p := range paths {
+		rel := strings.TrimPrefix(p, "/")
+		args = append(args, rel)
+	}
+
+	cmd := exec.Command("tar", args...)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Don't leave a partial/corrupt archive masquerading as a good backup.
+		_ = os.Remove(backupFile)
+		return "", fmt.Errorf("failed to create backup of data locations: %w", err)
+	}
+	return backupFile, nil
 }
 
 func removeUninstallLocation(path string) error {

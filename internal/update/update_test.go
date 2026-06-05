@@ -199,6 +199,27 @@ func TestUpdateBridgePy_UsesInjectedInstallerAndBacksUpExistingFile(t *testing.T
 	assert.Equal(t, "# injected bridge\n", string(newContent))
 }
 
+// TestUpdateBridgePy_NonCLICallerDoesNotHardFail is the regression test for
+// Blocker 3. The bridge installer is injected only by the CLI layer
+// (initUpdateSettings). A non-CLI caller (e.g. a watcher or library consumer)
+// that triggers UpdateBridgePy with a conductor dir present must NOT hard-fail
+// with "bridge.py installer is not configured" — it should gracefully no-op so
+// the surrounding update flow is not aborted.
+func TestUpdateBridgePy_NonCLICallerDoesNotHardFail(t *testing.T) {
+	tmpHome := isolateUpdatePaths(t)
+
+	// Conductor dir exists (so we get past the "not installed" early return),
+	// exercising the installer branch.
+	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	require.NoError(t, os.MkdirAll(condDir, 0o755))
+
+	// Simulate a non-CLI caller: installer never injected.
+	SetBridgeScriptInstaller(nil)
+
+	err := UpdateBridgePy()
+	require.NoError(t, err, "UpdateBridgePy must not hard-fail when installer is not configured (non-CLI caller)")
+}
+
 func TestNormalizeReleaseTag(t *testing.T) {
 	tests := []struct {
 		name  string

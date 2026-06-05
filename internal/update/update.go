@@ -885,8 +885,15 @@ func UpdateBridgePy() error {
 	}
 
 	// Install latest bridge template from embedded runtime.
+	//
+	// The installer is injected by the CLI layer (initUpdateSettings) to keep
+	// this package independent of internal/session. Non-CLI callers (watchers,
+	// library consumers) won't have injected it. Rather than hard-failing and
+	// aborting the surrounding update flow, gracefully no-op with a clear log.
+	// The existing bridge.py (and its .backup) are left untouched.
 	if bridgeScriptInstaller == nil {
-		return fmt.Errorf("bridge.py installer is not configured")
+		fmt.Println("⚠ bridge.py installer not configured (non-CLI caller); skipping bridge.py refresh.")
+		return nil
 	}
 	if err := bridgeScriptInstaller(); err != nil {
 		return fmt.Errorf("failed to install bridge.py: %w", err)

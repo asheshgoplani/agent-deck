@@ -20,7 +20,7 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate-paths", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "Show what would be copied without writing files")
-	force := fs.Bool("force", false, "Overwrite existing XDG destination files")
+	force := fs.Bool("force", false, "Merge legacy into existing XDG locations (per-file conflicts preserve the existing XDG file and are reported)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: agent-deck migrate-paths [--dry-run] [--force]")
 		fmt.Fprintln(stderr)
@@ -29,7 +29,9 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Options:")
 		fmt.Fprintln(stderr, "  --dry-run  Show what would be copied without writing files")
-		fmt.Fprintln(stderr, "  --force    Overwrite existing XDG destination files")
+		fmt.Fprintln(stderr, "  --force    Merge legacy into existing XDG locations. Per-file")
+		fmt.Fprintln(stderr, "             conflicts PRESERVE the existing (newer) XDG file and")
+		fmt.Fprintln(stderr, "             are reported; XDG-only data is never deleted.")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -59,7 +61,7 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		if errors.Is(err, agentpaths.ErrMigrationConflict) {
-			fmt.Fprintln(stderr, "rerun with --force to overwrite destination files")
+			fmt.Fprintln(stderr, "rerun with --force to merge into existing XDG locations (existing files are preserved on conflict)")
 		} else {
 			fmt.Fprintf(stderr, "migration failed: %v\n", err)
 		}

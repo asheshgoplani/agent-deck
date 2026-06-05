@@ -66,9 +66,19 @@ func MigrateLegacyLayout(opts MigrationOptions) (*MigrationResult, error) {
 			continue
 		}
 		if opts.Force {
-			if err := removeExistingDestination(item.Destination); err != nil {
+			// Data-safety (Blocker 2): merge legacy into the destination
+			// per-file. NEVER os.RemoveAll the destination tree — that would
+			// destroy newer XDG-only data. Per-file conflicts preserve the
+			// existing (newer) XDG file and are reported as conflicts.
+			conflicted, err := mergeMigrationPath(item.Source, item.Destination)
+			if err != nil {
 				return result, err
 			}
+			if conflicted {
+				result.Conflicts = append(result.Conflicts, item)
+			}
+			result.Copied = append(result.Copied, item)
+			continue
 		}
 		if err := copyMigrationPath(item.Source, item.Destination); err != nil {
 			return result, err
@@ -193,16 +203,67 @@ func pathExists(path string) (bool, error) {
 	return false, fmt.Errorf("stat %q: %w", path, err)
 }
 
-func removeExistingDestination(path string) error {
-	if exists, err := pathExists(path); err != nil {
-		return err
-	} else if !exists {
-		return nil
+// mergeMigrationPath copies a legacy source into the destination WITHOUT
+// deleting the destination tree (Blocker 2 data-safety fix). It returns
+// conflicted=true if any per-file conflict was encountered (an existing,
+// newer XDG file at a destination leaf), in which case the existing XDG file
+// is PRESERVED and the legacy file is NOT copied over it.
+//
+// Behavior by node type:
+//   - source file, no destination          -> copy
+//   - source file, destination is a file    -> CONFLICT, preserve XDG (skip)
+//   - source file, destination is a dir      -> CONFLICT, preserve XDG (skip)
+//   - source symlink                          -> copy if no destination, else CONFLICT
+//   - source dir                              -> recurse, merging children
+func mergeMigrationPath(source, destination string) (conflicted bool, err error) {
+	srcInfo, err := os.Lstat(source)
+	if err != nil {
+		return false, fmt.Errorf("stat source %q: %w", source, err)
 	}
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove existing destination %q: %w", path, err)
+
+	dstInfo, dstErr := os.Lstat(destination)
+	dstExists := dstErr == nil
+	if dstErr != nil && !os.IsNotExist(dstErr) {
+		return false, fmt.Errorf("stat destination %q: %w", destination, dstErr)
 	}
-	return nil
+
+	// Source directory: recurse into children, creating the destination dir if
+	// needed but never removing it.
+	if srcInfo.Mode()&os.ModeSymlink == 0 && srcInfo.IsDir() {
+		if dstExists && !dstInfo.IsDir() {
+			// Destination is a non-dir blocking the merge. Preserve it; report.
+			return true, nil
+		}
+		if err := os.MkdirAll(destination, 0o700); err != nil {
+			return false, fmt.Errorf("create destination dir %q: %w", destination, err)
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return false, fmt.Errorf("read source dir %q: %w", source, err)
+		}
+		anyConflict := false
+		for _, entry := range entries {
+			childConflict, err := mergeMigrationPath(
+				filepath.Join(source, entry.Name()),
+				filepath.Join(destination, entry.Name()),
+			)
+			if err != nil {
+				return false, err
+			}
+			anyConflict = anyConflict || childConflict
+		}
+		return anyConflict, nil
+	}
+
+	// Source is a file or symlink. If a destination already exists, preserve
+	// it (newer XDG data wins) and report the conflict.
+	if dstExists {
+		return true, nil
+	}
+	if err := copyMigrationPath(source, destination); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func copyMigrationPath(source, destination string) error {
