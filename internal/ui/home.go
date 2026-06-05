@@ -9473,8 +9473,7 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 					inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
 				}
 				// Create a new persistent dir for the fork with symlinks to shared worktrees
-				home, _ := os.UserHomeDir()
-				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
+				parentDir := filepath.Join(multiRepoWorktreesRoot(), inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return fmt.Errorf("failed to create multi-repo dir: %w", mkErr)
 				}
