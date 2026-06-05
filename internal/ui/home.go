@@ -12107,15 +12107,24 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 	case session.ItemTypeWindow:
 		// A tmux window row attaches just like its session.
 		add("⏎", "attach")
+
+	case session.ItemTypeRemoteSession:
+		// A remote session row attaches over SSH just like a local session;
+		// without this case the curated footer dropped the attach hint for
+		// remote rows (PR #1289 review nit 1).
+		add("⏎", "attach")
 	}
 
 	return hints
 }
 
 // sessionIsDead reports whether a session is stopped or errored — the states
-// for which restart, rather than attach, is the relevant footer action.
+// for which restart, rather than attach, is the relevant footer action. Reads
+// the status via the thread-safe getter since the render goroutine runs
+// concurrently with backgroundStatusUpdate (PR #1289 review nit 2).
 func sessionIsDead(s *session.Instance) bool {
-	return s.Status == session.StatusStopped || s.Status == session.StatusError
+	status := s.GetStatusThreadSafe()
+	return status == session.StatusStopped || status == session.StatusError
 }
 
 // renderHelpBarCurated renders the lighter, context-aware footer (the default

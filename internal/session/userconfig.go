@@ -244,14 +244,16 @@ type UISettings struct {
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
 
 	// Footer controls the style of the bottom hint bar. Valid values:
-	//   "curated" (default) — lighter, dim inline text advertising only the
+	//   "full" (default)    — the historic verbose bar: filled key chips,
+	//                         width-adaptive, advertising every action. This is
+	//                         today's behavior and stays the default so the look
+	//                         never changes without an explicit opt-in.
+	//   "curated"           — lighter, dim inline text advertising only the
 	//                         actions relevant to the selected row, with the
-	//                         settings and help keys always last.
-	//   "full"              — the historic verbose bar: filled key chips,
-	//                         width-adaptive, advertising every action.
+	//                         settings and help keys always last (opt-in).
 	//   "compact"           — force the abbreviated chip tier regardless of width.
 	//   "minimal"           — force the keys-only tier regardless of width.
-	// Empty or unknown values fall back to "curated". This is purely a
+	// Empty or unknown values fall back to "full". This is purely a
 	// rendering preference (TUI UX initiative, item 1): no keybinding is
 	// added, removed, or changed — only what the footer advertises. Every
 	// action remains reachable by its key and is fully listed under help (?).
@@ -282,12 +284,15 @@ const (
 	FooterFull    = "full"
 	FooterCompact = "compact"
 	FooterMinimal = "minimal"
-	DefaultFooter = FooterCurated
+	// DefaultFooter is the historic verbose bar ("full"). Keeping it as the
+	// default preserves today's look; curated/compact/minimal are opt-in via
+	// config.toml [ui] footer.
+	DefaultFooter = FooterFull
 )
 
 // GetFooter returns the configured footer style, normalized to one of the
 // known values. Empty or unknown input falls back to DefaultFooter
-// ("curated"). Matching is case-insensitive so users may write "Full" or
+// ("full"). Matching is case-insensitive so users may write "Full" or
 // "MINIMAL" in TOML.
 func (u UISettings) GetFooter() string {
 	switch strings.ToLower(strings.TrimSpace(u.Footer)) {

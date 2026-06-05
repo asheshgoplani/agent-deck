@@ -1987,7 +1987,7 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	}
 }
 
-// ── Curated footer (default [ui] footer = curated) ─────────────────────────
+// ── Curated footer (opt-in via [ui] footer = curated) ──────────────────────
 
 // curatedHome builds a Home in the curated footer style at a comfortable width.
 func curatedHome() *Home {
@@ -2191,10 +2191,51 @@ func TestCuratedFooterJumpMode(t *testing.T) {
 	}
 }
 
-func TestCuratedFooterIsDefault(t *testing.T) {
-	// A fresh Home with no [ui] footer config defaults to the curated style.
-	if got := (session.UISettings{}).GetFooter(); got != session.FooterCurated {
-		t.Fatalf("default footer = %q, want %q", got, session.FooterCurated)
+// TestCuratedFooterRemoteSessionShowsAttach covers PR #1289 review nit 1: a
+// remote-session row must still advertise the attach hint in the curated
+// footer (it attaches over SSH just like a local session).
+func TestCuratedFooterRemoteSessionShowsAttach(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeRemoteSession, RemoteSession: &session.RemoteSessionInfo{}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "⏎ attach") {
+		t.Errorf("curated footer for a remote session should advertise Enter attach\nGot: %q", result)
+	}
+}
+
+// TestFooterDefaultIsFull is the default-preserving guarantee for PR #1289:
+// with no [ui] footer config the footer is the historic verbose "full" bar,
+// not curated — so nobody's UI changes without an explicit opt-in.
+func TestFooterDefaultIsFull(t *testing.T) {
+	// Config layer: unset → full.
+	if got := (session.UISettings{}).GetFooter(); got != session.FooterFull {
+		t.Fatalf("default footer = %q, want %q (must preserve today's verbose bar)", got, session.FooterFull)
+	}
+
+	// Render layer: a Home seeded with the default footerMode must route to the
+	// verbose width-adaptive bar, not the curated bar. The verbose bar uses
+	// filled key chips and advertises many actions; a reliable distinguishing
+	// marker is the "quit" hint, which the curated bar never shows.
+	home := NewHome()
+	home.width = 120
+	home.height = 30
+	home.footerMode = (session.UISettings{}).GetFooter() // simulate default load
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	full := home.renderHelpBar()
+
+	home.footerMode = session.FooterCurated
+	curated := home.renderHelpBar()
+
+	if full == curated {
+		t.Fatal("default (full) footer render is identical to curated render; default did not select the verbose bar")
 	}
 }
 

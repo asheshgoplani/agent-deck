@@ -2120,22 +2120,23 @@ active_filter_excludes = ["error", "stopped"]
 }
 
 // TestUISettings_GetFooter covers the [ui] footer style knob (TUI UX
-// initiative, item 1). Unset/unknown values fall back to the curated default;
-// known values are normalized case-insensitively.
+// initiative, item 1). Unset/unknown values fall back to the "full" default
+// (today's verbose bar — default-preserving); curated/compact/minimal are
+// opt-in. Known values are normalized case-insensitively.
 func TestUISettings_GetFooter(t *testing.T) {
 	cases := []struct {
 		name string
 		ui   UISettings
 		want string
 	}{
-		{"unset uses curated default", UISettings{}, FooterCurated},
-		{"explicit curated", UISettings{Footer: "curated"}, FooterCurated},
+		{"unset uses full default (preserve today's look)", UISettings{}, FooterFull},
+		{"explicit curated (opt-in)", UISettings{Footer: "curated"}, FooterCurated},
 		{"full", UISettings{Footer: "full"}, FooterFull},
 		{"compact", UISettings{Footer: "compact"}, FooterCompact},
 		{"minimal", UISettings{Footer: "minimal"}, FooterMinimal},
 		{"case-insensitive", UISettings{Footer: "FULL"}, FooterFull},
 		{"trimmed", UISettings{Footer: "  minimal  "}, FooterMinimal},
-		{"unknown falls back to curated", UISettings{Footer: "bogus"}, FooterCurated},
+		{"unknown falls back to full", UISettings{Footer: "bogus"}, FooterFull},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2143,6 +2144,18 @@ func TestUISettings_GetFooter(t *testing.T) {
 				t.Fatalf("GetFooter() on %+v = %q, want %q", tc.ui, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestUISettings_GetFooter_DefaultIsFull is the focused default-preserving
+// guarantee for PR #1289: with no config, the footer is the historic verbose
+// "full" bar, so nobody's UI changes without an explicit opt-in.
+func TestUISettings_GetFooter_DefaultIsFull(t *testing.T) {
+	if got := (UISettings{}).GetFooter(); got != FooterFull {
+		t.Fatalf("default GetFooter() = %q, want %q (must preserve today's verbose bar)", got, FooterFull)
+	}
+	if DefaultFooter != FooterFull {
+		t.Fatalf("DefaultFooter = %q, want %q", DefaultFooter, FooterFull)
 	}
 }
 
