@@ -214,6 +214,12 @@ type NewDialog struct {
 	// Conducting parent selector.
 	conductorSessions []*session.Instance // nil when no conductors; populated by ShowInGroup
 	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
+
+	// enterAdvances mirrors config.toml [ui] new_session_enter_advances (PR
+	// #1295). False (default) preserves today's behavior: Enter on the free-text
+	// Name/Branch fields submits the form. True makes Enter advance focus
+	// instead, with Ctrl+S as the explicit submit. Ctrl+S submits in both modes.
+	enterAdvances bool
 }
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
@@ -260,6 +266,17 @@ func buildPresetCommands() []string {
 		presets = append(presets, customTools...)
 	}
 	return session.FilterVisibleToolNames(presets)
+}
+
+// newSessionEnterAdvancesFromConfig reads config.toml [ui]
+// new_session_enter_advances (PR #1295). Default false (config missing or
+// unset) preserves today's behavior: Enter on Name/Branch submits the form.
+func newSessionEnterAdvancesFromConfig() bool {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		return false
+	}
+	return cfg.UI.GetNewSessionEnterAdvances()
 }
 
 // buildInheritedSettings returns display pairs for non-default Docker config values.
@@ -346,6 +363,7 @@ func NewNewDialog() *NewDialog {
 		parentGroupName: "default",
 		worktreeEnabled: false,
 		branchPrefix:    "feature/",
+		enterAdvances:   newSessionEnterAdvancesFromConfig(),
 	}
 	dlg.syncInputWidths()
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
@@ -594,14 +612,17 @@ func (d *NewDialog) shouldHandleEnterLocally() bool {
 	// Path/Model open their own dropdown on Enter.
 	case focusPath, focusModel:
 		return true
-	// Name/Branch are free-text fields: Enter advances to the next field rather
-	// than submitting the whole form. Pressing Enter right after typing the
-	// session name is the most common keystroke; it used to silently submit
-	// (path defaults to cwd), skipping path/tool/model selection entirely.
-	// Keeping Enter local here lets the dialog advance focus instead. Submit is
-	// still reachable from non-text rows (checkboxes/conductor) and via Ctrl+S.
+	// Name/Branch are free-text fields. When the opt-in
+	// [ui].new_session_enter_advances toggle is on, Enter advances to the next
+	// field rather than submitting the whole form: pressing Enter right after
+	// typing the session name used to silently submit (path defaults to cwd),
+	// skipping path/tool/model selection entirely. Handling Enter locally lets
+	// the dialog advance focus instead. Submit stays reachable from non-text
+	// rows (checkboxes/conductor) and via Ctrl+S (additive, always available).
+	// Default (toggle off) preserves today's behavior: Enter here submits, so we
+	// must NOT claim it locally.
 	case focusName, focusBranch:
-		return true
+		return d.enterAdvances
 	case focusMultiRepo:
 		return d.multiRepoEnabled
 	default:
@@ -1879,12 +1900,14 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
-			// Name/Branch are free-text fields: Enter advances to the next field
-			// instead of submitting the form, so typing a name + Enter no longer
-			// silently creates a session with all defaults. See
-			// shouldHandleEnterLocally for the rationale; home.go forwards Enter
-			// here when that returns true.
-			if cur == focusName || cur == focusBranch {
+			// Name/Branch are free-text fields: when the opt-in
+			// [ui].new_session_enter_advances toggle is on, Enter advances to the
+			// next field instead of submitting the form, so typing a name + Enter
+			// no longer silently creates a session with all defaults. With the
+			// toggle off (default) home.go never forwards Enter here for these
+			// fields (shouldHandleEnterLocally returns false), so this branch is
+			// only reached in opt-in mode; the guard keeps it correct regardless.
+			if d.enterAdvances && (cur == focusName || cur == focusBranch) {
 				d.moveFocus(1)
 				return d, nil
 			}
@@ -2577,7 +2600,14 @@ func (d *NewDialog) View() string {
 	if len(d.recentSessions) > 0 {
 		recentPrefix = "^R recent │ "
 	}
-	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ ^S create │ Esc cancel"
+	// createHint reflects the active Enter mode on free-text fields. With the
+	// opt-in toggle on, Enter advances and Ctrl+S creates; with it off (default),
+	// Enter still creates (Ctrl+S also works, but Enter is the legacy primary).
+	createHint := "Enter create"
+	if d.enterAdvances {
+		createHint = "^S create"
+	}
+	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ " + createHint + " │ Esc cancel"
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
@@ -2589,8 +2619,10 @@ func (d *NewDialog) View() string {
 	} else if cur == focusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
-		} else {
+		} else if d.enterAdvances {
 			helpText = "^F branch search │ Tab/Enter next │ ^S create │ Esc cancel"
+		} else {
+			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()

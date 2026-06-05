@@ -242,6 +242,15 @@ type UISettings struct {
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+
+	// NewSessionEnterAdvances controls what Enter does on the free-text
+	// Name/Branch fields of the new-session dialog (PR #1295). Default false
+	// preserves today's behavior: Enter from Name/Branch submits the form. When
+	// true, Enter advances focus to the next field instead (so typing a name and
+	// pressing Enter no longer silently creates a session with all defaults), and
+	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
+	// it is strictly additive and always available regardless of this toggle.
+	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -316,6 +325,14 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 		return MaxRemoteSessionRefreshSecs
 	}
 	return val
+}
+
+// GetNewSessionEnterAdvances reports whether Enter on the new-session dialog's
+// free-text Name/Branch fields should advance focus (true) instead of
+// submitting the form (false). Default false preserves today's behavior
+// (Enter submits). Ctrl+S submits in both modes. See PR #1295.
+func (u UISettings) GetNewSessionEnterAdvances() bool {
+	return u.NewSessionEnterAdvances
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval

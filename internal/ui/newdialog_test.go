@@ -2159,11 +2159,12 @@ func TestDialogOrigin(t *testing.T) {
 
 // --- Keyboard navigation improvements (Feedback Hub: smoother new-session nav) ---
 
-// Enter on the Name field must advance focus to the next field, NOT submit the
-// form. shouldHandleEnterLocally must report true so home.go forwards Enter to
-// the dialog rather than running its submit path.
+// Opt-in mode: Enter on the Name field must advance focus to the next field,
+// NOT submit the form. shouldHandleEnterLocally must report true so home.go
+// forwards Enter to the dialog rather than running its submit path.
 func TestNewDialog_EnterOnNameAdvancesFocus(t *testing.T) {
 	d := NewNewDialog()
+	d.enterAdvances = true // opt in: [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 
@@ -2184,10 +2185,11 @@ func TestNewDialog_EnterOnNameAdvancesFocus(t *testing.T) {
 	}
 }
 
-// Enter on the Branch field (worktree enabled) advances focus instead of
-// submitting, matching the Name-field behavior for free-text inputs.
+// Opt-in mode: Enter on the Branch field (worktree enabled) advances focus
+// instead of submitting, matching the Name-field behavior for free-text inputs.
 func TestNewDialog_EnterOnBranchAdvancesFocus(t *testing.T) {
 	d := NewNewDialog()
+	d.enterAdvances = true // opt in: [ui].new_session_enter_advances = true
 	d.SetSize(100, 50)
 	d.Show()
 	d.nameInput.SetValue("demo")
@@ -2245,7 +2247,8 @@ func TestNewDialog_CtrlSInertWhileDropdownActive(t *testing.T) {
 	}
 }
 
-// Regression: Tab still advances Name -> next field (unchanged behavior).
+// Regression: Tab still advances Name -> next field (unchanged behavior,
+// independent of the Enter-mode toggle).
 func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
 	d := NewNewDialog()
 	d.SetSize(100, 50)
@@ -2256,5 +2259,80 @@ func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if d.currentTarget() == focusName {
 		t.Fatal("Tab on Name did not advance focus")
+	}
+}
+
+// --- Default-preserving behavior (PR #1295: toggle defaults OFF) ---
+
+// DEFAULT (toggle off): Enter on the Name field must NOT be handled locally, so
+// home.go runs its submit path — i.e. today's behavior (Enter from Name
+// submits) is preserved. This is the core default-preserving guarantee.
+func TestNewDialog_DefaultEnterOnNameSubmits(t *testing.T) {
+	d := NewNewDialog()
+	// enterAdvances defaults to false (no config → newSessionEnterAdvancesFromConfig
+	// returns false). Assert it explicitly so the default is load-bearing here.
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false (must preserve today's behavior)")
+	}
+	d.SetSize(100, 50)
+	d.Show()
+
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	// shouldHandleEnterLocally must be false on Name so home.go submits.
+	if d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Name = true, want false (Enter must submit, not advance)")
+	}
+	// Even if Enter were forwarded to the dialog, the advance guard must not fire
+	// in default mode: focus must stay on Name.
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() != before {
+		t.Fatalf("default mode: Enter on Name advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	}
+}
+
+// DEFAULT (toggle off): Enter on the Branch field must NOT advance — today's
+// behavior (Enter submits) is preserved.
+func TestNewDialog_DefaultEnterOnBranchSubmits(t *testing.T) {
+	d := NewNewDialog()
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false")
+	}
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+	d.ToggleWorktree()
+
+	idx := d.indexOf(focusBranch)
+	if idx < 0 {
+		t.Fatal("focusBranch should be present when worktree enabled")
+	}
+	d.focusIndex = idx
+	d.updateFocus()
+
+	if d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Branch = true, want false (Enter must submit)")
+	}
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() != before {
+		t.Fatalf("default mode: Enter on Branch advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	}
+}
+
+// Ctrl+S is additive: WantsSubmit(Ctrl+S) is true regardless of the toggle, so
+// the explicit-create shortcut works in BOTH default and opt-in modes.
+func TestNewDialog_CtrlSSubmitsInBothModes(t *testing.T) {
+	for _, advance := range []bool{false, true} {
+		d := NewNewDialog()
+		d.enterAdvances = advance
+		d.SetSize(100, 50)
+		d.Show()
+		d.nameInput.SetValue("demo")
+		if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+			t.Fatalf("WantsSubmit(Ctrl+S) with enterAdvances=%v = false, want true (additive in both modes)", advance)
+		}
 	}
 }
