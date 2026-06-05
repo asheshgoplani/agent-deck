@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 func TestForkDialogSubmitCapturesWithStateBeforeHide(t *testing.T) {
@@ -255,48 +256,178 @@ func TestForkWithStateWorktree_FailsClosedWhenDetectErrors(t *testing.T) {
 	}
 }
 
-func TestForkSessionCmdWithOptions_RollsBackWorktreeOnPostHelperFailure(t *testing.T) {
-	srcBytes, err := os.ReadFile("home.go")
+// --- Behavioral tests for completeFork (review finding G1) ---
+//
+// These exercise the three post-helper rollback paths via the forkInstanceDeps
+// DI seam, replacing the brittle source-scanning rollback test. Fakes use a
+// source whose Tool is "" and sandboxEnabled=false / parentSessionID="" so no
+// real *session.Instance behavior runs.
+
+func newForkStateOpts() *session.ClaudeOptions {
+	return &session.ClaudeOptions{
+		WorktreeRepoRoot: "/repo/root",
+		WorktreePath:     "/repo/root/.worktrees/feature",
+		WorktreeBranch:   "feature",
+	}
+}
+
+type rollbackRecorder struct {
+	calls    int
+	repoRoot string
+	wtPath   string
+	branch   string
+}
+
+func (r *rollbackRecorder) fn(repoRoot, worktreePath, branch string) {
+	r.calls++
+	r.repoRoot = repoRoot
+	r.wtPath = worktreePath
+	r.branch = branch
+}
+
+func TestCompleteFork_RollsBackOnInstanceCreateFailure(t *testing.T) {
+	source := &session.Instance{}
+	opts := newForkStateOpts()
+	rec := &rollbackRecorder{}
+	createErr := errors.New("boom")
+
+	deps := forkInstanceDeps{
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+			return nil, createErr
+		},
+		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
+		startInstance:      func(_ *session.Instance) error { return nil },
+		rollback:           rec.fn,
+	}
+
+	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	if inst != nil {
+		t.Fatalf("expected nil instance on create failure, got %v", inst)
+	}
+	if err == nil || !strings.Contains(err.Error(), "cannot create forked instance") {
+		t.Fatalf("expected wrapped 'cannot create forked instance' error, got %v", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("expected exactly one rollback, got %d", rec.calls)
+	}
+	if rec.repoRoot != opts.WorktreeRepoRoot || rec.wtPath != opts.WorktreePath || rec.branch != opts.WorktreeBranch {
+		t.Fatalf("rollback args mismatch: got (%q,%q,%q)", rec.repoRoot, rec.wtPath, rec.branch)
+	}
+}
+
+func TestCompleteFork_RollsBackOnMultiRepoDirFailure(t *testing.T) {
+	source := &session.Instance{}
+	opts := newForkStateOpts()
+	rec := &rollbackRecorder{}
+	fake := &session.Instance{}
+	mrErr := errors.New("failed to create multi-repo dir: disk full")
+
+	deps := forkInstanceDeps{
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+			return fake, nil
+		},
+		createMultiRepoDir: func(_, _ *session.Instance) error { return mrErr },
+		startInstance:      func(_ *session.Instance) error { return nil },
+		rollback:           rec.fn,
+	}
+
+	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	if inst != nil {
+		t.Fatalf("expected nil instance on multi-repo-dir failure, got %v", inst)
+	}
+	if err != mrErr {
+		t.Fatalf("expected bare multi-repo-dir error, got %v", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("expected exactly one rollback, got %d", rec.calls)
+	}
+	if rec.repoRoot != opts.WorktreeRepoRoot || rec.wtPath != opts.WorktreePath || rec.branch != opts.WorktreeBranch {
+		t.Fatalf("rollback args mismatch: got (%q,%q,%q)", rec.repoRoot, rec.wtPath, rec.branch)
+	}
+}
+
+func TestCompleteFork_RollsBackOnStartFailure(t *testing.T) {
+	source := &session.Instance{}
+	opts := newForkStateOpts()
+	rec := &rollbackRecorder{}
+	fake := &session.Instance{}
+	startErr := errors.New("start failed")
+
+	deps := forkInstanceDeps{
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+			return fake, nil
+		},
+		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
+		startInstance:      func(_ *session.Instance) error { return startErr },
+		rollback:           rec.fn,
+	}
+
+	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	if inst != nil {
+		t.Fatalf("expected nil instance on start failure, got %v", inst)
+	}
+	if err != startErr {
+		t.Fatalf("expected bare start error, got %v", err)
+	}
+	if rec.calls != 1 {
+		t.Fatalf("expected exactly one rollback, got %d", rec.calls)
+	}
+	if rec.repoRoot != opts.WorktreeRepoRoot || rec.wtPath != opts.WorktreePath || rec.branch != opts.WorktreeBranch {
+		t.Fatalf("rollback args mismatch: got (%q,%q,%q)", rec.repoRoot, rec.wtPath, rec.branch)
+	}
+}
+
+func TestCompleteFork_NoRollbackOnSuccess(t *testing.T) {
+	source := &session.Instance{}
+	opts := newForkStateOpts()
+	rec := &rollbackRecorder{}
+	fake := &session.Instance{}
+
+	deps := forkInstanceDeps{
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+			return fake, nil
+		},
+		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
+		startInstance:      func(_ *session.Instance) error { return nil },
+		rollback:           rec.fn,
+	}
+
+	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
 	if err != nil {
-		t.Fatalf("read home.go: %v", err)
+		t.Fatalf("expected no error on success, got %v", err)
 	}
-	src := string(srcBytes)
+	if inst != fake {
+		t.Fatalf("expected returned instance to be the createInstance fake")
+	}
+	if rec.calls != 0 {
+		t.Fatalf("expected no rollback on success, got %d", rec.calls)
+	}
+}
 
-	helper := strings.Index(src, "if err := forkWithStateWorktree(")
-	rollbackHelperDef := strings.Index(src, "func rollbackForkWithStateWorktree(")
-	if helper < 0 {
-		t.Fatal("with-state path must call forkWithStateWorktree")
-	}
-	if rollbackHelperDef < 0 {
-		t.Fatal("rollbackForkWithStateWorktree helper must exist")
-	}
+func TestCompleteFork_NoRollbackWhenWorktreeNotCreated(t *testing.T) {
+	source := &session.Instance{}
+	rec := &rollbackRecorder{}
+	createErr := errors.New("boom")
 
-	// The instance-create failure return and the Start() failure return both
-	// live after the helper succeeds; each must roll back the new worktree+branch
-	// when forkState.WithState is set. Search within the post-helper tail so we
-	// don't match identical strings from unrelated earlier functions.
-	tail := src[helper:]
-	if !strings.Contains(tail, "cannot create forked instance") {
-		t.Fatal("post-helper instance-create failure path must exist after the helper call")
-	}
-	if !strings.Contains(tail, "if err := inst.Start(); err != nil {") {
-		t.Fatal("post-helper Start failure path must exist after the helper call")
-	}
-	if !strings.Contains(tail, "failed to create multi-repo dir") {
-		t.Fatal("post-helper multi-repo-dir failure path must exist after the helper call")
+	deps := forkInstanceDeps{
+		createInstance: func(_ *session.Instance, _, _ string, _ *session.ClaudeOptions) (*session.Instance, error) {
+			return nil, createErr
+		},
+		createMultiRepoDir: func(_, _ *session.Instance) error { return nil },
+		startInstance:      func(_ *session.Instance) error { return nil },
+		rollback:           rec.fn,
 	}
 
-	// Count rollback invocations after the helper call, excluding the helper's
-	// own definition. Every post-helper early return that leaves the new worktree
-	// behind must roll it back: instance-create, multi-repo-dir, and Start — three.
-	invocations := strings.Count(tail, "rollbackForkWithStateWorktree(opts.WorktreeRepoRoot")
-	if invocations < 3 {
-		t.Fatalf("rollbackForkWithStateWorktree must be invoked on all three post-helper failure paths (instance-create, multi-repo-dir, Start); found %d invocation(s)", invocations)
+	// withStateWorktreeCreated=false and a nil opts: the rollback gate must not
+	// fire, so opts is never dereferenced.
+	inst, err := completeFork(source, "title", "group", nil, false, "", "", false, deps)
+	if inst != nil {
+		t.Fatalf("expected nil instance on create failure, got %v", inst)
 	}
-	// Rollback must be gated on a flag set only after the helper actually creates
-	// the worktree, so the fallback path (with-state true but no worktree
-	// created) never dereferences empty opts fields.
-	if !strings.Contains(tail, "if withStateWorktreeCreated {") {
-		t.Fatal("rollback must be gated on withStateWorktreeCreated (only when a worktree was created)")
+	if err == nil || !strings.Contains(err.Error(), "cannot create forked instance") {
+		t.Fatalf("expected wrapped 'cannot create forked instance' error, got %v", err)
+	}
+	if rec.calls != 0 {
+		t.Fatalf("expected no rollback when worktree not created, got %d", rec.calls)
 	}
 }

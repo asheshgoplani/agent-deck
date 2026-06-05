@@ -9431,6 +9431,130 @@ func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
 	}
 }
 
+// forkInstanceDeps injects the post-helper instance-create/start/multi-repo and
+// rollback steps of forkSessionCmdWithOptions so the three rollback paths are
+// behaviorally testable (review finding G1).
+type forkInstanceDeps struct {
+	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error)
+	createMultiRepoDir func(inst, source *session.Instance) error
+	startInstance      func(inst *session.Instance) error
+	rollback           func(repoRoot, worktreePath, branch string)
+}
+
+func defaultForkInstanceDeps() forkInstanceDeps {
+	return forkInstanceDeps{
+		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
+			var inst *session.Instance
+			var err error
+			switch source.Tool {
+			case "opencode":
+				inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
+			case "pi":
+				inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
+			default:
+				inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
+			}
+			return inst, err
+		},
+		createMultiRepoDir: func(inst, source *session.Instance) error {
+			// Propagate multi-repo config from source.
+			if source.IsMultiRepo() {
+				inst.MultiRepoEnabled = true
+				inst.AdditionalPaths = append([]string{}, source.AdditionalPaths...)
+				// Copy worktree tracking from source (shared worktrees)
+				if len(source.MultiRepoWorktrees) > 0 {
+					inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
+				}
+				// Create a new persistent dir for the fork with symlinks to shared worktrees
+				home, _ := os.UserHomeDir()
+				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
+				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
+					return fmt.Errorf("failed to create multi-repo dir: %w", mkErr)
+				}
+				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
+					parentDir = resolved
+				}
+				inst.MultiRepoTempDir = parentDir
+				if inst.GetTmuxSession() != nil {
+					inst.GetTmuxSession().WorkDir = parentDir
+				}
+				// Recreate symlinks/entries in new parent dir pointing to source worktree paths
+				allPaths := inst.AllProjectPaths()
+				dirnames := session.DeduplicateDirnames(allPaths)
+				var newProjectPath string
+				var newAdditionalPaths []string
+				for i, p := range allPaths {
+					linkPath := filepath.Join(parentDir, dirnames[i])
+					_ = os.Symlink(p, linkPath)
+					if i == 0 {
+						newProjectPath = linkPath
+					} else {
+						newAdditionalPaths = append(newAdditionalPaths, linkPath)
+					}
+				}
+				inst.ProjectPath = newProjectPath
+				inst.AdditionalPaths = newAdditionalPaths
+			}
+			return nil
+		},
+		startInstance: func(inst *session.Instance) error { return inst.Start() },
+		rollback:      rollbackForkWithStateWorktree,
+	}
+}
+
+// completeFork performs the post-forkWithStateWorktree sequence: create the
+// forked instance, apply sandbox/multi-repo/parent config, and start it. On any
+// failure after a with-state worktree was created (withStateWorktreeCreated),
+// it rolls back the new worktree+branch. Free function: it needs nothing from
+// *Home.
+func completeFork(
+	source *session.Instance,
+	title, groupPath string,
+	opts *session.ClaudeOptions,
+	sandboxEnabled bool,
+	parentSessionID, parentProjectPath string,
+	withStateWorktreeCreated bool,
+	deps forkInstanceDeps,
+) (*session.Instance, error) {
+	inst, err := deps.createInstance(source, title, groupPath, opts)
+	if err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, fmt.Errorf("cannot create forked instance: %w", err)
+	}
+
+	// Apply sandbox config to forked instance.
+	if sandboxEnabled {
+		inst.Sandbox = session.NewSandboxConfig("")
+	}
+
+	if err := deps.createMultiRepoDir(inst, source); err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, err
+	}
+
+	if parentSessionID != "" {
+		inst.SetParentWithPath(parentSessionID, parentProjectPath)
+	}
+
+	if err := deps.startInstance(inst); err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, err
+	}
+
+	switch inst.Tool {
+	case "opencode":
+		go inst.DetectOpenCodeSession()
+	}
+
+	return inst, nil
+}
+
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
@@ -9512,85 +9636,9 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 		}
 
-		var inst *session.Instance
-		var err error
-
-		switch source.Tool {
-		case "opencode":
-			inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
-		case "pi":
-			inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
-		default:
-			inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
-		}
+		inst, err := completeFork(source, title, groupPath, opts, sandboxEnabled, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
 		if err != nil {
-			if withStateWorktreeCreated {
-				rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
-			}
-			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
-		}
-
-		// Apply sandbox config to forked instance.
-		if sandboxEnabled {
-			inst.Sandbox = session.NewSandboxConfig("")
-		}
-
-		// Propagate multi-repo config from source.
-		if source.IsMultiRepo() {
-			inst.MultiRepoEnabled = true
-			inst.AdditionalPaths = append([]string{}, source.AdditionalPaths...)
-			// Copy worktree tracking from source (shared worktrees)
-			if len(source.MultiRepoWorktrees) > 0 {
-				inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
-			}
-			// Create a new persistent dir for the fork with symlinks to shared worktrees
-			home, _ := os.UserHomeDir()
-			parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
-			if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-				if withStateWorktreeCreated {
-					rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
-				}
-				return sessionForkedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), sourceID: sourceID}
-			}
-			if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
-				parentDir = resolved
-			}
-			inst.MultiRepoTempDir = parentDir
-			if inst.GetTmuxSession() != nil {
-				inst.GetTmuxSession().WorkDir = parentDir
-			}
-			// Recreate symlinks/entries in new parent dir pointing to source worktree paths
-			allPaths := inst.AllProjectPaths()
-			dirnames := session.DeduplicateDirnames(allPaths)
-			var newProjectPath string
-			var newAdditionalPaths []string
-			for i, p := range allPaths {
-				linkPath := filepath.Join(parentDir, dirnames[i])
-				_ = os.Symlink(p, linkPath)
-				if i == 0 {
-					newProjectPath = linkPath
-				} else {
-					newAdditionalPaths = append(newAdditionalPaths, linkPath)
-				}
-			}
-			inst.ProjectPath = newProjectPath
-			inst.AdditionalPaths = newAdditionalPaths
-		}
-
-		if parentSessionID != "" {
-			inst.SetParentWithPath(parentSessionID, parentProjectPath)
-		}
-
-		if err := inst.Start(); err != nil {
-			if withStateWorktreeCreated {
-				rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
-			}
 			return sessionForkedMsg{err: err, sourceID: sourceID}
-		}
-
-		switch inst.Tool {
-		case "opencode":
-			go inst.DetectOpenCodeSession()
 		}
 
 		return sessionForkedMsg{instance: inst, sourceID: sourceID}
