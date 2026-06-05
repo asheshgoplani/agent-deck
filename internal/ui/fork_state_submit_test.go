@@ -139,8 +139,8 @@ func TestForkWithStateWorktree_ReportsManualCleanupWhenCleanupFails(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), "manual cleanup required") {
 		t.Fatalf("error = %v, want manual cleanup hint", err)
 	}
-	if !strings.Contains(err.Error(), "git -C repo branch -D fork/state") {
-		t.Fatalf("error = %v, want branch deletion hint", err)
+	if !strings.Contains(err.Error(), `git -C "repo" branch -D "fork/state"`) {
+		t.Fatalf("error = %v, want quoted branch deletion hint", err)
 	}
 }
 
@@ -229,5 +229,74 @@ func TestForkSessionCmdWithOptions_WithStateRejectsNonGitBeforeGitDirectCalls(t 
 	}
 	if reject > validate {
 		t.Fatalf("non-git rejection must happen before git-direct helper call; reject=%d helper=%d", reject, validate)
+	}
+}
+
+func TestForkWithStateWorktree_FailsClosedWhenDetectErrors(t *testing.T) {
+	var created bool
+	deps := defaultForkWithStateWorktreeDeps()
+	deps.statPath = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	deps.mkdirAll = func(string, os.FileMode) error { return nil }
+	deps.validateDestination = func(string, string) error { return nil }
+	deps.detectInProgressOperation = func(string) (string, error) {
+		return "", errors.New("probe boom")
+	}
+	deps.createAtStartPoint = func(string, string, string, string) (bool, error) {
+		created = true
+		return true, nil
+	}
+
+	err := forkWithStateWorktree("parent", "repo", "fork-path", "fork/state", git.WorktreeStateOptions{WithState: true}, deps)
+	if err == nil || !strings.Contains(err.Error(), "failed to inspect parent session state") {
+		t.Fatalf("error = %v, want fail-closed inspect error", err)
+	}
+	if created {
+		t.Fatal("CreateWorktreeAtStartPoint must not run when the mid-op probe errors")
+	}
+}
+
+func TestForkSessionCmdWithOptions_RollsBackWorktreeOnPostHelperFailure(t *testing.T) {
+	srcBytes, err := os.ReadFile("home.go")
+	if err != nil {
+		t.Fatalf("read home.go: %v", err)
+	}
+	src := string(srcBytes)
+
+	helper := strings.Index(src, "if err := forkWithStateWorktree(")
+	rollbackHelperDef := strings.Index(src, "func rollbackForkWithStateWorktree(")
+	if helper < 0 {
+		t.Fatal("with-state path must call forkWithStateWorktree")
+	}
+	if rollbackHelperDef < 0 {
+		t.Fatal("rollbackForkWithStateWorktree helper must exist")
+	}
+
+	// The instance-create failure return and the Start() failure return both
+	// live after the helper succeeds; each must roll back the new worktree+branch
+	// when forkState.WithState is set. Search within the post-helper tail so we
+	// don't match identical strings from unrelated earlier functions.
+	tail := src[helper:]
+	if !strings.Contains(tail, "cannot create forked instance") {
+		t.Fatal("post-helper instance-create failure path must exist after the helper call")
+	}
+	if !strings.Contains(tail, "if err := inst.Start(); err != nil {") {
+		t.Fatal("post-helper Start failure path must exist after the helper call")
+	}
+	if !strings.Contains(tail, "failed to create multi-repo dir") {
+		t.Fatal("post-helper multi-repo-dir failure path must exist after the helper call")
+	}
+
+	// Count rollback invocations after the helper call, excluding the helper's
+	// own definition. Every post-helper early return that leaves the new worktree
+	// behind must roll it back: instance-create, multi-repo-dir, and Start — three.
+	invocations := strings.Count(tail, "rollbackForkWithStateWorktree(opts.WorktreeRepoRoot")
+	if invocations < 3 {
+		t.Fatalf("rollbackForkWithStateWorktree must be invoked on all three post-helper failure paths (instance-create, multi-repo-dir, Start); found %d invocation(s)", invocations)
+	}
+	// Rollback must be gated on a flag set only after the helper actually creates
+	// the worktree, so the fallback path (with-state true but no worktree
+	// created) never dereferences empty opts fields.
+	if !strings.Contains(tail, "if withStateWorktreeCreated {") {
+		t.Fatal("rollback must be gated on withStateWorktreeCreated (only when a worktree was created)")
 	}
 }

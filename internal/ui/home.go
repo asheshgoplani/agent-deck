@@ -9466,6 +9466,11 @@ func (h *Home) forkSessionCmdWithOptions(
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
 		}
 
+		// withStateWorktreeCreated tracks whether forkWithStateWorktree actually
+		// created a new worktree+branch, so later failures can roll it back
+		// without dereferencing opts when no worktree was created (e.g. the
+		// #1185 config-default fallback leaves the worktree fields empty).
+		withStateWorktreeCreated := false
 		if opts != nil && opts.WorktreePath != "" && opts.WorktreeRepoRoot != "" && opts.WorktreeBranch != "" {
 			// Worktree creation can be slow on large repos; keep it in async cmd path
 			// so the TUI remains responsive.
@@ -9493,6 +9498,7 @@ func (h *Home) forkSessionCmdWithOptions(
 				); err != nil {
 					return sessionForkedMsg{err: err, sourceID: sourceID}
 				}
+				withStateWorktreeCreated = true
 			} else if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))
 				opts.WorktreePath = existingPath
@@ -9518,6 +9524,9 @@ func (h *Home) forkSessionCmdWithOptions(
 			inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
 		}
 		if err != nil {
+			if withStateWorktreeCreated {
+				rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+			}
 			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
 		}
 
@@ -9538,6 +9547,9 @@ func (h *Home) forkSessionCmdWithOptions(
 			home, _ := os.UserHomeDir()
 			parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
 			if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
+				if withStateWorktreeCreated {
+					rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+				}
 				return sessionForkedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), sourceID: sourceID}
 			}
 			if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
@@ -9570,6 +9582,9 @@ func (h *Home) forkSessionCmdWithOptions(
 		}
 
 		if err := inst.Start(); err != nil {
+			if withStateWorktreeCreated {
+				rollbackForkWithStateWorktree(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+			}
 			return sessionForkedMsg{err: err, sourceID: sourceID}
 		}
 
@@ -9579,6 +9594,19 @@ func (h *Home) forkSessionCmdWithOptions(
 		}
 
 		return sessionForkedMsg{instance: inst, sourceID: sourceID}
+	}
+}
+
+// rollbackForkWithStateWorktree best-effort removes a worktree and deletes the
+// branch created by forkWithStateWorktree, used when a later step (instance
+// create or start) fails after the helper already succeeded. Failures are
+// logged, not returned, so the caller's original error is preserved.
+func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) {
+	if err := git.RemoveWorktree(repoRoot, worktreePath, true); err != nil {
+		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	if err := git.DeleteBranch(repoRoot, branch, true); err != nil {
+		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", err.Error()))
 	}
 }
 
@@ -9612,7 +9640,11 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("failed to stat worktree path: %w", statErr)
 	}
-	if kind, detectErr := deps.detectInProgressOperation(parentPath); detectErr == nil && kind != "" {
+	kind, detectErr := deps.detectInProgressOperation(parentPath)
+	if detectErr != nil {
+		return fmt.Errorf("failed to inspect parent session state: %w", detectErr)
+	}
+	if kind != "" {
 		abortCmd := map[string]string{
 			"rebase":      "git rebase --abort",
 			"merge":       "git merge --abort",
@@ -9620,7 +9652,7 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 			"revert":      "git revert --abort",
 			"bisect":      "git bisect reset",
 		}[kind]
-		return fmt.Errorf("parent session is mid-%s; finish or abort the %s before forking with state (cd %s && %s)", kind, kind, parentPath, abortCmd)
+		return fmt.Errorf("parent session is mid-%s; finish or abort the %s before forking with state (cd %q && %s)", kind, kind, parentPath, abortCmd)
 	}
 	if err := deps.mkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
@@ -9651,9 +9683,9 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 		}
 		branchHint := ""
 		if createdBranch {
-			branchHint = fmt.Sprintf(" && git -C %s branch -D %s", repoRoot, branch)
+			branchHint = fmt.Sprintf(" && git -C %q branch -D %q", repoRoot, branch)
 		}
-		return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup required: rm -rf %s%s", err, strings.Join(cleanupErrs, "; "), worktreePath, branchHint)
+		return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup required: rm -rf %q%s", err, strings.Join(cleanupErrs, "; "), worktreePath, branchHint)
 	}
 	if err := deps.processInclude(repoRoot, worktreePath, io.Discard); err != nil {
 		uiLog.Warn("fork_with_state_worktreeinclude_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))

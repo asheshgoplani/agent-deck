@@ -68,6 +68,10 @@ func TestForkDialog_Show(t *testing.T) {
 }
 
 func TestForkDialog_Show_UsesConfiguredWorktreeDefault(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tempDir)
@@ -86,8 +90,18 @@ func TestForkDialog_Show_UsesConfiguredWorktreeDefault(t *testing.T) {
 	}
 	session.ClearUserConfigCache()
 
+	// The config default only applies when the project is worktree-capable
+	// (F6), so use a real git repo as the project path.
+	projectPath := filepath.Join(tempDir, "project")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll project: %v", err)
+	}
+	if err := exec.Command("git", "init", projectPath).Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
 	d := NewForkDialog()
-	d.Show("Original Session", "/path/to/project", "group/path", nil, "")
+	d.Show("Original Session", projectPath, "group/path", nil, "")
 
 	if !d.worktreeEnabled {
 		t.Error("worktreeEnabled should default to true from config on Show")
@@ -375,6 +389,7 @@ func TestForkDialog_Space_TogglesFocusedCarryState(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 	d.setFocus(forkFocusCarryState)
 	if d.currentFocusName() != "carryState" {
@@ -390,6 +405,7 @@ func TestForkDialog_Space_TogglesFocusedGitignored(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 	d.ToggleWithState()
 	d.setFocus(forkFocusGitignored)
@@ -429,6 +445,7 @@ func TestForkDialog_I_TypeableInBranchField(t *testing.T) {
 	d := NewForkDialog()
 	d.SetSize(80, 40)
 	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 	d.setFocus(forkFocusBranch)
 	d.branchInput.SetValue("")
@@ -529,6 +546,7 @@ func TestForkDialog_Focus_WorktreeOff_ShiftTabReverses(t *testing.T) {
 func TestForkDialog_Focus_WorktreeOn_WithStateOff_TabOrder(t *testing.T) {
 	d := NewForkDialog()
 	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 
 	tab := tea.KeyMsg{Type: tea.KeyTab}
@@ -542,6 +560,7 @@ func TestForkDialog_Focus_WorktreeOn_WithStateOff_TabOrder(t *testing.T) {
 func TestForkDialog_Focus_WorktreeOn_WithStateOn_TabOrder(t *testing.T) {
 	d := NewForkDialog()
 	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 	d.ToggleWithState()
 	if !d.IsWithStateEnabled() {
@@ -574,6 +593,7 @@ func TestForkDialog_Focus_Conductor_WorktreeOn_Order(t *testing.T) {
 	cs := []*session.Instance{forkConductorInstance("id-1", "alpha", "/a")}
 	d := NewForkDialog()
 	d.Show("Test", "/path", "group", cs, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 
 	tab := tea.KeyMsg{Type: tea.KeyTab}
@@ -587,6 +607,7 @@ func TestForkDialog_Focus_Conductor_WorktreeOn_Order(t *testing.T) {
 func TestForkDialog_Focus_DanglingIndexReadsSafely(t *testing.T) {
 	d := NewForkDialog()
 	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeCapable = true
 	d.worktreeEnabled = true
 
 	// Land focus on carryState (a worktree-only target).
@@ -637,4 +658,89 @@ func equalStrs(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// F6: a dialog that is not worktree-capable must never expose worktree focus
+// stops, even if worktreeEnabled was somehow set true.
+func TestForkDialog_Focus_NonCapableHidesWorktreeTargets(t *testing.T) {
+	d := NewForkDialog()
+	d.Show("Test", "/path", "group", nil, "")
+	d.worktreeCapable = false
+	d.worktreeEnabled = true
+	d.withStateEnabled = true
+
+	for _, target := range d.focusTargets() {
+		switch target {
+		case forkFocusBranch, forkFocusCarryState, forkFocusGitignored:
+			t.Fatalf("non-capable dialog exposed worktree focus target %v", target)
+		}
+	}
+
+	// Tab-walking must also never land on a worktree stop.
+	tab := tea.KeyMsg{Type: tea.KeyTab}
+	got := tabOrder(d, tab, len(d.focusTargets()))
+	for _, name := range got {
+		if name == "branch" || name == "carryState" || name == "gitignored" {
+			t.Fatalf("tab walk reached worktree stop %q on non-capable dialog: %v", name, got)
+		}
+	}
+}
+
+// F7/F10: Enter on a focused carry-state checkbox toggles it (does not submit).
+func TestForkDialog_Enter_TogglesFocusedCarryState(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
+	d.worktreeEnabled = true
+	d.setFocus(forkFocusCarryState)
+	if d.currentFocusName() != "carryState" {
+		t.Fatalf("precondition: focus should be carryState, got %s", d.currentFocusName())
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsWithStateEnabled() {
+		t.Error("Enter on carryState should enable with-state")
+	}
+}
+
+// F7/F10: Enter on a focused include-gitignored checkbox toggles it.
+func TestForkDialog_Enter_TogglesFocusedGitignored(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
+	d.worktreeEnabled = true
+	d.ToggleWithState()
+	d.setFocus(forkFocusGitignored)
+	if d.currentFocusName() != "gitignored" {
+		t.Fatalf("precondition: focus should be gitignored, got %s", d.currentFocusName())
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.IsWithStateAndGitignoredEnabled() {
+		t.Error("Enter on gitignored should enable gitignored")
+	}
+}
+
+// F7/F10: Enter on the name field still submits and does not toggle with-state.
+func TestForkDialog_Enter_OnNameStillSubmits(t *testing.T) {
+	d := NewForkDialog()
+	d.SetSize(80, 40)
+	d.Show("T", "/p", "g", nil, "")
+	d.worktreeCapable = true
+	d.worktreeEnabled = true
+	d.setFocus(forkFocusName)
+
+	updated, cmd := d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if updated == nil {
+		t.Fatal("Enter on name must return a non-nil model (signal completion)")
+	}
+	if cmd != nil {
+		t.Error("Enter on name should signal completion with a nil cmd, as before")
+	}
+	if updated.IsWithStateEnabled() {
+		t.Error("Enter on name must not toggle with-state")
+	}
+	if !updated.IsVisible() {
+		t.Error("Enter on name must not hide the dialog (submit is handled by the caller)")
+	}
 }

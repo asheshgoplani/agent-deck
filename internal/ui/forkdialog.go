@@ -98,7 +98,7 @@ func (d *ForkDialog) focusTargets() []forkFocusTarget {
 	if d.hasConductors() {
 		targets = append(targets, forkFocusConductor)
 	}
-	if d.worktreeEnabled {
+	if d.worktreeCapable && d.worktreeEnabled {
 		targets = append(targets, forkFocusBranch, forkFocusCarryState)
 		if d.withStateEnabled {
 			targets = append(targets, forkFocusGitignored)
@@ -225,7 +225,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	if config, err := session.LoadUserConfig(); err == nil {
 		d.optionsPanel.SetDefaults(config)
 		d.sandboxEnabled = config.Docker.DefaultEnabled
-		d.worktreeEnabled = config.Worktree.DefaultEnabled
+		d.worktreeEnabled = d.worktreeCapable && config.Worktree.DefaultEnabled
 	}
 }
 
@@ -447,6 +447,20 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
+			// Enter toggles a focused with-state checkbox (matches Space); on any
+			// other focus it submits.
+			switch d.currentFocus() {
+			case forkFocusCarryState:
+				d.ToggleWithState()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			case forkFocusGitignored:
+				d.ToggleWithStateAndGitignored()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
 			if d.nameInput.Value() != "" {
 				return d, nil // Signal completion
 			}
