@@ -32,6 +32,9 @@ func runMigratePaths(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "  --force    Overwrite existing XDG destination files")
 	}
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {

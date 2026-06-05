@@ -61,13 +61,19 @@ func MigrateLegacyLayout(opts MigrationOptions) (*MigrationResult, error) {
 	}
 
 	for _, item := range ready {
-		result.Copied = append(result.Copied, item)
 		if opts.DryRun {
+			result.Copied = append(result.Copied, item)
 			continue
+		}
+		if opts.Force {
+			if err := removeExistingDestination(item.Destination); err != nil {
+				return result, err
+			}
 		}
 		if err := copyMigrationPath(item.Source, item.Destination); err != nil {
 			return result, err
 		}
+		result.Copied = append(result.Copied, item)
 	}
 
 	return result, nil
@@ -185,6 +191,18 @@ func pathExists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("stat %q: %w", path, err)
+}
+
+func removeExistingDestination(path string) error {
+	if exists, err := pathExists(path); err != nil {
+		return err
+	} else if !exists {
+		return nil
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove existing destination %q: %w", path, err)
+	}
+	return nil
 }
 
 func copyMigrationPath(source, destination string) error {

@@ -698,11 +698,26 @@ func renderConductorHeartbeatScript(name, profile string) string {
 	script := strings.ReplaceAll(conductorHeartbeatScript, "{NAME}", name)
 	script = strings.ReplaceAll(script, "{PROFILE}", profile)
 	script = strings.ReplaceAll(script, "{HEARTBEAT_PREFIX}", ConductorBridgeHeartbeatPrefix)
+	conductorRoot := "$HOME/.agent-deck/conductor"
+	if dir, err := ConductorDir(); err == nil {
+		conductorRoot = shellDoubleQuotedValue(dir)
+	}
+	script = strings.ReplaceAll(script, "{CONDUCTOR_ROOT}", conductorRoot)
 	if profile == DefaultProfile {
 		// For default profile, omit -p flag entirely
 		script = strings.ReplaceAll(script, `-p "$PROFILE" `, "")
 	}
 	return script
+}
+
+func shellDoubleQuotedValue(value string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		`$`, `\$`,
+		"`", "\\`",
+	)
+	return replacer.Replace(value)
 }
 
 // HeartbeatPlistLabel returns the launchd label for a conductor's heartbeat
@@ -901,8 +916,12 @@ STATUS=$(agent-deck -p "$PROFILE" session show "$SESSION" --json 2>/dev/null | a
 
 # Resolve HEARTBEAT_RULES.md (per-conductor, then per-profile, then global fallback).
 # Mirrors the lookup order used by conductor/bridge.py since PR #218.
+CONDUCTOR_ROOT="{CONDUCTOR_ROOT}"
 RULES_FILE=""
 for candidate in \
+    "$CONDUCTOR_ROOT/{NAME}/HEARTBEAT_RULES.md" \
+    "$CONDUCTOR_ROOT/{PROFILE}/HEARTBEAT_RULES.md" \
+    "$CONDUCTOR_ROOT/HEARTBEAT_RULES.md" \
     "$HOME/.agent-deck/conductor/{NAME}/HEARTBEAT_RULES.md" \
     "$HOME/.agent-deck/conductor/{PROFILE}/HEARTBEAT_RULES.md" \
     "$HOME/.agent-deck/conductor/HEARTBEAT_RULES.md"; do

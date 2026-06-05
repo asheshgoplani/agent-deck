@@ -161,9 +161,12 @@ func TestUpdateBridgePy_NoConductorDir(t *testing.T) {
 	err := UpdateBridgePy()
 	require.NoError(t, err)
 
-	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
-	_, statErr := os.Stat(condDir)
-	assert.True(t, os.IsNotExist(statErr), "conductor dir should not be created when not installed")
+	legacyCondDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	xdgCondDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "agent-deck", "conductor")
+	_, legacyErr := os.Stat(legacyCondDir)
+	_, xdgErr := os.Stat(xdgCondDir)
+	assert.True(t, os.IsNotExist(legacyErr), "legacy conductor dir should not be created when not installed")
+	assert.True(t, os.IsNotExist(xdgErr), "XDG conductor dir should not be created when not installed")
 }
 
 func TestUpdateBridgePy_UsesInjectedInstallerAndBacksUpExistingFile(t *testing.T) {

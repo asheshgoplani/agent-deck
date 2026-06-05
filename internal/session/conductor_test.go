@@ -638,8 +638,11 @@ func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, "{PROFILE}/HEARTBEAT_RULES.md") {
 		t.Fatal("heartbeat script should look up per-profile HEARTBEAT_RULES.md")
 	}
+	if !strings.Contains(conductorHeartbeatScript, "$CONDUCTOR_ROOT/HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should look up global HEARTBEAT_RULES.md under the effective conductor root")
+	}
 	if !strings.Contains(conductorHeartbeatScript, "/.agent-deck/conductor/HEARTBEAT_RULES.md") {
-		t.Fatal("heartbeat script should fall back to the global HEARTBEAT_RULES.md")
+		t.Fatal("heartbeat script should fall back to the legacy global HEARTBEAT_RULES.md")
 	}
 	// The rendered (not raw) script should carry the bridge-style prefix so the
 	// idle-pause matcher (IsConductorHeartbeatMessage) can recognise heartbeat
@@ -647,6 +650,26 @@ func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
 	rendered := renderConductorHeartbeatScript("alpha", "default")
 	if !strings.Contains(rendered, ConductorBridgeHeartbeatPrefix) {
 		t.Fatalf("rendered heartbeat script should emit %q prefix (matches bridge.py)", ConductorBridgeHeartbeatPrefix)
+	}
+}
+
+func TestRenderConductorHeartbeatScript_UsesXDGConductorRoot(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, "xdg data")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+
+	wantRoot := filepath.Join(xdgData, "agent-deck", "conductor")
+	script := renderConductorHeartbeatScript("alpha", "work")
+
+	if !strings.Contains(script, `CONDUCTOR_ROOT="`+wantRoot+`"`) {
+		t.Fatalf("heartbeat script should render XDG conductor root %q:\n%s", wantRoot, script)
+	}
+	if !strings.Contains(script, `"$CONDUCTOR_ROOT/alpha/HEARTBEAT_RULES.md"`) {
+		t.Fatalf("heartbeat script should check per-conductor rules under XDG root:\n%s", script)
+	}
+	if !strings.Contains(script, `"$HOME/.agent-deck/conductor/alpha/HEARTBEAT_RULES.md"`) {
+		t.Fatalf("heartbeat script should retain legacy fallback:\n%s", script)
 	}
 }
 

@@ -942,8 +942,12 @@ func printWatcherHelp() {
 	fmt.Println("  test <name>                   Route a synthetic event to verify routing config")
 	fmt.Println("  routes [--json]               Show all routing rules from clients.json")
 	fmt.Println("  import <path>                 Migrate bash issue-watcher channels.json to Go watcher config")
-	skillPoolPath, _ := session.GetSkillPoolPath()
-	fmt.Printf("  install-skill <skill-name>    Install a skill to %s (e.g. watcher-creator)\n", FormatPath(skillPoolPath))
+	skillPoolPath, err := session.GetSkillPoolPath()
+	displaySkillPoolPath := "${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/skills/pool"
+	if err == nil {
+		displaySkillPoolPath = FormatPath(skillPoolPath)
+	}
+	fmt.Printf("  install-skill <skill-name>    Install a skill to %s (e.g. watcher-creator)\n", displaySkillPoolPath)
 	fmt.Println()
 	fmt.Println("Examples (one per adapter type):")
 	fmt.Println()

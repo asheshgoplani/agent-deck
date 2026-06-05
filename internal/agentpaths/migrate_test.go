@@ -90,31 +90,70 @@ func TestMigrateLegacyLayout_ConflictRequiresForceAndLeavesFilesUntouched(t *tes
 }
 
 func TestMigrateLegacyLayout_ForceOverwritesConflict(t *testing.T) {
-	home, legacy := setupMigrationHome(t)
-	legacyConfig := filepath.Join(legacy, "config.toml")
-	xdgConfig := filepath.Join(home, ".config", "agent-deck", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(legacyConfig), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(xdgConfig), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyConfig, []byte("legacy\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(xdgConfig, []byte("existing\n"), 0o600); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		seed func(t *testing.T, path string)
+	}{
+		{
+			name: "file",
+			seed: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("existing\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			seed: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlink",
+			seed: func(t *testing.T, path string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "existing-target")
+				if err := os.WriteFile(target, []byte("existing\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 	}
 
-	result, err := MigrateLegacyLayout(MigrationOptions{Force: true})
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, legacy := setupMigrationHome(t)
+			legacyConfig := filepath.Join(legacy, "config.toml")
+			xdgConfig := filepath.Join(home, ".config", "agent-deck", "config.toml")
+			if err := os.MkdirAll(filepath.Dir(legacyConfig), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(xdgConfig), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(legacyConfig, []byte("legacy\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tc.seed(t, xdgConfig)
+
+			result, err := MigrateLegacyLayout(MigrationOptions{Force: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Conflicts) != 0 {
+				t.Fatalf("force migration should not leave conflicts: %#v", result.Conflicts)
+			}
+			assertMigrationFile(t, xdgConfig, "legacy\n")
+			assertMigrationFile(t, legacyConfig, "legacy\n")
+		})
 	}
-	if len(result.Conflicts) != 0 {
-		t.Fatalf("force migration should not leave conflicts: %#v", result.Conflicts)
-	}
-	assertMigrationFile(t, xdgConfig, "legacy\n")
-	assertMigrationFile(t, legacyConfig, "legacy\n")
 }
 
 func TestMigrateLegacyLayout_DryRunDoesNotCopy(t *testing.T) {

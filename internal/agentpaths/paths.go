@@ -115,11 +115,13 @@ func LegacyDir() (string, error) {
 
 func xdgDir(envName string, fallbackParts ...string) (string, error) {
 	if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
-		dir := filepath.Join(value, AppDirName)
-		if err := ensureSafeForTest(dir); err != nil {
-			return "", err
+		if filepath.IsAbs(value) {
+			dir := filepath.Join(value, AppDirName)
+			if err := ensureSafeForTest(dir); err != nil {
+				return "", err
+			}
+			return dir, nil
 		}
-		return dir, nil
 	}
 
 	home, err := homeDir()

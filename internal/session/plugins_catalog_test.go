@@ -35,11 +35,15 @@ func withTempHome(t *testing.T) string {
 	return temp
 }
 
-// writeConfig drops a config.toml with the given content into the test
-// HOME's .agent-deck dir.
+// writeConfig drops a config.toml with the given content into the test XDG
+// config dir.
 func writeConfig(t *testing.T, home, content string) {
 	t.Helper()
-	dir := filepath.Join(home, ".agent-deck")
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		configHome = filepath.Join(home, ".config")
+	}
+	dir := filepath.Join(configHome, "agent-deck")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir agent-deck: %v", err)
 	}

@@ -654,7 +654,10 @@ func main() {
 		if cacheErr != nil {
 			cacheDir = ""
 		}
-		pricerCfg := costs.PricerConfig{CachePath: cacheDir}
+		pricerCfg := costs.PricerConfig{}
+		if cacheDir != "" {
+			pricerCfg.CachePath = cacheDir
+		}
 		if userCfg != nil && len(userCfg.Costs.Pricing.Overrides) > 0 {
 			pricerCfg.Overrides = make(map[string]costs.PriceOverride)
 			for model, ov := range userCfg.Costs.Pricing.Overrides {
@@ -667,13 +670,15 @@ func main() {
 			}
 		}
 		pricer := costs.NewPricer(pricerCfg)
-		_ = pricer.LoadCache()
+		if cacheDir != "" {
+			_ = pricer.LoadCache()
 
-		// Start daily price fetcher
-		fetchCtx, fetchCancel := context.WithCancel(context.Background())
-		defer fetchCancel()
-		fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
-		go fetcher.StartDaily(fetchCtx)
+			// Start daily price fetcher
+			fetchCtx, fetchCancel := context.WithCancel(context.Background())
+			defer fetchCancel()
+			fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
+			go fetcher.StartDaily(fetchCtx)
+		}
 
 		// Set up budget checker
 		var budgetCfg costs.BudgetConfig

@@ -373,6 +373,10 @@ func TestGroupNav_EvalHarness_RendersAndLandsOnRightSession(t *testing.T) {
 
 // ---------- First-launch nav-hint (discoverability) ----------
 
+func TestNavHint_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: nav hint is global first-launch HOME/XDG sentinel state, not a row action or session-type branch")
+}
+
 // TestNavHint_ShownOnFirstLaunch_DismissedAfterKeypress exercises the
 // discoverability path end-to-end: sentinel absent -> hint shows -> first
 // keypress dismisses and leaves a sentinel file so it never shows again.

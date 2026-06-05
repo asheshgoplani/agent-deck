@@ -86,6 +86,37 @@ func TestXDGDirs_EnvOverrides(t *testing.T) {
 	}
 }
 
+func TestXDGDirs_RelativeEnvValuesFallBackToHome(t *testing.T) {
+	home := setupHome(t)
+	t.Setenv("XDG_CONFIG_HOME", "relative-config")
+	t.Setenv("XDG_DATA_HOME", "relative-data")
+	t.Setenv("XDG_CACHE_HOME", "relative-cache")
+
+	configDir, err := ConfigDir()
+	if err != nil {
+		t.Fatalf("ConfigDir() error = %v", err)
+	}
+	if want := filepath.Join(home, ".config", AppDirName); configDir != want {
+		t.Fatalf("ConfigDir() = %q, want fallback %q", configDir, want)
+	}
+
+	dataDir, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir() error = %v", err)
+	}
+	if want := filepath.Join(home, ".local", "share", AppDirName); dataDir != want {
+		t.Fatalf("DataDir() = %q, want fallback %q", dataDir, want)
+	}
+
+	cacheDir, err := CacheDir()
+	if err != nil {
+		t.Fatalf("CacheDir() error = %v", err)
+	}
+	if want := filepath.Join(home, ".cache", AppDirName); cacheDir != want {
+		t.Fatalf("CacheDir() = %q, want fallback %q", cacheDir, want)
+	}
+}
+
 func osRealHome(t *testing.T) string {
 	t.Helper()
 	u, err := user.Current()
