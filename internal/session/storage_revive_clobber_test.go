@@ -98,15 +98,21 @@ func TestReviveDoesNotClobberConcurrentlyAddedSession(t *testing.T) {
 		"the revived session must still be present")
 }
 
-// TestReviveSaveWithGroupsClobbersConcurrentAdd_DemonstratesBug pins down the
-// root cause: it drives the OLD revive save path (SaveWithGroups on the stale
-// snapshot) and asserts that it DOES clobber the concurrently-added row. This
-// is the negative witness — it documents exactly why revive must NOT use the
-// full-rewrite path. If a future change makes SaveWithGroups stop sweeping
-// (or someone "fixes" it differently), this test flags that the assumption
-// underpinning PersistRevivedInstances has shifted. The positive guarantee
-// lives in TestReviveDoesNotClobberConcurrentlyAddedSession above.
-func TestReviveSaveWithGroupsClobbersConcurrentAdd_DemonstratesBug(t *testing.T) {
+// TestPersistRevivedInstances_IsSweepFree is the contrastive guard for the
+// chosen persist path. It proves the PROPERTY revive depends on — that
+// PersistRevivedInstances never deletes a row absent from its argument — WITHOUT
+// pinning any particular behavior of SaveWithGroups.
+//
+// (It deliberately replaces an earlier "negative witness" test that asserted
+// SaveWithGroups DOES sweep. That made buggy full-rewrite behavior a required
+// contract: the day SaveWithGroups is globally de-swept — a desirable hardening
+// — the old test would fail for the wrong reason. What revive actually needs is
+// only that ITS path is sweep-free, which is exactly what we assert here.)
+//
+// Sequence: revive loads a 1-row snapshot, a concurrent add inserts a 2nd row,
+// then revive persists ONLY its snapshot row via PersistRevivedInstances. The
+// concurrently-added row must remain — proving no DELETE-NOT-IN sweep happened.
+func TestPersistRevivedInstances_IsSweepFree(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "state.db")
 
@@ -129,9 +135,12 @@ func TestReviveSaveWithGroupsClobbersConcurrentAdd_DemonstratesBug(t *testing.T)
 	require.NoError(t, reviveStorage.SaveWithGroups(
 		[]*Instance{existing}, NewGroupTree([]*Instance{existing})))
 
+	// revive loads its snapshot (only sess-existing).
 	snapshot, _, err := reviveStorage.LoadWithGroups()
 	require.NoError(t, err)
+	require.Len(t, snapshot, 1)
 
+	// A concurrent add inserts a second row after the snapshot was taken.
 	added := &Instance{
 		ID: "sess-added-concurrently", Title: "added-concurrently",
 		ProjectPath: "/tmp/added", GroupPath: "test", Command: "claude",
@@ -139,10 +148,9 @@ func TestReviveSaveWithGroupsClobbersConcurrentAdd_DemonstratesBug(t *testing.T)
 	}
 	require.NoError(t, addStorage.InsertSessionAndVerify(added, nil))
 
-	// The old revive persistence: full rewrite of the stale snapshot. Its
-	// DELETE-NOT-IN sweep drops sess-added-concurrently (absent from snapshot).
+	// revive persists ONLY its snapshot row through the targeted path.
 	snapshot[0].Status = StatusRunning
-	require.NoError(t, reviveStorage.SaveWithGroups(snapshot, NewGroupTree(snapshot)))
+	require.NoError(t, reviveStorage.PersistRevivedInstances(snapshot))
 
 	loaded, err := openStorage().Load()
 	require.NoError(t, err)
@@ -150,9 +158,10 @@ func TestReviveSaveWithGroupsClobbersConcurrentAdd_DemonstratesBug(t *testing.T)
 	for _, inst := range loaded {
 		ids[inst.ID] = true
 	}
-	// The old path's DELETE-NOT-IN sweep removes the concurrently-added row.
-	// This assertion documents the bug; it is the reason revive now routes
-	// through PersistRevivedInstances instead of SaveWithGroups.
-	assert.False(t, ids["sess-added-concurrently"],
-		"witness: the old SaveWithGroups revive path clobbers the concurrently-added row")
+	// The targeted path performs NO sweep: a row absent from its argument is
+	// left untouched. This is the property revive relies on.
+	assert.True(t, ids["sess-added-concurrently"],
+		"PersistRevivedInstances must be sweep-free: a row absent from its argument must survive")
+	assert.True(t, ids["sess-existing"],
+		"the revived row must persist")
 }

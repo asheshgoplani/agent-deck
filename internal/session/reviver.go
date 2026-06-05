@@ -108,6 +108,18 @@ func (r *Reviver) Classify(inst *Instance) RevivalClass {
 // those in ClassErrored. Calls are staggered by r.Stagger. Alive/dead entries
 // do NOT consume a stagger slot — total wall clock scales with errored count,
 // not total count.
+//
+// MUTATION INVARIANT (relied on by the CLI persist path, revive_cmd.go):
+// ReviveAll mutates an instance ONLY when it both (a) classifies it ClassErrored
+// AND (b) its ReviveAction succeeds (outcome.Revived == true). ClassAlive and
+// ClassDead instances are classified and returned untouched — no status flip, no
+// timestamp/socket normalization. The only field a successful revive writes is
+// Instance.Status (StatusError → StatusRunning; see defaultReviveAction). The
+// caller therefore persists exactly the Revived subset, status-only, and nothing
+// else. If a future ReviveAction starts normalizing already-alive sessions or
+// mutating other fields, this invariant — and the targeted persist in
+// runReviveAll / PersistRevivedInstances — MUST be revisited so those mutations
+// are not silently dropped.
 func (r *Reviver) ReviveAll(instances []*Instance) []ReviveOutcome {
 	outcomes := make([]ReviveOutcome, 0, len(instances))
 	firstRevive := true

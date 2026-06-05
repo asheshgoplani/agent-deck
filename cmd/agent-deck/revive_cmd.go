@@ -61,6 +61,31 @@ func runReviveAll(instances []*session.Instance, rev *session.Reviver) (ReviveSu
 	return summary, revived
 }
 
+// reviveAndPersist is the testable persist seam: run the reviver over the given
+// instances, then durably persist ONLY the rows it actually revived, via the
+// targeted, status-only, sweep-free path (Storage.PersistRevivedInstances →
+// statedb.PersistInstanceStatusesTx). It deliberately does NOT call
+// saveSessionData / SaveWithGroups / SaveInstances: that full load-modify-write
+// path runs a `DELETE FROM instances WHERE id NOT IN (<stale snapshot>)` sweep
+// that silently drops any session a concurrent `add` inserted after we loaded
+// our snapshot, and a full-row rewrite that would clobber concurrent edits to
+// the revived rows. Keeping persistence behind this single function means a
+// future regression back to the full-rewrite path is a one-line change here that
+// the CLI-level regression test (revive_persist_cli_test.go) will catch.
+func reviveAndPersist(
+	storage *session.Storage,
+	instances []*session.Instance,
+	rev *session.Reviver,
+) (ReviveSummary, error) {
+	summary, revived := runReviveAll(instances, rev)
+	if len(revived) > 0 {
+		if err := storage.PersistRevivedInstances(revived); err != nil {
+			return summary, err
+		}
+	}
+	return summary, nil
+}
+
 // handleSessionRevive dispatches `agent-deck session revive [--all|--name <title>]`.
 // Rebuilds dead control pipes for sessions whose tmux server is still alive
 // (see REPORT-D). Exits 0 on success, 1 on usage/load errors, 2 if --name not found.
@@ -102,10 +127,9 @@ func handleSessionRevive(profile string, args []string) {
 
 	rev := session.NewReviver()
 
-	var summary ReviveSummary
-	var revived []*session.Instance
+	var target []*session.Instance
 	if *all {
-		summary, revived = runReviveAll(instances, rev)
+		target = instances
 	} else {
 		inst, errMsg, errCode := ResolveSession(*name, instances)
 		if inst == nil {
@@ -116,21 +140,13 @@ func handleSessionRevive(profile string, args []string) {
 			os.Exit(1)
 			return
 		}
-		summary, revived = runReviveAll([]*session.Instance{inst}, rev)
+		target = []*session.Instance{inst}
 	}
 
-	// Persist ONLY the rows we actually revived, via a targeted sweep-free
-	// write. Using the full load-modify-write path (saveSessionData →
-	// SaveWithGroups → SaveInstances) would run a `DELETE FROM instances WHERE
-	// id NOT IN (<stale snapshot>)` sweep that silently drops any session a
-	// concurrent `add` inserted after we loaded our snapshot (lost-update
-	// race). PersistRevivedInstances never deletes, so revive cannot clobber
-	// a row it didn't touch.
-	if len(revived) > 0 {
-		if err := storage.PersistRevivedInstances(revived); err != nil {
-			out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
-			os.Exit(1)
-		}
+	summary, err := reviveAndPersist(storage, target, rev)
+	if err != nil {
+		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	jsonData := map[string]interface{}{
