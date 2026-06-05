@@ -2037,8 +2037,42 @@ func TestCuratedFooterLiveSessionShowsAttach(t *testing.T) {
 	if !strings.Contains(result, "⏎ attach") {
 		t.Errorf("live session should advertise Enter attach\nGot: %q", result)
 	}
-	if strings.Contains(result, "restart") {
-		t.Errorf("live session should not advertise restart in curated footer\nGot: %q", result)
+	// Live session shows up to 3 context hints (attach first, then restart, …).
+	if !strings.Contains(result, "restart") {
+		t.Errorf("live session should advertise restart after attach\nGot: %q", result)
+	}
+	// Attach must be the first context hint.
+	ai := strings.Index(result, "attach")
+	ri := strings.Index(result, "restart")
+	if ai == -1 || ri == -1 || ai > ri {
+		t.Errorf("attach should come before restart\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterCapsContextHints(t *testing.T) {
+	home := curatedHome()
+	// A forkable live session would offer attach/restart/fork; verify the
+	// curated footer caps context hints at maxCuratedContextHints and never
+	// exceeds it once settings/help are appended.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:               "s1",
+			Tool:             "claude",
+			Status:           session.StatusRunning,
+			ClaudeSessionID:  "abc",
+			ClaudeDetectedAt: time.Now(), // recent → CanFork() true
+		}},
+	}
+	home.cursor = 0
+
+	hints := home.curatedContextHints(home.flatItems[0])
+	if len(hints) != maxCuratedContextHints {
+		t.Fatalf("forkable live session should yield %d context hints, got %d: %+v",
+			maxCuratedContextHints, len(hints), hints)
+	}
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "fork") {
+		t.Errorf("forkable live session should advertise fork\nGot: %q", result)
 	}
 }
 
@@ -2062,8 +2096,40 @@ func TestCuratedFooterDeadSessionShowsRestart(t *testing.T) {
 	if !strings.Contains(result, "restart fresh") {
 		t.Errorf("dead restartable session should advertise restart fresh\nGot: %q", result)
 	}
+	if !strings.Contains(result, "delete") {
+		t.Errorf("dead session should advertise delete as the third action\nGot: %q", result)
+	}
 	if strings.Contains(result, "attach") {
 		t.Errorf("dead session should not advertise attach\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterErrorSessionShowsRestartRestartFreshDelete(t *testing.T) {
+	home := curatedHome()
+	// Errored Claude session with a session id → R / T / d, in that order.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:              "s1",
+			Tool:            "claude",
+			Status:          session.StatusError,
+			ClaudeSessionID: "abc",
+		}},
+	}
+	home.cursor = 0
+
+	hints := home.curatedContextHints(home.flatItems[0])
+	got := make([]string, len(hints))
+	for i, hint := range hints {
+		got[i] = hint.label
+	}
+	want := []string{"restart", "restart fresh", "delete"}
+	if len(got) != len(want) {
+		t.Fatalf("errored session context hints = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("errored session context hints = %v, want %v", got, want)
+		}
 	}
 }
 

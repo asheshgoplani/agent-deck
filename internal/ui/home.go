@@ -12043,27 +12043,40 @@ func (h *Home) curatedHint(hint footerHint) string {
 	return keyStyle.Render(hint.key) + " " + labelStyle.Render(hint.label)
 }
 
-// curatedContextHints returns the context-relevant hints for the selected row.
-// It advertises only the primary action(s) for the current selection; rarer
-// and global actions stay under help (?). The settings and help keys are added
-// separately by renderHelpBarCurated so they always remain last.
+// maxCuratedContextHints caps how many context-relevant shortcuts the curated
+// footer advertises for the selected row. The settings and help keys are added
+// on top of these by renderHelpBarCurated, so the bar stays short while still
+// surfacing the two or three most useful actions for what is highlighted.
+const maxCuratedContextHints = 3
+
+// curatedContextHints returns up to maxCuratedContextHints context-relevant
+// hints for the selected row, in priority order. It advertises the actions most
+// likely to be wanted for the current selection; rarer and global actions stay
+// under help (?). The settings and help keys are added separately by
+// renderHelpBarCurated so they always remain last.
 func (h *Home) curatedContextHints(item session.Item) []footerHint {
 	var hints []footerHint
 	add := func(key, label string) {
+		if len(hints) >= maxCuratedContextHints {
+			return
+		}
 		if strings.TrimSpace(key) != "" {
 			hints = append(hints, footerHint{key: key, label: label})
 		}
 	}
 
+	newQuick := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate))
+
 	switch item.Type {
 	case session.ItemTypeGroup:
-		// Group row: the relevant action is collapse/expand. The toggle key is
-		// Tab (also l/h); advertise the direction that matches current state.
+		// Group row: collapse/expand first (Tab; also l/h), then create/manage.
 		if item.Group != nil && item.Group.Expanded {
 			add("Tab", "collapse")
 		} else {
 			add("Tab", "expand")
 		}
+		add(newQuick, "new")
+		add(h.actionKey(hotkeyRename), "rename")
 
 	case session.ItemTypeSession:
 		s := item.Session
@@ -12071,15 +12084,24 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 			return hints
 		}
 		if sessionIsDead(s) {
-			// Dead (stopped or error): the useful actions are restart and,
-			// when the tool tracks a session id, restart-fresh.
+			// Dead (stopped or error): restart, then restart-fresh when the
+			// tool tracks a session id, then delete — the actions for a session
+			// that broke or was parked, in order of likely intent.
 			add(h.actionKey(hotkeyRestart), "restart")
 			if s.CanRestartFresh() {
 				add(h.actionKey(hotkeyRestartFresh), "restart fresh")
 			}
+			add(h.actionKey(hotkeyDelete), "delete")
 		} else {
-			// Live/attachable session: Enter attaches.
+			// Live/attachable session: attach first, then restart, then the
+			// most relevant follow-up (fork while forkable, else new).
 			add("⏎", "attach")
+			add(h.actionKey(hotkeyRestart), "restart")
+			if s.CanFork() {
+				add(h.actionKey(hotkeyQuickFork), "fork")
+			} else {
+				add(newQuick, "new")
+			}
 		}
 
 	case session.ItemTypeWindow:
@@ -12111,10 +12133,19 @@ func (h *Home) renderHelpBarCurated() string {
 	case h.jumpMode:
 		hints = append(hints, footerHint{key: "a-z", label: "jump"}, footerHint{key: "esc", label: "cancel"})
 	case len(h.flatItems) == 0:
-		// Empty list: the only useful action is creating a session.
-		if newQuick := joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate)); newQuick != "" {
-			hints = append(hints, footerHint{key: newQuick, label: "new"})
+		// Empty list: the useful actions all create something — new session,
+		// import, or a group. Cap at the same budget as context hints.
+		add := func(key, label string) {
+			if len(hints) >= maxCuratedContextHints {
+				return
+			}
+			if strings.TrimSpace(key) != "" {
+				hints = append(hints, footerHint{key: key, label: label})
+			}
 		}
+		add(joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate)), "new")
+		add(h.actionKey(hotkeyImport), "import")
+		add(h.actionKey(hotkeyCreateGroup), "group")
 	case h.cursor < len(h.flatItems):
 		hints = append(hints, h.curatedContextHints(h.flatItems[h.cursor])...)
 	}
