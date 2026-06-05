@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
 
+### Changed
+
+- New installs now use the XDG Base Directory layout: config under `$XDG_CONFIG_HOME/agent-deck` (default `~/.config/agent-deck`), durable state under `$XDG_DATA_HOME/agent-deck` (default `~/.local/share/agent-deck`), and cache/debug files under `$XDG_CACHE_HOME/agent-deck` (default `~/.cache/agent-deck`). Existing `~/.agent-deck` installs continue to work through category-specific legacy fallback.
+- Added `agent-deck migrate-paths [--dry-run] [--force]` to copy known legacy `~/.agent-deck` files into the split XDG layout without deleting or renaming the legacy directory.
+- Runtime and watcher durable state paths now use `$XDG_DATA_HOME/agent-deck` for new installs, with category-specific legacy fallback for existing `~/.agent-deck` state. Hooks, events, inboxes, runtime ledgers, logs, locks, conductor state, watcher state, triage output, and worker scratch no longer fall back to legacy just because an unrelated legacy marker exists.
+
 ## [1.9.47] - 2026-06-03
 
 ### Fixed

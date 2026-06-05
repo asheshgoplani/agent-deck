@@ -16,11 +16,7 @@ import (
 // than exporting internals.
 func writeTestCache(t *testing.T, cache *update.UpdateCache) error {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(home, ".agent-deck")
+	dir := filepath.Join(os.Getenv("XDG_CACHE_HOME"), "agent-deck")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -31,14 +27,20 @@ func writeTestCache(t *testing.T, cache *update.UpdateCache) error {
 	return os.WriteFile(filepath.Join(dir, update.CacheFileName), data, 0o644)
 }
 
+func isolateVersionUpdatePaths(t *testing.T) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tmpHome, "xdg-cache"))
+}
+
 // Conductor task #45 — `agent-deck --version` should append
 // "(update available: vX.Y.Z)" when the disk cache shows the user is
 // behind. The annotation must be cache-only (no network hit — --version
 // should stay instant).
 
 func TestVersionOutput_AppendsUpdateAnnotationWhenBehind(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateVersionUpdatePaths(t)
 
 	// Seed a cache entry claiming 1.7.20 is well behind 1.7.58.
 	cache := &update.UpdateCache{
@@ -62,8 +64,7 @@ func TestVersionOutput_AppendsUpdateAnnotationWhenBehind(t *testing.T) {
 }
 
 func TestVersionOutput_NoAnnotationWhenUpToDate(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateVersionUpdatePaths(t)
 
 	cache := &update.UpdateCache{
 		CheckedAt:      time.Now(),
@@ -88,8 +89,7 @@ func TestVersionOutput_NoAnnotationWhenUpToDate(t *testing.T) {
 func TestVersionOutput_NoAnnotationWhenNoCache(t *testing.T) {
 	// Fresh install: no cache file yet. --version must still print
 	// cleanly — we never hit the network on --version.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateVersionUpdatePaths(t)
 
 	var buf bytes.Buffer
 	writeVersionOutput(&buf, "1.7.20")
@@ -104,8 +104,7 @@ func TestVersionOutput_NoAnnotationWhenNoCache(t *testing.T) {
 func TestVersionOutput_NoAnnotationWhenEnvSkipped(t *testing.T) {
 	// AGENTDECK_SKIP_UPDATE_CHECK must strip the annotation too — some
 	// users export this to silence all update nagging.
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateVersionUpdatePaths(t)
 	t.Setenv("AGENTDECK_SKIP_UPDATE_CHECK", "1")
 
 	cache := &update.UpdateCache{

@@ -28,11 +28,11 @@ var sessionIDLifecycleLogMu sync.Mutex
 
 // GetSessionIDLifecycleLogPath returns ~/.agent-deck/logs/session-id-lifecycle.jsonl.
 func GetSessionIDLifecycleLogPath() string {
-	agentDeckDir, err := GetAgentDeckDir()
+	path, err := logDataPath("session-id-lifecycle.jsonl")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "session-id-lifecycle.jsonl")
+		return tempAgentDeckPath("logs", "session-id-lifecycle.jsonl")
 	}
-	return filepath.Join(agentDeckDir, "logs", "session-id-lifecycle.jsonl")
+	return path
 }
 
 // WriteSessionIDLifecycleEvent appends a single JSONL event.

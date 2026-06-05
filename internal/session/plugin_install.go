@@ -238,11 +238,10 @@ func pluginLockPath(sourceProfileDir string, def *PluginDef) (string, error) {
 	if def == nil {
 		return "", fmt.Errorf("nil PluginDef")
 	}
-	dir, err := GetAgentDeckDir()
+	locks, err := dataPath("locks", "locks")
 	if err != nil {
 		return "", err
 	}
-	locks := filepath.Join(dir, "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", err
 	}

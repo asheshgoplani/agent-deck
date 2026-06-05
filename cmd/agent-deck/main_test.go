@@ -76,7 +76,7 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 		subcommands := []string{
 			"add", "list", "ls", "remove", "rm", "status",
 			"session", "mcp", "skill", "group", "try", "worktree", "wt",
-			"profile", "update", "mcp-proxy", "web", "uninstall", "hooks", "codex-hooks", "codex-notify", "gemini-hooks",
+			"profile", "update", "mcp-proxy", "web", "uninstall", "migrate-paths", "hooks", "codex-hooks", "codex-notify", "gemini-hooks",
 			"version", "--version", "-v",
 			"help", "--help", "-h",
 		}
@@ -114,6 +114,13 @@ func TestNestedSessionAllowsCLICommands(t *testing.T) {
 // guard warns and exits unless the user opts in via AGENT_DECK_ALLOW_OUTER_TMUX=1.
 func TestOuterTmuxGuard(t *testing.T) {
 	// Setup: snapshot env, restore on exit
+	fakeBin := t.TempDir()
+	fakeTmux := filepath.Join(fakeBin, "tmux")
+	if err := os.WriteFile(fakeTmux, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	origTmux := os.Getenv("TMUX")
 	origOptIn := os.Getenv("AGENT_DECK_ALLOW_OUTER_TMUX")
 	t.Cleanup(func() {

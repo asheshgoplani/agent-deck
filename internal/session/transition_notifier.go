@@ -598,35 +598,35 @@ func (n *TransitionNotifier) logMissed(event TransitionNotificationEvent, reason
 // --- paths -------------------------------------------------------------------
 
 func transitionNotifyStatePath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := runtimeDataPath("transition-notify-state.json")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "transition-notify-state.json")
+		return tempAgentDeckPath("runtime", "transition-notify-state.json")
 	}
-	return filepath.Join(dir, "runtime", "transition-notify-state.json")
+	return path
 }
 
 func transitionNotifyLogPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("transition-notifier.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "transition-notifier.log")
+		return tempAgentDeckPath("logs", "transition-notifier.log")
 	}
-	return filepath.Join(dir, "logs", "transition-notifier.log")
+	return path
 }
 
 func transitionNotifierMissedPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("notifier-missed.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-missed.log")
+		return tempAgentDeckPath("logs", "notifier-missed.log")
 	}
-	return filepath.Join(dir, "logs", "notifier-missed.log")
+	return path
 }
 
 func transitionNotifierOrphanLogPath() string {
-	dir, err := GetAgentDeckDir()
+	path, err := logDataPath("notifier-orphans.log")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "notifier-orphans.log")
+		return tempAgentDeckPath("logs", "notifier-orphans.log")
 	}
-	return filepath.Join(dir, "logs", "notifier-orphans.log")
+	return path
 }
 
 // --- orphan WARN -------------------------------------------------------------

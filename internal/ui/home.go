@@ -28,6 +28,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
@@ -8404,6 +8405,14 @@ func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []stri
 	}
 }
 
+func multiRepoWorktreesRoot() string {
+	dir, err := agentpaths.EffectiveDataPath("multi-repo-worktrees", "multi-repo-worktrees")
+	if err != nil {
+		return filepath.Join(os.TempDir(), "agent-deck", "multi-repo-worktrees")
+	}
+	return dir
+}
+
 // handleSkillDialogKey handles keys when Skills dialog is visible
 func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -8963,11 +8972,10 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 
 			if worktreeBranch != "" {
 				// Multi-repo + worktree: create a persistent parent dir with all worktrees inside.
-				// Layout: ~/.agent-deck/multi-repo-worktrees/<branch>-<id>/<repo-name>/
-				home, _ := os.UserHomeDir()
+				// Layout: <effective-data-dir>/multi-repo-worktrees/<branch>-<id>/<repo-name>/
 				sanitizedBranch := strings.ReplaceAll(worktreeBranch, "/", "-")
 				sanitizedBranch = strings.ReplaceAll(sanitizedBranch, " ", "-")
-				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees",
+				parentDir := filepath.Join(multiRepoWorktreesRoot(),
 					fmt.Sprintf("%s-%s", sanitizedBranch, inst.ID[:8]))
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr), tempID: tempID}
@@ -8986,8 +8994,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				inst.AdditionalPaths = wtResult.MappedPaths[1:]
 			} else {
 				// Multi-repo without worktree: create a persistent parent dir with symlinks.
-				home, _ := os.UserHomeDir()
-				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
+				parentDir := filepath.Join(multiRepoWorktreesRoot(), inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), tempID: tempID}
 				}

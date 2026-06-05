@@ -156,20 +156,21 @@ func TestFormatChangelogForDisplay(t *testing.T) {
 }
 
 func TestUpdateBridgePy_NoConductorDir(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	tmpHome := isolateUpdatePaths(t)
 
 	err := UpdateBridgePy()
 	require.NoError(t, err)
 
-	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
-	_, statErr := os.Stat(condDir)
-	assert.True(t, os.IsNotExist(statErr), "conductor dir should not be created when not installed")
+	legacyCondDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	xdgCondDir := filepath.Join(os.Getenv("XDG_DATA_HOME"), "agent-deck", "conductor")
+	_, legacyErr := os.Stat(legacyCondDir)
+	_, xdgErr := os.Stat(xdgCondDir)
+	assert.True(t, os.IsNotExist(legacyErr), "legacy conductor dir should not be created when not installed")
+	assert.True(t, os.IsNotExist(xdgErr), "XDG conductor dir should not be created when not installed")
 }
 
-func TestUpdateBridgePy_UsesEmbeddedTemplateAndBacksUpExistingFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+func TestUpdateBridgePy_UsesInjectedInstallerAndBacksUpExistingFile(t *testing.T) {
+	tmpHome := isolateUpdatePaths(t)
 
 	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
 	require.NoError(t, os.MkdirAll(condDir, 0o755))
@@ -177,6 +178,13 @@ func TestUpdateBridgePy_UsesEmbeddedTemplateAndBacksUpExistingFile(t *testing.T)
 	bridgePath := filepath.Join(condDir, "bridge.py")
 	legacyContent := "# legacy bridge\nprint('old bridge')\n"
 	require.NoError(t, os.WriteFile(bridgePath, []byte(legacyContent), 0o755))
+
+	SetBridgeScriptInstaller(func() error {
+		return os.WriteFile(bridgePath, []byte("# injected bridge\n"), 0o755)
+	})
+	t.Cleanup(func() {
+		SetBridgeScriptInstaller(nil)
+	})
 
 	err := UpdateBridgePy()
 	require.NoError(t, err)
@@ -188,8 +196,7 @@ func TestUpdateBridgePy_UsesEmbeddedTemplateAndBacksUpExistingFile(t *testing.T)
 
 	newContent, err := os.ReadFile(bridgePath)
 	require.NoError(t, err)
-	assert.True(t, strings.Contains(string(newContent), "Conductor Bridge: Telegram & Slack"),
-		"bridge.py should be refreshed from the embedded multi-platform template")
+	assert.Equal(t, "# injected bridge\n", string(newContent))
 }
 
 func TestNormalizeReleaseTag(t *testing.T) {
@@ -340,7 +347,7 @@ func TestPerformVerifiedUpdate_ChecksumsDownloadFailureLeavesBinaryUntouched(t *
 func selfUpdateTestTarget(t *testing.T, initial []byte) string {
 	t.Helper()
 
-	t.Setenv("HOME", t.TempDir())
+	isolateUpdatePaths(t)
 	execPath := filepath.Join(t.TempDir(), "agent-deck")
 	require.NoError(t, os.WriteFile(execPath, initial, 0o755))
 

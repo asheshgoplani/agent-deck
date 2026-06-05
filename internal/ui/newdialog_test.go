@@ -2,7 +2,6 @@ package ui
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -825,17 +824,7 @@ func TestNewDialog_ShowInGroup_ResetsMultiRepo(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_UsesConfiguredWorktreeDefault(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {
@@ -887,6 +876,8 @@ func TestNewDialog_BranchInputInitialized(t *testing.T) {
 }
 
 func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -917,6 +908,8 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 }
 
 func TestNewDialog_ShortcutsBlockedDuringTextInput(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -1141,6 +1134,8 @@ func TestNewDialog_ClearError_HidesFromView(t *testing.T) {
 // ===== Checkbox Focus Tests =====
 
 func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -1256,6 +1251,8 @@ func TestNewDialog_ToggleWorktree_EmptyName_NoBranch(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
+	setXDGTestHome(t)
+
 	d := NewNewDialog()
 	d.branchAutoSet = true
 
@@ -1267,17 +1264,7 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_DefaultWorktree_SetsBranchAutoSet(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {
@@ -1297,17 +1284,7 @@ func TestNewDialog_ShowInGroup_DefaultWorktree_SetsBranchAutoSet(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_DefaultWorktree_AutoPopulatesBranchFromName(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {

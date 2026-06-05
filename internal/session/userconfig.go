@@ -18,6 +18,7 @@ import (
 
 	dark "github.com/thiagokokada/dark-mode-go"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -2056,11 +2057,7 @@ var (
 
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, UserConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(UserConfigFileName)
 }
 
 // LoadUserConfig loads the user configuration from TOML file.

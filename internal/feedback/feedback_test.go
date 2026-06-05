@@ -20,8 +20,7 @@ func oldShouldShowBypass(s *feedback.State) *feedback.State {
 
 // TEST-01: ShouldShow returns true when this is a new version
 func TestShouldShow_NewVersion(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -38,8 +37,7 @@ func TestShouldShow_NewVersion(t *testing.T) {
 
 // TEST-02: ShouldShow returns false when already rated this version
 func TestShouldShow_AlreadyRated(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.5.1",
@@ -56,8 +54,7 @@ func TestShouldShow_AlreadyRated(t *testing.T) {
 
 // TEST-03: ShouldShow returns false when user opted out
 func TestShouldShow_OptedOut(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -74,8 +71,7 @@ func TestShouldShow_OptedOut(t *testing.T) {
 
 // TEST-04: ShouldShow returns false when shown_count >= max_shows
 func TestShouldShow_MaxShows(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := oldShouldShowBypass(&feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -92,8 +88,7 @@ func TestShouldShow_MaxShows(t *testing.T) {
 
 // TEST-05: RecordRating sets last_rated_version and resets shown_count
 func TestRecordRating_Valid(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := &feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -112,8 +107,7 @@ func TestRecordRating_Valid(t *testing.T) {
 
 // TEST-06: RecordOptOut sets feedback_enabled to false (persisted)
 func TestRecordOptOut(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := &feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -131,8 +125,7 @@ func TestRecordOptOut(t *testing.T) {
 
 // TEST-07: RecordShown increments shown_count (persisted)
 func TestRecordShown(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := &feedback.State{
 		LastRatedVersion: "1.0.0",
@@ -171,8 +164,7 @@ func (e *fakeExitError) ExitCode() int { return e.code }
 
 // TEST-10: TestSend_GhAuthFailure verifies non-headless fallback copies to clipboard AND opens browser
 func TestSend_GhAuthFailure(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	clipboardCalled := false
 	clipboardText := ""
@@ -207,8 +199,7 @@ func TestSend_GhAuthFailure(t *testing.T) {
 
 // TEST-11: TestSend_Headless verifies headless mode copies to clipboard only (no browser)
 func TestSend_Headless(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	clipboardCalled := false
 	browserCalled := false
@@ -247,8 +238,7 @@ func TestSend_Headless(t *testing.T) {
 // dismissed; ShouldShow only honors the opt-out while the current version is
 // still on that same series.
 func TestUpgradeFeedback_ShownPerMajorVersion_RegressionFor967(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	// Seed the state so pacing gates pass — the test is about version-scoped
 	// opt-out, not pacing.
@@ -285,8 +275,7 @@ func TestUpgradeFeedback_ShownPerMajorVersion_RegressionFor967(t *testing.T) {
 // (cmd/agent-deck/main.go) right after LoadState — this test mirrors that
 // shape so the contract is pinned at the package boundary.
 func TestUpgradeFeedback_LegacyForeverOptOut_MigratesGracefully(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	// Legacy state: FeedbackEnabled=false, no OptOutVersion. This is what a
 	// pre-#967 user has on disk after clicking "no thanks" once.

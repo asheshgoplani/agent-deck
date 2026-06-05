@@ -11,12 +11,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // navHintSentinelName is the file whose presence records that the v1.7.60
 // group-navigation discoverability hint has already been shown to this user.
-// Lives under ~/.agent-deck/ so it persists across binary upgrades.
+// Lives under the effective data directory so it persists across binary upgrades.
 const navHintSentinelName = ".nav-hint-v1760-shown"
 
 // navHintText is the one-shot discoverability message rendered in the
@@ -26,16 +27,16 @@ const navHintText = "Tip: Alt+j/k and Alt+1-9 navigate within the current group.
 // navHintSentinelPath returns the absolute path of the sentinel file, or "" if
 // it cannot be resolved (no HOME, etc. — treat as "do not show").
 func navHintSentinelPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	path, err := agentpaths.EffectiveDataPath(navHintSentinelName, navHintSentinelName)
+	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".agent-deck", navHintSentinelName)
+	return path
 }
 
 // navHintAlreadyShown reports whether the sentinel exists. Also returns true
 // when running under the test profile so tests do not write a sentinel file
-// into the developer's real ~/.agent-deck directory.
+// into the developer's real data directory.
 func navHintAlreadyShown() bool {
 	if os.Getenv("AGENTDECK_PROFILE") == "_test" {
 		return true

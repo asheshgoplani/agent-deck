@@ -93,8 +93,8 @@ func LoadClientsJSON(path string) (map[string]ClientEntry, error) {
 	return entries, nil
 }
 
-// LoadFromWatcherDir loads clients.json from the standard watcher directory
-// (~/.agent-deck/watcher/clients.json) and returns a ready-to-use Router.
+// LoadFromWatcherDir loads clients.json from the effective watcher data
+// directory and returns a ready-to-use Router.
 func LoadFromWatcherDir() (*Router, error) {
 	base, err := session.WatcherDir()
 	if err != nil {

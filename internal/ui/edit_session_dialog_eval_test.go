@@ -8,8 +8,6 @@ package ui
 // `-tags eval_smoke`. See tests/eval/README.md.
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -173,24 +171,12 @@ func TestEval_EditSessionDialog_RestartHintSurfacesForRestartFields(t *testing.T
 func TestEval_PluginToggleSurfacesAsRestartHint(t *testing.T) {
 	// Set up a HOME with a non-empty plugin catalog so the dialog renders
 	// the Plugins field. The dialog reads via session.GetAvailablePluginNames.
-	temp := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", temp)
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
-
-	configDir := filepath.Join(temp, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir agent-deck: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(`
+	home := setXDGTestHome(t)
+	writeXDGTestConfig(t, home, `
 [plugins.octopus]
 name = "octopus"
 source = "nyldn/claude-octopus"
-`), 0o600); err != nil {
-		t.Fatalf("write config.toml: %v", err)
-	}
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
+`)
 
 	d := NewEditSessionDialog()
 	d.SetSize(100, 40)

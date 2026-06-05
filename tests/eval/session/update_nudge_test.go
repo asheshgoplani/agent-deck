@@ -38,9 +38,9 @@ func TestEval_VersionFlag_ShowsUpdateAnnotationFromCache(t *testing.T) {
 	// shape mirrors internal/update.UpdateCache; hand-written here so the
 	// eval package doesn't depend on internal/update (which it could not
 	// import under Go's internal-package rule anyway).
-	cacheDir := filepath.Join(sb.Home, ".agent-deck")
+	cacheDir := filepath.Join(sb.Home, ".cache", "agent-deck")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatalf("mkdir .agent-deck: %v", err)
+		t.Fatalf("mkdir update cache dir: %v", err)
 	}
 	// 9.9.99 is an impossible-future sentinel; using a real near-future
 	// version (e.g., 1.8.99) silently flips this test once the binary
@@ -93,9 +93,9 @@ func TestEval_VersionFlag_ShowsUpdateAnnotationFromCache(t *testing.T) {
 func TestEval_VersionFlag_EnvSkipSuppressesAnnotation(t *testing.T) {
 	sb := harness.NewSandbox(t)
 
-	cacheDir := filepath.Join(sb.Home, ".agent-deck")
+	cacheDir := filepath.Join(sb.Home, ".cache", "agent-deck")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		t.Fatalf("mkdir .agent-deck: %v", err)
+		t.Fatalf("mkdir update cache dir: %v", err)
 	}
 	cache := map[string]any{
 		"checked_at":      time.Now().Format(time.RFC3339Nano),

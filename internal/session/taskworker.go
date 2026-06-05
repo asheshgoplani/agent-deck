@@ -50,11 +50,7 @@ type CompletionRecord struct {
 }
 
 func completionsDir() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "runtime", "completions"), nil
+	return runtimeDataPath("completions")
 }
 
 // safeRecordName keeps a child id usable as a single path segment, defending the

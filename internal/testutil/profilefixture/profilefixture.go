@@ -38,14 +38,14 @@ type Options struct {
 	ClaudeConfigDir string
 
 	// ConfigDefault, if non-empty, writes a config file at
-	// <Home>/.agent-deck/config.json with `default_profile` set to this
+	// <Home>/.config/agent-deck/config.json with `default_profile` set to this
 	// value. Lowest precedence — only matters when env / inference are
 	// both empty.
 	ConfigDefault string
 
 	// AgentDeckHome overrides the agent-deck config root via HOME. If
 	// empty, a fresh t.TempDir() is used so the test never touches the
-	// developer's real ~/.agent-deck.
+	// developer's real config.
 	AgentDeckHome string
 }
 
@@ -66,6 +66,7 @@ func New(t *testing.T, opts Options) *Fixture {
 		home = t.TempDir()
 	}
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 
 	if opts.EnvProfile != "" {
 		t.Setenv("AGENTDECK_PROFILE", opts.EnvProfile)
@@ -169,7 +170,7 @@ func (f *Fixture) AssertParity(t TB, p Probes) {
 // should write their own config.
 func writeConfigDefault(t *testing.T, home, profile string) {
 	t.Helper()
-	dir := filepath.Join(home, ".agent-deck")
+	dir := filepath.Join(home, ".config", "agent-deck")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("profilefixture: mkdir %s: %v", dir, err)
 	}

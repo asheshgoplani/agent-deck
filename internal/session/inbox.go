@@ -134,11 +134,11 @@ var inboxFingerprintCache = map[string]map[string]struct{}{}
 
 // InboxDir returns the directory that holds per-parent inbox files.
 func InboxDir() string {
-	dir, err := GetAgentDeckDir()
+	dir, err := dataPath("inboxes", "inboxes")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "inboxes")
+		return tempAgentDeckPath("inboxes")
 	}
-	return filepath.Join(dir, "inboxes")
+	return dir
 }
 
 // InboxPathFor returns the absolute inbox path for a given parent session id.

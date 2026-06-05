@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 const (
@@ -238,16 +240,34 @@ func isContainedIn(basePath, targetPath string) bool {
 	return strings.HasPrefix(normalizedTarget, normalizedBase+string(os.PathSeparator))
 }
 
-// GetSkillsRootPath returns ~/.agent-deck/skills.
+// GetSkillsRootPath returns the Agent Deck skills config directory, falling back
+// to the legacy ~/.agent-deck/skills tree when it already exists.
 func GetSkillsRootPath() (string, error) {
-	base, err := GetAgentDeckDir()
+	configDir, err := agentpaths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, skillsDirName), nil
+	xdgPath := filepath.Join(configDir, skillsDirName)
+	if _, err := os.Stat(xdgPath); err == nil {
+		return xdgPath, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+
+	legacyDir, err := agentpaths.LegacyDir()
+	if err != nil {
+		return xdgPath, nil
+	}
+	legacyPath := filepath.Join(legacyDir, skillsDirName)
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return xdgPath, nil
 }
 
-// GetSkillSourcesPath returns ~/.agent-deck/skills/sources.toml.
+// GetSkillSourcesPath returns the skill source registry path.
 func GetSkillSourcesPath() (string, error) {
 	root, err := GetSkillsRootPath()
 	if err != nil {
@@ -256,7 +276,7 @@ func GetSkillSourcesPath() (string, error) {
 	return filepath.Join(root, skillSourcesFileName), nil
 }
 
-// GetSkillPoolPath returns ~/.agent-deck/skills/pool.
+// GetSkillPoolPath returns the managed skill pool path.
 func GetSkillPoolPath() (string, error) {
 	root, err := GetSkillsRootPath()
 	if err != nil {

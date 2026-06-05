@@ -27,7 +27,7 @@
 //
 // Cleanup. `CleanupWorkerScratchConfigDir` removes the dir on
 // session stop/remove — best-effort, no-op on first-time misses. The
-// scratch dir lives under `~/.agent-deck/worker-scratch/<instance-id>/`.
+// scratch dir lives under the effective worker-scratch data directory.
 
 package session
 
@@ -271,7 +271,11 @@ func WorkerScratchDirRoot() (string, error) {
 // workerScratchDirFor below which derives this from the effective
 // HOME at call time.
 func workerScratchDirRoot(home string) string {
-	return filepath.Join(home, ".agent-deck", "worker-scratch")
+	dir, err := dataPath("worker-scratch", "worker-scratch")
+	if err != nil {
+		return filepath.Join(os.TempDir(), "agent-deck", "worker-scratch")
+	}
+	return dir
 }
 
 func workerScratchDirFor(home, instanceID string) string {
@@ -638,9 +642,8 @@ var macOSScratchWarningEmitter func(sourceProfileDir string) = emitMacOSScratchW
 
 // maybeEmitMacOSScratchWarning is a no-op on non-darwin and a one-shot
 // per-(host, sourceProfileDir) pair on darwin. Cache lives in
-// `~/.agent-deck/state.json` under the key
-// `macos_plugin_scratch_warning_shown[<sourceProfileDir>]` so a second
-// session re-using the same source profile silently skips the warning.
+// the effective data directory so a second session re-using the same
+// source profile silently skips the warning.
 //
 // Best-effort: state-file errors (read or write) do NOT block the
 // session. Worst case: warning is shown twice.
@@ -667,18 +670,14 @@ func goosNative() string { return runtime.GOOS }
 
 // macOSWarningStateFile is the single-flag JSON state file recording
 // which source profile dirs already showed the macOS plugin-scratch
-// warning. Lives at `~/.agent-deck/macos-plugin-warning-state.json`.
+// warning. Lives in the effective data directory.
 //
 // Schema: { "shown": { "<source-profile-dir>": true, ... } }
 //
 // Best-effort everywhere — read errors degrade to "not yet shown",
 // write errors degrade to "may show twice". No mandate-level guard.
 func macOSWarningStateFile() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "macos-plugin-warning-state.json"), nil
+	return dataPath("macos-plugin-warning-state.json", "macos-plugin-warning-state.json")
 }
 
 type macosWarningState struct {
