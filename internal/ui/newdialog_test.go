@@ -2298,6 +2298,54 @@ func TestNewDialog_CtrlSDuringMultiRepoEditSubmitsEditedPath(t *testing.T) {
 	}
 }
 
+// Regression (Codex round-2 P2): Ctrl+S submitted while editing a NON-primary
+// multi-repo entry must leave pathInput holding the PRIMARY path. The submit
+// path in home.go reads `path` from pathInput (via GetValuesWithWorktree) and
+// runs worktree resolution + the create-directory check against it BEFORE path
+// is reassigned to multiRepoPaths[0]. If pathInput were left on the secondary
+// entry being edited, those pre-create checks would run against the WRONG repo.
+func TestNewDialog_CtrlSEditingSecondaryEntry_PreCreateChecksUsePrimaryPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+
+	// Two committed multi-repo paths: primary = /primary/repo, secondary = /secondary/repo.
+	d.pathInput.SetValue("/primary/repo")
+	d.ToggleMultiRepo()
+	d.multiRepoPaths = []string{"/primary/repo", "/secondary/repo"}
+	d.rebuildFocusTargets()
+
+	// Begin editing the SECONDARY entry (index 1), mirroring the Enter handler.
+	d.multiRepoPathCursor = 1
+	d.multiRepoEditing = true
+	d.pathInput.SetValue("/secondary/repo-edited")
+	d.pathInput.Focus()
+
+	// Sanity: before the commit, pathInput holds the secondary edit, so a naive
+	// GetValuesWithWorktree would resolve against the wrong repo.
+	if _, p, _, _, _ := d.GetValuesWithWorktree(); p != "/secondary/repo-edited" {
+		t.Fatalf("setup: GetValuesWithWorktree path = %q, want /secondary/repo-edited", p)
+	}
+
+	// Ctrl+S submit path: WantsSubmit true, then flush the in-flight edit.
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) while editing secondary = false, want true")
+	}
+	d.CommitInFlightMultiRepoEdit()
+
+	// The edited secondary value must be flushed into multiRepoPaths[1]...
+	got, ok := d.GetMultiRepoPaths()
+	if !ok || len(got) != 2 || got[0] != "/primary/repo" || got[1] != "/secondary/repo-edited" {
+		t.Fatalf("post-commit: GetMultiRepoPaths = %v (ok=%v), want [/primary/repo /secondary/repo-edited]", got, ok)
+	}
+
+	// ...AND pathInput must now hold the PRIMARY path so the caller's pre-create
+	// checks (worktree resolution, create-directory) run against the primary repo.
+	if _, p, _, _, _ := d.GetValuesWithWorktree(); p != "/primary/repo" {
+		t.Fatalf("post-commit: GetValuesWithWorktree path = %q, want /primary/repo (primary), not the secondary entry", p)
+	}
+}
+
 // CommitInFlightMultiRepoEdit must be a safe no-op when no multi-repo edit is in
 // progress (the normal Ctrl+S-from-any-field case).
 func TestNewDialog_CommitInFlightMultiRepoEdit_NoopWhenNotEditing(t *testing.T) {

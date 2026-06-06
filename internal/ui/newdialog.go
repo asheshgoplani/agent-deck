@@ -653,6 +653,14 @@ func (d *NewDialog) WantsSubmit(msg tea.KeyMsg) bool {
 // pathInput (the Enter handler is the sole place that writes it back), so
 // submitting mid-edit would persist stale data. Safe to call when not editing:
 // it is a no-op unless an active multi-repo path edit is in progress.
+//
+// After flushing, pathInput is reset to the PRIMARY path (multiRepoPaths[0]).
+// The submit path in home.go reads `path` from pathInput via GetValuesWithWorktree
+// and runs worktree resolution + the create-directory check against it BEFORE
+// path is reassigned to multiRepoPaths[0]. If pathInput were left holding the
+// secondary path being edited, those pre-create checks would run against the
+// wrong repo. Resetting to the primary keeps pathInput consistent with the
+// session that will actually be created.
 func (d *NewDialog) CommitInFlightMultiRepoEdit() {
 	if !d.multiRepoEnabled || !d.multiRepoEditing {
 		return
@@ -664,6 +672,12 @@ func (d *NewDialog) CommitInFlightMultiRepoEdit() {
 	d.multiRepoEditing = false
 	d.pathInput.Blur()
 	d.pathCycler.Reset()
+	// Reset pathInput to the primary path so the caller's pre-create checks
+	// (worktree resolution, create-directory) run against the primary repo, not
+	// the secondary entry that was just being edited.
+	if len(d.multiRepoPaths) > 0 {
+		d.pathInput.SetValue(d.multiRepoPaths[0])
+	}
 }
 
 func (d *NewDialog) ApplyHighlightedModelSuggestion() {
