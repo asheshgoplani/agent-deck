@@ -100,10 +100,11 @@ One terminal. All your agents. Complete visibility.
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude conversations and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, Codex, and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
+- Codex forking requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`)
 
 ### MCP Manager
 

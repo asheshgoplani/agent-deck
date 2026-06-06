@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+- **Codex session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support Codex (and Codex-compatible custom tools) by launching `codex fork <session-id>`, cloning the parent transcript into a new thread while leaving the parent intact. Requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`).
 
 ## [1.9.47] - 2026-06-03
 

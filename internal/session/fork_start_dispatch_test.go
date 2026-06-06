@@ -3,6 +3,7 @@ package session
 import (
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,4 +132,37 @@ func startDispatchHonorsForkSentinel() bool {
 	}
 	// Sentinel-use must precede the resume call in source order.
 	return earlyIdx[0] < resumeIdx[0]
+}
+
+func TestCodexForkStartDispatchConsumesAwaitingStart(t *testing.T) {
+	requireCodexForkStartGuard(t, "Start")
+	requireCodexForkStartGuard(t, "StartWithMessage")
+}
+
+func requireCodexForkStartGuard(t *testing.T, funcName string) {
+	t.Helper()
+	body := extractFuncBodyInstance(funcName)
+	if body == "" {
+		t.Fatalf("%s body not found", funcName)
+	}
+	codexIdx := strings.Index(body, "case IsCodexCompatible(i.Tool):")
+	if codexIdx < 0 {
+		t.Fatalf("%s must have a Codex-compatible dispatch branch", funcName)
+	}
+	codexBody := body[codexIdx:]
+	nextCase := strings.Index(codexBody[len("case IsCodexCompatible(i.Tool):"):], "\n\tcase ")
+	if nextCase >= 0 {
+		codexBody = codexBody[:len("case IsCodexCompatible(i.Tool):")+nextCase]
+	}
+	sentinelIdx := strings.Index(codexBody, "if i.IsForkAwaitingStart")
+	buildIdx := strings.Index(codexBody, "i.buildCodexCommand")
+	if sentinelIdx < 0 {
+		t.Fatalf("%s Codex branch must consume IsForkAwaitingStart before normal resume/fresh dispatch", funcName)
+	}
+	if buildIdx < 0 {
+		t.Fatalf("%s Codex branch must still call buildCodexCommand for normal starts", funcName)
+	}
+	if sentinelIdx > buildIdx {
+		t.Fatalf("%s Codex branch must check IsForkAwaitingStart before buildCodexCommand", funcName)
+	}
 }

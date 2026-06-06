@@ -685,7 +685,8 @@ func handleSessionFork(profile string, args []string) {
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
 	isPiFork := inst.Tool == "pi"
 	isOpenCodeFork := inst.Tool == "opencode"
-	if !isClaudeFork && !isPiFork && !isOpenCodeFork {
+	isCodexFork := session.IsCodexCompatible(inst.Tool)
+	if !isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork {
 		out.Error(
 			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
@@ -934,6 +935,8 @@ func handleSessionFork(profile string, args []string) {
 			branch = opts.WorktreeBranch
 		}
 		forkedInst, _, err = inst.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(forkTitle, forkGroup, nil, workDir, repoRoot, branch)
+	case isCodexFork:
+		forkedInst, _, err = inst.CreateForkedCodexInstanceWithOptions(forkTitle, forkGroup, opts)
 	default:
 		forkedInst, _, err = inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
 	}

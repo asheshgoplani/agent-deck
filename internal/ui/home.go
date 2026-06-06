@@ -9497,8 +9497,8 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
 			var inst *session.Instance
 			var err error
-			switch source.Tool {
-			case "opencode":
+			switch {
+			case source.Tool == "opencode":
 				workDir := source.ProjectPath
 				repoRoot := ""
 				branch := ""
@@ -9508,8 +9508,10 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 					branch = opts.WorktreeBranch
 				}
 				inst, _, err = source.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(title, groupPath, nil, workDir, repoRoot, branch)
-			case "pi":
+			case source.Tool == "pi":
 				inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
+			case session.IsCodexCompatible(source.Tool):
+				inst, _, err = source.CreateForkedCodexInstanceWithOptions(title, groupPath, opts)
 			default:
 				inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
 			}

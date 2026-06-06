@@ -2883,6 +2883,14 @@ func (i *Instance) Start() error {
 		// Record start time for session ID detection (Unix millis)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildCodexCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
@@ -3095,6 +3103,14 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildOpenCodeCommand(i.Command)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
@@ -6070,6 +6086,12 @@ func (i *Instance) CanFork() bool {
 		return i.CanForkPi()
 	}
 
+	// Codex-compatible sessions fork via `codex fork <sid>`, gated on a
+	// flushed on-disk rollout (same invariant as `codex resume`).
+	if IsCodexCompatible(i.Tool) {
+		return i.CanForkCodex()
+	}
+
 	// Claude sessions can fork if session ID is recent
 	if i.ClaudeSessionID == "" {
 		return false
@@ -6436,6 +6458,89 @@ func (i *Instance) CreateForkedPiInstanceWithOptions(
 	forked.Command = baseCommand
 
 	cmd, err := i.buildPiForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
+	}
+
+	return forked, cmd, nil
+}
+
+// CanForkCodex reports whether this Codex session can be forked. Forkability
+// requires a flushed on-disk rollout for the captured session id — the same
+// invariant buildCodexCommand uses to gate `codex resume` (#756). `codex fork`
+// is a newer codex CLI subcommand; if the installed binary predates it the
+// launched command fails into a recoverable error state.
+func (i *Instance) CanForkCodex() bool {
+	if !IsCodexCompatible(i.Tool) || i.CodexSessionID == "" {
+		return false
+	}
+	return codexRolloutExistsInHome(i.CodexSessionID, i.getCodexHomeDir())
+}
+
+// buildCodexForkCommandForTarget builds the one-time `codex fork <parent-sid>`
+// launch command for a forked codex instance. Mirrors buildCodexCommand's resume
+// path (instance.go:1374) but uses `fork`, which clones the parent transcript into
+// a new thread with a fresh id while leaving the parent intact.
+func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if !i.CanForkCodex() {
+		return "", fmt.Errorf("cannot fork: no resumable Codex session")
+	}
+	envPrefix := target.buildEnvSourceCommand()
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
+		target.ID, target.Title, target.Tool)
+	yoloFlag := target.resolveCodexYoloFlag()
+	modelFlag := target.resolveCodexModelFlag()
+	command := target.resolveCodexCommand(baseCommand)
+	if isCodexHomeExplicit() {
+		codexHome := strings.TrimSpace(getCodexHomeDir())
+		if codexHome != "" {
+			if err := os.MkdirAll(codexHome, 0o755); err != nil {
+				sessionLog.Warn("codex_home_mkdir_failed",
+					slog.String("path", codexHome),
+					slog.String("error", err.Error()))
+			}
+			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
+		}
+	}
+	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, i.CodexSessionID), nil
+}
+
+// CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
+// CreateForkedPiInstanceWithOptions: opts is the shared worktree carrier (only
+// WorkDir/Worktree* consumed); launch is deferred via ForkStartCommand.
+func (i *Instance) CreateForkedCodexInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = i.Tool
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "codex"
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildCodexForkCommandForTarget(forked, baseCommand)
 	if err != nil {
 		return nil, "", err
 	}
