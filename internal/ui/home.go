@@ -9499,7 +9499,15 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 			var err error
 			switch source.Tool {
 			case "opencode":
-				inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
+				workDir := source.ProjectPath
+				repoRoot := ""
+				branch := ""
+				if opts != nil && opts.WorkDir != "" {
+					workDir = opts.WorkDir
+					repoRoot = opts.WorktreeRepoRoot
+					branch = opts.WorktreeBranch
+				}
+				inst, _, err = source.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(title, groupPath, nil, workDir, repoRoot, branch)
 			case "pi":
 				inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
 			default:

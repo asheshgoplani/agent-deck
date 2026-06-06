@@ -6264,11 +6264,17 @@ func (i *Instance) ForkOpenCode(newTitle, newGroupPath string) (string, error) {
 // Uses export/import to clone the session with a new ID, then launches
 // the forked session with opencode -s <new-id> plus any model/agent flags.
 func (i *Instance) ForkOpenCodeWithOptions(newTitle, newGroupPath string, opts *OpenCodeOptions) (string, error) {
+	return i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, i.ProjectPath)
+}
+
+func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath string, opts *OpenCodeOptions, workDir string) (string, error) {
 	if !i.CanForkOpenCode() {
 		return "", fmt.Errorf("cannot fork: no active OpenCode session")
 	}
+	if strings.TrimSpace(workDir) == "" {
+		workDir = i.ProjectPath
+	}
 
-	workDir := i.ProjectPath
 	envPrefix := i.buildEnvSourceCommand()
 
 	// Build extra flags from options (for fork, exclude session mode flags)
@@ -6354,12 +6360,25 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 	newTitle, newGroupPath string,
 	opts *OpenCodeOptions,
 ) (*Instance, string, error) {
-	cmd, err := i.ForkOpenCodeWithOptions(newTitle, newGroupPath, opts)
+	return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, opts, i.ProjectPath, "", "")
+}
+
+// CreateForkedOpenCodeInstanceWithOptionsAndWorkDir creates a forked OpenCode instance
+// rooted at workDir and copies worktree metadata when worktreeRepoRoot is set.
+func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
+	newTitle, newGroupPath string,
+	opts *OpenCodeOptions,
+	workDir, worktreeRepoRoot, worktreeBranch string,
+) (*Instance, string, error) {
+	if strings.TrimSpace(workDir) == "" {
+		workDir = i.ProjectPath
+	}
+	cmd, err := i.forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath, opts, workDir)
 	if err != nil {
 		return nil, "", err
 	}
 
-	forked := NewInstance(newTitle, i.ProjectPath)
+	forked := NewInstance(newTitle, workDir)
 	if newGroupPath != "" {
 		forked.GroupPath = newGroupPath
 	} else {
@@ -6367,6 +6386,11 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 	}
 	forked.Command = cmd
 	forked.Tool = "opencode"
+	if worktreeRepoRoot != "" {
+		forked.WorktreePath = workDir
+		forked.WorktreeRepoRoot = worktreeRepoRoot
+		forked.WorktreeBranch = worktreeBranch
+	}
 
 	// Store options in the new instance for persistence
 	if opts != nil {
