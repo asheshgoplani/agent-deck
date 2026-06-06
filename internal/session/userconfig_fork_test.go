@@ -50,3 +50,35 @@ func TestForkSettings_GetBranchPrefix_Override(t *testing.T) {
 	cfg := decodeForkConfig(t, "[fork]\nbranch_prefix = \"wip/\"\n")
 	assert.Equal(t, "wip/", cfg.Fork.GetBranchPrefix())
 }
+
+func TestForkSettings_Resolve_ComprehensiveDefault_DockerAuto(t *testing.T) {
+	cfg := decodeForkConfig(t, ``) // all defaults
+	// parent NOT sandboxed -> auto resolves sandbox off
+	p := cfg.Fork.Resolve(false)
+	assert.Equal(t, ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: false}, p)
+	// parent sandboxed -> auto resolves sandbox on
+	p = cfg.Fork.Resolve(true)
+	assert.True(t, p.Sandbox, "docker=auto with sandboxed parent -> sandbox on")
+}
+
+func TestForkSettings_Resolve_DockerOnOff_OverrideParent(t *testing.T) {
+	on := decodeForkConfig(t, "[fork]\ndocker = \"on\"\n").Fork.Resolve(false)
+	assert.True(t, on.Sandbox, "docker=on forces sandbox even if parent not sandboxed")
+	off := decodeForkConfig(t, "[fork]\ndocker = \"off\"\n").Fork.Resolve(true)
+	assert.False(t, off.Sandbox, "docker=off forces no sandbox even if parent sandboxed")
+}
+
+func TestForkSettings_Resolve_InheritFromParent_OverridesStructuralKeys(t *testing.T) {
+	// Even with structural keys turned off, inherit_from_parent forces the
+	// comprehensive worktree+state mapping and matches parent docker.
+	cfg := decodeForkConfig(t, "[fork]\ninherit_from_parent = true\nworktree = false\nwith_state = false\nwith_ignored = false\ndocker = \"off\"\n")
+	p := cfg.Fork.Resolve(true) // parent sandboxed
+	assert.Equal(t, ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: true}, p)
+}
+
+func TestForkSettings_Resolve_WithIgnoredImpliesWithState(t *testing.T) {
+	cfg := decodeForkConfig(t, "[fork]\nwith_state = false\nwith_ignored = true\n")
+	p := cfg.Fork.Resolve(false)
+	assert.True(t, p.WithState, "with_ignored must imply with_state")
+	assert.True(t, p.WithIgnored)
+}

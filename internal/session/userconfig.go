@@ -1954,6 +1954,40 @@ func (f ForkSettings) GetBranchPrefix() string {
 	return f.BranchPrefix
 }
 
+// ResolvedForkPlan is the effective set of structural fork toggles after
+// applying [fork] config + parent context.
+type ResolvedForkPlan struct {
+	Worktree    bool
+	WithState   bool
+	WithIgnored bool
+	Sandbox     bool
+}
+
+// Resolve turns ForkSettings + the parent's Docker state into a concrete plan.
+// parentSandboxed is source.IsSandboxed(). When InheritFromParent is set, the
+// fork mirrors the parent: worktree+state+gitignored ON (the parent is a real
+// working tree) and Sandbox matches the parent, ignoring the structural keys.
+func (f ForkSettings) Resolve(parentSandboxed bool) ResolvedForkPlan {
+	if f.InheritFromParent {
+		return ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: parentSandboxed}
+	}
+	sandbox := parentSandboxed
+	switch f.GetDocker() {
+	case "on":
+		sandbox = true
+	case "off":
+		sandbox = false
+	}
+	withIgnored := f.GetWithIgnored()
+	withState := f.GetWithState() || withIgnored
+	return ResolvedForkPlan{
+		Worktree:    f.GetWorktree(),
+		WithState:   withState,
+		WithIgnored: withIgnored,
+		Sandbox:     sandbox,
+	}
+}
+
 type StatusSettings struct {
 	// Reserved for future status detection settings.
 	// Control mode pipes are always enabled (no longer configurable).
