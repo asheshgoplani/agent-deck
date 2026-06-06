@@ -24,6 +24,14 @@
 - `internal/session/instance.go` — ensure OpenCode fork creation consumes the resolved worktree target, not only Claude/Pi.
 - `internal/ui/quick_fork_defaults_eval_test.go` — **create** an eval-smoke case for the user-observable behavior change (per `tests/eval/README.md` and existing fork-dialog eval pattern).
 
+### Cross-tool parity (Tasks 7–10)
+
+- `internal/session/mutators.go` — add `opencode-session-id` / `codex-session-id` setter fields (Task 7).
+- `cmd/agent-deck/session_cmd.go` — admit opencode (Task 8) + codex (Task 9) at the `session fork` gate + dispatch.
+- `internal/session/instance.go` — `CanForkCodex`, `buildCodexForkCommandForTarget`, `CreateForkedCodexInstanceWithOptions`; `CanFork` codex branch (Task 9).
+- `internal/ui/home.go` — `defaultForkInstanceDeps` codex case (Task 9).
+- `internal/session/instance_codex_fork_test.go`, `tests/eval/session/fork_{pi,opencode,codex}_test.go` — **create** (Tasks 9, 10).
+
 ---
 
 ## Task 1: `ForkSettings` config struct + getters
@@ -1198,6 +1206,573 @@ git commit -m "test(eval): fork dialog renders comprehensive defaults checked on
 
 ---
 
+# Cross-tool fork parity (OpenCode, Codex, Pi)
+
+> Goal: every locally-forkable tool reaches the same end-to-end fork coverage as
+> Claude. Pi is already code-complete (TUI + CLI) — it only needs an eval. OpenCode
+> needs CLI `session fork` support (Task 8). Codex has **no** fork support and is
+> built from scratch (Task 9). All three get real-binary evals (Task 10). Mutator
+> fields (Task 7) unblock the evals.
+
+## Task 7: `session set opencode-session-id` / `codex-session-id` mutator fields
+
+**Files:**
+- Modify: `internal/session/mutators.go` (field consts ~26, `ValidMutableFields` ~36, `SetField` switch ~229)
+- Test: `internal/session/mutators_test.go` (append)
+
+These let users (and the Task 10 evals) satisfy `CanForkOpenCode`/`CanForkCodex` the
+same way `claude-session-id` satisfies the Claude path, stamping the matching
+`*DetectedAt`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/session/mutators_test.go`:
+
+```go
+func TestSetField_OpenCodeSessionID_StampsDetectedAt(t *testing.T) {
+	inst := NewInstanceWithTool("oc", "/tmp/p", "opencode")
+	if _, _, err := SetField(inst, FieldOpenCodeSessionID, "ses_abc"); err != nil {
+		t.Fatalf("SetField: %v", err)
+	}
+	if inst.OpenCodeSessionID != "ses_abc" {
+		t.Fatalf("OpenCodeSessionID = %q, want ses_abc", inst.OpenCodeSessionID)
+	}
+	if inst.OpenCodeDetectedAt.IsZero() {
+		t.Fatal("OpenCodeDetectedAt must be stamped so CanForkOpenCode's recency gate passes")
+	}
+}
+
+func TestSetField_CodexSessionID_StampsDetectedAt(t *testing.T) {
+	inst := NewInstanceWithTool("cx", "/tmp/p", "codex")
+	if _, _, err := SetField(inst, FieldCodexSessionID, "11111111-2222-3333-4444-555555555555"); err != nil {
+		t.Fatalf("SetField: %v", err)
+	}
+	if inst.CodexSessionID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("CodexSessionID = %q", inst.CodexSessionID)
+	}
+	if inst.CodexDetectedAt.IsZero() {
+		t.Fatal("CodexDetectedAt must be stamped")
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go test ./internal/session/ -run 'TestSetField_(OpenCode|Codex)SessionID' -count=1`
+Expected: FAIL — `FieldOpenCodeSessionID` / `FieldCodexSessionID` undefined.
+
+- [ ] **Step 3: Add the field constants + register them**
+
+In `internal/session/mutators.go`, add to the const block (after `FieldGeminiSessionID` at ~27):
+
+```go
+	FieldOpenCodeSessionID  = "opencode-session-id"
+	FieldCodexSessionID     = "codex-session-id"
+```
+
+Add both to `ValidMutableFields` (after `FieldGeminiSessionID` at ~48):
+
+```go
+	FieldOpenCodeSessionID,
+	FieldCodexSessionID,
+```
+
+- [ ] **Step 4: Add the `SetField` cases**
+
+In `internal/session/mutators.go`, after the `case FieldGeminiSessionID:` block (~249):
+
+```go
+	case FieldOpenCodeSessionID:
+		oldValue = inst.OpenCodeSessionID
+		inst.OpenCodeSessionID = value
+		inst.OpenCodeDetectedAt = time.Now()
+
+	case FieldCodexSessionID:
+		oldValue = inst.CodexSessionID
+		inst.CodexSessionID = value
+		inst.CodexDetectedAt = time.Now()
+```
+
+- [ ] **Step 5: Run to verify it passes**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go test ./internal/session/ -run 'TestSetField_(OpenCode|Codex)SessionID' -count=1`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/session/mutators.go internal/session/mutators_test.go
+git commit -m "feat(session): add opencode-session-id + codex-session-id mutator fields"
+```
+
+---
+
+## Task 8: CLI `session fork` parity for OpenCode
+
+**Files:**
+- Modify: `cmd/agent-deck/session_cmd.go` (`handleSessionFork`: tool gate ~685-693, dispatch ~927-932)
+- Test: `cmd/agent-deck/session_cmd_fork_state_test.go` (append a wiring assertion)
+
+The CLI currently rejects opencode (`isClaudeFork || isPiFork` gate at `session_cmd.go:687`)
+and has no opencode dispatch branch. Add both, reusing Task 4A's
+`CreateForkedOpenCodeInstanceWithOptionsAndWorkDir`. The worktree/with-state machinery
+above the dispatch is tool-agnostic (operates on git), so it already works for opencode.
+
+- [ ] **Step 1: Write the failing wiring test**
+
+Append to `cmd/agent-deck/session_cmd_fork_state_test.go` (these source-introspection tests
+match the file's existing style):
+
+```go
+func TestSessionFork_AdmitsOpenCode(t *testing.T) {
+	src, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cmd.go: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `isOpenCodeFork := inst.Tool == "opencode"`) {
+		t.Fatal("fork gate must recognize opencode")
+	}
+	if !strings.Contains(s, "CreateForkedOpenCodeInstanceWithOptionsAndWorkDir") {
+		t.Fatal("fork dispatch must route opencode through the worktree-aware create method")
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go test ./cmd/agent-deck/ -run 'TestSessionFork_AdmitsOpenCode' -count=1`
+Expected: FAIL — neither string present.
+
+- [ ] **Step 3: Admit opencode at the tool gate**
+
+In `cmd/agent-deck/session_cmd.go`, replace the gate (lines ~685-693):
+
+```go
+	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
+	isPiFork := inst.Tool == "pi"
+	isOpenCodeFork := inst.Tool == "opencode"
+	if !isClaudeFork && !isPiFork && !isOpenCodeFork {
+		out.Error(
+			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
+			ErrCodeInvalidOperation,
+		)
+		os.Exit(1)
+	}
+```
+
+And generalize the `CanFork()` failure reason (lines ~701-711) so it is not Claude-specific:
+
+```go
+	if !inst.CanFork() {
+		out.Error(
+			fmt.Sprintf("session '%s' cannot be forked: no resumable session for tool %s", inst.Title, inst.Tool),
+			ErrCodeInvalidOperation,
+		)
+		os.Exit(1)
+	}
+```
+
+- [ ] **Step 4: Add the opencode dispatch branch**
+
+In `cmd/agent-deck/session_cmd.go`, extend the create switch (lines ~927-932):
+
+```go
+	switch {
+	case isPiFork:
+		forkedInst, _, err = inst.CreateForkedPiInstanceWithOptions(forkTitle, forkGroup, opts)
+	case isOpenCodeFork:
+		workDir := inst.ProjectPath
+		repoRoot := ""
+		branch := ""
+		if opts != nil && opts.WorkDir != "" {
+			workDir = opts.WorkDir
+			repoRoot = opts.WorktreeRepoRoot
+			branch = opts.WorktreeBranch
+		}
+		forkedInst, _, err = inst.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(forkTitle, forkGroup, nil, workDir, repoRoot, branch)
+	default:
+		forkedInst, _, err = inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
+	}
+```
+
+- [ ] **Step 5: Run + build**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go build ./... && go test ./cmd/agent-deck/ -run 'TestSessionFork_AdmitsOpenCode' -count=1`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add cmd/agent-deck/session_cmd.go cmd/agent-deck/session_cmd_fork_state_test.go
+git commit -m "feat(cli): session fork parity for opencode (worktree-aware)"
+```
+
+---
+
+## Task 9: Codex forking (CanForkCodex + `codex fork <sid>` + dispatch)
+
+**Files:**
+- Modify: `internal/session/instance.go` (`CanFork` ~6056; add `CanForkCodex`, `buildCodexForkCommandForTarget`, `CreateForkedCodexInstanceWithOptions` near the Pi fork methods ~6390)
+- Modify: `internal/ui/home.go` (`defaultForkInstanceDeps` switch ~9449)
+- Modify: `cmd/agent-deck/session_cmd.go` (gate + dispatch from Task 8)
+- Test: `internal/session/instance_codex_fork_test.go` (create)
+
+Codex forking mirrors the Pi pattern (deferred `ForkStartCommand` + `IsForkAwaitingStart`),
+using the codex CLI's `codex fork <SESSION_ID>` primitive — analogous to the existing
+`codex resume <sid>` builder (`instance.go:1374-1376`). **Version note:** `codex fork` is
+a newer subcommand; forkability is gated on a flushed on-disk rollout (the same invariant
+`codex resume` uses), and if the installed codex binary predates `fork`, the launched
+command fails and the session enters a recoverable error state (no crash). Document a
+minimum codex version in the CHANGELOG/README per the watcher-style docs-sync habit.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `internal/session/instance_codex_fork_test.go`:
+
+```go
+package session
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func seedCodexRollout(t *testing.T, codexHome, sid string) {
+	t.Helper()
+	dir := filepath.Join(codexHome, "sessions", "2026", "06", "06")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir rollout dir: %v", err)
+	}
+	p := filepath.Join(dir, "rollout-20260606T000000-"+sid+".jsonl")
+	if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+}
+
+func TestCanForkCodex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sid := "11111111-2222-3333-4444-555555555555"
+	seedCodexRollout(t, home, sid)
+
+	inst := NewInstanceWithTool("cx", "/tmp/p", "codex")
+	inst.CodexSessionID = sid
+	inst.CodexDetectedAt = time.Now()
+	if !inst.CanForkCodex() {
+		t.Fatal("codex session with an on-disk rollout must be forkable")
+	}
+
+	inst.CodexSessionID = "no-rollout-uuid"
+	if inst.CanForkCodex() {
+		t.Fatal("codex session without a rollout must NOT be forkable")
+	}
+}
+
+func TestCreateForkedCodexInstance_UsesWorktreeAndForkCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sid := "11111111-2222-3333-4444-555555555555"
+	seedCodexRollout(t, home, sid)
+
+	parent := NewInstanceWithTool("cx parent", "/tmp/original", "codex")
+	parent.CodexSessionID = sid
+	parent.CodexDetectedAt = time.Now()
+
+	opts := &ClaudeOptions{
+		WorkDir:          "/tmp/original-wt",
+		WorktreePath:     "/tmp/original-wt",
+		WorktreeRepoRoot: "/tmp/original",
+		WorktreeBranch:   "fork/cx-parent",
+	}
+	forked, cmd, err := parent.CreateForkedCodexInstanceWithOptions("cx parent (fork)", "", opts)
+	if err != nil {
+		t.Fatalf("CreateForkedCodexInstanceWithOptions: %v", err)
+	}
+	if forked.ProjectPath != "/tmp/original-wt" {
+		t.Fatalf("forked ProjectPath = %q, want worktree dir", forked.ProjectPath)
+	}
+	if forked.WorktreePath != "/tmp/original-wt" || forked.WorktreeBranch != "fork/cx-parent" {
+		t.Fatalf("worktree metadata not copied: %+v", forked)
+	}
+	if !forked.IsForkAwaitingStart || forked.ForkStartCommand == "" {
+		t.Fatal("codex fork must defer launch via ForkStartCommand/IsForkAwaitingStart (Pi pattern)")
+	}
+	if !strings.Contains(cmd, "fork "+sid) {
+		t.Fatalf("fork command must run `codex fork <parent-sid>`; got: %s", cmd)
+	}
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go test ./internal/session/ -run 'TestCanForkCodex|TestCreateForkedCodexInstance' -count=1`
+Expected: FAIL — `CanForkCodex` / `CreateForkedCodexInstanceWithOptions` undefined.
+
+- [ ] **Step 3: Add `CanForkCodex` + the codex fork builder + create method**
+
+In `internal/session/instance.go`, near the Pi fork methods (~6390), add:
+
+```go
+// CanForkCodex reports whether this Codex session can be forked. Forkability
+// requires a flushed on-disk rollout for the captured session id — the same
+// invariant buildCodexCommand uses to gate `codex resume` (#756). `codex fork`
+// is a newer codex CLI subcommand; if the installed binary predates it the
+// launched command fails into a recoverable error state.
+func (i *Instance) CanForkCodex() bool {
+	if i.Tool != "codex" || i.CodexSessionID == "" {
+		return false
+	}
+	return codexRolloutExistsInHome(i.CodexSessionID, i.getCodexHomeDir())
+}
+
+// buildCodexForkCommandForTarget builds the one-time `codex fork <parent-sid>`
+// launch command for a forked codex instance. Mirrors buildCodexCommand's resume
+// path (instance.go:1374) but uses `fork`, which clones the parent transcript into
+// a new thread with a fresh id while leaving the parent intact.
+func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if !i.CanForkCodex() {
+		return "", fmt.Errorf("cannot fork: no resumable Codex session")
+	}
+	envPrefix := target.buildEnvSourceCommand()
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
+		target.ID, target.Title, target.Tool)
+	yoloFlag := target.resolveCodexYoloFlag()
+	modelFlag := target.resolveCodexModelFlag()
+	command := target.resolveCodexCommand(baseCommand)
+	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, i.CodexSessionID), nil
+}
+
+// CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors
+// CreateForkedPiInstanceWithOptions: opts is the shared worktree carrier (only
+// WorkDir/Worktree* consumed); launch is deferred via ForkStartCommand.
+func (i *Instance) CreateForkedCodexInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = "codex"
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "codex"
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildCodexForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
+	}
+
+	return forked, cmd, nil
+}
+```
+
+- [ ] **Step 4: Add the codex branch to `CanFork`**
+
+In `internal/session/instance.go` `CanFork()` (~6056), add a codex branch beside the
+opencode/pi branches (before the Claude fallback):
+
+```go
+	if i.Tool == "codex" {
+		return i.CanForkCodex()
+	}
+```
+
+- [ ] **Step 5: Wire the TUI + CLI dispatchers**
+
+In `internal/ui/home.go` `defaultForkInstanceDeps` switch (~9449), add:
+
+```go
+			case "codex":
+				inst, _, err = source.CreateForkedCodexInstanceWithOptions(title, groupPath, opts)
+```
+
+In `cmd/agent-deck/session_cmd.go`, extend the Task 8 gate and dispatch to include codex:
+add `isCodexFork := inst.Tool == "codex"` to the gate condition (`!isClaudeFork && !isPiFork && !isOpenCodeFork && !isCodexFork`), and add a dispatch case:
+
+```go
+	case isCodexFork:
+		forkedInst, _, err = inst.CreateForkedCodexInstanceWithOptions(forkTitle, forkGroup, opts)
+```
+
+- [ ] **Step 6: Run tests + build**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go build ./... && go test ./internal/session/ -run 'TestCanForkCodex|TestCreateForkedCodexInstance' -count=1`
+Expected: PASS.
+
+- [ ] **Step 7: Docs sync (minimum codex version)**
+
+Add a one-line note to `CHANGELOG.md` and the README fork section: "Codex forking
+requires a codex CLI version that supports `codex fork <session-id>`." Keep it brief.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/session/instance.go internal/session/instance_codex_fork_test.go internal/ui/home.go cmd/agent-deck/session_cmd.go CHANGELOG.md README.md
+git commit -m "feat: codex session forking (codex fork <sid>, worktree-aware, CLI+TUI)"
+```
+
+---
+
+## Task 10: End-to-end fork evals — Pi, OpenCode, Codex
+
+**Files:**
+- Create: `tests/eval/session/fork_pi_test.go`, `tests/eval/session/fork_opencode_test.go`, `tests/eval/session/fork_codex_test.go`
+
+Each mirrors `tests/eval/session/fork_with_state_test.go`: real `agent-deck` binary,
+scratch HOME, real seeded git repo, then `session fork … -w fork/<slug>`, asserting the
+destination worktree exists on the right branch. Downstream `Start()` failing (no real
+tool binary) is tolerated — worktree creation runs before Start, exactly as the Claude
+eval documents. Reuse that file's helpers (`gitInit`, `gitMust`, `worktreePathForBranch`,
+`runBin`, `runBinTry`) — they live in the same `session_test` package, so do **not**
+redefine them.
+
+- [ ] **Step 1: Pi fork eval**
+
+Create `tests/eval/session/fork_pi_test.go`. Satisfy `CanForkPi` by seeding a session
+JSONL under `~/.pi/agent-deck/<id>/` (no `session set` needed):
+
+```go
+//go:build eval_smoke
+
+package session_test
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
+)
+
+func TestEval_SessionForkPi_RealBinary(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	sb := harness.NewSandbox(t)
+	writeForkConfig(t, sb) // [worktree] branch_prefix="" + sibling location
+
+	repoDir := filepath.Join(sb.Home, "proj")
+	mustMkdir(t, repoDir)
+	gitInit(t, repoDir)
+	writeFile(t, repoDir, "README.md", "seed\n")
+	gitMust(t, repoDir, "add", ".")
+	gitMust(t, repoDir, "commit", "-m", "seed")
+
+	// Register a Pi parent and capture its instance ID from --json.
+	id := addJSONID(t, sb, "add", "-c", "pi", "-t", "parent", "-g", "evalgrp", "--json", repoDir)
+
+	// Satisfy CanForkPi(): seed a session JSONL under ~/.pi/agent-deck/<id>/.
+	piDir := filepath.Join(sb.Home, ".pi", "agent-deck", id)
+	mustMkdir(t, piDir)
+	writeFile(t, piDir, "session.jsonl", "{}\n")
+
+	forkOut, forkErr := runBinTry(sb, "session", "fork", "parent", "-w", "fork/pi-eval", "-t", "fork-pi")
+
+	forkPath := worktreePathForBranch(t, repoDir, "fork/pi-eval")
+	if forkPath == "" {
+		t.Fatalf("destination worktree for fork/pi-eval not found.\nerr: %v\noutput:\n%s", forkErr, forkOut)
+	}
+	gotBranch := strings.TrimSpace(gitOut(t, forkPath, "rev-parse", "--abbrev-ref", "HEAD"))
+	if gotBranch != "fork/pi-eval" {
+		t.Errorf("destination branch = %q, want fork/pi-eval", gotBranch)
+	}
+}
+```
+
+This case references three small helpers that do not yet exist in the eval package —
+add them once (e.g. in `fork_pi_test.go`), guarded by `//go:build eval_smoke`:
+`writeForkConfig(t, sb)` (writes `<sb.Home>/.agent-deck/config.toml` with
+`[worktree]\nbranch_prefix = ""\ndefault_location = "sibling"\n`, mirroring
+fork_with_state's inline config), `mustMkdir(t, path)` (os.MkdirAll + Fatalf), and
+`addJSONID(t, sb, args...)` (runs `runBin` capturing stdout, `json.Unmarshal` into a
+struct with `ID string \`json:"id"\``, returns the id — `add --json` emits `"id"` per
+`main.go:1714`).
+
+- [ ] **Step 2: OpenCode fork eval**
+
+Create `tests/eval/session/fork_opencode_test.go` — same shape, but the parent is
+`add -c opencode` and `CanForkOpenCode` is satisfied via the Task 7 setter:
+
+```go
+	id := addJSONID(t, sb, "add", "-c", "opencode", "-t", "parent", "-g", "evalgrp", "--json", repoDir)
+	_ = id
+	runBin(t, sb, "session", "set", "parent", "opencode-session-id", "ses_evalparent")
+
+	forkOut, forkErr := runBinTry(sb, "session", "fork", "parent", "-w", "fork/oc-eval", "-t", "fork-oc")
+	forkPath := worktreePathForBranch(t, repoDir, "fork/oc-eval")
+	// …assert forkPath != "" and branch == "fork/oc-eval" (same as Pi)…
+```
+
+(Function name `TestEval_SessionForkOpenCode_RealBinary`; reuse the shared helpers.)
+
+- [ ] **Step 3: Codex fork eval**
+
+Create `tests/eval/session/fork_codex_test.go` — parent is `add -c codex`; satisfy
+`CanForkCodex` by setting `codex-session-id` (Task 7) AND seeding a codex rollout under
+`CODEX_HOME` (the sandbox HOME's default codex home), since `CanForkCodex` gates on
+rollout existence:
+
+```go
+	sid := "11111111-2222-3333-4444-555555555555"
+	id := addJSONID(t, sb, "add", "-c", "codex", "-t", "parent", "-g", "evalgrp", "--json", repoDir)
+	_ = id
+	runBin(t, sb, "session", "set", "parent", "codex-session-id", sid)
+
+	// Seed a rollout so CanForkCodex() passes. Default CODEX_HOME is <HOME>/.codex.
+	rollDir := filepath.Join(sb.Home, ".codex", "sessions", "2026", "06", "06")
+	mustMkdir(t, rollDir)
+	writeFile(t, rollDir, "rollout-20260606T000000-"+sid+".jsonl", "{}\n")
+
+	forkOut, forkErr := runBinTry(sb, "session", "fork", "parent", "-w", "fork/cx-eval", "-t", "fork-cx")
+	forkPath := worktreePathForBranch(t, repoDir, "fork/cx-eval")
+	// …assert forkPath != "" and branch == "fork/cx-eval"…
+```
+
+> NOTE: confirm the sandbox's default codex home resolves to `<sb.Home>/.codex`
+> (`getCodexHomeDir`). If `CODEX_HOME` is exported by the harness Env, seed under that
+> path instead. The worker should verify the resolved path before finalizing the seed
+> location (a `t.Logf` of the resolved home during a first run is a cheap check).
+
+- [ ] **Step 4: Run the eval suite**
+
+Run: `export GOTOOLCHAIN=go1.25.11 && go test -tags eval_smoke ./tests/eval/session/... -run 'TestEval_SessionFork(Pi|OpenCode|Codex)' -count=1`
+Expected: PASS (or `SKIP` where git is unavailable).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add tests/eval/session/fork_pi_test.go tests/eval/session/fork_opencode_test.go tests/eval/session/fork_codex_test.go
+git commit -m "test(eval): end-to-end fork coverage for pi, opencode, codex"
+```
+
+---
+
 ## Final Verification
 
 - [ ] **Full mandated suites + build:**
@@ -1206,12 +1781,13 @@ git commit -m "test(eval): fork dialog renders comprehensive defaults checked on
 export GOTOOLCHAIN=go1.25.11
 go build ./...
 go test -run TestPersistence_ ./internal/session/... -race -count=1
-go test ./internal/session/... -run 'Fork|TestForkSettings' -race -count=1
-go test ./internal/ui/... -run 'Fork|Watcher|SettingsPanel_Fork' -race -count=1
+go test ./internal/session/... -run 'Fork|TestForkSettings|TestCanForkCodex|TestCreateForkedCodex|TestSetField_(OpenCode|Codex)SessionID' -race -count=1
+go test ./internal/ui/... -run 'Fork|Watcher|SettingsPanel_Fork|TestQuickForkInputs|TestForkInstanceDeps' -race -count=1
+go test ./cmd/agent-deck/... -run 'SessionFork' -race -count=1
 go test -tags eval_smoke ./tests/eval/... ./internal/ui/...
 ```
 
-Expected: all PASS. (Persistence suite is green per the macOS fixture fix already committed.)
+Expected: all PASS (eval cases SKIP where git is unavailable). Persistence suite is green per the macOS fixture fix already committed.
 
 - [ ] **Manual smoke (optional, real TUI):** launch agent-deck on a git project, press `f` on a Claude session, confirm a `(fork)` session appears in a new worktree on a `fork/<slug>` branch; on a non-git dir confirm the "forked without worktree" notice and a plain fork.
 
@@ -1233,3 +1809,7 @@ Expected: all PASS. (Persistence suite is green per the macOS fixture fix alread
 | Graceful degradation + brief notice through success message | 3, 4 |
 | Dialog seeded from `[fork]` with parent sandbox context; branch sanitizer aligned with quick fork | 5 |
 | Eval case (user-observable mandate) | 6 |
+| `opencode-session-id` / `codex-session-id` setter fields | 7 |
+| CLI `session fork` parity for OpenCode | 8 |
+| Codex forking (`codex fork <sid>`, worktree-aware, CLI+TUI, version-gated) | 9 |
+| End-to-end fork evals — Pi, OpenCode, Codex | 10 |

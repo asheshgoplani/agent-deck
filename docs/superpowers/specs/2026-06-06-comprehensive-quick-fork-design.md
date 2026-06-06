@@ -57,11 +57,25 @@ resembles its parent nor honors configured defaults.
 9. **Master switch:** `[fork].inherit_from_parent` (bool, default false). When
    true, the fork mirrors the parent and the individual structural keys are
    ignored (see Inherit-from-parent mapping).
-10. **Forkable tool scope:** structural fork behavior (worktree, state,
-   gitignored files, Docker) applies to every local tool that `CanFork()`
-   exposes. Claude launch options are Claude-specific and inherit only for
-   Claude-compatible sessions; OpenCode and Pi must still receive the resolved
-   worktree directory through their own fork paths.
+10. **Forkable tool scope (full cross-tool parity):** structural fork behavior
+   (worktree, state, gitignored files, Docker) applies to every local tool that
+   `CanFork()` exposes. Claude launch options are Claude-specific and inherit only
+   for Claude-compatible sessions; OpenCode, Pi, and Codex must still receive the
+   resolved worktree directory + state through their own fork paths. The target is
+   that **OpenCode, Pi, and Codex reach the same end-to-end fork coverage as Claude**:
+   - **Pi** — already code-complete on TUI + CLI; needs only an end-to-end eval.
+   - **OpenCode** — TUI worktree/metadata fix (the `*ClaudeOptions`↔`*OpenCodeOptions`
+     type gap is bridged by a workdir-explicit create method), **plus** CLI
+     `session fork` support (the CLI currently rejects opencode), plus an eval.
+   - **Codex** — forking does **not** exist today and is built from scratch:
+     `CanForkCodex`, a `codex fork <session-id>` launch builder (mirroring the existing
+     `codex resume <sid>` path and the Pi deferred-`ForkStartCommand` pattern),
+     `CreateForkedCodexInstanceWithOptions`, and CLI+TUI dispatch wiring, plus an eval.
+     `codex fork` is a newer subcommand, so forkability is gated on a flushed on-disk
+     rollout (the same invariant `codex resume` uses) and a documented minimum codex
+     version; an unsupporting binary fails into a recoverable error state, never a crash.
+   - Cross-tool fork-faking for tests/users is enabled by `opencode-session-id` and
+     `codex-session-id` `session set` mutator fields (mirroring `claude-session-id`).
 
 ## Config schema
 
@@ -215,7 +229,12 @@ success notices.
 - `ForkDialog.Show` seeds checkboxes from `[fork]` and Docker `"auto"` from the
   selected source's `IsSandboxed()` state.
 - SettingsPanel direct `GetConfig()` preserves `[fork]`.
-- OpenCode/Pi fork paths receive the worktree target when structural worktree is on.
+- OpenCode/Pi/Codex fork paths receive the worktree target when structural worktree is on.
+- `CanForkCodex` gates on an on-disk rollout; `CreateForkedCodexInstanceWithOptions` builds
+  `codex fork <sid>` via the deferred-`ForkStartCommand` (Pi) pattern and copies worktree metadata.
+- CLI `session fork` admits opencode + codex (not only claude/pi).
+- End-to-end real-binary fork evals exist for Pi, OpenCode, and Codex (mirroring the
+  Claude fork-with-state eval); each asserts the fork roots in a fresh worktree/branch.
 - Session-persistence suite (`TestPersistence_*`) stays green (touches session
   lifecycle paths).
 - Eval harness: this is a user-observable interactive behavior change to a tmux
