@@ -5751,6 +5751,13 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, cmd
 		}
 
+		// Ctrl+S can fire mid-edit of a multi-repo path. The in-flight text
+		// lives only in pathInput (Enter is the sole committer), so flush it
+		// into multiRepoPaths first; otherwise submit would use stale data.
+		if submitNow {
+			h.newDialog.CommitInFlightMultiRepoEdit()
+		}
+
 		// Validate before creating session
 		if validationErr := h.newDialog.Validate(); validationErr != "" {
 			h.newDialog.SetError(validationErr)

@@ -2247,6 +2247,78 @@ func TestNewDialog_CtrlSInertWhileDropdownActive(t *testing.T) {
 	}
 }
 
+// Regression (Codex P2): Ctrl+S submitted while a multi-repo path is being
+// edited inline must use the in-flight edited value, not the stale
+// previously-committed path. The edited text lives only in pathInput until the
+// Enter handler writes it back, so the submit path must flush it first via
+// CommitInFlightMultiRepoEdit.
+func TestNewDialog_CtrlSDuringMultiRepoEditSubmitsEditedPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+
+	// Enable multi-repo with one committed path and focus the multi-repo row.
+	d.pathInput.SetValue("/old/path")
+	d.ToggleMultiRepo()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusMultiRepo)
+	d.updateFocus()
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/old/path" {
+		t.Fatalf("setup: GetMultiRepoPaths = %v, want [/old/path]", got)
+	}
+
+	// Enter edit mode for the path (mirrors the Enter handler entering edit).
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.multiRepoEditing {
+		t.Fatal("expected multiRepoEditing=true after Enter on multi-repo path")
+	}
+
+	// User edits the path in-flight: clear and type a new value into pathInput.
+	d.pathInput.SetValue("/edited/path")
+
+	// Before the fix, GetMultiRepoPaths still returns the stale committed value
+	// because the edit lives only in pathInput.
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/old/path" {
+		t.Fatalf("pre-commit: GetMultiRepoPaths = %v, want stale [/old/path]", got)
+	}
+
+	// Ctrl+S submit path: WantsSubmit must be true (no dropdown open), then the
+	// submit handler flushes the in-flight edit.
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) during multi-repo edit = false, want true")
+	}
+	d.CommitInFlightMultiRepoEdit()
+
+	if d.multiRepoEditing {
+		t.Fatal("multiRepoEditing should be false after CommitInFlightMultiRepoEdit")
+	}
+	got, ok := d.GetMultiRepoPaths()
+	if !ok || len(got) != 1 || got[0] != "/edited/path" {
+		t.Fatalf("post-commit: GetMultiRepoPaths = %v (ok=%v), want [/edited/path]", got, ok)
+	}
+}
+
+// CommitInFlightMultiRepoEdit must be a safe no-op when no multi-repo edit is in
+// progress (the normal Ctrl+S-from-any-field case).
+func TestNewDialog_CommitInFlightMultiRepoEdit_NoopWhenNotEditing(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	// Not in multi-repo mode at all.
+	d.CommitInFlightMultiRepoEdit() // must not panic
+
+	// Multi-repo enabled but not editing.
+	d.pathInput.SetValue("/a")
+	d.ToggleMultiRepo()
+	d.CommitInFlightMultiRepoEdit()
+	if d.multiRepoEditing {
+		t.Fatal("multiRepoEditing flipped true unexpectedly")
+	}
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/a" {
+		t.Fatalf("GetMultiRepoPaths = %v, want [/a] (unchanged)", got)
+	}
+}
+
 // Regression: Tab still advances Name -> next field (unchanged behavior,
 // independent of the Enter-mode toggle).
 func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {

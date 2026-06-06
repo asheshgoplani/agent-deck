@@ -647,6 +647,25 @@ func (d *NewDialog) WantsSubmit(msg tea.KeyMsg) bool {
 	return true
 }
 
+// CommitInFlightMultiRepoEdit flushes an in-progress multi-repo path edit into
+// multiRepoPaths so a Ctrl+S submit uses the edited value rather than the
+// previously-committed one. Without this, the in-flight text lives only in
+// pathInput (the Enter handler is the sole place that writes it back), so
+// submitting mid-edit would persist stale data. Safe to call when not editing:
+// it is a no-op unless an active multi-repo path edit is in progress.
+func (d *NewDialog) CommitInFlightMultiRepoEdit() {
+	if !d.multiRepoEnabled || !d.multiRepoEditing {
+		return
+	}
+	if d.multiRepoPathCursor < 0 || d.multiRepoPathCursor >= len(d.multiRepoPaths) {
+		return
+	}
+	d.multiRepoPaths[d.multiRepoPathCursor] = strings.TrimSpace(d.pathInput.Value())
+	d.multiRepoEditing = false
+	d.pathInput.Blur()
+	d.pathCycler.Reset()
+}
+
 func (d *NewDialog) ApplyHighlightedModelSuggestion() {
 	if d.modelSuggestionActive && d.modelSuggestionCursor > 0 {
 		suggestionIdx := d.modelSuggestionCursor - 1
