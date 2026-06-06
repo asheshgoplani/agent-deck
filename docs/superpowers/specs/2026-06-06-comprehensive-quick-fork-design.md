@@ -48,10 +48,11 @@ resembles its parent nor honors configured defaults.
 6. **Graceful degradation:** each comprehensive step is best-effort; `f` never
    hard-fails. When a step can't run, fall back and surface a **brief
    non-blocking notice**.
-7. **Config scope:** `[fork]` governs only structural toggles. Claude launch flags
-   (skip-perms / chrome / teammate / model) **always inherit from the parent** via
-   `source.GetClaudeOptions()`, falling back to global config when the parent has
-   none.
+7. **Config scope:** `[fork]` governs only structural toggles. For Claude-compatible
+   sessions, Claude launch flags (skip-perms / chrome / teammate / model) **always
+   inherit from the parent** via `source.GetClaudeOptions()`, falling back to global
+   config when the parent has none. Non-Claude tools use their own tool defaults for
+   launch options (see Decision 10) — only the structural worktree/state is shared.
 8. **Dialog consistency:** `ForkDialog.Show` seeds its checkboxes from `[fork]`
    defaults — the dialog becomes "comprehensive, tweak down."
 9. **Master switch:** `[fork].inherit_from_parent` (bool, default false). When
@@ -67,13 +68,15 @@ resembles its parent nor honors configured defaults.
    - **OpenCode** — TUI worktree/metadata fix (the `*ClaudeOptions`↔`*OpenCodeOptions`
      type gap is bridged by a workdir-explicit create method), **plus** CLI
      `session fork` support (the CLI currently rejects opencode), plus an eval.
-   - **Codex** — forking does **not** exist today and is built from scratch:
-     `CanForkCodex`, a `codex fork <session-id>` launch builder (mirroring the existing
-     `codex resume <sid>` path and the Pi deferred-`ForkStartCommand` pattern),
-     `CreateForkedCodexInstanceWithOptions`, and CLI+TUI dispatch wiring, plus an eval.
-     `codex fork` is a newer subcommand, so forkability is gated on a flushed on-disk
-     rollout (the same invariant `codex resume` uses) and a documented minimum codex
-     version; an unsupporting binary fails into a recoverable error state, never a crash.
+   - **Codex-compatible tools** — forking does **not** exist today and is built from
+     scratch: `CanForkCodex`, a `codex fork <session-id>` launch builder (mirroring
+     the existing `codex resume <sid>` path and the Pi deferred-`ForkStartCommand`
+     pattern), `CreateForkedCodexInstanceWithOptions`, and CLI+TUI dispatch wiring,
+     plus an eval. `codex fork` is a newer subcommand, verified locally on
+     `codex-cli 0.137.0`, so forkability is gated on a flushed on-disk rollout (the
+     same invariant `codex resume` uses) and the docs must state that Codex forking
+     requires a codex CLI with `fork` support. An unsupporting binary fails into a
+     recoverable error state, never a crash.
    - Cross-tool fork-faking for tests/users is enabled by `opencode-session-id` and
      `codex-session-id` `session set` mutator fields (mirroring `claude-session-id`).
 
@@ -232,6 +235,13 @@ success notices.
 - OpenCode/Pi/Codex fork paths receive the worktree target when structural worktree is on.
 - `CanForkCodex` gates on an on-disk rollout; `CreateForkedCodexInstanceWithOptions` builds
   `codex fork <sid>` via the deferred-`ForkStartCommand` (Pi) pattern and copies worktree metadata.
+- Codex-compatible fork targets preserve the source tool identity and launch command
+  instead of collapsing custom compatible tools back to the built-in `codex` tool.
+- Codex fork launch commands preserve inline `CODEX_HOME=... codex` commands and
+  shell-quote configured `[codex].config_dir` / `CODEX_HOME` prefixes.
+- Codex `Start()` and `StartWithMessage()` consume `IsForkAwaitingStart` before
+  normal `buildCodexCommand` resume/fresh dispatch, mirroring the existing Claude
+  and Pi fork-start sentinels.
 - CLI `session fork` admits opencode + codex (not only claude/pi).
 - End-to-end real-binary fork evals exist for Pi, OpenCode, and Codex (mirroring the
   Claude fork-with-state eval); each asserts the fork roots in a fresh worktree/branch.
