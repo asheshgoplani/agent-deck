@@ -25,6 +25,8 @@ const (
 	FieldNotes              = "notes"
 	FieldClaudeSessionID    = "claude-session-id"
 	FieldGeminiSessionID    = "gemini-session-id"
+	FieldOpenCodeSessionID  = "opencode-session-id"
+	FieldCodexSessionID     = "codex-session-id"
 	FieldTitleLocked        = "title-locked"
 	FieldNoTransitionNotify = "no-transition-notify"
 	FieldSkipPermissions    = "skip-permissions"
@@ -46,6 +48,8 @@ var ValidMutableFields = []string{
 	FieldNotes,
 	FieldClaudeSessionID,
 	FieldGeminiSessionID,
+	FieldOpenCodeSessionID,
+	FieldCodexSessionID,
 	FieldTitleLocked,
 	FieldNoTransitionNotify,
 	FieldSkipPermissions,
@@ -247,6 +251,16 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 		inst.GeminiSessionID = value
 		inst.GeminiDetectedAt = time.Now()
 		postCommit = makeSessionEnvPostCommit(inst, "GEMINI_SESSION_ID", value)
+
+	case FieldOpenCodeSessionID:
+		oldValue = inst.OpenCodeSessionID
+		inst.OpenCodeSessionID = value
+		inst.OpenCodeDetectedAt = time.Now()
+
+	case FieldCodexSessionID:
+		oldValue = inst.CodexSessionID
+		inst.CodexSessionID = value
+		inst.CodexDetectedAt = time.Now()
 
 	case FieldTitleLocked:
 		oldValue = strconv.FormatBool(inst.TitleLocked)

@@ -382,3 +382,29 @@ func TestSetField_PreservesToolOptionsJSON(t *testing.T) {
 		t.Errorf("ToolOptionsJSON clobbered by title edit: %s", inst.ToolOptionsJSON)
 	}
 }
+
+func TestSetField_OpenCodeSessionID_StampsDetectedAt(t *testing.T) {
+	inst := NewInstanceWithTool("oc", "/tmp/p", "opencode")
+	if _, _, err := SetField(inst, FieldOpenCodeSessionID, "ses_abc", nil); err != nil {
+		t.Fatalf("SetField: %v", err)
+	}
+	if inst.OpenCodeSessionID != "ses_abc" {
+		t.Fatalf("OpenCodeSessionID = %q, want ses_abc", inst.OpenCodeSessionID)
+	}
+	if inst.OpenCodeDetectedAt.IsZero() {
+		t.Fatal("OpenCodeDetectedAt must be stamped so CanForkOpenCode's recency gate passes")
+	}
+}
+
+func TestSetField_CodexSessionID_StampsDetectedAt(t *testing.T) {
+	inst := NewInstanceWithTool("cx", "/tmp/p", "codex")
+	if _, _, err := SetField(inst, FieldCodexSessionID, "11111111-2222-3333-4444-555555555555", nil); err != nil {
+		t.Fatalf("SetField: %v", err)
+	}
+	if inst.CodexSessionID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("CodexSessionID = %q", inst.CodexSessionID)
+	}
+	if inst.CodexDetectedAt.IsZero() {
+		t.Fatal("CodexDetectedAt must be stamped")
+	}
+}
