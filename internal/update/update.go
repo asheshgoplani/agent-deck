@@ -871,6 +871,20 @@ func UpdateBridgePy() error {
 		return nil
 	}
 
+	// No-op guard MUST run before any side effect (Blocker 3 fix).
+	//
+	// The installer is injected by the CLI layer (initUpdateSettings) to keep
+	// this package independent of internal/session. Non-CLI callers (watchers,
+	// library consumers) won't have injected it. Rather than hard-failing and
+	// aborting the surrounding update flow, gracefully no-op with a clear log.
+	// This early return guarantees the advertised contract: when there is no
+	// installer, the existing bridge.py AND its .backup are left untouched (we
+	// neither print "Updating", nor read, nor overwrite bridge.py.backup).
+	if bridgeScriptInstaller == nil {
+		fmt.Println("⚠ bridge.py installer not configured (non-CLI caller); skipping bridge.py refresh.")
+		return nil
+	}
+
 	fmt.Println("Updating bridge.py...")
 	// Backup existing bridge.py if present
 	if _, err := os.Stat(bridgePath); err == nil {
@@ -885,16 +899,6 @@ func UpdateBridgePy() error {
 	}
 
 	// Install latest bridge template from embedded runtime.
-	//
-	// The installer is injected by the CLI layer (initUpdateSettings) to keep
-	// this package independent of internal/session. Non-CLI callers (watchers,
-	// library consumers) won't have injected it. Rather than hard-failing and
-	// aborting the surrounding update flow, gracefully no-op with a clear log.
-	// The existing bridge.py (and its .backup) are left untouched.
-	if bridgeScriptInstaller == nil {
-		fmt.Println("⚠ bridge.py installer not configured (non-CLI caller); skipping bridge.py refresh.")
-		return nil
-	}
 	if err := bridgeScriptInstaller(); err != nil {
 		return fmt.Errorf("failed to install bridge.py: %w", err)
 	}

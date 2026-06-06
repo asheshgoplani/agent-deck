@@ -220,6 +220,45 @@ func TestUpdateBridgePy_NonCLICallerDoesNotHardFail(t *testing.T) {
 	require.NoError(t, err, "UpdateBridgePy must not hard-fail when installer is not configured (non-CLI caller)")
 }
 
+// TestUpdateBridgePy_NoOpLeavesExistingBackupUntouched is the regression test
+// for Blocker 3's data-safety contract: when there is no injected installer the
+// function advertises a true no-op ("the existing bridge.py and its .backup are
+// left untouched"). Previously the .backup was overwritten with the current
+// bridge.py BEFORE the nil-installer check ran, silently corrupting a prior
+// good backup. This asserts the no-op truly does not read or rewrite .backup.
+func TestUpdateBridgePy_NoOpLeavesExistingBackupUntouched(t *testing.T) {
+	tmpHome := isolateUpdatePaths(t)
+
+	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	require.NoError(t, os.MkdirAll(condDir, 0o755))
+
+	bridgePath := filepath.Join(condDir, "bridge.py")
+	backupPath := bridgePath + ".backup"
+
+	// A live bridge.py and a PRE-EXISTING, distinct .backup (e.g. from an
+	// earlier successful update). The no-op must not overwrite the backup with
+	// the current bridge.py content.
+	require.NoError(t, os.WriteFile(bridgePath, []byte("# current bridge\n"), 0o755))
+	priorBackup := "# prior good backup\nprint('keep me')\n"
+	require.NoError(t, os.WriteFile(backupPath, []byte(priorBackup), 0o644))
+
+	// Non-CLI caller: installer never injected -> no-op path.
+	SetBridgeScriptInstaller(nil)
+
+	err := UpdateBridgePy()
+	require.NoError(t, err)
+
+	// The pre-existing backup must be byte-for-byte intact.
+	gotBackup, err := os.ReadFile(backupPath)
+	require.NoError(t, err)
+	assert.Equal(t, priorBackup, string(gotBackup), "no-op must not touch bridge.py.backup")
+
+	// bridge.py itself must also be unchanged.
+	gotBridge, err := os.ReadFile(bridgePath)
+	require.NoError(t, err)
+	assert.Equal(t, "# current bridge\n", string(gotBridge), "no-op must not touch bridge.py")
+}
+
 func TestNormalizeReleaseTag(t *testing.T) {
 	tests := []struct {
 		name  string

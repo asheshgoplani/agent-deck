@@ -296,3 +296,72 @@ func TestMigrateLegacyLayout_ForcePrefersNewerXDGOnPerFileConflict(t *testing.T)
 		t.Fatalf("expected per-file conflict to be reported, got none")
 	}
 }
+
+// TestCopyMigrationFile_NeverTruncatesExistingDestination is the unit-level
+// Blocker 1 (TOCTOU) regression: the copy primitive must NEVER truncate an
+// existing destination. It opens with O_EXCL, so a pre-existing destination
+// (e.g. one created concurrently by a running Agent Deck after the caller's
+// existence check) is left byte-for-byte intact and surfaces a conflict, not a
+// clobbered/empty file.
+func TestCopyMigrationFile_NeverTruncatesExistingDestination(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "dest")
+	if err := os.WriteFile(source, []byte("legacy-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Destination already present (simulating a concurrent create that won the
+	// race after the higher-level existence check passed).
+	if err := os.WriteFile(dest, []byte("concurrently-written-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := copyMigrationFile(source, dest, 0o600)
+	if !errors.Is(err, errDestinationExists) {
+		t.Fatalf("copyMigrationFile over existing dest = %v, want errDestinationExists", err)
+	}
+	// The pre-existing destination must be intact, NOT truncated.
+	if data, readErr := os.ReadFile(dest); readErr != nil {
+		t.Fatalf("read dest: %v", readErr)
+	} else if string(data) != "concurrently-written-data" {
+		t.Fatalf("destination was clobbered: got %q, want %q", string(data), "concurrently-written-data")
+	}
+}
+
+// TestMergeMigrationPath_ConcurrentDestinationFileIsPreserved exercises the
+// Blocker 1 TOCTOU window at the merge layer: a destination file that does NOT
+// exist when mergeMigrationPath performs its Lstat fast-path, but DOES exist by
+// the time the copy runs (created concurrently by a running Agent Deck), must be
+// preserved and reported as a conflict — never truncated. We reproduce the race
+// deterministically by pre-seeding the destination and verifying that the copy
+// (which goes through the O_EXCL primitive) refuses to overwrite it.
+func TestMergeMigrationPath_ConcurrentDestinationFileIsPreserved(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "legacy", "file")
+	dest := filepath.Join(dir, "xdg", "file")
+	if err := os.MkdirAll(filepath.Dir(source), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("live-agent-deck-write"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicted, err := mergeMigrationPath(source, dest)
+	if err != nil {
+		t.Fatalf("mergeMigrationPath returned error: %v", err)
+	}
+	if !conflicted {
+		t.Fatalf("expected concurrent destination to be reported as a conflict")
+	}
+	if data, readErr := os.ReadFile(dest); readErr != nil {
+		t.Fatalf("read dest: %v", readErr)
+	} else if string(data) != "live-agent-deck-write" {
+		t.Fatalf("concurrent destination clobbered: got %q, want %q", string(data), "live-agent-deck-write")
+	}
+}

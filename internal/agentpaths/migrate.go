@@ -19,6 +19,13 @@ const (
 
 var ErrMigrationConflict = errors.New("migration destination conflict")
 
+// errDestinationExists is returned by the copy primitives when a destination
+// leaf already exists at the moment of the atomic (O_EXCL) create. It signals a
+// TOCTOU race: a concurrent Agent Deck process created the destination between
+// the caller's existence check and the copy. Callers MUST treat it as a
+// conflict (preserve the existing file, never truncate), never as a hard error.
+var errDestinationExists = errors.New("migration destination already exists")
+
 type MigrationOptions struct {
 	DryRun bool
 	Force  bool
@@ -81,6 +88,13 @@ func MigrateLegacyLayout(opts MigrationOptions) (*MigrationResult, error) {
 			continue
 		}
 		if err := copyMigrationPath(item.Source, item.Destination); err != nil {
+			// A concurrent Agent Deck process created the destination (or a leaf
+			// within it) after our pre-flight existence check. Preserve it and
+			// report a conflict instead of truncating (Blocker 1 TOCTOU fix).
+			if errors.Is(err, errDestinationExists) {
+				result.Conflicts = append(result.Conflicts, item)
+				return result, ErrMigrationConflict
+			}
 			return result, err
 		}
 		result.Copied = append(result.Copied, item)
@@ -260,7 +274,14 @@ func mergeMigrationPath(source, destination string) (conflicted bool, err error)
 	if dstExists {
 		return true, nil
 	}
+	// The Lstat above is a best-effort fast path; the authoritative no-clobber
+	// guarantee is the O_EXCL create inside copyMigrationPath. If a concurrent
+	// Agent Deck process created the destination in the TOCTOU window, the copy
+	// returns errDestinationExists — preserve the existing file, report conflict.
 	if err := copyMigrationPath(source, destination); err != nil {
+		if errors.Is(err, errDestinationExists) {
+			return true, nil
+		}
 		return false, err
 	}
 	return false, nil
@@ -323,8 +344,15 @@ func copyMigrationFile(source, destination string, mode fs.FileMode) error {
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	// Atomic no-clobber create (Blocker 1, TOCTOU fix). O_EXCL guarantees we
+	// never truncate a destination that a concurrent Agent Deck process may
+	// have created after the caller's existence check. On EEXIST we surface the
+	// race as a conflict sentinel; the caller preserves the existing file.
+	dst, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errDestinationExists
+		}
 		return fmt.Errorf("open destination %q: %w", destination, err)
 	}
 	if _, err := io.Copy(dst, src); err != nil {
@@ -346,7 +374,12 @@ func copyMigrationSymlink(source, destination string) error {
 	if err != nil {
 		return fmt.Errorf("read symlink %q: %w", source, err)
 	}
+	// os.Symlink fails with EEXIST if the destination already exists; map it to
+	// the conflict sentinel so a concurrent create is preserved, never replaced.
 	if err := os.Symlink(target, destination); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errDestinationExists
+		}
 		return fmt.Errorf("create symlink %q: %w", destination, err)
 	}
 	return nil
