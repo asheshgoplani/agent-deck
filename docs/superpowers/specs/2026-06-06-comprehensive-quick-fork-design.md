@@ -123,8 +123,9 @@ the established `*bool` nil-default precedent (`ShowOutput`/`ShowAnalytics` nil 
 3. Claude opts: `opts = source.GetClaudeOptions()` (nil → downstream falls back to
    global config, as today). Transient worktree fields are non-persisted and must
    not leak; the new worktree fields are set fresh.
-4. Docker: `"auto"` → `sandboxEnabled = (source.Sandbox != nil)`; `"on"` → true;
-   `"off"` → false.
+4. Docker: `"auto"` → `sandboxEnabled = source.IsSandboxed()`
+   (`instance.go:459` = `Sandbox != nil && Sandbox.Enabled` — the authoritative
+   signal, not bare `Sandbox != nil`); `"on"` → true; `"off"` → false.
 5. If worktree enabled & git-capable: compute branch `<prefix><slug>` and call
    `resolveWorktreeTarget(...)` (same as the dialog path).
 6. Build `WorktreeStateOptions{WithState, WithIgnored}` and call the shared helper.
@@ -147,9 +148,14 @@ parent's physical worktree.
 | Non-Claude tool | inherit that tool's own opts if any, else tool defaults | — |
 | Parent has no persisted opts | global config defaults | — |
 
-Notices use the existing non-blocking TUI message path (exact mechanism to be
-confirmed in the plan; `setError` is for hard errors — a non-blocking info/status
-channel is preferred).
+**Notice channel (resolved):** reuse the existing transient message bar. `setError`
+sets `h.err` + `h.errTime`; the View auto-clears it after 5s (`home.go:5157`).
+Despite the name it is already used for non-error info/warnings (`home.go:4462`
+"restored '%s' (%s)"; `msg.warning` at `4520-4521`), so it is the de-facto
+non-blocking notice path. Thread the notice from the async fork command by adding a
+`notice string` field to `sessionForkedMsg` (`home.go:725`); the handler's success
+branch (`home.go:4277+`) calls `h.setError(fmt.Errorf("%s", msg.notice))` when set,
+mirroring the existing restore-warning pattern. No new UI mechanism is introduced.
 
 ## Implementation shape
 
@@ -172,7 +178,7 @@ channel is preferred).
   `false`/`"off"` honored; `GetDocker` canonicalization (auto/on/off/unknown).
 - Quick fork builds worktree opts + `WithState/WithIgnored=true` + inherited
   parent opts; transient worktree fields excluded from inheritance.
-- Docker `auto`: parent with `Sandbox != nil` → fork sandboxed; parent without → not.
+- Docker `auto`: parent with `IsSandboxed()` true → fork sandboxed; parent without → not.
 - `inherit_from_parent=true` resolves per the mapping; ignores individual keys.
 - Degradation: non-git source → plain fork + notice; Docker-absent → worktree-only
   + notice.
