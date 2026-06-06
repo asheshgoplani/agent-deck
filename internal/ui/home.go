@@ -9118,14 +9118,64 @@ func applyCreateSessionToolOverrides(inst *session.Instance, tool string, gemini
 	}
 }
 
-// quickForkSession performs a quick fork with default title suffix " (fork)"
+// quickForkSpec is the resolved input set for a comprehensive quick fork.
+type quickForkSpec struct {
+	Title     string
+	GroupPath string
+	Branch    string
+	Plan      session.ResolvedForkPlan
+}
+
+// quickForkInputs computes the comprehensive quick-fork spec from the source
+// session and [fork] config. Pure: no side effects, no UI, no I/O — the wiring
+// (Claude-opts inheritance, degradation notices, dispatch) lives in
+// quickForkSession. parentSandboxed is source.IsSandboxed().
+func quickForkInputs(source *session.Instance, fork session.ForkSettings, parentSandboxed bool) quickForkSpec {
+	slug := git.SanitizeBranchName(strings.ToLower(strings.TrimSpace(source.Title)))
+	if slug == "" {
+		slug = "fork"
+	}
+	return quickForkSpec{
+		Title:     source.Title + " (fork)",
+		GroupPath: source.GroupPath,
+		Branch:    fork.GetBranchPrefix() + slug,
+		Plan:      fork.Resolve(parentSandboxed),
+	}
+}
+
+// quickForkSession performs a comprehensive quick fork: new worktree+branch,
+// carry tracked+gitignored state, match parent Docker, inherit the parent's
+// Claude launch options for Claude-compatible sessions, and keep sibling
+// placement. Defaults come from [fork] config (comprehensive when unset).
+// Non-fatal degradation notices are reported after the async fork succeeds.
 func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if source == nil {
 		return nil
 	}
-	title := source.Title + " (fork)"
-	groupPath := source.GroupPath
-	return h.forkSessionCmd(source, title, groupPath, source.ParentSessionID, source.ParentProjectPath)
+	cfg, _ := session.LoadUserConfig()
+	fork := session.ForkSettings{}
+	if cfg != nil {
+		fork = cfg.Fork
+	}
+	in := quickForkInputs(source, fork, source.IsSandboxed())
+
+	// Inherit the parent's persisted Claude launch options (transient worktree
+	// fields are json:"-" so they are never carried over). nil falls back to
+	// global config downstream, as before.
+	opts := source.GetClaudeOptions()
+
+	result := h.buildForkCmd(
+		source, in.Title, in.GroupPath, in.Branch,
+		in.Plan.Worktree, in.Plan.WithState, in.Plan.WithIgnored, in.Plan.Sandbox,
+		false, // quick fork worktree is config-default, not an explicit toggle (#1185)
+		opts,
+		source.ParentSessionID, source.ParentProjectPath,
+	)
+	if result.errMsg != "" {
+		h.setError(fmt.Errorf("%s", result.errMsg))
+		return nil
+	}
+	return result.cmd
 }
 
 // quickCreateSession creates a session instantly with auto-generated name and smart defaults.
@@ -9554,12 +9604,6 @@ func completeFork(
 	}
 
 	return inst, nil
-}
-
-// forkSessionCmd creates a forked session with the given title and group
-// Shows immediate UI feedback by tracking the source session in forkingSessions
-func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, git.WorktreeStateOptions{}, parentSessionID, parentProjectPath, "")
 }
 
 type forkBuildResult struct {
