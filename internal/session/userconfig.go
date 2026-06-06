@@ -173,6 +173,9 @@ type UserConfig struct {
 	// Docker defines Docker sandbox settings for containerized sessions
 	Docker DockerSettings `toml:"docker"`
 
+	// Fork defines quick-fork (f) and fork-dialog (Shift+F) default behavior.
+	Fork ForkSettings `toml:"fork"`
+
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes"`
 
@@ -1896,6 +1899,59 @@ func (d DockerSettings) GetAutoCleanup() bool {
 		return true
 	}
 	return *d.AutoCleanup
+}
+
+// ForkSettings controls quick-fork (f) and fork-dialog (Shift+F) defaults.
+// Unset structural toggles default to the comprehensive built-in (ON); these
+// defaults are independent of [worktree]/[docker] default_enabled, which govern
+// non-fork session creation. *bool is required so "absent" reads as ON.
+type ForkSettings struct {
+	// InheritFromParent, when true, makes the fork mirror the parent session and
+	// ignores the structural keys below. See Resolve.
+	InheritFromParent bool `toml:"inherit_from_parent"`
+
+	// Worktree creates a new worktree + branch. nil => true.
+	Worktree *bool `toml:"worktree"`
+	// WithState carries the parent's tracked uncommitted changes. nil => true.
+	WithState *bool `toml:"with_state"`
+	// WithIgnored also copies gitignored files (implies WithState). nil => true.
+	WithIgnored *bool `toml:"with_ignored"`
+	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
+	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
+	Docker *string `toml:"docker"`
+	// BranchPrefix is the auto branch-name prefix. "" => "fork/".
+	BranchPrefix string `toml:"branch_prefix"`
+}
+
+// GetWorktree reports whether forks create a worktree (default ON).
+func (f ForkSettings) GetWorktree() bool { return f.Worktree == nil || *f.Worktree }
+
+// GetWithState reports whether forks carry tracked state (default ON).
+func (f ForkSettings) GetWithState() bool { return f.WithState == nil || *f.WithState }
+
+// GetWithIgnored reports whether forks copy gitignored files (default ON).
+func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored == nil || *f.WithIgnored }
+
+// GetDocker returns the canonical docker mode: "auto" | "on" | "off".
+// Mirrors GetLaunchAs: lowercase/trim, unknown/nil -> "auto".
+func (f ForkSettings) GetDocker() string {
+	if f.Docker == nil {
+		return "auto"
+	}
+	switch v := strings.ToLower(strings.TrimSpace(*f.Docker)); v {
+	case "auto", "on", "off":
+		return v
+	default:
+		return "auto"
+	}
+}
+
+// GetBranchPrefix returns the auto branch-name prefix (default "fork/").
+func (f ForkSettings) GetBranchPrefix() string {
+	if f.BranchPrefix == "" {
+		return "fork/"
+	}
+	return f.BranchPrefix
 }
 
 type StatusSettings struct {
