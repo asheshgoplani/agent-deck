@@ -184,6 +184,10 @@ func (d *ForkDialog) GetParentProjectPath() string {
 
 // Show displays the dialog with pre-filled values
 func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductors []*session.Instance, suggestedParentID string) {
+	d.ShowWithParentSandboxed(originalName, projectPath, groupPath, conductors, suggestedParentID, false)
+}
+
+func (d *ForkDialog) ShowWithParentSandboxed(originalName, projectPath, groupPath string, conductors []*session.Instance, suggestedParentID string, parentSandboxed bool) {
 	d.visible = true
 	d.validationErr = ""
 	d.projectPath = projectPath
@@ -216,16 +220,20 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 		}
 	}
 
-	// Auto-suggest branch name based on fork title
-	sanitized := strings.ToLower(originalName)
-	sanitized = strings.ReplaceAll(sanitized, " ", "-")
-	d.branchInput.SetValue("fork/" + sanitized)
+	// Auto-suggest branch name based on fork title. Use the git sanitizer (same
+	// as quick fork's quickForkInputs) so titles with ':' '?' etc. don't produce
+	// an invalid branch like "fork/fix:-bug".
+	d.branchInput.SetValue("fork/" + git.SanitizeBranchName(strings.ToLower(originalName)))
 
-	// Initialize options with defaults from config.
+	// Initialize options + structural toggles from [fork] defaults so the dialog
+	// opens "comprehensive, tweak down" — matching quick fork (f).
 	if config, err := session.LoadUserConfig(); err == nil {
 		d.optionsPanel.SetDefaults(config)
-		d.sandboxEnabled = config.Docker.DefaultEnabled
-		d.worktreeEnabled = d.worktreeCapable && config.Worktree.DefaultEnabled
+		plan := config.Fork.Resolve(parentSandboxed)
+		d.worktreeEnabled = d.worktreeCapable && plan.Worktree
+		d.withStateEnabled = d.worktreeEnabled && plan.WithState
+		d.withStateAndGitignored = d.withStateEnabled && plan.WithIgnored
+		d.sandboxEnabled = plan.Sandbox
 	}
 }
 

@@ -9446,7 +9446,7 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	// Pre-populate dialog with source session info
 	conductors := h.activeConductorSessions()
 	suggestedParentID := h.suggestConductorParent()
-	h.forkDialog.Show(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID)
+	h.forkDialog.ShowWithParentSandboxed(source.Title, source.ProjectPath, source.GroupPath, conductors, suggestedParentID, source.IsSandboxed())
 	return nil
 }
 
