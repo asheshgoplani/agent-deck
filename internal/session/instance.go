@@ -2394,7 +2394,16 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		}
 	}
 
-	// 3. Detect same-project session rotation (e.g. /new) from disk.
+	// 3. Use disk scan only as a bootstrap fallback. Once a session ID is
+	// known, rotation must come from authoritative live evidence above (tmux
+	// env, hook payload, or the Codex process' open rollout file). Polling the
+	// full historical $CODEX_HOME/sessions tree for every active Codex session
+	// burns CPU on large histories and has no stronger ownership signal than the
+	// current binding.
+	if i.CodexSessionID != "" {
+		return missingProbeDep
+	}
+
 	// Only allow unscoped fallback when we don't have a known session ID yet.
 	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
 	if !i.shouldScanCodexSession(allowUnscoped) {

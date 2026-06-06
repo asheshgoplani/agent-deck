@@ -3337,11 +3337,22 @@ func TestInstance_UpdateCodexSession_ScanCooldown(t *testing.T) {
 		t.Fatalf("cooldown should keep %q, got %q", sessionID1, inst.CodexSessionID)
 	}
 
-	// After cooldown, scan should run and pick the newer rotated session.
+	// After cooldown, a known session ID should still not trigger historical
+	// disk-scan rebinding. Rotation is handled by hook payloads or live process
+	// file probes, not by periodically walking all old Codex transcripts.
+	inst.lastCodexScanAt = time.Now().Add(-codexRotationScanInterval - time.Second)
+	inst.UpdateCodexSession(nil)
+	if inst.CodexSessionID != sessionID1 {
+		t.Fatalf("post-cooldown known ID should keep %q, got %q", sessionID1, inst.CodexSessionID)
+	}
+
+	// If the binding is genuinely missing, bootstrap scan still works and picks
+	// the newest matching session.
+	inst.CodexSessionID = ""
 	inst.lastCodexScanAt = time.Now().Add(-codexRotationScanInterval - time.Second)
 	inst.UpdateCodexSession(nil)
 	if inst.CodexSessionID != sessionID2 {
-		t.Fatalf("post-cooldown scan picked %q, want %q", inst.CodexSessionID, sessionID2)
+		t.Fatalf("bootstrap scan picked %q, want %q", inst.CodexSessionID, sessionID2)
 	}
 }
 
