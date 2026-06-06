@@ -13,35 +13,28 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-func TestForkDialogSubmitCapturesWithStateBeforeHide(t *testing.T) {
+func TestForkDialogSubmitCapturesStateBeforeHide(t *testing.T) {
 	srcBytes, err := os.ReadFile("home.go")
 	if err != nil {
 		t.Fatalf("read home.go: %v", err)
 	}
 	src := string(srcBytes)
 
-	captureState := strings.Index(src, "forkState := git.WorktreeStateOptions")
-	captureSandbox := strings.Index(src, "sandboxEnabled := h.forkDialog.IsSandboxEnabled()")
-	hide := strings.Index(src, "h.forkDialog.Hide()")
-	call := strings.Index(src, "h.forkSessionCmdWithOptions(source, title, groupPath, opts, sandboxEnabled, forkState, parentID, parentPath)")
-
-	if captureState < 0 {
-		t.Fatal("submit handler must capture git.WorktreeStateOptions before hiding the dialog")
+	// The dialog submit must read its toggle state (passed as args to
+	// buildForkCmd) and dispatch the fork BEFORE Hide() resets the dialog.
+	build := strings.Index(src, "result := h.buildForkCmd(")
+	if build < 0 {
+		t.Fatal("submit handler must dispatch through h.buildForkCmd")
 	}
-	if captureSandbox < 0 {
-		t.Fatal("submit handler must capture sandboxEnabled before hiding the dialog")
+	after := src[build:]
+	if !strings.Contains(after, "h.forkDialog.IsWithStateEnabled()") {
+		t.Fatal("submit handler must pass dialog with-state into buildForkCmd")
 	}
-	if hide < 0 {
-		t.Fatal("submit handler must hide the dialog after capturing values")
+	if !strings.Contains(after, "h.forkDialog.IsSandboxEnabled()") {
+		t.Fatal("submit handler must pass dialog sandbox into buildForkCmd")
 	}
-	if call < 0 {
-		t.Fatal("submit handler must pass captured forkState into forkSessionCmdWithOptions")
-	}
-	if captureState > hide || captureSandbox > hide {
-		t.Fatalf("dialog state must be captured before Hide(); captureState=%d captureSandbox=%d hide=%d", captureState, captureSandbox, hide)
-	}
-	if hide > call {
-		t.Fatalf("forkSessionCmdWithOptions should be called after Hide with captured values; hide=%d call=%d", hide, call)
+	if !strings.Contains(after, "h.forkDialog.Hide()") {
+		t.Fatal("submit handler must Hide() after building the fork command")
 	}
 }
 

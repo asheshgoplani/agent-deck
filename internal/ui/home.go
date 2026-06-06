@@ -30,6 +30,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
+	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
@@ -725,6 +726,7 @@ type sessionCreatedMsg struct {
 type sessionForkedMsg struct {
 	instance *session.Instance
 	sourceID string // ID of the source session that was forked (for cleanup)
+	notice   string // non-fatal degradation notice shown after a successful fork
 	err      error
 }
 
@@ -4310,6 +4312,10 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Save both instances AND groups
 			// Use forceSave to bypass mtime check - forked session MUST persist
 			h.forceSaveInstances()
+
+			if msg.notice != "" {
+				h.setError(fmt.Errorf("%s", msg.notice))
+			}
 
 			// Start fetching preview for the forked session
 			return h, h.fetchPreview(msg.instance, msg.instance.ID, -1)
@@ -8593,32 +8599,27 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// new-session path (#742). #1185: a worktree enabled by config
 				// default (not an explicit toggle) on a non-repo dir falls back
 				// to a normal fork instead of erroring.
-				if worktreeEnabled && branchName != "" {
-					worktreePath, repoRoot, fallback, errMsg := resolveWorktreeTarget(source.ProjectPath, branchName, h.forkDialog.IsWorktreeExplicit())
-					if errMsg != "" {
-						h.forkDialog.SetError(errMsg)
-						return h, nil
-					}
-					if !fallback {
-						if opts == nil {
-							opts = &session.ClaudeOptions{}
-						}
-						opts.WorkDir = worktreePath
-						opts.WorktreePath = worktreePath
-						opts.WorktreeRepoRoot = repoRoot
-						opts.WorktreeBranch = branchName
-					}
-				}
-
 				parentID := h.forkDialog.GetParentSessionID()
 				parentPath := h.forkDialog.GetParentProjectPath()
-				sandboxEnabled := h.forkDialog.IsSandboxEnabled()
-				forkState := git.WorktreeStateOptions{
-					WithState:   h.forkDialog.IsWithStateEnabled(),
-					WithIgnored: h.forkDialog.IsWithStateAndGitignoredEnabled(),
+				result := h.buildForkCmd(
+					source, title, groupPath, branchName,
+					worktreeEnabled,
+					h.forkDialog.IsWithStateEnabled(),
+					h.forkDialog.IsWithStateAndGitignoredEnabled(),
+					h.forkDialog.IsSandboxEnabled(),
+					h.forkDialog.IsWorktreeExplicit(),
+					opts,
+					parentID, parentPath,
+				)
+				if result.errMsg != "" {
+					h.forkDialog.SetError(result.errMsg)
+					return h, nil
+				}
+				if result.cmd == nil {
+					return h, nil
 				}
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, sandboxEnabled, forkState, parentID, parentPath)
+				return h, result.cmd
 			}
 		}
 		h.forkDialog.Hide()
@@ -9558,7 +9559,70 @@ func completeFork(
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, git.WorktreeStateOptions{}, parentSessionID, parentProjectPath)
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, git.WorktreeStateOptions{}, parentSessionID, parentProjectPath, "")
+}
+
+type forkBuildResult struct {
+	cmd             tea.Cmd
+	worktreeApplied bool
+	notice          string
+	errMsg          string
+}
+
+// buildForkCmd resolves the worktree target (when requested + git-capable),
+// populates the worktree fields on opts, builds WorktreeStateOptions, and
+// returns the async fork command plus any non-fatal success notice. Shared by
+// the dialog (Shift+F) and quick fork (f). Fatal validation text is returned to
+// the caller so Shift+F can keep using ForkDialog.SetError while quick fork uses
+// Home.setError. explicitWorktree is forwarded to resolveWorktreeTarget's #1185
+// fallback gate.
+func (h *Home) buildForkCmd(
+	source *session.Instance,
+	title, groupPath, branchName string,
+	worktreeEnabled, withState, withIgnored, sandboxEnabled, explicitWorktree bool,
+	opts *session.ClaudeOptions,
+	parentSessionID, parentProjectPath string,
+) forkBuildResult {
+	worktreeApplied := false
+	notice := ""
+	if worktreeEnabled && branchName != "" {
+		worktreePath, repoRoot, fallback, errMsg := resolveWorktreeTarget(source.ProjectPath, branchName, explicitWorktree)
+		if errMsg != "" {
+			return forkBuildResult{errMsg: errMsg}
+		}
+		if !fallback {
+			if opts == nil {
+				opts = &session.ClaudeOptions{}
+			}
+			opts.WorkDir = worktreePath
+			opts.WorktreePath = worktreePath
+			opts.WorktreeRepoRoot = repoRoot
+			opts.WorktreeBranch = branchName
+			worktreeApplied = true
+		} else {
+			notice = "forked without worktree: not a git repo"
+		}
+	}
+	forkState := git.WorktreeStateOptions{WithState: withState, WithIgnored: withIgnored}
+	if !worktreeApplied {
+		// State materialization requires a freshly created worktree.
+		forkState = git.WorktreeStateOptions{}
+	}
+	return forkBuildResult{
+		cmd:             h.forkSessionCmdWithOptions(source, title, groupPath, opts, sandboxEnabled, forkState, parentSessionID, parentProjectPath, notice),
+		worktreeApplied: worktreeApplied,
+		notice:          notice,
+	}
+}
+
+func joinForkNotices(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "; " + b
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, shared fork options, and optional sandbox.
@@ -9570,6 +9634,7 @@ func (h *Home) forkSessionCmdWithOptions(
 	sandboxEnabled bool,
 	forkState git.WorktreeStateOptions,
 	parentSessionID, parentProjectPath string,
+	notice string,
 ) tea.Cmd {
 	if source == nil {
 		return nil
@@ -9588,6 +9653,15 @@ func (h *Home) forkSessionCmdWithOptions(
 		// Check tmux availability before forking
 		if err := tmux.IsTmuxAvailable(); err != nil {
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
+		}
+
+		effectiveSandbox := sandboxEnabled
+		forkNotice := notice
+		if effectiveSandbox {
+			if err := docker.CheckAvailability(context.Background()); err != nil {
+				effectiveSandbox = false
+				forkNotice = joinForkNotices(forkNotice, "forked without Docker: not available")
+			}
 		}
 
 		// withStateWorktreeCreated tracks whether forkWithStateWorktree actually
@@ -9636,12 +9710,12 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 		}
 
-		inst, err := completeFork(source, title, groupPath, opts, sandboxEnabled, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
+		inst, err := completeFork(source, title, groupPath, opts, effectiveSandbox, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
 		if err != nil {
 			return sessionForkedMsg{err: err, sourceID: sourceID}
 		}
 
-		return sessionForkedMsg{instance: inst, sourceID: sourceID}
+		return sessionForkedMsg{instance: inst, sourceID: sourceID, notice: forkNotice}
 	}
 }
 
