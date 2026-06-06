@@ -112,7 +112,7 @@
       "test_name": "TestCapability_Lifecycle_Fork",
       "status": "pass",
       "runtime_seconds": 0.15,
-      "snapshot": "$ agent-deck session fork cap-fork\nError: session 'cap-fork' is not a Claude session or Pi session (tool: shell)"
+      "snapshot": "$ agent-deck session fork cap-fork\nError: session 'cap-fork' is not a forkable session (tool: shell)"
     },
     {
       "id": "send-output-echo",
