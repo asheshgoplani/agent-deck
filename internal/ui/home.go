@@ -11472,11 +11472,13 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 // renderHelpBar renders context-aware keyboard shortcuts. The style is
 // selected by config.toml [ui] footer (cached in h.footerMode):
 //
-//   - "curated" (default): a lighter, dim inline bar that advertises only the
+//   - "full" (default): the historic verbose bar with filled key chips, adapting
+//     to terminal width across the tiny/minimal/compact/full tiers. This is also
+//     the fallback for any unset or unrecognized footerMode, so the historic look
+//     is never silently replaced.
+//   - "curated" (opt-in): a lighter, dim inline bar that advertises only the
 //     actions relevant to the selected row, with the settings and help keys
 //     always last. Rarer/global actions live under help (?).
-//   - "full": the historic verbose bar with filled key chips, adapting to
-//     terminal width across the tiny/minimal/compact/full tiers.
 //   - "compact" / "minimal": force a single verbose tier regardless of width.
 //
 // The very-narrow tiny tier is always used below layoutBreakpointSingle so the
@@ -11487,14 +11489,17 @@ func (h *Home) renderHelpBar() string {
 	}
 
 	switch h.footerMode {
-	case session.FooterFull:
-		return h.renderHelpBarWidthAdaptive()
+	case session.FooterCurated:
+		return h.renderHelpBarCurated()
 	case session.FooterCompact:
 		return h.renderHelpBarCompact()
 	case session.FooterMinimal:
 		return h.renderHelpBarMinimal()
 	default:
-		return h.renderHelpBarCurated()
+		// FooterFull, plus any unset ("") or unrecognized mode, routes to the
+		// historic width-adaptive bar. Only an explicit curated setting selects
+		// the curated bar, so the pre-PR default behavior is preserved.
+		return h.renderHelpBarWidthAdaptive()
 	}
 }
 
@@ -11585,7 +11590,7 @@ func (h *Home) renderHelpBarMinimal() string {
 		}
 	} else if len(h.flatItems) == 0 {
 		contextKeys = renderKeys(newKey, quickKey, importKey, groupKey)
-	} else if h.cursor < len(h.flatItems) {
+	} else if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
 			contextKeys = renderKeys("⏎", newKey, quickKey, groupKey)
@@ -11680,7 +11685,7 @@ func (h *Home) renderHelpBarCompact() string {
 		if key := h.actionKey(hotkeyImport); key != "" {
 			contextHints = append(contextHints, h.helpKeyShort(key, "Import"))
 		}
-	} else if h.cursor < len(h.flatItems) {
+	} else if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
 			contextHints = append(contextHints, h.helpKeyShort("⏎", "Toggle"))
@@ -11843,7 +11848,7 @@ func (h *Home) renderHelpBarFull() string {
 		if groupKey != "" {
 			primaryHints = append(primaryHints, h.helpKey(groupKey, "Group"))
 		}
-	} else if h.cursor < len(h.flatItems) {
+	} else if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 		item := h.flatItems[h.cursor]
 		if item.Type == session.ItemTypeGroup {
 			contextTitle = "Group"
@@ -12155,7 +12160,7 @@ func (h *Home) renderHelpBarCurated() string {
 		add(joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate)), "new")
 		add(h.actionKey(hotkeyImport), "import")
 		add(h.actionKey(hotkeyCreateGroup), "group")
-	case h.cursor < len(h.flatItems):
+	case h.cursor >= 0 && h.cursor < len(h.flatItems):
 		hints = append(hints, h.curatedContextHints(h.flatItems[h.cursor])...)
 	}
 

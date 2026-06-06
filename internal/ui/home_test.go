@@ -2239,6 +2239,79 @@ func TestFooterDefaultIsFull(t *testing.T) {
 	}
 }
 
+// TestFooterUnsetOrUnknownModeRendersHistoricBar guards the renderHelpBar
+// routing directly: a truly-unset ("") or unrecognized footerMode must render
+// the HISTORIC width-adaptive bar, NOT the curated bar. Only an explicit
+// curated setting selects curated. This covers the path that
+// TestFooterDefaultIsFull masks by hard-setting the normalized GetFooter value;
+// here we set footerMode to raw values that bypass GetFooter normalization.
+func TestFooterUnsetOrUnknownModeRendersHistoricBar(t *testing.T) {
+	mkHome := func(mode string) *Home {
+		home := NewHome()
+		home.width = 120
+		home.height = 30
+		home.footerMode = mode
+		home.flatItems = []session.Item{
+			{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+		}
+		home.cursor = 0
+		return home
+	}
+
+	// The verbose width-adaptive bar (full tier at width 120) renders a
+	// capitalized context title ("Session:") that the curated bar never emits;
+	// the curated bar uses lowercase inline labels ("attach", "settings"). Use
+	// the "Session:" prefix as the distinguishing marker.
+	const historicMarker = "Session:"
+	curated := mkHome(session.FooterCurated).renderHelpBar()
+	if strings.Contains(curated, historicMarker) {
+		t.Fatalf("precondition failed: curated bar unexpectedly contains %q; marker invalid", historicMarker)
+	}
+
+	for _, mode := range []string{"", "bogus", "FULL-ish", "default"} {
+		got := mkHome(mode).renderHelpBar()
+		if got == curated {
+			t.Errorf("footerMode=%q rendered the curated bar; unset/unknown must route to the historic bar", mode)
+		}
+		if !strings.Contains(got, historicMarker) {
+			t.Errorf("footerMode=%q did not render the historic verbose bar (no %q marker)", mode, historicMarker)
+		}
+	}
+}
+
+// TestRenderHelpBarCursorNegativeNoPanic guards against a negative-index panic:
+// with items present but cursor == -1 (e.g. a transient state before cursor is
+// restored), the help-bar renderers must not index flatItems[-1]. Exercises
+// every footer mode that has a cursor-indexed context branch.
+func TestRenderHelpBarCursorNegativeNoPanic(t *testing.T) {
+	modes := []string{
+		session.FooterCurated,
+		session.FooterFull,
+		session.FooterCompact,
+		session.FooterMinimal,
+		"", // unset → historic width-adaptive
+	}
+	for _, mode := range modes {
+		home := NewHome()
+		home.width = 120
+		home.height = 30
+		home.footerMode = mode
+		home.flatItems = []session.Item{
+			{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+		}
+		home.cursor = -1 // items present, but no valid selection
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("footerMode=%q: renderHelpBar panicked with cursor=-1: %v", mode, r)
+				}
+			}()
+			_ = home.renderHelpBar()
+		}()
+	}
+}
+
 // newTestHomeWithItems creates a Home with flatItems populated, initial loading disabled, and sized.
 func newTestHomeWithItems(width, height int, items []session.Item) *Home {
 	home := NewHome()
