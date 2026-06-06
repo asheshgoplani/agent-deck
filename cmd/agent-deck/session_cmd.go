@@ -684,9 +684,10 @@ func handleSessionFork(profile string, args []string) {
 	// Verify this tool has a session-fork implementation.
 	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
 	isPiFork := inst.Tool == "pi"
-	if !isClaudeFork && !isPiFork {
+	isOpenCodeFork := inst.Tool == "opencode"
+	if !isClaudeFork && !isPiFork && !isOpenCodeFork {
 		out.Error(
-			fmt.Sprintf("session '%s' is not a Claude session or Pi session (tool: %s)", inst.Title, inst.Tool),
+			fmt.Sprintf("session '%s' is not a forkable session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
@@ -699,12 +700,8 @@ func handleSessionFork(profile string, args []string) {
 
 	// Verify it can be forked.
 	if !inst.CanFork() {
-		reason := "no active Claude session ID"
-		if isPiFork {
-			reason = "no Agent Deck Pi session directory"
-		}
 		out.Error(
-			fmt.Sprintf("session '%s' cannot be forked: %s", inst.Title, reason),
+			fmt.Sprintf("session '%s' cannot be forked: no resumable session for tool %s", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
@@ -927,6 +924,16 @@ func handleSessionFork(profile string, args []string) {
 	switch {
 	case isPiFork:
 		forkedInst, _, err = inst.CreateForkedPiInstanceWithOptions(forkTitle, forkGroup, opts)
+	case isOpenCodeFork:
+		workDir := inst.ProjectPath
+		repoRoot := ""
+		branch := ""
+		if opts != nil && opts.WorkDir != "" {
+			workDir = opts.WorkDir
+			repoRoot = opts.WorktreeRepoRoot
+			branch = opts.WorktreeBranch
+		}
+		forkedInst, _, err = inst.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(forkTitle, forkGroup, nil, workDir, repoRoot, branch)
 	default:
 		forkedInst, _, err = inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
 	}
