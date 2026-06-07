@@ -27,7 +27,7 @@ Verification already run during validation:
 
 ```bash
 git diff --check main...HEAD
-GOCACHE=/private/tmp/agent-deck-validate-go-cache GOTOOLCHAIN=local go test ./internal/session ./internal/ui ./cmd/agent-deck -run 'Fork|ForkSettings|SetField_OpenCode|SetField_Codex|Codex|OpenCode|SettingsPanel_Fork|ForkDialog' -count=1
+GOCACHE=/private/tmp/agent-deck-validate-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session ./internal/ui ./cmd/agent-deck -run 'Fork|ForkSettings|SetField_OpenCode|SetField_Codex|Codex|OpenCode|SettingsPanel_Fork|ForkDialog' -count=1
 ```
 
 Expected current result before implementing this plan: both commands pass, but they do not cover the validated gaps above.
@@ -204,7 +204,7 @@ func TestCreateForkedInstanceForTool_CodexCompatibleUsesCodexFork(t *testing.T) 
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session -run 'TestCreateForkedInstanceForTool' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session -run 'TestCreateForkedInstanceForTool' -count=1
 ```
 
 Expected: FAIL because `CreateForkedInstanceForTool` does not exist.
@@ -299,7 +299,7 @@ forked, _, err := parent.CreateForkedInstanceForTool(parent.Title+" (fork)", par
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session ./internal/ui ./cmd/agent-deck -run 'TestCreateForkedInstanceForTool|TestWebMutatorForkSessionUsesSharedToolDispatcher|TestSessionFork_AdmitsOpenCode|TestCodexFork' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session ./internal/ui ./cmd/agent-deck -run 'TestCreateForkedInstanceForTool|TestWebMutatorForkSessionUsesSharedToolDispatcher|TestSessionFork_AdmitsOpenCode|TestCodexFork' -count=1
 ```
 
 Expected: PASS.
@@ -334,19 +334,23 @@ if !ms.CanFork {
 }
 ```
 
-In the fixture for that test, make the instance forkable:
+In the fixture for that test, make the instance forkable. The fixture already sets
+`inst.ClaudeSessionID = "claude-1"` and an existing assertion checks
+`ms.ClaudeSessionID == "claude-1"`, so do **NOT** overwrite the session ID —
+Claude's `CanFork()` only additionally needs a recent `ClaudeDetectedAt`. Add just:
 
 ```go
-inst.ClaudeSessionID = "11111111-2222-3333-4444-555555555555"
 inst.ClaudeDetectedAt = time.Now()
 ```
+
+(ensure `time` is imported in the test file.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/web -run 'TestToMenuSessionMapsInstanceFields' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/web -run 'TestToMenuSessionMapsInstanceFields' -count=1
 ```
 
 Expected: FAIL because `MenuSession.CanFork` does not exist.
@@ -412,7 +416,7 @@ await expect(page.locator('[title="Fork"]')).toHaveCount(0)
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/web -run 'TestToMenuSessionMapsInstanceFields|TestMenuSession' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/web -run 'TestToMenuSessionMapsInstanceFields|TestMenuSession' -count=1
 ```
 
 Expected: PASS.
@@ -469,7 +473,7 @@ func TestForkDialog_Show_UsesForkBranchPrefix(t *testing.T) {
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/ui -run 'TestForkDialog_Show_UsesForkBranchPrefix' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/ui -run 'TestForkDialog_Show_UsesForkBranchPrefix' -count=1
 ```
 
 Expected: FAIL with branch `fork/fix-bug`.
@@ -513,7 +517,7 @@ d.branchInput.SetValue("fork/" + git.SanitizeBranchName(strings.ToLower(original
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/ui -run 'TestForkDialog_Show_UsesForkBranchPrefix|TestQuickForkInputs_BranchPrefixOverride|TestForkDialog_Show_SeedsComprehensiveWithStateDefault' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/ui -run 'TestForkDialog_Show_UsesForkBranchPrefix|TestQuickForkInputs_BranchPrefixOverride|TestForkDialog_Show_SeedsComprehensiveWithStateDefault' -count=1
 ```
 
 Expected: PASS.
@@ -589,7 +593,7 @@ func TestSetField_SessionID_ClearStillAllowed(t *testing.T) {
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session -run 'TestSetField_(OpenCodeSessionID_RejectsShellMeta|CodexSessionID_RejectsNonUUID|SessionID_ClearStillAllowed)' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session -run 'TestSetField_(OpenCodeSessionID_RejectsShellMeta|CodexSessionID_RejectsNonUUID|SessionID_ClearStillAllowed)' -count=1
 ```
 
 Expected: first two tests FAIL because invalid values are accepted.
@@ -678,8 +682,11 @@ func TestOpenCodeForkScriptQuotesWorkDir(t *testing.T) {
 	if strings.Contains(string(body), `cd "/tmp/project with "quote""`) {
 		t.Fatalf("workDir is embedded unsafely:\n%s", body)
 	}
-	if !strings.Contains(string(body), `opencode export 'ses_parent_123'`) {
-		t.Fatalf("opencode session id should be shell-quoted in export command:\n%s", body)
+	// shellescape.Quote leaves quote-free strings bare, and validateToolSessionID
+	// guarantees the id has no shell metacharacters, so assert the bare value
+	// (the workDir-with-quotes check above is what proves the quoting is applied).
+	if !strings.Contains(string(body), `opencode export ses_parent_123`) {
+		t.Fatalf("opencode session id should flow through shellescape.Quote in the export command:\n%s", body)
 	}
 }
 ```
@@ -735,7 +742,7 @@ return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, s
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session -run 'TestSetField_(OpenCodeSessionID|CodexSessionID|SessionID)|TestOpenCodeForkScriptQuotesWorkDir|TestCreateForkedCodexInstance' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session -run 'TestSetField_(OpenCodeSessionID|CodexSessionID|SessionID)|TestOpenCodeForkScriptQuotesWorkDir|TestCreateForkedCodexInstance' -count=1
 ```
 
 Expected: PASS.
@@ -806,7 +813,7 @@ if forkErr != nil {
 Run in an environment without at least one tool installed:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
 ```
 
 Expected: tests for missing tools are SKIP, not PASS-after-error.
@@ -816,7 +823,7 @@ Expected: tests for missing tools are SKIP, not PASS-after-error.
 Run in an environment with `pi`, `opencode`, and `codex` available:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
 ```
 
 Expected: PASS only when each fork command exits successfully and the destination branch exists.
@@ -955,7 +962,7 @@ Expected: no output, exit 0.
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session ./internal/ui ./internal/web ./cmd/agent-deck -run 'Fork|ForkSettings|SetField_OpenCode|SetField_Codex|Codex|OpenCode|SettingsPanel_Fork|ForkDialog|MenuSession|WebMutator' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session ./internal/ui ./internal/web ./cmd/agent-deck -run 'Fork|ForkSettings|SetField_OpenCode|SetField_Codex|Codex|OpenCode|SettingsPanel_Fork|ForkDialog|MenuSession|WebMutator' -count=1
 ```
 
 Expected: PASS.
@@ -965,7 +972,7 @@ Expected: PASS.
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test -tags eval_smoke ./tests/eval/session -run 'TestEval_SessionFork(Pi|OpenCode|Codex)_RealBinary' -count=1
 ```
 
 Expected: PASS for installed tools, SKIP for missing tools. Any non-skip failure is a blocker.
@@ -975,7 +982,7 @@ Expected: PASS for installed tools, SKIP for missing tools. Any non-skip failure
 Run:
 
 ```bash
-GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=local go test ./internal/session ./internal/ui ./internal/web ./cmd/agent-deck -count=1
+GOCACHE=/private/tmp/agent-deck-fork-remediation-go-cache GOTOOLCHAIN=go1.25.11 go test ./internal/session ./internal/ui ./internal/web ./cmd/agent-deck -count=1
 ```
 
 Expected: PASS in a normal local environment. If sandbox blocks localhost binds or network-backed subprocess builds, record exact failures and rerun with the needed local permissions or warmed caches before merge.
