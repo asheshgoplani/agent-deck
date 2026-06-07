@@ -365,3 +365,72 @@ func TestMergeMigrationPath_ConcurrentDestinationFileIsPreserved(t *testing.T) {
 		t.Fatalf("concurrent destination clobbered: got %q, want %q", string(data), "live-agent-deck-write")
 	}
 }
+
+// TestCopyMigrationFile_AtomicLeavesNoTempArtifacts verifies the atomic
+// copy-via-temp path: after a successful copy the destination has the expected
+// contents/mode and NO stray temp file is left behind in the destination dir.
+func TestCopyMigrationFile_AtomicLeavesNoTempArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "sub", "dest")
+	if err := os.WriteFile(source, []byte("legacy-content"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyMigrationFile(source, dest, 0o640); err != nil {
+		t.Fatalf("copyMigrationFile: %v", err)
+	}
+	assertMigrationFile(t, dest, "legacy-content")
+
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat dest: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("dest mode = %o, want 0640", info.Mode().Perm())
+	}
+
+	entries, err := os.ReadDir(filepath.Dir(dest))
+	if err != nil {
+		t.Fatalf("read dest dir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "dest" {
+			t.Fatalf("stray artifact left in destination dir: %q", e.Name())
+		}
+	}
+}
+
+// TestCopyMigrationFile_FailedCopyLeavesNoPartialDestination is the core
+// data-safety guard for the atomic copy: if the copy fails mid-stream, no
+// partial file may exist at the FINAL destination name (which a later run would
+// otherwise mistake for an existing XDG conflict), and no temp artifact may be
+// left behind. We force a copy failure by making the source a directory passed
+// straight to copyMigrationFile (io.Copy from a dir fd errors on read).
+func TestCopyMigrationFile_FailedCopyLeavesNoPartialDestination(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "srcdir")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "sub", "dest")
+
+	err := copyMigrationFile(source, dest, 0o600)
+	if err == nil {
+		t.Fatal("expected copyMigrationFile to fail when source is a directory")
+	}
+	if errors.Is(err, errDestinationExists) {
+		t.Fatalf("unexpected conflict sentinel: %v", err)
+	}
+
+	// The final destination name must NOT exist — no partial file.
+	if _, statErr := os.Lstat(dest); !os.IsNotExist(statErr) {
+		t.Fatalf("partial destination left behind: stat err = %v", statErr)
+	}
+	// No temp artifact may remain in the destination directory.
+	if entries, readErr := os.ReadDir(filepath.Dir(dest)); readErr == nil {
+		for _, e := range entries {
+			t.Fatalf("stray temp artifact left behind: %q", e.Name())
+		}
+	}
+}

@@ -335,8 +335,9 @@ func copyMigrationDir(source, destination string) error {
 }
 
 func copyMigrationFile(source, destination string, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return fmt.Errorf("create destination parent %q: %w", filepath.Dir(destination), err)
+	dstDir := filepath.Dir(destination)
+	if err := os.MkdirAll(dstDir, 0o700); err != nil {
+		return fmt.Errorf("create destination parent %q: %w", dstDir, err)
 	}
 	src, err := os.Open(source)
 	if err != nil {
@@ -344,25 +345,51 @@ func copyMigrationFile(source, destination string, mode fs.FileMode) error {
 	}
 	defer src.Close()
 
-	// Atomic no-clobber create (Blocker 1, TOCTOU fix). O_EXCL guarantees we
-	// never truncate a destination that a concurrent Agent Deck process may
-	// have created after the caller's existence check. On EEXIST we surface the
-	// race as a conflict sentinel; the caller preserves the existing file.
-	dst, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	// Atomic copy (data-safety): stream into a private temp file in the SAME
+	// directory, fsync + close it, then atomically publish it to the final
+	// name. A copy/close/sync failure therefore never leaves a partial file at
+	// the destination that a later run would mistake for an existing XDG
+	// conflict — the partial only ever exists under the temp name and is
+	// removed on any error.
+	tmp, err := os.CreateTemp(dstDir, ".agentdeck-migrate-*")
 	if err != nil {
+		return fmt.Errorf("create temp file in %q: %w", dstDir, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("copy %q to %q: %w", source, destination, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("sync temp file for %q: %w", destination, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp file for %q: %w", destination, err)
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		cleanup()
+		return fmt.Errorf("chmod temp file for %q: %w", destination, err)
+	}
+
+	// Atomic no-clobber publish (Blocker 1, TOCTOU fix). os.Link refuses to
+	// overwrite an existing name (EEXIST), so we never truncate a destination
+	// that a concurrent Agent Deck process created after the caller's existence
+	// check. On EEXIST we surface the race as a conflict sentinel; the caller
+	// preserves the existing file. The temp is always removed afterwards.
+	if err := os.Link(tmpName, destination); err != nil {
+		cleanup()
 		if errors.Is(err, os.ErrExist) {
 			return errDestinationExists
 		}
-		return fmt.Errorf("open destination %q: %w", destination, err)
+		return fmt.Errorf("publish destination %q: %w", destination, err)
 	}
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = dst.Close()
-		return fmt.Errorf("copy %q to %q: %w", source, destination, err)
-	}
-	if err := dst.Close(); err != nil {
-		return fmt.Errorf("close destination %q: %w", destination, err)
-	}
-	_ = os.Chmod(destination, mode)
+	cleanup()
 	return nil
 }
 
