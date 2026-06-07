@@ -240,7 +240,7 @@ func TestNewStorageWithProfile_UsesXDGDataHome(t *testing.T) {
 }
 
 func TestXDGDataTask4_RuntimeStateDirsUseXDGDataHomeForNewUser(t *testing.T) {
-	home, _, xdgDataHome := setupSessionXDGPathEnv(t)
+	_, _, xdgDataHome := setupSessionXDGPathEnv(t)
 
 	tests := []struct {
 		name string
@@ -284,7 +284,7 @@ func TestXDGDataTask4_RuntimeStateDirsUseXDGDataHomeForNewUser(t *testing.T) {
 		},
 		{
 			name: "worker scratch",
-			got:  workerScratchDirRoot(home),
+			got:  workerScratchDirRoot(),
 			want: filepath.Join(xdgDataHome, "agent-deck", "worker-scratch"),
 		},
 	}
