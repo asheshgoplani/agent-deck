@@ -6523,8 +6523,11 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 		return "", fmt.Errorf("cannot fork: no resumable Codex session")
 	}
 	envPrefix := target.buildEnvSourceCommand()
-	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%q AGENTDECK_TOOL=%s ",
-		target.ID, target.Title, target.Tool)
+	// Shell-quote the injected env values: target.Title is user-editable and could
+	// contain shell metacharacters (e.g. $(...) or backticks), and custom Codex-tool
+	// identities are config-defined — keep the generated fork command injection-safe.
+	envPrefix += fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s AGENTDECK_TITLE=%s AGENTDECK_TOOL=%s ",
+		shellescape.Quote(target.ID), shellescape.Quote(target.Title), shellescape.Quote(target.Tool))
 	yoloFlag := target.resolveCodexYoloFlag()
 	modelFlag := target.resolveCodexModelFlag()
 	command := target.resolveCodexCommand(baseCommand)

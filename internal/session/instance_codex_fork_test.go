@@ -180,3 +180,27 @@ func TestCreateForkedCodexInstance_PreservesCompatibleToolIdentity(t *testing.T)
 		t.Fatalf("fork command must use the compatible tool command; got %q", cmd)
 	}
 }
+
+// TestCreateForkedCodexInstance_ShellQuotesEnvPrefix guards the PR #1299 review
+// finding: a user-editable session title containing shell metacharacters must be
+// shell-quoted in the generated fork launch command, not Go-%q-quoted (which would
+// still allow $(...) / backtick expansion under a shell).
+func TestCreateForkedCodexInstance_ShellQuotesEnvPrefix(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sid := "dddddddd-2222-3333-4444-555555555555"
+	seedCodexRollout(t, home, sid)
+
+	parent := NewInstanceWithTool("cx parent", "/tmp/original", "codex")
+	parent.CodexSessionID = sid
+	parent.CodexDetectedAt = time.Now()
+
+	evil := "pwn $(touch /tmp/agentdeck-pwn)"
+	_, cmd, err := parent.CreateForkedCodexInstanceWithOptions(evil, "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedCodexInstanceWithOptions: %v", err)
+	}
+	if !strings.Contains(cmd, "AGENTDECK_TITLE="+shellescape.Quote(evil)) {
+		t.Fatalf("AGENTDECK_TITLE must be shell-quoted via shellescape.Quote; got: %s", cmd)
+	}
+}
