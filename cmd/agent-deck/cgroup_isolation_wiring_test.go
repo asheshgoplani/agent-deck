@@ -42,7 +42,10 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 			t.Skip("skipping subprocess integration test in short mode")
 		}
 		tmpHome := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(tmpHome, ".agent-deck"), 0o755); err != nil {
+		xdgConfigHome := filepath.Join(tmpHome, ".config")
+		xdgDataHome := filepath.Join(tmpHome, ".local", "share")
+		xdgCacheHome := filepath.Join(tmpHome, ".cache")
+		if err := os.MkdirAll(filepath.Join(xdgCacheHome, "agent-deck"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		binPath := filepath.Join(t.TempDir(), "agent-deck-test")
@@ -72,6 +75,9 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		}
 		env = append(env,
 			"HOME="+tmpHome,
+			"XDG_CONFIG_HOME="+xdgConfigHome,
+			"XDG_DATA_HOME="+xdgDataHome,
+			"XDG_CACHE_HOME="+xdgCacheHome,
 			"AGENTDECK_DEBUG=1",
 			"AGENTDECK_PROFILE=test-obs01",
 			"TERM=dumb",
@@ -91,7 +97,7 @@ func TestLogCgroupIsolationDecision_WiredIntoBootstrap(t *testing.T) {
 		// Allow lumberjack to flush after SIGTERM.
 		time.Sleep(200 * time.Millisecond)
 
-		logPath := filepath.Join(tmpHome, ".agent-deck", "debug.log")
+		logPath := filepath.Join(xdgCacheHome, "agent-deck", "debug.log")
 		data, err := os.ReadFile(logPath)
 		if err != nil {
 			t.Fatalf("OBS-01-WIRE-UP-MISSING: read debug.log at %s: %v", logPath, err)

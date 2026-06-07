@@ -32,24 +32,9 @@ func TestNewHome(t *testing.T) {
 }
 
 func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
-	session.ClearUserConfigCache()
-	defer func() {
-		os.Setenv("HOME", origHome)
-		session.ClearUserConfigCache()
-	}()
-
-	configDir := filepath.Join(tmpHome, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() failed: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.toml")
+	homeDir := setXDGTestHome(t)
 	config := "[tmux]\ninject_status_line = false\n"
-	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
+	writeXDGTestConfig(t, homeDir, config)
 
 	home := NewHome()
 	if home.manageTmuxNotifications {
@@ -926,17 +911,7 @@ func TestNotesSectionLineBudget(t *testing.T) {
 func setFollowCwdOnAttachConfigForTest(t *testing.T, enabled *bool) {
 	t.Helper()
 
-	homeDir, err := os.MkdirTemp("", "follow-cwd-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(homeDir) })
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
+	homeDir := setXDGTestHome(t)
 
 	if enabled != nil {
 		value := "false"
@@ -944,30 +919,14 @@ func setFollowCwdOnAttachConfigForTest(t *testing.T, enabled *bool) {
 			value = "true"
 		}
 		content := fmt.Sprintf("[instances]\nfollow_cwd_on_attach = %s\n", value)
-		configPath := filepath.Join(configDir, session.UserConfigFileName)
-		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
-			t.Fatalf("failed to write config.toml: %v", err)
-		}
+		writeXDGTestConfig(t, homeDir, content)
 	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
 }
 
 func setPreviewShowNotesConfigForTest(t *testing.T, enabled *bool) {
 	t.Helper()
 
-	homeDir, err := os.MkdirTemp("", "follow-cwd-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(homeDir) })
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
+	homeDir := setXDGTestHome(t)
 
 	if enabled != nil {
 		value := "false"
@@ -975,14 +934,8 @@ func setPreviewShowNotesConfigForTest(t *testing.T, enabled *bool) {
 			value = "true"
 		}
 		content := fmt.Sprintf("[preview]\nshow_notes = %s\n", value)
-		configPath := filepath.Join(configDir, session.UserConfigFileName)
-		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
-			t.Fatalf("failed to write config.toml: %v", err)
-		}
+		writeXDGTestConfig(t, homeDir, content)
 	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
 }
 
 func TestFollowAttachReturnCwdEnabledUpdatesProjectPath(t *testing.T) {

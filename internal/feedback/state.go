@@ -8,10 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 // State holds the persisted feedback preferences for a user.
-// File: ~/.agent-deck/feedback-state.json. Always serializes all fields (D-05).
+// File: feedback-state.json in the XDG data directory, with legacy fallback.
+// Always serializes all fields (D-05).
 //
 // v1.7.41 added LaunchCount, FirstSeenAt, LastPromptedAt to pace the first
 // prompt for new users. Serialized via RFC3339 through time.Time's MarshalJSON.
@@ -60,27 +63,12 @@ func defaultState() *State {
 	}
 }
 
-// agentDeckDir returns the base agent-deck directory (~/.agent-deck).
-// Inlined here to avoid importing internal/session, which is a heavyweight
-// package and would create a circular import risk if session ever imports feedback.
-func agentDeckDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("feedback: get home dir: %w", err)
-	}
-	return filepath.Join(home, ".agent-deck"), nil
-}
-
 // statePath returns the absolute path to the feedback state file.
 func statePath() (string, error) {
-	dir, err := agentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "feedback-state.json"), nil
+	return agentpaths.EffectiveDataPath("feedback-state.json", "feedback-state.json")
 }
 
-// LoadState reads ~/.agent-deck/feedback-state.json and returns the state.
+// LoadState reads feedback-state.json and returns the state.
 // If the file does not exist, it returns a default State (FeedbackEnabled=true, MaxShows=3).
 // A missing file is NOT an error. A malformed file returns a default state to prevent crashes.
 func LoadState() (*State, error) {
@@ -105,13 +93,14 @@ func LoadState() (*State, error) {
 	return &s, nil
 }
 
-// SaveState atomically writes the state to ~/.agent-deck/feedback-state.json.
+// SaveState atomically writes the feedback state file.
 // Uses tmp+rename to prevent partial writes (T-01-01).
 func SaveState(s *State) error {
-	dir, err := agentDeckDir()
+	path, err := statePath()
 	if err != nil {
-		return fmt.Errorf("feedback: get agent-deck dir: %w", err)
+		return fmt.Errorf("feedback: get state path: %w", err)
 	}
+	dir := filepath.Dir(path)
 
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("feedback: create dir: %w", err)
@@ -122,7 +111,6 @@ func SaveState(s *State) error {
 		return fmt.Errorf("feedback: marshal state: %w", err)
 	}
 
-	path := filepath.Join(dir, "feedback-state.json")
 	tmpPath := path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		return fmt.Errorf("feedback: write tmp: %w", err)

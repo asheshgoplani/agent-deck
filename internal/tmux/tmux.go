@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/BurntSushi/toml"
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	dark "github.com/thiagokokada/dark-mode-go"
@@ -54,10 +55,9 @@ func resolvedAgentDeckTheme() string {
 	type cfg struct {
 		Theme string `toml:"theme"`
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
+	if configPath, err := agentpaths.EffectiveConfigPath("config.toml"); err == nil {
 		var c cfg
-		if _, err := toml.DecodeFile(filepath.Join(home, ".agent-deck", "config.toml"), &c); err == nil {
+		if _, err := toml.DecodeFile(configPath, &c); err == nil {
 			switch c.Theme {
 			case "light", "dark":
 				return c.Theme
@@ -1323,23 +1323,18 @@ func (s *Session) SetClearOnRestart(clear bool) {
 }
 
 // LogFile returns the path to this session's log file
-// Logs are stored in ~/.agent-deck/logs/<session-name>.log
+// Logs are stored under the XDG data directory, falling back to legacy logs.
 func (s *Session) LogFile() string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		homeDir = "/tmp"
-	}
-	logDir := filepath.Join(homeDir, ".agent-deck", "logs")
-	return filepath.Join(logDir, s.Name+".log")
+	return filepath.Join(LogDir(), s.Name+".log")
 }
 
 // LogDir returns the directory containing all session logs
 func LogDir() string {
-	homeDir, err := os.UserHomeDir()
+	logDir, err := agentpaths.EffectiveDataPath("logs", "logs")
 	if err != nil {
-		homeDir = "/tmp"
+		return filepath.Join(os.TempDir(), "agent-deck", "logs")
 	}
-	return filepath.Join(homeDir, ".agent-deck", "logs")
+	return logDir
 }
 
 // NewSession creates a new Session instance with a unique name
@@ -4790,13 +4785,22 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 	return cmd.Run()
 }
 
+const ackSignalLegacyMarker = ".ack-signal-legacy"
+
 // GetAckSignalPath returns the path to the acknowledgment signal file
 func GetAckSignalPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	return agentpaths.EffectiveDataPath("ack-signal", "ack-signal", ackSignalLegacyMarker)
+}
+
+func preserveLegacyAckSignalPath(signalFile string) {
+	legacyDir, err := agentpaths.LegacyDir()
 	if err != nil {
-		return "", err
+		return
 	}
-	return filepath.Join(homeDir, ".agent-deck", "ack-signal"), nil
+	if filepath.Clean(signalFile) != filepath.Join(legacyDir, "ack-signal") {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(legacyDir, ackSignalLegacyMarker), []byte{}, 0o600)
 }
 
 // ReadAndClearAckSignal reads the session ID from the signal file and deletes it.
@@ -4813,6 +4817,7 @@ func ReadAndClearAckSignal() string {
 	}
 
 	// Delete the file immediately after reading
+	preserveLegacyAckSignalPath(signalFile)
 	_ = os.Remove(signalFile)
 
 	return strings.TrimSpace(string(data))

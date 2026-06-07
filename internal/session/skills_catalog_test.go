@@ -110,6 +110,54 @@ func TestLoadSkillSources_DefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestGetSkillPoolPath_UsesXDGConfigForNewInstall(t *testing.T) {
+	homeDir, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+	xdgConfigHome := filepath.Join(homeDir, "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+
+	got, err := GetSkillPoolPath()
+	if err != nil {
+		t.Fatalf("GetSkillPoolPath failed: %v", err)
+	}
+	want := filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool")
+	if got != want {
+		t.Fatalf("GetSkillPoolPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGetSkillPoolPath_LegacySkillsFallback(t *testing.T) {
+	homeDir, cleanup := setupSkillTestEnv(t)
+	defer cleanup()
+	xdgConfigHome := filepath.Join(homeDir, "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	legacySkills := filepath.Join(homeDir, ".agent-deck", "skills")
+	if err := os.MkdirAll(filepath.Join(legacySkills, "pool"), 0o700); err != nil {
+		t.Fatalf("mkdir legacy skills pool: %v", err)
+	}
+
+	got, err := GetSkillPoolPath()
+	if err != nil {
+		t.Fatalf("GetSkillPoolPath failed: %v", err)
+	}
+	want := filepath.Join(legacySkills, "pool")
+	if got != want {
+		t.Fatalf("GetSkillPoolPath() = %q, want legacy %q", got, want)
+	}
+
+	if err := os.MkdirAll(filepath.Join(xdgConfigHome, "agent-deck", "skills"), 0o700); err != nil {
+		t.Fatalf("mkdir XDG skills root: %v", err)
+	}
+	got, err = GetSkillPoolPath()
+	if err != nil {
+		t.Fatalf("GetSkillPoolPath with XDG marker failed: %v", err)
+	}
+	want = filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool")
+	if got != want {
+		t.Fatalf("XDG skills root should win once present: got %q want %q", got, want)
+	}
+}
+
 func TestExpandSkillPath_DollarHome(t *testing.T) {
 	homeDir, cleanup := setupSkillTestEnv(t)
 	defer cleanup()

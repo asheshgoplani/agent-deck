@@ -80,6 +80,19 @@ func NewReviver() *Reviver {
 }
 
 // Classify decides which bucket an instance falls into at scan time.
+//
+// TODO(revive-liveness): after a tmux SERVER restart (OOM/SIGKILL +
+// systemd Restart=on-failure, or a manual restart), a session that is in
+// fact alive under the NEW server can briefly probe as not-found if the
+// has-session call races the server coming back up. Today that yields
+// ClassDead, which is never auto-revived — so a transient miss permanently
+// strands a recoverable session until the user restarts it manually. A fix
+// (single short retry on a confirmed-not-found probe, scoped to revive so it
+// does not add latency to the shared HasSession hot path) is deferred: it is
+// orthogonal to the data-loss race fixed here and carries its own regression
+// risk for the watchPipe reconnect loop that shares the probe. The
+// data-loss-critical half (revive never clobbering concurrently-added rows)
+// is fixed via Storage.PersistRevivedInstances.
 func (r *Reviver) Classify(inst *Instance) RevivalClass {
 	name := instanceTmuxName(inst)
 	if !r.TmuxExists(name, inst.TmuxSocketName) {
@@ -95,6 +108,18 @@ func (r *Reviver) Classify(inst *Instance) RevivalClass {
 // those in ClassErrored. Calls are staggered by r.Stagger. Alive/dead entries
 // do NOT consume a stagger slot — total wall clock scales with errored count,
 // not total count.
+//
+// MUTATION INVARIANT (relied on by the CLI persist path, revive_cmd.go):
+// ReviveAll mutates an instance ONLY when it both (a) classifies it ClassErrored
+// AND (b) its ReviveAction succeeds (outcome.Revived == true). ClassAlive and
+// ClassDead instances are classified and returned untouched — no status flip, no
+// timestamp/socket normalization. The only field a successful revive writes is
+// Instance.Status (StatusError → StatusRunning; see defaultReviveAction). The
+// caller therefore persists exactly the Revived subset, status-only, and nothing
+// else. If a future ReviveAction starts normalizing already-alive sessions or
+// mutating other fields, this invariant — and the targeted persist in
+// runReviveAll / PersistRevivedInstances — MUST be revisited so those mutations
+// are not silently dropped.
 func (r *Reviver) ReviveAll(instances []*Instance) []ReviveOutcome {
 	outcomes := make([]ReviveOutcome, 0, len(instances))
 	firstRevive := true

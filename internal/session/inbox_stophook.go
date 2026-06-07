@@ -44,11 +44,11 @@ type StopHookDecision struct {
 }
 
 func stopBlocksDir() string {
-	dir, err := GetAgentDeckDir()
+	dir, err := runtimeDataPath("stop-blocks")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "runtime", "stop-blocks")
+		return tempAgentDeckPath("runtime", "stop-blocks")
 	}
-	return filepath.Join(dir, "runtime", "stop-blocks")
+	return dir
 }
 
 func stopBlocksPathFor(instanceID string) string {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
@@ -5744,12 +5746,25 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return h, cmd
 	}
 
-	switch msg.String() {
-	case "enter":
-		if h.newDialog.shouldHandleEnterLocally() {
+	// Ctrl+S is an explicit "create now" shortcut that submits from any field,
+	// including Name/Branch where Enter advances focus instead of submitting.
+	// Route it through the same path as a submitting Enter by falling through to
+	// the submit block below.
+	submitNow := h.newDialog.WantsSubmit(msg)
+
+	switch {
+	case msg.String() == "enter" || submitNow:
+		if !submitNow && h.newDialog.shouldHandleEnterLocally() {
 			var cmd tea.Cmd
 			h.newDialog, cmd = h.newDialog.Update(msg)
 			return h, cmd
+		}
+
+		// Ctrl+S can fire mid-edit of a multi-repo path. The in-flight text
+		// lives only in pathInput (Enter is the sole committer), so flush it
+		// into multiRepoPaths first; otherwise submit would use stale data.
+		if submitNow {
+			h.newDialog.CommitInFlightMultiRepoEdit()
 		}
 
 		// Validate before creating session
@@ -5874,7 +5889,7 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			tempID,
 		)
 
-	case "esc":
+	case msg.String() == "esc":
 		// #1162: when the model picker dropdown is open, Esc dismisses only the
 		// picker and keeps the new-session form alive (focus stays on the model
 		// field) rather than cancelling the whole flow. Forward to the dialog so
@@ -8411,6 +8426,21 @@ func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []stri
 	}
 }
 
+// multiRepoWorktreesRoot resolves the persistent parent directory for
+// multi-repo worktrees and symlink trees. The returned path is recorded in
+// session state (Instance.MultiRepoTempDir, worktree paths), so it MUST be a
+// stable, non-ephemeral location. We therefore propagate any resolution error
+// to the caller rather than falling back to os.TempDir(): worktree/symlink
+// state placed under temp storage would be silently removed by a reboot or
+// tmp cleanup, breaking the affected sessions (Codex round-2 P1).
+func multiRepoWorktreesRoot() (string, error) {
+	dir, err := agentpaths.EffectiveDataPath("multi-repo-worktrees", "multi-repo-worktrees")
+	if err != nil {
+		return "", fmt.Errorf("resolve multi-repo worktrees root: %w", err)
+	}
+	return dir, nil
+}
+
 // handleSkillDialogKey handles keys when Skills dialog is visible
 func (h *Home) handleSkillDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -8619,8 +8649,13 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 				parentID := h.forkDialog.GetParentSessionID()
 				parentPath := h.forkDialog.GetParentProjectPath()
+				sandboxEnabled := h.forkDialog.IsSandboxEnabled()
+				forkState := git.WorktreeStateOptions{
+					WithState:   h.forkDialog.IsWithStateEnabled(),
+					WithIgnored: h.forkDialog.IsWithStateAndGitignoredEnabled(),
+				}
 				h.forkDialog.Hide()
-				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, h.forkDialog.IsSandboxEnabled(), parentID, parentPath)
+				return h, h.forkSessionCmdWithOptions(source, title, groupPath, opts, sandboxEnabled, forkState, parentID, parentPath)
 			}
 		}
 		h.forkDialog.Hide()
@@ -8965,11 +9000,14 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 
 			if worktreeBranch != "" {
 				// Multi-repo + worktree: create a persistent parent dir with all worktrees inside.
-				// Layout: ~/.agent-deck/multi-repo-worktrees/<branch>-<id>/<repo-name>/
-				home, _ := os.UserHomeDir()
+				// Layout: <effective-data-dir>/multi-repo-worktrees/<branch>-<id>/<repo-name>/
 				sanitizedBranch := strings.ReplaceAll(worktreeBranch, "/", "-")
 				sanitizedBranch = strings.ReplaceAll(sanitizedBranch, " ", "-")
-				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees",
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("failed to resolve multi-repo worktree dir: %w", rootErr), tempID: tempID}
+				}
+				parentDir := filepath.Join(worktreesRoot,
 					fmt.Sprintf("%s-%s", sanitizedBranch, inst.ID[:8]))
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr), tempID: tempID}
@@ -8988,8 +9026,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				inst.AdditionalPaths = wtResult.MappedPaths[1:]
 			} else {
 				// Multi-repo without worktree: create a persistent parent dir with symlinks.
-				home, _ := os.UserHomeDir()
-				parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("failed to resolve multi-repo dir: %w", rootErr), tempID: tempID}
+				}
+				parentDir := filepath.Join(worktreesRoot, inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), tempID: tempID}
 				}
@@ -9401,10 +9442,169 @@ func (h *Home) forkSessionWithDialog(source *session.Instance) tea.Cmd {
 	return nil
 }
 
+type forkWithStateWorktreeDeps struct {
+	statPath                  func(string) (os.FileInfo, error)
+	mkdirAll                  func(string, os.FileMode) error
+	validateDestination       func(string, string) error
+	detectInProgressOperation func(string) (string, error)
+	hasSubmodules             func(string) bool
+	headCommit                func(string) (string, error)
+	createAtStartPoint        func(string, string, string, string) (bool, error)
+	materialize               func(string, string, bool) error
+	processInclude            func(string, string, io.Writer) error
+	runSetup                  func(string, string, io.Writer, io.Writer, time.Duration) error
+	removeWorktree            func(string, string, bool) error
+	deleteBranch              func(string, string, bool) error
+}
+
+func defaultForkWithStateWorktreeDeps() forkWithStateWorktreeDeps {
+	return forkWithStateWorktreeDeps{
+		statPath:                  os.Stat,
+		mkdirAll:                  os.MkdirAll,
+		validateDestination:       git.ValidateForkWithStateDestination,
+		detectInProgressOperation: git.DetectInProgressOperation,
+		hasSubmodules:             git.HasSubmodules,
+		headCommit:                git.HeadCommit,
+		createAtStartPoint:        git.CreateWorktreeAtStartPoint,
+		materialize:               git.MaterializeWipFromParent,
+		processInclude:            git.ProcessWorktreeInclude,
+		runSetup:                  git.RunWorktreeSetupAfterCreate,
+		removeWorktree:            git.RemoveWorktree,
+		deleteBranch:              git.DeleteBranch,
+	}
+}
+
+// forkInstanceDeps injects the post-helper instance-create/start/multi-repo and
+// rollback steps of forkSessionCmdWithOptions so the three rollback paths are
+// behaviorally testable (review finding G1).
+type forkInstanceDeps struct {
+	createInstance     func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error)
+	createMultiRepoDir func(inst, source *session.Instance) error
+	startInstance      func(inst *session.Instance) error
+	rollback           func(repoRoot, worktreePath, branch string)
+}
+
+func defaultForkInstanceDeps() forkInstanceDeps {
+	return forkInstanceDeps{
+		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
+			var inst *session.Instance
+			var err error
+			switch source.Tool {
+			case "opencode":
+				inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
+			case "pi":
+				inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
+			default:
+				inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
+			}
+			return inst, err
+		},
+		createMultiRepoDir: func(inst, source *session.Instance) error {
+			// Propagate multi-repo config from source.
+			if source.IsMultiRepo() {
+				inst.MultiRepoEnabled = true
+				inst.AdditionalPaths = append([]string{}, source.AdditionalPaths...)
+				// Copy worktree tracking from source (shared worktrees)
+				if len(source.MultiRepoWorktrees) > 0 {
+					inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
+				}
+				// Create a new persistent dir for the fork with symlinks to shared worktrees
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return fmt.Errorf("failed to resolve multi-repo dir: %w", rootErr)
+				}
+				parentDir := filepath.Join(worktreesRoot, inst.ID[:8])
+				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
+					return fmt.Errorf("failed to create multi-repo dir: %w", mkErr)
+				}
+				if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
+					parentDir = resolved
+				}
+				inst.MultiRepoTempDir = parentDir
+				if inst.GetTmuxSession() != nil {
+					inst.GetTmuxSession().WorkDir = parentDir
+				}
+				// Recreate symlinks/entries in new parent dir pointing to source worktree paths
+				allPaths := inst.AllProjectPaths()
+				dirnames := session.DeduplicateDirnames(allPaths)
+				var newProjectPath string
+				var newAdditionalPaths []string
+				for i, p := range allPaths {
+					linkPath := filepath.Join(parentDir, dirnames[i])
+					_ = os.Symlink(p, linkPath)
+					if i == 0 {
+						newProjectPath = linkPath
+					} else {
+						newAdditionalPaths = append(newAdditionalPaths, linkPath)
+					}
+				}
+				inst.ProjectPath = newProjectPath
+				inst.AdditionalPaths = newAdditionalPaths
+			}
+			return nil
+		},
+		startInstance: func(inst *session.Instance) error { return inst.Start() },
+		rollback:      rollbackForkWithStateWorktree,
+	}
+}
+
+// completeFork performs the post-forkWithStateWorktree sequence: create the
+// forked instance, apply sandbox/multi-repo/parent config, and start it. On any
+// failure after a with-state worktree was created (withStateWorktreeCreated),
+// it rolls back the new worktree+branch. Free function: it needs nothing from
+// *Home.
+func completeFork(
+	source *session.Instance,
+	title, groupPath string,
+	opts *session.ClaudeOptions,
+	sandboxEnabled bool,
+	parentSessionID, parentProjectPath string,
+	withStateWorktreeCreated bool,
+	deps forkInstanceDeps,
+) (*session.Instance, error) {
+	inst, err := deps.createInstance(source, title, groupPath, opts)
+	if err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, fmt.Errorf("cannot create forked instance: %w", err)
+	}
+
+	// Apply sandbox config to forked instance.
+	if sandboxEnabled {
+		inst.Sandbox = session.NewSandboxConfig("")
+	}
+
+	if err := deps.createMultiRepoDir(inst, source); err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, err
+	}
+
+	if parentSessionID != "" {
+		inst.SetParentWithPath(parentSessionID, parentProjectPath)
+	}
+
+	if err := deps.startInstance(inst); err != nil {
+		if withStateWorktreeCreated {
+			deps.rollback(opts.WorktreeRepoRoot, opts.WorktreePath, opts.WorktreeBranch)
+		}
+		return nil, err
+	}
+
+	switch inst.Tool {
+	case "opencode":
+		go inst.DetectOpenCodeSession()
+	}
+
+	return inst, nil
+}
+
 // forkSessionCmd creates a forked session with the given title and group
 // Shows immediate UI feedback by tracking the source session in forkingSessions
 func (h *Home) forkSessionCmd(source *session.Instance, title, groupPath, parentSessionID, parentProjectPath string) tea.Cmd {
-	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, parentSessionID, parentProjectPath)
+	return h.forkSessionCmdWithOptions(source, title, groupPath, nil, false, git.WorktreeStateOptions{}, parentSessionID, parentProjectPath)
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, shared fork options, and optional sandbox.
@@ -9414,10 +9614,15 @@ func (h *Home) forkSessionCmdWithOptions(
 	title, groupPath string,
 	opts *session.ClaudeOptions,
 	sandboxEnabled bool,
+	forkState git.WorktreeStateOptions,
 	parentSessionID, parentProjectPath string,
 ) tea.Cmd {
 	if source == nil {
 		return nil
+	}
+
+	if forkState.WithIgnored {
+		forkState.WithState = true
 	}
 
 	// Track source session as "forking" for immediate UI feedback
@@ -9431,6 +9636,11 @@ func (h *Home) forkSessionCmdWithOptions(
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
 		}
 
+		// withStateWorktreeCreated tracks whether forkWithStateWorktree actually
+		// created a new worktree+branch, so later failures can roll it back
+		// without dereferencing opts when no worktree was created (e.g. the
+		// #1185 config-default fallback leaves the worktree fields empty).
+		withStateWorktreeCreated := false
 		if opts != nil && opts.WorktreePath != "" && opts.WorktreeRepoRoot != "" && opts.WorktreeBranch != "" {
 			// Worktree creation can be slow on large repos; keep it in async cmd path
 			// so the TUI remains responsive.
@@ -9441,8 +9651,25 @@ func (h *Home) forkSessionCmdWithOptions(
 				return sessionForkedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), sourceID: sourceID}
 			}
 
-			// Check for an existing worktree for this branch before creating a new one.
-			if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
+			// With-state forks are git-only and never reuse an existing worktree;
+			// otherwise check for an existing worktree for this branch before
+			// creating a new one.
+			if forkState.WithState {
+				if backend.Type() != vcs.TypeGit {
+					return sessionForkedMsg{err: fmt.Errorf("--with-state is only supported for git repositories"), sourceID: sourceID}
+				}
+				if err := forkWithStateWorktree(
+					source.ProjectPath,
+					opts.WorktreeRepoRoot,
+					opts.WorktreePath,
+					opts.WorktreeBranch,
+					forkState,
+					defaultForkWithStateWorktreeDeps(),
+				); err != nil {
+					return sessionForkedMsg{err: err, sourceID: sourceID}
+				}
+				withStateWorktreeCreated = true
+			} else if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
 				uiLog.Info("worktree_reuse", slog.String("branch", opts.WorktreeBranch), slog.String("path", existingPath))
 				opts.WorktreePath = existingPath
 			} else {
@@ -9455,80 +9682,115 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 		}
 
-		var inst *session.Instance
-		var err error
-
-		switch source.Tool {
-		case "opencode":
-			inst, _, err = source.CreateForkedOpenCodeInstance(title, groupPath)
-		case "pi":
-			inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
-		default:
-			inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
-		}
+		inst, err := completeFork(source, title, groupPath, opts, sandboxEnabled, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
 		if err != nil {
-			return sessionForkedMsg{err: fmt.Errorf("cannot create forked instance: %w", err), sourceID: sourceID}
-		}
-
-		// Apply sandbox config to forked instance.
-		if sandboxEnabled {
-			inst.Sandbox = session.NewSandboxConfig("")
-		}
-
-		// Propagate multi-repo config from source.
-		if source.IsMultiRepo() {
-			inst.MultiRepoEnabled = true
-			inst.AdditionalPaths = append([]string{}, source.AdditionalPaths...)
-			// Copy worktree tracking from source (shared worktrees)
-			if len(source.MultiRepoWorktrees) > 0 {
-				inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
-			}
-			// Create a new persistent dir for the fork with symlinks to shared worktrees
-			home, _ := os.UserHomeDir()
-			parentDir := filepath.Join(home, ".agent-deck", "multi-repo-worktrees", inst.ID[:8])
-			if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
-				return sessionForkedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), sourceID: sourceID}
-			}
-			if resolved, evalErr := filepath.EvalSymlinks(parentDir); evalErr == nil {
-				parentDir = resolved
-			}
-			inst.MultiRepoTempDir = parentDir
-			if inst.GetTmuxSession() != nil {
-				inst.GetTmuxSession().WorkDir = parentDir
-			}
-			// Recreate symlinks/entries in new parent dir pointing to source worktree paths
-			allPaths := inst.AllProjectPaths()
-			dirnames := session.DeduplicateDirnames(allPaths)
-			var newProjectPath string
-			var newAdditionalPaths []string
-			for i, p := range allPaths {
-				linkPath := filepath.Join(parentDir, dirnames[i])
-				_ = os.Symlink(p, linkPath)
-				if i == 0 {
-					newProjectPath = linkPath
-				} else {
-					newAdditionalPaths = append(newAdditionalPaths, linkPath)
-				}
-			}
-			inst.ProjectPath = newProjectPath
-			inst.AdditionalPaths = newAdditionalPaths
-		}
-
-		if parentSessionID != "" {
-			inst.SetParentWithPath(parentSessionID, parentProjectPath)
-		}
-
-		if err := inst.Start(); err != nil {
 			return sessionForkedMsg{err: err, sourceID: sourceID}
-		}
-
-		switch inst.Tool {
-		case "opencode":
-			go inst.DetectOpenCodeSession()
 		}
 
 		return sessionForkedMsg{instance: inst, sourceID: sourceID}
 	}
+}
+
+// rollbackForkWithStateWorktree best-effort removes a worktree and deletes the
+// branch created by forkWithStateWorktree, used when a later step (instance
+// create or start) fails after the helper already succeeded. Failures are
+// logged, not returned, so the caller's original error is preserved.
+func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) {
+	if err := git.RemoveWorktree(repoRoot, worktreePath, true); err != nil {
+		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	if err := git.DeleteBranch(repoRoot, branch, true); err != nil {
+		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", err.Error()))
+	}
+}
+
+// forkWithStateWorktree creates the fork's worktree, anchors it to the parent
+// session's HEAD, and materializes the parent's working-tree state, mirroring
+// the CLI safeguards from #1263. Defined after forkSessionCmdWithOptions so the
+// call site (not this definition) is the structurally-first reference.
+func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, state git.WorktreeStateOptions, deps forkWithStateWorktreeDeps) error {
+	if state.WithIgnored {
+		state.WithState = true
+	}
+	if !state.WithState {
+		return errors.New("forkWithStateWorktree called without WithState")
+	}
+	// Destination collision is the more actionable refusal, so check it before
+	// the local path-existence guard (mirrors #1263's CLI precedence).
+	if err := deps.validateDestination(repoRoot, branch); err != nil {
+		var collErr *git.DestinationCollisionError
+		if errors.As(err, &collErr) {
+			switch collErr.Kind {
+			case git.CollisionWorktreeExists:
+				return fmt.Errorf("branch %q already has a worktree at %s; choose a new destination branch for --with-state", collErr.Branch, collErr.Path)
+			case git.CollisionBranchExists:
+				return fmt.Errorf("branch %q already exists; choose a new destination branch for --with-state", collErr.Branch)
+			}
+		}
+		return fmt.Errorf("failed to validate destination: %w", err)
+	}
+	if _, statErr := deps.statPath(worktreePath); statErr == nil {
+		return fmt.Errorf("worktree path already exists: %s", worktreePath)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat worktree path: %w", statErr)
+	}
+	kind, detectErr := deps.detectInProgressOperation(parentPath)
+	if detectErr != nil {
+		return fmt.Errorf("failed to inspect parent session state: %w", detectErr)
+	}
+	if kind != "" {
+		abortCmd := map[string]string{
+			"rebase":      "git rebase --abort",
+			"merge":       "git merge --abort",
+			"cherry-pick": "git cherry-pick --abort",
+			"revert":      "git revert --abort",
+			"bisect":      "git bisect reset",
+		}[kind]
+		return fmt.Errorf("parent session is mid-%s; finish or abort the %s before forking with state (cd %q && %s)", kind, kind, parentPath, abortCmd)
+	}
+	if err := deps.mkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if deps.hasSubmodules(parentPath) {
+		uiLog.Warn("fork_with_state_submodules_detected", slog.String("parent", parentPath))
+	}
+	parentHead, err := deps.headCommit(parentPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve parent session HEAD: %w", err)
+	}
+	createdBranch, err := deps.createAtStartPoint(repoRoot, worktreePath, branch, parentHead)
+	if err != nil {
+		return fmt.Errorf("worktree creation failed: %w", err)
+	}
+	if err := deps.materialize(parentPath, worktreePath, state.WithIgnored); err != nil {
+		var cleanupErrs []string
+		if rmErr := deps.removeWorktree(repoRoot, worktreePath, true); rmErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+		}
+		if createdBranch {
+			if brErr := deps.deleteBranch(repoRoot, branch, true); brErr != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Sprintf("branch delete failed: %v", brErr))
+			}
+		}
+		if len(cleanupErrs) == 0 {
+			return fmt.Errorf("failed to materialize parent state: %w; new worktree cleaned up", err)
+		}
+		branchHint := ""
+		if createdBranch {
+			branchHint = fmt.Sprintf(" && git -C %q branch -D %q", repoRoot, branch)
+		}
+		return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup required: rm -rf %q%s", err, strings.Join(cleanupErrs, "; "), worktreePath, branchHint)
+	}
+	if err := deps.processInclude(repoRoot, worktreePath, io.Discard); err != nil {
+		uiLog.Warn("fork_with_state_worktreeinclude_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	if err := deps.runSetup(repoRoot, worktreePath, io.Discard, io.Discard, session.GetWorktreeSettings().SetupTimeout()); err != nil {
+		// Non-fatal: the worktree and parent state are already created. Mirror
+		// #1263's CLI, which warns on a failed setup script rather than failing
+		// the whole fork.
+		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	return nil
 }
 
 // sessionDeletedMsg signals that a session was deleted

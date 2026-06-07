@@ -76,8 +76,9 @@ echo
 echo "--- Seam C (tmux) ---"
 command -v tmux >/dev/null || { skip "tmux not installed — Seam C skipped"; exit 0; }
 
-mkdir -p "$TMPHOME/.agent-deck"
-cat > "$TMPHOME/.agent-deck/config.toml" <<'EOF'
+export XDG_CONFIG_HOME="$TMPHOME/.config"
+mkdir -p "$XDG_CONFIG_HOME/agent-deck"
+cat > "$XDG_CONFIG_HOME/agent-deck/config.toml" <<'EOF'
 [tmux]
 inject_status_line = false
 EOF

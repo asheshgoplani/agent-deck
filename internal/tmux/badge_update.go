@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -34,11 +36,11 @@ import (
 // File writes succeed regardless of controlling-terminal state. So:
 //
 //   - Hook side  → WriteBadgeUpdate(tmuxSessionName, title)
-//     drops a per-session file under ~/.agent-deck/badge-updates/.
+//     drops a per-session file under the effective badge-updates data dir.
 //
 //   - Attach side → WatchBadgeUpdates(ctx, tmuxSessionName, w, configEnabled, ready)
 //     watches the same directory via fsnotify (already a project dep
-//     for ~/.agent-deck/events/), and when the file for THIS session
+//     for hook/event dirs), and when the file for THIS session
 //     changes, reads the new title and emits the OSC through `w`. In
 //     production `w` is `os.Stdout`, which the attach process owns;
 //     the outer iTerm2 sees the OSC directly.
@@ -53,23 +55,22 @@ import (
 // new dependencies, same operational shape for ops.
 
 // badgeUpdatesDirEnv lets tests redirect the signal directory away from
-// the real ~/.agent-deck/badge-updates path so parallel runs do not
+// the real badge-updates path so parallel runs do not
 // collide. The env var is intentionally undocumented in user-facing
 // config — it exists for the test harness only.
 const badgeUpdatesDirEnv = "AGENTDECK_BADGE_UPDATES_DIR"
 
 // BadgeUpdatesDir returns the directory where rename-hook signals live.
-// Mirrors GetEventsDir's shape (also under ~/.agent-deck/) so an ops
-// engineer staring at the directory tree sees one consistent pattern.
+// Uses the XDG data directory, falling back to a legacy badge-updates dir.
 func BadgeUpdatesDir() string {
 	if v := strings.TrimSpace(os.Getenv(badgeUpdatesDirEnv)); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
+	dir, err := agentpaths.EffectiveDataPath("badge-updates", "badge-updates")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "badge-updates")
+		return filepath.Join(os.TempDir(), "agent-deck", "badge-updates")
 	}
-	return filepath.Join(home, ".agent-deck", "badge-updates")
+	return dir
 }
 
 // WriteBadgeUpdate atomically writes title under tmuxSessionName so the
@@ -128,41 +129,60 @@ func WatchBadgeUpdates(ctx context.Context, tmuxSessionName string, w io.Writer,
 		return
 	}
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		if ready != nil {
-			close(ready)
+	targetPath := filepath.Join(dir, tmuxSessionName)
+	var lastTitle string
+	var haveLastTitle bool
+	emitCurrent := func() {
+		data, err := os.ReadFile(targetPath)
+		if err != nil {
+			return
 		}
-		return
+		title := string(data)
+		if haveLastTitle && title == lastTitle {
+			return
+		}
+		lastTitle = title
+		haveLastTitle = true
+		emitITermBadge(w, title, configEnabled)
 	}
-	defer watcher.Close()
 
-	if err := watcher.Add(dir); err != nil {
-		if ready != nil {
-			close(ready)
+	var events <-chan fsnotify.Event
+	var fsnotifyErrors <-chan error
+	if watcher, err := fsnotify.NewWatcher(); err == nil {
+		if err := watcher.Add(dir); err == nil {
+			defer watcher.Close()
+			events = watcher.Events
+			fsnotifyErrors = watcher.Errors
+		} else {
+			watcher.Close()
 		}
-		return
 	}
 
 	// Catch-up: if the hook fired before the watcher registered, we'd
 	// miss the event. Read the file once at startup so a rename that
 	// completed during agent-deck's attach setup still updates the
 	// badge. No-op when the file does not exist.
-	emitFromFile(filepath.Join(dir, tmuxSessionName), w, configEnabled)
+	emitCurrent()
 
 	if ready != nil {
 		close(ready)
 	}
 
+	poll := time.NewTicker(250 * time.Millisecond)
+	defer poll.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-watcher.Events:
+		case <-poll.C:
+			// Some filesystems report atomic rename events on the temporary
+			// file only. The low-rate poll is a change-detect fallback for
+			// that case and emits only when content changes.
+			emitCurrent()
+		case ev, ok := <-events:
 			if !ok {
-				return
-			}
-			if ev.Op&(fsnotify.Create|fsnotify.Write) == 0 {
+				events = nil
 				continue
 			}
 			// Filter strictly on filename — concurrent attaches in the
@@ -170,10 +190,11 @@ func WatchBadgeUpdates(ctx context.Context, tmuxSessionName string, w io.Writer,
 			if filepath.Base(ev.Name) != tmuxSessionName {
 				continue
 			}
-			emitFromFile(ev.Name, w, configEnabled)
-		case _, ok := <-watcher.Errors:
+			emitCurrent()
+		case _, ok := <-fsnotifyErrors:
 			if !ok {
-				return
+				fsnotifyErrors = nil
+				continue
 			}
 			// fsnotify errors are non-fatal here; the next event will
 			// retry. We deliberately do NOT log to stdout because that's
@@ -181,16 +202,4 @@ func WatchBadgeUpdates(ctx context.Context, tmuxSessionName string, w io.Writer,
 			// corrupt the user's display.
 		}
 	}
-}
-
-// emitFromFile reads the badge title from path and writes the OSC to w,
-// gated on the same iTerm2-active + configEnabled rules as the
-// on-attach emitITermBadge. Missing file is a silent no-op (the user
-// may have detached / cleaned up between the event and the read).
-func emitFromFile(path string, w io.Writer, configEnabled bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	emitITermBadge(w, string(data), configEnabled)
 }

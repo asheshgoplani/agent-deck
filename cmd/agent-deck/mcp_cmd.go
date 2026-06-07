@@ -96,7 +96,8 @@ func handleMCPList(args []string) {
 		} else if !quietMode {
 			fmt.Println("No MCPs configured.")
 			fmt.Println()
-			fmt.Println("Define MCPs in ~/.agent-deck/config.toml:")
+			configPath, _ := session.GetUserConfigPath()
+			fmt.Printf("Define MCPs in %s:\n", FormatPath(configPath))
 			fmt.Println()
 			fmt.Println("  [mcps.exa]")
 			fmt.Println("  command = \"npx\"")

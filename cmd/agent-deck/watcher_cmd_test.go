@@ -440,16 +440,19 @@ func TestWatcherCreatorSkill_DocsMatchesAssets(t *testing.T) {
 }
 
 // TestWatcherInstallSkill verifies that handleWatcherInstallSkill copies both
-// SKILL.md and README.md to $HOME/.agent-deck/skills/pool/watcher-creator/.
+// SKILL.md and README.md to the XDG config skill pool.
 func TestWatcherInstallSkill(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	home := filepath.Join(tmp, "home")
+	xdgConfigHome := filepath.Join(tmp, "xdg-config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
 
 	if err := handleWatcherInstallSkill("default", []string{"watcher-creator"}); err != nil {
 		t.Fatalf("handleWatcherInstallSkill: %v", err)
 	}
 
-	poolDir := filepath.Join(tmp, ".agent-deck", "skills", "pool", "watcher-creator")
+	poolDir := filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool", "watcher-creator")
 
 	// Both files should exist in pool dir.
 	for _, f := range []string{"SKILL.md", "README.md"} {
@@ -478,16 +481,19 @@ func TestWatcherInstallSkill(t *testing.T) {
 // directory hierarchy with mode 0o700 (T-18-21).
 func TestWatcherInstallSkill_DirMode(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	home := filepath.Join(tmp, "home")
+	xdgConfigHome := filepath.Join(tmp, "xdg-config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
 
 	if err := handleWatcherInstallSkill("default", []string{"watcher-creator"}); err != nil {
 		t.Fatalf("handleWatcherInstallSkill: %v", err)
 	}
 
 	dirs := []string{
-		filepath.Join(tmp, ".agent-deck", "skills"),
-		filepath.Join(tmp, ".agent-deck", "skills", "pool"),
-		filepath.Join(tmp, ".agent-deck", "skills", "pool", "watcher-creator"),
+		filepath.Join(xdgConfigHome, "agent-deck", "skills"),
+		filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool"),
+		filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool", "watcher-creator"),
 	}
 	for _, d := range dirs {
 		info, err := os.Stat(d)
@@ -501,7 +507,7 @@ func TestWatcherInstallSkill_DirMode(t *testing.T) {
 	}
 
 	// Installed files should be readable (0o644).
-	poolDir := filepath.Join(tmp, ".agent-deck", "skills", "pool", "watcher-creator")
+	poolDir := filepath.Join(xdgConfigHome, "agent-deck", "skills", "pool", "watcher-creator")
 	for _, f := range []string{"SKILL.md", "README.md"} {
 		info, err := os.Stat(filepath.Join(poolDir, f))
 		if err != nil {

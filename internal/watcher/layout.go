@@ -43,12 +43,12 @@ func validateWatcherName(name string) error {
 	return nil
 }
 
-// LayoutDir returns the root watcher dir (~/.agent-deck/watcher). Delegates to session.WatcherDir for single-source-of-truth.
+// LayoutDir returns the effective root watcher dir. Delegates to session.WatcherDir for single-source-of-truth.
 func LayoutDir() (string, error) {
 	return session.WatcherDir()
 }
 
-// WatcherDir returns ~/.agent-deck/watcher/<name> after validating name. T-21-PI mitigation.
+// WatcherDir returns the effective watcher/<name> dir after validating name. T-21-PI mitigation.
 func WatcherDir(name string) (string, error) {
 	if err := validateWatcherName(name); err != nil {
 		return "", err
@@ -100,16 +100,16 @@ func writeIfAbsent(path string, content []byte) error {
 // and creates a relative compatibility symlink watchers -> watcher. Single-shot; subsequent calls no-op.
 // SECURITY T-21-SL: uses os.Lstat (not os.Stat) and refuses if watcher/ is a symlink targeting outside the deck root.
 func MigrateLegacyWatchersDir() error {
-	deck, err := session.GetAgentDeckDir()
+	current, err := LayoutDir()
 	if err != nil {
 		return err
 	}
+	deck := filepath.Dir(current)
 	absDeck, err := filepath.Abs(deck)
 	if err != nil {
 		return err
 	}
 	legacy := filepath.Join(deck, "watchers")
-	current := filepath.Join(deck, "watcher")
 
 	curInfo, curErr := os.Lstat(current)      // Lstat: do NOT follow symlink
 	legacyInfo, legacyErr := os.Lstat(legacy) // Lstat: do NOT follow symlink

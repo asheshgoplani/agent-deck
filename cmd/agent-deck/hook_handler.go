@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
@@ -385,11 +386,7 @@ func warnProjectDirMissingOnce(instanceID, cwd string) {
 
 // getHooksDir returns the path to the hooks status directory.
 func getHooksDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "hooks")
-	}
-	return filepath.Join(home, ".agent-deck", "hooks")
+	return session.GetHooksDir()
 }
 
 // cleanStaleHookFiles removes hook status files older than 24 hours.
@@ -786,17 +783,19 @@ func readLastLine(path string) (string, error) {
 	return strings.TrimSpace(string(buf)), nil
 }
 
-// logCostDebug writes debug messages to ~/.agent-deck/cost-debug.log
+// logCostDebug writes debug messages to the XDG cache cost-debug.log.
 // Only active when AGENTDECK_DEBUG is set.
 func logCostDebug(format string, args ...any) {
 	if os.Getenv("AGENTDECK_DEBUG") == "" {
 		return
 	}
-	home, err := os.UserHomeDir()
+	logPath, err := effectiveCachePath("cost-debug.log")
 	if err != nil {
 		return
 	}
-	logPath := filepath.Join(home, ".agent-deck", "cost-debug.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return
+	}
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return
@@ -808,11 +807,11 @@ func logCostDebug(format string, args ...any) {
 
 // getCostEventsDir returns the path to the cost events directory.
 func getCostEventsDir() string {
-	home, err := os.UserHomeDir()
+	path, err := agentpaths.EffectiveDataPath("cost-events", "cost-events")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "cost-events")
+		return filepath.Join(os.TempDir(), "agent-deck", "cost-events")
 	}
-	return filepath.Join(home, ".agent-deck", "cost-events")
+	return path
 }
 
 // getClaudeConfigDirForHooks returns the Claude config directory for hook operations.
