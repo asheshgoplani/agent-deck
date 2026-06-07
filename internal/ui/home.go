@@ -8405,12 +8405,19 @@ func (h *Home) applyMultiRepoPathChanges(inst *session.Instance, newPaths []stri
 	}
 }
 
-func multiRepoWorktreesRoot() string {
+// multiRepoWorktreesRoot resolves the persistent parent directory for
+// multi-repo worktrees and symlink trees. The returned path is recorded in
+// session state (Instance.MultiRepoTempDir, worktree paths), so it MUST be a
+// stable, non-ephemeral location. We therefore propagate any resolution error
+// to the caller rather than falling back to os.TempDir(): worktree/symlink
+// state placed under temp storage would be silently removed by a reboot or
+// tmp cleanup, breaking the affected sessions (Codex round-2 P1).
+func multiRepoWorktreesRoot() (string, error) {
 	dir, err := agentpaths.EffectiveDataPath("multi-repo-worktrees", "multi-repo-worktrees")
 	if err != nil {
-		return filepath.Join(os.TempDir(), "agent-deck", "multi-repo-worktrees")
+		return "", fmt.Errorf("resolve multi-repo worktrees root: %w", err)
 	}
-	return dir
+	return dir, nil
 }
 
 // handleSkillDialogKey handles keys when Skills dialog is visible
@@ -8975,7 +8982,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				// Layout: <effective-data-dir>/multi-repo-worktrees/<branch>-<id>/<repo-name>/
 				sanitizedBranch := strings.ReplaceAll(worktreeBranch, "/", "-")
 				sanitizedBranch = strings.ReplaceAll(sanitizedBranch, " ", "-")
-				parentDir := filepath.Join(multiRepoWorktreesRoot(),
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("failed to resolve multi-repo worktree dir: %w", rootErr), tempID: tempID}
+				}
+				parentDir := filepath.Join(worktreesRoot,
 					fmt.Sprintf("%s-%s", sanitizedBranch, inst.ID[:8]))
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo worktree dir: %w", mkErr), tempID: tempID}
@@ -8994,7 +9005,11 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 				inst.AdditionalPaths = wtResult.MappedPaths[1:]
 			} else {
 				// Multi-repo without worktree: create a persistent parent dir with symlinks.
-				parentDir := filepath.Join(multiRepoWorktreesRoot(), inst.ID[:8])
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return sessionCreatedMsg{err: fmt.Errorf("failed to resolve multi-repo dir: %w", rootErr), tempID: tempID}
+				}
+				parentDir := filepath.Join(worktreesRoot, inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return sessionCreatedMsg{err: fmt.Errorf("failed to create multi-repo dir: %w", mkErr), tempID: tempID}
 				}
@@ -9473,7 +9488,11 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 					inst.MultiRepoWorktrees = append([]session.MultiRepoWorktree{}, source.MultiRepoWorktrees...)
 				}
 				// Create a new persistent dir for the fork with symlinks to shared worktrees
-				parentDir := filepath.Join(multiRepoWorktreesRoot(), inst.ID[:8])
+				worktreesRoot, rootErr := multiRepoWorktreesRoot()
+				if rootErr != nil {
+					return fmt.Errorf("failed to resolve multi-repo dir: %w", rootErr)
+				}
+				parentDir := filepath.Join(worktreesRoot, inst.ID[:8])
 				if mkErr := os.MkdirAll(parentDir, 0o755); mkErr != nil {
 					return fmt.Errorf("failed to create multi-repo dir: %w", mkErr)
 				}

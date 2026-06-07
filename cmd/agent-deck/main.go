@@ -24,7 +24,6 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
-	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
@@ -3192,7 +3191,6 @@ func handleUninstall(args []string) {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	legacyDir, _ := agentpaths.LegacyDir()
 	var foundItems []uninstallFoundItem
 
 	// Check for Homebrew installation
@@ -3254,7 +3252,19 @@ func handleUninstall(args []string) {
 		for _, loc := range binaryLocations {
 			fmt.Printf("  - %s\n", loc)
 		}
-		fmt.Printf("  - %s\n", legacyDir)
+		// List every data-location an uninstall would remove (XDG
+		// config/data/cache + legacy), resolved from the same source as the
+		// real removal so XDG-only installs are accurately represented. Dedupe
+		// in case XDG resolution falls back onto the legacy dir.
+		seenChecked := make(map[string]struct{})
+		for _, c := range uninstallDataCandidates() {
+			cleanPath := filepath.Clean(c.path)
+			if _, ok := seenChecked[cleanPath]; ok {
+				continue
+			}
+			seenChecked[cleanPath] = struct{}{}
+			fmt.Printf("  - %s (%s)\n", cleanPath, strings.ToLower(c.label))
+		}
 		fmt.Printf("  - %s (for agent-deck config)\n", tmuxConf)
 		return
 	}

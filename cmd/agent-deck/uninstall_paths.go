@@ -17,26 +17,40 @@ type uninstallFoundItem struct {
 	description string
 }
 
-func collectUninstallDataLocations() []uninstallFoundItem {
-	type candidate struct {
-		itemType string
-		label    string
-		path     string
-	}
+// uninstallDataCandidate is a data-location path that a real uninstall would
+// consider for removal (XDG config/data/cache + legacy). Candidates are
+// resolved from the SAME source whether or not they exist on disk, so the
+// not-installed "Checked locations" preview and the actual removal stay in
+// sync (Codex round-2 P2).
+type uninstallDataCandidate struct {
+	itemType string
+	label    string
+	path     string
+}
 
-	var candidates []candidate
+// uninstallDataCandidates resolves every data-location path an uninstall would
+// remove, independent of whether the path currently exists. The not-installed
+// dry-run preview uses this so it accurately lists XDG config/data/cache for
+// XDG-only installs (not just legacy + ~/.tmux.conf).
+func uninstallDataCandidates() []uninstallDataCandidate {
+	var candidates []uninstallDataCandidate
 	if path, err := agentpaths.ConfigDir(); err == nil {
-		candidates = append(candidates, candidate{itemType: "config", label: "Config directory", path: path})
+		candidates = append(candidates, uninstallDataCandidate{itemType: "config", label: "Config directory", path: path})
 	}
 	if path, err := agentpaths.DataDir(); err == nil {
-		candidates = append(candidates, candidate{itemType: "data", label: "Data directory", path: path})
+		candidates = append(candidates, uninstallDataCandidate{itemType: "data", label: "Data directory", path: path})
 	}
 	if path, err := agentpaths.CacheDir(); err == nil {
-		candidates = append(candidates, candidate{itemType: "cache", label: "Cache directory", path: path})
+		candidates = append(candidates, uninstallDataCandidate{itemType: "cache", label: "Cache directory", path: path})
 	}
 	if path, err := agentpaths.LegacyDir(); err == nil {
-		candidates = append(candidates, candidate{itemType: "legacy", label: "Legacy directory", path: path})
+		candidates = append(candidates, uninstallDataCandidate{itemType: "legacy", label: "Legacy directory", path: path})
 	}
+	return candidates
+}
+
+func collectUninstallDataLocations() []uninstallFoundItem {
+	candidates := uninstallDataCandidates()
 
 	seen := make(map[string]struct{}, len(candidates))
 	items := make([]uninstallFoundItem, 0, len(candidates))
