@@ -625,6 +625,56 @@ func (s *Storage) saveSingleInstance(row *statedb.InstanceRow) error {
 	return nil
 }
 
+// PersistRevivedInstances durably persists the status heal from a revive sweep
+// WITHOUT the full-table rewrite that SaveWithGroups performs and WITHOUT a
+// full-row INSERT OR REPLACE.
+//
+// Why this exists (two races, two guarantees):
+//
+//  1. Lost-update vs. concurrent `add`. `session revive` is a read-process-write
+//     cycle: it loads the full instances snapshot, classifies/heals each one
+//     (flipping StatusError → StatusRunning), then persists. If it persisted via
+//     SaveWithGroups → SaveInstances, that path's `DELETE FROM instances WHERE
+//     id NOT IN (<snapshot ids>)` sweep would delete any session a concurrent
+//     process (TUI/CLI `add`) inserted AFTER revive loaded its snapshot — the
+//     row is silently lost because it was never in revive's stale id set. The
+//     targeted path below issues NO sweep, so rows revive never saw are never
+//     touched.
+//
+//  2. Clobber vs. concurrent edit of a row being revived. A full-row write
+//     (INSERT OR REPLACE / saveSingleInstance) would push EVERY column from
+//     revive's stale in-memory snapshot, overwriting any field (title, group,
+//     tool_data, last_accessed, claude_session_id, …) a concurrent process
+//     edited between revive's load and its save. Revive owns exactly ONE field:
+//     Instance.Status (see reviver.go defaultReviveAction — it mutates nothing
+//     else). So this method persists ONLY status, via the targeted
+//     `UPDATE instances SET status = ? WHERE id = ?` batch
+//     (PersistInstanceStatusesTx), inside a single transaction for atomicity.
+//
+// Callers should pass only the instances they actually revived; rows whose id
+// is absent are simply not in the batch and stay untouched.
+func (s *Storage) PersistRevivedInstances(instances []*Instance) error {
+	updates := make([]statedb.InstanceStatusUpdate, 0, len(instances))
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		updates = append(updates, statedb.InstanceStatusUpdate{
+			ID:     inst.ID,
+			Status: string(inst.Status),
+		})
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+	return s.db.PersistInstanceStatusesTx(updates)
+}
+
 // instanceToRow converts a session.Instance into the statedb row shape.
 // Shared by SaveWithGroups (bulk path) and InsertSessionAndVerify
 // (targeted single-row path) so the marshal/normalize logic stays in

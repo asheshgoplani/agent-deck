@@ -11,15 +11,15 @@ exercise the capability.
 
 ## Wave 1 gaps
 
-### Fork that inherits Claude context
-`session fork` only fully works for a Claude-compatible session that has a live
-`ClaudeSessionID` captured from a real claude transcript (see
-`internal/session/instance.go` `CanFork`). That id is non-deterministic and
-key-gated, and the fork itself runs `claude --resume`, which needs the real CLI
-and auth. Wave 1 therefore tests the deterministic half of the capability: the
-precondition guard refuses to fork a non-Claude session and creates no orphan
-child row (`TestCapability_Lifecycle_Fork`). The context-inheriting happy path
-is Tier N.
+### Fork that inherits tool context
+`session fork` happy paths depend on real tool session data. Claude-compatible
+sessions need a live `ClaudeSessionID` captured from a real claude transcript;
+Pi sessions need a real JSONL in Agent Deck's per-instance Pi session directory
+so `pi --fork <jsonl>` can branch it. Those inputs are non-deterministic and
+key/tool-gated, and the fork itself needs the real CLI and auth. Wave 1
+therefore tests the deterministic half of the capability: the precondition guard
+refuses to fork an unsupported session and creates no orphan child row
+(`TestCapability_Lifecycle_Fork`). The context-inheriting happy paths are Tier N.
 
 ### Real agent round trips (claude, codex, gemini, opencode)
 The backbone send-and-reply round trip is verified offline against a

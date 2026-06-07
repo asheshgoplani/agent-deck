@@ -88,7 +88,7 @@ Status legend: ✅ verified, 🟡 partial, 🔴 known broken, ⚪ unknown. To up
 | `agent-deck session send <name> "message"` | Send message |
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
-| `agent-deck session fork <name>` | Fork Claude conversation |
+| `agent-deck session fork <name>` | Fork Claude/Pi conversation |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
@@ -346,7 +346,7 @@ Key constraints:
 | `r/R` | Restart (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
-| `f/F` | Fork Claude session |
+| `f/F` | Fork Claude/Pi session |
 | `d` | Delete |
 | `M` | Move to group |
 
@@ -450,7 +450,7 @@ Full conversational setup flow is available as a separate skill:
 agent-deck watcher install-skill watcher-creator
 ```
 
-After running the install command, read `~/.agent-deck/skills/pool/watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring `~/.agent-deck/watcher/<name>/clients.json` routing.
+After running the install command, read the installed `watcher-creator/SKILL.md` to walk the user through adapter selection, required settings, and configuring the effective watcher data dir's `clients.json` routing (`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` for new users; legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present).
 
 See `agent-deck watcher --help` for the full command surface and per-adapter examples.
 

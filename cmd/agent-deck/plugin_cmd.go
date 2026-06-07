@@ -39,13 +39,14 @@ func handlePlugin(profile string, args []string) {
 }
 
 func printPluginHelp() {
+	configPath := effectiveUserConfigPathForHelp()
 	fmt.Println("Usage: agent-deck plugin <command> [options]")
 	fmt.Println()
 	fmt.Println("Manage Claude Code plugins (per-session enabledPlugins) for sessions.")
 	fmt.Println("RFC: docs/rfc/PLUGIN_ATTACH.md")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  list                   List available plugins from [plugins.<name>] in ~/.agent-deck/config.toml")
+	fmt.Printf("  list                   List available plugins from [plugins.<name>] in %s\n", configPath)
 	fmt.Println("  attached [id]          Show plugins enabled on a session")
 	fmt.Println("  attach <id> <name>     Enable a catalog plugin on a session")
 	fmt.Println("  detach <id> <name>     Disable a catalog plugin on a session")
@@ -89,7 +90,7 @@ func handlePluginList(args []string) {
 	}
 
 	if len(names) == 0 {
-		fmt.Println("No plugins configured. Add [plugins.<name>] tables to ~/.agent-deck/config.toml")
+		fmt.Printf("No plugins configured. Add [plugins.<name>] tables to %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("RFC: docs/rfc/PLUGIN_ATTACH.md §4.1")
 		return
 	}

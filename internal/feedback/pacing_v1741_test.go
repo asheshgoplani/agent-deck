@@ -38,8 +38,7 @@ func baseEnabled() *feedback.State {
 // TEST-P1: brand new state (FirstSeenAt zero, LaunchCount zero) must block
 // ShouldShow. RecordLaunch must set FirstSeenAt to now and bump LaunchCount.
 func TestPacing_NewUser_FirstSeenSetOnRecordLaunch(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	st := baseEnabled()
 	now := time.Now()
@@ -60,8 +59,7 @@ func TestPacing_NewUser_FirstSeenSetOnRecordLaunch(t *testing.T) {
 // TEST-P2: RecordLaunch must NOT overwrite a pre-existing FirstSeenAt.
 // (Pacing decision must persist across restarts.)
 func TestPacing_RecordLaunch_DoesNotOverwriteFirstSeenAt(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	original := time.Now().Add(-10 * 24 * time.Hour)
 	st := baseEnabled()
@@ -230,8 +228,7 @@ func TestPacing_RecordRating_PreservesPacingFields(t *testing.T) {
 // TEST-P14: state round-trip through SaveState/LoadState must preserve
 // the new pacing fields (RFC3339 JSON serialization).
 func TestPacing_StateRoundtrip(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("HOME", tmpDir)
+	isolateFeedbackPaths(t)
 
 	now := time.Now().UTC().Truncate(time.Second)
 	st := &feedback.State{

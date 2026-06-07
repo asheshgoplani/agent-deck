@@ -1,1 +1,1 @@
-Hand-authored skill for conversational watcher setup. Install via `agent-deck watcher install-skill watcher-creator`. Source of truth — runtime copy lives at ~/.agent-deck/skills/pool/watcher-creator/.
+Hand-authored skill for conversational watcher setup. Install via `agent-deck watcher install-skill watcher-creator`. Source of truth: the runtime copy lives at `$XDG_CONFIG_HOME/agent-deck/skills/pool/watcher-creator/` (default `~/.config/agent-deck/skills/pool/watcher-creator/`).

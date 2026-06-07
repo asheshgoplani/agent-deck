@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
 // restoreDefaultLogger restores the default slog logger after test-local capture.
@@ -33,8 +35,8 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// agentDeckDir returns ~/.agent-deck for the current HOME (which is t.TempDir in tests).
-func agentDeckDir(t *testing.T) string {
+// legacyAgentDeckDir returns ~/.agent-deck for the current HOME.
+func legacyAgentDeckDir(t *testing.T) string {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -43,17 +45,33 @@ func agentDeckDir(t *testing.T) string {
 	return filepath.Join(home, ".agent-deck")
 }
 
+func effectiveAgentDeckDir(t *testing.T) string {
+	t.Helper()
+	watcherDir, err := session.WatcherDir()
+	if err != nil {
+		t.Fatalf("WatcherDir: %v", err)
+	}
+	return filepath.Dir(watcherDir)
+}
+
+func isolateWatcherLayoutHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+}
+
 // TestLayout_FreshInstallCreatesLayout verifies that ScaffoldWatcherLayout creates
-// ~/.agent-deck/watcher/{CLAUDE.md, POLICY.md, LEARNINGS.md, clients.json} when the
-// directory does not yet exist.
+// watcher/{CLAUDE.md, POLICY.md, LEARNINGS.md, clients.json} under the effective
+// XDG data dir when the directory does not yet exist.
 func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	if err := ScaffoldWatcherLayout(); err != nil {
 		t.Fatalf("ScaffoldWatcherLayout: %v", err)
 	}
 
-	deck := agentDeckDir(t)
+	deck := effectiveAgentDeckDir(t)
 	for _, name := range []string{"CLAUDE.md", "POLICY.md", "LEARNINGS.md", "clients.json"} {
 		path := filepath.Join(deck, "watcher", name)
 		info, err := os.Stat(path)
@@ -72,10 +90,10 @@ func TestLayout_FreshInstallCreatesLayout(t *testing.T) {
 // and idempotent re-run.
 func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	t.Run("happy_path", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 		buf := captureLog(t)
 
-		deck := agentDeckDir(t)
+		deck := legacyAgentDeckDir(t)
 		// Seed legacy directory with sub-dir + file.
 		legacyDir := filepath.Join(deck, "watchers", "alpha")
 		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
@@ -136,10 +154,10 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("collision", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 		buf := captureLog(t)
 
-		deck := agentDeckDir(t)
+		deck := legacyAgentDeckDir(t)
 		// Seed both as real directories.
 		if err := os.MkdirAll(filepath.Join(deck, "watchers"), 0o755); err != nil {
 			t.Fatalf("MkdirAll watchers: %v", err)
@@ -168,9 +186,9 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("symlink_attack", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
-		deck := agentDeckDir(t)
+		deck := legacyAgentDeckDir(t)
 		if err := os.MkdirAll(deck, 0o755); err != nil {
 			t.Fatalf("MkdirAll deck: %v", err)
 		}
@@ -191,9 +209,9 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 	})
 
 	t.Run("idempotent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
-		deck := agentDeckDir(t)
+		deck := legacyAgentDeckDir(t)
 		legacyDir := filepath.Join(deck, "watchers")
 		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
 			t.Fatalf("MkdirAll legacy: %v", err)
@@ -214,9 +232,9 @@ func TestLayout_LegacyMigrationAtomic(t *testing.T) {
 // TestLayout_SymlinkResolves verifies that after migration, the compatibility symlink
 // allows reads through watchers/clients.json that resolve to watcher/clients.json.
 func TestLayout_SymlinkResolves(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
-	deck := agentDeckDir(t)
+	deck := legacyAgentDeckDir(t)
 	// Seed clients.json in the legacy location.
 	legacyDir := filepath.Join(deck, "watchers")
 	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
@@ -248,7 +266,7 @@ func TestLayout_SymlinkResolves(t *testing.T) {
 // TestLayout_StateRoundtrip verifies SaveState/LoadState round-trip all WatcherState fields,
 // and that LoadState returns (nil, nil) when state.json is absent.
 func TestLayout_StateRoundtrip(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	original := &WatcherState{
@@ -298,7 +316,7 @@ func TestLayout_StateRoundtrip(t *testing.T) {
 // TestLayout_EventLogAppendAtomic verifies AppendEventLog writes complete lines,
 // and that concurrent appends do not produce torn lines.
 func TestLayout_EventLogAppendAtomic(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	entries := []string{
 		"## 2026-04-16T12:00:00Z - webhook: evt1",
@@ -311,7 +329,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 		}
 	}
 
-	deck := agentDeckDir(t)
+	deck := effectiveAgentDeckDir(t)
 	logPath := filepath.Join(deck, "watcher", "alpha", "task-log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -340,7 +358,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 	// Concurrency sub-test: 2 goroutines × 50 appends = 100 total lines, no torn lines.
 	t.Run("concurrent", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		isolateWatcherLayoutHome(t)
 
 		lineRe := regexp.MustCompile(`^## .+$`)
 		var wg sync.WaitGroup
@@ -363,7 +381,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 		}
 		wg.Wait()
 
-		deck2 := agentDeckDir(t)
+		deck2 := effectiveAgentDeckDir(t)
 		logPath2 := filepath.Join(deck2, "watcher", "beta", "task-log.md")
 		data2, err := os.ReadFile(logPath2)
 		if err != nil {
@@ -386,7 +404,7 @@ func TestLayout_EventLogAppendAtomic(t *testing.T) {
 
 // TestLayout_HotReloadSafe verifies LoadState always reads from disk (no in-process cache).
 func TestLayout_HotReloadSafe(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	t0 := time.Now().UTC().Truncate(time.Second)
 	stateV1 := &WatcherState{LastEventTS: t0, ErrorCount: 1, AdapterHealthy: true}
@@ -419,10 +437,10 @@ func TestLayout_HotReloadSafe(t *testing.T) {
 // TestLayout_Integration_ThreeEvents simulates writerLoop calling AppendEventLog + SaveState
 // three times and checks that task-log.md has 3 lines and LastEventTS equals the third event's ts.
 func TestLayout_Integration_ThreeEvents(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	// Seed meta.json for "alpha".
-	deck := agentDeckDir(t)
+	deck := effectiveAgentDeckDir(t)
 	alphaDir := filepath.Join(deck, "watcher", "alpha")
 	if err := os.MkdirAll(alphaDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll alpha: %v", err)
@@ -475,7 +493,7 @@ func TestLayout_Integration_ThreeEvents(t *testing.T) {
 
 // TestLayout_WatcherDir_RejectsMaliciousNames verifies T-21-PI: path traversal names are rejected.
 func TestLayout_WatcherDir_RejectsMaliciousNames(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateWatcherLayoutHome(t)
 
 	cases := []struct {
 		name    string

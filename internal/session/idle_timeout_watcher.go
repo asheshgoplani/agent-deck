@@ -48,11 +48,11 @@ var sessionLifecycleLogMu sync.Mutex
 // Distinct from session-id-lifecycle.jsonl (which logs bind/rebind), this
 // covers process-level lifecycle decisions like idle-timeout-expired.
 func GetSessionLifecycleLogPath() string {
-	agentDeckDir, err := GetAgentDeckDir()
+	path, err := logDataPath("session-lifecycle.jsonl")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "logs", "session-lifecycle.jsonl")
+		return tempAgentDeckPath("logs", "session-lifecycle.jsonl")
 	}
-	return filepath.Join(agentDeckDir, "logs", "session-lifecycle.jsonl")
+	return path
 }
 
 // WriteSessionLifecycleEvent appends a single JSONL row.

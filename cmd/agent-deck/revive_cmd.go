@@ -27,9 +27,21 @@ func (s ReviveSummary) Format() string {
 // runReviveAll is the testable core: classify all instances, trigger revives,
 // aggregate the summary. Separate from handleSessionRevive so tests can stub
 // the reviver and storage without exec'ing the binary.
-func runReviveAll(instances []*session.Instance, rev *session.Reviver) ReviveSummary {
+//
+// It also returns the subset of instances that were actually revived (status
+// mutated). The caller persists ONLY these via a targeted, sweep-free write so
+// revive can never clobber a session a concurrent process added after the
+// snapshot was loaded (lost-update race fix).
+func runReviveAll(instances []*session.Instance, rev *session.Reviver) (ReviveSummary, []*session.Instance) {
 	outcomes := rev.ReviveAll(instances)
+	byID := make(map[string]*session.Instance, len(instances))
+	for _, inst := range instances {
+		if inst != nil {
+			byID[inst.ID] = inst
+		}
+	}
 	summary := ReviveSummary{}
+	var revived []*session.Instance
 	for _, o := range outcomes {
 		switch o.Class {
 		case session.ClassAlive:
@@ -40,10 +52,38 @@ func runReviveAll(instances []*session.Instance, rev *session.Reviver) ReviveSum
 			summary.Errored++
 			if o.Revived {
 				summary.Revived++
+				if inst := byID[o.InstanceID]; inst != nil {
+					revived = append(revived, inst)
+				}
 			}
 		}
 	}
-	return summary
+	return summary, revived
+}
+
+// reviveAndPersist is the testable persist seam: run the reviver over the given
+// instances, then durably persist ONLY the rows it actually revived, via the
+// targeted, status-only, sweep-free path (Storage.PersistRevivedInstances →
+// statedb.PersistInstanceStatusesTx). It deliberately does NOT call
+// saveSessionData / SaveWithGroups / SaveInstances: that full load-modify-write
+// path runs a `DELETE FROM instances WHERE id NOT IN (<stale snapshot>)` sweep
+// that silently drops any session a concurrent `add` inserted after we loaded
+// our snapshot, and a full-row rewrite that would clobber concurrent edits to
+// the revived rows. Keeping persistence behind this single function means a
+// future regression back to the full-rewrite path is a one-line change here that
+// the CLI-level regression test (revive_persist_cli_test.go) will catch.
+func reviveAndPersist(
+	storage *session.Storage,
+	instances []*session.Instance,
+	rev *session.Reviver,
+) (ReviveSummary, error) {
+	summary, revived := runReviveAll(instances, rev)
+	if len(revived) > 0 {
+		if err := storage.PersistRevivedInstances(revived); err != nil {
+			return summary, err
+		}
+	}
+	return summary, nil
 }
 
 // handleSessionRevive dispatches `agent-deck session revive [--all|--name <title>]`.
@@ -79,7 +119,7 @@ func handleSessionRevive(profile string, args []string) {
 	quietMode := *quiet || *quietShort
 	out := NewCLIOutput(*jsonOutput, quietMode)
 
-	storage, instances, groups, err := loadSessionData(profile)
+	storage, instances, _, err := loadSessionData(profile)
 	if err != nil {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
@@ -87,9 +127,9 @@ func handleSessionRevive(profile string, args []string) {
 
 	rev := session.NewReviver()
 
-	var summary ReviveSummary
+	var target []*session.Instance
 	if *all {
-		summary = runReviveAll(instances, rev)
+		target = instances
 	} else {
 		inst, errMsg, errCode := ResolveSession(*name, instances)
 		if inst == nil {
@@ -100,11 +140,11 @@ func handleSessionRevive(profile string, args []string) {
 			os.Exit(1)
 			return
 		}
-		summary = runReviveAll([]*session.Instance{inst}, rev)
+		target = []*session.Instance{inst}
 	}
 
-	// Persist any status mutations (e.g., StatusError → StatusRunning on revive).
-	if err := saveSessionData(storage, instances, groups); err != nil {
+	summary, err := reviveAndPersist(storage, target, rev)
+	if err != nil {
 		out.Error(fmt.Sprintf("failed to save session state: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}

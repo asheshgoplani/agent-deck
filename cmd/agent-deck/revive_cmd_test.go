@@ -34,7 +34,11 @@ func TestRevive_CLI_AllFlag_TriggersReviver(t *testing.T) {
 	}
 	_ = erroredTmux
 
-	summary := runReviveAll([]*session.Instance{errored, alive, dead}, rev)
+	summary, revived := runReviveAll([]*session.Instance{errored, alive, dead}, rev)
+
+	if len(revived) != 1 || revived[0].ID != errored.ID {
+		t.Errorf("expected exactly the errored instance in revived set, got %+v", revived)
+	}
 
 	if summary.Revived != 1 {
 		t.Errorf("expected 1 revived, got %d", summary.Revived)
@@ -68,7 +72,10 @@ func TestRevive_CLI_EmptyStorage_NoCalls(t *testing.T) {
 		ReviveAction: func(i *session.Instance) error { reviveCalls++; return nil },
 		Stagger:      0,
 	}
-	summary := runReviveAll(nil, rev)
+	summary, revived := runReviveAll(nil, rev)
+	if len(revived) != 0 {
+		t.Errorf("empty input must produce empty revived set, got %+v", revived)
+	}
 	if summary.Revived != 0 || summary.Alive != 0 || summary.Errored != 0 || summary.Dead != 0 {
 		t.Errorf("empty input must produce zero counts: %+v", summary)
 	}

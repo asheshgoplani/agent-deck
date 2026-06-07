@@ -32,24 +32,9 @@ func TestNewHome(t *testing.T) {
 }
 
 func TestNewHome_DisablesTmuxNotificationsWhenStatusInjectionDisabled(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	tmpHome := t.TempDir()
-	os.Setenv("HOME", tmpHome)
-	session.ClearUserConfigCache()
-	defer func() {
-		os.Setenv("HOME", origHome)
-		session.ClearUserConfigCache()
-	}()
-
-	configDir := filepath.Join(tmpHome, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() failed: %v", err)
-	}
-	configPath := filepath.Join(configDir, "config.toml")
+	homeDir := setXDGTestHome(t)
 	config := "[tmux]\ninject_status_line = false\n"
-	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
-		t.Fatalf("WriteFile() failed: %v", err)
-	}
+	writeXDGTestConfig(t, homeDir, config)
 
 	home := NewHome()
 	if home.manageTmuxNotifications {
@@ -969,17 +954,7 @@ func TestNotesSectionLineBudget(t *testing.T) {
 func setFollowCwdOnAttachConfigForTest(t *testing.T, enabled *bool) {
 	t.Helper()
 
-	homeDir, err := os.MkdirTemp("", "follow-cwd-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(homeDir) })
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
+	homeDir := setXDGTestHome(t)
 
 	if enabled != nil {
 		value := "false"
@@ -987,30 +962,14 @@ func setFollowCwdOnAttachConfigForTest(t *testing.T, enabled *bool) {
 			value = "true"
 		}
 		content := fmt.Sprintf("[instances]\nfollow_cwd_on_attach = %s\n", value)
-		configPath := filepath.Join(configDir, session.UserConfigFileName)
-		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
-			t.Fatalf("failed to write config.toml: %v", err)
-		}
+		writeXDGTestConfig(t, homeDir, content)
 	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
 }
 
 func setPreviewShowNotesConfigForTest(t *testing.T, enabled *bool) {
 	t.Helper()
 
-	homeDir, err := os.MkdirTemp("", "follow-cwd-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp home: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(homeDir) })
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("failed to create config directory: %v", err)
-	}
+	homeDir := setXDGTestHome(t)
 
 	if enabled != nil {
 		value := "false"
@@ -1018,14 +977,8 @@ func setPreviewShowNotesConfigForTest(t *testing.T, enabled *bool) {
 			value = "true"
 		}
 		content := fmt.Sprintf("[preview]\nshow_notes = %s\n", value)
-		configPath := filepath.Join(configDir, session.UserConfigFileName)
-		if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
-			t.Fatalf("failed to write config.toml: %v", err)
-		}
+		writeXDGTestConfig(t, homeDir, content)
 	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
 }
 
 func TestFollowAttachReturnCwdEnabledUpdatesProjectPath(t *testing.T) {
@@ -1634,6 +1587,7 @@ func TestRenderHelpBarMinimal(t *testing.T) {
 	home := NewHome()
 	home.width = 55 // Minimal mode (50-69)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	result := home.renderHelpBar()
 
@@ -1654,6 +1608,7 @@ func TestRenderHelpBarMinimalWithSession(t *testing.T) {
 	home := NewHome()
 	home.width = 55 // Minimal mode (50-69)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a session to test context-specific keys
 	testSession := &session.Instance{
@@ -1685,6 +1640,7 @@ func TestRenderHelpBarMinimalWithFreshRestartableSession(t *testing.T) {
 	home := NewHome()
 	home.width = 55
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	testSession := &session.Instance{
 		ID:              "test-456",
@@ -1706,6 +1662,7 @@ func TestRenderHelpBarCompact(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	result := home.renderHelpBar()
 
@@ -1723,6 +1680,7 @@ func TestRenderHelpBarCompactWithSession(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a session with fork capability
 	// ClaudeDetectedAt must be recent for CanFork() to return true
@@ -1761,6 +1719,7 @@ func TestRenderHelpBarCompactWithGroup(t *testing.T) {
 	home := NewHome()
 	home.width = 85 // Compact mode (70-99)
 	home.height = 30
+	home.footerMode = session.FooterFull // verbose width-adaptive tiers
 
 	// Add a group
 	home.flatItems = []session.Item{
@@ -2001,6 +1960,7 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	home := NewHome()
 	home.width = 200 // Wide terminal to fit all hints including Undo
 	home.height = 30
+	home.footerMode = session.FooterFull // Undo lives in the verbose bar's secondary hints
 
 	// Add a session to have context (non-Claude to reduce hint count)
 	inst := &session.Instance{ID: "test-1", Title: "Test", Tool: "other"}
@@ -2020,6 +1980,414 @@ func TestUndoHintInHelpBar(t *testing.T) {
 	result = home.renderHelpBar()
 	if !strings.Contains(result, "Undo") {
 		t.Errorf("Help bar should show Undo when undo stack is non-empty\nGot: %q", result)
+	}
+}
+
+// ── Curated footer (opt-in via [ui] footer = curated) ──────────────────────
+
+// curatedHome builds a Home in the curated footer style at a comfortable width.
+func curatedHome() *Home {
+	home := NewHome()
+	home.width = 120
+	home.height = 30
+	home.footerMode = session.FooterCurated
+	return home
+}
+
+func TestCuratedFooterAlwaysEndsWithSettingsThenHelp(t *testing.T) {
+	home := curatedHome()
+	// Live session selected so there is a context hint before settings/help.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+
+	settingsKey := home.actionKey(hotkeySettings)
+	helpKey := home.actionKey(hotkeyHelp)
+	si := strings.LastIndex(result, settingsKey+" ")
+	hi := strings.LastIndex(result, helpKey+" ")
+	if si == -1 {
+		t.Fatalf("curated footer should advertise settings key %q\nGot: %q", settingsKey, result)
+	}
+	if hi == -1 {
+		t.Fatalf("curated footer should advertise help key %q\nGot: %q", helpKey, result)
+	}
+	if !(si < hi) {
+		t.Errorf("settings must come before help as the last two items\nGot: %q", result)
+	}
+	if !strings.Contains(result, "attach") {
+		t.Errorf("curated footer for a live session should show attach\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterLiveSessionShowsAttach(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "⏎ attach") {
+		t.Errorf("live session should advertise Enter attach\nGot: %q", result)
+	}
+	// Live session shows up to 3 context hints (attach first, then restart, …).
+	if !strings.Contains(result, "restart") {
+		t.Errorf("live session should advertise restart after attach\nGot: %q", result)
+	}
+	// Attach must be the first context hint.
+	ai := strings.Index(result, "attach")
+	ri := strings.Index(result, "restart")
+	if ai == -1 || ri == -1 || ai > ri {
+		t.Errorf("attach should come before restart\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterCapsContextHints(t *testing.T) {
+	home := curatedHome()
+	// A forkable live session would offer attach/restart/fork; verify the
+	// curated footer caps context hints at maxCuratedContextHints and never
+	// exceeds it once settings/help are appended.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:               "s1",
+			Tool:             "claude",
+			Status:           session.StatusRunning,
+			ClaudeSessionID:  "abc",
+			ClaudeDetectedAt: time.Now(), // recent → CanFork() true
+		}},
+	}
+	home.cursor = 0
+
+	hints := home.curatedContextHints(home.flatItems[0])
+	if len(hints) != maxCuratedContextHints {
+		t.Fatalf("forkable live session should yield %d context hints, got %d: %+v",
+			maxCuratedContextHints, len(hints), hints)
+	}
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "fork") {
+		t.Errorf("forkable live session should advertise fork\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterDeadSessionShowsRestart(t *testing.T) {
+	home := curatedHome()
+	// Stopped Claude session with a known session id → restart + restart fresh.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:              "s1",
+			Tool:            "claude",
+			Status:          session.StatusStopped,
+			ClaudeSessionID: "abc",
+		}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "restart") {
+		t.Errorf("dead session should advertise restart\nGot: %q", result)
+	}
+	if !strings.Contains(result, "restart fresh") {
+		t.Errorf("dead restartable session should advertise restart fresh\nGot: %q", result)
+	}
+	if !strings.Contains(result, "delete") {
+		t.Errorf("dead session should advertise delete as the third action\nGot: %q", result)
+	}
+	if strings.Contains(result, "attach") {
+		t.Errorf("dead session should not advertise attach\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterErrorSessionShowsRestartRestartFreshDelete(t *testing.T) {
+	home := curatedHome()
+	// Errored Claude session with a session id → R / T / d, in that order.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:              "s1",
+			Tool:            "claude",
+			Status:          session.StatusError,
+			ClaudeSessionID: "abc",
+		}},
+	}
+	home.cursor = 0
+
+	hints := home.curatedContextHints(home.flatItems[0])
+	got := make([]string, len(hints))
+	for i, hint := range hints {
+		got[i] = hint.label
+	}
+	want := []string{"restart", "restart fresh", "delete"}
+	if len(got) != len(want) {
+		t.Fatalf("errored session context hints = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("errored session context hints = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCuratedFooterErrorSessionShowsRestart(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "other", Status: session.StatusError}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "restart") {
+		t.Errorf("errored session should advertise restart\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterGroupShowsCollapseExpand(t *testing.T) {
+	home := curatedHome()
+
+	// Expanded group → collapse hint.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: true}},
+	}
+	home.cursor = 0
+	if result := home.renderHelpBar(); !strings.Contains(result, "Tab collapse") {
+		t.Errorf("expanded group should advertise Tab collapse\nGot: %q", result)
+	}
+
+	// Collapsed group → expand hint.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeGroup, Path: "g", Group: &session.Group{Name: "g", Path: "g", Expanded: false}},
+	}
+	if result := home.renderHelpBar(); !strings.Contains(result, "Tab expand") {
+		t.Errorf("collapsed group should advertise Tab expand\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterEmptyListShowsNew(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = nil
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "new") {
+		t.Errorf("empty list should advertise new\nGot: %q", result)
+	}
+	// settings + help must still be present and last.
+	if !strings.Contains(result, "help") {
+		t.Errorf("curated footer should always include help\nGot: %q", result)
+	}
+}
+
+func TestCuratedFooterJumpMode(t *testing.T) {
+	home := curatedHome()
+	home.jumpMode = true
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "jump") || !strings.Contains(result, "cancel") {
+		t.Errorf("jump mode should advertise jump and cancel\nGot: %q", result)
+	}
+}
+
+// TestCuratedFooterRemoteSessionShowsAttach covers PR #1289 review nit 1: a
+// remote-session row must still advertise the attach hint in the curated
+// footer (it attaches over SSH just like a local session).
+func TestCuratedFooterRemoteSessionShowsAttach(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeRemoteSession, RemoteSession: &session.RemoteSessionInfo{}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if !strings.Contains(result, "⏎ attach") {
+		t.Errorf("curated footer for a remote session should advertise Enter attach\nGot: %q", result)
+	}
+}
+
+// TestCuratedFooterQueuedSessionNotAttachable covers PR #1289 review nit 2b: a
+// queued session has no tmux yet, so the curated footer must not advertise
+// "⏎ attach" or "restart" for it — only delete and new make sense.
+func TestCuratedFooterQueuedSessionNotAttachable(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusQueued}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if strings.Contains(result, "attach") {
+		t.Errorf("queued session (no tmux yet) must not advertise attach\nGot: %q", result)
+	}
+	if strings.Contains(result, "restart") {
+		t.Errorf("queued session (nothing running) must not advertise restart\nGot: %q", result)
+	}
+	if !strings.Contains(result, "delete") {
+		t.Errorf("queued session should advertise delete\nGot: %q", result)
+	}
+}
+
+// TestCuratedFooterNarrowKeepsSettingsAndHelp covers PR #1289 review nit 2a: on
+// a narrow terminal the curated footer drops lower-priority CONTEXT hints by
+// width rather than letting MaxWidth truncate the always-last settings/help
+// global hints off the right edge.
+func TestCuratedFooterNarrowKeepsSettingsAndHelp(t *testing.T) {
+	home := curatedHome()
+	home.width = 50 // narrow, but still >= layoutBreakpointSingle (curated, not tiny)
+	// Forkable live session → three context hints (attach/restart/fork) that
+	// would, together with settings+help, overflow 50 columns.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:               "s1",
+			Tool:             "claude",
+			Status:           session.StatusRunning,
+			ClaudeSessionID:  "abc",
+			ClaudeDetectedAt: time.Now(),
+		}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	settingsKey := home.actionKey(hotkeySettings)
+	helpKey := home.actionKey(hotkeyHelp)
+	if !strings.Contains(result, settingsKey+" settings") {
+		t.Errorf("narrow curated footer must keep the settings hint\nGot: %q", result)
+	}
+	if !strings.Contains(result, helpKey+" help") {
+		t.Errorf("narrow curated footer must keep the help hint\nGot: %q", result)
+	}
+}
+
+// TestFitCuratedHintsAlwaysKeepsGlobals exercises the width-fitting helper
+// directly: even when the bar is too narrow for any context hint, the global
+// hints survive; and context hints are kept front-to-back (highest priority
+// first) when there is room.
+func TestFitCuratedHintsAlwaysKeepsGlobals(t *testing.T) {
+	home := curatedHome()
+	globals := []footerHint{{key: "s", label: "settings"}, {key: "?", label: "help"}}
+	ctx := []footerHint{{key: "a", label: "attach"}, {key: "r", label: "restart"}, {key: "f", label: "fork"}}
+
+	// Width too small for any context hint: only globals remain.
+	home.width = 1
+	got := home.fitCuratedHints(ctx, globals)
+	if len(got) != len(globals) {
+		t.Fatalf("at width=1 expected only the %d global hints, got %d: %+v", len(globals), len(got), got)
+	}
+	if got[len(got)-1].label != "help" {
+		t.Errorf("help must remain the last hint, got %+v", got)
+	}
+
+	// Generous width: everything fits, context first then globals.
+	home.width = 200
+	got = home.fitCuratedHints(ctx, globals)
+	if len(got) != len(ctx)+len(globals) {
+		t.Fatalf("at width=200 expected all %d hints, got %d: %+v", len(ctx)+len(globals), len(got), got)
+	}
+	if got[0].label != "attach" || got[len(got)-1].label != "help" {
+		t.Errorf("expected attach first and help last, got %+v", got)
+	}
+}
+
+// TestFooterDefaultIsFull is the default-preserving guarantee for PR #1289:
+// with no [ui] footer config the footer is the historic verbose "full" bar,
+// not curated — so nobody's UI changes without an explicit opt-in.
+func TestFooterDefaultIsFull(t *testing.T) {
+	// Config layer: unset → full.
+	if got := (session.UISettings{}).GetFooter(); got != session.FooterFull {
+		t.Fatalf("default footer = %q, want %q (must preserve today's verbose bar)", got, session.FooterFull)
+	}
+
+	// Render layer: a Home seeded with the default footerMode must route to the
+	// verbose width-adaptive bar, not the curated bar. The verbose bar uses
+	// filled key chips and advertises many actions; a reliable distinguishing
+	// marker is the "quit" hint, which the curated bar never shows.
+	home := NewHome()
+	home.width = 120
+	home.height = 30
+	home.footerMode = (session.UISettings{}).GetFooter() // simulate default load
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+	}
+	home.cursor = 0
+
+	full := home.renderHelpBar()
+
+	home.footerMode = session.FooterCurated
+	curated := home.renderHelpBar()
+
+	if full == curated {
+		t.Fatal("default (full) footer render is identical to curated render; default did not select the verbose bar")
+	}
+}
+
+// TestFooterUnsetOrUnknownModeRendersHistoricBar guards the renderHelpBar
+// routing directly: a truly-unset ("") or unrecognized footerMode must render
+// the HISTORIC width-adaptive bar, NOT the curated bar. Only an explicit
+// curated setting selects curated. This covers the path that
+// TestFooterDefaultIsFull masks by hard-setting the normalized GetFooter value;
+// here we set footerMode to raw values that bypass GetFooter normalization.
+func TestFooterUnsetOrUnknownModeRendersHistoricBar(t *testing.T) {
+	mkHome := func(mode string) *Home {
+		home := NewHome()
+		home.width = 120
+		home.height = 30
+		home.footerMode = mode
+		home.flatItems = []session.Item{
+			{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+		}
+		home.cursor = 0
+		return home
+	}
+
+	// The verbose width-adaptive bar (full tier at width 120) renders a
+	// capitalized context title ("Session:") that the curated bar never emits;
+	// the curated bar uses lowercase inline labels ("attach", "settings"). Use
+	// the "Session:" prefix as the distinguishing marker.
+	const historicMarker = "Session:"
+	curated := mkHome(session.FooterCurated).renderHelpBar()
+	if strings.Contains(curated, historicMarker) {
+		t.Fatalf("precondition failed: curated bar unexpectedly contains %q; marker invalid", historicMarker)
+	}
+
+	for _, mode := range []string{"", "bogus", "FULL-ish", "default"} {
+		got := mkHome(mode).renderHelpBar()
+		if got == curated {
+			t.Errorf("footerMode=%q rendered the curated bar; unset/unknown must route to the historic bar", mode)
+		}
+		if !strings.Contains(got, historicMarker) {
+			t.Errorf("footerMode=%q did not render the historic verbose bar (no %q marker)", mode, historicMarker)
+		}
+	}
+}
+
+// TestRenderHelpBarCursorNegativeNoPanic guards against a negative-index panic:
+// with items present but cursor == -1 (e.g. a transient state before cursor is
+// restored), the help-bar renderers must not index flatItems[-1]. Exercises
+// every footer mode that has a cursor-indexed context branch.
+func TestRenderHelpBarCursorNegativeNoPanic(t *testing.T) {
+	modes := []string{
+		session.FooterCurated,
+		session.FooterFull,
+		session.FooterCompact,
+		session.FooterMinimal,
+		"", // unset → historic width-adaptive
+	}
+	for _, mode := range modes {
+		home := NewHome()
+		home.width = 120
+		home.height = 30
+		home.footerMode = mode
+		home.flatItems = []session.Item{
+			{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusRunning}},
+		}
+		home.cursor = -1 // items present, but no valid selection
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("footerMode=%q: renderHelpBar panicked with cursor=-1: %v", mode, r)
+				}
+			}()
+			_ = home.renderHelpBar()
+		}()
 	}
 }
 

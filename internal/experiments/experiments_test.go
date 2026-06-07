@@ -7,9 +7,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
+	// See internal/testutil/homeenv.go for the postmortem.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	os.Setenv("AGENTDECK_PROFILE", "_test")
 
 	// Run tests

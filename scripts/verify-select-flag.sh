@@ -39,8 +39,9 @@ command -v tmux >/dev/null || { skip "tmux not installed"; exit 0; }
 [[ -x "$BIN" ]] || { fail "binary not found at $BIN (run: go build -o agent-deck ./cmd/agent-deck)"; exit 1; }
 
 # ---- seed three sessions in three groups so we can verify all groups remain visible
-mkdir -p "$TMPHOME/.agent-deck"
-cat > "$TMPHOME/.agent-deck/config.toml" <<'EOF'
+export XDG_CONFIG_HOME="$TMPHOME/.config"
+mkdir -p "$XDG_CONFIG_HOME/agent-deck"
+cat > "$XDG_CONFIG_HOME/agent-deck/config.toml" <<'EOF'
 [tmux]
 inject_status_line = false
 EOF

@@ -4,8 +4,6 @@
 package ui
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,19 +17,8 @@ import (
 // definitions.
 func withPluginCatalog(t *testing.T, content string) {
 	t.Helper()
-	temp := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", temp)
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
-
-	dir := filepath.Join(temp, ".agent-deck")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	session.ClearUserConfigCache()
+	home := setXDGTestHome(t)
+	writeXDGTestConfig(t, home, content)
 }
 
 // TestEditSessionDialog_PluginsFieldShownForClaudeWithCatalog asserts the

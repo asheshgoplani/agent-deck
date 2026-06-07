@@ -10,6 +10,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
+	// See internal/testutil/homeenv.go for the postmortem.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()

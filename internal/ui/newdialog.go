@@ -214,6 +214,12 @@ type NewDialog struct {
 	// Conducting parent selector.
 	conductorSessions []*session.Instance // nil when no conductors; populated by ShowInGroup
 	conductorCursor   int                 // 0 = "None", 1..N index into conductorSessions
+
+	// enterAdvances mirrors config.toml [ui] new_session_enter_advances (PR
+	// #1295). False (default) preserves today's behavior: Enter on the free-text
+	// Name/Branch fields submits the form. True makes Enter advance focus
+	// instead, with Ctrl+S as the explicit submit. Ctrl+S submits in both modes.
+	enterAdvances bool
 }
 
 // dialogSnapshot captures form state so the recent picker can restore on cancel.
@@ -260,6 +266,17 @@ func buildPresetCommands() []string {
 		presets = append(presets, customTools...)
 	}
 	return session.FilterVisibleToolNames(presets)
+}
+
+// newSessionEnterAdvancesFromConfig reads config.toml [ui]
+// new_session_enter_advances (PR #1295). Default false (config missing or
+// unset) preserves today's behavior: Enter on Name/Branch submits the form.
+func newSessionEnterAdvancesFromConfig() bool {
+	cfg, err := session.LoadUserConfig()
+	if err != nil || cfg == nil {
+		return false
+	}
+	return cfg.UI.GetNewSessionEnterAdvances()
 }
 
 // buildInheritedSettings returns display pairs for non-default Docker config values.
@@ -346,6 +363,7 @@ func NewNewDialog() *NewDialog {
 		parentGroupName: "default",
 		worktreeEnabled: false,
 		branchPrefix:    "feature/",
+		enterAdvances:   newSessionEnterAdvancesFromConfig(),
 	}
 	dlg.syncInputWidths()
 	dlg.updateToolOptions() // Also calls rebuildFocusTargets.
@@ -591,12 +609,74 @@ func (d *NewDialog) IsModelTypeCustomHighlighted() bool {
 
 func (d *NewDialog) shouldHandleEnterLocally() bool {
 	switch d.currentTarget() {
+	// Path/Model open their own dropdown on Enter.
 	case focusPath, focusModel:
 		return true
+	// Name/Branch are free-text fields. When the opt-in
+	// [ui].new_session_enter_advances toggle is on, Enter advances to the next
+	// field rather than submitting the whole form: pressing Enter right after
+	// typing the session name used to silently submit (path defaults to cwd),
+	// skipping path/tool/model selection entirely. Handling Enter locally lets
+	// the dialog advance focus instead. Submit stays reachable from non-text
+	// rows (checkboxes/conductor) and via Ctrl+S (additive, always available).
+	// Default (toggle off) preserves today's behavior: Enter here submits, so we
+	// must NOT claim it locally.
+	case focusName, focusBranch:
+		return d.enterAdvances
 	case focusMultiRepo:
 		return d.multiRepoEnabled
 	default:
 		return d.suggestionsActive || d.modelSuggestionActive
+	}
+}
+
+// WantsSubmit reports whether the given key is an explicit "create now"
+// shortcut (Ctrl+S) that should submit the form from any field, including the
+// free-text Name/Branch fields where Enter now advances focus instead of
+// submitting. It is intentionally inert while a sub-picker (recent sessions,
+// branch search, path/model dropdowns) is open so the shortcut never fires mid
+// selection.
+func (d *NewDialog) WantsSubmit(msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyCtrlS {
+		return false
+	}
+	if d.IsRecentPickerOpen() || d.IsBranchPickerOpen() ||
+		d.suggestionsActive || d.modelSuggestionActive {
+		return false
+	}
+	return true
+}
+
+// CommitInFlightMultiRepoEdit flushes an in-progress multi-repo path edit into
+// multiRepoPaths so a Ctrl+S submit uses the edited value rather than the
+// previously-committed one. Without this, the in-flight text lives only in
+// pathInput (the Enter handler is the sole place that writes it back), so
+// submitting mid-edit would persist stale data. Safe to call when not editing:
+// it is a no-op unless an active multi-repo path edit is in progress.
+//
+// After flushing, pathInput is reset to the PRIMARY path (multiRepoPaths[0]).
+// The submit path in home.go reads `path` from pathInput via GetValuesWithWorktree
+// and runs worktree resolution + the create-directory check against it BEFORE
+// path is reassigned to multiRepoPaths[0]. If pathInput were left holding the
+// secondary path being edited, those pre-create checks would run against the
+// wrong repo. Resetting to the primary keeps pathInput consistent with the
+// session that will actually be created.
+func (d *NewDialog) CommitInFlightMultiRepoEdit() {
+	if !d.multiRepoEnabled || !d.multiRepoEditing {
+		return
+	}
+	if d.multiRepoPathCursor < 0 || d.multiRepoPathCursor >= len(d.multiRepoPaths) {
+		return
+	}
+	d.multiRepoPaths[d.multiRepoPathCursor] = strings.TrimSpace(d.pathInput.Value())
+	d.multiRepoEditing = false
+	d.pathInput.Blur()
+	d.pathCycler.Reset()
+	// Reset pathInput to the primary path so the caller's pre-create checks
+	// (worktree resolution, create-directory) run against the primary repo, not
+	// the secondary entry that was just being edited.
+	if len(d.multiRepoPaths) > 0 {
+		d.pathInput.SetValue(d.multiRepoPaths[0])
 	}
 }
 
@@ -1853,6 +1933,17 @@ func (d *NewDialog) Update(msg tea.Msg) (*NewDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
+			// Name/Branch are free-text fields: when the opt-in
+			// [ui].new_session_enter_advances toggle is on, Enter advances to the
+			// next field instead of submitting the form, so typing a name + Enter
+			// no longer silently creates a session with all defaults. With the
+			// toggle off (default) home.go never forwards Enter here for these
+			// fields (shouldHandleEnterLocally returns false), so this branch is
+			// only reached in opt-in mode; the guard keeps it correct regardless.
+			if d.enterAdvances && (cur == focusName || cur == focusBranch) {
+				d.moveFocus(1)
+				return d, nil
+			}
 			if cur == focusPath {
 				d.suggestionsActive = true
 				d.suggestionsHidden = false
@@ -2542,7 +2633,14 @@ func (d *NewDialog) View() string {
 	if len(d.recentSessions) > 0 {
 		recentPrefix = "^R recent │ "
 	}
-	helpText := recentPrefix + "Tab next/accept │ ↑↓ navigate │ Enter create │ Esc cancel"
+	// createHint reflects the active Enter mode on free-text fields. With the
+	// opt-in toggle on, Enter advances and Ctrl+S creates; with it off (default),
+	// Enter still creates (Ctrl+S also works, but Enter is the legacy primary).
+	createHint := "Enter create"
+	if d.enterAdvances {
+		createHint = "^S create"
+	}
+	helpText := recentPrefix + "Tab next │ ↑↓ navigate │ " + createHint + " │ Esc cancel"
 	if cur == focusPath {
 		if d.suggestionsActive {
 			helpText = "↑/↓ navigate │ Space/Enter select │ Tab next │ Esc back"
@@ -2554,15 +2652,17 @@ func (d *NewDialog) View() string {
 	} else if cur == focusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
+		} else if d.enterAdvances {
+			helpText = "^F branch search │ Tab/Enter next │ ^S create │ Esc cancel"
 		} else {
 			helpText = "^F branch search │ Tab next │ Enter create │ Esc cancel"
 		}
 	} else if cur == focusCommand {
 		selectedCmd := d.GetSelectedCommand()
 		if selectedCmd == "gemini" || selectedCmd == "codex" || selectedCmd == "hermes" {
-			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ Enter create │ Esc cancel"
+			helpText = "←→ command │ w worktree │ s sandbox │ y yolo │ Tab next │ ^S create │ Esc cancel"
 		} else {
-			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ Enter create │ Esc cancel"
+			helpText = "←→ command │ w worktree │ s sandbox │ Tab next │ ^S create │ Esc cancel"
 		}
 	} else if cur == focusModel {
 		if d.modelSuggestionActive {
@@ -2571,13 +2671,13 @@ func (d *NewDialog) View() string {
 			helpText = "Type custom model ID │ Enter browse known IDs │ Tab next"
 		}
 	} else if cur == focusConductor {
-		helpText = "↑↓ select parent │ Tab next │ Enter create │ Esc cancel"
+		helpText = "↑↓ select parent │ Tab next │ Enter/^S create │ Esc cancel"
 	} else if cur == focusWorktree || cur == focusSandbox {
-		helpText = "Space toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusInherited {
-		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space expand/collapse │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	} else if cur == focusOptions && d.toolOptions != nil {
-		helpText = "Space/y toggle │ ↑↓ navigate │ Enter create │ Esc cancel"
+		helpText = "Space/y toggle │ ↑↓ navigate │ Enter/^S create │ Esc cancel"
 	}
 	content.WriteString(helpStyle.Render(helpText))
 

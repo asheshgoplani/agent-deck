@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -126,9 +127,17 @@ func skipIfNoClaudeBinary(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG FIRST so every path this package resolves (config.json,
+	// profiles/<p>/state.db, worker-scratch, logs) lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
+	// See internal/testutil/homeenv.go for the postmortem.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()
+	isolatePackageHome("agent-deck-session-tests-home-*")
 
 	// Isolate the tmux socket. Without this, tests spawn tmux sessions on the
 	// user's default socket and destabilize live agent-deck sessions.
@@ -160,6 +169,17 @@ func TestMain(m *testing.M) {
 	cleanupTestSessions()
 
 	os.Exit(code)
+}
+
+func isolatePackageHome(pattern string) {
+	home, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	os.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 }
 
 // cleanupTestSessions kills any tmux sessions created during testing.

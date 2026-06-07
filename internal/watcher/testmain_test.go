@@ -55,6 +55,13 @@ import (
 // in RESEARCH.md §Pitfall 1 and will fire as soon as a real pubsub.Subscription
 // is Receive()-d in Plan 17-02.
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
+	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5). goleak's
+	// VerifyTestMain calls os.Exit internally so the cleanup func cannot run,
+	// which is fine — the temp dir is reaped by the OS. What matters is HOME is
+	// overridden BEFORE any path is resolved. See internal/testutil/homeenv.go.
+	_ = testutil.IsolateHome()
+
 	// Isolate the tmux socket. goleak.VerifyTestMain calls os.Exit internally,
 	// so the cleanup func cannot run here — that's acceptable because the temp
 	// directory is harmless and will be reaped by the OS. What matters is that

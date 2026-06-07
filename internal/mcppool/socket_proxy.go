@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
@@ -150,11 +151,11 @@ var dangerousEnvVars = map[string]bool{
 
 // mcpSocketDir returns a user-private directory for MCP sockets instead of /tmp.
 func mcpSocketDir() string {
-	home, err := os.UserHomeDir()
+	dir, err := agentpaths.EffectiveDataPath("sockets", "sockets")
 	if err != nil {
 		return filepath.Join(os.TempDir(), fmt.Sprintf("agentdeck-%d", os.Getuid()))
 	}
-	return filepath.Join(home, ".agent-deck", "sockets")
+	return dir
 }
 
 func NewSocketProxy(ctx context.Context, name, command string, args []string, env map[string]string) (*SocketProxy, error) {
@@ -215,7 +216,10 @@ func (p *SocketProxy) Start() error {
 		return err
 	}
 
-	logDir := filepath.Join(os.Getenv("HOME"), ".agent-deck", "logs", "mcppool")
+	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "mcppool"), "logs")
+	if err != nil {
+		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "mcppool")
+	}
 	_ = os.MkdirAll(logDir, 0700)
 	p.logFile = filepath.Join(logDir, fmt.Sprintf("%s_socket.log", p.name))
 

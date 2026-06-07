@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,54 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// ErrRefusingEmptySweep is returned by SaveInstances when it is asked to
+// persist an EMPTY instance set while the instances table still holds rows.
+//
+// S1 data-loss safeguard (added after the 2026-06-04 incident, the third of
+// its class): SaveInstances' DELETE+re-insert sweep used to run an
+// unconditional `DELETE FROM instances` for an empty payload, so a stray
+// SaveInstances([]) wiped the live profile index. Refusing the destructive
+// empty sweep turns silent data loss into a loud, recoverable error. Callers
+// that genuinely intend to empty the table must use ClearAllInstances.
+var ErrRefusingEmptySweep = errors.New("statedb: refusing to wipe populated instances table with an empty SaveInstances payload (use ClearAllInstances to intentionally clear)")
+
+// backupDBFile copies the live SQLite database file to "<path>.bak" so a
+// destructive sweep is recoverable (S2 data-loss safeguard, 2026-06-04
+// incident). It is best-effort: a failed backup must NOT abort the save (the
+// save is the operation the caller actually asked for; the backup is an
+// insurance copy). To capture a consistent snapshot we checkpoint the WAL into
+// the main file first, then copy. Errors are returned so callers can log them,
+// but the only current caller intentionally ignores the error.
+//
+// No-op (nil) when path is empty (in-memory DB) — there is no file to copy.
+func (s *StateDB) backupDBFile() error {
+	if s.path == "" {
+		return nil
+	}
+	// Fold the WAL back into the main db file so the .bak is self-contained and
+	// doesn't depend on a sidecar -wal that the next write will overwrite.
+	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+
+	src, err := os.ReadFile(s.path)
+	if err != nil {
+		// Nothing to back up (file not created yet) or unreadable; either way,
+		// don't block the save.
+		return err
+	}
+	bak := s.path + ".bak"
+	// 0600: the db may carry session metadata; keep the backup as private as
+	// the original. Write+rename to avoid leaving a torn .bak.
+	tmp := bak + ".tmp"
+	if err := os.WriteFile(tmp, src, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, bak); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
 
 // withBusyRetry runs op with linear backoff (10ms, 20ms, 30ms, 40ms, 50ms;
 // ~150ms total) when op fails with SQLITE_BUSY. Non-BUSY errors are returned
@@ -62,7 +111,21 @@ const SchemaVersion = 11
 type StateDB struct {
 	db  *sql.DB
 	pid int
+	// path is the on-disk path of the SQLite database file. Retained so
+	// destructive write paths can snapshot the file to "<path>.bak" before a
+	// large DELETE+re-insert sweep (S2 data-loss safeguard, 2026-06-04
+	// incident). Empty for in-memory databases (no file to back up).
+	path string
 }
+
+// backupRowDropThreshold is the minimum number of rows a single
+// saveInstancesOnce sweep must DELETE before it is worth snapshotting the DB
+// file to "<path>.bak". A sweep that drops one or two rows is routine session
+// churn (a session was removed/renamed); backing the file up on every such save
+// would thrash the disk. The 2026-06-04 incident wiped the entire populated
+// table at once, so a meaningful-drop gate catches the catastrophic case while
+// staying quiet during normal operation.
+const backupRowDropThreshold = 3
 
 // InstanceRow represents a session row in the database.
 type InstanceRow struct {
@@ -232,7 +295,7 @@ func Open(dbPath string) (*StateDB, error) {
 		return nil, fmt.Errorf("statedb: wal mode: %w", err)
 	}
 
-	return &StateDB{db: db, pid: os.Getpid()}, nil
+	return &StateDB{db: db, pid: os.Getpid(), path: dbPath}, nil
 }
 
 // Close checkpoints WAL and closes the database.
@@ -662,6 +725,36 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 		}
 	}
 
+	// S2 data-loss safeguard (2026-06-04 incident): for a NON-empty payload,
+	// the sweep below DELETEs every on-disk row whose id is absent from the new
+	// set. Count that drop FIRST (on the raw handle, before opening the write
+	// transaction — running a wal_checkpoint backup inside an open tx on the
+	// same pool would deadlock). When the drop is meaningful
+	// (>= backupRowDropThreshold), snapshot the DB file to "<path>.bak" so a
+	// buggy-but-non-empty replace (the incident dropped most of the table at
+	// once) stays recoverable. S1 already refuses the fully-empty sweep; S2
+	// covers the large-but-not-empty replaces S1 cannot catch. The backup is
+	// best-effort: a failed copy is logged, never fatal — the caller asked to
+	// save, and the insurance copy must not become a new failure mode.
+	if len(insts) > 0 && s.path != "" {
+		placeholders := make([]string, len(insts))
+		args := make([]any, len(insts))
+		for i, inst := range insts {
+			placeholders[i] = "?"
+			args[i] = inst.ID
+		}
+		var dropCount int
+		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
+		// from len(insts); all values flow through args[], never the SQL string.
+		countQuery := "SELECT COUNT(*) FROM instances WHERE id NOT IN (" + strings.Join(placeholders, ",") + ")"
+		if err := s.db.QueryRow(countQuery, args...).Scan(&dropCount); err == nil && dropCount >= backupRowDropThreshold {
+			if bErr := s.backupDBFile(); bErr != nil {
+				slog.Warn("statedb: pre-sweep backup failed (continuing with save)",
+					"path", s.path, "drop_count", dropCount, "err", bErr)
+			}
+		}
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -670,9 +763,21 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 
 	// Delete rows not in the new list to prevent deleted sessions from reappearing.
 	if len(insts) == 0 {
-		if _, err := tx.Exec("DELETE FROM instances"); err != nil {
+		// S1 guard: an empty payload would `DELETE FROM instances`, wiping the
+		// whole table. If rows already exist this is almost certainly a bug in
+		// the caller (a stray empty save), not an intentional clear — refuse it
+		// rather than silently destroying the index. Intentional clears go
+		// through ClearAllInstances. An empty payload on an already-empty table
+		// is a benign no-op.
+		var existing int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM instances").Scan(&existing); err != nil {
 			return err
 		}
+		if existing > 0 {
+			return ErrRefusingEmptySweep
+		}
+		// Already empty: nothing to delete, nothing to insert.
+		return tx.Commit()
 	} else {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
@@ -744,6 +849,18 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	}
 
 	return tx.Commit()
+}
+
+// ClearAllInstances is the explicit escape hatch for intentionally emptying the
+// instances table. SaveInstances([]) refuses to wipe a populated table (S1
+// data-loss safeguard, ErrRefusingEmptySweep); callers that truly mean to clear
+// every row must call this method so the destructive intent is unambiguous and
+// greppable. It is a no-op on an already-empty table.
+func (s *StateDB) ClearAllInstances() error {
+	return withBusyRetry(func() error {
+		_, err := s.db.Exec("DELETE FROM instances")
+		return err
+	})
 }
 
 // LoadInstances returns all instances ordered by sort_order.
@@ -960,6 +1077,81 @@ func (s *StateDB) WriteAutoNameDescription(id, description string) error {
 			description, id,
 		)
 		return err
+	})
+}
+
+// InstanceStatusUpdate is one targeted status mutation for
+// PersistInstanceStatusesTx: set instances.status = Status WHERE id = ID.
+// No other column is touched, so a concurrent writer's edits to any other
+// field of the same row are preserved.
+type InstanceStatusUpdate struct {
+	ID     string
+	Status string
+}
+
+// PersistInstanceStatusesTx applies a batch of targeted status updates inside a
+// SINGLE transaction. It is the persistence primitive for `session revive`.
+//
+// Why a dedicated primitive (two independent guarantees):
+//
+//  1. ATOMICITY / no partial write. All rows commit together or none do. A
+//     mid-loop failure on `revive --all` rolls the whole batch back instead of
+//     leaving the table half-healed (some rows StatusRunning, some still
+//     StatusError). Per-row INSERT-OR-REPLACE outside a tx could not promise
+//     this.
+//
+//  2. NO clobber of concurrent edits. Each row is written with a TARGETED
+//     `UPDATE instances SET status = ? WHERE id = ?` — only the single column
+//     revive owns (see Reviver.defaultReviveAction, which mutates nothing but
+//     Instance.Status). It deliberately does NOT use INSERT OR REPLACE of the
+//     whole row: a full-row write would overwrite every other column from
+//     revive's stale in-memory snapshot, clobbering any field (title, group,
+//     tool_data, last_accessed, …) a concurrent process edited between
+//     revive's load and its save. Mirrors WriteStatus / WriteClaudeSessionBinding,
+//     which target single columns for exactly this reason.
+//
+// There is NO DELETE sweep here — a row absent from `updates` is left entirely
+// untouched, so revive can never drop a session a concurrent `add` inserted
+// after revive loaded its snapshot (the lost-update race this fixes). Rows
+// whose id no longer exists (removed concurrently) simply match zero rows; the
+// UPDATE is a benign no-op, never a resurrection.
+//
+// The acknowledged-reset mirrors WriteStatus: flipping a row to "running"
+// clears its acknowledged flag so the TUI re-surfaces the freshly-revived
+// session. Wrapped in withBusyRetry because the whole batch is idempotent
+// (targeted UPDATEs to fixed ids), matching SaveInstances' retry rationale.
+func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		stmt, err := tx.Prepare(
+			`UPDATE instances
+			   SET status = ?,
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			 WHERE id = ?`,
+		)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, u := range updates {
+			if _, err := stmt.Exec(u.Status, u.Status, u.ID); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		_ = s.Touch()
+		return nil
 	})
 }
 

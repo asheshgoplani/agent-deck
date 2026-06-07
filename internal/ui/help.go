@@ -258,7 +258,7 @@ func (h *HelpOverlay) View() string {
 				{reorderUpKeys, "Reorder up (auto-promote at edge)"},
 				{reorderDownKeys, "Reorder down (auto-promote at edge)"},
 				{indentKeys, "Indent / outdent (in group)"},
-				{forkKeys, "Fork session (Claude only)"},
+				{forkKeys, "Fork session (Claude/Pi)"},
 				{copyKey, "Copy output to clipboard"},
 				{"C", "Copy preview info (Repo / Path / Branch)"},
 				{sendKey, "Send output to session"},

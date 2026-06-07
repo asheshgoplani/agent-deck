@@ -1,78 +1,45 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
 
-// claudeSessionMetaFile is the subset of ~/.claude/sessions/<PID>.json that
-// agent-deck cares about for issue #572 title sync.
-type claudeSessionMetaFile struct {
-	SessionID string `json:"sessionId"`
-	Name      string `json:"name"`
-}
-
-// findClaudeSessionName scans claudeDir/sessions/*.json and returns the
-// `name` field of the entry whose `sessionId` matches. Empty string if no
-// match, no name, or the sessions dir doesn't exist.
+// findClaudeSessionName scans claudeDir/sessions/*.json and returns the `name`
+// field of the entry whose `sessionId` matches. Empty string if no match, no
+// name, or the sessions dir doesn't exist.
 //
-// Issue #572: Claude Code writes per-process metadata here when the user
-// starts with `claude --name X` or runs `/rename X` mid-session.
+// Thin wrapper over session.ClaudeSessionNameIn so the hook path and the
+// on-attach reconcile (internal/session) share one scanner implementation.
 func findClaudeSessionName(claudeDir, sessionID string) string {
-	if claudeDir == "" || sessionID == "" {
-		return ""
-	}
-	entries, err := os.ReadDir(filepath.Join(claudeDir, "sessions"))
-	if err != nil {
-		return ""
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(claudeDir, "sessions", entry.Name()))
-		if err != nil {
-			continue
-		}
-		var meta claudeSessionMetaFile
-		if err := json.Unmarshal(data, &meta); err != nil {
-			continue
-		}
-		if meta.SessionID == sessionID {
-			return strings.TrimSpace(meta.Name)
-		}
-	}
-	return ""
+	return session.ClaudeSessionNameIn(claudeDir, sessionID)
 }
 
-// applyClaudeTitleSync looks up the Claude session name for sessionID and,
-// if non-empty and different from the current agent-deck session title for
+// applyClaudeTitleSync looks up the Claude session name for sessionID and, if
+// non-empty and different from the current agent-deck session title for
 // instanceID, updates the title in storage.
 //
 // No-op (and silent) when:
 //   - instance can't be resolved across profiles
 //   - Claude session file doesn't exist or has no name
 //   - the stored title already matches
+//   - sync_title is disabled, or the instance is TitleLocked (both enforced by
+//     Instance.ReconcileTitleFromClaude)
 //
-// Scans profiles in order so the first match wins. This is the right shape
-// for hook_handler which doesn't know which profile owns the session — the
-// instance ID is globally unique.
+// Scans profiles in order so the first match wins. This is the right shape for
+// hook_handler which doesn't know which profile owns the session — the instance
+// ID is globally unique.
 func applyClaudeTitleSync(instanceID, sessionID string) {
 	if instanceID == "" || sessionID == "" {
 		return
 	}
 
-	// Global, tool-agnostic switch (config: sync_title = false). When the user
-	// has disabled title sync, agent-deck never overwrites a session Title with
-	// the agent's own session-name — for any tool. The per-session TitleLocked
-	// flag (checked below) stays as a finer-grained override.
-	// NOTE: this is currently the only title-sync path; any future non-Claude
-	// session-name sync MUST honor GetSyncTitle() the same way.
+	// Global, tool-agnostic switch (config: sync_title = false). Short-circuit
+	// before touching storage; ReconcileTitleFromClaude enforces it too, so
+	// this is purely to skip the profile scan when sync is off.
 	if cfg, err := session.LoadUserConfig(); err == nil && cfg != nil && !cfg.GetSyncTitle() {
 		return
 	}
@@ -81,8 +48,10 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 	if err != nil {
 		return
 	}
-	name := findClaudeSessionName(filepath.Join(home, ".claude"), sessionID)
-	if name == "" {
+	// Cheap pre-check: if Claude has no name for this session at all, skip the
+	// profile scan entirely (the common case for sessions started without
+	// --name). ReconcileTitleFromClaude re-reads it authoritatively below.
+	if findClaudeSessionName(filepath.Join(home, ".claude"), sessionID) == "" {
 		return
 	}
 
@@ -116,40 +85,24 @@ func applyClaudeTitleSync(instanceID, sessionID string) {
 			_ = storage.Close()
 			continue
 		}
-		// #697: TitleLocked blocks Claude's session name from overwriting the
-		// agent-deck title. Conductors rely on semantic titles (e.g.
-		// "SCRUM-351") surviving Claude's own /rename.
-		if target.TitleLocked {
-			_ = storage.Close()
-			return
+
+		// Instance IDs are globally unique: once found, this profile owns the
+		// session — act and stop, never fall through to another profile.
+		newName, changed := target.ReconcileTitleFromClaude(sessionID)
+		if changed {
+			target.AutoName = false // Claude/user-chosen name replaces the auto handle
+			groupTree := session.NewGroupTreeWithGroups(instances, groups)
+			_ = storage.SaveWithGroups(instances, groupTree)
 		}
-		if target.Title == name {
-			_ = storage.Close()
-			return
-		}
-		target.Title = name
-		target.AutoName = false // Claude/user-chosen name replaces the auto handle
-		target.SyncTmuxDisplayName()
-		groupTree := session.NewGroupTreeWithGroups(instances, groups)
-		_ = storage.SaveWithGroups(instances, groupTree)
 		_ = storage.Close()
 
-		// #1114: signal the attached agent-deck process to re-emit the
-		// iTerm2 badge for the new title. This hook subprocess is
-		// spawned detached (setsid) by Claude Code, so it has no
-		// controlling tty — the previous EmitITermBadgeViaTty path
-		// silently no-op'd because /dev/tty returned ENXIO. Writing a
-		// per-tmux-session file succeeds without a tty; the attach
-		// process (which owns the outer iTerm2 tty via os.Stdout)
-		// picks it up via fsnotify and emits the OSC.
-		//
-		// Also keep the via-tty emit for the rare case where the hook
-		// does happen to have a tty (e.g. a future Claude that doesn't
-		// setsid its hooks) — it's a silent no-op when it doesn't.
-		if tmuxSess := target.GetTmuxSession(); tmuxSess != nil && tmuxSess.Name != "" {
-			_ = tmux.WriteBadgeUpdate(tmuxSess.Name, name)
+		if changed {
+			// #1114: ReconcileTitleFromClaude already wrote the badge-update
+			// file the attached process watches (the path that works without a
+			// controlling tty). Also attempt the direct via-tty emit for the
+			// rare hook that DOES own a tty — silent no-op otherwise.
+			tmux.EmitITermBadgeViaTty(newName, session.GetTerminalSettings().GetITermBadge())
 		}
-		tmux.EmitITermBadgeViaTty(name, session.GetTerminalSettings().GetITermBadge())
 		return
 	}
 }

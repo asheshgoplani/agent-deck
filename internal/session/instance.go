@@ -303,19 +303,22 @@ type Instance struct {
 	// so existing sessions are unaffected on upgrade.
 	IdleTimeoutSecs int64 `json:"idle_timeout_secs,omitempty"`
 
-	// IsForkAwaitingStart signals that this instance was produced by
-	// CreateForkedInstanceWithOptions and holds a pre-built fork command
-	// in Command that must be run verbatim on the first Start() (#745).
-	// Without this flag, Start()'s claude-compatible dispatch sees the
-	// pre-populated ClaudeSessionID (the new fork UUID), routes to
-	// buildClaudeResumeCommand, which fails to find a JSONL for a
-	// brand-new UUID and falls back to a plain --session-id fresh
-	// command — stripping --resume <parent-id> / --fork-session and
-	// dropping all conversation history from the parent. Transient
-	// (json:"-"): persisting this would cause a restart of the forked
-	// session to re-emit --fork-session and double-count the parent
-	// transcript.
+	// IsForkAwaitingStart signals that this instance was produced by a
+	// fork builder and must run a pre-built fork command verbatim on the
+	// first Start() (#745). Claude fork targets usually store that command
+	// in Command. Pi fork targets keep Command as the normal restart
+	// command (so later restarts use --continue) and store the first-start
+	// command in ForkStartCommand instead.
+	//
+	// Transient (json:"-"): persisting this would cause a restart of the
+	// forked session to re-emit the tool-specific fork command and
+	// double-count the parent transcript.
 	IsForkAwaitingStart bool `json:"-"`
+
+	// ForkStartCommand optionally carries the pre-built command to run while
+	// IsForkAwaitingStart is true. When empty, Start() falls back to Command
+	// for backwards compatibility with Claude fork targets.
+	ForkStartCommand string `json:"-"`
 
 	// ExtraArgs are user-supplied claude CLI tokens appended verbatim to every
 	// start/resume/fork command (e.g. ["--agent","reviewer","--model","opus"]).
@@ -1406,6 +1409,14 @@ func (i *Instance) buildCodexCommand(baseCommand string) string {
 	return envPrefix + command + yoloFlag + modelFlag
 }
 
+// piAgentDeckSessionDirExpr returns a target-shell expression for the Pi session
+// directory Agent Deck owns for an instance. It intentionally uses target-side
+// $HOME rather than resolving the Agent Deck process' home directory, keeping
+// local, SSH, and sandbox launch paths consistent.
+func piAgentDeckSessionDirExpr(instanceID string) string {
+	return "${HOME}/.pi/agent-deck/" + shellescape.Quote(instanceID)
+}
+
 // buildPiCommand builds the command for the Pi CLI.
 // Pi sessions are JSONL files, not externally named sessions like Claude/Codex.
 // Scope Pi's session directory to the Agent Deck instance and always launch
@@ -1422,9 +1433,7 @@ func (i *Instance) buildPiCommand(baseCommand string) string {
 		cmd = "pi"
 	}
 
-	// Use target-side $HOME rather than resolving the Agent Deck process' home
-	// directory. This keeps local, SSH, and sandbox launch paths consistent.
-	sessionDir := "${HOME}/.pi/agent-deck/" + shellescape.Quote(i.ID)
+	sessionDir := piAgentDeckSessionDirExpr(i.ID)
 	quotedInstanceID := shellescape.Quote(i.ID)
 
 	return envPrefix + fmt.Sprintf(
@@ -1433,6 +1442,43 @@ func (i *Instance) buildPiCommand(baseCommand string) string {
 		quotedInstanceID,
 		cmd,
 	)
+}
+
+func (i *Instance) buildPiForkCommandForTarget(target *Instance, baseCommand string) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("cannot build Pi fork command: target instance is nil")
+	}
+	if !i.CanForkPi() {
+		return "", fmt.Errorf("cannot fork: no Agent Deck Pi session directory")
+	}
+
+	envPrefix := target.buildEnvSourceCommand()
+	cmd := strings.TrimSpace(baseCommand)
+	if cmd == "" {
+		cmd = "pi"
+	}
+
+	parentSessionDir := piAgentDeckSessionDirExpr(i.ID)
+	sessionDir := piAgentDeckSessionDirExpr(target.ID)
+	quotedInstanceID := shellescape.Quote(target.ID)
+
+	return envPrefix + fmt.Sprintf(
+		"parent_session_dir=%s; session_dir=%s; mkdir -p \"$session_dir\" && source_file=$(find \"$parent_session_dir\" -type f -name '*.jsonl' -exec ls -t {} + 2>/dev/null | head -n 1); if [ -z \"$source_file\" ]; then echo \"No Pi session file found in $parent_session_dir\" >&2; exit 1; fi; AGENTDECK_INSTANCE_ID=%s %s --fork \"$source_file\" --session-dir \"$session_dir\"",
+		parentSessionDir,
+		sessionDir,
+		quotedInstanceID,
+		cmd,
+	), nil
+}
+
+func (i *Instance) consumeForkStartCommand() string {
+	command := i.Command
+	if i.ForkStartCommand != "" {
+		command = i.ForkStartCommand
+		i.ForkStartCommand = ""
+	}
+	i.IsForkAwaitingStart = false
+	return command
 }
 
 // buildCursorCommand builds the command for the Cursor CLI (`cursor agent`).
@@ -2834,17 +2880,15 @@ func (i *Instance) Start() error {
 	var command string
 	switch {
 	case IsClaudeCompatible(i.Tool):
-		// #745 fork guard: a fork target arrives here with i.Command
-		// already populated with the exact `claude --session-id <new>
-		// --resume <parent> --fork-session` command built by
-		// buildClaudeForkCommandForTarget. It also carries a pre-assigned
-		// ClaudeSessionID (the new fork UUID), which would otherwise send
-		// us into buildClaudeResumeCommand and silently drop --resume /
-		// --fork-session. Run the fork command verbatim and clear the
-		// sentinel so a subsequent Restart() takes the normal resume path.
+		// #745 fork guard: a fork target arrives here with a pre-built
+		// first-start command (`claude --session-id <new> --resume <parent>
+		// --fork-session`) and a pre-assigned ClaudeSessionID (the new fork
+		// UUID), which would otherwise send us into buildClaudeResumeCommand
+		// and silently drop --resume / --fork-session. Run the fork command
+		// verbatim and clear the sentinel so a subsequent Restart() takes the
+		// normal resume path.
 		if i.IsForkAwaitingStart {
-			command = i.Command
-			i.IsForkAwaitingStart = false
+			command = i.consumeForkStartCommand()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -2892,6 +2936,14 @@ func (i *Instance) Start() error {
 		// Record start time for session ID detection (Unix millis)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
@@ -3050,11 +3102,10 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsClaudeCompatible(i.Tool):
 		// #745 fork guard: mirrors the Start() branch above. A fork target
 		// that arrives through StartWithMessage must also bypass the
-		// resume/fresh dispatch and run i.Command verbatim, or the
-		// --resume <parent>/--fork-session flags are silently dropped.
+		// resume/fresh dispatch and run its first-start command verbatim, or
+		// the --resume <parent>/--fork-session flags are silently dropped.
 		if i.IsForkAwaitingStart {
-			command = i.Command
-			i.IsForkAwaitingStart = false
+			command = i.consumeForkStartCommand()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -3096,6 +3147,14 @@ func (i *Instance) StartWithMessage(message string) error {
 		command = i.buildCodexCommand(i.Command)
 		i.CodexStartedAt = time.Now().UnixMilli()
 	case i.Tool == "pi":
+		if i.IsForkAwaitingStart {
+			command = i.consumeForkStartCommand()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildPiCommand(i.Command)
 	case i.Tool == "copilot":
 		command = i.buildCopilotCommand(i.Command)
@@ -6070,6 +6129,12 @@ func (i *Instance) CanFork() bool {
 		return i.CanForkOpenCode()
 	}
 
+	// Pi sessions fork by source JSONL path under Agent Deck's per-instance
+	// Pi session directory. The launch command validates that a JSONL exists.
+	if i.Tool == "pi" {
+		return i.CanForkPi()
+	}
+
 	// Claude sessions can fork if session ID is recent
 	if i.ClaudeSessionID == "" {
 		return false
@@ -6080,6 +6145,41 @@ func (i *Instance) CanFork() bool {
 // CanForkOpenCode returns true if this OpenCode session can be forked
 func (i *Instance) CanForkOpenCode() bool {
 	return i.Tool == "opencode" && i.OpenCodeSessionID != "" && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
+}
+
+// CanForkPi returns true if this Pi session can be forked by Agent Deck.
+func (i *Instance) CanForkPi() bool {
+	if i.Tool != "pi" || i.ID == "" {
+		return false
+	}
+	// For local non-sandboxed Pi sessions, require an actual source JSONL so
+	// CLI/TUI fork attempts fail before creating an immediately-dead child tmux
+	// pane. Remote/sandboxed sessions use target-side $HOME, which this process
+	// cannot inspect, so the launch command performs the runtime validation.
+	if i.SSHHost == "" && !i.IsSandboxed() {
+		return i.hasLocalPiSessionFile()
+	}
+	return true
+}
+
+func (i *Instance) hasLocalPiSessionFile() bool {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	sessionDir := filepath.Join(home, ".pi", "agent-deck", i.ID)
+	found := false
+	_ = filepath.WalkDir(sessionDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 // Fork returns the command to create a forked Claude session
@@ -6338,6 +6438,55 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptions(
 		if err := forked.SetOpenCodeOptions(opts); err != nil {
 			sessionLog.Warn("set_opencode_options_failed", slog.String("error", err.Error()))
 		}
+	}
+
+	return forked, cmd, nil
+}
+
+// CreateForkedPiInstance creates a new Instance configured for forking a Pi session.
+// Deprecated: Use CreateForkedPiInstanceWithOptions instead.
+func (i *Instance) CreateForkedPiInstance(newTitle, newGroupPath string) (*Instance, string, error) {
+	return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, nil)
+}
+
+// CreateForkedPiInstanceWithOptions creates a new Instance configured for forking a Pi session.
+// The opts parameter is accepted for the shared fork worktree flow; only WorkDir
+// and Worktree* fields are consumed for Pi.
+func (i *Instance) CreateForkedPiInstanceWithOptions(
+	newTitle, newGroupPath string,
+	opts *ClaudeOptions,
+) (*Instance, string, error) {
+	projectPath := i.ProjectPath
+	if opts != nil && opts.WorkDir != "" {
+		projectPath = opts.WorkDir
+	}
+
+	forked := NewInstance(newTitle, projectPath)
+	if newGroupPath != "" {
+		forked.GroupPath = newGroupPath
+	} else {
+		forked.GroupPath = i.GroupPath
+	}
+	forked.Tool = "pi"
+	forked.Wrapper = i.Wrapper
+
+	baseCommand := strings.TrimSpace(i.Command)
+	if baseCommand == "" {
+		baseCommand = "pi"
+	}
+	forked.Command = baseCommand
+
+	cmd, err := i.buildPiForkCommandForTarget(forked, baseCommand)
+	if err != nil {
+		return nil, "", err
+	}
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
+
+	if opts != nil && opts.WorktreePath != "" {
+		forked.WorktreePath = opts.WorktreePath
+		forked.WorktreeRepoRoot = opts.WorktreeRepoRoot
+		forked.WorktreeBranch = opts.WorktreeBranch
 	}
 
 	return forked, cmd, nil

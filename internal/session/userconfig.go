@@ -18,6 +18,7 @@ import (
 
 	dark "github.com/thiagokokada/dark-mode-go"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -25,6 +26,19 @@ import (
 
 // UserConfigFileName is the TOML config file for user preferences
 const UserConfigFileName = "config.toml"
+
+// ErrRefusingConfigSectionDrop is returned by SaveUserConfig when the config it
+// is asked to write would empty an entire top-level section ([mcps] or [groups])
+// that currently has entries on disk. These are the exact sections lost in the
+// 2026-06-04 data-loss incident: a partially-constructed config saved over the
+// live file silently dropped the whole MCP catalog and group overrides.
+//
+// S3 data-loss safeguard: a save that zeroes a populated section is almost
+// always a bug in the caller (it built a config without loading the existing
+// one), not a deliberate "clear everything". Refuse it. A caller that genuinely
+// means to clear all MCPs/groups must go through SaveUserConfigWithIntent with
+// allowSectionDrop=true so the destructive intent is explicit and greppable.
+var ErrRefusingConfigSectionDrop = fmt.Errorf("session: refusing to save config.toml that would drop a populated [mcps] or [groups] section to empty (use SaveUserConfigWithIntent to intentionally clear)")
 
 // UserConfig represents user-facing configuration in TOML format
 type UserConfig struct {
@@ -229,6 +243,31 @@ type UISettings struct {
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+
+	// Footer controls the style of the bottom hint bar. Valid values:
+	//   "full" (default)    — the historic verbose bar: filled key chips,
+	//                         width-adaptive, advertising every action. This is
+	//                         today's behavior and stays the default so the look
+	//                         never changes without an explicit opt-in.
+	//   "curated"           — lighter, dim inline text advertising only the
+	//                         actions relevant to the selected row, with the
+	//                         settings and help keys always last (opt-in).
+	//   "compact"           — force the abbreviated chip tier regardless of width.
+	//   "minimal"           — force the keys-only tier regardless of width.
+	// Empty or unknown values fall back to "full". This is purely a
+	// rendering preference (TUI UX initiative, item 1): no keybinding is
+	// added, removed, or changed — only what the footer advertises. Every
+	// action remains reachable by its key and is fully listed under help (?).
+	Footer string `toml:"footer"`
+
+	// NewSessionEnterAdvances controls what Enter does on the free-text
+	// Name/Branch fields of the new-session dialog (PR #1295). Default false
+	// preserves today's behavior: Enter from Name/Branch submits the form. When
+	// true, Enter advances focus to the next field instead (so typing a name and
+	// pressing Enter no longer silently creates a session with all defaults), and
+	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
+	// it is strictly additive and always available regardless of this toggle.
+	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -248,6 +287,36 @@ const (
 	ITermOpenAsWindow  = "window"
 	DefaultITermOpenAs = ITermOpenAsTab
 )
+
+// Footer hint-bar styles. See UISettings.Footer.
+const (
+	FooterCurated = "curated"
+	FooterFull    = "full"
+	FooterCompact = "compact"
+	FooterMinimal = "minimal"
+	// DefaultFooter is the historic verbose bar ("full"). Keeping it as the
+	// default preserves today's look; curated/compact/minimal are opt-in via
+	// config.toml [ui] footer.
+	DefaultFooter = FooterFull
+)
+
+// GetFooter returns the configured footer style, normalized to one of the
+// known values. Empty or unknown input falls back to DefaultFooter
+// ("full"). Matching is case-insensitive so users may write "Full" or
+// "MINIMAL" in TOML.
+func (u UISettings) GetFooter() string {
+	switch strings.ToLower(strings.TrimSpace(u.Footer)) {
+	case FooterFull:
+		return FooterFull
+	case FooterCompact:
+		return FooterCompact
+	case FooterMinimal:
+		return FooterMinimal
+	case FooterCurated:
+		return FooterCurated
+	}
+	return DefaultFooter
+}
 
 // GetPreviewPct returns the configured preview percentage, clamped to
 // [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when
@@ -303,6 +372,14 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 		return MaxRemoteSessionRefreshSecs
 	}
 	return val
+}
+
+// GetNewSessionEnterAdvances reports whether Enter on the new-session dialog's
+// free-text Name/Branch fields should advance focus (true) instead of
+// submitting the form (false). Default false preserves today's behavior
+// (Enter submits). Ctrl+S submits in both modes. See PR #1295.
+func (u UISettings) GetNewSessionEnterAdvances() bool {
+	return u.NewSessionEnterAdvances
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval
@@ -2043,11 +2120,7 @@ var (
 
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, UserConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(UserConfigFileName)
 }
 
 // LoadUserConfig loads the user configuration from TOML file.
@@ -2131,9 +2204,28 @@ func ReloadUserConfig() (*UserConfig, error) {
 	return LoadUserConfig()
 }
 
-// SaveUserConfig writes the config to config.toml using atomic write pattern
-// This clears the cache so next LoadUserConfig() reads fresh values
+// SaveUserConfig writes the config to config.toml using atomic write pattern.
+// This clears the cache so next LoadUserConfig() reads fresh values.
+//
+// Guarded path: it backs up the existing config.toml to config.toml.bak before
+// overwriting (S2) and REFUSES a save that would drop a populated [mcps] or
+// [groups] section to empty (S3, ErrRefusingConfigSectionDrop). Both are
+// data-loss safeguards from the 2026-06-04 incident. Callers that genuinely
+// intend to clear all MCPs/groups must use SaveUserConfigWithIntent.
 func SaveUserConfig(config *UserConfig) error {
+	return SaveUserConfigWithIntent(config, false)
+}
+
+// SaveUserConfigWithIntent is SaveUserConfig with an explicit opt-out of the S3
+// section-drop guard. Pass allowSectionDrop=true only when the user genuinely
+// wants to clear all [mcps] or [groups] entries; the default false path refuses
+// such a save (ErrRefusingConfigSectionDrop) because zeroing a populated section
+// is almost always a partially-built-config bug, not deliberate intent.
+//
+// The S2 config.toml.bak backup is taken on BOTH paths: the atomic rename
+// prevents torn writes but not semantic clobbering, so the .bak is the recovery
+// net regardless of intent.
+func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 	configPath, err := GetUserConfigPath()
 	if err != nil {
 		return fmt.Errorf("failed to get config path: %w", err)
@@ -2160,6 +2252,33 @@ func SaveUserConfig(config *UserConfig) error {
 	encoder := toml.NewEncoder(&buf)
 	if err := encoder.Encode(config); err != nil {
 		return fmt.Errorf("failed to encode config: %w", err)
+	}
+
+	// ═══════════════════════════════════════════════════════════════════
+	// S3 data-loss safeguard (2026-06-04 incident): refuse a save that would
+	// drop a populated [mcps] or [groups] section to empty. We round-trip the
+	// content we are ABOUT to write (decode buf) and compare its section counts
+	// against what is currently on disk. The guard fires ONLY when disk had
+	// entries and the new content has zero — a normal edit that loads the
+	// config, removes ONE group, and saves still carries the rest of the map,
+	// so its count stays > 0 and is unaffected. allowSectionDrop=true (the
+	// explicit-intent path) skips the refusal but still backs up.
+	// ═══════════════════════════════════════════════════════════════════
+	if !allowSectionDrop {
+		if err := guardConfigSectionDrop(configPath, buf.Bytes()); err != nil {
+			return err
+		}
+	}
+
+	// S2 data-loss safeguard: copy the existing config.toml to config.toml.bak
+	// BEFORE the atomic rename. Atomic rename prevents torn writes but NOT
+	// semantic clobbering (e.g. saving a config missing whole sections); the
+	// .bak is the recovery net. Best-effort: a failed backup is logged, never
+	// fatal — the caller asked to save, and the insurance copy must not become
+	// a new failure mode. No-op when config.toml does not exist yet.
+	if err := backupConfigFile(configPath); err != nil {
+		slog.Warn("session: pre-save config backup failed (continuing with save)",
+			"path", configPath, "err", err)
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -2193,6 +2312,64 @@ func SaveUserConfig(config *UserConfig) error {
 	// Clear cache so next load picks up changes
 	ClearUserConfigCache()
 
+	return nil
+}
+
+// guardConfigSectionDrop implements the S3 refusal: it decodes the on-disk
+// config and the about-to-be-written content, and returns
+// ErrRefusingConfigSectionDrop if either [mcps] or [groups] had entries on disk
+// but would become empty. A missing/unparseable on-disk file means there is
+// nothing populated to protect, so the guard passes (first write, or a file the
+// loader would have replaced with defaults anyway).
+func guardConfigSectionDrop(configPath string, newContent []byte) error {
+	// Nothing on disk yet → nothing to lose.
+	if _, statErr := os.Stat(configPath); os.IsNotExist(statErr) {
+		return nil
+	}
+
+	var onDisk UserConfig
+	if _, err := toml.DecodeFile(configPath, &onDisk); err != nil {
+		// Can't read the old file to know what's populated; don't block the
+		// save (the loader treats an unparseable file as defaults anyway).
+		return nil
+	}
+
+	var next UserConfig
+	if _, err := toml.Decode(string(newContent), &next); err != nil {
+		// We just encoded this from a *UserConfig, so a decode failure is
+		// unexpected — surface it rather than silently writing.
+		return fmt.Errorf("session: failed to round-trip new config for section-drop guard: %w", err)
+	}
+
+	if len(onDisk.MCPs) > 0 && len(next.MCPs) == 0 {
+		return fmt.Errorf("%w: [mcps] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.MCPs))
+	}
+	if len(onDisk.Groups) > 0 && len(next.Groups) == 0 {
+		return fmt.Errorf("%w: [groups] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.Groups))
+	}
+	return nil
+}
+
+// backupConfigFile copies config.toml to config.toml.bak (write-temp + rename
+// so the .bak is never torn). No-op when the source does not exist yet (first
+// save). Part of the S2 data-loss safeguard.
+func backupConfigFile(configPath string) error {
+	src, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // nothing to back up yet
+		}
+		return err
+	}
+	bak := configPath + ".bak"
+	tmp := bak + ".tmp"
+	if err := os.WriteFile(tmp, src, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, bak); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	return nil
 }
 

@@ -14,13 +14,28 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
+// forkFocusTarget identifies a focusable element in the fork dialog. The set of
+// visible targets (and their order) is computed on demand by focusTargets()
+// from the dialog's current state, so hidden elements never occupy a focus stop.
+type forkFocusTarget int
+
+const (
+	forkFocusName forkFocusTarget = iota
+	forkFocusGroup
+	forkFocusConductor  // conditional — only when conductors exist.
+	forkFocusBranch     // conditional — only when worktree enabled.
+	forkFocusCarryState // conditional — only when worktree enabled.
+	forkFocusGitignored // conditional — only when worktree && with-state enabled.
+	forkFocusOptions
+)
+
 // ForkDialog handles the fork session dialog
 type ForkDialog struct {
 	visible       bool
 	nameInput     textinput.Model
 	groupInput    textinput.Model
 	optionsPanel  *ClaudeOptionsPanel
-	focusIndex    int // 0=name, 1=group, 2=branch(if worktree), 2/3+=options
+	focusIndex    int // position into focusTargets() (0..len-1)
 	width         int
 	height        int
 	projectPath   string
@@ -31,7 +46,11 @@ type ForkDialog struct {
 	worktreeToggled bool // true once the user explicitly toggled the worktree checkbox (vs config default_enabled); see #1185.
 	branchInput     textinput.Model
 	branchPicker    *BranchPickerDialog
-	isGitRepo       bool
+	worktreeCapable bool
+	// Fork-with-state (PR-B): carry the parent's working-tree state into the
+	// new worktree. Nested under worktree; gitignored nested under with-state.
+	withStateEnabled       bool
+	withStateAndGitignored bool
 	// Docker sandbox support
 	sandboxEnabled bool
 
@@ -71,12 +90,80 @@ func (d *ForkDialog) hasConductors() bool {
 	return len(d.conductorSessions) > 0
 }
 
-// conductorFocusIndex returns the focus index for the conductor picker, or -1 if none.
-func (d *ForkDialog) conductorFocusIndex() int {
+// focusTargets returns the visible focus stops in tab order for the current
+// dialog state. Hidden elements are omitted, so focusIndex is always a position
+// into this slice.
+func (d *ForkDialog) focusTargets() []forkFocusTarget {
+	targets := []forkFocusTarget{forkFocusName, forkFocusGroup}
 	if d.hasConductors() {
-		return 2
+		targets = append(targets, forkFocusConductor)
 	}
-	return -1
+	if d.worktreeCapable && d.worktreeEnabled {
+		targets = append(targets, forkFocusBranch, forkFocusCarryState)
+		if d.withStateEnabled {
+			targets = append(targets, forkFocusGitignored)
+		}
+	}
+	targets = append(targets, forkFocusOptions)
+	return targets
+}
+
+// clampFocus pins focusIndex into the valid range of the current focusTargets
+// slice (it may shrink after a toggle).
+func (d *ForkDialog) clampFocus() {
+	n := len(d.focusTargets())
+	if d.focusIndex >= n {
+		d.focusIndex = n - 1
+	}
+	if d.focusIndex < 0 {
+		d.focusIndex = 0
+	}
+}
+
+// currentFocus returns the focus target at the current focusIndex.
+func (d *ForkDialog) currentFocus() forkFocusTarget {
+	targets := d.focusTargets()
+	i := d.focusIndex
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(targets) {
+		i = len(targets) - 1
+	}
+	return targets[i]
+}
+
+// currentFocusName returns the lowercase name of the current focus target.
+func (d *ForkDialog) currentFocusName() string {
+	switch d.currentFocus() {
+	case forkFocusName:
+		return "name"
+	case forkFocusGroup:
+		return "group"
+	case forkFocusConductor:
+		return "conductor"
+	case forkFocusBranch:
+		return "branch"
+	case forkFocusCarryState:
+		return "carryState"
+	case forkFocusGitignored:
+		return "gitignored"
+	case forkFocusOptions:
+		return "options"
+	}
+	return ""
+}
+
+// setFocus moves focus to the given target if it is currently visible, then
+// refreshes the focused input.
+func (d *ForkDialog) setFocus(target forkFocusTarget) {
+	for i, t := range d.focusTargets() {
+		if t == target {
+			d.focusIndex = i
+			d.updateFocus()
+			return
+		}
+	}
 }
 
 // GetParentSessionID returns the conductor ID selected in the dialog (empty = None).
@@ -114,8 +201,10 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
 	d.worktreeToggled = false
+	d.withStateEnabled = false
+	d.withStateAndGitignored = false
 	d.sandboxEnabled = false
-	d.isGitRepo = git.IsGitRepo(projectPath)
+	d.worktreeCapable = git.IsGitRepoOrBareProjectRoot(projectPath)
 
 	// Conductor parent selector
 	d.conductorSessions = conductors
@@ -136,7 +225,7 @@ func (d *ForkDialog) Show(originalName, projectPath, groupPath string, conductor
 	if config, err := session.LoadUserConfig(); err == nil {
 		d.optionsPanel.SetDefaults(config)
 		d.sandboxEnabled = config.Docker.DefaultEnabled
-		d.worktreeEnabled = config.Worktree.DefaultEnabled
+		d.worktreeEnabled = d.worktreeCapable && config.Worktree.DefaultEnabled
 	}
 }
 
@@ -194,6 +283,45 @@ func (d *ForkDialog) SetSize(width, height int) {
 func (d *ForkDialog) ToggleWorktree() {
 	d.worktreeEnabled = !d.worktreeEnabled
 	d.worktreeToggled = true // user made an explicit choice; see #1185.
+	if !d.worktreeEnabled {
+		// Worktree off clears the nested with-state selections (with-state
+		// only applies to a freshly created worktree).
+		d.withStateEnabled = false
+		d.withStateAndGitignored = false
+	}
+}
+
+// IsWithStateEnabled reports whether the fork should carry the parent's
+// working-tree state into the new worktree (the --with-state behavior).
+func (d *ForkDialog) IsWithStateEnabled() bool {
+	return d.withStateEnabled
+}
+
+// IsWithStateAndGitignoredEnabled reports whether gitignored files are also
+// carried (the --with-state-and-gitignored behavior).
+func (d *ForkDialog) IsWithStateAndGitignoredEnabled() bool {
+	return d.withStateAndGitignored
+}
+
+// ToggleWithState flips the carry-parent-state selection. No-op unless worktree
+// creation is enabled. Turning it off clears the nested gitignored selection.
+func (d *ForkDialog) ToggleWithState() {
+	if !d.worktreeEnabled {
+		return
+	}
+	d.withStateEnabled = !d.withStateEnabled
+	if !d.withStateEnabled {
+		d.withStateAndGitignored = false
+	}
+}
+
+// ToggleWithStateAndGitignored flips the include-gitignored selection. No-op
+// unless carry-parent-state is enabled.
+func (d *ForkDialog) ToggleWithStateAndGitignored() {
+	if !d.withStateEnabled {
+		return
+	}
+	d.withStateAndGitignored = !d.withStateAndGitignored
 }
 
 // IsWorktreeExplicit reports whether the worktree state reflects an explicit
@@ -216,18 +344,6 @@ func (d *ForkDialog) IsSandboxEnabled() bool {
 // ToggleSandbox toggles Docker sandbox mode.
 func (d *ForkDialog) ToggleSandbox() {
 	d.sandboxEnabled = !d.sandboxEnabled
-}
-
-// optionsStartIndex returns the focus index where the options panel begins
-func (d *ForkDialog) optionsStartIndex() int {
-	base := 2
-	if d.hasConductors() {
-		base = 3 // conductor occupies index 2
-	}
-	if d.worktreeEnabled {
-		return base + 1
-	}
-	return base
 }
 
 // Validate checks if the dialog values are valid and returns an error message if not
@@ -268,8 +384,6 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 		return d, nil
 	}
 
-	optStart := d.optionsStartIndex()
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
@@ -288,85 +402,44 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 
 		switch msg.String() {
 		case "tab", "down":
-			cIdx := d.conductorFocusIndex()
-			// "down" navigates within conductor list before advancing focus
-			if msg.String() == "down" && cIdx >= 0 && d.focusIndex == cIdx {
+			cur := d.currentFocus()
+			// "down" navigates within the conductor list before advancing focus.
+			if msg.String() == "down" && cur == forkFocusConductor {
 				if d.conductorCursor < len(d.conductorSessions) {
 					d.conductorCursor++
 					return d, nil
 				}
-				// At last item — advance past conductor to next field
-				d.focusIndex++
-				branchFocusIdx := 3 // always 3 when conductors present
-				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
-					d.focusIndex = optStart
-				}
-				d.updateFocus()
-				return d, nil
-			}
-			if d.focusIndex < optStart {
-				d.focusIndex++
-				// Skip branch field if worktree not enabled
-				// Branch is at index 2 (no conductor) or 3 (with conductor)
-				branchFocusIdx := 2
-				if d.hasConductors() {
-					branchFocusIdx = 3
-				}
-				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
-					d.focusIndex = optStart
-				}
-				d.updateFocus()
-			} else {
-				// Inside options panel - delegate
+				// At last item — advance past conductor to next field.
+			} else if cur == forkFocusOptions {
+				// Inside options panel — delegate.
 				return d, d.optionsPanel.Update(msg)
 			}
+			if d.focusIndex < len(d.focusTargets())-1 {
+				d.focusIndex++
+			}
+			d.updateFocus()
 			return d, nil
 
 		case "shift+tab", "up":
-			cIdx := d.conductorFocusIndex()
-			// "up" navigates within conductor list before retreating focus
-			if msg.String() == "up" && cIdx >= 0 && d.focusIndex == cIdx {
+			cur := d.currentFocus()
+			// "up" navigates within the conductor list before retreating focus.
+			if msg.String() == "up" && cur == forkFocusConductor {
 				if d.conductorCursor > 0 {
 					d.conductorCursor--
 					return d, nil
 				}
-				// At None — retreat to group
-				d.focusIndex = 1
-				d.updateFocus()
-				return d, nil
-			}
-			branchFocusIdx := 2
-			if d.hasConductors() {
-				branchFocusIdx = 3
-			}
-			if d.focusIndex == optStart && d.optionsPanel.AtTop() {
-				// At first option item, move back
-				if d.worktreeEnabled {
-					d.focusIndex = branchFocusIdx
-				} else if d.hasConductors() {
-					d.focusIndex = cIdx
-				} else {
-					d.focusIndex = 1 // group
+				// At None — retreat to the previous field.
+			} else if cur == forkFocusOptions {
+				if !d.optionsPanel.AtTop() {
+					// Inside options panel, not at top — delegate.
+					return d, d.optionsPanel.Update(msg)
 				}
-				d.updateFocus()
-			} else if d.focusIndex < optStart {
+				// At first option item — retreat out of the panel.
+			}
+			if d.focusIndex > 0 {
 				d.focusIndex--
-				// Skip branch field if worktree not enabled
-				if d.focusIndex == branchFocusIdx && !d.worktreeEnabled {
-					if d.hasConductors() {
-						d.focusIndex = cIdx
-					} else {
-						d.focusIndex = 1
-					}
-				}
-				if d.focusIndex < 0 {
-					d.focusIndex = 0
-				}
-				d.updateFocus()
-			} else {
-				// Inside options panel - delegate
-				return d, d.optionsPanel.Update(msg)
 			}
+			d.updateFocus()
 			return d, nil
 
 		case "esc":
@@ -374,23 +447,39 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 			return d, nil
 
 		case "enter":
+			// Enter toggles a focused with-state checkbox (matches Space); on any
+			// other focus it submits.
+			switch d.currentFocus() {
+			case forkFocusCarryState:
+				d.ToggleWithState()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			case forkFocusGitignored:
+				d.ToggleWithStateAndGitignored()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
 			if d.nameInput.Value() != "" {
 				return d, nil // Signal completion
 			}
 
 		case "w":
 			// Toggle worktree when on group field (only if git repo).
-			if d.focusIndex == 1 && d.isGitRepo {
+			if d.currentFocus() == forkFocusGroup && d.worktreeCapable {
 				d.ToggleWorktree()
 				if d.worktreeEnabled {
-					d.focusIndex = 2
-					d.updateFocus()
+					d.setFocus(forkFocusBranch)
+				} else {
+					// Branch/with-state targets vanished — keep focusIndex valid.
+					d.clampFocus()
 				}
 				return d, nil
 			}
 
 		case "ctrl+f":
-			if d.focusIndex == 2 && d.worktreeEnabled {
+			if d.currentFocus() == forkFocusBranch {
 				if d.branchPicker == nil {
 					d.branchPicker = NewBranchPickerDialog()
 				}
@@ -406,14 +495,50 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 
 		case "s":
 			// Toggle sandbox when on group field.
-			if d.focusIndex == 1 {
+			if d.currentFocus() == forkFocusGroup {
 				d.ToggleSandbox()
 				return d, nil
 			}
 
+		case "y":
+			// Shortcut: toggle carry-parent-state. Intercepted only on the group
+			// row (like w/s) or the checkbox itself, so it stays typeable in the
+			// name/branch inputs.
+			if f := d.currentFocus(); f == forkFocusGroup || f == forkFocusCarryState {
+				d.ToggleWithState()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
+
+		case "i":
+			// Shortcut: toggle include-gitignored.
+			if f := d.currentFocus(); f == forkFocusGroup || f == forkFocusGitignored {
+				d.ToggleWithStateAndGitignored()
+				d.clampFocus()
+				d.updateFocus()
+				return d, nil
+			}
+
 		case " ", "left", "right":
-			// Delegate space/arrow keys to options panel if focused there
-			if d.focusIndex >= optStart {
+			// Space toggles the focused with-state checkbox; space/arrows inside
+			// the options panel are delegated.
+			switch d.currentFocus() {
+			case forkFocusCarryState:
+				if msg.String() == " " {
+					d.ToggleWithState()
+					d.clampFocus()
+					d.updateFocus()
+				}
+				return d, nil
+			case forkFocusGitignored:
+				if msg.String() == " " {
+					d.ToggleWithStateAndGitignored()
+					d.clampFocus()
+					d.updateFocus()
+				}
+				return d, nil
+			case forkFocusOptions:
 				return d, d.optionsPanel.Update(msg)
 			}
 		}
@@ -421,20 +546,16 @@ func (d *ForkDialog) Update(msg tea.Msg) (*ForkDialog, tea.Cmd) {
 
 	// Update focused input
 	var cmd tea.Cmd
-	switch d.focusIndex {
-	case 0:
+	switch d.currentFocus() {
+	case forkFocusName:
 		d.nameInput, cmd = d.nameInput.Update(msg)
-	case 1:
+	case forkFocusGroup:
 		d.groupInput, cmd = d.groupInput.Update(msg)
-	case 2:
-		if d.worktreeEnabled {
-			oldBranch := d.branchInput.Value()
-			d.branchInput, cmd = d.branchInput.Update(msg)
-			if d.branchInput.Value() != oldBranch && d.branchPicker != nil && d.branchPicker.IsVisible() {
-				d.branchPicker.SetQuery(d.branchInput.Value())
-			}
-		} else {
-			cmd = d.optionsPanel.Update(msg)
+	case forkFocusBranch:
+		oldBranch := d.branchInput.Value()
+		d.branchInput, cmd = d.branchInput.Update(msg)
+		if d.branchInput.Value() != oldBranch && d.branchPicker != nil && d.branchPicker.IsVisible() {
+			d.branchPicker.SetQuery(d.branchInput.Value())
 		}
 	default:
 		// Options panel handles its own inputs
@@ -450,26 +571,17 @@ func (d *ForkDialog) updateFocus() {
 	d.branchInput.Blur()
 	d.optionsPanel.Blur()
 
-	cIdx := d.conductorFocusIndex()
-	switch d.focusIndex {
-	case 0:
+	switch d.currentFocus() {
+	case forkFocusName:
 		d.nameInput.Focus()
-	case 1:
+	case forkFocusGroup:
 		d.groupInput.Focus()
-	default:
-		if cIdx >= 0 && d.focusIndex == cIdx {
-			// Conductor picker focused — no text input to activate
-			return
-		}
-		branchFocusIdx := 2
-		if d.hasConductors() {
-			branchFocusIdx = 3
-		}
-		if d.focusIndex == branchFocusIdx && d.worktreeEnabled {
-			d.branchInput.Focus()
-		} else {
-			d.optionsPanel.Focus()
-		}
+	case forkFocusConductor, forkFocusCarryState, forkFocusGitignored:
+		// Conductor picker and the with-state checkboxes activate no text input.
+	case forkFocusBranch:
+		d.branchInput.Focus()
+	case forkFocusOptions:
+		d.optionsPanel.Focus()
 	}
 }
 
@@ -507,11 +619,11 @@ func (d *ForkDialog) View() string {
 
 	// Build content
 	var nameLabel, groupLabel string
-	switch d.focusIndex {
-	case 0:
+	switch d.currentFocus() {
+	case forkFocusName:
 		nameLabel = activeLabelStyle.Render("▶ Name:")
 		groupLabel = labelStyle.Render("  Group:")
-	case 1:
+	case forkFocusGroup:
 		nameLabel = labelStyle.Render("  Name:")
 		groupLabel = activeLabelStyle.Render("▶ Group:")
 	default:
@@ -522,9 +634,8 @@ func (d *ForkDialog) View() string {
 	// Conductor parent section (only when conductors exist)
 	conductorSection := ""
 	if d.hasConductors() {
-		cIdx := d.conductorFocusIndex()
 		cLabel := labelStyle.Render("  Conductor:")
-		if d.focusIndex == cIdx {
+		if d.currentFocus() == forkFocusConductor {
 			cLabel = activeLabelStyle.Render("▶ Conductor:")
 		}
 		conductorSection += cLabel + "\n"
@@ -559,7 +670,7 @@ func (d *ForkDialog) View() string {
 
 	// Worktree checkbox and branch input (only for git repos)
 	worktreeSection := ""
-	if d.isGitRepo {
+	if d.worktreeCapable {
 		checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)
 		checkboxActiveStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 
@@ -568,7 +679,7 @@ func (d *ForkDialog) View() string {
 			checkbox = "[x]"
 		}
 
-		if d.focusIndex == 1 {
+		if d.currentFocus() == forkFocusGroup {
 			worktreeSection += checkboxActiveStyle.Render(fmt.Sprintf("  %s Create in worktree (press w)", checkbox))
 		} else {
 			worktreeSection += checkboxStyle.Render(fmt.Sprintf("  %s Create in worktree", checkbox))
@@ -578,7 +689,7 @@ func (d *ForkDialog) View() string {
 		// Branch input (only visible when worktree is enabled)
 		if d.worktreeEnabled {
 			worktreeSection += "\n"
-			if d.focusIndex == 2 {
+			if d.currentFocus() == forkFocusBranch {
 				worktreeSection += activeLabelStyle.Render("▶ Branch:")
 			} else {
 				worktreeSection += labelStyle.Render("  Branch:")
@@ -588,13 +699,37 @@ func (d *ForkDialog) View() string {
 			if d.branchPicker != nil && d.branchPicker.IsVisible() {
 				worktreeSection += "  " + strings.ReplaceAll(d.branchPicker.View(), "\n", "\n  ") + "\n"
 			}
+
+			// Fork-with-state: carry parent state, with nested gitignored (PR-B B3).
+			carryCb := "[ ]"
+			if d.withStateEnabled {
+				carryCb = "[x]"
+			}
+			if d.currentFocus() == forkFocusCarryState {
+				worktreeSection += "\n" + checkboxActiveStyle.Render(fmt.Sprintf("  ▶ %s Carry parent state (y)", carryCb)) + "\n"
+			} else {
+				worktreeSection += "\n" + checkboxStyle.Render(fmt.Sprintf("    %s Carry parent state (y)", carryCb)) + "\n"
+			}
+			worktreeSection += checkboxStyle.Render("      ↳ creates a NEW branch at parent HEAD") + "\n"
+
+			if d.withStateEnabled {
+				gitignoredCb := "[ ]"
+				if d.withStateAndGitignored {
+					gitignoredCb = "[x]"
+				}
+				if d.currentFocus() == forkFocusGitignored {
+					worktreeSection += checkboxActiveStyle.Render(fmt.Sprintf("    ▶ %s Include gitignored files (i)", gitignoredCb)) + "\n"
+				} else {
+					worktreeSection += checkboxStyle.Render(fmt.Sprintf("      %s Include gitignored files (i)", gitignoredCb)) + "\n"
+				}
+			}
 		}
 	}
 
 	// Docker sandbox checkbox.
 	sandboxSection := ""
 	sandboxLabel := "Run in Docker sandbox"
-	if d.focusIndex == 1 {
+	if d.currentFocus() == forkFocusGroup {
 		sandboxLabel = "Run in Docker sandbox (press s)"
 	}
 	sandboxCb := "[ ]"
@@ -602,7 +737,7 @@ func (d *ForkDialog) View() string {
 		sandboxCb = "[x]"
 	}
 	sandboxStyle := lipgloss.NewStyle().Foreground(ColorText)
-	if d.focusIndex == 1 {
+	if d.currentFocus() == forkFocusGroup {
 		sandboxStyle = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 	}
 	sandboxSection = sandboxStyle.Render(fmt.Sprintf("  %s %s", sandboxCb, sandboxLabel)) + "\n"
@@ -614,7 +749,7 @@ func (d *ForkDialog) View() string {
 	}
 
 	helpText := "Enter create │ Esc cancel │ Tab next │ s sandbox │ Space toggle"
-	if d.focusIndex == 2 && d.worktreeEnabled {
+	if d.currentFocus() == forkFocusBranch {
 		if d.branchPicker != nil && d.branchPicker.IsVisible() {
 			helpText = "Type filter │ ↑↓ navigate │ Enter select │ Esc close"
 		} else {

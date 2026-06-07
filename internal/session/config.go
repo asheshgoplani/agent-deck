@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 const (
@@ -32,27 +34,38 @@ type Config struct {
 	Version int `json:"version"`
 }
 
-// GetAgentDeckDir returns the base agent-deck directory (~/.agent-deck)
+// GetAgentDeckDir returns the effective agent-deck data directory.
+// It is a broad compatibility wrapper for data/runtime callers, not the
+// config root. Profile/session migrations must use profileDataRootDir().
 func GetAgentDeckDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".agent-deck"), nil
+	return agentpaths.EffectiveDataDir(
+		ProfilesDirName,
+		"sessions.json",
+		"hooks",
+		"events",
+		"inboxes",
+		"conductor",
+		"watcher",
+		"watchers",
+		"locks",
+		"runtime",
+		"logs",
+		"cost-events",
+	)
+}
+
+func profileDataRootDir() (string, error) {
+	return agentpaths.EffectiveDataDir(ProfilesDirName, "sessions.json")
 }
 
 // GetConfigPath returns the path to the global config file
 func GetConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, ConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(ConfigFileName)
 }
 
 // GetProfilesDir returns the path to the profiles directory
 func GetProfilesDir() (string, error) {
-	dir, err := GetAgentDeckDir()
+	dir, err := profileDataRootDir()
 	if err != nil {
 		return "", err
 	}

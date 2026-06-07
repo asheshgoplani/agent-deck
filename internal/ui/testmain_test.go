@@ -13,6 +13,14 @@ import (
 // accidental modification of production data.
 // CRITICAL: This was missing and caused test data to overwrite production sessions!
 func TestMain(m *testing.M) {
+	// Isolate HOME+XDG FIRST. This package was the concrete trigger of the
+	// 2026-06-04 data-loss incident (S5): it set AGENTDECK_PROFILE=_test but did
+	// NOT override HOME/XDG, so an un-sandboxed `go test ./internal/ui/...`
+	// resolved paths via the real $HOME and wiped the live profile index +
+	// config. See internal/testutil/homeenv.go for the postmortem.
+	cleanupHome := testutil.IsolateHome()
+	defer cleanupHome()
+
 	// Isolate the tmux socket. UI tests drive session-lifecycle flows end-to-end;
 	// without isolation they spawn tmux on the user's default socket and
 	// destabilize live agent-deck sessions (2026-04-17 incident).

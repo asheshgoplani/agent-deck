@@ -28,8 +28,10 @@ func TestAllTestMainsIsolateTmuxSocket(t *testing.T) {
 
 	testMainRe := regexp.MustCompile(`(?m)^func TestMain\s*\(`)
 	isolateRe := regexp.MustCompile(`IsolateTmuxSocket`)
+	isolateHomeRe := regexp.MustCompile(`IsolateHome`)
 
 	var offenders []string
+	var homeOffenders []string
 	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -55,9 +57,12 @@ func TestAllTestMainsIsolateTmuxSocket(t *testing.T) {
 		if !testMainRe.MatchString(content) {
 			return nil
 		}
+		rel, _ := filepath.Rel(repoRoot, path)
 		if !isolateRe.MatchString(content) {
-			rel, _ := filepath.Rel(repoRoot, path)
 			offenders = append(offenders, rel)
+		}
+		if !isolateHomeRe.MatchString(content) {
+			homeOffenders = append(homeOffenders, rel)
 		}
 		return nil
 	})
@@ -75,6 +80,19 @@ func TestAllTestMainsIsolateTmuxSocket(t *testing.T) {
 				"Fix: copy the pattern from internal/tmux/testmain_test.go. "+
 				"See internal/testutil/tmuxenv.go for the postmortem.",
 			strings.Join(offenders, "\n  - "),
+		)
+	}
+
+	if len(homeOffenders) > 0 {
+		t.Fatalf(
+			"The following TestMain files are missing a call to testutil.IsolateHome(). "+
+				"Without it, `go test` resolves agent-deck runtime paths via the real "+
+				"$HOME and can WIPE the live ~/.agent-deck (config.json, profile index, "+
+				"worker-scratch, logs) — the 2026-06-04 data-loss incident (S5 safeguard).\n\n"+
+				"Offending files:\n  - %s\n\n"+
+				"Fix: add `cleanupHome := testutil.IsolateHome(); defer cleanupHome()` at "+
+				"the top of TestMain. See internal/testutil/homeenv.go for the postmortem.",
+			strings.Join(homeOffenders, "\n  - "),
 		)
 	}
 }

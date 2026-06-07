@@ -103,7 +103,7 @@ func printSessionHelp() {
 	fmt.Println("  unarchive <id|title>   Unarchive a session (returns as stopped)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude session with context")
+	fmt.Println("  fork <id>               Fork Claude or Pi session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
@@ -620,7 +620,7 @@ func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
 	return fmt.Sprintf(" && git -C %s branch -D %s", shellescape.Quote(repoRoot), shellescape.Quote(branchName))
 }
 
-// handleSessionFork forks a Claude session
+// handleSessionFork forks a Claude or Pi session
 func handleSessionFork(profile string, args []string) {
 	fs := flag.NewFlagSet("session fork", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -642,7 +642,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude session with conversation context.")
+		fmt.Println("Fork a Claude or Pi session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -687,24 +687,30 @@ func handleSessionFork(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
-	// Verify it's a Claude session
-	if !session.IsClaudeCompatible(inst.Tool) {
+	// Verify this tool has a session-fork implementation.
+	isClaudeFork := session.IsClaudeCompatible(inst.Tool)
+	isPiFork := inst.Tool == "pi"
+	if !isClaudeFork && !isPiFork {
 		out.Error(
-			fmt.Sprintf("session '%s' is not a Claude session (tool: %s)", inst.Title, inst.Tool),
+			fmt.Sprintf("session '%s' is not a Claude session or Pi session (tool: %s)", inst.Title, inst.Tool),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
 	}
 
-	// Try to capture session ID from tmux if missing (handles pre-fix sessions)
-	if inst.ClaudeSessionID == "" && inst.Exists() {
+	// Try to capture Claude session ID from tmux if missing (handles pre-fix sessions).
+	if isClaudeFork && inst.ClaudeSessionID == "" && inst.Exists() {
 		inst.PostStartSync(2 * time.Second)
 	}
 
-	// Verify it can be forked
+	// Verify it can be forked.
 	if !inst.CanFork() {
+		reason := "no active Claude session ID"
+		if isPiFork {
+			reason = "no Agent Deck Pi session directory"
+		}
 		out.Error(
-			fmt.Sprintf("session '%s' cannot be forked: no active Claude session ID", inst.Title),
+			fmt.Sprintf("session '%s' cannot be forked: %s", inst.Title, reason),
 			ErrCodeInvalidOperation,
 		)
 		os.Exit(1)
@@ -923,7 +929,13 @@ func handleSessionFork(profile string, args []string) {
 	}
 
 	// Create the forked instance
-	forkedInst, _, err := inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
+	var forkedInst *session.Instance
+	switch {
+	case isPiFork:
+		forkedInst, _, err = inst.CreateForkedPiInstanceWithOptions(forkTitle, forkGroup, opts)
+	default:
+		forkedInst, _, err = inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
+	}
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -1299,7 +1311,7 @@ func handleSessionSet(profile string, args []string) {
 		fmt.Println("  tool               Tool type (claude, gemini, shell, etc.)")
 		fmt.Println("  wrapper            Wrapper command (use {command} to include tool command)")
 		fmt.Println("  channels           Comma-separated plugin channel ids (claude only)")
-		fmt.Println("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in ~/.agent-deck/config.toml")
+		fmt.Printf("  plugins            Comma-separated plugin catalog names (claude only) — see [plugins.<name>] in %s\n", effectiveUserConfigPathForHelp())
 		fmt.Println("  extra-args         Extra claude CLI tokens (claude only; use `-- --flag value` for tokens starting with -; persisted plaintext — no secrets)")
 		fmt.Println("  color              Optional TUI row tint: '#RRGGBB' or ANSI '0'..'255' or '' (issue #391)")
 		fmt.Println("  claude-session-id  Claude conversation ID")
