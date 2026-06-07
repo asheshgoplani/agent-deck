@@ -9186,6 +9186,37 @@ func quickForkInputs(source *session.Instance, fork session.ForkSettings, parent
 	}
 }
 
+// uniqueForkBranch returns base, or base-2 / base-3 / … — the first name with no
+// existing git branch and no linked worktree — so repeated quick forks of the same
+// source session don't collide on the deterministic branch name (comprehensive
+// fork forces a fresh worktree+branch). Non-git sources have no branch to collide
+// with, so base is returned unchanged.
+func uniqueForkBranch(projectPath, base string) string {
+	backend, err := vcsbackend.Detect(projectPath)
+	if err != nil {
+		return base
+	}
+	repoRoot := backend.RepoDir()
+	candidate := base
+	for n := 2; forkBranchTaken(repoRoot, candidate); n++ {
+		candidate = fmt.Sprintf("%s-%d", base, n)
+		if n > 1000 {
+			return candidate // pathological guard; never expected in practice
+		}
+	}
+	return candidate
+}
+
+// forkBranchTaken reports whether a branch name is already used by a local branch
+// or a linked worktree in repoRoot.
+func forkBranchTaken(repoRoot, branch string) bool {
+	if git.BranchExists(repoRoot, branch) {
+		return true
+	}
+	wt, err := git.GetWorktreeForBranch(repoRoot, branch)
+	return err == nil && wt != ""
+}
+
 // quickForkSession performs a comprehensive quick fork: new worktree+branch,
 // carry tracked+gitignored state, match parent Docker, inherit the parent's
 // Claude launch options for Claude-compatible sessions, and keep sibling
@@ -9201,6 +9232,14 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 		fork = cfg.Fork
 	}
 	in := quickForkInputs(source, fork, source.IsSandboxed())
+
+	// Repeated quick forks of the same source would otherwise collide on the
+	// deterministic branch name (comprehensive fork forces a fresh worktree+branch),
+	// so the second `f` would fail. Bump to fork/<slug>-2, -3, … so you can fan out
+	// multiple alternative forks from one session.
+	if in.Plan.Worktree {
+		in.Branch = uniqueForkBranch(source.ProjectPath, in.Branch)
+	}
 
 	// Inherit the parent's persisted Claude launch options (transient worktree
 	// fields are json:"-" so they are never carried over). nil falls back to

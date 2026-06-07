@@ -78,6 +78,7 @@ func TestCreateForkedCodexInstance_UsesWorktreeAndForkCommand(t *testing.T) {
 func TestCreateForkedCodexInstance_UsesConfiguredCodexHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CODEX_HOME", "")
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
@@ -109,6 +110,7 @@ func TestCreateForkedCodexInstance_UsesConfiguredCodexHome(t *testing.T) {
 func TestCreateForkedCodexInstance_QuotesConfiguredCodexConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CODEX_HOME", "")
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
@@ -141,6 +143,7 @@ func TestCreateForkedCodexInstance_PreservesCompatibleToolIdentity(t *testing.T)
 	home := t.TempDir()
 	codexHome := filepath.Join(home, ".codex")
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CODEX_HOME", codexHome)
 	ClearUserConfigCache()
 	t.Cleanup(ClearUserConfigCache)
