@@ -1,12 +1,14 @@
 package testutil_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestTestMainDoesNotLeakBootstrapServer is the behavioral guard for the
@@ -51,11 +53,22 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 		t.Run(pkg, func(t *testing.T) {
 			before := snapshotADTmuxDirs()
 
-			cmd := exec.Command("go", "test", "-count=1",
+			// Bound the child run so a hung child (e.g. a stalled tmux call)
+			// fails this guard with a clear message instead of pinning the
+			// whole suite until the parent `go test` timeout. -timeout makes
+			// the child itself fail fast; the context is the outer backstop
+			// (it also covers the one-time compile).
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-timeout", "60s",
 				"-run", "TestTmuxBootstrap_ServerIsRunning", pkg)
 			cmd.Dir = repoRoot
 			cmd.Env = os.Environ()
-			if out, err := cmd.CombinedOutput(); err != nil {
+			out, err := cmd.CombinedOutput()
+			if ctx.Err() == context.DeadlineExceeded {
+				t.Fatalf("child `go test %s` did not finish within 2m (hung?); output:\n%s", pkg, out)
+			}
+			if err != nil {
 				t.Fatalf("child `go test %s` failed: %v\n%s", pkg, err, out)
 			}
 
@@ -65,18 +78,30 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			// still alive on its isolated socket.
 			newDirs := diffDirs(before, snapshotADTmuxDirs())
 
+			// Defense-in-depth: strip TMUX/TMUX_PANE from the probe/kill calls.
+			// `-S <path>` already pins the socket (verified: it is NOT overridden
+			// by an ambient $TMUX, unlike the bare/`-L` discovery documented in
+			// tmuxenv.go), but `go test` is routinely run from inside a tmux pane,
+			// so we belt-and-suspender against any tmux-version edge case ever
+			// letting these calls touch the developer's live server.
+			probeEnv := envWithoutTmux()
+
 			var leaked []string
 			for _, dir := range newDirs {
 				for _, sock := range socketsUnder(dir) {
-					out, err := exec.Command("tmux", "-S", sock,
-						"list-sessions", "-F", "#{session_name}").Output()
+					list := exec.Command("tmux", "-S", sock,
+						"list-sessions", "-F", "#{session_name}")
+					list.Env = probeEnv
+					out, err := list.Output()
 					if err != nil {
 						continue // server already gone — not a leak
 					}
 					if strings.Contains(string(out), "bootstrap") {
 						leaked = append(leaked, sock)
 						// Never let the guard itself leak: tear down what we found.
-						_ = exec.Command("tmux", "-S", sock, "kill-server").Run()
+						kill := exec.Command("tmux", "-S", sock, "kill-server")
+						kill.Env = probeEnv
+						_ = kill.Run()
 					}
 				}
 			}
@@ -90,6 +115,21 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// envWithoutTmux returns os.Environ() with TMUX and TMUX_PANE removed, mirroring
+// what testutil.IsolateTmuxSocket does so socket-scoped tmux calls can never be
+// influenced by an ambient tmux client.
+func envWithoutTmux() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // adTmuxBases returns the candidate base dirs where IsolateTmuxSocket creates

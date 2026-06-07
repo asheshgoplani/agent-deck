@@ -144,8 +144,20 @@ func TestNoTestMainLeaksCleanupBehindOsExit(t *testing.T) {
 		if !strings.HasSuffix(d.Name(), "_test.go") {
 			return nil
 		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		// Cheap prefilter: only the handful of files that define TestMain need
+		// AST parsing. This keeps full-repo coverage (TestMain also lives in
+		// tests/ and in non-testmain_test.go files like experiments_test.go and
+		// guard_test.go, so we can't restrict by directory or filename) while
+		// avoiding the cost of parsing every *_test.go in the repo.
+		if !strings.Contains(string(data), "func TestMain") {
+			return nil
+		}
 		fset := token.NewFileSet()
-		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		file, parseErr := parser.ParseFile(fset, path, data, 0)
 		if parseErr != nil {
 			return parseErr
 		}
