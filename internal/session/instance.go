@@ -3501,6 +3501,33 @@ func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	}
 }
 
+// shellForegroundRunning reports whether a "shell" tool session currently has a
+// genuine non-interactive foreground process running (e.g. "node" from
+// `yarn dev`, "java" from `mvn spring-boot:run`). It returns false for the
+// interactive shell itself and for interactive foreground programs (editors,
+// pagers, system monitors, remote shells, multiplexers) that are really waiting
+// for the user rather than doing background work — otherwise opening vim or
+// sitting at an ssh prompt would show a perpetual running indicator.
+//
+// It relies on the pane-info cache warmed once per tick by RefreshPaneInfoCache
+// (TUI backgroundStatusUpdate / Web refreshStatuses / CLI status refresh). When
+// the cache is cold the lookup misses and this returns false, preserving the
+// historical "shell maps to idle" behavior. Caller must hold i.mu.
+func (i *Instance) shellForegroundRunning() bool {
+	if i.tmuxSession == nil {
+		return false
+	}
+	paneInfo, ok := tmux.GetCachedPaneInfo(i.tmuxSession.Name)
+	if !ok || paneInfo.CurrentCommand == "" {
+		return false
+	}
+	cmd := paneInfo.CurrentCommand
+	if isShellBinary(cmd) || isInteractiveForegroundProgram(cmd) {
+		return false
+	}
+	return true
+}
+
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
 func (i *Instance) UpdateStatus() error {
@@ -3698,12 +3725,11 @@ func (i *Instance) UpdateStatus() error {
 	case "active":
 		i.Status = StatusRunning
 	case "waiting":
+		// tmux reports a shell prompt ("waiting"), but a non-interactive foreground
+		// process may still be running (e.g. "yarn dev", "mvn spring-boot:run").
+		// shellForegroundRunning() inspects the cached pane command to tell them apart.
 		if i.Tool == "shell" {
-			// tmux sees a shell prompt ("waiting") but a foreground process may still be
-			// running (e.g. "yarn dev", "mvn spring-boot:run"). pane_current_command is
-			// already cached by RefreshPaneInfoCache so this lookup is free.
-			if paneInfo, ok := tmux.GetCachedPaneInfo(i.tmuxSession.Name); ok &&
-				paneInfo.CurrentCommand != "" && !isShellBinary(paneInfo.CurrentCommand) {
+			if i.shellForegroundRunning() {
 				i.Status = StatusRunning
 			} else {
 				i.Status = StatusIdle
@@ -3712,15 +3738,10 @@ func (i *Instance) UpdateStatus() error {
 			i.Status = StatusWaiting
 		}
 	case "idle":
-		// For acknowledged shell sessions, a foreground process may still be running
-		// even though the user has already attached. Keep showing running in that case.
-		if i.Tool == "shell" {
-			if paneInfo, ok := tmux.GetCachedPaneInfo(i.tmuxSession.Name); ok &&
-				paneInfo.CurrentCommand != "" && !isShellBinary(paneInfo.CurrentCommand) {
-				i.Status = StatusRunning
-			} else {
-				i.Status = StatusIdle
-			}
+		// Acknowledged shell sessions can still have a foreground process running
+		// even after the user has attached; keep surfacing that as running.
+		if i.Tool == "shell" && i.shellForegroundRunning() {
+			i.Status = StatusRunning
 		} else {
 			i.Status = StatusIdle
 		}

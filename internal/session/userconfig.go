@@ -2582,6 +2582,33 @@ func isShellBinary(cmd string) bool {
 	return false
 }
 
+// isInteractiveForegroundProgram returns true for foreground commands that are
+// interactive and effectively waiting for the user rather than doing background
+// work: editors, pagers, system monitors, remote shells, and terminal
+// multiplexers. A shell session sitting in one of these should NOT show a
+// "running" indicator (an idle ssh prompt or an open editor is not busy work).
+//
+// REPLs and interpreters (node, python, ruby, …) are deliberately NOT listed:
+// they share a process name with the long-running servers this feature targets
+// (`yarn dev` runs as "node", `python manage.py runserver` runs as "python"),
+// so denylisting them would defeat the primary use case. The rare REPL false
+// positive is the lesser evil versus failing to flag a running dev server.
+func isInteractiveForegroundProgram(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case
+		// remote shells / terminal multiplexers
+		"ssh", "mosh", "mosh-client", "et", "tmux", "screen", "zellij",
+		// editors
+		"vi", "vim", "nvim", "nano", "emacs", "emacsclient", "helix", "hx", "micro", "kak",
+		// pagers / viewers
+		"less", "more", "most", "man", "bat",
+		// system monitors
+		"top", "htop", "btop", "btm", "glances", "atop":
+		return true
+	}
+	return false
+}
+
 // GetCodexCommand returns the configured Codex command/alias.
 func GetCodexCommand() string {
 	userConfig, _ := LoadUserConfig()
