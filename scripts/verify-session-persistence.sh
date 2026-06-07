@@ -27,14 +27,6 @@ banner_fail() { printf "${C_RED}[FAIL]${C_RESET} %s\n" "$*" >&2; FAILED=1; }
 banner_skip() { printf "${C_YELLOW}[SKIP]${C_RESET} %s\n" "$*"; }
 log() { printf '    %s\n' "$*"; }
 
-FAILED=0
-RUN_ID="$$"
-TMPROOT="$(mktemp -d -t adeck-verify.XXXXXX)"
-SESSION_PREFIX="verify-persist-${RUN_ID}"
-LOGINSIM_SCOPE="adeck-verify-loginsim-${RUN_ID}"
-ARGV_OUT="${TMPROOT}/argv.log"
-export AGENT_DECK_VERIFY_ARGV_OUT="${ARGV_OUT}"
-
 # ---------- cleanup ----------
 cleanup() {
   set +e
@@ -55,45 +47,6 @@ cleanup() {
     rm -rf "${TMPROOT}" 2>/dev/null || true
   fi
 }
-trap cleanup EXIT INT TERM
-
-# ---------- preflight ----------
-if ! command -v agent-deck >/dev/null 2>&1; then
-  printf "${C_RED}ERROR${C_RESET}: agent-deck binary not on PATH.\n" >&2
-  exit 2
-fi
-if ! command -v tmux >/dev/null 2>&1; then
-  printf "${C_RED}ERROR${C_RESET}: tmux binary not on PATH.\n" >&2
-  exit 2
-fi
-
-# Decide whether to install the claude stub.
-USE_STUB=0
-if [[ "${AGENT_DECK_VERIFY_USE_STUB:-0}" == "1" ]]; then
-  USE_STUB=1
-elif ! command -v claude >/dev/null 2>&1; then
-  USE_STUB=1
-fi
-if [[ "${USE_STUB}" == "1" ]]; then
-  STUB_DIR="$(cd "$(dirname "$0")/verify-session-persistence.d" && pwd)"
-  # Provide a `claude` alias by symlinking the stub into a PATH-controlled dir.
-  mkdir -p "${TMPROOT}/bin"
-  ln -sf "${STUB_DIR}/fake-claude.sh" "${TMPROOT}/bin/claude"
-  export PATH="${TMPROOT}/bin:${PATH}"
-  log "claude stub: ${STUB_DIR}/fake-claude.sh (argv -> ${ARGV_OUT})"
-else
-  log "claude: $(command -v claude) (real)"
-fi
-
-# ---------- checklist ----------
-cat <<EOF
-==========================================================
-verify-session-persistence.sh — v1.5.2 persistence harness
-==========================================================
-${CHECKLIST}
-==========================================================
-Each scenario ends with one [PASS], [FAIL], or [SKIP] line.
-EOF
 
 # ---------- helpers ----------
 tmux_pid_for_session() {
@@ -344,16 +297,72 @@ scenario_5_reviver_respawns_killed_pipe() {
   agent-deck session stop "${name}" >/dev/null 2>&1 || true
 }
 
-# ---------- dispatch ----------
-want_scenario 1 && scenario_1_live_session_cgroup
-want_scenario 2 && scenario_2_login_teardown
-want_scenario 3 && scenario_3_restart_resume
-want_scenario 4 && scenario_4_fresh_session_shape
-want_scenario 5 && scenario_5_reviver_respawns_killed_pipe
+# ---------- entrypoint ----------
+main() {
+  FAILED=0
+  RUN_ID="$$"
+  TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/adeck-verify.XXXXXX")"
+  SESSION_PREFIX="verify-persist-${RUN_ID}"
+  LOGINSIM_SCOPE="adeck-verify-loginsim-${RUN_ID}"
+  ARGV_OUT="${TMPROOT}/argv.log"
+  export AGENT_DECK_VERIFY_ARGV_OUT="${ARGV_OUT}"
 
-if [[ "${FAILED}" -ne 0 ]]; then
-  printf "${C_RED}OVERALL: FAIL${C_RESET}\n" >&2
-  exit 1
+  trap cleanup EXIT INT TERM
+
+  # ----- preflight -----
+  if ! command -v agent-deck >/dev/null 2>&1; then
+    printf "${C_RED}ERROR${C_RESET}: agent-deck binary not on PATH.\n" >&2
+    exit 2
+  fi
+  if ! command -v tmux >/dev/null 2>&1; then
+    printf "${C_RED}ERROR${C_RESET}: tmux binary not on PATH.\n" >&2
+    exit 2
+  fi
+
+  # ----- claude stub decision (unchanged logic) -----
+  USE_STUB=0
+  if [[ "${AGENT_DECK_VERIFY_USE_STUB:-0}" == "1" ]]; then
+    USE_STUB=1
+  elif ! command -v claude >/dev/null 2>&1; then
+    USE_STUB=1
+  fi
+  if [[ "${USE_STUB}" == "1" ]]; then
+    STUB_DIR="$(cd "$(dirname "$0")/verify-session-persistence.d" && pwd)"
+    mkdir -p "${TMPROOT}/bin"
+    ln -sf "${STUB_DIR}/fake-claude.sh" "${TMPROOT}/bin/claude"
+    export PATH="${TMPROOT}/bin:${PATH}"
+    log "claude stub: ${STUB_DIR}/fake-claude.sh (argv -> ${ARGV_OUT})"
+  else
+    log "claude: $(command -v claude) (real)"
+  fi
+
+  # ----- checklist -----
+  cat <<EOF
+==========================================================
+verify-session-persistence.sh — v1.5.2 persistence harness
+==========================================================
+${CHECKLIST}
+==========================================================
+Each scenario ends with one [PASS], [FAIL], or [SKIP] line.
+EOF
+
+  # ----- dispatch -----
+  want_scenario 1 && scenario_1_live_session_cgroup
+  want_scenario 2 && scenario_2_login_teardown
+  want_scenario 3 && scenario_3_restart_resume
+  want_scenario 4 && scenario_4_fresh_session_shape
+  want_scenario 5 && scenario_5_reviver_respawns_killed_pipe
+
+  if [[ "${FAILED}" -ne 0 ]]; then
+    printf "${C_RED}OVERALL: FAIL${C_RESET}\n" >&2
+    exit 1
+  fi
+  printf "${C_GREEN}OVERALL: PASS${C_RESET}\n"
+  exit 0
+}
+
+# Run only when executed directly. When sourced for unit tests with
+# AGENT_DECK_VERIFY_LIB_ONLY=1, expose functions without side effects.
+if [[ "${AGENT_DECK_VERIFY_LIB_ONLY:-0}" != "1" ]]; then
+  main "$@"
 fi
-printf "${C_GREEN}OVERALL: PASS${C_RESET}\n"
-exit 0
