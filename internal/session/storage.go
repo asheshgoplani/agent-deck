@@ -390,6 +390,27 @@ func (s *Storage) WriteArchived(id string, archivedAt time.Time) error {
 	return nil
 }
 
+// WriteStatus persists a single session's runtime status via a targeted column
+// update — no whole-row rewrite, no full-table reconcile. Mirrors WriteArchived
+// so the deferred archive stop (stopArchivedSession -> archiveStopCompletedMsg)
+// can record StatusStopped without a full saveInstances, which is unsafe under
+// reload churn.
+func (s *Storage) WriteStatus(id string, status Status, tool string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.db == nil {
+		return fmt.Errorf("storage database not initialized")
+	}
+
+	if err := s.db.WriteStatus(id, string(status), tool); err != nil {
+		return fmt.Errorf("failed to persist status for %s: %w", id, err)
+	}
+
+	_ = s.db.Touch()
+	return nil
+}
+
 // WriteAutoNameDescription persists a single auto-named session's last captured
 // Claude task description via a targeted column update — no whole-row rewrite,
 // no full-table reconcile. Mirrors WriteArchived so callers route both halves of

@@ -607,15 +607,17 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	// flag. Without this, a web-archived session keeps its tmux pane and tool
 	// process running indefinitely while the row claims to be set aside.
 	//
-	// Capture the live auto-name BEFORE Kill(), exactly as the TUI does: an
+	// Capture the live auto-name BEFORE the stop, exactly as the TUI does: an
 	// auto-named row renders the live pane title, which Kill() tears down, so
 	// without this the row reverts to its bare random handle.
 	m.h.captureAutoNameBeforeStop(inst)
-	// Non-blocking Kill (not KillAndWait): the web server shares the long-lived
-	// TUI process, so the background process-tree reaper completes — unlike the
-	// short-lived CLI which must use KillAndWait (issue #59).
-	_ = inst.Kill()
 
+	// Mark archived + persist synchronously (fast, single-column write path) so
+	// the POST returns at once, then run the expensive Kill OFF the request
+	// goroutine. Kill()'s MCP-child reap (SIGTERM -> up to 1s grace -> SIGKILL ->
+	// up to 2s verify) plus tmux/ps subprocess scans take ~1-3s; blocking the
+	// HTTP handler on them froze the web archive action just as the inline TUI
+	// Kill froze the render loop. This mirrors the TUI's stopArchivedSession.
 	inst.ArchivedAt = time.Now()
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)
@@ -629,7 +631,24 @@ func (m *WebMutator) ArchiveSession(id string) error {
 	copy(instances, m.h.instances)
 	m.h.instancesMu.RUnlock()
 
-	return storage.SaveWithGroups(instances, m.h.groupTree)
+	if err := storage.SaveWithGroups(instances, m.h.groupTree); err != nil {
+		return err
+	}
+
+	// Deferred stop off the request goroutine. Persist StatusStopped via the
+	// Home's storage when present (nil in unit harnesses), mirroring the TUI's
+	// archiveStopCompletedMsg handler.
+	tool := inst.GetToolThreadSafe()
+	go func() {
+		if killErr := inst.Kill(); killErr != nil {
+			return
+		}
+		if m.h.storage != nil {
+			_ = m.h.storage.WriteStatus(id, session.StatusStopped, tool)
+		}
+	}()
+
+	return nil
 }
 
 // UnarchiveSession clears ArchivedAt and persists.

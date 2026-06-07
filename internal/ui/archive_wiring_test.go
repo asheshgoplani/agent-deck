@@ -143,6 +143,91 @@ func TestArchiveKey_ArchivesAndParksSelection(t *testing.T) {
 	}
 }
 
+// TestArchiveKey_DefersKillOffUIGoroutine pins the fix for the archive freeze.
+// inst.Kill() reaps MCP children inline (SIGTERM -> up to 1s grace -> SIGKILL ->
+// up to 2s verify) plus tmux list-panes / ps subprocess scans. Run on the Bubble
+// Tea UI goroutine that blocks the render loop for ~1-3s — the user-reported
+// freeze. Archiving must register ArchivedAt synchronously (so the row hides at
+// once) but DEFER the process Kill to the returned tea.Cmd, exactly as
+// closeSession does. A tmux-less seeded instance's Kill resolves to
+// Status=StatusStopped, so a status flip is the observable proxy for "Kill ran".
+func TestArchiveKey_DefersKillOffUIGoroutine(t *testing.T) {
+	home, idx := buildTwoGroupHome(t)
+	home.showArchived = false
+	home.rebuildFlatItems()
+	home.cursor = idx["a1"]
+
+	var target *session.Instance
+	home.instancesMu.RLock()
+	for _, inst := range home.instances {
+		if inst.Title == "a1" {
+			target = inst
+		}
+	}
+	home.instancesMu.RUnlock()
+	if target == nil {
+		t.Fatal("a1 instance not found")
+	}
+	// A synchronous Kill flips status to stopped; mark running so we can detect it.
+	target.Status = session.StatusRunning
+
+	_, cmd := home.handleMainKey(keyMsgString("A"))
+
+	// Immediate UI effect: ArchivedAt set so the row hides/parks at once.
+	if !target.IsArchived() {
+		t.Fatal("archive must set ArchivedAt synchronously for an immediate UI update")
+	}
+	// The expensive process stop must NOT have run on the UI goroutine.
+	if got := target.GetStatusThreadSafe(); got == session.StatusStopped {
+		t.Fatalf("archive stopped the process synchronously on the UI goroutine (status=%s); "+
+			"Kill must be deferred to a tea.Cmd or the ~1-3s MCP-child reap freezes the TUI", got)
+	}
+	if cmd == nil {
+		t.Fatal("archive must return a tea.Cmd to perform the deferred stop")
+	}
+}
+
+// TestStopArchivedSession_RunsKillAndReports drains the deferred-stop command
+// returned by toggleArchiveSelected: running it must perform the Kill (status ->
+// stopped) and report an archiveStopCompletedMsg carrying the session id, so the
+// Update handler can persist the stopped status.
+func TestStopArchivedSession_RunsKillAndReports(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+
+	var target *session.Instance
+	home.instancesMu.RLock()
+	for _, inst := range home.instances {
+		if inst.Title == "a1" {
+			target = inst
+		}
+	}
+	home.instancesMu.RUnlock()
+	if target == nil {
+		t.Fatal("a1 instance not found")
+	}
+	target.Status = session.StatusRunning
+
+	cmd := home.stopArchivedSession(target)
+	if cmd == nil {
+		t.Fatal("stopArchivedSession returned a nil command")
+	}
+	// The stop runs inside the command body (off the UI goroutine in production).
+	msg := cmd()
+	done, ok := msg.(archiveStopCompletedMsg)
+	if !ok {
+		t.Fatalf("expected archiveStopCompletedMsg, got %T", msg)
+	}
+	if done.sessionID != target.ID {
+		t.Errorf("sessionID = %q, want %q", done.sessionID, target.ID)
+	}
+	// killErr is harness noise here: the seeded instance carries a fake
+	// tmuxSession with no live server, so tmux kill-session reports exit 1.
+	// Kill() still sets StatusStopped regardless, which is what we assert.
+	if got := target.GetStatusThreadSafe(); got != session.StatusStopped {
+		t.Errorf("status = %q after running the stop command, want %q", got, session.StatusStopped)
+	}
+}
+
 func TestArchiveKey_UnarchivesWhenSelectionArchived(t *testing.T) {
 	home, _ := buildTwoGroupHome(t)
 	// Reveal archived rows so we can land the cursor on one.

@@ -4589,6 +4589,25 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case archiveStopCompletedMsg:
+		// The deferred Kill from stopArchivedSession finished. Persist the
+		// stopped status now so it survives without waiting on the background
+		// poller; the row is already hidden (ArchivedAt was set synchronously).
+		if msg.killErr != nil {
+			uiLog.Warn("archive_stop_failed", slog.String("id", msg.sessionID), slog.String("error", msg.killErr.Error()))
+			h.setError(fmt.Errorf("archived session, but failed to stop it: %w", msg.killErr))
+			return h, nil
+		}
+		if h.storage != nil {
+			if err := h.storage.WriteStatus(msg.sessionID, session.StatusStopped, msg.tool); err != nil {
+				uiLog.Warn("archive_status_persist_failed", slog.String("id", msg.sessionID), slog.String("error", err.Error()))
+			}
+		}
+		h.cachedStatusCounts.valid.Store(false)
+		h.invalidatePreviewCache(msg.sessionID)
+		h.rebuildFlatItems()
+		return h, nil
+
 	case sessionRestoredMsg:
 		h.reloadMu.Lock()
 		reloading := h.isReloading
@@ -10048,6 +10067,14 @@ type sessionClosedMsg struct {
 	killErr   error
 }
 
+// archiveStopCompletedMsg signals that a hidden archived session finished its
+// background process stop (the deferred Kill from stopArchivedSession).
+type archiveStopCompletedMsg struct {
+	sessionID string
+	tool      string
+	killErr   error
+}
+
 // sessionRestoredMsg signals that an undo-delete restore completed
 type sessionRestoredMsg struct {
 	instance *session.Instance
@@ -10176,9 +10203,13 @@ func (h *Home) toggleArchiveSelected(inst *session.Instance) tea.Cmd {
 	// auto generated name"). See captureAutoNameBeforeStop.
 	h.captureAutoNameBeforeStop(inst)
 
-	// Stop the process first (reuse the close kill path), then mark archived.
+	// Mark archived synchronously so the row hides/parks immediately, but DEFER
+	// the process Kill to a background command. Kill() reaps MCP children inline
+	// (SIGTERM -> up to 1s grace -> SIGKILL -> up to 2s verify) plus tmux
+	// list-panes / ps subprocess scans; running it on this Bubble Tea UI
+	// goroutine froze the render loop for ~1-3s (the user-reported "archive
+	// freezes the UI"). closeSession already defers Kill the same way.
 	title := inst.Title
-	_ = inst.Kill() // non-blocking: sets StatusStopped, keeps metadata + worktree
 	inst.ArchivedAt = time.Now()
 	// Keep this row visible+selected even with showArchived off, so pressing the
 	// archive key again immediately undoes it. It hides on the next rebuild once
@@ -10191,7 +10222,21 @@ func (h *Home) toggleArchiveSelected(inst *session.Instance) tea.Cmd {
 
 	archiveKey := h.actionKey(hotkeyArchiveSession)
 	h.setError(fmt.Errorf("archived %q (%s to undo)", title, archiveKey))
-	return h.fetchSelectedPreview()
+	return tea.Batch(h.fetchSelectedPreview(), h.stopArchivedSession(inst))
+}
+
+// stopArchivedSession stops an already-hidden archived session's process off the
+// UI goroutine. Kill()'s MCP-child reap + tmux/ps subprocess scans take up to
+// ~1-3s; running them here (instead of inline in toggleArchiveSelected) keeps
+// the render loop responsive. The returned archiveStopCompletedMsg persists the
+// stopped status so it survives without waiting on the background poller.
+func (h *Home) stopArchivedSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	tool := inst.GetToolThreadSafe()
+	return func() tea.Msg {
+		killErr := inst.Kill()
+		return archiveStopCompletedMsg{sessionID: id, tool: tool, killErr: killErr}
+	}
 }
 
 // closeSession stops a session process but keeps metadata in list/storage.

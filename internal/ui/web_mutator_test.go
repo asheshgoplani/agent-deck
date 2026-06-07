@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -184,6 +185,10 @@ func TestWebMutator_MoveSessionToGroup_NotFound(t *testing.T) {
 // wire/data parity (the `archived` flag), so a missing Kill() slips through.
 // On a tmux-less seeded instance, Kill() resolves to Status=StatusStopped, so
 // status is the observable proxy for "the process was torn down".
+//
+// The stop runs OFF the request goroutine (Kill()'s MCP-child reap + tmux/ps
+// scans take ~1-3s; blocking the HTTP handler froze the web archive action), so
+// ArchivedAt is set synchronously while status settles to stopped shortly after.
 func TestWebMutator_ArchiveSession_StopsProcess(t *testing.T) {
 	inst := session.NewInstanceWithTool("archive-me", "/tmp/wm-archive", "claude")
 	inst.Status = session.StatusRunning
@@ -194,10 +199,17 @@ func TestWebMutator_ArchiveSession_StopsProcess(t *testing.T) {
 		t.Fatalf("ArchiveSession: %v", err)
 	}
 
+	// Archive registers immediately so the row hides without waiting on Kill.
 	if inst.ArchivedAt.IsZero() {
 		t.Errorf("ArchivedAt not set; archive did not record the timestamp")
 	}
-	if got := inst.GetStatusThreadSafe(); got != session.StatusStopped {
-		t.Errorf("status = %q after web archive, want %q (archive must stop the process to mirror the TUI 'A' hotkey / CLI `session archive`)", got, session.StatusStopped)
+
+	// The process stop runs in the background; it must still complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for inst.GetStatusThreadSafe() != session.StatusStopped {
+		if time.Now().After(deadline) {
+			t.Fatalf("status = %q, want %q: archive must stop the process (asynchronously) to mirror the TUI 'A' hotkey / CLI `session archive`", inst.GetStatusThreadSafe(), session.StatusStopped)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
