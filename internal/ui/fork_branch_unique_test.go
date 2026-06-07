@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,5 +53,19 @@ func TestUniqueForkBranch_BumpsOnCollision(t *testing.T) {
 	// Non-git path → base unchanged (no branches to collide with).
 	if got := uniqueForkBranch(t.TempDir(), "fork/feat"); got != "fork/feat" {
 		t.Fatalf("non-git: got %q, want fork/feat", got)
+	}
+}
+
+func TestUniqueForkBranch_UsesBackendCollisionChecks(t *testing.T) {
+	src, err := os.ReadFile("home.go")
+	if err != nil {
+		t.Fatalf("read home.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "forkBranchTaken(backend, candidate)") {
+		t.Fatal("uniqueForkBranch must pass the detected backend into collision checks")
+	}
+	if strings.Contains(body, "func forkBranchTaken(repoRoot, branch string)") {
+		t.Fatal("forkBranchTaken must not take only a git repo root")
 	}
 }

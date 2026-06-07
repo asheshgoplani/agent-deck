@@ -34,6 +34,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -5788,11 +5789,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 		launchModelID := h.newDialog.GetLaunchModelID()
 
-		// Resolve worktree target if enabled; actual worktree creation runs in async command.
+		// Resolve worktree/workspace target if enabled; actual creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			// resolveWorktreeTarget validates the path is a git repo OR a
-			// bare-repo project root (#742 / #715) and implements the #1185
+			// resolveWorktreeTarget validates the path is a supported VCS repo
+			// (git or jujutsu; including bare-repo project roots) and implements the #1185
 			// fallback: a worktree enabled by config default (not an explicit
 			// user toggle) on a non-repo dir falls back to a normal session
 			// instead of erroring, while an explicit worktree still fails loud.
@@ -9199,9 +9200,8 @@ func uniqueForkBranch(projectPath, base string) string {
 	if err != nil {
 		return base
 	}
-	repoRoot := backend.RepoDir()
 	candidate := base
-	for n := 2; forkBranchTaken(repoRoot, candidate); n++ {
+	for n := 2; forkBranchTaken(backend, candidate); n++ {
 		candidate = fmt.Sprintf("%s-%d", base, n)
 		if n > 1000 {
 			return candidate // pathological guard; never expected in practice
@@ -9210,18 +9210,18 @@ func uniqueForkBranch(projectPath, base string) string {
 	return candidate
 }
 
-// forkBranchTaken reports whether a branch name is already used by a local branch
-// or a linked worktree in repoRoot.
-func forkBranchTaken(repoRoot, branch string) bool {
-	if git.BranchExists(repoRoot, branch) {
+// forkBranchTaken reports whether a branch/bookmark name is already used by the
+// detected VCS backend or already has a linked worktree/workspace.
+func forkBranchTaken(backend vcs.Backend, branch string) bool {
+	if backend.BranchExists(branch) {
 		return true
 	}
-	wt, err := git.GetWorktreeForBranch(repoRoot, branch)
+	wt, err := backend.GetWorktreeForBranch(branch)
 	return err == nil && wt != ""
 }
 
 // resolveQuickForkSpec computes the comprehensive quick-fork spec and applies the
-// non-git with-state gate — i.e. the exact spec quickForkSession forks from
+// backend with-state gate — i.e. the exact spec quickForkSession forks from
 // (modulo the downstream unique-branch bump). Kept as a seam so the `f`-path
 // with-state decision is testable against real repos without the tmux/tea.Cmd
 // machinery.
@@ -9231,23 +9231,28 @@ func resolveQuickForkSpec(source *session.Instance, fork session.ForkSettings) q
 }
 
 // gateForkStateForBackend disables with-state materialization when the source
-// repo's VCS backend is not git. The comprehensive quick-fork default forces
-// WithState=true, but with-state is git-only — the downstream fork path rejects
-// it on jujutsu ("--with-state is only supported for git repositories"), so the
-// unconditional default regressed `f` on jj repos from "create the supported
-// workspace fork" to "error". For non-git (jj) or undetectable backends we
-// degrade to a plain (workspace) fork; the worktree/workspace itself is still
-// created. Proper jj with-state support is tracked in #1305.
+// repo's VCS backend cannot carry working state. The comprehensive quick-fork
+// default forces WithState=true; git and jujutsu both support with-state (git
+// via forkWithStateWorktree, jj via forkWithStateWorkspaceJJ since #1305), so
+// only a truly unsupported or undetectable backend degrades to a plain
+// (workspace) fork. The worktree/workspace itself is still created either way.
 func gateForkStateForBackend(in quickForkSpec, projectPath string) quickForkSpec {
 	if !in.Plan.WithState {
 		return in
 	}
 	backend, err := vcsbackend.Detect(projectPath)
-	if err != nil || backend.Type() != vcs.TypeGit {
+	if err != nil || !backendSupportsWithState(backend.Type()) {
 		in.Plan.WithState = false
 		in.Plan.WithIgnored = false
 	}
 	return in
+}
+
+// backendSupportsWithState reports whether a VCS backend can materialize a
+// parent's working state into a fork. git and jujutsu qualify; everything else
+// degrades to a plain workspace fork.
+func backendSupportsWithState(t vcs.Type) bool {
+	return t == vcs.TypeGit || t == vcs.TypeJujutsu
 }
 
 // quickForkSession performs a comprehensive quick fork: new worktree+branch,
@@ -9756,7 +9761,7 @@ func (h *Home) buildForkCmd(
 			opts.WorktreeBranch = branchName
 			worktreeApplied = true
 		} else {
-			notice = "forked without worktree: not a git repo"
+			notice = "forked without worktree: not a git or jujutsu repo"
 		}
 	}
 	forkState := git.WorktreeStateOptions{WithState: withState, WithIgnored: withIgnored}
@@ -9848,22 +9853,34 @@ func (h *Home) forkSessionCmdWithOptions(
 				return sessionForkedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), sourceID: sourceID}
 			}
 
-			// With-state forks are git-only and never reuse an existing worktree;
-			// otherwise check for an existing worktree for this branch before
-			// creating a new one.
+			// With-state forks are routed by backend and never reuse an existing
+			// worktree/workspace; otherwise check for an existing worktree for this
+			// branch before creating a new one.
 			if forkState.WithState {
-				if backend.Type() != vcs.TypeGit {
-					return sessionForkedMsg{err: fmt.Errorf("--with-state is only supported for git repositories"), sourceID: sourceID}
-				}
-				if err := forkWithStateWorktree(
-					source.ProjectPath,
-					opts.WorktreeRepoRoot,
-					opts.WorktreePath,
-					opts.WorktreeBranch,
-					forkState,
-					defaultForkWithStateWorktreeDeps(),
-				); err != nil {
-					return sessionForkedMsg{err: err, sourceID: sourceID}
+				switch backend.Type() {
+				case vcs.TypeGit:
+					if err := forkWithStateWorktree(
+						source.ProjectPath,
+						opts.WorktreeRepoRoot,
+						opts.WorktreePath,
+						opts.WorktreeBranch,
+						forkState,
+						defaultForkWithStateWorktreeDeps(),
+					); err != nil {
+						return sessionForkedMsg{err: err, sourceID: sourceID}
+					}
+				case vcs.TypeJujutsu:
+					if err := forkWithStateWorkspaceJJ(
+						source.ProjectPath,
+						opts.WorktreeRepoRoot,
+						opts.WorktreePath,
+						opts.WorktreeBranch,
+						forkState,
+					); err != nil {
+						return sessionForkedMsg{err: err, sourceID: sourceID}
+					}
+				default:
+					return sessionForkedMsg{err: fmt.Errorf("--with-state is not supported for this repository's VCS backend"), sourceID: sourceID}
 				}
 				withStateWorktreeCreated = true
 			} else if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
@@ -9888,16 +9905,32 @@ func (h *Home) forkSessionCmdWithOptions(
 	}
 }
 
-// rollbackForkWithStateWorktree best-effort removes a worktree and deletes the
-// branch created by forkWithStateWorktree, used when a later step (instance
-// create or start) fails after the helper already succeeded. Failures are
-// logged, not returned, so the caller's original error is preserved.
+// rollbackForkWithStateWorktree best-effort removes the worktree/workspace and
+// deletes the branch created by the with-state fork helpers, used when a later
+// step (instance create or start) fails after the helper already succeeded.
+// Failures are logged, not returned, so the caller's original error is
+// preserved.
+//
+// It re-detects the VCS backend so jj forks roll back via `jj workspace forget`
+// (and bookmark delete) rather than git's worktree/branch removal — using the
+// wrong VCS here would leave the new workspace orphaned. On detection failure it
+// falls back to git semantics (the pre-#1305 behavior).
 func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) {
-	if err := git.RemoveWorktree(repoRoot, worktreePath, true); err != nil {
-		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	backend, err := vcsbackend.Detect(repoRoot)
+	if err != nil {
+		if rmErr := git.RemoveWorktree(repoRoot, worktreePath, true); rmErr != nil {
+			uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", rmErr.Error()))
+		}
+		if brErr := git.DeleteBranch(repoRoot, branch, true); brErr != nil {
+			uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", brErr.Error()))
+		}
+		return
 	}
-	if err := git.DeleteBranch(repoRoot, branch, true); err != nil {
-		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", err.Error()))
+	if rmErr := backend.RemoveWorktree(worktreePath, true); rmErr != nil {
+		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", rmErr.Error()))
+	}
+	if brErr := backend.DeleteBranch(branch, true); brErr != nil {
+		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", brErr.Error()))
 	}
 }
 
@@ -9986,6 +10019,47 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 		// #1263's CLI, which warns on a failed setup script rather than failing
 		// the whole fork.
 		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	return nil
+}
+
+// forkWithStateWorkspaceJJ is the jujutsu equivalent of forkWithStateWorktree:
+// it creates the fork's jj workspace anchored at the parent session's committed
+// point (@-) and materializes the parent's uncommitted working-copy state into
+// it. Wired into forkSessionCmdWithOptions for jj backends (#1305).
+//
+// jj's model makes this leaner than git: the working copy is a commit and
+// untracked files are auto-snapshotted, so a single restore carries tracked +
+// untracked state; only gitignored files need a filesystem copy. There is also
+// no staging area or in-progress rebase/merge/cherry-pick state to guard
+// against, so the git path's index/operation safeguards do not apply.
+func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string, state git.WorktreeStateOptions) error {
+	if state.WithIgnored {
+		state.WithState = true
+	}
+	if !state.WithState {
+		return errors.New("forkWithStateWorkspaceJJ called without WithState")
+	}
+	if _, statErr := os.Stat(workspacePath); statErr == nil {
+		return fmt.Errorf("workspace path already exists: %s", workspacePath)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat workspace path: %w", statErr)
+	}
+	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	parentBase, err := jujutsu.WorkingCopyParentRevision(parentPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve parent session committed anchor: %w", err)
+	}
+	if err := jujutsu.CreateWorkspaceAtRevision(repoRoot, workspacePath, branch, parentBase); err != nil {
+		return fmt.Errorf("workspace creation failed: %w", err)
+	}
+	if err := jujutsu.MaterializeWipFromParent(parentPath, workspacePath, state.WithIgnored); err != nil {
+		// Roll back the workspace we just created so a materialize failure does
+		// not leave an orphaned workspace behind.
+		rollbackForkWithStateWorktree(repoRoot, workspacePath, branch)
+		return fmt.Errorf("failed to materialize parent state: %w; new workspace cleaned up", err)
 	}
 	return nil
 }

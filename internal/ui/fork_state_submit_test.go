@@ -209,20 +209,36 @@ func gitOutUI(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func TestForkSessionCmdWithOptions_WithStateRejectsNonGitBeforeGitDirectCalls(t *testing.T) {
+// With-state forks route by backend type (#1305): git → forkWithStateWorktree
+// (internal/git-direct calls), jj → forkWithStateWorkspaceJJ, anything else →
+// rejection. This structural test asserts the git-direct helper is reachable
+// only from inside the git case, so a non-git backend can never fall through to
+// the git-direct calls — the safety property the old `!= vcs.TypeGit` early
+// guard provided, now enforced by the switch shape.
+func TestForkSessionCmdWithOptions_WithStateRoutesByBackend(t *testing.T) {
 	srcBytes, err := os.ReadFile("home.go")
 	if err != nil {
 		t.Fatalf("read home.go: %v", err)
 	}
 	src := string(srcBytes)
 	guard := strings.Index(src, "if forkState.WithState {")
-	reject := strings.Index(src, `backend.Type() != vcs.TypeGit`)
-	validate := strings.Index(src, "forkWithStateWorktree(")
-	if guard < 0 || reject < 0 || validate < 0 {
-		t.Fatalf("missing with-state guard/reject/helper call: guard=%d reject=%d helper=%d", guard, reject, validate)
+	gitCase := strings.Index(src, "case vcs.TypeGit:")
+	gitHelper := strings.Index(src, "forkWithStateWorktree(")
+	jjCase := strings.Index(src, "case vcs.TypeJujutsu:")
+	jjHelper := strings.Index(src, "forkWithStateWorkspaceJJ(")
+	reject := strings.Index(src, "is not supported for this repository's VCS backend")
+	if guard < 0 || gitCase < 0 || gitHelper < 0 || jjCase < 0 || jjHelper < 0 || reject < 0 {
+		t.Fatalf("missing with-state routing markers: guard=%d gitCase=%d gitHelper=%d jjCase=%d jjHelper=%d reject=%d",
+			guard, gitCase, gitHelper, jjCase, jjHelper, reject)
 	}
-	if reject > validate {
-		t.Fatalf("non-git rejection must happen before git-direct helper call; reject=%d helper=%d", reject, validate)
+	if !(guard < gitCase && gitCase < gitHelper) {
+		t.Fatalf("git-direct helper must sit inside the git case after the with-state guard; guard=%d gitCase=%d gitHelper=%d", guard, gitCase, gitHelper)
+	}
+	if !(gitHelper < jjCase && jjCase < jjHelper) {
+		t.Fatalf("jj case must route to the jj workspace helper after the git case; gitHelper=%d jjCase=%d jjHelper=%d", gitHelper, jjCase, jjHelper)
+	}
+	if reject < jjHelper {
+		t.Fatalf("unsupported-backend rejection must be the default after both cases; reject=%d jjHelper=%d", reject, jjHelper)
 	}
 }
 
