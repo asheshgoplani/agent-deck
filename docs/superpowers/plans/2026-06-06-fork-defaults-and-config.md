@@ -1215,6 +1215,12 @@ git commit -m "test(eval): fork dialog renders comprehensive defaults checked on
 > built from scratch (Task 9). All three get real-binary evals (Task 10). Mutator
 > fields (Task 7) unblock the evals.
 
+**Web scope clarification:** Web/API fork is plain cross-tool native fork parity
+for this branch. It should share the session-layer tool dispatch and WebUI
+should render a fork action only for sessions the backend marks forkable.
+Worktree/state/Docker defaults remain TUI quick/dialog scope and are not added
+to Web in this remediation.
+
 ## Task 7: `session set opencode-session-id` / `codex-session-id` mutator fields
 
 **Files:**

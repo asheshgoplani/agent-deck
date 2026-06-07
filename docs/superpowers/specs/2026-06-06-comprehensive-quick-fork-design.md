@@ -80,6 +80,18 @@ resembles its parent nor honors configured defaults.
    - Cross-tool fork-faking for tests/users is enabled by `opencode-session-id` and
      `codex-session-id` `session set` mutator fields (mirroring `claude-session-id`).
 
+### Web/API fork scope
+
+The Web/API `POST /api/sessions/{id}/fork` endpoint is plain cross-tool
+native fork parity in this iteration. It must route Claude-compatible,
+OpenCode, Pi, and Codex-compatible sessions through the same tool-specific
+fork builders as TUI/CLI, but it does not apply `[fork]` worktree/state/Docker
+defaults and does not expose Shift+F title/group/branch controls.
+
+Comprehensive Web fork defaults require an async workflow with branch conflict
+handling, worktree/state materialization, rollback, and user-visible
+degradation notices. That is intentionally deferred.
+
 ## Config schema
 
 New `[fork]` TOML section on `UserConfig`, consistent with `[worktree]` /

@@ -201,6 +201,11 @@ func (d *ForkDialog) ShowWithParentSandboxed(originalName, projectPath, groupPat
 		d.branchPicker.Hide()
 	}
 	d.optionsPanel.Blur()
+	config, _ := session.LoadUserConfig()
+	forkSettings := session.ForkSettings{}
+	if config != nil {
+		forkSettings = config.Fork
+	}
 
 	// Reset worktree fields from global config defaults.
 	d.worktreeEnabled = false
@@ -223,11 +228,11 @@ func (d *ForkDialog) ShowWithParentSandboxed(originalName, projectPath, groupPat
 	// Auto-suggest branch name based on fork title. Use the git sanitizer (same
 	// as quick fork's quickForkInputs) so titles with ':' '?' etc. don't produce
 	// an invalid branch like "fork/fix:-bug".
-	d.branchInput.SetValue("fork/" + git.SanitizeBranchName(strings.ToLower(originalName)))
+	d.branchInput.SetValue(forkSettings.GetBranchPrefix() + git.SanitizeBranchName(strings.ToLower(originalName)))
 
 	// Initialize options + structural toggles from [fork] defaults so the dialog
 	// opens "comprehensive, tweak down" — matching quick fork (f).
-	if config, err := session.LoadUserConfig(); err == nil {
+	if config != nil {
 		d.optionsPanel.SetDefaults(config)
 		plan := config.Fork.Resolve(parentSandboxed)
 		d.worktreeEnabled = d.worktreeCapable && plan.Worktree

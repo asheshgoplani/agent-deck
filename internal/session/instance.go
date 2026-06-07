@@ -6101,7 +6101,8 @@ func (i *Instance) CanFork() bool {
 
 // CanForkOpenCode returns true if this OpenCode session can be forked
 func (i *Instance) CanForkOpenCode() bool {
-	return i.Tool == "opencode" && i.OpenCodeSessionID != "" && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
+	sessionID, err := normalizeToolSessionID(FieldOpenCodeSessionID, i.OpenCodeSessionID)
+	return i.Tool == "opencode" && err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.OpenCodeSessionID) && time.Since(i.OpenCodeDetectedAt) < 5*time.Minute
 }
 
 // CanForkPi returns true if this Pi session can be forked by Agent Deck.
@@ -6274,6 +6275,30 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	return forked, cmd, nil
 }
 
+// CreateForkedInstanceForTool creates a forked instance using the correct
+// tool-specific fork implementation. opts is the shared fork carrier for
+// worktree fields; non-Claude tool options continue to come from global config.
+func (i *Instance) CreateForkedInstanceForTool(newTitle, newGroupPath string, opts *ClaudeOptions) (*Instance, string, error) {
+	switch {
+	case i.Tool == "opencode":
+		workDir := i.ProjectPath
+		repoRoot := ""
+		branch := ""
+		if opts != nil && opts.WorkDir != "" {
+			workDir = opts.WorkDir
+			repoRoot = opts.WorktreeRepoRoot
+			branch = opts.WorktreeBranch
+		}
+		return i.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(newTitle, newGroupPath, nil, workDir, repoRoot, branch)
+	case i.Tool == "pi":
+		return i.CreateForkedPiInstanceWithOptions(newTitle, newGroupPath, opts)
+	case IsCodexCompatible(i.Tool):
+		return i.CreateForkedCodexInstanceWithOptions(newTitle, newGroupPath, opts)
+	default:
+		return i.CreateForkedInstanceWithOptions(newTitle, newGroupPath, opts)
+	}
+}
+
 // ForkOpenCode returns the command to create a forked OpenCode session.
 // Uses export/import to clone the session with a new ID, then launches
 // the forked session with opencode -s <new-id>.
@@ -6303,12 +6328,12 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 	var extraFlags string
 	if opts != nil {
 		for _, arg := range opts.ToArgsForFork() {
-			extraFlags += " " + arg
+			extraFlags += " " + shellescape.Quote(arg)
 		}
 	} else if config, err := LoadUserConfig(); err == nil && config != nil {
 		defaultOpts := NewOpenCodeOptions(config)
 		for _, arg := range defaultOpts.ToArgsForFork() {
-			extraFlags += " " + arg
+			extraFlags += " " + shellescape.Quote(arg)
 		}
 	}
 
@@ -6323,8 +6348,11 @@ func (i *Instance) forkOpenCodeWithOptionsInWorkDir(newTitle, newGroupPath strin
 // writeOpenCodeForkScript writes a bash script that forks via export/import.
 // The script self-deletes after execution.
 func (i *Instance) writeOpenCodeForkScript(workDir, envPrefix, extraFlags string) (string, error) {
+	quotedWorkDir := shellescape.Quote(workDir)
+	quotedSessionID := shellescape.Quote(i.OpenCodeSessionID)
+	sedSessionID := strings.ReplaceAll(i.OpenCodeSessionID, ".", `\.`)
 	script := fmt.Sprintf(`#!/bin/bash
-cd "%s" || { echo "cd failed to: %s"; exit 1; }
+cd %s || { printf 'cd failed to: %%s\n' %s; exit 1; }
 %s
 tmpfile=$(mktemp -t opencode-fork)
 trap "rm -f \"$tmpfile\" \"$0\"" EXIT
@@ -6349,8 +6377,8 @@ opencode import "$tmpfile" 2>&1 || { echo "Import failed"; exit 1; }
 # OPENCODE_SESSION_ID is propagated via host-side SetEnvironment after tmux start.
 echo "Forked to: $new_id"
 opencode -s "$new_id"%s
-`, workDir, workDir, envPrefix, i.OpenCodeSessionID,
-		i.OpenCodeSessionID, i.OpenCodeSessionID, extraFlags)
+`, quotedWorkDir, quotedWorkDir, envPrefix, quotedSessionID,
+		sedSessionID, sedSessionID, extraFlags)
 
 	f, err := os.CreateTemp("", "opencode-fork-*.sh")
 	if err != nil {
@@ -6482,7 +6510,8 @@ func (i *Instance) CanForkCodex() bool {
 	if !IsCodexCompatible(i.Tool) || i.CodexSessionID == "" {
 		return false
 	}
-	return codexRolloutExistsInHome(i.CodexSessionID, i.getCodexHomeDir())
+	sessionID, err := normalizeToolSessionID(FieldCodexSessionID, i.CodexSessionID)
+	return err == nil && sessionID != "" && sessionID == strings.TrimSpace(i.CodexSessionID) && codexRolloutExistsInHome(sessionID, i.getCodexHomeDir())
 }
 
 // buildCodexForkCommandForTarget builds the one-time `codex fork <parent-sid>`
@@ -6510,7 +6539,7 @@ func (i *Instance) buildCodexForkCommandForTarget(target *Instance, baseCommand 
 			envPrefix += "CODEX_HOME=" + shellescape.Quote(codexHome) + " "
 		}
 	}
-	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, i.CodexSessionID), nil
+	return envPrefix + fmt.Sprintf("%s%s%s fork %s", command, yoloFlag, modelFlag, shellescape.Quote(i.CodexSessionID)), nil
 }
 
 // CreateForkedCodexInstanceWithOptions creates a forked Codex instance. Mirrors

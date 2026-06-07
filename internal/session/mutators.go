@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -81,6 +82,35 @@ type MutationError struct {
 }
 
 func (e *MutationError) Error() string { return e.Msg }
+
+var (
+	openCodeSessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
+	codexSessionIDPattern    = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
+)
+
+func normalizeToolSessionID(field, value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	switch field {
+	case FieldOpenCodeSessionID:
+		if !openCodeSessionIDPattern.MatchString(trimmed) {
+			return "", &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("invalid opencode session id %q — expected a shell-safe identifier", trimmed),
+			}
+		}
+	case FieldCodexSessionID:
+		if !codexSessionIDPattern.MatchString(trimmed) {
+			return "", &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("invalid codex session id %q — expected UUID format", trimmed),
+			}
+		}
+	}
+	return trimmed, nil
+}
 
 // SetField is the single source of truth for session metadata edits — both
 // `agent-deck session set` and the TUI EditSessionDialog call it.
@@ -254,12 +284,20 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 
 	case FieldOpenCodeSessionID:
 		oldValue = inst.OpenCodeSessionID
-		inst.OpenCodeSessionID = value
+		normalized, err := normalizeToolSessionID(field, value)
+		if err != nil {
+			return oldValue, nil, err
+		}
+		inst.OpenCodeSessionID = normalized
 		inst.OpenCodeDetectedAt = time.Now()
 
 	case FieldCodexSessionID:
 		oldValue = inst.CodexSessionID
-		inst.CodexSessionID = value
+		normalized, err := normalizeToolSessionID(field, value)
+		if err != nil {
+			return oldValue, nil, err
+		}
+		inst.CodexSessionID = normalized
 		inst.CodexDetectedAt = time.Now()
 
 	case FieldTitleLocked:

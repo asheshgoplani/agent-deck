@@ -238,18 +238,7 @@ func (m *WebMutator) ForkSession(id string) (string, error) {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
 
-	var forked *session.Instance
-	var err error
-	switch parent.Tool {
-	case "opencode":
-		forked, _, err = parent.CreateForkedOpenCodeInstance(parent.Title+" (fork)", parent.GroupPath)
-	case "pi":
-		forked, _, err = parent.CreateForkedPiInstance(parent.Title+" (fork)", parent.GroupPath)
-	default:
-		forked, _, err = parent.CreateForkedInstanceWithOptions(
-			parent.Title+" (fork)", parent.GroupPath, nil,
-		)
-	}
+	forked, _, err := parent.CreateForkedInstanceForTool(parent.Title+" (fork)", parent.GroupPath, nil)
 	if err != nil {
 		return "", fmt.Errorf("fork session: %w", err)
 	}

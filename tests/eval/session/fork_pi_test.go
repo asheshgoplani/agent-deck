@@ -4,11 +4,13 @@ package session_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/tests/eval/harness"
 )
@@ -17,6 +19,7 @@ func TestEval_SessionForkPi_RealBinary(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
+	requireForkTool(t, "pi")
 	sb := harness.NewSandbox(t)
 	writeForkConfig(t, sb) // [worktree] branch_prefix="" + sibling location
 
@@ -50,7 +53,14 @@ func writeForkConfig(t *testing.T, sb *harness.Sandbox) {
 	t.Helper()
 	cfgDir := filepath.Join(sb.Home, ".agent-deck")
 	mustMkdir(t, cfgDir)
-	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`[worktree]
+	socketName := fmt.Sprintf("ad-fork-%x", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", socketName, "kill-server").Run()
+	})
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(`[tmux]
+socket_name = "`+socketName+`"
+
+[worktree]
 branch_prefix = ""
 default_location = "sibling"
 `), 0o600); err != nil {
@@ -94,6 +104,9 @@ func addJSONID(t *testing.T, sb *harness.Sandbox, args ...string) string {
 
 func assertForkWorktreeBranch(t *testing.T, repoDir, branch, forkOut string, forkErr error) {
 	t.Helper()
+	if forkErr != nil {
+		t.Fatalf("session fork failed before tool fork completed.\nerr: %v\noutput:\n%s", forkErr, forkOut)
+	}
 	forkPath := worktreePathForBranch(t, repoDir, branch)
 	if forkPath == "" {
 		t.Fatalf("destination worktree for %s not found.\nerr: %v\noutput:\n%s", branch, forkErr, forkOut)
@@ -101,6 +114,13 @@ func assertForkWorktreeBranch(t *testing.T, repoDir, branch, forkOut string, for
 	gotBranch := strings.TrimSpace(gitOut(t, forkPath, "rev-parse", "--abbrev-ref", "HEAD"))
 	if gotBranch != branch {
 		t.Errorf("destination branch = %q, want %s", gotBranch, branch)
+	}
+}
+
+func requireForkTool(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s not on PATH", name)
 	}
 }
 

@@ -14,6 +14,7 @@ func TestEval_SessionForkCodex_RealBinary(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
+	requireForkTool(t, "codex")
 	sb := harness.NewSandbox(t)
 	writeForkConfig(t, sb)
 	repoDir := newForkEvalRepo(t, sb)

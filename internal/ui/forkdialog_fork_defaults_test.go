@@ -53,3 +53,21 @@ func TestForkDialog_Show_DockerAutoMatchesSandboxedParent(t *testing.T) {
 
 	assert.True(t, d.IsSandboxEnabled(), "docker=auto should seed ON for sandboxed parent")
 }
+
+func TestForkDialog_Show_UsesForkBranchPrefix(t *testing.T) {
+	repo := forkDefaultsGitRepo(t)
+	cfg, err := session.LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	cfg.Fork.BranchPrefix = "wip/"
+	if err := session.SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	d := NewForkDialog()
+	d.ShowWithParentSandboxed("Fix Bug", repo, "grp", nil, "", false)
+
+	assert.Equal(t, "wip/fix-bug", d.branchInput.Value())
+}

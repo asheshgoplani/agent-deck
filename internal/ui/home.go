@@ -9495,26 +9495,7 @@ type forkInstanceDeps struct {
 func defaultForkInstanceDeps() forkInstanceDeps {
 	return forkInstanceDeps{
 		createInstance: func(source *session.Instance, title, groupPath string, opts *session.ClaudeOptions) (*session.Instance, error) {
-			var inst *session.Instance
-			var err error
-			switch {
-			case source.Tool == "opencode":
-				workDir := source.ProjectPath
-				repoRoot := ""
-				branch := ""
-				if opts != nil && opts.WorkDir != "" {
-					workDir = opts.WorkDir
-					repoRoot = opts.WorktreeRepoRoot
-					branch = opts.WorktreeBranch
-				}
-				inst, _, err = source.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(title, groupPath, nil, workDir, repoRoot, branch)
-			case source.Tool == "pi":
-				inst, _, err = source.CreateForkedPiInstanceWithOptions(title, groupPath, opts)
-			case session.IsCodexCompatible(source.Tool):
-				inst, _, err = source.CreateForkedCodexInstanceWithOptions(title, groupPath, opts)
-			default:
-				inst, _, err = source.CreateForkedInstanceWithOptions(title, groupPath, opts)
-			}
+			inst, _, err := source.CreateForkedInstanceForTool(title, groupPath, opts)
 			return inst, err
 		},
 		createMultiRepoDir: func(inst, source *session.Instance) error {

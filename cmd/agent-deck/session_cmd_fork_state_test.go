@@ -492,7 +492,7 @@ func TestSessionFork_AdmitsOpenCode(t *testing.T) {
 	if !strings.Contains(s, `isOpenCodeFork := inst.Tool == "opencode"`) {
 		t.Fatal("fork gate must recognize opencode")
 	}
-	if !strings.Contains(s, "CreateForkedOpenCodeInstanceWithOptionsAndWorkDir") {
-		t.Fatal("fork dispatch must route opencode through the worktree-aware create method")
+	if !strings.Contains(s, "CreateForkedInstanceForTool") {
+		t.Fatal("fork dispatch must route through the shared cross-tool create method")
 	}
 }

@@ -100,7 +100,7 @@ One terminal. All your agents. Complete visibility.
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude, Codex, and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
@@ -558,8 +558,8 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **OpenCode** | Status detection, organization |
-| **Codex** | Status detection, organization, conductor |
+| **OpenCode** | Status detection, organization, fork |
+| **Codex** | Status detection, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
@@ -780,7 +780,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 ```bash
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a Claude/Pi session
+agent-deck session fork my-proj   # Fork a supported session
 agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart

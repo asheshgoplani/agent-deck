@@ -97,7 +97,7 @@ func printSessionHelp() {
 	fmt.Println("  remove <id>             Remove session from registry (stopped/error only; --force to bypass)")
 	fmt.Println("  restart [id] [--all]    Restart session (Claude: reload MCPs)")
 	fmt.Println("  revive [--all|--name]   Rebuild dead control pipes for errored sessions")
-	fmt.Println("  fork <id>               Fork Claude or Pi session with context")
+	fmt.Println("  fork <id>               Fork Claude, OpenCode, Pi, or Codex session with context")
 	fmt.Println("  attach <id>             Attach to session interactively")
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
@@ -614,7 +614,7 @@ func branchCleanupHint(createdBranch bool, repoRoot, branchName string) string {
 	return fmt.Sprintf(" && git -C %s branch -D %s", shellescape.Quote(repoRoot), shellescape.Quote(branchName))
 }
 
-// handleSessionFork forks a Claude or Pi session
+// handleSessionFork forks a supported tool session
 func handleSessionFork(profile string, args []string) {
 	fs := flag.NewFlagSet("session fork", flag.ExitOnError)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
@@ -636,7 +636,7 @@ func handleSessionFork(profile string, args []string) {
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session fork <id|title> [options]")
 		fmt.Println()
-		fmt.Println("Fork a Claude or Pi session with conversation context.")
+		fmt.Println("Fork a Claude, OpenCode, Pi, or Codex session with conversation context.")
 		fmt.Println()
 		fmt.Println("Options:")
 		fs.PrintDefaults()
@@ -922,24 +922,7 @@ func handleSessionFork(profile string, args []string) {
 
 	// Create the forked instance
 	var forkedInst *session.Instance
-	switch {
-	case isPiFork:
-		forkedInst, _, err = inst.CreateForkedPiInstanceWithOptions(forkTitle, forkGroup, opts)
-	case isOpenCodeFork:
-		workDir := inst.ProjectPath
-		repoRoot := ""
-		branch := ""
-		if opts != nil && opts.WorkDir != "" {
-			workDir = opts.WorkDir
-			repoRoot = opts.WorktreeRepoRoot
-			branch = opts.WorktreeBranch
-		}
-		forkedInst, _, err = inst.CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(forkTitle, forkGroup, nil, workDir, repoRoot, branch)
-	case isCodexFork:
-		forkedInst, _, err = inst.CreateForkedCodexInstanceWithOptions(forkTitle, forkGroup, opts)
-	default:
-		forkedInst, _, err = inst.CreateForkedInstanceWithOptions(forkTitle, forkGroup, opts)
-	}
+	forkedInst, _, err = inst.CreateForkedInstanceForTool(forkTitle, forkGroup, opts)
 	if err != nil {
 		out.Error(fmt.Sprintf("failed to create fork: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
