@@ -488,3 +488,37 @@ if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
 		t.Fatalf("cleanup must skip null titles and still remove matching session; got:\n%s", out)
 	}
 }
+
+func TestResolveTmuxSession_MalformedJSONSurfacesErrorWithoutAbort(t *testing.T) {
+	// Copilot review (PR #1309): a real malformed-JSON breakage from
+	// `agent-deck session show --json` must surface loudly (jq's stderr is no
+	// longer suppressed) — NOT silently degrade to an empty [SKIP]. It must
+	// still NOT abort the caller under set -e (|| true keeps the resolver at
+	// exit 0 and stdout empty so the caller degrades gracefully).
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; resolver depends on jq")
+	}
+	dir := t.TempDir()
+	fake := `#!/usr/bin/env bash
+if [[ "$1" == "session" && "$2" == "show" ]]; then
+  printf '{ this is not valid json\n'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-deck"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := sourceAndRun(t,
+		[]string{"PATH=" + dir + ":" + os.Getenv("PATH")},
+		`tsess="$(resolve_tmux_session foo)"; echo "REACHED tsess=[${tsess}]"`)
+	if err != nil {
+		t.Fatalf("malformed JSON must not abort the caller under set -e: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "REACHED tsess=[]") {
+		t.Fatalf("resolver must degrade to empty without abort; got:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "error") {
+		t.Fatalf("malformed JSON must surface a jq error on stderr (not be silenced); got:\n%s", out)
+	}
+}

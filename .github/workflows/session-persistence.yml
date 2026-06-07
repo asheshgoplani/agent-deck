@@ -111,7 +111,7 @@ jobs:
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             command -v jq >/dev/null || brew install jq
           else
-            command -v jq >/dev/null || sudo apt-get install -y jq
+            command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
           fi
 
       - name: go test ./scripts/...

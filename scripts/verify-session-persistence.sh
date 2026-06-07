@@ -85,7 +85,12 @@ resolve_tmux_session() {
     printf '%sERROR%s: jq binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
     return 2
   fi
-  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null || true
+  # agent-deck's stderr is suppressed (its "not found" message is expected
+  # noise), but jq's is NOT: a real malformed-JSON breakage surfaces loudly on
+  # stderr while `|| true` still degrades stdout to empty (caller SKIPs) and
+  # keeps set -e from aborting. We deliberately do NOT propagate jq's nonzero —
+  # that would re-introduce the silent set -e abort this `|| true` exists to fix.
+  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' || true
 }
 
 tmux_pid_for_session() {
@@ -154,10 +159,10 @@ classify_argv() {
   if [[ -z "${argv}" ]]; then echo skip; return; fi
   case "${mode}" in
     resume)
-      if echo "${argv}" | grep -qE -- '--resume|--session-id'; then echo pass; else echo fail; fi
+      if printf '%s\n' "${argv}" | grep -qE -- '--resume|--session-id'; then echo pass; else echo fail; fi
       ;;
     fresh)
-      if echo "${argv}" | grep -qE -- '--session-id' && ! echo "${argv}" | grep -qE -- '--resume'; then
+      if printf '%s\n' "${argv}" | grep -qE -- '--session-id' && ! printf '%s\n' "${argv}" | grep -qE -- '--resume'; then
         echo pass
       else
         echo fail
