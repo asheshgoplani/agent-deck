@@ -1,6 +1,7 @@
 package jujutsu
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -30,12 +31,21 @@ func WorkingCopyParentRevision(dir string) (string, error) {
 
 // resolveRevision runs `jj log` from dir (snapshotting the working copy first)
 // and returns the resolved commit id for rev.
+//
+// It reads STDOUT only (not combined output): jj emits non-fatal snapshot
+// warnings (e.g. "Refused to snapshot some files" for a working-copy file above
+// snapshot.max-new-file-size) to STDERR while still exiting 0. Folding stderr
+// into the parsed value would return that multi-line warning as the "commit id"
+// and break every downstream `jj --revision <id>` call. Stderr is captured
+// separately and surfaced only on error.
 func resolveRevision(dir, rev string) (string, error) {
 	cmd := exec.Command("jj", "log", "-r", rev, "--no-graph", "-T", "commit_id") // #nosec G204 -- fixed args + caller-controlled revset
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("resolve revision %q: %s: %w", rev, strings.TrimSpace(string(out)), err)
+		return "", fmt.Errorf("resolve revision %q: %s: %w", rev, strings.TrimSpace(stderr.String()), err)
 	}
 	id := strings.TrimSpace(string(out))
 	if id == "" {

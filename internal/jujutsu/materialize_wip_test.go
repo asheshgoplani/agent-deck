@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -152,6 +153,53 @@ func TestCreateWorkspaceAtRevision_CleansWorkspaceWhenBookmarkSetupFails(t *test
 	require.Contains(t, err.Error(), "bookmark")
 	require.NoDirExists(t, dest, "post-add bookmark failure must remove the workspace directory")
 	require.Equal(t, before, jjWorkspaceList(t, parent), "post-add bookmark failure must forget the registered workspace")
+}
+
+// TestWorkingCopyRevision_CleanIDWithOversizedWorkingFile guards against jj
+// snapshot warnings corrupting the resolved commit id. A working-copy file
+// larger than jj's default snapshot.max-new-file-size (1MiB) makes `jj log`
+// print a multi-line "Refused to snapshot some files" warning to STDERR while
+// still exiting 0. If the resolver reads combined stdout+stderr, that warning is
+// returned as the "commit id" and every downstream `jj --revision <id>` fails.
+// Oversized untracked files (build artifacts, binaries) are common, so this
+// would break `f` with-state on jj for many real repos.
+func TestWorkingCopyRevision_CleanIDWithOversizedWorkingFile(t *testing.T) {
+	requireJJ(t)
+	parent := setupJJParentWithWIP(t)
+	// 2MiB untracked file exceeds jj's default 1MiB snapshot limit.
+	big := make([]byte, 2*1024*1024)
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "big.bin"), big, 0o644))
+
+	hexID := regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+	at, err := WorkingCopyRevision(parent)
+	require.NoError(t, err)
+	require.Regexp(t, hexID, at, "@ commit id must be a clean hash, not jj's stderr snapshot warning")
+
+	base, err := WorkingCopyParentRevision(parent)
+	require.NoError(t, err)
+	require.Regexp(t, hexID, base, "@- commit id must be a clean hash, not jj's stderr snapshot warning")
+}
+
+// TestMaterializeWipFromParent_SucceedsWithOversizedWorkingFile is the
+// end-to-end guard: a with-state fork must still succeed (carrying the tracked
+// WIP) when the parent working copy holds an oversized file jj refuses to snapshot.
+func TestMaterializeWipFromParent_SucceedsWithOversizedWorkingFile(t *testing.T) {
+	requireJJ(t)
+	parent := setupJJParentWithWIP(t)
+	big := make([]byte, 2*1024*1024)
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "big.bin"), big, 0o644))
+
+	base, err := WorkingCopyParentRevision(parent)
+	require.NoError(t, err)
+
+	dest := filepath.Join(t.TempDir(), "fork")
+	require.NoError(t, CreateWorkspaceAtRevision(parent, dest, "forkbranch", base))
+	require.NoError(t, MaterializeWipFromParent(parent, dest, false))
+
+	got, err := os.ReadFile(filepath.Join(dest, "tracked.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "base content\nWIP EDIT\n", string(got), "tracked WIP must still carry despite the oversized file")
 }
 
 func jjWorkspaceList(t *testing.T, dir string) string {
