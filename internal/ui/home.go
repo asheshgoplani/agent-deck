@@ -9666,7 +9666,9 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 			return nil
 		},
 		startInstance: func(inst *session.Instance) error { return inst.Start() },
-		rollback:      rollbackForkWithStateWorktree,
+		rollback: func(repoRoot, worktreePath, branch string) {
+			_ = rollbackForkWithStateWorktree(repoRoot, worktreePath, branch)
+		},
 	}
 }
 
@@ -9912,33 +9914,43 @@ func (h *Home) forkSessionCmdWithOptions(
 	}
 }
 
-// rollbackForkWithStateWorktree best-effort removes the worktree/workspace and
-// deletes the branch created by the with-state fork helpers, used when a later
-// step (instance create or start) fails after the helper already succeeded.
-// Failures are logged, not returned, so the caller's original error is
-// preserved.
+// rollbackForkWithStateWorktree removes the worktree/workspace and deletes the
+// branch created by the with-state fork helpers, used when a later step fails
+// after the helper already succeeded. Failures are both logged and returned
+// (joined): the completeFork post-create path discards the return as best-effort
+// so the caller's original error is preserved, while forkWithStateWorkspaceJJ
+// uses it to report an accurate "cleaned up" vs "cleanup also failed" message
+// instead of claiming success over an orphaned workspace.
 //
 // It re-detects the VCS backend so jj forks roll back via `jj workspace forget`
 // (and bookmark delete) rather than git's worktree/branch removal — using the
 // wrong VCS here would leave the new workspace orphaned. On detection failure it
 // falls back to git semantics (the pre-#1305 behavior).
-func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) {
-	backend, err := vcsbackend.Detect(repoRoot)
-	if err != nil {
-		if rmErr := git.RemoveWorktree(repoRoot, worktreePath, true); rmErr != nil {
+func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) error {
+	var errs []string
+	removeWorktree := func(rmErr error) {
+		if rmErr != nil {
 			uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", rmErr.Error()))
+			errs = append(errs, fmt.Sprintf("worktree remove failed: %v", rmErr))
 		}
-		if brErr := git.DeleteBranch(repoRoot, branch, true); brErr != nil {
+	}
+	deleteBranch := func(brErr error) {
+		if brErr != nil {
 			uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", brErr.Error()))
+			errs = append(errs, fmt.Sprintf("branch delete failed: %v", brErr))
 		}
-		return
 	}
-	if rmErr := backend.RemoveWorktree(worktreePath, true); rmErr != nil {
-		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", rmErr.Error()))
+	if backend, err := vcsbackend.Detect(repoRoot); err != nil {
+		removeWorktree(git.RemoveWorktree(repoRoot, worktreePath, true))
+		deleteBranch(git.DeleteBranch(repoRoot, branch, true))
+	} else {
+		removeWorktree(backend.RemoveWorktree(worktreePath, true))
+		deleteBranch(backend.DeleteBranch(branch, true))
 	}
-	if brErr := backend.DeleteBranch(branch, true); brErr != nil {
-		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", brErr.Error()))
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
+	return nil
 }
 
 // forkWithStateWorktree creates the fork's worktree, anchors it to the parent
@@ -10064,8 +10076,11 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 	}
 	if err := jujutsu.MaterializeWipFromParent(parentPath, workspacePath, state.WithIgnored); err != nil {
 		// Roll back the workspace we just created so a materialize failure does
-		// not leave an orphaned workspace behind.
-		rollbackForkWithStateWorktree(repoRoot, workspacePath, branch)
+		// not leave an orphaned workspace behind — and report accurately whether
+		// that cleanup actually succeeded.
+		if cleanupErr := rollbackForkWithStateWorktree(repoRoot, workspacePath, branch); cleanupErr != nil {
+			return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup may be required: rm -rf %q", err, cleanupErr, workspacePath)
+		}
 		return fmt.Errorf("failed to materialize parent state: %w; new workspace cleaned up", err)
 	}
 	return nil

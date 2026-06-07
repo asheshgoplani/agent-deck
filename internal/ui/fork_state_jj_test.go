@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,8 +97,12 @@ func TestForkWithStateWorkspaceJJ_CarriesParentState(t *testing.T) {
 func jjCommitIDUI(t *testing.T, dir, revset string) string {
 	t.Helper()
 	cmd := exec.Command("jj", "log", "-r", revset, "--no-graph", "-T", "commit_id", "-R", dir)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "jj log -r %s: %s", revset, out)
+	// stdout only: a jj snapshot warning on stderr would otherwise corrupt the
+	// parsed commit id (same hazard as resolveRevision).
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, "jj log -r %s: %s", revset, stderr.String())
 	return strings.TrimSpace(string(out))
 }
 
