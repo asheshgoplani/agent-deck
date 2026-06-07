@@ -9217,6 +9217,36 @@ func forkBranchTaken(repoRoot, branch string) bool {
 	return err == nil && wt != ""
 }
 
+// resolveQuickForkSpec computes the comprehensive quick-fork spec and applies the
+// non-git with-state gate — i.e. the exact spec quickForkSession forks from
+// (modulo the downstream unique-branch bump). Kept as a seam so the `f`-path
+// with-state decision is testable against real repos without the tmux/tea.Cmd
+// machinery.
+func resolveQuickForkSpec(source *session.Instance, fork session.ForkSettings) quickForkSpec {
+	in := quickForkInputs(source, fork, source.IsSandboxed())
+	return gateForkStateForBackend(in, source.ProjectPath)
+}
+
+// gateForkStateForBackend disables with-state materialization when the source
+// repo's VCS backend is not git. The comprehensive quick-fork default forces
+// WithState=true, but with-state is git-only — the downstream fork path rejects
+// it on jujutsu ("--with-state is only supported for git repositories"), so the
+// unconditional default regressed `f` on jj repos from "create the supported
+// workspace fork" to "error". For non-git (jj) or undetectable backends we
+// degrade to a plain (workspace) fork; the worktree/workspace itself is still
+// created. Proper jj with-state support is tracked in #1305.
+func gateForkStateForBackend(in quickForkSpec, projectPath string) quickForkSpec {
+	if !in.Plan.WithState {
+		return in
+	}
+	backend, err := vcsbackend.Detect(projectPath)
+	if err != nil || backend.Type() != vcs.TypeGit {
+		in.Plan.WithState = false
+		in.Plan.WithIgnored = false
+	}
+	return in
+}
+
 // quickForkSession performs a comprehensive quick fork: new worktree+branch,
 // carry tracked+gitignored state, match parent Docker, inherit the parent's
 // Claude launch options for Claude-compatible sessions, and keep sibling
@@ -9231,7 +9261,7 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 	if cfg != nil {
 		fork = cfg.Fork
 	}
-	in := quickForkInputs(source, fork, source.IsSandboxed())
+	in := resolveQuickForkSpec(source, fork)
 
 	// Repeated quick forks of the same source would otherwise collide on the
 	// deterministic branch name (comprehensive fork forces a fresh worktree+branch),
