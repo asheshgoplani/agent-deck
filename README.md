@@ -100,24 +100,25 @@ One terminal. All your agents. Complete visibility.
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude conversations and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
+- Codex forking requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`)
 
 ### MCP Manager
 
 Attach MCP servers without touching config files. Need web search? Browser automation? Toggle them on per project or globally. Agent Deck handles the restart automatically.
 
 - Press `m` to open, `Space` to toggle, `Tab` to cycle scope (LOCAL/GLOBAL), type to jump
-- Define your MCPs once in `~/.agent-deck/config.toml`, then toggle per session — see [Configuration Reference](skills/agent-deck/references/config-reference.md)
+- Define your MCPs once in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`), then toggle per session — see [Configuration Reference](skills/agent-deck/references/config-reference.md)
 
 ### Skills Manager
 
 Attach/detach Claude skills per project with a managed pool workflow.
 
 - Press `s` to open Skills Manager for a Claude session
-- Available list is pool-only (`~/.agent-deck/skills/pool`) to keep attach/detach deterministic
+- Available list is pool-only (`$XDG_CONFIG_HOME/agent-deck/skills/pool`, default `~/.config/agent-deck/skills/pool`) to keep attach/detach deterministic
 - Apply writes project state to `.agent-deck/skills.toml` and materializes into `.claude/skills`
 - Type-to-jump is supported in the dialog (same pattern as MCP Manager)
 
@@ -125,7 +126,7 @@ Attach/detach Claude skills per project with a managed pool workflow.
 
 Agent Deck supports per-group `CLAUDE_CONFIG_DIR` and `env_file` overrides. Useful when a single profile hosts groups that should authenticate against different Claude accounts — for example, a personal profile hosting a `conductor` group pinned to `~/.claude-work` while other groups stay on `~/.claude`.
 
-Override any group by adding a `[groups."<name>".claude]` table to `~/.agent-deck/config.toml`:
+Override any group by adding a `[groups."<name>".claude]` table to `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 
 ```toml
 [groups."conductor".claude]
@@ -218,7 +219,7 @@ Multiple agents can work on the same repo without conflicts. Each worktree is an
 - `agent-deck worktree finish "My Session"` merges the branch, removes the worktree, and deletes the session
 - `agent-deck worktree cleanup` finds and removes orphaned worktrees
 
-Configure the default worktree location in `~/.agent-deck/config.toml`:
+Configure the default worktree location in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 
 ```toml
 [worktree]
@@ -350,6 +351,32 @@ Set `auto_cleanup = false` to keep containers alive after session termination, w
 
 See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the full reference including overlay details, custom images, and troubleshooting.
 
+### Forking sessions
+
+Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, and Codex** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
+
+Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down").
+
+Tune the defaults in `~/.agent-deck/config.toml`:
+
+```toml
+[fork]
+inherit_from_parent = false   # true => mirror the parent and ignore the keys below
+worktree            = true    # create a new worktree + branch for the fork
+with_state          = true    # carry the parent's uncommitted changes into the fork
+with_ignored        = true    # also copy gitignored files (implies with_state)
+docker              = "auto"  # "auto" = match parent | "on" = always | "off" = never
+branch_prefix       = "fork/" # auto branch name = <branch_prefix><sanitized-title>
+```
+
+- Unset keys default to the comprehensive behavior shown above. The `[fork]` section is **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (those govern non-fork session creation).
+- `docker = "auto"` forks into a fresh container only when the parent is already sandboxed.
+- `branch_prefix` applies to both quick fork and the dialog's suggested branch name.
+- `with_ignored = true` copies gitignored content (e.g. `.env`, `node_modules`) into the new worktree — convenient but can be large; set it `false` to skip.
+
+> **Web/API fork** (`POST /api/sessions/{id}/fork`) is plain tool-native fork — it does **not** apply `[fork]` worktree/state/Docker defaults (those are TUI quick-fork/dialog scope).
+> **Codex** forking requires a codex CLI with `codex fork <session-id>` support.
+
 ### Conductor
 
 Conductors are persistent agent sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
@@ -377,10 +404,11 @@ agent-deck conductor setup glm-bot \
 agent-deck conductor setup glm-bot -env-file ~/.conductor.env
 ```
 
-Each conductor gets its own directory, identity, and settings:
+Each conductor gets its own directory, identity, and settings under the XDG data
+root (default `~/.local/share/agent-deck/conductor/`):
 
 ```
-~/.agent-deck/conductor/
+~/.local/share/agent-deck/conductor/
 ├── CLAUDE.md           # Shared knowledge for Claude conductors
 ├── AGENTS.md           # Shared knowledge for Codex conductors
 ├── bridge.py           # Bridge daemon (Telegram/Slack, if configured)
@@ -446,7 +474,8 @@ Both Telegram and Slack can run simultaneously — the bridge daemon handles bot
 Dispatch can be suppressed at two scopes (PR #580, v1.7.34):
 
 ```toml
-# Global kill switch in ~/.agent-deck/config.toml (default: true)
+# Global kill switch in $XDG_CONFIG_HOME/agent-deck/config.toml
+# (default ~/.config/agent-deck/config.toml)
 [notifications]
 transition_events = false
 ```
@@ -465,9 +494,9 @@ Suppression only affects dispatch — the parent link itself is unchanged. Defer
 
 **Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
 
-**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `~/.agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/SKILL.md#telegram-conductor-topology-v1722).
+**Telegram conductor topology (v1.7.22+)**: each conductor bot must own exactly one channel-owning session. Activate telegram per-session via `--channels plugin:telegram@claude-plugins-official` and inject `TELEGRAM_STATE_DIR` via `[conductors.<name>.claude].env_file` in `$XDG_CONFIG_HOME/agent-deck/config.toml`. Do NOT set `enabledPlugins."telegram@claude-plugins-official"=true` in a profile's `settings.json` — that leaks a poller to every claude session under the profile. agent-deck emits warnings (`GLOBAL_ANTIPATTERN`, `DOUBLE_LOAD`, `WRAPPER_DEPRECATED`) when it detects these setups. Full guidance: [Telegram conductor topology](skills/agent-deck/SKILL.md#telegram-conductor-topology-v1722).
 
-**Permission prompts during automation**: if a conductor keeps pausing on permission requests, set `[claude].allow_dangerous_mode = true` (or `dangerous_mode = true`) in `~/.agent-deck/config.toml`, then run `agent-deck session restart conductor-<name>`. See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#conductor-keeps-asking-for-permissions).
+**Permission prompts during automation**: if a conductor keeps pausing on permission requests, set `[claude].allow_dangerous_mode = true` (or `dangerous_mode = true`) in `$XDG_CONFIG_HOME/agent-deck/config.toml`, then run `agent-deck session restart conductor-<name>`. See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#conductor-keeps-asking-for-permissions).
 
 **Legacy external watcher scripts**: optional only. `~/.agent-deck/events/` is not required for notification routing.
 
@@ -528,7 +557,7 @@ agent-deck watcher status <name>       # detail view including recent events
 agent-deck watcher test   <name>       # fire a synthetic event to verify routing
 ```
 
-Routing rules live under `~/.agent-deck/watcher/<name>/clients.json` — edit to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
+Routing rules live in the effective watcher data dir (`${XDG_DATA_HOME:-$HOME/.local/share}/agent-deck/watcher/clients.json` for new users, or legacy `~/.agent-deck/watcher/clients.json` when existing watcher state is present). Edit it to pick which conductor/group receives which events. Use `agent-deck watcher routes` to see the currently-loaded rules across all watchers.
 
 **Conversational setup (recommended for first-time use):**
 
@@ -541,7 +570,7 @@ Then, inside a Claude Code session started by agent-deck, ask: *"Use the watcher
 Safety notes:
 - The GitHub adapter enforces HMAC-SHA256 signature verification on every webhook — a missing/invalid signature drops the event.
 - Events are deduplicated in SQLite by `(watcher_name, event_id)`, so retries from the sender do not double-fire the conductor.
-- Watchers keep per-adapter health in `~/.agent-deck/watcher/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
+- Watchers keep per-adapter health in `<effective watcher data dir>/<name>/state.json`; the TUI watcher panel (press `w`) surfaces this in real time.
 
 **Doorbell rule:** watchers are triggers, not launchers. They forward a short event string to the conductor and let the conductor decide what to do. A watcher should never call `agent-deck launch` or `agent-deck add` directly — those calls run outside any conductor's process and have no `$AGENTDECK_INSTANCE_ID`, so the spawned session becomes an orphan whose status events never route back. Use `agent-deck session send <conductor> "[event] hint"` from the watcher and let the conductor fan out from there.
 
@@ -557,8 +586,8 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **OpenCode** | Status detection, organization |
-| **Codex** | Status detection, organization, conductor |
+| **OpenCode** | Status detection, organization, fork |
+| **Codex** | Status detection, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
@@ -579,7 +608,8 @@ Track token usage and costs across all your AI agent sessions in real-time.
 - **Export** — CSV/JSON export from web dashboard
 
 ```toml
-# Optional config (~/.agent-deck/config.toml)
+# Optional config ($XDG_CONFIG_HOME/agent-deck/config.toml;
+# default ~/.config/agent-deck/config.toml)
 [costs]
 retention_days = 90
 
@@ -621,7 +651,8 @@ Resolution chain: `profiles.<active>.costs.cost_line_template > [costs].cost_lin
 Run agent-deck on its own tmux server so it never touches your interactive tmux's config, bindings, or sessions. Opt-in via a single config line:
 
 ```toml
-# ~/.agent-deck/config.toml
+# $XDG_CONFIG_HOME/agent-deck/config.toml
+# default ~/.config/agent-deck/config.toml
 [tmux]
 socket_name = "agent-deck"
 ```
@@ -654,7 +685,7 @@ Precedence at session creation: `--tmux-socket` flag > `[tmux].socket_name` > em
 
 1. Set `[tmux].socket_name = "agent-deck"` in your config.
 2. Stop the session (`agent-deck session stop <name>`) — this kills the tmux pane on the old server.
-3. Restart it (`agent-deck session start <name>`) — agent-deck will see TmuxSocketName=`""` on the stored Instance, spawn a fresh pane on the old server, and keep it there. To force it onto the new socket, edit `~/.agent-deck/<profile>/state.db`:
+3. Restart it (`agent-deck session start <name>`) — agent-deck will see TmuxSocketName=`""` on the stored Instance, spawn a fresh pane on the old server, and keep it there. To force it onto the new socket, edit the effective profile database (`~/.local/share/agent-deck/<profile>/state.db` for new users, or `~/.agent-deck/<profile>/state.db` for legacy profiles):
    ```sql
    UPDATE instances SET tmux_socket_name = 'agent-deck' WHERE id = '<session-id>';
    ```
@@ -705,7 +736,7 @@ agent-deck remote update          # all remotes
 agent-deck remote update dev      # specific remote
 ```
 
-Remote configuration is stored under `[remotes]` in `~/.agent-deck/config.toml`. All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
+Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
 
 #### Security
 
@@ -779,7 +810,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 ```bash
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a Claude/Pi session
+agent-deck session fork my-proj   # Fork a supported session
 agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
@@ -893,7 +924,7 @@ Yes, via WSL (Windows Subsystem for Linux). [Install WSL](https://learn.microsof
 <details>
 <summary><b>Can I use different Claude accounts/configs per profile?</b></summary>
 
-Yes. Set a global Claude config dir, then add optional per-profile overrides in `~/.agent-deck/config.toml`:
+Yes. Set a global Claude config dir, then add optional per-profile overrides in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 
 ```toml
 [claude]

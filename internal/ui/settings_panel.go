@@ -475,6 +475,9 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 		// (inject_status_line, launch_in_user_scope, detach_key, options …)
 		// vanishes on save. Same class of bug as #584 (Worktree).
 		config.Tmux = s.originalConfig.Tmux
+		// Fork settings are not exposed in SettingsPanel; preserve the whole
+		// [fork] table so saving visible settings cannot reset quick-fork defaults.
+		config.Fork = s.originalConfig.Fork
 		// Keep global Claude config when editing profile-specific override.
 		if s.claudeConfigIsScope {
 			config.Claude.ConfigDir = s.originalConfig.Claude.ConfigDir
@@ -1085,7 +1088,7 @@ func (s *SettingsPanel) View() string {
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
-	content.WriteString(dimStyle.Render("  Edit ~/.agent-deck/config.toml to configure MCPs and tools."))
+	content.WriteString(dimStyle.Render("  Edit " + userConfigPathForDisplay() + " to configure MCPs and tools."))
 	content.WriteString("\n")
 	hotkeys := resolveHotkeys(session.GetHotkeyOverrides())
 	mcpKey := actionHotkey(hotkeys, hotkeyMCPManager)

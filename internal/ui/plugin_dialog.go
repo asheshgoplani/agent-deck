@@ -175,7 +175,7 @@ func (d *PluginDialog) View() string {
 
 	if len(d.items) == 0 {
 		body.WriteString(lipgloss.NewStyle().Faint(true).Render(
-			"No plugins in catalog. Add [plugins.<name>] tables to ~/.agent-deck/config.toml\n" +
+			"No plugins in catalog. Add [plugins.<name>] tables to " + userConfigPathForDisplay() + "\n" +
 				"See docs/rfc/PLUGIN_ATTACH.md §4.1",
 		))
 		body.WriteString("\n")

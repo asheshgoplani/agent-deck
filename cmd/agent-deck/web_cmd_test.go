@@ -47,20 +47,26 @@ var _ web.SessionMutator = (*ui.WebMutator)(nil)
 func withTempHomeAndConfig(t *testing.T, contents string) {
 	t.Helper()
 	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
+	// Point HOME and all XDG base dirs at the temp dir (auto-restored by
+	// t.Setenv). The package TestMain isolates these to a shared ad-home-*
+	// dir, so overriding HOME alone is NOT enough under the XDG resolver — the
+	// config would still be read from the stale XDG_CONFIG_HOME. Write the
+	// config to the XDG config path the resolver actually reads.
+	t.Setenv("HOME", tempDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tempDir, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(tempDir, ".cache"))
 	t.Cleanup(func() {
-		os.Setenv("HOME", originalHome)
 		session.ClearUserConfigCache()
 	})
 	session.ClearUserConfigCache()
 
 	if contents != "" {
-		agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-		if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {
+		configDir := filepath.Join(tempDir, ".config", "agent-deck")
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if err := os.WriteFile(filepath.Join(agentDeckDir, "config.toml"), []byte(contents), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(contents), 0o600); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
 	}

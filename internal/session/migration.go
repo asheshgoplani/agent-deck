@@ -39,7 +39,7 @@ type MigrationResult struct {
 //	~/.agent-deck/profiles/default/sessions.json.bak.2
 //	~/.agent-deck/logs/ (unchanged)
 func MigrateToProfiles() (*MigrationResult, error) {
-	agentDeckDir, err := GetAgentDeckDir()
+	agentDeckDir, err := profileDataRootDir()
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func MigrateToProfiles() (*MigrationResult, error) {
 
 // NeedsMigration checks if migration from old layout is needed
 func NeedsMigration() (bool, error) {
-	agentDeckDir, err := GetAgentDeckDir()
+	agentDeckDir, err := profileDataRootDir()
 	if err != nil {
 		return false, err
 	}

@@ -21,8 +21,6 @@ package ui
 // round-trip. That coverage gap is what this file closes.
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -38,13 +36,7 @@ import (
 // Without the #710 fix, the final reload returns zero-valued TmuxSettings
 // and the assertions below fail with "InjectStatusLine = nil".
 func TestEval_SettingsTUI_SavePreservesTmux(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	configDir := filepath.Join(homeDir, ".agent-deck")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
+	homeDir := setXDGTestHome(t)
 
 	// Seed a config.toml with [tmux] populated. These three fields cover
 	// all three Tmux struct member shapes: *bool, *bool, string.
@@ -56,13 +48,7 @@ inject_status_line = false
 launch_in_user_scope = true
 detach_key = "C-q"
 `
-	configPath := filepath.Join(configDir, session.UserConfigFileName)
-	if err := os.WriteFile(configPath, []byte(seedTOML), 0o600); err != nil {
-		t.Fatalf("seed config.toml: %v", err)
-	}
-
-	session.ClearUserConfigCache()
-	t.Cleanup(session.ClearUserConfigCache)
+	writeXDGTestConfig(t, homeDir, seedTOML)
 
 	// Replay the TUI flow: load existing config into the panel, change a
 	// non-tmux field (theme), then ask the panel for the to-be-saved config.

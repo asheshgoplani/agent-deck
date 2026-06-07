@@ -18,6 +18,7 @@ import (
 
 	dark "github.com/thiagokokada/dark-mode-go"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -173,6 +174,9 @@ type UserConfig struct {
 	// Docker defines Docker sandbox settings for containerized sessions
 	Docker DockerSettings `toml:"docker"`
 
+	// Fork defines quick-fork (f) and fork-dialog (Shift+F) default behavior.
+	Fork ForkSettings `toml:"fork"`
+
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes"`
 
@@ -242,6 +246,31 @@ type UISettings struct {
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+
+	// Footer controls the style of the bottom hint bar. Valid values:
+	//   "full" (default)    — the historic verbose bar: filled key chips,
+	//                         width-adaptive, advertising every action. This is
+	//                         today's behavior and stays the default so the look
+	//                         never changes without an explicit opt-in.
+	//   "curated"           — lighter, dim inline text advertising only the
+	//                         actions relevant to the selected row, with the
+	//                         settings and help keys always last (opt-in).
+	//   "compact"           — force the abbreviated chip tier regardless of width.
+	//   "minimal"           — force the keys-only tier regardless of width.
+	// Empty or unknown values fall back to "full". This is purely a
+	// rendering preference (TUI UX initiative, item 1): no keybinding is
+	// added, removed, or changed — only what the footer advertises. Every
+	// action remains reachable by its key and is fully listed under help (?).
+	Footer string `toml:"footer"`
+
+	// NewSessionEnterAdvances controls what Enter does on the free-text
+	// Name/Branch fields of the new-session dialog (PR #1295). Default false
+	// preserves today's behavior: Enter from Name/Branch submits the form. When
+	// true, Enter advances focus to the next field instead (so typing a name and
+	// pressing Enter no longer silently creates a session with all defaults), and
+	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
+	// it is strictly additive and always available regardless of this toggle.
+	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -261,6 +290,36 @@ const (
 	ITermOpenAsWindow  = "window"
 	DefaultITermOpenAs = ITermOpenAsTab
 )
+
+// Footer hint-bar styles. See UISettings.Footer.
+const (
+	FooterCurated = "curated"
+	FooterFull    = "full"
+	FooterCompact = "compact"
+	FooterMinimal = "minimal"
+	// DefaultFooter is the historic verbose bar ("full"). Keeping it as the
+	// default preserves today's look; curated/compact/minimal are opt-in via
+	// config.toml [ui] footer.
+	DefaultFooter = FooterFull
+)
+
+// GetFooter returns the configured footer style, normalized to one of the
+// known values. Empty or unknown input falls back to DefaultFooter
+// ("full"). Matching is case-insensitive so users may write "Full" or
+// "MINIMAL" in TOML.
+func (u UISettings) GetFooter() string {
+	switch strings.ToLower(strings.TrimSpace(u.Footer)) {
+	case FooterFull:
+		return FooterFull
+	case FooterCompact:
+		return FooterCompact
+	case FooterMinimal:
+		return FooterMinimal
+	case FooterCurated:
+		return FooterCurated
+	}
+	return DefaultFooter
+}
 
 // GetPreviewPct returns the configured preview percentage, clamped to
 // [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when
@@ -316,6 +375,14 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 		return MaxRemoteSessionRefreshSecs
 	}
 	return val
+}
+
+// GetNewSessionEnterAdvances reports whether Enter on the new-session dialog's
+// free-text Name/Branch fields should advance focus (true) instead of
+// submitting the form (false). Default false preserves today's behavior
+// (Enter submits). Ctrl+S submits in both modes. See PR #1295.
+func (u UISettings) GetNewSessionEnterAdvances() bool {
+	return u.NewSessionEnterAdvances
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval
@@ -1898,6 +1965,94 @@ func (d DockerSettings) GetAutoCleanup() bool {
 	return *d.AutoCleanup
 }
 
+// ForkSettings controls quick-fork (f) and fork-dialog (Shift+F) defaults.
+// Unset structural toggles default to the comprehensive built-in (ON); these
+// defaults are independent of [worktree]/[docker] default_enabled, which govern
+// non-fork session creation. *bool is required so "absent" reads as ON.
+type ForkSettings struct {
+	// InheritFromParent, when true, makes the fork mirror the parent session and
+	// ignores the structural keys below. See Resolve.
+	InheritFromParent bool `toml:"inherit_from_parent"`
+
+	// Worktree creates a new worktree + branch. nil => true.
+	Worktree *bool `toml:"worktree"`
+	// WithState carries the parent's tracked uncommitted changes. nil => true.
+	WithState *bool `toml:"with_state"`
+	// WithIgnored also copies gitignored files (implies WithState). nil => true.
+	WithIgnored *bool `toml:"with_ignored"`
+	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
+	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
+	Docker *string `toml:"docker"`
+	// BranchPrefix is the auto branch-name prefix. "" => "fork/".
+	BranchPrefix string `toml:"branch_prefix"`
+}
+
+// GetWorktree reports whether forks create a worktree (default ON).
+func (f ForkSettings) GetWorktree() bool { return f.Worktree == nil || *f.Worktree }
+
+// GetWithState reports whether forks carry tracked state (default ON).
+func (f ForkSettings) GetWithState() bool { return f.WithState == nil || *f.WithState }
+
+// GetWithIgnored reports whether forks copy gitignored files (default ON).
+func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored == nil || *f.WithIgnored }
+
+// GetDocker returns the canonical docker mode: "auto" | "on" | "off".
+// Mirrors GetLaunchAs: lowercase/trim, unknown/nil -> "auto".
+func (f ForkSettings) GetDocker() string {
+	if f.Docker == nil {
+		return "auto"
+	}
+	switch v := strings.ToLower(strings.TrimSpace(*f.Docker)); v {
+	case "auto", "on", "off":
+		return v
+	default:
+		return "auto"
+	}
+}
+
+// GetBranchPrefix returns the auto branch-name prefix (default "fork/").
+func (f ForkSettings) GetBranchPrefix() string {
+	prefix := strings.TrimSpace(f.BranchPrefix)
+	if prefix == "" {
+		return "fork/"
+	}
+	return prefix
+}
+
+// ResolvedForkPlan is the effective set of structural fork toggles after
+// applying [fork] config + parent context.
+type ResolvedForkPlan struct {
+	Worktree    bool
+	WithState   bool
+	WithIgnored bool
+	Sandbox     bool
+}
+
+// Resolve turns ForkSettings + the parent's Docker state into a concrete plan.
+// parentSandboxed is source.IsSandboxed(). When InheritFromParent is set, the
+// fork mirrors the parent: worktree+state+gitignored ON (the parent is a real
+// working tree) and Sandbox matches the parent, ignoring the structural keys.
+func (f ForkSettings) Resolve(parentSandboxed bool) ResolvedForkPlan {
+	if f.InheritFromParent {
+		return ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: parentSandboxed}
+	}
+	sandbox := parentSandboxed
+	switch f.GetDocker() {
+	case "on":
+		sandbox = true
+	case "off":
+		sandbox = false
+	}
+	withIgnored := f.GetWithIgnored()
+	withState := f.GetWithState() || withIgnored
+	return ResolvedForkPlan{
+		Worktree:    f.GetWorktree(),
+		WithState:   withState,
+		WithIgnored: withIgnored,
+		Sandbox:     sandbox,
+	}
+}
+
 type StatusSettings struct {
 	// Reserved for future status detection settings.
 	// Control mode pipes are always enabled (no longer configurable).
@@ -2056,11 +2211,7 @@ var (
 
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, UserConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(UserConfigFileName)
 }
 
 // LoadUserConfig loads the user configuration from TOML file.

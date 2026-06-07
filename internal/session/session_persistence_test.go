@@ -1262,7 +1262,16 @@ func TestPersistence_CustomCommandResumesFromLatestJSONL(t *testing.T) {
 		olderUUID = "11111111-1111-1111-1111-111111111111"
 		newerUUID = "22222222-2222-2222-2222-222222222222"
 	)
-	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(inst.ProjectPath))
+	// Production discovery (findLatestClaudeTranscriptOnDisk) derives the
+	// Claude projects dir from filepath.EvalSymlinks(ProjectPath); mirror that
+	// so the fixture lands in the dir Start() actually reads. On macOS
+	// t.TempDir() lives under the /var -> /private/var symlink, so the raw and
+	// resolved paths produce different ConvertToClaudeDirName values.
+	resolvedProjectPath := inst.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(inst.ProjectPath); err == nil {
+		resolvedProjectPath = resolved
+	}
+	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(resolvedProjectPath))
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir projectDir: %v", err)
 	}

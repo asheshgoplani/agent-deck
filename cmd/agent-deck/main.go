@@ -37,7 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.9.47" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.9.49" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -57,6 +57,7 @@ func init() {
 func initUpdateSettings() {
 	settings := session.GetUpdateSettings()
 	update.SetCheckInterval(settings.CheckIntervalHours)
+	update.SetBridgeScriptInstaller(session.InstallBridgeScript)
 }
 
 // writeVersionOutput prints `Agent Deck vX.Y.Z` to `w`, appending
@@ -324,6 +325,9 @@ func main() {
 		case "uninstall":
 			handleUninstall(args[1:])
 			return
+		case "migrate-paths":
+			handleMigratePaths(args[1:])
+			return
 		case "hook-handler":
 			handleHookHandler()
 			return
@@ -479,13 +483,13 @@ func main() {
 	}()
 
 	// Set up structured logging (JSONL format with rotation)
-	// When AGENTDECK_DEBUG is set, logs go to ~/.agent-deck/debug.log
+	// When AGENTDECK_DEBUG is set, logs go to the XDG cache debug.log.
 	// When not set, logs are discarded to avoid TUI interference
 	debugMode := os.Getenv("AGENTDECK_DEBUG") != ""
-	if baseDir, err := session.GetAgentDeckDir(); err == nil {
+	if cacheDir, err := ensureEffectiveCacheDir(); err == nil {
 		logCfg := logging.Config{
 			Debug:                 debugMode,
-			LogDir:                baseDir,
+			LogDir:                cacheDir,
 			Level:                 "debug",
 			Format:                "json",
 			MaxSizeMB:             10,
@@ -532,7 +536,7 @@ func main() {
 		defer logging.Shutdown()
 
 		// OBS-01: emit the cgroup-isolation decision exactly once on TUI
-		// startup. The line lands in ~/.agent-deck/debug.log via the
+		// startup. The line lands in the XDG cache debug.log via the
 		// dynamicHandler + lumberjack pipeline that logging.Init wires up.
 		// See internal/session/userconfig.go LogCgroupIsolationDecision.
 		session.LogCgroupIsolationDecision()
@@ -547,7 +551,7 @@ func main() {
 		signal.Notify(usr1Chan, syscall.SIGUSR1)
 		go func() {
 			for range usr1Chan {
-				dumpPath := filepath.Join(baseDir, fmt.Sprintf("crash-dump-%d.jsonl", time.Now().Unix()))
+				dumpPath := filepath.Join(cacheDir, fmt.Sprintf("crash-dump-%d.jsonl", time.Now().Unix()))
 				if err := logging.DumpRingBuffer(dumpPath); err != nil {
 					logging.ForComponent(logging.CompUI).Error("crash_dump_failed",
 						slog.String("error", err.Error()))
@@ -645,9 +649,14 @@ func main() {
 		userCfg, _ := session.LoadUserConfig()
 
 		// Set up pricer with overrides
-		homeDir, _ := os.UserHomeDir()
-		cacheDir := filepath.Join(homeDir, ".agent-deck")
-		pricerCfg := costs.PricerConfig{CachePath: cacheDir}
+		cacheDir, cacheErr := effectiveCacheDir()
+		if cacheErr != nil {
+			cacheDir = ""
+		}
+		pricerCfg := costs.PricerConfig{}
+		if cacheDir != "" {
+			pricerCfg.CachePath = cacheDir
+		}
 		if userCfg != nil && len(userCfg.Costs.Pricing.Overrides) > 0 {
 			pricerCfg.Overrides = make(map[string]costs.PriceOverride)
 			for model, ov := range userCfg.Costs.Pricing.Overrides {
@@ -660,13 +669,15 @@ func main() {
 			}
 		}
 		pricer := costs.NewPricer(pricerCfg)
-		_ = pricer.LoadCache()
+		if cacheDir != "" {
+			_ = pricer.LoadCache()
 
-		// Start daily price fetcher
-		fetchCtx, fetchCancel := context.WithCancel(context.Background())
-		defer fetchCancel()
-		fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
-		go fetcher.StartDaily(fetchCtx)
+			// Start daily price fetcher
+			fetchCtx, fetchCancel := context.WithCancel(context.Background())
+			defer fetchCancel()
+			fetcher := &costs.Fetcher{CachePath: filepath.Join(cacheDir, "pricing.json"), Pricer: pricer}
+			go fetcher.StartDaily(fetchCtx)
+		}
 
 		// Set up budget checker
 		var budgetCfg costs.BudgetConfig
@@ -690,7 +701,7 @@ func main() {
 		homeModel.SetCostBudget(budgetChecker)
 
 		// Start cost event watcher (for Claude hook events)
-		costEventsDir := filepath.Join(homeDir, ".agent-deck", "cost-events")
+		costEventsDir := getCostEventsDir()
 		costWatcher, watchErr := costs.NewCostEventWatcher(costEventsDir)
 		if watchErr == nil {
 			go costWatcher.Start()
@@ -1155,10 +1166,10 @@ func handleAdd(profile string, args []string) {
 
 	// Plugin enablement flag — repeatable, catalog-only, claude-only.
 	// Persisted on Instance.Plugins; resolved at spawn through
-	// [plugins.<name>] in ~/.agent-deck/config.toml and applied via the
+	// [plugins.<name>] in the user config and applied via the
 	// per-session scratch settings.json (RFC docs/rfc/PLUGIN_ATTACH.md).
 	var pluginFlags []string
-	fs.Func("plugin", "Catalog plugin to enable for this session (can specify multiple times); requires -c claude; configure in [plugins.<name>] in ~/.agent-deck/config.toml", func(s string) error {
+	fs.Func("plugin", fmt.Sprintf("Catalog plugin to enable for this session (can specify multiple times); requires -c claude; configure in [plugins.<name>] in %s", effectiveUserConfigPathForHelp()), func(s string) error {
 		pluginFlags = append(pluginFlags, s)
 		return nil
 	})
@@ -2971,6 +2982,7 @@ func printHelp() {
 	fmt.Println("  profile          Manage profiles")
 	fmt.Println("  update           Check for and install updates")
 	fmt.Println("  debug-dump       Dump debug ring buffer to file for sharing")
+	fmt.Println("  migrate-paths    Copy legacy ~/.agent-deck files into XDG paths")
 	fmt.Println("  uninstall        Uninstall Agent Deck")
 	fmt.Println("  version          Show version")
 	fmt.Println("  help             Show this help")
@@ -3110,28 +3122,28 @@ func detectTool(cmd string) string {
 
 // handleUninstall removes agent-deck from the system
 func handleDebugDump() {
-	baseDir, err := session.GetAgentDeckDir()
+	cacheDir, err := ensureEffectiveCacheDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot determine agent-deck dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: cannot determine agent-deck cache dir: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Initialize logging just enough to populate the ring buffer from the log file
 	logging.Init(logging.Config{
 		Debug:  true,
-		LogDir: baseDir,
+		LogDir: cacheDir,
 		Level:  "debug",
 	})
 	defer logging.Shutdown()
 
-	dumpPath := filepath.Join(baseDir, fmt.Sprintf("debug-dump-%d.jsonl", time.Now().Unix()))
+	dumpPath := filepath.Join(cacheDir, fmt.Sprintf("debug-dump-%d.jsonl", time.Now().Unix()))
 	if err := logging.DumpRingBuffer(dumpPath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: failed to dump ring buffer: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Also check if the debug.log file exists and report its path
-	debugLogPath := filepath.Join(baseDir, "debug.log")
+	debugLogPath := filepath.Join(cacheDir, "debug.log")
 	if info, statErr := os.Stat(debugLogPath); statErr == nil {
 		fmt.Printf("Debug log: %s (%.1f MB)\n", debugLogPath, float64(info.Size())/(1024*1024))
 	}
@@ -3141,7 +3153,7 @@ func handleDebugDump() {
 
 func handleUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	keepData := fs.Bool("keep-data", false, "Keep ~/.agent-deck/ (sessions, config, logs)")
+	keepData := fs.Bool("keep-data", false, "Keep XDG config/data/cache locations and legacy ~/.agent-deck/")
 	keepTmuxConfig := fs.Bool("keep-tmux-config", false, "Keep tmux configuration")
 	dryRun := fs.Bool("dry-run", false, "Show what would be removed without removing")
 	yes := fs.Bool("y", false, "Skip confirmation prompts")
@@ -3153,7 +3165,7 @@ func handleUninstall(args []string) {
 		fmt.Println()
 		fmt.Println("Options:")
 		fmt.Println("  --dry-run           Show what would be removed without removing")
-		fmt.Println("  --keep-data         Keep ~/.agent-deck/ (sessions, config, logs)")
+		fmt.Println("  --keep-data         Keep XDG config/data/cache locations and legacy ~/.agent-deck/")
 		fmt.Println("  --keep-tmux-config  Keep tmux configuration")
 		fmt.Println("  -y                  Skip confirmation prompts")
 		fmt.Println()
@@ -3178,16 +3190,21 @@ func handleUninstall(args []string) {
 		fmt.Println()
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	dataDir := filepath.Join(homeDir, ".agent-deck")
-
-	// Track what we find
-	type foundItem struct {
-		itemType    string
-		path        string
-		description string
+	// Resolve the home directory up front. Every path the uninstaller collects,
+	// backs up, and removes (binaries, tmux config, legacy data dir) is rooted
+	// here. If resolution fails or yields an empty string, those paths degrade
+	// to cwd-relative junk (e.g. ".tmux.conf") and we could back up / delete the
+	// wrong files. Abort before touching anything.
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		fmt.Fprintln(os.Stderr, "Error: cannot resolve home directory; refusing to uninstall with invalid paths")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "       %v\n", err)
+		}
+		os.Exit(1)
 	}
-	var foundItems []foundItem
+
+	var foundItems []uninstallFoundItem
 
 	// Check for Homebrew installation
 	homebrewInstalled := false
@@ -3195,7 +3212,7 @@ func handleUninstall(args []string) {
 		cmd := exec.Command("brew", "list", "agent-deck")
 		if cmd.Run() == nil {
 			homebrewInstalled = true
-			foundItems = append(foundItems, foundItem{"homebrew", "", "Homebrew package: agent-deck"})
+			foundItems = append(foundItems, uninstallFoundItem{"homebrew", "", "Homebrew package: agent-deck"})
 			fmt.Println("Found: Homebrew installation")
 		}
 	}
@@ -3217,70 +3234,23 @@ func handleUninstall(args []string) {
 			target, _ := os.Readlink(loc)
 			foundItems = append(
 				foundItems,
-				foundItem{"binary-symlink", loc, fmt.Sprintf("Binary (symlink) → %s", target)},
+				uninstallFoundItem{"binary-symlink", loc, fmt.Sprintf("Binary (symlink) → %s", target)},
 			)
 			fmt.Printf("Found: Binary (symlink) at %s\n", loc)
 			fmt.Printf("       → %s\n", target)
 		} else {
-			foundItems = append(foundItems, foundItem{"binary", loc, "Binary"})
+			foundItems = append(foundItems, uninstallFoundItem{"binary", loc, "Binary"})
 			fmt.Printf("Found: Binary at %s\n", loc)
 		}
 	}
 
-	// Check for data directory
-	if info, err := os.Stat(dataDir); err == nil && info.IsDir() {
-		// Count sessions and profiles
-		sessionCount := 0
-		profileCount := 0
-		profilesDir := filepath.Join(dataDir, "profiles")
-		if entries, err := os.ReadDir(profilesDir); err == nil {
-			for _, entry := range entries {
-				if entry.IsDir() {
-					// Check for state.db (SQLite, v0.11.0+) or sessions.json (legacy)
-					dbFile := filepath.Join(profilesDir, entry.Name(), "state.db")
-					jsonFile := filepath.Join(profilesDir, entry.Name(), "sessions.json")
-					if _, err := os.Stat(dbFile); err == nil {
-						profileCount++
-						if s, err := session.NewStorageWithProfile(entry.Name()); err == nil {
-							if instances, _, err := s.LoadWithGroups(); err == nil {
-								sessionCount += len(instances)
-							}
-						}
-					} else if data, err := os.ReadFile(jsonFile); err == nil {
-						profileCount++
-						sessionCount += strings.Count(string(data), `"id"`)
-					}
-				}
-			}
-		}
-
-		// Get total size
-		var totalSize int64
-		_ = filepath.Walk(dataDir, func(_ string, info os.FileInfo, err error) error {
-			if err == nil && !info.IsDir() {
-				totalSize += info.Size()
-			}
-			return nil
-		})
-		sizeStr := formatSize(totalSize)
-
-		foundItems = append(
-			foundItems,
-			foundItem{
-				"data",
-				dataDir,
-				fmt.Sprintf("%d profiles, %d sessions, %s", profileCount, sessionCount, sizeStr),
-			},
-		)
-		fmt.Printf("Found: Data directory at %s\n", dataDir)
-		fmt.Printf("       %d profiles, %d sessions, %s\n", profileCount, sessionCount, sizeStr)
-	}
+	foundItems = append(foundItems, collectUninstallDataLocations()...)
 
 	// Check for tmux config
 	tmuxConf := filepath.Join(homeDir, ".tmux.conf")
 	if data, err := os.ReadFile(tmuxConf); err == nil {
 		if strings.Contains(string(data), "# agent-deck configuration") {
-			foundItems = append(foundItems, foundItem{"tmux", tmuxConf, "tmux configuration block"})
+			foundItems = append(foundItems, uninstallFoundItem{"tmux", tmuxConf, "tmux configuration block"})
 			fmt.Println("Found: tmux configuration in ~/.tmux.conf")
 		}
 	}
@@ -3295,7 +3265,19 @@ func handleUninstall(args []string) {
 		for _, loc := range binaryLocations {
 			fmt.Printf("  - %s\n", loc)
 		}
-		fmt.Printf("  - %s\n", dataDir)
+		// List every data-location an uninstall would remove (XDG
+		// config/data/cache + legacy), resolved from the same source as the
+		// real removal so XDG-only installs are accurately represented. Dedupe
+		// in case XDG resolution falls back onto the legacy dir.
+		seenChecked := make(map[string]struct{})
+		for _, c := range uninstallDataCandidates() {
+			cleanPath := filepath.Clean(c.path)
+			if _, ok := seenChecked[cleanPath]; ok {
+				continue
+			}
+			seenChecked[cleanPath] = struct{}{}
+			fmt.Printf("  - %s (%s)\n", cleanPath, strings.ToLower(c.label))
+		}
 		fmt.Printf("  - %s (for agent-deck config)\n", tmuxConf)
 		return
 	}
@@ -3310,12 +3292,31 @@ func handleUninstall(args []string) {
 			fmt.Println("  • Homebrew package: agent-deck")
 		case "binary", "binary-symlink":
 			fmt.Printf("  • Binary: %s\n", item.path)
+		case "config":
+			if *keepData {
+				fmt.Printf("  ○ Config directory: %s (keeping)\n", item.path)
+			} else {
+				fmt.Printf("  • Config directory: %s\n", item.path)
+			}
 		case "data":
 			if *keepData {
 				fmt.Printf("  ○ Data directory: %s (keeping)\n", item.path)
 			} else {
 				fmt.Printf("  • Data directory: %s\n", item.path)
-				fmt.Println("    Including: sessions, logs, config")
+				fmt.Println("    Including: sessions, logs, runtime state")
+			}
+		case "cache":
+			if *keepData {
+				fmt.Printf("  ○ Cache directory: %s (keeping)\n", item.path)
+			} else {
+				fmt.Printf("  • Cache directory: %s\n", item.path)
+			}
+		case "legacy":
+			if *keepData {
+				fmt.Printf("  ○ Legacy directory: %s (keeping)\n", item.path)
+			} else {
+				fmt.Printf("  • Legacy directory: %s\n", item.path)
+				fmt.Println("    Including: pre-XDG sessions, config, logs, cache")
 			}
 		case "tmux":
 			if *keepTmuxConfig {
@@ -3464,39 +3465,57 @@ func handleUninstall(args []string) {
 		}
 	}
 
-	// 4. Data directory
+	// 4. XDG and legacy data locations
 	if !*keepData {
+		// Data-safety (Blocker 1, 2026-06-04 incident): back up EVERY data
+		// location that will be deleted (XDG config + data + cache + legacy),
+		// not just legacy ~/.agent-deck. Refuse to delete an un-backed-up XDG
+		// location.
+		backupCreated := false
+		if !*yes {
+			fmt.Print("Create a backup of ALL data locations (XDG config/data/cache + legacy) before removing them? [Y/n] ")
+			var response string
+			_, _ = fmt.Scanln(&response)
+			if strings.ToLower(response) != "n" {
+				fmt.Println("Creating backup of all data locations...")
+				backupFile, err := backupUninstallDataLocations(foundItems, homeDir)
+				if err != nil {
+					// Backup failed: do NOT delete data we couldn't archive.
+					fmt.Printf("✗ Backup failed: %v\n", err)
+					fmt.Println("Refusing to delete data locations without a backup.")
+					fmt.Println("Re-run with --keep-data to preserve data, or -y to skip backup and delete anyway.")
+					return
+				}
+				if backupFile != "" {
+					fmt.Printf("✓ Backup created: %s\n", backupFile)
+					backupCreated = true
+				} else {
+					fmt.Println("No real data found to back up (only symlinks/empty locations).")
+				}
+			} else {
+				// User explicitly declined the backup. Confirm they accept the
+				// irreversible deletion of every listed data location.
+				fmt.Print("Skip backup and permanently delete all listed data locations? [y/N] ")
+				var confirm string
+				_, _ = fmt.Scanln(&confirm)
+				if strings.ToLower(confirm) != "y" {
+					fmt.Println("Aborted. Data locations preserved.")
+					return
+				}
+			}
+		}
+		_ = backupCreated
+
 		for _, item := range foundItems {
-			if item.itemType != "data" {
+			if !isUninstallDataLocation(item.itemType) {
 				continue
 			}
 
-			// Offer backup unless -y flag
-			if !*yes {
-				fmt.Print("Create backup of data before removing? [Y/n] ")
-				var response string
-				_, _ = fmt.Scanln(&response)
-				if strings.ToLower(response) != "n" {
-					backupFile := filepath.Join(
-						homeDir,
-						fmt.Sprintf("agent-deck-backup-%s.tar.gz", time.Now().Format("20060102-150405")),
-					)
-					fmt.Printf("Creating backup at %s...\n", backupFile)
-
-					cmd := exec.Command("tar", "-czf", backupFile, "-C", homeDir, ".agent-deck")
-					if err := cmd.Run(); err != nil {
-						fmt.Printf("Warning: failed to create backup: %v\n", err)
-					} else {
-						fmt.Printf("✓ Backup created: %s\n", backupFile)
-					}
-				}
-			}
-
-			fmt.Println("Removing data directory...")
-			if err := os.RemoveAll(dataDir); err != nil {
-				fmt.Printf("Warning: failed to remove data directory: %v\n", err)
+			fmt.Printf("Removing %s...\n", item.path)
+			if err := removeUninstallLocation(item.path); err != nil {
+				fmt.Printf("Warning: failed to remove %s: %v\n", item.path, err)
 			} else {
-				fmt.Printf("✓ Data directory removed: %s\n", dataDir)
+				fmt.Printf("✓ Removed: %s\n", item.path)
 			}
 		}
 	}
@@ -3508,8 +3527,8 @@ func handleUninstall(args []string) {
 	fmt.Println()
 
 	if *keepData {
-		fmt.Printf("Note: Data directory preserved at %s\n", dataDir)
-		fmt.Println("      Remove manually with: rm -rf ~/.agent-deck")
+		fmt.Println("Note: XDG config/data/cache locations and legacy ~/.agent-deck/ were preserved.")
+		fmt.Println("      Remove them manually with trash after reviewing their contents.")
 	}
 
 	if *keepTmuxConfig {

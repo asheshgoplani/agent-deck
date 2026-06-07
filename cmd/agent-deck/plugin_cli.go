@@ -27,9 +27,9 @@ func validatePluginFlags(names []string) error {
 			available := session.GetAvailablePluginNames()
 			sort.Strings(available)
 			if len(available) == 0 {
-				return fmt.Errorf("--plugin %q: catalog is empty. Add a [plugins.%s] table to ~/.agent-deck/config.toml", raw, name)
+				return fmt.Errorf("--plugin %q: catalog is empty. Add a [plugins.%s] table to %s", raw, name, effectiveUserConfigPathForHelp())
 			}
-			return fmt.Errorf("--plugin %q: not in catalog. Available: %s. Add new entries via [plugins.<name>] in ~/.agent-deck/config.toml", raw, strings.Join(available, ", "))
+			return fmt.Errorf("--plugin %q: not in catalog. Available: %s. Add new entries via [plugins.<name>] in %s", raw, strings.Join(available, ", "), effectiveUserConfigPathForHelp())
 		}
 	}
 	return nil

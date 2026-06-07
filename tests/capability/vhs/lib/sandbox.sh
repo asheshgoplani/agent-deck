@@ -81,12 +81,13 @@ export PATH="$_capvid_bindir:$PATH"
 # Same stand-in the Go suite uses (tests/capability/testdata/echobot.sh): prints
 # a ready marker, echoes each line back as ECHO:<line>. prompt_patterns wires it
 # into agent-deck's readiness gate exactly as a real claude prompt would be.
-mkdir -p "$HOME/.agent-deck"
-cp "$_capvid_repo/tests/capability/testdata/echobot.sh" "$HOME/.agent-deck/echobot.sh"
-chmod +x "$HOME/.agent-deck/echobot.sh"
-cat > "$HOME/.agent-deck/config.toml" <<TOML
+_capvid_tooldir="$HOME/tools"
+mkdir -p "$_capvid_tooldir" "$XDG_CONFIG_HOME/agent-deck"
+cp "$_capvid_repo/tests/capability/testdata/echobot.sh" "$_capvid_tooldir/echobot.sh"
+chmod +x "$_capvid_tooldir/echobot.sh"
+cat > "$XDG_CONFIG_HOME/agent-deck/config.toml" <<TOML
 [tools.echobot]
-command = "$HOME/.agent-deck/echobot.sh"
+command = "$_capvid_tooldir/echobot.sh"
 icon = "E"
 prompt_patterns = ["ECHOBOT READY"]
 busy_patterns = ["WORKING"]

@@ -134,15 +134,16 @@ Conductor setup complete!
 Next steps:
   agent-deck -p personal session start conductor-work
   Test from Telegram: send /status to your bot
-  View bridge logs:   tail -f ~/.agent-deck/conductor/bridge.log
+  View bridge logs:   tail -f ~/.local/share/agent-deck/conductor/bridge.log
 ```
 
 That single command:
 
-- Created `~/.agent-deck/conductor/<name>/` with `CLAUDE.md`, `POLICY.md`,
-  `LEARNINGS.md`, `meta.json`, `state.json`, `task-log.md`.
-- Stored the Telegram token in `~/.agent-deck/conductor/<name>/.env`
-  (chmod 600). **Never commit this file.**
+- Created `$XDG_DATA_HOME/agent-deck/conductor/<name>/` (default
+  `~/.local/share/agent-deck/conductor/<name>/`) with `CLAUDE.md`,
+  `POLICY.md`, `LEARNINGS.md`, `meta.json`, `state.json`, `task-log.md`.
+- Stored the Telegram token in the conductor `.env` file (chmod 600).
+  **Never commit this file.**
 - Registered a session called `conductor-<name>` in the profile's
   agent-deck database.
 - Installed a heartbeat daemon (launchd on macOS, systemd on Linux) that
@@ -262,12 +263,13 @@ pgrep -af "bun.*telegram" | wc -l
 ### 2. "My token disappears across session restarts"
 
 The token is in `<conductor-dir>/.env`. agent-deck loads it via `env_file`
-in `~/.agent-deck/config.toml`:
+in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default
+`~/.config/agent-deck/config.toml`):
 
 ```toml
 [conductors.work.claude]
 config_dir = "~/.claude"
-env_file = "~/.agent-deck/conductor/work/.env"
+env_file = "~/.local/share/agent-deck/conductor/work/.env"
 ```
 
 If you renamed or moved the conductor dir, this block points at the wrong
@@ -360,7 +362,8 @@ multiplexes across N bots.
 
 ## After setup: making the conductor smarter
 
-Two files in `~/.agent-deck/conductor/<name>/` are worth knowing:
+Two files in `$XDG_DATA_HOME/agent-deck/conductor/<name>/` (default
+`~/.local/share/agent-deck/conductor/<name>/`) are worth knowing:
 
 - **`POLICY.md`** — rules for what the conductor should auto-answer vs
   escalate. The starting template includes "if a worker asks whether to
@@ -400,7 +403,7 @@ agent-deck conductor move <name> --to-profile <other>
 agent-deck session start conductor-<name>
 agent-deck session restart conductor-<name>
 agent-deck session output conductor-<name> -q
-tail -f ~/.agent-deck/conductor/bridge.log
+tail -f ~/.local/share/agent-deck/conductor/bridge.log
 ```
 
 If anything in this guide didn't work for you, please open an issue — the

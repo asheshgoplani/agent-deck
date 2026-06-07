@@ -9,7 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+- **Comprehensive quick fork with configurable defaults**. The TUI quick fork (`f`) now creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options — instead of a conversation-only fork. A new `[fork]` config section (`worktree`, `with_state`, `with_ignored`, `docker = "auto"|"on"|"off"`, `branch_prefix`, `inherit_from_parent`) makes these defaults configurable; unset keys default to the comprehensive behavior. **Behavior change:** the `Shift+F` fork dialog now opens pre-seeded from `[fork]` defaults (comprehensive, "tweak down") rather than honoring `[worktree].default_enabled` / `[docker].default_enabled`.
+- **Cross-tool fork parity (Claude / OpenCode / Pi / Codex)**. Forking now works consistently across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) from the TUI, CLI (`agent-deck session fork <id>`), and Web UI, routed through one shared tool-specific dispatcher. Adds Codex session forking (`codex fork <session-id>`), OpenCode CLI fork + worktree support, and Web fork affordances driven by backend forkability instead of hardcoded Claude checks.
+- **Fork quality + safety hardening**. `Shift+F` honors `[fork].branch_prefix`; OpenCode/Codex session-id mutators validate IDs and generated fork shell commands are shell-quoted; settings preserve `[fork]` on save; and real-binary fork evals now fail on tool fork errors instead of only checking worktree creation.
+
+## [1.9.49] - 2026-06-07
+
+### Added
+
+- **XDG base directory support, hardened** ([#1294](https://github.com/asheshgoplani/agent-deck/pull/1294), supersedes [#1281](https://github.com/asheshgoplani/agent-deck/pull/1281)). Agent Deck now honours the XDG base directory specification: configuration under `$XDG_CONFIG_HOME`, data under `$XDG_DATA_HOME`, and cache under `$XDG_CACHE_HOME`, with backward-compatible fallback to the legacy `~/.agent-deck` location. Includes a safe migration command, atomic copy, and uninstall backups.
+- **Smoother new-session keyboard navigation** ([#1295](https://github.com/asheshgoplani/agent-deck/pull/1295)). The new-session dialog gains smoother keyboard navigation, with an opt-in `[ui].new_session_enter_advances` config flag that lets Enter advance between fields.
+- **Lighter curated TUI footer** ([#1300](https://github.com/asheshgoplani/agent-deck/pull/1300), supersedes [#1289](https://github.com/asheshgoplani/agent-deck/pull/1289), credit [@JMBattista](https://github.com/JMBattista)). An opt-in `[ui] footer` setting renders a lighter, curated TUI footer.
+
+## [1.9.48] - 2026-06-07
+
+### Fixed
+
+- **Sessions disappearing from the TUI: `revive` is now concurrency-safe** ([#1296](https://github.com/asheshgoplani/agent-deck/pull/1296)). The session `revive` path could clobber sessions added concurrently; it now reconciles safely so concurrently-added sessions are preserved.
+- **Data-loss safeguards S1–S4**. Hardening the storage layer after the recurring "tests wiped the live profile" class of incidents:
+  - **S1 — refuse empty-payload `SaveInstances` sweep on a populated table** ([#1283](https://github.com/asheshgoplani/agent-deck/pull/1283)). `SaveInstances` no longer issues a destructive `DELETE FROM instances` when handed an empty slice against a populated table.
+  - **S2 + S3 — backup-before-destructive-write and refuse config section-drop** ([#1286](https://github.com/asheshgoplani/agent-deck/pull/1286)). State DB and `config.toml` are snapshotted before destructive rewrites, and `SaveUserConfig` refuses to silently drop whole top-level config sections.
+  - **S4 — warn/refuse on silent legacy `~/.agent-deck` fallback** ([#1285](https://github.com/asheshgoplani/agent-deck/pull/1285)). Path resolution no longer silently falls back to the real legacy `~/.agent-deck` location.
+- **Reconcile session title/badge on attach** ([#1282](https://github.com/asheshgoplani/agent-deck/pull/1282)). Session title and badge are reconciled when attaching.
+- **Bridge HTTP proxy support for Telegram** ([#1280](https://github.com/asheshgoplani/agent-deck/pull/1280)). The bridge supports an HTTP proxy for the Telegram bot via environment variables.
+- **Fork-state cleanup uses `RemoveWorktree`** ([#1279](https://github.com/asheshgoplani/agent-deck/pull/1279)). Fork-state cleanup now goes through `RemoveWorktree`.
+- **Materialize fork state from repo root** ([#1277](https://github.com/asheshgoplani/agent-deck/pull/1277)). Fork state is materialized relative to the repository root.
+
+### Added
+
+- **Pi session forking** ([#1287](https://github.com/asheshgoplani/agent-deck/pull/1287)). `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+- **Fork-with-state controls in the ForkDialog** ([#1291](https://github.com/asheshgoplani/agent-deck/pull/1291), [#1292](https://github.com/asheshgoplani/agent-deck/pull/1292), [#1293](https://github.com/asheshgoplani/agent-deck/pull/1293)). The ForkDialog gains fork-with-state controls, with PR-review follow-ups and behavioral coverage for the fork rollback paths.
+- **Mandatory HOME+XDG test isolation + guard test (S5)** ([#1284](https://github.com/asheshgoplani/agent-deck/pull/1284)). All path-touching `TestMain` functions now sandbox HOME and all `XDG_*` vars, with a guard test that fails if any path resolves under the real home directory.
+- **`show_only_installed_tools` config flag** ([#1276](https://github.com/asheshgoplani/agent-deck/pull/1276)). New session config flag to show only installed tools.
+- **Optional last-update timestamp badge on session rows** ([#1273](https://github.com/asheshgoplani/agent-deck/pull/1273)). Session rows can optionally display a last-update timestamp badge.
+
+### Changed
+
+- New installs now use the XDG Base Directory layout: config under `$XDG_CONFIG_HOME/agent-deck` (default `~/.config/agent-deck`), durable state under `$XDG_DATA_HOME/agent-deck` (default `~/.local/share/agent-deck`), and cache/debug files under `$XDG_CACHE_HOME/agent-deck` (default `~/.cache/agent-deck`). Existing `~/.agent-deck` installs continue to work through category-specific legacy fallback.
+- Added `agent-deck migrate-paths [--dry-run] [--force]` to copy known legacy `~/.agent-deck` files into the split XDG layout without deleting or renaming the legacy directory.
+- Runtime and watcher durable state paths now use `$XDG_DATA_HOME/agent-deck` for new installs, with category-specific legacy fallback for existing `~/.agent-deck` state. Hooks, events, inboxes, runtime ledgers, logs, locks, conductor state, watcher state, triage output, and worker scratch no longer fall back to legacy just because an unrelated legacy marker exists.
 
 ## [1.9.47] - 2026-06-03
 

@@ -136,6 +136,7 @@ func TestMain(m *testing.M) {
 	// Git hooks export GIT_DIR/GIT_WORK_TREE; clear them so test subprocess git
 	// commands operate on their temp repos instead of the real repository.
 	testutil.UnsetGitRepoEnv()
+	isolatePackageHome("agent-deck-session-tests-home-*")
 
 	// Isolate the tmux socket. Without this, tests spawn tmux sessions on the
 	// user's default socket and destabilize live agent-deck sessions.
@@ -167,6 +168,22 @@ func TestMain(m *testing.M) {
 	cleanupTestSessions()
 
 	os.Exit(code)
+}
+
+func isolatePackageHome(pattern string) {
+	home, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	// Clear (do NOT pin) XDG base dirs so they track HOME and don't accumulate
+	// stale config/data across tests in this shared package home. See
+	// testutil.IsolateHome's doc comment (2026-06-07 ~96-test isolation
+	// regression from #1294's "prefer XDG if it exists" path resolution).
+	os.Unsetenv("XDG_CONFIG_HOME")
+	os.Unsetenv("XDG_DATA_HOME")
+	os.Unsetenv("XDG_CACHE_HOME")
+	os.Unsetenv("XDG_STATE_HOME")
 }
 
 // cleanupTestSessions kills any tmux sessions created during testing.

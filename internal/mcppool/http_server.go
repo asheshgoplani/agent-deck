@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/childenv"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 )
@@ -217,7 +218,10 @@ func (s *HTTPServer) Start() error {
 	s.mu.Unlock()
 
 	// Create log file
-	logDir := filepath.Join(os.Getenv("HOME"), ".agent-deck", "logs", "http-servers")
+	logDir, err := agentpaths.EffectiveDataPath(filepath.Join("logs", "http-servers"), "logs")
+	if err != nil {
+		logDir = filepath.Join(os.TempDir(), "agent-deck", "logs", "http-servers")
+	}
 	_ = os.MkdirAll(logDir, 0700)
 	s.logFile = filepath.Join(logDir, fmt.Sprintf("%s.log", s.name))
 

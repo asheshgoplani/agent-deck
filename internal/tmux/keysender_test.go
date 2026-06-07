@@ -31,7 +31,14 @@ func makeIsolatedServer(t *testing.T) (socket, target string) {
 	// TestOpenKeySender_Issue1102_PerfBudget100KeysUnder500ms blow it out.
 	socket = fmt.Sprintf("ks%x", sha256.Sum256([]byte(t.Name())))[:14]
 	target = "tgt"
-	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-s", target, "bash").CombinedOutput(); err != nil {
+	// Force a deterministic, wide window size with -x/-y. Without it,
+	// `tmux new-session -d` sizes the detached window from the most-recent
+	// client (or a host default). On CI hosts with no attached client the
+	// fallback width can be very narrow, which soft-wraps the typed text in
+	// capture-pane output (e.g. "hello world" -> "hell\no world") and breaks
+	// the literal-key assertions. A fixed 200x50 keeps short typed strings on
+	// one line everywhere. (#1284 isolation regression.)
+	if out, err := exec.Command("tmux", "-L", socket, "new-session", "-d", "-x", "200", "-y", "50", "-s", target, "bash").CombinedOutput(); err != nil {
 		t.Fatalf("create tmux session: %v: %s", err, out)
 	}
 	t.Cleanup(func() {
@@ -66,9 +73,19 @@ func TestOpenKeySender_StreamsLiteralKeysToPane(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture-pane: %v: %s", err, pane)
 	}
-	if !strings.Contains(string(pane), "hello world") {
+	if !strings.Contains(unwrapPane(string(pane)), "hello world") {
 		t.Errorf("pane does not contain typed text; got:\n%s", pane)
 	}
+}
+
+// unwrapPane removes newlines from capture-pane output so soft-wrapped lines
+// are matched as the contiguous text the user actually typed. tmux inserts a
+// hard '\n' at the pane's right edge when text overflows the window width; a
+// literal "hello world" can therefore arrive as "hell\no world" on a narrow
+// pane. Stripping newlines lets the assertion check the logical key stream
+// regardless of where the terminal happened to wrap it. (#1284.)
+func unwrapPane(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
 }
 
 // TestOpenKeySender_Issue1102_PerfBudget100KeysUnder500ms is the regression

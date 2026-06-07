@@ -62,6 +62,7 @@ type MenuSession struct {
 	ModelID         string         `json:"modelId,omitempty"`
 	Model           string         `json:"model,omitempty"`
 	ModelVersion    string         `json:"modelVersion,omitempty"`
+	CanFork         bool           `json:"canFork"`
 	Status          session.Status `json:"status"`
 	GroupPath       string         `json:"groupPath"`
 	ProjectPath     string         `json:"projectPath"`
@@ -203,6 +204,7 @@ func toMenuSession(inst *session.Instance) *MenuSession {
 		ModelID:            modelInfo.ModelID,
 		Model:              modelInfo.Model,
 		ModelVersion:       modelInfo.Version,
+		CanFork:            inst.CanFork(),
 		Status:             inst.GetStatusThreadSafe(),
 		GroupPath:          inst.GroupPath,
 		ProjectPath:        inst.ProjectPath,

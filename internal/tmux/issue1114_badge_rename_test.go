@@ -62,6 +62,15 @@ func useTestBadgeDir(t *testing.T) string {
 	return dir
 }
 
+func useSimulatedITerm(t *testing.T) {
+	t.Helper()
+	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	t.Setenv("WARP_IS_LOCAL_SHELL_SESSION", "")
+	t.Setenv("ITERM_SESSION_ID", "")
+	t.Setenv("LC_TERMINAL", "")
+	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+}
+
 // waitForOSC blocks until w contains an OSC SetBadgeFormat for title, or
 // the deadline expires.
 func waitForOSC(t *testing.T, w *lockedWriter, title string, timeout time.Duration) {
@@ -99,10 +108,7 @@ func TestIssue1114_WriteBadgeUpdate_AtomicFileWrite(t *testing.T) {
 // the pre-fix bug where EmitITermBadgeViaTty silently dropped the OSC.
 func TestIssue1114_AttachWatcher_EmitsOSCOnFileChange(t *testing.T) {
 	useTestBadgeDir(t)
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
-	t.Setenv("ITERM_SESSION_ID", "")
-	t.Setenv("LC_TERMINAL", "")
-	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+	useSimulatedITerm(t)
 
 	w := newLockedWriter()
 
@@ -146,10 +152,7 @@ func TestIssue1114_AttachWatcher_EmitsOSCOnFileChange(t *testing.T) {
 // between two attached agent-deck users in the same iTerm2 window.
 func TestIssue1114_Watcher_IgnoresOtherSessions(t *testing.T) {
 	useTestBadgeDir(t)
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
-	t.Setenv("ITERM_SESSION_ID", "")
-	t.Setenv("LC_TERMINAL", "")
-	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+	useSimulatedITerm(t)
 
 	w := newLockedWriter()
 
@@ -191,6 +194,7 @@ func TestIssue1114_Watcher_IgnoresOtherSessions(t *testing.T) {
 func TestIssue1114_Watcher_NoOpOutsideITerm2(t *testing.T) {
 	useTestBadgeDir(t)
 	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	t.Setenv("WARP_IS_LOCAL_SHELL_SESSION", "")
 	t.Setenv("ITERM_SESSION_ID", "")
 	t.Setenv("LC_TERMINAL", "")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
@@ -229,10 +233,7 @@ func TestIssue1114_Watcher_NoOpOutsideITerm2(t *testing.T) {
 // silently bypass the user's opt-out.
 func TestIssue1114_Watcher_ConfigDisabledSuppresses(t *testing.T) {
 	useTestBadgeDir(t)
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
-	t.Setenv("ITERM_SESSION_ID", "")
-	t.Setenv("LC_TERMINAL", "")
-	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+	useSimulatedITerm(t)
 
 	w := newLockedWriter()
 
@@ -267,10 +268,7 @@ func TestIssue1114_Watcher_ConfigDisabledSuppresses(t *testing.T) {
 // same DisplayName depending on whether the attach was fresh or post-rename.
 func TestIssue1114_OSCMatchesAttachEmit(t *testing.T) {
 	useTestBadgeDir(t)
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
-	t.Setenv("ITERM_SESSION_ID", "")
-	t.Setenv("LC_TERMINAL", "")
-	t.Setenv("AGENTDECK_ITERM_BADGE", "")
+	useSimulatedITerm(t)
 
 	w := newLockedWriter()
 

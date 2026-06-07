@@ -18,11 +18,17 @@ import (
 	"golang.org/x/term"
 )
 
+func setTerminalProgram(t *testing.T, value string) {
+	t.Helper()
+	t.Setenv("TERM_PROGRAM", value)
+	t.Setenv("WARP_IS_LOCAL_SHELL_SESSION", "")
+}
+
 // TestEmitITermBadge_EncodesTitleBase64 asserts that the helper produces
 // exactly the OSC 1337 SetBadgeFormat sequence iTerm2 expects: the literal
 // prefix, the base64-encoded title bytes, and a BEL terminator.
 func TestEmitITermBadge_EncodesTitleBase64(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
 
 	var buf bytes.Buffer
@@ -37,7 +43,7 @@ func TestEmitITermBadge_EncodesTitleBase64(t *testing.T) {
 // the badge-clear form (empty base64 payload), which iTerm2 interprets as
 // "remove the badge" — used on detach to leave the terminal in a clean state.
 func TestEmitITermBadge_EmptyTitleClears(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
 
 	var buf bytes.Buffer
@@ -51,7 +57,7 @@ func TestEmitITermBadge_EmptyTitleClears(t *testing.T) {
 // escape sequences to terminals that won't parse them — they would otherwise
 // appear as literal garbage in the user's terminal output.
 func TestEmitITermBadge_NoOpOutsideITerm2(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	setTerminalProgram(t, "Apple_Terminal")
 	t.Setenv("ITERM_SESSION_ID", "")
 	t.Setenv("LC_TERMINAL", "")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
@@ -68,7 +74,7 @@ func TestEmitITermBadge_NoOpOutsideITerm2(t *testing.T) {
 // ssh), we still detect iTerm2 and emit the badge. Mirrors the gate the
 // external bash hook in tarek-eq-scripts uses.
 func TestEmitITermBadge_HonorsLCTerminal(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "")
+	setTerminalProgram(t, "")
 	t.Setenv("ITERM_SESSION_ID", "")
 	t.Setenv("LC_TERMINAL", "iTerm2")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
@@ -85,7 +91,7 @@ func TestEmitITermBadge_HonorsLCTerminal(t *testing.T) {
 // configEnabled=false must suppress the OSC write — that's the whole
 // point of the opt-in default for users who run their own badge scheme.
 func TestEmitITermBadge_ConfigDisabledSuppressesEmit(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
 
 	var buf bytes.Buffer
@@ -100,7 +106,7 @@ func TestEmitITermBadge_ConfigDisabledSuppressesEmit(t *testing.T) {
 // off, but AGENTDECK_ITERM_BADGE=1 forces it on for this run. Each truthy
 // value variant is asserted because the helper accepts a small set.
 func TestEmitITermBadge_EnvForceEnableOverridesConfigOff(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 
 	for _, v := range []string{"1", "true", "TRUE", "yes", "on"} {
 		t.Run(v, func(t *testing.T) {
@@ -120,7 +126,7 @@ func TestEmitITermBadge_EnvForceEnableOverridesConfigOff(t *testing.T) {
 // AGENTDECK_ITERM_BADGE=0 forces it off for this run. Each falsy value
 // variant is asserted because the helper accepts a small set.
 func TestEmitITermBadge_EnvForceDisableOverridesConfigOn(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 
 	for _, v := range []string{"0", "false", "FALSE", "no", "off"} {
 		t.Run(v, func(t *testing.T) {
@@ -140,7 +146,7 @@ func TestEmitITermBadge_EnvForceDisableOverridesConfigOn(t *testing.T) {
 // otherwise unrecognised env value must not silently flip the user's
 // persistent setting. Garbage falls through to configEnabled.
 func TestEmitITermBadge_EnvGarbageDefersToConfig(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "maybe")
 
 	var bufOff bytes.Buffer
@@ -192,7 +198,7 @@ func TestFormatITermBadgeOSCViaTmux_DCSEnvelope(t *testing.T) {
 // attempt to open /dev/tty (which would still succeed and write garbage
 // into the user's pane that the wrong terminal can't parse).
 func TestEmitITermBadgeViaTty_NoOpOutsideITerm2(t *testing.T) {
-	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	setTerminalProgram(t, "Apple_Terminal")
 	t.Setenv("ITERM_SESSION_ID", "")
 	t.Setenv("LC_TERMINAL", "")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
@@ -223,7 +229,7 @@ func TestEmitITermBadgeViaTty_NoFDLeak(t *testing.T) {
 	t.Setenv("AGENTDECK_ITERM_BADGE_DEBUG", "1")
 	// Stay outside iTerm2 so the function returns at the gate without
 	// opening /dev/tty, exercising the early-return defer path.
-	t.Setenv("TERM_PROGRAM", "Apple_Terminal")
+	setTerminalProgram(t, "Apple_Terminal")
 	t.Setenv("ITERM_SESSION_ID", "")
 	t.Setenv("LC_TERMINAL", "")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
@@ -288,7 +294,7 @@ func TestAttach_EmitsITermBadgeOnEntry(t *testing.T) {
 		t.Skip("stdin is not a terminal (CI/pipe environment); skipping PTY attach test")
 	}
 
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
+	setTerminalProgram(t, "iTerm.app")
 	t.Setenv("AGENTDECK_ITERM_BADGE", "")
 
 	name := SessionPrefix + "ptytest-itermbadge-" + fmt.Sprintf("%d", time.Now().UnixNano()%100000)

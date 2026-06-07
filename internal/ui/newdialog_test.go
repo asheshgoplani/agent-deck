@@ -2,7 +2,6 @@ package ui
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -825,17 +824,7 @@ func TestNewDialog_ShowInGroup_ResetsMultiRepo(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_UsesConfiguredWorktreeDefault(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {
@@ -887,6 +876,8 @@ func TestNewDialog_BranchInputInitialized(t *testing.T) {
 }
 
 func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -917,6 +908,8 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 }
 
 func TestNewDialog_ShortcutsBlockedDuringTextInput(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -1141,6 +1134,8 @@ func TestNewDialog_ClearError_HidesFromView(t *testing.T) {
 // ===== Checkbox Focus Tests =====
 
 func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
+	setXDGTestHome(t)
+
 	dialog := NewNewDialog()
 	dialog.Show()
 	dialog.sandboxEnabled = false
@@ -1256,6 +1251,8 @@ func TestNewDialog_ToggleWorktree_EmptyName_NoBranch(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
+	setXDGTestHome(t)
+
 	d := NewNewDialog()
 	d.branchAutoSet = true
 
@@ -1267,17 +1264,7 @@ func TestNewDialog_ShowInGroup_ResetsBranchAutoSet(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_DefaultWorktree_SetsBranchAutoSet(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {
@@ -1297,17 +1284,7 @@ func TestNewDialog_ShowInGroup_DefaultWorktree_SetsBranchAutoSet(t *testing.T) {
 }
 
 func TestNewDialog_ShowInGroup_DefaultWorktree_AutoPopulatesBranchFromName(t *testing.T) {
-	tempDir := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-	session.ClearUserConfigCache()
-	defer session.ClearUserConfigCache()
-
-	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
-	if err := os.MkdirAll(agentDeckDir, 0700); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
+	setXDGTestHome(t)
 	if err := session.SaveUserConfig(&session.UserConfig{
 		Worktree: session.WorktreeSettings{DefaultEnabled: true},
 	}); err != nil {
@@ -2154,5 +2131,305 @@ func TestDialogOrigin(t *testing.T) {
 					tt.termW, tt.termH, tt.dialogW, tt.dialogH, row, col, tt.wantRow, tt.wantCol)
 			}
 		})
+	}
+}
+
+// --- Keyboard navigation improvements (Feedback Hub: smoother new-session nav) ---
+
+// Opt-in mode: Enter on the Name field must advance focus to the next field,
+// NOT submit the form. shouldHandleEnterLocally must report true so home.go
+// forwards Enter to the dialog rather than running its submit path.
+func TestNewDialog_EnterOnNameAdvancesFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.enterAdvances = true // opt in: [ui].new_session_enter_advances = true
+	d.SetSize(100, 50)
+	d.Show()
+
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
+	}
+
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() == before {
+		t.Fatalf("Enter on Name did not advance focus (still %v)", d.currentTarget())
+	}
+	if d.currentTarget() != focusMultiRepo {
+		t.Fatalf("focus after Enter on Name = %v, want focusMultiRepo (next field)", d.currentTarget())
+	}
+}
+
+// Opt-in mode: Enter on the Branch field (worktree enabled) advances focus
+// instead of submitting, matching the Name-field behavior for free-text inputs.
+func TestNewDialog_EnterOnBranchAdvancesFocus(t *testing.T) {
+	d := NewNewDialog()
+	d.enterAdvances = true // opt in: [ui].new_session_enter_advances = true
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+	d.ToggleWorktree() // enables worktree -> branch field appears
+
+	idx := d.indexOf(focusBranch)
+	if idx < 0 {
+		t.Fatal("focusBranch should be present when worktree enabled")
+	}
+	d.focusIndex = idx
+	d.updateFocus()
+
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("shouldHandleEnterLocally on Branch = false, want true")
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() == focusBranch {
+		t.Fatal("Enter on Branch did not advance focus")
+	}
+}
+
+// Ctrl+S is recognized as an explicit submit shortcut from a plain text field.
+func TestNewDialog_CtrlSWantsSubmit(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) on Name = false, want true")
+	}
+	// A non-Ctrl+S key must not be treated as submit.
+	if d.WantsSubmit(tea.KeyMsg{Type: tea.KeyEnter}) {
+		t.Fatal("WantsSubmit(Enter) = true, want false")
+	}
+}
+
+// Ctrl+S must be inert while a sub-picker is open so it never fires mid
+// selection (it would otherwise create a session from a half-picked state).
+func TestNewDialog_CtrlSInertWhileDropdownActive(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	d.SetPathSuggestions([]string{"/tmp/a", "/tmp/b"})
+
+	// Open the path suggestions dropdown.
+	d.focusIndex = d.indexOf(focusPath)
+	d.updateFocus()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter}) // focusPath Enter opens dropdown
+	if !d.IsSuggestionsActive() {
+		t.Fatal("path dropdown should be active after Enter on Path")
+	}
+	if d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) while path dropdown active = true, want false")
+	}
+}
+
+// Regression (Codex P2): Ctrl+S submitted while a multi-repo path is being
+// edited inline must use the in-flight edited value, not the stale
+// previously-committed path. The edited text lives only in pathInput until the
+// Enter handler writes it back, so the submit path must flush it first via
+// CommitInFlightMultiRepoEdit.
+func TestNewDialog_CtrlSDuringMultiRepoEditSubmitsEditedPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+
+	// Enable multi-repo with one committed path and focus the multi-repo row.
+	d.pathInput.SetValue("/old/path")
+	d.ToggleMultiRepo()
+	d.rebuildFocusTargets()
+	d.focusIndex = d.indexOf(focusMultiRepo)
+	d.updateFocus()
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/old/path" {
+		t.Fatalf("setup: GetMultiRepoPaths = %v, want [/old/path]", got)
+	}
+
+	// Enter edit mode for the path (mirrors the Enter handler entering edit).
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !d.multiRepoEditing {
+		t.Fatal("expected multiRepoEditing=true after Enter on multi-repo path")
+	}
+
+	// User edits the path in-flight: clear and type a new value into pathInput.
+	d.pathInput.SetValue("/edited/path")
+
+	// Before the fix, GetMultiRepoPaths still returns the stale committed value
+	// because the edit lives only in pathInput.
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/old/path" {
+		t.Fatalf("pre-commit: GetMultiRepoPaths = %v, want stale [/old/path]", got)
+	}
+
+	// Ctrl+S submit path: WantsSubmit must be true (no dropdown open), then the
+	// submit handler flushes the in-flight edit.
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) during multi-repo edit = false, want true")
+	}
+	d.CommitInFlightMultiRepoEdit()
+
+	if d.multiRepoEditing {
+		t.Fatal("multiRepoEditing should be false after CommitInFlightMultiRepoEdit")
+	}
+	got, ok := d.GetMultiRepoPaths()
+	if !ok || len(got) != 1 || got[0] != "/edited/path" {
+		t.Fatalf("post-commit: GetMultiRepoPaths = %v (ok=%v), want [/edited/path]", got, ok)
+	}
+}
+
+// Regression (Codex round-2 P2): Ctrl+S submitted while editing a NON-primary
+// multi-repo entry must leave pathInput holding the PRIMARY path. The submit
+// path in home.go reads `path` from pathInput (via GetValuesWithWorktree) and
+// runs worktree resolution + the create-directory check against it BEFORE path
+// is reassigned to multiRepoPaths[0]. If pathInput were left on the secondary
+// entry being edited, those pre-create checks would run against the WRONG repo.
+func TestNewDialog_CtrlSEditingSecondaryEntry_PreCreateChecksUsePrimaryPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+
+	// Two committed multi-repo paths: primary = /primary/repo, secondary = /secondary/repo.
+	d.pathInput.SetValue("/primary/repo")
+	d.ToggleMultiRepo()
+	d.multiRepoPaths = []string{"/primary/repo", "/secondary/repo"}
+	d.rebuildFocusTargets()
+
+	// Begin editing the SECONDARY entry (index 1), mirroring the Enter handler.
+	d.multiRepoPathCursor = 1
+	d.multiRepoEditing = true
+	d.pathInput.SetValue("/secondary/repo-edited")
+	d.pathInput.Focus()
+
+	// Sanity: before the commit, pathInput holds the secondary edit, so a naive
+	// GetValuesWithWorktree would resolve against the wrong repo.
+	if _, p, _, _, _ := d.GetValuesWithWorktree(); p != "/secondary/repo-edited" {
+		t.Fatalf("setup: GetValuesWithWorktree path = %q, want /secondary/repo-edited", p)
+	}
+
+	// Ctrl+S submit path: WantsSubmit true, then flush the in-flight edit.
+	if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+		t.Fatal("WantsSubmit(Ctrl+S) while editing secondary = false, want true")
+	}
+	d.CommitInFlightMultiRepoEdit()
+
+	// The edited secondary value must be flushed into multiRepoPaths[1]...
+	got, ok := d.GetMultiRepoPaths()
+	if !ok || len(got) != 2 || got[0] != "/primary/repo" || got[1] != "/secondary/repo-edited" {
+		t.Fatalf("post-commit: GetMultiRepoPaths = %v (ok=%v), want [/primary/repo /secondary/repo-edited]", got, ok)
+	}
+
+	// ...AND pathInput must now hold the PRIMARY path so the caller's pre-create
+	// checks (worktree resolution, create-directory) run against the primary repo.
+	if _, p, _, _, _ := d.GetValuesWithWorktree(); p != "/primary/repo" {
+		t.Fatalf("post-commit: GetValuesWithWorktree path = %q, want /primary/repo (primary), not the secondary entry", p)
+	}
+}
+
+// CommitInFlightMultiRepoEdit must be a safe no-op when no multi-repo edit is in
+// progress (the normal Ctrl+S-from-any-field case).
+func TestNewDialog_CommitInFlightMultiRepoEdit_NoopWhenNotEditing(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	// Not in multi-repo mode at all.
+	d.CommitInFlightMultiRepoEdit() // must not panic
+
+	// Multi-repo enabled but not editing.
+	d.pathInput.SetValue("/a")
+	d.ToggleMultiRepo()
+	d.CommitInFlightMultiRepoEdit()
+	if d.multiRepoEditing {
+		t.Fatal("multiRepoEditing flipped true unexpectedly")
+	}
+	if got, _ := d.GetMultiRepoPaths(); len(got) != 1 || got[0] != "/a" {
+		t.Fatalf("GetMultiRepoPaths = %v, want [/a] (unchanged)", got)
+	}
+}
+
+// Regression: Tab still advances Name -> next field (unchanged behavior,
+// independent of the Enter-mode toggle).
+func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
+	d := NewNewDialog()
+	d.SetSize(100, 50)
+	d.Show()
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if d.currentTarget() == focusName {
+		t.Fatal("Tab on Name did not advance focus")
+	}
+}
+
+// --- Default-preserving behavior (PR #1295: toggle defaults OFF) ---
+
+// DEFAULT (toggle off): Enter on the Name field must NOT be handled locally, so
+// home.go runs its submit path — i.e. today's behavior (Enter from Name
+// submits) is preserved. This is the core default-preserving guarantee.
+func TestNewDialog_DefaultEnterOnNameSubmits(t *testing.T) {
+	d := NewNewDialog()
+	// enterAdvances defaults to false (no config → newSessionEnterAdvancesFromConfig
+	// returns false). Assert it explicitly so the default is load-bearing here.
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false (must preserve today's behavior)")
+	}
+	d.SetSize(100, 50)
+	d.Show()
+
+	if d.currentTarget() != focusName {
+		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
+	}
+	// shouldHandleEnterLocally must be false on Name so home.go submits.
+	if d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Name = true, want false (Enter must submit, not advance)")
+	}
+	// Even if Enter were forwarded to the dialog, the advance guard must not fire
+	// in default mode: focus must stay on Name.
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() != before {
+		t.Fatalf("default mode: Enter on Name advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	}
+}
+
+// DEFAULT (toggle off): Enter on the Branch field must NOT advance — today's
+// behavior (Enter submits) is preserved.
+func TestNewDialog_DefaultEnterOnBranchSubmits(t *testing.T) {
+	d := NewNewDialog()
+	if d.enterAdvances {
+		t.Fatal("enterAdvances default = true, want false")
+	}
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+	d.ToggleWorktree()
+
+	idx := d.indexOf(focusBranch)
+	if idx < 0 {
+		t.Fatal("focusBranch should be present when worktree enabled")
+	}
+	d.focusIndex = idx
+	d.updateFocus()
+
+	if d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Branch = true, want false (Enter must submit)")
+	}
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() != before {
+		t.Fatalf("default mode: Enter on Branch advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	}
+}
+
+// Ctrl+S is additive: WantsSubmit(Ctrl+S) is true regardless of the toggle, so
+// the explicit-create shortcut works in BOTH default and opt-in modes.
+func TestNewDialog_CtrlSSubmitsInBothModes(t *testing.T) {
+	for _, advance := range []bool{false, true} {
+		d := NewNewDialog()
+		d.enterAdvances = advance
+		d.SetSize(100, 50)
+		d.Show()
+		d.nameInput.SetValue("demo")
+		if !d.WantsSubmit(tea.KeyMsg{Type: tea.KeyCtrlS}) {
+			t.Fatalf("WantsSubmit(Ctrl+S) with enterAdvances=%v = false, want true (additive in both modes)", advance)
+		}
 	}
 }
