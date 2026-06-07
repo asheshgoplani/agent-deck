@@ -7,6 +7,35 @@ import (
 	"time"
 )
 
+// TestCreateForkedOpenCode_DefersLaunchViaForkStartCommand guards a fork-restart
+// bug: the generated OpenCode fork script self-deletes after first run (trap …
+// EXIT). If it is stored as the persistent Command, a restart after the tmux
+// session dies (before async session-id detection completes) re-runs a missing
+// file and silently starts fresh. The fork must therefore use the Pi/Codex
+// deferred pattern — script in ForkStartCommand (transient), a stable base in
+// Command — so restart resumes via OpenCodeSessionID / bare opencode instead.
+func TestCreateForkedOpenCode_DefersLaunchViaForkStartCommand(t *testing.T) {
+	parent := NewInstanceWithTool("oc", t.TempDir(), "opencode")
+	parent.OpenCodeSessionID = "ses_parent_123"
+	parent.OpenCodeDetectedAt = time.Now()
+
+	forked, cmd, err := parent.CreateForkedOpenCodeInstanceWithOptions("oc fork", "", nil)
+	if err != nil {
+		t.Fatalf("CreateForkedOpenCodeInstanceWithOptions: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(strings.TrimPrefix(strings.TrimSuffix(cmd, "'"), "bash '"))
+	})
+
+	if forked.Command != "opencode" {
+		t.Fatalf("forked.Command = %q, want \"opencode\" (stable base survives the script's self-delete)", forked.Command)
+	}
+	if !forked.IsForkAwaitingStart || forked.ForkStartCommand != cmd {
+		t.Fatalf("opencode fork must defer launch via ForkStartCommand/IsForkAwaitingStart (Pi pattern); got awaiting=%v forkCmd=%q cmd=%q",
+			forked.IsForkAwaitingStart, forked.ForkStartCommand, cmd)
+	}
+}
+
 // TestOpenCodeForkScriptQuotesWorkDir is the regression guard for the fork-review
 // command-safety finding: the generated OpenCode fork bash script must shell-quote
 // the working directory (and session id) rather than interpolate them raw, so a
