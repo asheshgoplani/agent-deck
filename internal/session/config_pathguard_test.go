@@ -45,6 +45,11 @@ func TestGetAgentDeckDir_SandboxedResolvesToXDGData(t *testing.T) {
 		t.Fatalf("precondition: HOME (%s) must be sandboxed, not the real home", home)
 	}
 
+	// TestMain clears XDG_* so they track HOME (see testutil.IsolateHome). This
+	// test asserts the XDG_DATA_HOME contract specifically, so set it explicitly
+	// to a sandboxed dir under the isolated HOME.
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
 	dir, err := GetAgentDeckDir()
 	if err != nil {
 		t.Fatalf("GetAgentDeckDir under sandbox returned error: %v", err)

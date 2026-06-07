@@ -66,9 +66,14 @@ func isolatePackageHome(pattern string) {
 		panic(err)
 	}
 	os.Setenv("HOME", home)
-	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	os.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	os.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	// Clear (do NOT pin) XDG base dirs so they track HOME and don't accumulate
+	// stale config/data across tests in this shared package home. See
+	// testutil.IsolateHome's doc comment (2026-06-07 ~96-test isolation
+	// regression from #1294's "prefer XDG if it exists" path resolution).
+	os.Unsetenv("XDG_CONFIG_HOME")
+	os.Unsetenv("XDG_DATA_HOME")
+	os.Unsetenv("XDG_CACHE_HOME")
+	os.Unsetenv("XDG_STATE_HOME")
 }
 
 // isolateLegacyHome points HOME and every XDG base dir at `home` for the

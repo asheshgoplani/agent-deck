@@ -389,7 +389,12 @@ func TestCreateExampleConfigDocumentsCompatibleWith(t *testing.T) {
 		t.Fatalf("CreateExampleConfig: %v", err)
 	}
 
-	configPath := filepath.Join(tmpDir, ".agent-deck", "config.toml")
+	// Read back from wherever CreateExampleConfig actually wrote (XDG-aware;
+	// hardcoding the legacy ~/.agent-deck path breaks post-#1294 resolution).
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", configPath, err)
