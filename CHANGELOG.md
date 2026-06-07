@@ -9,10 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Fork parity follow-up**. Web/API fork now routes supported tools through the same tool-specific dispatcher as TUI/CLI, Web fork affordances are driven by backend forkability instead of hardcoded Claude checks, `Shift+F` honors `[fork].branch_prefix`, OpenCode/Codex session-id mutators validate IDs before generated shell commands use them, and real-binary fork evals now fail on tool fork errors instead of only checking worktree creation.
-- **Comprehensive quick fork**. The TUI quick fork (`f`) now creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options — instead of a conversation-only fork. A new `[fork]` config section (`worktree`, `with_state`, `with_ignored`, `docker = "auto"|"on"|"off"`, `branch_prefix`, `inherit_from_parent`) makes these defaults configurable; unset keys default to the comprehensive behavior. **Behavior change:** the `Shift+F` fork dialog now opens pre-seeded from `[fork]` defaults (comprehensive, "tweak down") rather than honoring `[worktree].default_enabled` / `[docker].default_enabled`. Cross-tool worktree parity: OpenCode forks now honor the worktree target (and gain CLI `session fork` support), matching Claude and Pi.
-- **Pi session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
-- **Codex session forking**. `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support Codex (and Codex-compatible custom tools) by launching `codex fork <session-id>`, cloning the parent transcript into a new thread while leaving the parent intact. Requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`).
+- **Comprehensive quick fork with configurable defaults**. The TUI quick fork (`f`) now creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options — instead of a conversation-only fork. A new `[fork]` config section (`worktree`, `with_state`, `with_ignored`, `docker = "auto"|"on"|"off"`, `branch_prefix`, `inherit_from_parent`) makes these defaults configurable; unset keys default to the comprehensive behavior. **Behavior change:** the `Shift+F` fork dialog now opens pre-seeded from `[fork]` defaults (comprehensive, "tweak down") rather than honoring `[worktree].default_enabled` / `[docker].default_enabled`.
+- **Cross-tool fork parity (Claude / OpenCode / Pi / Codex)**. Forking now works consistently across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) from the TUI, CLI (`agent-deck session fork <id>`), and Web UI, routed through one shared tool-specific dispatcher. Adds Codex session forking (`codex fork <session-id>`), OpenCode CLI fork + worktree support, and Web fork affordances driven by backend forkability instead of hardcoded Claude checks.
+- **Fork quality + safety hardening**. `Shift+F` honors `[fork].branch_prefix`; OpenCode/Codex session-id mutators validate IDs and generated fork shell commands are shell-quoted; settings preserve `[fork]` on save; and real-binary fork evals now fail on tool fork errors instead of only checking worktree creation.
+
+## [1.9.48] - 2026-06-07
+
+### Fixed
+
+- **Sessions disappearing from the TUI: `revive` is now concurrency-safe** ([#1296](https://github.com/asheshgoplani/agent-deck/pull/1296)). The session `revive` path could clobber sessions added concurrently; it now reconciles safely so concurrently-added sessions are preserved.
+- **Data-loss safeguards S1–S4**. Hardening the storage layer after the recurring "tests wiped the live profile" class of incidents:
+  - **S1 — refuse empty-payload `SaveInstances` sweep on a populated table** ([#1283](https://github.com/asheshgoplani/agent-deck/pull/1283)). `SaveInstances` no longer issues a destructive `DELETE FROM instances` when handed an empty slice against a populated table.
+  - **S2 + S3 — backup-before-destructive-write and refuse config section-drop** ([#1286](https://github.com/asheshgoplani/agent-deck/pull/1286)). State DB and `config.toml` are snapshotted before destructive rewrites, and `SaveUserConfig` refuses to silently drop whole top-level config sections.
+  - **S4 — warn/refuse on silent legacy `~/.agent-deck` fallback** ([#1285](https://github.com/asheshgoplani/agent-deck/pull/1285)). Path resolution no longer silently falls back to the real legacy `~/.agent-deck` location.
+- **Reconcile session title/badge on attach** ([#1282](https://github.com/asheshgoplani/agent-deck/pull/1282)). Session title and badge are reconciled when attaching.
+- **Bridge HTTP proxy support for Telegram** ([#1280](https://github.com/asheshgoplani/agent-deck/pull/1280)). The bridge supports an HTTP proxy for the Telegram bot via environment variables.
+- **Fork-state cleanup uses `RemoveWorktree`** ([#1279](https://github.com/asheshgoplani/agent-deck/pull/1279)). Fork-state cleanup now goes through `RemoveWorktree`.
+- **Materialize fork state from repo root** ([#1277](https://github.com/asheshgoplani/agent-deck/pull/1277)). Fork state is materialized relative to the repository root.
+
+### Added
+
+- **Pi session forking** ([#1287](https://github.com/asheshgoplani/agent-deck/pull/1287)). `agent-deck session fork` and the TUI `f`/`F` fork shortcuts now support built-in Pi sessions by launching `pi --fork <source-jsonl> --session-dir <child-dir>` from Agent Deck's per-instance Pi session directories.
+- **Fork-with-state controls in the ForkDialog** ([#1291](https://github.com/asheshgoplani/agent-deck/pull/1291), [#1292](https://github.com/asheshgoplani/agent-deck/pull/1292), [#1293](https://github.com/asheshgoplani/agent-deck/pull/1293)). The ForkDialog gains fork-with-state controls, with PR-review follow-ups and behavioral coverage for the fork rollback paths.
+- **Mandatory HOME+XDG test isolation + guard test (S5)** ([#1284](https://github.com/asheshgoplani/agent-deck/pull/1284)). All path-touching `TestMain` functions now sandbox HOME and all `XDG_*` vars, with a guard test that fails if any path resolves under the real home directory.
+- **`show_only_installed_tools` config flag** ([#1276](https://github.com/asheshgoplani/agent-deck/pull/1276)). New session config flag to show only installed tools.
+- **Optional last-update timestamp badge on session rows** ([#1273](https://github.com/asheshgoplani/agent-deck/pull/1273)). Session rows can optionally display a last-update timestamp badge.
 
 ## [1.9.47] - 2026-06-03
 

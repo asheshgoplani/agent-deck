@@ -970,6 +970,81 @@ func (s *StateDB) WriteStatus(id, status, tool string) error {
 	})
 }
 
+// InstanceStatusUpdate is one targeted status mutation for
+// PersistInstanceStatusesTx: set instances.status = Status WHERE id = ID.
+// No other column is touched, so a concurrent writer's edits to any other
+// field of the same row are preserved.
+type InstanceStatusUpdate struct {
+	ID     string
+	Status string
+}
+
+// PersistInstanceStatusesTx applies a batch of targeted status updates inside a
+// SINGLE transaction. It is the persistence primitive for `session revive`.
+//
+// Why a dedicated primitive (two independent guarantees):
+//
+//  1. ATOMICITY / no partial write. All rows commit together or none do. A
+//     mid-loop failure on `revive --all` rolls the whole batch back instead of
+//     leaving the table half-healed (some rows StatusRunning, some still
+//     StatusError). Per-row INSERT-OR-REPLACE outside a tx could not promise
+//     this.
+//
+//  2. NO clobber of concurrent edits. Each row is written with a TARGETED
+//     `UPDATE instances SET status = ? WHERE id = ?` — only the single column
+//     revive owns (see Reviver.defaultReviveAction, which mutates nothing but
+//     Instance.Status). It deliberately does NOT use INSERT OR REPLACE of the
+//     whole row: a full-row write would overwrite every other column from
+//     revive's stale in-memory snapshot, clobbering any field (title, group,
+//     tool_data, last_accessed, …) a concurrent process edited between
+//     revive's load and its save. Mirrors WriteStatus / WriteClaudeSessionBinding,
+//     which target single columns for exactly this reason.
+//
+// There is NO DELETE sweep here — a row absent from `updates` is left entirely
+// untouched, so revive can never drop a session a concurrent `add` inserted
+// after revive loaded its snapshot (the lost-update race this fixes). Rows
+// whose id no longer exists (removed concurrently) simply match zero rows; the
+// UPDATE is a benign no-op, never a resurrection.
+//
+// The acknowledged-reset mirrors WriteStatus: flipping a row to "running"
+// clears its acknowledged flag so the TUI re-surfaces the freshly-revived
+// session. Wrapped in withBusyRetry because the whole batch is idempotent
+// (targeted UPDATEs to fixed ids), matching SaveInstances' retry rationale.
+func (s *StateDB) PersistInstanceStatusesTx(updates []InstanceStatusUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return withBusyRetry(func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		stmt, err := tx.Prepare(
+			`UPDATE instances
+			   SET status = ?,
+			       acknowledged = CASE WHEN ? = 'running' THEN 0 ELSE acknowledged END
+			 WHERE id = ?`,
+		)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+
+		for _, u := range updates {
+			if _, err := stmt.Exec(u.Status, u.Status, u.ID); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		_ = s.Touch()
+		return nil
+	})
+}
+
 // WriteClaudeSessionBinding atomically updates claude_session_id and
 // claude_detected_at inside the tool_data JSON column for the given
 // instance. Used by the hook-rebind path (UpdateHookStatus →
