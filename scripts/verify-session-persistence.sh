@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Numbered scenario checklist (printed at startup, also parseable via head -30).
-readonly CHECKLIST="$(cat <<'EOF'
+CHECKLIST="$(cat <<'EOF'
 [1] Live session + cgroup inspection
 [2] Login-session teardown survival (Linux+systemd only)
 [3] Stop -> restart resume (--resume or --session-id in argv)
@@ -15,6 +15,7 @@ readonly CHECKLIST="$(cat <<'EOF'
 [5] Reviver respawns a killed control pipe without breaking tmux (v1.7.8+)
 EOF
 )"
+readonly CHECKLIST
 
 # ---------- color + logging ----------
 readonly C_RED='\033[31m'
@@ -42,12 +43,20 @@ is_own_tmproot() {
 cleanup() {
   set +e
   # Stop any sessions we created. agent-deck has no `session ls` subcommand;
-  # use the top-level `agent-deck list` (TITLE is col 1, ID is last column).
-  if command -v agent-deck >/dev/null 2>&1; then
-    for n in $(agent-deck list 2>/dev/null | awk -v P="${SESSION_PREFIX}" '$1 ~ "^"P {print $1}' || true); do
-      agent-deck session stop "$n" >/dev/null 2>&1 || true
-      agent-deck remove "$n" >/dev/null 2>&1 || true
-    done
+  # use the top-level `agent-deck list --json` so long titles are not truncated.
+  if [[ -n "${SESSION_PREFIX:-}" ]] && command -v agent-deck >/dev/null 2>&1; then
+    if command -v jq >/dev/null 2>&1; then
+      while IFS= read -r n; do
+        [[ -n "${n}" ]] || continue
+        agent-deck session stop "$n" >/dev/null 2>&1 || true
+        agent-deck remove "$n" >/dev/null 2>&1 || true
+      done < <(agent-deck list --json 2>/dev/null | jq -r --arg P "${SESSION_PREFIX}" '.[]? | select(.title | startswith($P)) | .title' 2>/dev/null || true)
+    else
+      for n in $(agent-deck list 2>/dev/null | awk -v P="${SESSION_PREFIX}" '$1 ~ "^"P {print $1}' || true); do
+        agent-deck session stop "$n" >/dev/null 2>&1 || true
+        agent-deck remove "$n" >/dev/null 2>&1 || true
+      done
+    fi
   fi
   # Tear down any lingering login-sim scope.
   if command -v systemctl >/dev/null 2>&1; then
@@ -72,6 +81,10 @@ resolve_tmux_session() {
   # assignments via set -e. Callers all degrade on empty output. Single-point
   # fix shared by tmux_pid_for_session, tmux_pane_start_command_for_session,
   # and scenario 5.
+  if ! command -v jq >/dev/null 2>&1; then
+    printf '%sERROR%s: jq binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
+    return 2
+  fi
   agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null || true
 }
 
@@ -149,6 +162,9 @@ classify_argv() {
       else
         echo fail
       fi
+      ;;
+    *)
+      echo fail
       ;;
   esac
 }
@@ -261,7 +277,11 @@ scenario_3_restart_resume() {
   sleep 1
   : > "${ARGV_OUT}"
   log "restarting session: agent-deck session start ${name}"
-  agent-deck session start "${name}" >/dev/null || true
+  if ! agent-deck session start "${name}" >/dev/null; then
+    banner_fail "[3] restart command failed for ${name}"
+    agent-deck session stop "${name}" >/dev/null 2>&1 || true
+    return
+  fi
   sleep 2
   local argv verdict
   argv="$(capture_claude_argv "${name}")"
@@ -326,7 +346,11 @@ scenario_5_reviver_respawns_killed_pipe() {
   sleep 2
 
   # Trigger revive. Tmux session should still exist; reviver must respawn the pipe.
-  agent-deck session revive --name "${name}" >/dev/null 2>&1 || true
+  if ! agent-deck session revive --name "${name}" >/dev/null 2>&1; then
+    banner_fail "[5] revive command failed for ${name}"
+    agent-deck session stop "${name}" >/dev/null 2>&1 || true
+    return
+  fi
   sleep 2
 
   local new_pipe_pid
@@ -355,11 +379,15 @@ main() {
 
   # ----- preflight -----
   if ! command -v agent-deck >/dev/null 2>&1; then
-    printf "${C_RED}ERROR${C_RESET}: agent-deck binary not on PATH.\n" >&2
+    printf '%sERROR%s: agent-deck binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
     exit 2
   fi
   if ! command -v tmux >/dev/null 2>&1; then
-    printf "${C_RED}ERROR${C_RESET}: tmux binary not on PATH.\n" >&2
+    printf '%sERROR%s: tmux binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
+    exit 2
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    printf '%sERROR%s: jq binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
     exit 2
   fi
 
@@ -398,10 +426,10 @@ EOF
   want_scenario 5 && scenario_5_reviver_respawns_killed_pipe
 
   if [[ "${FAILED}" -ne 0 ]]; then
-    printf "${C_RED}OVERALL: FAIL${C_RESET}\n" >&2
+    printf '%sOVERALL: FAIL%s\n' "${C_RED}" "${C_RESET}" >&2
     exit 1
   fi
-  printf "${C_GREEN}OVERALL: PASS${C_RESET}\n"
+  printf '%sOVERALL: PASS%s\n' "${C_GREEN}" "${C_RESET}"
   exit 0
 }
 

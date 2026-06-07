@@ -1,14 +1,15 @@
 # Session persistence CI gate for v1.5.2.
 #
 # Runs on every PR that touches any file under the v1.5.2 mandate (see
-# CLAUDE.md "Session persistence: mandatory test coverage" section). Two
-# jobs, both required:
-#   1. tests        — go test -run TestPersistence_ -race -count=1
+# CLAUDE.md "Session persistence: mandatory test coverage" section). Three
+# jobs, all required:
+#   1. tests         — go test -run TestPersistence_ -race -count=1
 #   2. verify-script — bash scripts/verify-session-persistence.sh
+#   3. unit-xplat    — go test ./scripts/... on macOS + Linux
 #
 # Either red blocks the PR. Branch protection rules are user-managed and
 # not part of this workflow; the CLAUDE.md mandate instructs reviewers to
-# require both jobs green plus the test output (or CI link) in the PR body.
+# require all jobs green plus the test output (or CI link) in the PR body.
 #
 # Do NOT modify .github/workflows/release.yml. This workflow is strictly
 # additive.
@@ -49,8 +50,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux and jq
+        run: sudo apt-get update && sudo apt-get install -y tmux jq
 
       - name: Enable user lingering (systemd user scope)
         run: loginctl enable-linger "$USER" || true

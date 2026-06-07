@@ -757,3 +757,21 @@ Use `superpowers:finishing-a-development-branch` to choose merge/PR. Do NOT `git
 **Verified assumptions:** A test-only `scripts` package (`*_test.go` with no non-test `.go`) compiles and is picked up by both `go test ./scripts/` and `go test ./...` — confirmed empirically in this repo before handoff. `${p##*/}` and the explicit-template `mktemp` form both behave correctly on macOS bash 3.2. This repo has no `PROJECTS.md` trunk, so the global PROJECTS.md process does not apply.
 
 **Bash 3.2 / `set -e` caveats honored:** no associative arrays; test snippets gate non-zero returns with `if`/`||` so the harness's `set -e` doesn't abort them.
+
+## Post-review hardening follow-up
+
+Final review found additional false-green and cross-platform gaps. These
+supersede the earlier illustrative snippets where they differ:
+
+- `resolve_tmux_session` now treats missing `jq` as an explicit status-2 error,
+  and the workflow installs `jq` for the Linux end-to-end job.
+- Scenario 3 fails when `agent-deck session start` fails; empty argv is only a
+  skip after the restart command itself succeeds.
+- Scenario 5 fails when `agent-deck session revive` fails; "no new pipe" remains
+  a skip only after a successful revive command.
+- Cleanup uses `agent-deck list --json` plus full titles, not truncated table
+  output.
+- The fake Claude stub uses a portable long-sleep loop instead of
+  GNU-only `sleep infinity`.
+- `classify_argv` has a default `fail` arm so unknown modes cannot silently
+  produce no verdict.

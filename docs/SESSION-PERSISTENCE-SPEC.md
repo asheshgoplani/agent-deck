@@ -179,7 +179,10 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
   the managed session (stub bypassed by a pre-existing shared tmux daemon, or
   empty `pane_start_command`). The harness never asserts on host-wide processes.
 - Scenario 5 resolves its tmux session name via `session show --json`.
-- The harness removes its own `${TMPDIR}/adeck-verify.*` tempdir on exit.
+- `jq` is an explicit harness dependency; missing `jq` is a preflight error, not
+  a silent `[SKIP]`.
+- The harness removes its own `${TMPDIR}/adeck-verify.*` tempdir and
+  `verify-persist-*` sessions by full JSON title on exit.
 
 Unit-gated by `scripts/verify-session-persistence_test.go` on macOS + Linux CI.
 

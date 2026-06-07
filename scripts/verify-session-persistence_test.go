@@ -23,6 +23,19 @@ func scriptPath(t *testing.T) string {
 	return p
 }
 
+func fakeClaudePath(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	p := filepath.Join(wd, "verify-session-persistence.d", "fake-claude.sh")
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("fake claude not found at %s: %v", p, err)
+	}
+	return p
+}
+
 // sourceAndRun sources the harness in lib-only mode and runs a bash snippet.
 // Returns combined stdout+stderr. `set -e` is active (the harness sets it), so
 // snippets must guard non-zero returns with `if`/`||` rather than bare calls.
@@ -40,13 +53,13 @@ func TestIsOwnTmproot_MatchesMktempOutputAnyParent(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"/tmp/adeck-verify.AbC123", true},                       // Linux mktemp
-		{"/var/folders/23/xxxx/T/adeck-verify.AbC123", true},     // macOS $TMPDIR
-		{"/private/var/folders/q/y/T/adeck-verify.Z9", true},     // macOS realpath
-		{"/tmp", false},                                          // bare tmp — never rm
-		{"/home/user/important", false},                          // unrelated dir
-		{"", false},                                              // empty
-		{"/tmp/other-prefix.123", false},                         // wrong prefix
+		{"/tmp/adeck-verify.AbC123", true},                   // Linux mktemp
+		{"/var/folders/23/xxxx/T/adeck-verify.AbC123", true}, // macOS $TMPDIR
+		{"/private/var/folders/q/y/T/adeck-verify.Z9", true}, // macOS realpath
+		{"/tmp", false},                  // bare tmp — never rm
+		{"/home/user/important", false},  // unrelated dir
+		{"", false},                      // empty
+		{"/tmp/other-prefix.123", false}, // wrong prefix
 	}
 	for _, c := range cases {
 		snippet := `if is_own_tmproot "` + c.path + `"; then echo YES; else echo NO; fi`
@@ -111,6 +124,7 @@ func TestClassifyArgv_VerdictsIncludingEmptyIsSkip(t *testing.T) {
 		{"fresh", "claude --session-id abc", "pass"},
 		{"fresh", "claude --session-id abc --resume x", "fail"}, // both -> wrong shape
 		{"fresh", "claude --resume x", "fail"},
+		{"unknown", "claude --session-id abc", "fail"}, // no silent empty verdict
 	}
 	for _, c := range cases {
 		snippet := `classify_argv ` + c.mode + ` "` + c.argv + `"`
@@ -121,6 +135,40 @@ func TestClassifyArgv_VerdictsIncludingEmptyIsSkip(t *testing.T) {
 		if strings.TrimSpace(out) != c.want {
 			t.Errorf("classify_argv(%s, %q) = %q, want %q", c.mode, c.argv, strings.TrimSpace(out), c.want)
 		}
+	}
+}
+
+func TestResolveTmuxSession_MissingJqIsExplicitError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Symlink("/bin/cat", filepath.Join(dir, "cat")); err != nil {
+		t.Fatal(err)
+	}
+	fake := `#!/bin/bash
+if [[ "$1" == "session" && "$2" == "show" ]]; then
+  printf '{ "tmux_session": "agentdeck_missing_jq" }\n'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-deck"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := sourceAndRun(t,
+		[]string{"PATH=" + dir},
+		`if msg="$(resolve_tmux_session foo 2>&1)"; then
+		   echo "UNEXPECTED_OK=[$msg]"
+		 else
+		   echo "STATUS=$?"
+		   echo "MSG=[$msg]"
+		 fi`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "UNEXPECTED_OK") {
+		t.Fatalf("missing jq was silently treated as success:\n%s", out)
+	}
+	if !strings.Contains(out, "STATUS=2") || !strings.Contains(out, "jq binary not on PATH") {
+		t.Fatalf("missing jq must be explicit status 2 error; got:\n%s", out)
 	}
 }
 
@@ -196,6 +244,161 @@ func TestResolveTmuxSession_NonzeroAgentDeckDoesNotAbortUnderSetE(t *testing.T) 
 	}
 	if !strings.Contains(out, "REACHED=[]") {
 		t.Fatalf("expected empty resolution without abort; got: %s", strings.TrimSpace(out))
+	}
+}
+
+func TestScenario3_RestartFailureMarksFailure(t *testing.T) {
+	out, err := sourceAndRun(t, nil, `
+FAILED=0
+SESSION_PREFIX=verify-persist-test
+TMPROOT="${TMPDIR:-/tmp}/adeck-verify-test-s3"
+mkdir -p "${TMPROOT}"
+ARGV_OUT="${TMPROOT}/argv.log"
+start_count=0
+agent-deck() {
+  if [[ "$1" == "session" && "$2" == "start" ]]; then
+    start_count=$((start_count + 1))
+    if [[ "${start_count}" -eq 2 ]]; then
+      return 42
+    fi
+  fi
+  return 0
+}
+sleep() { :; }
+capture_claude_argv() { :; }
+scenario_3_restart_resume
+echo "FAILED=${FAILED}"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "FAILED=1") {
+		t.Fatalf("restart command failure must mark scenario failed; got:\n%s", out)
+	}
+}
+
+func TestScenario5_ReviveFailureMarksFailure(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "pgrep-count")
+	if err := os.WriteFile(counter, []byte("0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := sourceAndRun(t, []string{"COUNT_FILE=" + counter}, `
+FAILED=0
+SESSION_PREFIX=verify-persist-test
+TMPROOT="${TMPDIR:-/tmp}/adeck-verify-test-s5"
+ARGV_OUT="${TMPROOT}/argv.log"
+agent-deck() {
+  if [[ "$1" == "session" && "$2" == "revive" ]]; then
+    return 42
+  fi
+  return 0
+}
+resolve_tmux_session() { printf 'agentdeck_fake_session\n'; }
+pgrep() {
+  c="$(cat "${COUNT_FILE}")"
+  c=$((c + 1))
+  printf '%s' "${c}" > "${COUNT_FILE}"
+  if [[ "${c}" -eq 1 ]]; then
+    printf '12345\n'
+    return 0
+  fi
+  return 1
+}
+kill() { return 0; }
+sleep() { :; }
+scenario_5_reviver_respawns_killed_pipe
+echo "FAILED=${FAILED}"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "FAILED=1") {
+		t.Fatalf("revive command failure must mark scenario failed; got:\n%s", out)
+	}
+}
+
+func TestCleanup_RemovesFullTitlesFromJSONList(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; cleanup JSON path depends on jq")
+	}
+	record := filepath.Join(t.TempDir(), "calls.log")
+	out, err := sourceAndRun(t, []string{"RECORD=" + record}, `
+SESSION_PREFIX=verify-persist-123456
+LOGINSIM_SCOPE=adeck-verify-loginsim-test
+TMPROOT=""
+agent-deck() {
+  if [[ "$1" == "list" && "${2:-}" == "--json" ]]; then
+    cat <<'JSON'
+[
+  {"title":"verify-persist-123456-s1","id":"id-1"},
+  {"title":"unrelated","id":"id-2"}
+]
+JSON
+    return 0
+  fi
+  if [[ "$1" == "list" ]]; then
+    printf 'TITLE                GROUP           PATH                                     ID\n'
+    printf 'verify-persist-12... T               /tmp/path                                id-1\n'
+    return 0
+  fi
+  if [[ "$1" == "session" && "$2" == "stop" ]]; then
+    printf 'stop:%s\n' "$3" >> "${RECORD}"
+    return 0
+  fi
+  if [[ "$1" == "remove" ]]; then
+    printf 'remove:%s\n' "$2" >> "${RECORD}"
+    return 0
+  fi
+  return 0
+}
+systemctl() { return 0; }
+cleanup
+if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "stop:verify-persist-123456-s1") ||
+		!strings.Contains(out, "remove:verify-persist-123456-s1") {
+		t.Fatalf("cleanup must use full JSON titles instead of truncated table output; got:\n%s", out)
+	}
+}
+
+func TestFakeClaudeStub_UsesPortableSleepDuration(t *testing.T) {
+	dir := t.TempDir()
+	sleepArg := filepath.Join(dir, "sleep-arg.log")
+	fakeSleep := `#!/usr/bin/env bash
+printf '%s\n' "$*" > "${SLEEP_ARG_OUT}"
+exit 33
+`
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte(fakeSleep), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	argvFile := filepath.Join(dir, "argv.log")
+	cmd := exec.Command(fakeClaudePath(t), "--session-id", "abc")
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+":"+os.Getenv("PATH"),
+		"SLEEP_ARG_OUT="+sleepArg,
+		"AGENT_DECK_VERIFY_ARGV_OUT="+argvFile,
+	)
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("fake sleep should stop the stub after the first sleep call")
+	}
+	data, readErr := os.ReadFile(sleepArg)
+	if readErr != nil {
+		t.Fatalf("fake sleep was not invoked: %v", readErr)
+	}
+	got := strings.TrimSpace(string(data))
+	if got == "" || strings.Contains(got, "infinity") {
+		t.Fatalf("stub must not rely on non-portable 'sleep infinity'; sleep arg = %q", got)
+	}
+	argv, readErr := os.ReadFile(argvFile)
+	if readErr != nil {
+		t.Fatalf("argv log was not written: %v", readErr)
+	}
+	if strings.TrimSpace(string(argv)) != "--session-id abc" {
+		t.Fatalf("argv log = %q, want --session-id abc", strings.TrimSpace(string(argv)))
 	}
 }
 

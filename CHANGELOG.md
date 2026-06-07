@@ -66,7 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `verify-session-persistence.sh` now degrades truthfully on macOS/non-systemd
   hosts: scenarios 3/4 `[SKIP]` instead of false `[FAIL]` when claude argv is
   unobservable, scenario 5 resolves its tmux name via `session show --json`, and
-  the harness cleans up its own tempdir. Gated by new macOS + Linux unit tests.
+  the harness cleans up its own tempdir and sessions by full JSON title. The
+  harness now requires `jq` explicitly and the fake Claude stub no longer relies
+  on GNU-only `sleep infinity`. Gated by new macOS + Linux unit tests.
 
 ## [1.9.49] - 2026-06-07
 
