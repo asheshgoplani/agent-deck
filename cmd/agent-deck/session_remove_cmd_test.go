@@ -50,7 +50,10 @@ func addTestSession(t *testing.T, home, workPath, title string) string {
 // without racing the status worker.
 func forceSetStatus(t *testing.T, home, id string, status session.Status) {
 	t.Helper()
-	t.Setenv("HOME", home)
+	// Must match the XDG isolation runAgentDeck gives its subprocesses, so this
+	// in-process storage mutation lands in the SAME state.db the add/remove CLI
+	// subprocesses use (both under `home`), not the shared package sandbox.
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "ch_support_test")
 
 	storage, err := session.NewStorageWithProfile("")

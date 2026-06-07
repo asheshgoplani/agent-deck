@@ -71,6 +71,29 @@ func isolatePackageHome(pattern string) {
 	os.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 }
 
+// isolateLegacyHome points HOME and every XDG base dir at `home` for the
+// duration of the test (auto-restored via t.Setenv).
+//
+// Tests that seed the legacy ~/.agent-deck/ layout (config.toml, hooks/, …)
+// and override only HOME used to rely on agentpaths' legacy-path fallback:
+// EffectiveConfigPath returns the XDG path when it exists and only falls back
+// to ~/.agent-deck otherwise. With XDG_*_HOME left pointing at the shared
+// package-level sandbox (isolatePackageHome), any sibling test that wrote a
+// config.toml there materializes the XDG path and suppresses the fallback — so
+// the legacy-seeding test silently reads the sibling's config instead of its
+// own. That made a cluster of tests pass in isolation but fail in the full
+// suite (order-dependent cross-test pollution). Redirecting XDG under the
+// test's own `home` keeps the fallback reaching the seeded legacy files and
+// isolates the test from siblings.
+func isolateLegacyHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+}
+
 // cleanupTestSessions kills any tmux sessions created during testing.
 // IMPORTANT: Only match specific known test artifacts, NOT broad patterns.
 // Broad patterns like HasPrefix("agentdeck_test") or Contains("test_") kill

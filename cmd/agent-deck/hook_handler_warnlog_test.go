@@ -38,7 +38,7 @@ func TestWriteHookStatus_WarnsOnMkdirError(t *testing.T) {
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 
 	// Place a regular file where the hooks directory should be, so MkdirAll
 	// fails with "not a directory".
@@ -73,7 +73,7 @@ func TestWriteHookStatus_WarnsOnWriteFileError(t *testing.T) {
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 
 	hooksDir := filepath.Join(home, ".agent-deck", "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -100,7 +100,7 @@ func TestWriteCostEvent_WarnsOnMkdirError(t *testing.T) {
 	logDir := initTestLogging(t)
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 
 	// Stage a valid Claude transcript so writeCostEvent gets past the
 	// transcript-path validation and reaches the MkdirAll(costDir) call.

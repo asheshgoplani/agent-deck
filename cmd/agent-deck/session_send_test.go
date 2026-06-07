@@ -65,7 +65,7 @@ func TestShouldSkipConductorHeartbeatSend_UsesHeartbeatPrefixOnlyForConductors(t
 
 func TestShouldSkipConductorHeartbeatSend_ZeroLastActivitySends(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateLegacyHome(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -119,7 +119,7 @@ func writeHookStatusForTest(t *testing.T, instanceID string, age time.Duration) 
 // heartbeat MUST be suppressed.
 func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateLegacyHome(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -162,7 +162,7 @@ func TestShouldSkipConductorHeartbeatSend_SkipsWhenIdleExceeded(t *testing.T) {
 // "fire never".
 func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateLegacyHome(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",
@@ -201,7 +201,7 @@ func TestShouldSkipConductorHeartbeatSend_DoesNotSkipWithinIdleWindow(t *testing
 // last activity is far older than any plausible threshold.
 func TestShouldSkipConductorHeartbeatSend_DisabledThresholdNeverSkips(t *testing.T) {
 	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	isolateLegacyHome(t, tmpHome)
 
 	if err := session.SaveConductorMeta(&session.ConductorMeta{
 		Name:                 "ops",

@@ -16,9 +16,7 @@ import (
 func withTempPluginCatalog(t *testing.T, content string) string {
 	t.Helper()
 	temp := t.TempDir()
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", temp)
-	t.Cleanup(func() { os.Setenv("HOME", originalHome) })
+	isolateLegacyHome(t, temp)
 
 	dir := filepath.Join(temp, ".agent-deck")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

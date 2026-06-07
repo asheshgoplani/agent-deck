@@ -208,6 +208,7 @@ func cliEnvForIssue961(home string) []string {
 		if strings.HasPrefix(kv, "TMUX") ||
 			strings.HasPrefix(kv, "AGENTDECK_") ||
 			strings.HasPrefix(kv, "HOME=") ||
+			strings.HasPrefix(kv, "XDG_") ||
 			strings.HasPrefix(kv, "CLAUDE_CONFIG_DIR=") {
 			continue
 		}
@@ -215,6 +216,10 @@ func cliEnvForIssue961(home string) []string {
 	}
 	env = append(env,
 		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)

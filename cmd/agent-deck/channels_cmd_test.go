@@ -69,6 +69,15 @@ func runAgentDeck(
 		if strings.HasPrefix(kv, "HOME=") {
 			continue
 		}
+		// Strip inherited XDG_*_HOME so the subprocess resolves all agent-deck
+		// paths under the test's own HOME below, not the shared package-level
+		// sandbox (isolatePackageHome). Without this, every runAgentDeck call
+		// writes its state.db/config to the same inherited XDG_DATA_HOME, so
+		// sessions added by one test leak into another's profile — e.g. the
+		// parallel-rm reproducer saw 19 sessions left behind by sibling tests.
+		if strings.HasPrefix(kv, "XDG_") {
+			continue
+		}
 		// Strip CLAUDE_CONFIG_DIR so the test's isolated HOME/.claude is the
 		// effective Claude config dir — otherwise session search leaks into
 		// the developer's real ~/.claude/projects tree. Added for #483.
@@ -79,6 +88,10 @@ func runAgentDeck(
 	}
 	env = append(env,
 		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"XDG_STATE_HOME="+filepath.Join(home, ".local", "state"),
 		"AGENTDECK_PROFILE=ch_support_test",
 		"TERM=dumb",
 	)

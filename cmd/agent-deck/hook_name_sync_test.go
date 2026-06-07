@@ -101,7 +101,7 @@ func TestFindClaudeSessionName_MissingSessionsDir(t *testing.T) {
 // storage.
 func TestApplyClaudeTitleSync_UpdatesInstance(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_572")
 
 	claudeDir := filepath.Join(home, ".claude")
@@ -160,7 +160,7 @@ func TestApplyClaudeTitleSync_UpdatesInstance(t *testing.T) {
 // the existing adjective-noun agent-deck title.
 func TestApplyClaudeTitleSync_NoopWhenNameMissing(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_572_noop")
 
 	storage, err := session.NewStorageWithProfile("sync_test_572_noop")
@@ -202,7 +202,7 @@ func TestApplyClaudeTitleSync_NoopWhenNameMissing(t *testing.T) {
 // can tick for unrelated reasons like WAL rollover on Open).
 func TestApplyClaudeTitleSync_NoopWhenNameEqualsTitle(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_572_equal")
 
 	claudeDir := filepath.Join(home, ".claude")
@@ -256,7 +256,7 @@ func TestApplyClaudeTitleSync_NoopWhenNameEqualsTitle(t *testing.T) {
 // /rename of its own session.
 func TestApplyClaudeTitleSync_NoopWhenTitleLocked(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_697_lock")
 
 	claudeDir := filepath.Join(home, ".claude")
@@ -377,7 +377,7 @@ func titleAfterSync(t *testing.T, home, profile, sid, claudeName, startTitle str
 // per-session TitleLocked. Companion to the #697 per-session test above.
 func TestApplyClaudeTitleSync_NoopWhenSyncDisabled(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_disabled")
 	writeAgentDeckConfig(t, home, "sync_title = false\n")
 
@@ -392,7 +392,7 @@ func TestApplyClaudeTitleSync_NoopWhenSyncDisabled(t *testing.T) {
 // against the gate accidentally short-circuiting the normal path.
 func TestApplyClaudeTitleSync_SyncsWhenEnabled(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	t.Setenv("AGENTDECK_PROFILE", "sync_test_enabled")
 	writeAgentDeckConfig(t, home, "sync_title = true\n")
 

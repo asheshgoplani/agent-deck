@@ -15,7 +15,7 @@ import (
 func isolateFeedbackHome(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	isolateLegacyHome(t, tmp)
 	// ClearUserConfigCache so the next LoadUserConfig reads from the new HOME.
 	session.ClearUserConfigCache()
 	t.Cleanup(func() { session.ClearUserConfigCache() })

@@ -332,7 +332,7 @@ func TestSessionFork_WithStateOptionsPropagatedBeforeStart(t *testing.T) {
 
 func TestSessionFork_WithStateHookCapturesResolvedStateBeforeStart(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	isolateLegacyHome(t, home)
 	session.ClearUserConfigCache()
 	t.Cleanup(session.ClearUserConfigCache)
 
