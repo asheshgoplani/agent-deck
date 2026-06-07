@@ -3699,12 +3699,31 @@ func (i *Instance) UpdateStatus() error {
 		i.Status = StatusRunning
 	case "waiting":
 		if i.Tool == "shell" {
-			i.Status = StatusIdle
+			// tmux sees a shell prompt ("waiting") but a foreground process may still be
+			// running (e.g. "yarn dev", "mvn spring-boot:run"). pane_current_command is
+			// already cached by RefreshPaneInfoCache so this lookup is free.
+			if paneInfo, ok := tmux.GetCachedPaneInfo(i.tmuxSession.Name); ok &&
+				paneInfo.CurrentCommand != "" && !isShellBinary(paneInfo.CurrentCommand) {
+				i.Status = StatusRunning
+			} else {
+				i.Status = StatusIdle
+			}
 		} else {
 			i.Status = StatusWaiting
 		}
 	case "idle":
-		i.Status = StatusIdle
+		// For acknowledged shell sessions, a foreground process may still be running
+		// even though the user has already attached. Keep showing running in that case.
+		if i.Tool == "shell" {
+			if paneInfo, ok := tmux.GetCachedPaneInfo(i.tmuxSession.Name); ok &&
+				paneInfo.CurrentCommand != "" && !isShellBinary(paneInfo.CurrentCommand) {
+				i.Status = StatusRunning
+			} else {
+				i.Status = StatusIdle
+			}
+		} else {
+			i.Status = StatusIdle
+		}
 	case "starting":
 		i.Status = StatusStarting
 	case "inactive":

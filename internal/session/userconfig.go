@@ -2571,6 +2571,17 @@ func IsCodexCompatible(toolName string) bool {
 	return false
 }
 
+// isShellBinary returns true if cmd is a known interactive shell process name.
+// Used to distinguish "shell at a prompt" from "shell running a foreground command"
+// (e.g. "node" from "yarn dev", "java" from "mvn spring-boot:run").
+func isShellBinary(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "nushell", "pwsh", "powershell":
+		return true
+	}
+	return false
+}
+
 // GetCodexCommand returns the configured Codex command/alias.
 func GetCodexCommand() string {
 	userConfig, _ := LoadUserConfig()
