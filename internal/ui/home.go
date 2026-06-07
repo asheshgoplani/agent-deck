@@ -9879,6 +9879,13 @@ func (h *Home) forkSessionCmdWithOptions(
 					); err != nil {
 						return sessionForkedMsg{err: err, sourceID: sourceID}
 					}
+					// gitignored files are copied via git's exclude machinery; a jj
+					// repo with no git worktree root (pure jj, or a linked workspace)
+					// can't enumerate them, so tell the user instead of dropping them
+					// silently.
+					if forkState.WithIgnored && !jujutsu.SupportsGitignoredCopy(source.ProjectPath) {
+						forkNotice = joinForkNotices(forkNotice, "forked without gitignored files: this jj repo has no git metadata to copy them")
+					}
 				default:
 					return sessionForkedMsg{err: fmt.Errorf("--with-state is not supported for this repository's VCS backend"), sourceID: sourceID}
 				}

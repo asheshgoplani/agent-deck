@@ -132,10 +132,13 @@ func MaterializeWipFromParent(parentDir, workspacePath string, includeIgnored bo
 }
 
 // BookmarkExists reports whether a jj bookmark (branch) named name exists in the
-// repo. Newer jj versions accept bookmark names positionally; --name is not
-// supported by jj 0.42.0.
+// repo. The name is passed with jj's "exact:" string-pattern prefix because a
+// bare positional name is matched as a GLOB by default — so a name containing a
+// glob metacharacter (or one that is a glob-prefix of a real bookmark) would
+// otherwise report a false-positive collision. (jj 0.42.0 rejects the --name
+// flag entirely; the pattern must be positional.)
 func BookmarkExists(repoDir, name string) (bool, error) {
-	cmd := exec.Command("jj", "bookmark", "list", name, "-R", repoDir, "--ignore-working-copy") // #nosec G204 -- slice args, not shell-formed
+	cmd := exec.Command("jj", "bookmark", "list", "exact:"+name, "-R", repoDir, "--ignore-working-copy") // #nosec G204 -- slice args, not shell-formed
 	out, err := cmd.Output()
 	if err != nil {
 		return false, err
@@ -187,6 +190,16 @@ func copyGitignoredFromParent(parentDir, destDir string) error {
 		}
 	}
 	return nil
+}
+
+// SupportsGitignoredCopy reports whether copyGitignoredFromParent could actually
+// enumerate and copy gitignored files for a fork rooted at dir — i.e. whether dir
+// resolves to a git worktree root (a colocated jj repo). A pure jj repo (or a
+// linked jj workspace) has no such root, so a with-ignored fork would silently
+// carry nothing; callers use this to emit a notice instead.
+func SupportsGitignoredCopy(dir string) bool {
+	_, ok := gitWorktreeRoot(dir)
+	return ok
 }
 
 func gitWorktreeRoot(dir string) (string, bool) {

@@ -202,6 +202,45 @@ func TestMaterializeWipFromParent_SucceedsWithOversizedWorkingFile(t *testing.T)
 	require.Equal(t, "base content\nWIP EDIT\n", string(got), "tracked WIP must still carry despite the oversized file")
 }
 
+// TestBookmarkExists_MatchesExactlyNotGlob guards against jj's default glob
+// matching producing false-positive collisions: `jj bookmark list <name>` treats
+// <name> as a glob, so a query containing a metacharacter (or a query that is a
+// glob-prefix of a real bookmark) would spuriously report the bookmark as
+// existing. BookmarkExists must match the literal name only.
+func TestBookmarkExists_MatchesExactlyNotGlob(t *testing.T) {
+	requireJJ(t)
+	repo := t.TempDir()
+	jjMust(t, repo, "git", "init", "--colocate")
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "f.txt"), []byte("x\n"), 0o644))
+	jjMust(t, repo, "describe", "-m", "base")
+	jjMust(t, repo, "bookmark", "create", "release-v1.0", "-r", "@")
+
+	exists, err := BookmarkExists(repo, "release-v1.0")
+	require.NoError(t, err)
+	require.True(t, exists, "the literal bookmark name must be found")
+
+	globbed, err := BookmarkExists(repo, "release-v1*")
+	require.NoError(t, err)
+	require.False(t, globbed, "a glob pattern must NOT match — exact name comparison only")
+}
+
+// TestSupportsGitignoredCopy distinguishes repos where with-ignored can carry
+// gitignored files (colocated jj, has a git worktree to enumerate against) from
+// those where it would silently no-op. A linked jj workspace has only .jj and no
+// .git, so forking such a session (fork-of-a-fork) can't enumerate ignored files.
+// The fork path uses this to surface a notice instead of dropping files silently
+// (#1305 BUG-04).
+func TestSupportsGitignoredCopy(t *testing.T) {
+	requireJJ(t)
+
+	colocated := setupJJParentWithWIP(t)
+	require.True(t, SupportsGitignoredCopy(colocated), "colocated jj repo has git metadata for ignored-file enumeration")
+
+	linked := filepath.Join(t.TempDir(), "workspace")
+	jjMust(t, colocated, "workspace", "add", "--name", "linked", linked)
+	require.False(t, SupportsGitignoredCopy(linked), "a linked jj workspace has no git worktree root, so ignored-file copy can't run")
+}
+
 func jjWorkspaceList(t *testing.T, dir string) string {
 	t.Helper()
 	cmd := exec.Command("jj", "workspace", "list", "-R", dir)
