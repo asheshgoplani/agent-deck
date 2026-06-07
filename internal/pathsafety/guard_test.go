@@ -27,13 +27,21 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body so the deferred HOME-restore below
+// actually runs: TestMain calls os.Exit, which does NOT run deferred functions,
+// so registering the defer here and returning the exit code is the only way to
+// guarantee the temp dir is removed (2026-06-07 pty-exhaustion incident class).
+func runTestMain(m *testing.M) int {
 	// This package's OWN tests must be sandboxed too — IsolateHome points
 	// HOME+XDG at a temp dir. The guard below then proves the sandbox is real
 	// by comparing resolved paths against the OS-level real home (read from
 	// the user database, which IsolateHome does NOT touch).
 	cleanupHome := testutil.IsolateHome()
 	defer cleanupHome()
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // realHome returns the developer's actual home directory, independent of the

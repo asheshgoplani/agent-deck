@@ -13,6 +13,15 @@ import (
 // accidental modification of production data.
 // CRITICAL: This was missing and caused test data to overwrite production sessions!
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body so the cleanup defers below actually
+// run: TestMain calls os.Exit, which does NOT run deferred functions, so
+// registering them here and returning the exit code is the only way to guarantee
+// the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
+// pty-exhaustion incident class).
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG FIRST. This package was the concrete trigger of the
 	// 2026-06-04 data-loss incident (S5): it set AGENTDECK_PROFILE=_test but did
 	// NOT override HOME/XDG, so an un-sandboxed `go test ./internal/ui/...`
@@ -46,7 +55,7 @@ func TestMain(m *testing.M) {
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
 
-	os.Exit(code)
+	return code
 }
 
 // cleanupTestSessions kills any tmux sessions created during testing.

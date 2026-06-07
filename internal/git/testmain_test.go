@@ -8,6 +8,15 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body so the cleanup defers below actually
+// run: TestMain calls os.Exit, which does NOT run deferred functions, so
+// registering them here and returning the exit code is the only way to guarantee
+// the isolated TMUX_TMPDIR and HOME temp dirs are removed (2026-06-07
+// pty-exhaustion incident class).
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG so any agent-deck path resolution lands in a temp dir,
 	// never the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
 	// See internal/testutil/homeenv.go for the postmortem.
@@ -26,5 +35,5 @@ func TestMain(m *testing.M) {
 	cleanupTmux := testutil.IsolateTmuxSocket()
 	defer cleanupTmux()
 
-	os.Exit(m.Run())
+	return m.Run()
 }
