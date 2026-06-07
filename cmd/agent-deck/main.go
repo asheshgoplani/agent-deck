@@ -3190,7 +3190,20 @@ func handleUninstall(args []string) {
 		fmt.Println()
 	}
 
-	homeDir, _ := os.UserHomeDir()
+	// Resolve the home directory up front. Every path the uninstaller collects,
+	// backs up, and removes (binaries, tmux config, legacy data dir) is rooted
+	// here. If resolution fails or yields an empty string, those paths degrade
+	// to cwd-relative junk (e.g. ".tmux.conf") and we could back up / delete the
+	// wrong files. Abort before touching anything.
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		fmt.Fprintln(os.Stderr, "Error: cannot resolve home directory; refusing to uninstall with invalid paths")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "       %v\n", err)
+		}
+		os.Exit(1)
+	}
+
 	var foundItems []uninstallFoundItem
 
 	// Check for Homebrew installation

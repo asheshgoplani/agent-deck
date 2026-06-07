@@ -306,10 +306,59 @@ func TestXDGTask6HelperProcess(t *testing.T) {
 		handleTry("default", []string{"--help"})
 	case "session-set-help":
 		handleSessionSet("default", []string{"--help"})
+	case "uninstall-no-home":
+		// handleUninstall must abort with os.Exit(1) before touching any
+		// path when the home directory cannot be resolved. Caller clears
+		// HOME so os.UserHomeDir() fails on Linux.
+		handleUninstall([]string{"-y", "--keep-tmux-config"})
 	default:
 		os.Exit(2)
 	}
 	os.Exit(0)
+}
+
+// TestXDGTask6_UninstallAbortsWhenHomeUnresolvable is the regression test for
+// the remaining P2 (R3 #1294): handleUninstall previously did
+// `homeDir, _ := os.UserHomeDir()`, swallowing the error. With HOME unset and
+// resolution failing, homeDir became "" and every collected path degraded to
+// cwd-relative junk (".tmux.conf", binary/data paths under cwd), so backups and
+// removals targeted the wrong files. The fix aborts early with a clear error
+// and a non-zero exit before collecting or removing anything.
+func TestXDGTask6_UninstallAbortsWhenHomeUnresolvable(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestXDGTask6HelperProcess", "--", "uninstall-no-home")
+	// Drop HOME (and XDG/USERPROFILE) so os.UserHomeDir() fails on Linux.
+	env := []string{"AGENT_DECK_TASK6_HELPER_PROCESS=1"}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "HOME=") ||
+			strings.HasPrefix(e, "USERPROFILE=") ||
+			strings.HasPrefix(e, "XDG_CONFIG_HOME=") ||
+			strings.HasPrefix(e, "XDG_DATA_HOME=") ||
+			strings.HasPrefix(e, "XDG_CACHE_HOME=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = env
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected uninstall to abort with non-zero exit when home is unresolvable; got success:\n%s", out)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected *exec.ExitError, got %T: %v\n%s", err, err, out)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit code 1, got %d:\n%s", exitErr.ExitCode(), out)
+	}
+	if !strings.Contains(string(out), "cannot resolve home directory") {
+		t.Fatalf("expected clear home-resolution error message; got:\n%s", out)
+	}
+	// The abort must happen before the uninstaller does any work, so the
+	// "Found:" / "will be removed" collection output must be absent.
+	if strings.Contains(string(out), "The following will be removed") {
+		t.Fatalf("uninstall collected/removed items despite unresolvable home:\n%s", out)
+	}
 }
 
 func TestXDGTask6_UninstallDryRunListsExistingXDGAndLegacyLocations(t *testing.T) {
