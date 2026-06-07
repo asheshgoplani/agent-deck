@@ -3,14 +3,12 @@ package session
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
-	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 )
 
 const (
@@ -36,135 +34,38 @@ type Config struct {
 	Version int `json:"version"`
 }
 
-// --- S4 data-loss safeguard (2026-06-04 incident, chain-link #2) -------------
-//
-// GetAgentDeckDir() is the single chokepoint every other agent-deck path
-// function (config.json, profiles/<p>/state.db, worker-scratch, logs) builds
-// on. It resolves via os.UserHomeDir(), which reads $HOME. When $HOME points at
-// the developer's real home (e.g. a test that forgot testutil.IsolateHome(), or
-// any caller running without an XDG/sandbox dir present) the resolver used to
-// hand back the live ~/.agent-deck with no signal at all — so an un-isolated
-// test silently touched real user data.
-//
-// S4 makes that chain-link fail closed *in the production resolver itself*,
-// complementing S5's opt-in IsolateHome() + pathsafety guard test:
-//
-//   - When running under test (testing.Testing()==true) AND resolution lands
-//     under the real OS-user home, GetAgentDeckDir() REFUSES (returns an error)
-//     instead of returning the live path, and emits a loud one-time warning.
-//   - The real binary (testing.Testing()==false) is UNCHANGED: it still
-//     resolves ~/.agent-deck normally and silently.
-//
-// The real home is read from the OS user database (os/user), NOT $HOME, so the
-// guard can tell a sandboxed HOME from the real home even after $HOME is
-// overridden — mirroring internal/pathsafety's realHome().
-
-var (
-	legacyFallbackWarnOnce sync.Once
-	legacyFallbackWarnMu   sync.Mutex
-	legacyFallbackWarnSink io.Writer = os.Stderr
-)
-
-// setLegacyFallbackWarnSink redirects the S4 warning (test hook). Returns a
-// restore func.
-func setLegacyFallbackWarnSink(w io.Writer) func() {
-	legacyFallbackWarnMu.Lock()
-	prev := legacyFallbackWarnSink
-	legacyFallbackWarnSink = w
-	legacyFallbackWarnMu.Unlock()
-	return func() {
-		legacyFallbackWarnMu.Lock()
-		legacyFallbackWarnSink = prev
-		legacyFallbackWarnMu.Unlock()
-	}
-}
-
-// resetLegacyFallbackWarnOnce re-arms the debounce (test hook).
-func resetLegacyFallbackWarnOnce() {
-	legacyFallbackWarnMu.Lock()
-	legacyFallbackWarnOnce = sync.Once{}
-	legacyFallbackWarnMu.Unlock()
-}
-
-// osUserRealHome returns the developer's actual home from the OS user database,
-// independent of $HOME. Empty string if it cannot be determined (in which case
-// the guard cannot prove a real-home hit and stays out of the way).
-func osUserRealHome() string {
-	if u, err := user.Current(); err == nil && u.HomeDir != "" {
-		return filepath.Clean(u.HomeDir)
-	}
-	return ""
-}
-
-// pathUnderReal reports whether p is the real home (or its ~/.agent-deck) or
-// lives beneath it.
-func pathUnderReal(p, realHome string) bool {
-	if realHome == "" {
-		return false
-	}
-	clean := filepath.Clean(p)
-	if clean == realHome || strings.HasPrefix(clean, realHome+string(os.PathSeparator)) {
-		return true
-	}
-	realAgentDeck := filepath.Join(realHome, ".agent-deck")
-	return clean == realAgentDeck || strings.HasPrefix(clean, realAgentDeck+string(os.PathSeparator))
-}
-
-// warnLegacyFallbackOnce emits the S4 legacy-fallback warning exactly once.
-func warnLegacyFallbackOnce(resolved string) {
-	legacyFallbackWarnMu.Lock()
-	once := &legacyFallbackWarnOnce
-	sink := legacyFallbackWarnSink
-	legacyFallbackWarnMu.Unlock()
-	once.Do(func() {
-		fmt.Fprintf(sink,
-			"agentpaths: resolved to legacy ~/.agent-deck (%s) (no XDG dir present); "+
-				"this touches REAL user data. If this is a test, it is NOT sandboxed — "+
-				"call testutil.IsolateHome() in TestMain and run with a temp HOME+XDG "+
-				"(2026-06-04 data-loss incident, S4).\n",
-			resolved)
-	})
-}
-
-// GetAgentDeckDir returns the base agent-deck directory (~/.agent-deck).
-//
-// See the S4 block above: under test it refuses (and warns) when resolution
-// lands under the real OS-user home; the real binary is unchanged.
+// GetAgentDeckDir returns the effective agent-deck data directory.
+// It is a broad compatibility wrapper for data/runtime callers, not the
+// config root. Profile/session migrations must use profileDataRootDir().
 func GetAgentDeckDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %w", err)
-	}
-	resolved := filepath.Join(homeDir, ".agent-deck")
+	return agentpaths.EffectiveDataDir(
+		ProfilesDirName,
+		"sessions.json",
+		"hooks",
+		"events",
+		"inboxes",
+		"conductor",
+		"watcher",
+		"watchers",
+		"locks",
+		"runtime",
+		"logs",
+		"cost-events",
+	)
+}
 
-	// S4 fail-closed guard: only active under `go test`. The real binary keeps
-	// the original behavior exactly.
-	if testing.Testing() {
-		if realHome := osUserRealHome(); pathUnderReal(resolved, realHome) {
-			warnLegacyFallbackOnce(resolved)
-			return "", fmt.Errorf(
-				"agentpaths: refusing to resolve agent-deck dir under the real home %q "+
-					"(resolved %q) while running under test — the suite is NOT sandboxed; "+
-					"call testutil.IsolateHome() in TestMain (2026-06-04 data-loss incident, S4)",
-				realHome, resolved)
-		}
-	}
-
-	return resolved, nil
+func profileDataRootDir() (string, error) {
+	return agentpaths.EffectiveDataDir(ProfilesDirName, "sessions.json")
 }
 
 // GetConfigPath returns the path to the global config file
 func GetConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, ConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(ConfigFileName)
 }
 
 // GetProfilesDir returns the path to the profiles directory
 func GetProfilesDir() (string, error) {
-	dir, err := GetAgentDeckDir()
+	dir, err := profileDataRootDir()
 	if err != nil {
 		return "", err
 	}

@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,25 +26,10 @@ import (
 // register the cleanup before returning.
 func withTempAgentDeckHome(t *testing.T, configTOML string) {
 	t.Helper()
-	tmpDir := t.TempDir()
+	home := setXDGTestHome(t)
 	if configTOML != "" {
-		dir := filepath.Join(tmpDir, ".agent-deck")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(configTOML), 0o644); err != nil {
-			t.Fatalf("write config.toml: %v", err)
-		}
+		writeXDGTestConfig(t, home, configTOML)
 	}
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", tmpDir); err != nil {
-		t.Fatalf("setenv HOME: %v", err)
-	}
-	session.ClearUserConfigCache()
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", oldHome)
-		session.ClearUserConfigCache()
-	})
 }
 
 // armHomeWithOneRemoteSession sets up a Home whose cursor sits on a

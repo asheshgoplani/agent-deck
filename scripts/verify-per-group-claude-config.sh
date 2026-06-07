@@ -40,7 +40,8 @@ else
 fi
 
 # --- Config ---
-CONFIG_FILE="${HOME}/.agent-deck/config.toml"
+export XDG_CONFIG_HOME="${HOME}/.config"
+CONFIG_FILE="${XDG_CONFIG_HOME}/agent-deck/config.toml"
 BACKUP_FILE=""
 GROUP_A="verify-group-a"
 GROUP_B="verify-group-b"

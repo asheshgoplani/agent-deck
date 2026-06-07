@@ -18,6 +18,7 @@ import (
 
 	dark "github.com/thiagokokada/dark-mode-go"
 
+	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -245,6 +246,31 @@ type UISettings struct {
 	// display filter only — `agent-deck launch -c <tool>` still spawns a hidden
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
+
+	// Footer controls the style of the bottom hint bar. Valid values:
+	//   "full" (default)    — the historic verbose bar: filled key chips,
+	//                         width-adaptive, advertising every action. This is
+	//                         today's behavior and stays the default so the look
+	//                         never changes without an explicit opt-in.
+	//   "curated"           — lighter, dim inline text advertising only the
+	//                         actions relevant to the selected row, with the
+	//                         settings and help keys always last (opt-in).
+	//   "compact"           — force the abbreviated chip tier regardless of width.
+	//   "minimal"           — force the keys-only tier regardless of width.
+	// Empty or unknown values fall back to "full". This is purely a
+	// rendering preference (TUI UX initiative, item 1): no keybinding is
+	// added, removed, or changed — only what the footer advertises. Every
+	// action remains reachable by its key and is fully listed under help (?).
+	Footer string `toml:"footer"`
+
+	// NewSessionEnterAdvances controls what Enter does on the free-text
+	// Name/Branch fields of the new-session dialog (PR #1295). Default false
+	// preserves today's behavior: Enter from Name/Branch submits the form. When
+	// true, Enter advances focus to the next field instead (so typing a name and
+	// pressing Enter no longer silently creates a session with all defaults), and
+	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
+	// it is strictly additive and always available regardless of this toggle.
+	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -264,6 +290,36 @@ const (
 	ITermOpenAsWindow  = "window"
 	DefaultITermOpenAs = ITermOpenAsTab
 )
+
+// Footer hint-bar styles. See UISettings.Footer.
+const (
+	FooterCurated = "curated"
+	FooterFull    = "full"
+	FooterCompact = "compact"
+	FooterMinimal = "minimal"
+	// DefaultFooter is the historic verbose bar ("full"). Keeping it as the
+	// default preserves today's look; curated/compact/minimal are opt-in via
+	// config.toml [ui] footer.
+	DefaultFooter = FooterFull
+)
+
+// GetFooter returns the configured footer style, normalized to one of the
+// known values. Empty or unknown input falls back to DefaultFooter
+// ("full"). Matching is case-insensitive so users may write "Full" or
+// "MINIMAL" in TOML.
+func (u UISettings) GetFooter() string {
+	switch strings.ToLower(strings.TrimSpace(u.Footer)) {
+	case FooterFull:
+		return FooterFull
+	case FooterCompact:
+		return FooterCompact
+	case FooterMinimal:
+		return FooterMinimal
+	case FooterCurated:
+		return FooterCurated
+	}
+	return DefaultFooter
+}
 
 // GetPreviewPct returns the configured preview percentage, clamped to
 // [MinPreviewPct, MaxPreviewPct]. Falls back to DefaultPreviewPct when
@@ -319,6 +375,14 @@ func (u UISettings) GetRemoteSessionRefreshSecs() int {
 		return MaxRemoteSessionRefreshSecs
 	}
 	return val
+}
+
+// GetNewSessionEnterAdvances reports whether Enter on the new-session dialog's
+// free-text Name/Branch fields should advance focus (true) instead of
+// submitting the form (false). Default false preserves today's behavior
+// (Enter submits). Ctrl+S submits in both modes. See PR #1295.
+func (u UISettings) GetNewSessionEnterAdvances() bool {
+	return u.NewSessionEnterAdvances
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval
@@ -2146,11 +2210,7 @@ var (
 
 // GetUserConfigPath returns the path to the user config file
 func GetUserConfigPath() (string, error) {
-	dir, err := GetAgentDeckDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, UserConfigFileName), nil
+	return agentpaths.EffectiveConfigPath(UserConfigFileName)
 }
 
 // LoadUserConfig loads the user configuration from TOML file.

@@ -638,8 +638,11 @@ func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
 	if !strings.Contains(conductorHeartbeatScript, "{PROFILE}/HEARTBEAT_RULES.md") {
 		t.Fatal("heartbeat script should look up per-profile HEARTBEAT_RULES.md")
 	}
+	if !strings.Contains(conductorHeartbeatScript, "$CONDUCTOR_ROOT/HEARTBEAT_RULES.md") {
+		t.Fatal("heartbeat script should look up global HEARTBEAT_RULES.md under the effective conductor root")
+	}
 	if !strings.Contains(conductorHeartbeatScript, "/.agent-deck/conductor/HEARTBEAT_RULES.md") {
-		t.Fatal("heartbeat script should fall back to the global HEARTBEAT_RULES.md")
+		t.Fatal("heartbeat script should fall back to the legacy global HEARTBEAT_RULES.md")
 	}
 	// The rendered (not raw) script should carry the bridge-style prefix so the
 	// idle-pause matcher (IsConductorHeartbeatMessage) can recognise heartbeat
@@ -647,6 +650,26 @@ func TestConductorHeartbeatScript_InjectsHeartbeatRules(t *testing.T) {
 	rendered := renderConductorHeartbeatScript("alpha", "default")
 	if !strings.Contains(rendered, ConductorBridgeHeartbeatPrefix) {
 		t.Fatalf("rendered heartbeat script should emit %q prefix (matches bridge.py)", ConductorBridgeHeartbeatPrefix)
+	}
+}
+
+func TestRenderConductorHeartbeatScript_UsesXDGConductorRoot(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, "xdg data")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+
+	wantRoot := filepath.Join(xdgData, "agent-deck", "conductor")
+	script := renderConductorHeartbeatScript("alpha", "work")
+
+	if !strings.Contains(script, `CONDUCTOR_ROOT="`+wantRoot+`"`) {
+		t.Fatalf("heartbeat script should render XDG conductor root %q:\n%s", wantRoot, script)
+	}
+	if !strings.Contains(script, `"$CONDUCTOR_ROOT/alpha/HEARTBEAT_RULES.md"`) {
+		t.Fatalf("heartbeat script should check per-conductor rules under XDG root:\n%s", script)
+	}
+	if !strings.Contains(script, `"$HOME/.agent-deck/conductor/alpha/HEARTBEAT_RULES.md"`) {
+		t.Fatalf("heartbeat script should retain legacy fallback:\n%s", script)
 	}
 }
 
@@ -687,22 +710,17 @@ func TestConductorStatusJSON_ZeroActivityOmitted(t *testing.T) {
 // --- Symlink-based CLAUDE.md tests ---
 
 func TestInstallSharedClaudeMD_Default(t *testing.T) {
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
 
-	// Backup existing file if present
-	var backup []byte
-	if content, err := os.ReadFile(claudeMDPath); err == nil {
-		backup = content
-		defer func() { _ = os.WriteFile(claudeMDPath, backup, 0o644) }()
-	} else {
-		defer os.Remove(claudeMDPath)
-	}
-
 	// Test installing default template
-	err := InstallSharedClaudeMD("")
+	err = InstallSharedClaudeMD("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -744,6 +762,9 @@ func TestInstallSharedClaudeMD_Default(t *testing.T) {
 }
 
 func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	tmpDir := t.TempDir()
 	customPath := filepath.Join(tmpDir, "my-shared-claude.md")
 
@@ -752,30 +773,14 @@ func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
 		t.Fatalf("failed to create custom file: %v", err)
 	}
 
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	claudeMDPath := filepath.Join(conductorDir, "CLAUDE.md")
 
-	// Backup existing file/symlink if present
-	var backupContent []byte
-	var backupLink string
-	if linkDest, err := os.Readlink(claudeMDPath); err == nil {
-		backupLink = linkDest
-	} else if content, err := os.ReadFile(claudeMDPath); err == nil {
-		backupContent = content
-	}
-	t.Cleanup(func() {
-		os.Remove(claudeMDPath) // Remove whatever the test created (symlink or file)
-		if backupLink != "" {
-			_ = os.Symlink(backupLink, claudeMDPath)
-		} else if backupContent != nil {
-			_ = os.WriteFile(claudeMDPath, backupContent, 0o644)
-		}
-	})
-
 	// Test installing with custom path (creates symlink)
-	err := InstallSharedClaudeMD(customPath)
+	err = InstallSharedClaudeMD(customPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -801,6 +806,7 @@ func TestInstallSharedClaudeMD_CustomSymlink(t *testing.T) {
 func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	customPath := filepath.Join(t.TempDir(), "my-shared-claude.md")
 	if err := os.WriteFile(customPath, []byte("# shared rules\n"), 0o644); err != nil {
@@ -811,7 +817,11 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 		t.Fatalf("InstallSharedClaudeMD returned error: %v", err)
 	}
 
-	target := filepath.Join(tmpHome, ".agent-deck", "conductor", "CLAUDE.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	target := filepath.Join(conductorDir, "CLAUDE.md")
 	linkDest, err := os.Readlink(target)
 	if err != nil {
 		t.Fatalf("expected symlink at %q: %v", target, err)
@@ -821,15 +831,37 @@ func TestInstallSharedClaudeMD_CustomSymlinkCreatesConductorDir(t *testing.T) {
 	}
 }
 
+func TestGenerateTransitionNotifierDaemons_SurfaceLogPathErrors(t *testing.T) {
+	home := t.TempDir()
+	badXDGDataHome := filepath.Join(home, "xdg-data-file")
+	if err := os.WriteFile(badXDGDataHome, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", badXDGDataHome, err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", badXDGDataHome)
+
+	if _, err := GenerateTransitionNotifierLaunchdPlist(); err == nil {
+		t.Fatal("GenerateTransitionNotifierLaunchdPlist() error = nil, want log path lookup error")
+	}
+	if _, err := GenerateSystemdTransitionNotifierService(); err == nil {
+		t.Fatal("GenerateSystemdTransitionNotifierService() error = nil, want log path lookup error")
+	}
+}
+
 func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	if err := InstallSharedConductorInstructions(ConductorAgentCodex, ""); err != nil {
 		t.Fatalf("InstallSharedConductorInstructions returned error: %v", err)
 	}
 
-	target := filepath.Join(tmpHome, ".agent-deck", "conductor", "AGENTS.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	target := filepath.Join(conductorDir, "AGENTS.md")
 	content, err := os.ReadFile(target)
 	if err != nil {
 		t.Fatalf("failed to read AGENTS.md: %v", err)
@@ -845,6 +877,7 @@ func TestInstallSharedConductorInstructions_CodexDefault(t *testing.T) {
 func TestInstallSharedConductorInstructions_AgentsCoexist(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, "xdg-data"))
 
 	if err := InstallSharedConductorInstructions(ConductorAgentClaude, ""); err != nil {
 		t.Fatalf("InstallSharedConductorInstructions(claude) returned error: %v", err)
@@ -853,7 +886,10 @@ func TestInstallSharedConductorInstructions_AgentsCoexist(t *testing.T) {
 		t.Fatalf("InstallSharedConductorInstructions(codex) returned error: %v", err)
 	}
 
-	base := filepath.Join(tmpHome, ".agent-deck", "conductor")
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	for _, file := range []string{"CLAUDE.md", "AGENTS.md"} {
 		if _, err := os.Stat(filepath.Join(base, file)); err != nil {
 			t.Fatalf("%s should exist: %v", file, err)
@@ -1320,9 +1356,10 @@ func TestCreateSymlinkWithExpansion_MissingSourceError(t *testing.T) {
 // --- Policy MD tests ---
 
 func TestInstallPolicyMD_Default(t *testing.T) {
-	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	policyPath := filepath.Join(conductorDir, "POLICY.md")
 
 	// Backup existing file if present
@@ -1335,8 +1372,7 @@ func TestInstallPolicyMD_Default(t *testing.T) {
 	}
 
 	// Test installing default template
-	err := InstallPolicyMD("")
-	if err != nil {
+	if err := InstallPolicyMD(""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1378,8 +1414,10 @@ func TestInstallPolicyMD_CustomSymlink(t *testing.T) {
 	}
 
 	// Use actual conductor directory (cleanup after test)
-	homeDir, _ := os.UserHomeDir()
-	conductorDir := filepath.Join(homeDir, ".agent-deck", "conductor")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
 	policyPath := filepath.Join(conductorDir, "POLICY.md")
 
 	// Backup existing file/symlink if present
@@ -1400,7 +1438,7 @@ func TestInstallPolicyMD_CustomSymlink(t *testing.T) {
 	})
 
 	// Test installing with custom path (creates symlink)
-	err := InstallPolicyMD(customPath)
+	err = InstallPolicyMD(customPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1436,8 +1474,9 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 	profile := "default"
 
 	// Clean up after test
-	homeDir, _ := os.UserHomeDir()
-	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
+	if conductorDir, err := ConductorDir(); err == nil {
+		defer os.RemoveAll(filepath.Join(conductorDir, name))
+	}
 
 	// Setup with custom policy path (creates per-conductor symlink)
 	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath, "", nil, "")
@@ -1603,13 +1642,18 @@ func TestMigrateConductorPolicySplit_PreservesCustomClaudeMD(t *testing.T) {
 func TestInstallLearningsMD(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 
 	err := InstallLearningsMD()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	learningsPath := filepath.Join(tmpHome, ".agent-deck", "conductor", "LEARNINGS.md")
+	conductorDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	learningsPath := filepath.Join(conductorDir, "LEARNINGS.md")
 	content, err := os.ReadFile(learningsPath)
 	if err != nil {
 		t.Fatalf("LEARNINGS.md not created: %v", err)
@@ -2172,12 +2216,16 @@ func TestBridgeTemplate_DiscordImageUploadSupport(t *testing.T) {
 }
 
 func TestConductorClearOnCompact(t *testing.T) {
-	// Override HOME so LoadConductorMeta reads from our temp dir
+	// Override HOME/XDG data so LoadConductorMeta reads from our temp dir
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(tmpHome, ".local", "share"))
 
 	// Create conductor meta with clear_on_compact = true (default)
-	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor", "main")
+	condDir, err := ConductorNameDir("main")
+	if err != nil {
+		t.Fatalf("ConductorNameDir: %v", err)
+	}
 	if err := os.MkdirAll(condDir, 0755); err != nil {
 		t.Fatal(err)
 	}

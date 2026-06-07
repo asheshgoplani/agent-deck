@@ -325,9 +325,9 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 
 // GetHooksDir returns the path to the hooks status directory.
 func GetHooksDir() string {
-	home, err := os.UserHomeDir()
+	path, err := dataPath("hooks", "hooks")
 	if err != nil {
-		return filepath.Join(os.TempDir(), ".agent-deck", "hooks")
+		return tempAgentDeckPath("hooks")
 	}
-	return filepath.Join(home, ".agent-deck", "hooks")
+	return path
 }

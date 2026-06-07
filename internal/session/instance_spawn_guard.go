@@ -41,8 +41,8 @@ import (
 
 // agentDeckDirOverride lets tests redirect ~/.agent-deck without colliding
 // with the user's real install. Production code reads it via
-// resolveAgentDeckDirForSpawnLock(), which falls back to GetAgentDeckDir
-// when the override is empty.
+// resolveLocksDirForSpawnLock(), which falls back to the effective XDG data
+// locks dir when the override is empty.
 var agentDeckDirOverride string
 
 // SpawnAttempt is the single-flight wrapper used by Restart(), Start(),
@@ -143,11 +143,10 @@ func recordInstanceSpawn(instanceID string) {
 // instanceSpawnStampPath sits next to the lock file. Same dir, "-stamp"
 // suffix so an `ls` triages spawn activity per instance.
 func instanceSpawnStampPath(instanceID string) (string, error) {
-	dir, err := resolveAgentDeckDirForSpawnLock()
+	locks, err := resolveLocksDirForSpawnLock()
 	if err != nil {
 		return "", err
 	}
-	locks := filepath.Join(dir, "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", err
 	}
@@ -203,11 +202,10 @@ func defaultAcquireInstanceSpawnLock(instanceID string) (func(), error) {
 // The directory is created with 0700 (same permission as plugin_install
 // uses for the same locks/ dir).
 func instanceSpawnLockPath(instanceID string) (string, error) {
-	dir, err := resolveAgentDeckDirForSpawnLock()
+	locks, err := resolveLocksDirForSpawnLock()
 	if err != nil {
 		return "", err
 	}
-	locks := filepath.Join(dir, "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return "", err
 	}
@@ -239,11 +237,11 @@ func spawnLockSafeID(id string) string {
 	return mapped
 }
 
-func resolveAgentDeckDirForSpawnLock() (string, error) {
+func resolveLocksDirForSpawnLock() (string, error) {
 	if agentDeckDirOverride != "" {
-		return agentDeckDirOverride, nil
+		return filepath.Join(agentDeckDirOverride, "locks"), nil
 	}
-	return GetAgentDeckDir()
+	return dataPath("locks", "locks")
 }
 
 // reclaimStaleInstanceSpawnLock mirrors reclaimStalePluginLock — older

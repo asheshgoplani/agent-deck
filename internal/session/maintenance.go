@@ -29,7 +29,7 @@ type MaintenanceResult struct {
 func RunMaintenance(ctx context.Context) MaintenanceResult {
 	start := time.Now()
 
-	deckDir, err := GetAgentDeckDir()
+	profileRoot, err := profileDataRootDir()
 	if err != nil {
 		maintLog.Warn("maintenance_dir_lookup_failed", slog.String("error", err.Error()))
 		return MaintenanceResult{Duration: time.Since(start)}
@@ -37,8 +37,8 @@ func RunMaintenance(ctx context.Context) MaintenanceResult {
 	geminiDir := GetGeminiConfigDir()
 
 	prunedLogs := pruneGeminiLogs(geminiDir)
-	prunedBackups := cleanupDeckBackups(filepath.Join(deckDir, "profiles"))
-	archivedSessions := archiveBloatedSessions(deckDir)
+	prunedBackups := cleanupDeckBackups(filepath.Join(profileRoot, "profiles"))
+	archivedSessions := archiveBloatedSessions(profileRoot)
 	orphanContainers := cleanupOrphanContainers(ctx)
 
 	return MaintenanceResult{

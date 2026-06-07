@@ -1088,7 +1088,7 @@ func (s *SettingsPanel) View() string {
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
-	content.WriteString(dimStyle.Render("  Edit ~/.agent-deck/config.toml to configure MCPs and tools."))
+	content.WriteString(dimStyle.Render("  Edit " + userConfigPathForDisplay() + " to configure MCPs and tools."))
 	content.WriteString("\n")
 	hotkeys := resolveHotkeys(session.GetHotkeyOverrides())
 	mcpKey := actionHotkey(hotkeys, hotkeyMCPManager)
