@@ -60,13 +60,23 @@ cleanup() {
 }
 
 # ---------- helpers ----------
+
+# resolve_tmux_session prints the tmux session name agent-deck assigned to the
+# managed session $1, via the authoritative `session show --json` path. Empty
+# output means unresolved. This is the ONE resolver; helpers and scenario 5 all
+# use it (the old `agent-deck list | awk /^adeck_/` parse was doubly wrong: list
+# never prints the tmux name, and the real prefix is `agentdeck_`).
+resolve_tmux_session() {
+  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null
+}
+
 tmux_pid_for_session() {
   # Prints the PID of the tmux server hosting the agent-deck session $1.
-  # Uses `session show --json` to resolve the tmux session name, then asks
-  # tmux itself for the server PID via `display-message -p -F '#{pid}'`.
+  # Uses resolve_tmux_session to get the tmux session name, then asks tmux
+  # itself for the server PID via `display-message -p -F '#{pid}'`.
   local name="$1"
   local tsess
-  tsess=$(agent-deck session show --json "${name}" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null)
+  tsess="$(resolve_tmux_session "${name}")"
   if [[ -z "${tsess}" || "${tsess}" == "null" ]]; then
     pgrep -f "tmux.*${name}" | head -1 || true
     return
@@ -93,7 +103,7 @@ tmux_pane_start_command_for_session() {
   # claude processes sharing the same tmux daemon.
   local name="$1"
   local tsess
-  tsess=$(agent-deck session show --json "${name}" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null)
+  tsess="$(resolve_tmux_session "${name}")"
   if [[ -z "${tsess}" || "${tsess}" == "null" ]]; then
     return 1
   fi
@@ -270,10 +280,10 @@ scenario_5_reviver_respawns_killed_pipe() {
   agent-deck session start "${name}" >/dev/null
   sleep 1
 
-  # Find the tmux session name agent-deck actually assigned
+  # Resolve via the authoritative path (was: list|awk /^adeck_/ — never matched).
   local tmux_name
-  tmux_name="$(agent-deck list 2>/dev/null | awk -v P="${name}" '$1 == P {for(i=1;i<=NF;i++) if ($i ~ /^adeck_/) {print $i; exit}}')"
-  if [[ -z "${tmux_name}" ]]; then
+  tmux_name="$(resolve_tmux_session "${name}")"
+  if [[ -z "${tmux_name}" || "${tmux_name}" == "null" ]]; then
     banner_skip "[5] could not resolve tmux session name for ${name} — skipping reviver scenario"
     agent-deck session stop "${name}" >/dev/null 2>&1 || true
     return

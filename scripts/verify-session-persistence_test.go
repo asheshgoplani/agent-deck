@@ -61,6 +61,44 @@ func TestIsOwnTmproot_MatchesMktempOutputAnyParent(t *testing.T) {
 	}
 }
 
+// writeFakeAgentDeck installs a stub `agent-deck` on PATH that answers
+// `session show --json <name>` with a fixed payload. Returns the dir to prepend.
+func writeFakeAgentDeck(t *testing.T, tmuxSession string) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/usr/bin/env bash
+if [[ "$1" == "session" && "$2" == "show" ]]; then
+  cat <<'JSON'
+{ "title": "foo", "tmux_session": "` + tmuxSession + `" }
+JSON
+  exit 0
+fi
+exit 0
+`
+	p := filepath.Join(dir, "agent-deck")
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agent-deck: %v", err)
+	}
+	return dir
+}
+
+func TestResolveTmuxSession_UsesShowJson(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; resolver depends on jq")
+	}
+	const want = "agentdeck_foo_410a3758" // real prefix is agentdeck_, NOT adeck_
+	bin := writeFakeAgentDeck(t, want)
+	out, err := sourceAndRun(t,
+		[]string{"PATH=" + bin + ":" + os.Getenv("PATH")},
+		`resolve_tmux_session foo`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(out) != want {
+		t.Fatalf("resolve_tmux_session = %q, want %q", strings.TrimSpace(out), want)
+	}
+}
+
 func TestLibOnly_SourcesWithoutSideEffects(t *testing.T) {
 	// Sourcing with LIB_ONLY=1 must NOT run preflight/dispatch: no scenarios,
 	// no mktemp side effects, clean exit even with agent-deck absent from PATH.
