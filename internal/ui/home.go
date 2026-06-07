@@ -8595,10 +8595,12 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.groupDialog.Hide()
+		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
 		return h, nil
 	case "esc":
 		h.groupDialog.Hide()
-		h.clearError() // Clear any validation error
+		h.clearError()            // Clear any validation error
+		h.lastGTime = time.Time{} // Reset gg-detection so next 'g' opens dialog, not jump-to-top
 		return h, nil
 	}
 
