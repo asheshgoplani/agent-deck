@@ -56,7 +56,7 @@ import (
 // stage deterministic mtime ordering across multiple files.
 func stageJSONL(t *testing.T, home, projectPath, uuid string, mtime time.Time) {
 	t.Helper()
-	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+	projectDir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 	require.NoError(t, os.MkdirAll(projectDir, 0o755))
 	path := filepath.Join(projectDir, uuid+".jsonl")
 	body := []byte(`{"sessionId":"` + uuid + `","role":"user","content":"hi"}` + "\n")

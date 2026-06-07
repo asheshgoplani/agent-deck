@@ -82,7 +82,7 @@ func TestConductor_Restart_PreservesChatHistory_RegressionFor956(t *testing.T) {
 	// Now write a JSONL on disk — simulating the live conversation Claude
 	// just had. This is the state at the moment the user runs `restart`.
 	const jsonlUUID = "9560ab10-9560-9560-9560-956000000956"
-	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(inst.ProjectPath))
+	projectDir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), inst.ProjectPath)
 	require.NoError(t, os.MkdirAll(projectDir, 0o755))
 	jsonlPath := filepath.Join(projectDir, jsonlUUID+".jsonl")
 	body := []byte(`{"sessionId":"` + jsonlUUID + `","role":"user","content":"remember my favorite color is blue"}` + "\n" +

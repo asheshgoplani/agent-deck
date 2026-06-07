@@ -48,6 +48,9 @@ func withTempAgentDeckHome(t *testing.T, tomlBody string) (tmpHome string) {
 	_ = os.Setenv("HOME", tmpHome)
 	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
 	_ = os.Unsetenv("AGENTDECK_PROFILE")
+	// Keep XDG_CONFIG_HOME inside this temp HOME too. Empty XDG dir means reads
+	// fall back to the legacy config.toml written below.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
 
 	agentDeckDir := filepath.Join(tmpHome, ".agent-deck")
 	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {

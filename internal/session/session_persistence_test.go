@@ -139,6 +139,19 @@ func isolatedHomeDir(t *testing.T) string {
 	return home
 }
 
+func claudeProjectDirForTest(t *testing.T, configDir, projectPath string) string {
+	t.Helper()
+	resolvedPath := projectPath
+	if resolved, err := filepath.EvalSymlinks(projectPath); err == nil {
+		resolvedPath = resolved
+	}
+	encoded := ConvertToClaudeDirName(resolvedPath)
+	if encoded == "" {
+		encoded = "-"
+	}
+	return filepath.Join(configDir, "projects", encoded)
+}
+
 // TestPersistence_LinuxDefaultIsUserScope pins REQ-1: on a Linux host where
 // systemd-run is available and no config.toml overrides it, the default
 // MUST be launch_in_user_scope=true. Phase 2 will flip the default; this
@@ -1262,16 +1275,7 @@ func TestPersistence_CustomCommandResumesFromLatestJSONL(t *testing.T) {
 		olderUUID = "11111111-1111-1111-1111-111111111111"
 		newerUUID = "22222222-2222-2222-2222-222222222222"
 	)
-	// Production discovery (findLatestClaudeTranscriptOnDisk) derives the
-	// Claude projects dir from filepath.EvalSymlinks(ProjectPath); mirror that
-	// so the fixture lands in the dir Start() actually reads. On macOS
-	// t.TempDir() lives under the /var -> /private/var symlink, so the raw and
-	// resolved paths produce different ConvertToClaudeDirName values.
-	resolvedProjectPath := inst.ProjectPath
-	if resolved, err := filepath.EvalSymlinks(inst.ProjectPath); err == nil {
-		resolvedProjectPath = resolved
-	}
-	projectDir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(resolvedProjectPath))
+	projectDir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), inst.ProjectPath)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir projectDir: %v", err)
 	}
@@ -1348,7 +1352,7 @@ func TestPersistence_DiscoverLatestClaudeJSONL_Unit(t *testing.T) {
 
 	stage := func(t *testing.T, home, name string, mtime time.Time) {
 		t.Helper()
-		dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+		dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
@@ -1459,7 +1463,7 @@ func TestEnsureClaudeSessionIDFromDisk_NewSessionSkipsDiscovery(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	// Stage a JSONL from an existing session in this directory.
-	dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+	dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1499,7 +1503,7 @@ func TestEnsureClaudeSessionIDFromDisk_RestartDoesDiscovery(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	// Stage a JSONL from this session's previous run.
-	dir := filepath.Join(home, ".claude", "projects", ConvertToClaudeDirName(projectPath))
+	dir := claudeProjectDirForTest(t, filepath.Join(home, ".claude"), projectPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

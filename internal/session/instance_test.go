@@ -1394,6 +1394,7 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 
 	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
@@ -1441,6 +1442,7 @@ func TestBuildCodexCommand_UsesConfiguredCommandForBuiltinCodex(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
@@ -1553,6 +1555,7 @@ func TestBuildCodexCommand_ConfiguredCommandResume(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1585,6 +1588,7 @@ func TestBuildCodexCommand_ExplicitCommandBeatsConfiguredCommand(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
@@ -1609,6 +1613,7 @@ func TestBuildCodexCommand_InlineCodexHomeForRolloutCheck(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1642,6 +1647,7 @@ func TestBuildCodexCommand_QuotedInlineCodexHomeWithSpaces(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1693,6 +1699,7 @@ func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1902,6 +1909,7 @@ func TestBuildCodexCommand_UsesProfileCodexConfigDirAsCodexHome(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	_ = os.Setenv("HOME", tmpDir)
 	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	_ = os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1949,6 +1957,7 @@ func TestBuildCodexCommand_CreatesMissingExplicitCodexHomeDir(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	_ = os.Setenv("HOME", tmpDir)
 	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	_ = os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -2005,6 +2014,7 @@ func TestCanRestart_CustomCodexWrapperWithKnownID(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 
 	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
