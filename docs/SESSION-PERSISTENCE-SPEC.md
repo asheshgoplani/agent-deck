@@ -169,6 +169,20 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
 - No scope creep — if a plan wants to refactor code outside the paths named above, stop and escalate to the conductor.
 - No mocking of tmux or systemd in the persistence tests — use the real binaries; skip on hosts that don't have them.
 
+### Cross-platform degradation contract (v1.5.2 harness hardening)
+
+`scripts/verify-session-persistence.sh` MUST run cleanly on non-systemd hosts:
+
+- Scenario 2 (login-teardown) and the cgroup branch of scenario 1 `[SKIP]` on
+  non-Linux — unchanged; these gate a Linux+systemd-only contract.
+- Scenarios 3/4 `[SKIP]` (never `[FAIL]`) when claude argv is unobservable for
+  the managed session (stub bypassed by a pre-existing shared tmux daemon, or
+  empty `pane_start_command`). The harness never asserts on host-wide processes.
+- Scenario 5 resolves its tmux session name via `session show --json`.
+- The harness removes its own `${TMPDIR}/adeck-verify.*` tempdir on exit.
+
+Unit-gated by `scripts/verify-session-persistence_test.go` on macOS + Linux CI.
+
 ## Success criteria for the milestone
 
 1. On the user's conductor host, after installing v1.5.2, `launch_in_user_scope` is effectively `true` without any config edit. Proof: `systemctl --user status` shows `agentdeck-tmux-*.scope` units.

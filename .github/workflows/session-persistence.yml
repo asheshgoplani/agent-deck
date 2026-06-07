@@ -27,6 +27,7 @@ on:
       - 'cmd/restart_cmd.go'
       - 'scripts/verify-session-persistence.sh'
       - 'scripts/verify-session-persistence.d/**'
+      - 'scripts/verify-session-persistence_test.go'
       - 'internal/session/session_persistence_test.go'
       - 'CLAUDE.md'
       - '.github/workflows/session-persistence.yml'
@@ -84,3 +85,33 @@ jobs:
         env:
           AGENT_DECK_VERIFY_USE_STUB: '1'
         run: bash scripts/verify-session-persistence.sh
+
+  unit-xplat:
+    name: harness unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Ensure jq present
+        # Only jq is needed: the unit tests stub the tmux-calling helper and
+        # never invoke real tmux. (Don't install tmux here — wasted brew time.)
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            command -v jq >/dev/null || brew install jq
+          else
+            command -v jq >/dev/null || sudo apt-get install -y jq
+          fi
+
+      - name: go test ./scripts/...
+        run: go test ./scripts/... -count=1 -v

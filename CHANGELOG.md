@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pin GitHub Actions to commit SHAs in the release workflow** ([#1326](https://github.com/asheshgoplani/agent-deck/pull/1326)). Supply-chain hardening: third-party actions in `release.yml` are pinned to immutable commit SHAs.
 - **Reconcile XDG test isolation after rebase** ([#1304](https://github.com/asheshgoplani/agent-deck/pull/1304)).
 
+### Fixed
+
+- `verify-session-persistence.sh` now degrades truthfully on macOS/non-systemd
+  hosts: scenarios 3/4 `[SKIP]` instead of false `[FAIL]` when claude argv is
+  unobservable, scenario 5 resolves its tmux name via `session show --json`, and
+  the harness cleans up its own tempdir. Gated by new macOS + Linux unit tests.
+
 ## [1.9.49] - 2026-06-07
 
 ### Added
