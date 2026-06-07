@@ -99,6 +99,78 @@ func TestResolveTmuxSession_UsesShowJson(t *testing.T) {
 	}
 }
 
+func TestClassifyArgv_VerdictsIncludingEmptyIsSkip(t *testing.T) {
+	// Regression for the reported bug: empty argv (claude unobservable for this
+	// session) MUST classify as "skip", not "fail".
+	cases := []struct{ mode, argv, want string }{
+		{"resume", "", "skip"},
+		{"fresh", "", "skip"},
+		{"resume", "claude --resume abc", "pass"},
+		{"resume", "claude --session-id abc", "pass"},
+		{"resume", "claude --foo", "fail"},
+		{"fresh", "claude --session-id abc", "pass"},
+		{"fresh", "claude --session-id abc --resume x", "fail"}, // both -> wrong shape
+		{"fresh", "claude --resume x", "fail"},
+	}
+	for _, c := range cases {
+		snippet := `classify_argv ` + c.mode + ` "` + c.argv + `"`
+		out, err := sourceAndRun(t, nil, snippet)
+		if err != nil {
+			t.Fatalf("mode=%s argv=%q: bash error: %v\n%s", c.mode, c.argv, err, out)
+		}
+		if strings.TrimSpace(out) != c.want {
+			t.Errorf("classify_argv(%s, %q) = %q, want %q", c.mode, c.argv, strings.TrimSpace(out), c.want)
+		}
+	}
+}
+
+func TestCaptureClaudeArgv_PrefersStubFile(t *testing.T) {
+	argvFile := filepath.Join(t.TempDir(), "argv.log")
+	if err := os.WriteFile(argvFile, []byte("claude --session-id ABC123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := sourceAndRun(t, []string{"ARGV_OUT=" + argvFile},
+		`capture_claude_argv ignored-name`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "--session-id ABC123") {
+		t.Fatalf("capture did not return stub argv; got: %q", strings.TrimSpace(out))
+	}
+}
+
+func TestCaptureClaudeArgv_NeverScansHostWideProcesses(t *testing.T) {
+	// Regression for the false-FAIL bug: with the stub file empty AND no pane
+	// resolution, capture MUST return empty — never a host-wide `ps|grep claude`
+	// match. We plant a live foreign process whose argv contains "claude".
+	emptyArgv := filepath.Join(t.TempDir(), "argv.log") // exists, zero bytes
+	if err := os.WriteFile(emptyArgv, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Foreign process: argv0 = "claude-foreign-decoy", lives for the test.
+	foreign := exec.Command("bash", "-c", `exec -a claude-foreign-decoy sleep 30`)
+	if err := foreign.Start(); err != nil {
+		t.Fatalf("start foreign decoy: %v", err)
+	}
+	defer func() { _ = foreign.Process.Kill() }()
+
+	// Force pane resolution to yield nothing (no real tmux session named this).
+	out, err := sourceAndRun(t,
+		[]string{"ARGV_OUT=" + emptyArgv, "PATH=/usr/bin:/bin"},
+		`tmux_pane_start_command_for_session() { return 1; }
+		 r="$(capture_claude_argv nonexistent-session)"
+		 echo "CAPTURED=[$r]"`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "CAPTURED=[]") {
+		t.Fatalf("capture returned non-empty (host-wide scan leaked?): %s", strings.TrimSpace(out))
+	}
+	if strings.Contains(out, "claude-foreign-decoy") {
+		t.Fatalf("capture matched a FOREIGN process — false-FAIL bug present: %s", strings.TrimSpace(out))
+	}
+}
+
 func TestLibOnly_SourcesWithoutSideEffects(t *testing.T) {
 	// Sourcing with LIB_ONLY=1 must NOT run preflight/dispatch: no scenarios,
 	// no mktemp side effects, clean exit even with agent-deck absent from PATH.

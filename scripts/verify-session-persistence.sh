@@ -110,6 +110,44 @@ tmux_pane_start_command_for_session() {
   tmux list-panes -t "${tsess}" -F '#{pane_start_command}' 2>/dev/null | head -1 || true
 }
 
+# capture_claude_argv prints the claude argv for managed session $1 using ONLY
+# session-scoped sources: (1) the stub's ARGV_OUT file when populated, else
+# (2) the tmux pane_start_command for this session. It NEVER scans host-wide
+# `ps` — that matched unrelated claude processes and produced false FAILs.
+# Empty output means "unobservable for THIS session"; callers MUST treat that
+# as SKIP, not FAIL.
+capture_claude_argv() {
+  local name="$1"
+  if [[ -s "${ARGV_OUT:-/dev/null}" ]]; then
+    cat "${ARGV_OUT}"
+    return 0
+  fi
+  tmux_pane_start_command_for_session "${name}" 2>/dev/null || true
+}
+
+# classify_argv echoes the verdict (skip|pass|fail) for a captured argv under a
+# given mode. Empty argv (the session's claude was unobservable) is ALWAYS skip
+# — never fail; that is the cross-platform-degradation contract. Extracted so
+# the verdict is unit-testable in isolation and shared by scenarios 3 and 4.
+#   mode=resume: pass iff argv has --resume OR --session-id.
+#   mode=fresh : pass iff argv has --session-id AND NOT --resume.
+classify_argv() {
+  local mode="$1" argv="$2"
+  if [[ -z "${argv}" ]]; then echo skip; return; fi
+  case "${mode}" in
+    resume)
+      if echo "${argv}" | grep -qE -- '--resume|--session-id'; then echo pass; else echo fail; fi
+      ;;
+    fresh)
+      if echo "${argv}" | grep -qE -- '--session-id' && ! echo "${argv}" | grep -qE -- '--resume'; then
+        echo pass
+      else
+        echo fail
+      fi
+      ;;
+  esac
+}
+
 want_scenario() {
   local n="$1"
   if [[ -z "${SCENARIO:-}" ]]; then return 0; fi
@@ -220,27 +258,15 @@ scenario_3_restart_resume() {
   log "restarting session: agent-deck session start ${name}"
   agent-deck session start "${name}" >/dev/null || true
   sleep 2
-  # Read captured argv. Preferred order:
-  #  1) stub tempfile (AGENT_DECK_VERIFY_USE_STUB=1 path)
-  #  2) tmux pane_start_command for the session's tmux_session (authoritative:
-  #     this is exactly what agent-deck handed to tmux new-session)
-  #  3) ps -ef grep fallback (last-resort; ambiguous on hosts with many
-  #     concurrent claude processes)
-  local argv=""
-  if [[ -s "${ARGV_OUT}" ]]; then
-    argv="$(cat "${ARGV_OUT}")"
-  else
-    argv="$(tmux_pane_start_command_for_session "${name}" || true)"
-    if [[ -z "${argv}" ]]; then
-      argv="$(ps -ef | grep -E '[c]laude' | head -1 || true)"
-    fi
-  fi
+  local argv verdict
+  argv="$(capture_claude_argv "${name}")"
   log "captured claude argv: ${argv}"
-  if echo "${argv}" | grep -qE -- '--resume|--session-id'; then
-    banner_pass "[3] restart spawned claude with --resume or --session-id"
-  else
-    banner_fail "[3] restart spawned claude WITHOUT --resume or --session-id: ${argv}"
-  fi
+  verdict="$(classify_argv resume "${argv}")"
+  case "${verdict}" in
+    skip) banner_skip "[3] argv unobservable for ${name} (stub not exercised / empty pane_start_command — e.g. pre-existing tmux daemon); cannot assert resume shape" ;;
+    pass) banner_pass "[3] restart spawned claude with --resume or --session-id" ;;
+    fail) banner_fail "[3] restart spawned claude WITHOUT --resume or --session-id: ${argv}" ;;
+  esac
   agent-deck session stop "${name}" >/dev/null 2>&1 || true
 }
 
@@ -252,23 +278,15 @@ scenario_4_fresh_session_shape() {
   agent-deck add -t "${name}" -c claude -Q "${TMPROOT}" >/dev/null
   agent-deck session start "${name}" >/dev/null
   sleep 2
-  local argv=""
-  if [[ -s "${ARGV_OUT}" ]]; then
-    argv="$(cat "${ARGV_OUT}")"
-  else
-    argv="$(tmux_pane_start_command_for_session "${name}" || true)"
-    if [[ -z "${argv}" ]]; then
-      argv="$(ps -ef | grep -E '[c]laude' | head -1 || true)"
-    fi
-  fi
+  local argv verdict
+  argv="$(capture_claude_argv "${name}")"
   log "captured claude argv: ${argv}"
-  if echo "${argv}" | grep -qE -- '--session-id' && ! echo "${argv}" | grep -qE -- '--resume'; then
-    banner_pass "[4] fresh session uses --session-id without --resume"
-  elif [[ -z "${argv}" ]]; then
-    banner_skip "[4] no argv captured (real claude without stub); cannot assert fresh-session shape"
-  else
-    banner_fail "[4] fresh session argv shape wrong: ${argv}"
-  fi
+  verdict="$(classify_argv fresh "${argv}")"
+  case "${verdict}" in
+    skip) banner_skip "[4] argv unobservable for ${name} (stub not exercised / empty pane_start_command); cannot assert fresh-session shape" ;;
+    pass) banner_pass "[4] fresh session uses --session-id without --resume" ;;
+    fail) banner_fail "[4] fresh session argv shape wrong: ${argv}" ;;
+  esac
   agent-deck session stop "${name}" >/dev/null 2>&1 || true
 }
 
