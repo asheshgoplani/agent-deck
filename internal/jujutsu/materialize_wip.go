@@ -249,7 +249,7 @@ func isVCSInternalPath(rel string) bool {
 // copyFilePreserving copies a single file (or symlink) from src to dst,
 // preserving mode and symlink target. Mirrors git.copyOneFile's behavior for
 // the gitignored-file case.
-func copyFilePreserving(src, dst string) error {
+func copyFilePreserving(src, dst string) (err error) {
 	info, err := os.Lstat(src)
 	if err != nil {
 		return err
@@ -277,9 +277,14 @@ func copyFilePreserving(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
+	// Surface the writable handle's Close error: a failed flush/close on the
+	// destination can mean a partial copy. The copy error takes precedence if both
+	// occur.
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	_, err = io.Copy(out, in)
+	return err
 }
