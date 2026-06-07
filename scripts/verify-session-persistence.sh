@@ -50,7 +50,7 @@ cleanup() {
         [[ -n "${n}" ]] || continue
         agent-deck session stop "$n" >/dev/null 2>&1 || true
         agent-deck remove "$n" >/dev/null 2>&1 || true
-      done < <(agent-deck list --json 2>/dev/null | jq -r --arg P "${SESSION_PREFIX}" '.[]? | select(.title | startswith($P)) | .title' 2>/dev/null || true)
+      done < <(agent-deck list --json 2>/dev/null | jq -r --arg P "${SESSION_PREFIX}" '.[]? | select((.title // "") | startswith($P)) | .title' 2>/dev/null || true)
     else
       for n in $(agent-deck list 2>/dev/null | awk -v P="${SESSION_PREFIX}" '$1 ~ "^"P {print $1}' || true); do
         agent-deck session stop "$n" >/dev/null 2>&1 || true
@@ -175,12 +175,25 @@ want_scenario() {
   [[ "${SCENARIO}" == "${n}" ]]
 }
 
+# create_and_start_session runs `agent-deck add` + `agent-deck session start`
+# for managed session $1 (tool $2) under TMPROOT. Returns nonzero WITHOUT
+# aborting under `set -e` when either command fails, so scenario callers can
+# emit a diagnostic [FAIL] and return instead of the harness aborting silently
+# with no banner.
+create_and_start_session() {
+  local name="$1" tool="$2"
+  agent-deck add -t "${name}" -c "${tool}" -Q "${TMPROOT}" >/dev/null || return 1
+  agent-deck session start "${name}" >/dev/null || return 1
+}
+
 # ---------- Scenario 1 ----------
 scenario_1_live_session_cgroup() {
   local name="${SESSION_PREFIX}-s1"
   log "creating session: ${name}"
-  agent-deck add -t "${name}" -c claude -Q "${TMPROOT}" >/dev/null
-  agent-deck session start "${name}" >/dev/null
+  if ! create_and_start_session "${name}" claude; then
+    banner_fail "[1] could not create/start session ${name}"
+    return
+  fi
   sleep 2
   local pid
   pid="$(tmux_pid_for_session "${name}")"
@@ -232,8 +245,11 @@ scenario_2_login_teardown() {
   local scope_pid=$!
   sleep 1
   log "creating session inside simulated login scope: ${name}"
-  agent-deck add -t "${name}" -c claude -Q "${TMPROOT}" >/dev/null
-  agent-deck session start "${name}" >/dev/null
+  if ! create_and_start_session "${name}" claude; then
+    banner_fail "[2] could not create/start session ${name}"
+    systemctl --user stop "${LOGINSIM_SCOPE}.scope" >/dev/null 2>&1 || true
+    return
+  fi
   sleep 2
   local pid
   pid="$(tmux_pid_for_session "${name}")"
@@ -267,8 +283,10 @@ scenario_2_login_teardown() {
 scenario_3_restart_resume() {
   local name="${SESSION_PREFIX}-s3"
   log "creating session: ${name}"
-  agent-deck add -t "${name}" -c claude -Q "${TMPROOT}" >/dev/null
-  agent-deck session start "${name}" >/dev/null
+  if ! create_and_start_session "${name}" claude; then
+    banner_fail "[3] could not create/start session ${name}"
+    return
+  fi
   sleep 2
   # Seed a non-empty ClaudeSessionID via the state-set command if available;
   # otherwise rely on the natural first-start minting one. We want a restart
@@ -300,8 +318,10 @@ scenario_4_fresh_session_shape() {
   local name="${SESSION_PREFIX}-s4"
   : > "${ARGV_OUT}"
   log "creating fresh session: ${name}"
-  agent-deck add -t "${name}" -c claude -Q "${TMPROOT}" >/dev/null
-  agent-deck session start "${name}" >/dev/null
+  if ! create_and_start_session "${name}" claude; then
+    banner_fail "[4] could not create/start session ${name}"
+    return
+  fi
   sleep 2
   local argv verdict
   argv="$(capture_claude_argv "${name}")"
@@ -319,8 +339,10 @@ scenario_4_fresh_session_shape() {
 scenario_5_reviver_respawns_killed_pipe() {
   local name="${SESSION_PREFIX}-s5"
   log "creating session for reviver test: ${name}"
-  agent-deck add -t "${name}" -c shell -Q "${TMPROOT}" >/dev/null
-  agent-deck session start "${name}" >/dev/null
+  if ! create_and_start_session "${name}" shell; then
+    banner_fail "[5] could not create/start session ${name}"
+    return
+  fi
   sleep 1
 
   # Resolve via the authoritative path (was: list|awk /^adeck_/ — never matched).

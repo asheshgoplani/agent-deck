@@ -420,3 +420,71 @@ func TestLibOnly_SourcesWithoutSideEffects(t *testing.T) {
 		t.Fatalf("dispatch ran during source (should be gated by LIB_ONLY); got:\n%s", out)
 	}
 }
+
+func TestScenario_InitialStartFailureMarksFailureNotAbort(t *testing.T) {
+	// F2 regression: when a scenario's INITIAL `agent-deck session start` fails,
+	// the scenario must banner_fail and return — NOT abort the harness under
+	// `set -e` with no diagnostic banner. Exercised via scenario 4 (simplest).
+	out, err := sourceAndRun(t, []string{"S4_TMPROOT=" + t.TempDir()}, `
+FAILED=0
+SESSION_PREFIX=verify-persist-test
+TMPROOT="${S4_TMPROOT}"
+ARGV_OUT="${TMPROOT}/argv.log"
+agent-deck() {
+  if [[ "$1" == "session" && "$2" == "start" ]]; then
+    return 9
+  fi
+  return 0
+}
+tmux() { return 0; }
+sleep() { :; }
+scenario_4_fresh_session_shape
+echo "REACHED_AFTER FAILED=${FAILED}"
+`)
+	if err != nil {
+		t.Fatalf("harness aborted under set -e instead of bannering (F2): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "REACHED_AFTER FAILED=1") {
+		t.Fatalf("initial start failure must mark [FAIL] and not abort; got:\n%s", out)
+	}
+}
+
+func TestCleanup_HandlesNullTitleInJSONList(t *testing.T) {
+	// F4 regression: a session entry with a null `.title` must not error the jq
+	// filter (startswith on null) and abort the cleanup pass — matching sessions
+	// must still be removed. Null entry FIRST so the unguarded filter errors
+	// before reaching the matching one.
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; cleanup JSON path depends on jq")
+	}
+	record := filepath.Join(t.TempDir(), "calls.log")
+	out, err := sourceAndRun(t, []string{"RECORD=" + record}, `
+SESSION_PREFIX=verify-persist-123456
+LOGINSIM_SCOPE=adeck-verify-loginsim-test
+TMPROOT=""
+agent-deck() {
+  if [[ "$1" == "list" && "${2:-}" == "--json" ]]; then
+    cat <<'JSON'
+[
+  {"title":null,"id":"id-null"},
+  {"title":"verify-persist-123456-s1","id":"id-1"}
+]
+JSON
+    return 0
+  fi
+  if [[ "$1" == "session" && "$2" == "stop" ]]; then printf 'stop:%s\n' "$3" >> "${RECORD}"; return 0; fi
+  if [[ "$1" == "remove" ]]; then printf 'remove:%s\n' "$2" >> "${RECORD}"; return 0; fi
+  return 0
+}
+systemctl() { return 0; }
+cleanup
+if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "stop:verify-persist-123456-s1") ||
+		!strings.Contains(out, "remove:verify-persist-123456-s1") {
+		t.Fatalf("cleanup must skip null titles and still remove matching session; got:\n%s", out)
+	}
+}
