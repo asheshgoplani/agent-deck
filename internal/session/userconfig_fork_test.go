@@ -51,6 +51,14 @@ func TestForkSettings_GetBranchPrefix_Override(t *testing.T) {
 	assert.Equal(t, "wip/", cfg.Fork.GetBranchPrefix())
 }
 
+// A whitespace-only or padded branch_prefix would otherwise pass through and
+// produce invalid fork branch names (e.g. "  /slug"). GetBranchPrefix must trim,
+// mirroring GetDocker's canonicalization.
+func TestForkSettings_GetBranchPrefix_TrimsWhitespace(t *testing.T) {
+	assert.Equal(t, "fork/", ForkSettings{BranchPrefix: "   "}.GetBranchPrefix(), "whitespace-only -> default")
+	assert.Equal(t, "wip/", ForkSettings{BranchPrefix: "  wip/  "}.GetBranchPrefix(), "padded value is trimmed")
+}
+
 func TestForkSettings_Resolve_ComprehensiveDefault_DockerAuto(t *testing.T) {
 	cfg := decodeForkConfig(t, ``) // all defaults
 	// parent NOT sandboxed -> auto resolves sandbox off

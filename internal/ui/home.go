@@ -4322,8 +4322,11 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use forceSave to bypass mtime check - forked session MUST persist
 			h.forceSaveInstances()
 
+			// forceSaveInstances can setError on a failed persist; fold the
+			// non-fatal degradation notice into it rather than overwriting, so a
+			// fork that wasn't actually saved doesn't look successful (#1299 review).
 			if msg.notice != "" {
-				h.setError(fmt.Errorf("%s", msg.notice))
+				h.setError(noticeError(h.err, msg.notice))
 			}
 
 			// Start fetching preview for the forked session
@@ -9773,6 +9776,19 @@ func joinForkNotices(a, b string) string {
 		return a
 	}
 	return a + "; " + b
+}
+
+// noticeError folds a non-fatal fork degradation notice into any pre-existing
+// error (e.g. one set by a failed forceSaveInstances) so the notice never
+// silently masks a real failure. Returns existing unchanged when notice is empty.
+func noticeError(existing error, notice string) error {
+	if notice == "" {
+		return existing
+	}
+	if existing == nil {
+		return fmt.Errorf("%s", notice)
+	}
+	return fmt.Errorf("%v; %s", existing, notice)
 }
 
 // forkSessionCmdWithOptions creates a forked session with the given title, group, shared fork options, and optional sandbox.

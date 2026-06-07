@@ -2012,10 +2012,11 @@ func (f ForkSettings) GetDocker() string {
 
 // GetBranchPrefix returns the auto branch-name prefix (default "fork/").
 func (f ForkSettings) GetBranchPrefix() string {
-	if f.BranchPrefix == "" {
+	prefix := strings.TrimSpace(f.BranchPrefix)
+	if prefix == "" {
 		return "fork/"
 	}
-	return f.BranchPrefix
+	return prefix
 }
 
 // ResolvedForkPlan is the effective set of structural fork toggles after

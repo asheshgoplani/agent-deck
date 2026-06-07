@@ -2885,6 +2885,11 @@ func (i *Instance) Start() error {
 	case IsCodexCompatible(i.Tool):
 		if i.IsForkAwaitingStart {
 			command = i.consumeForkStartCommand()
+			// Stamp the start time so the session-id disk scan is lower-bounded and
+			// can't rebind this fork to an older same-project rollout (e.g. the
+			// parent it just forked from). The normal path stamps after
+			// buildCodexCommand, which this fork branch skips.
+			i.CodexStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),
@@ -3105,6 +3110,11 @@ func (i *Instance) StartWithMessage(message string) error {
 	case IsCodexCompatible(i.Tool):
 		if i.IsForkAwaitingStart {
 			command = i.consumeForkStartCommand()
+			// Stamp the start time so the session-id disk scan is lower-bounded and
+			// can't rebind this fork to an older same-project rollout (e.g. the
+			// parent it just forked from). The normal path stamps after
+			// buildCodexCommand, which this fork branch skips.
+			i.CodexStartedAt = time.Now().UnixMilli()
 			sessionLog.Info("resume: none reason=fork_awaiting_start",
 				slog.String("instance_id", i.ID),
 				slog.String("path", i.ProjectPath),

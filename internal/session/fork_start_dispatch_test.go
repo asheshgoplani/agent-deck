@@ -166,3 +166,46 @@ func requireCodexForkStartGuard(t *testing.T, funcName string) {
 		t.Fatalf("%s Codex branch must check IsForkAwaitingStart before buildCodexCommand", funcName)
 	}
 }
+
+// TestCodexForkStartStampsStartedAt guards a PR #1299 review finding (CodeRabbit):
+// the Codex fork-awaiting-start branch `break`s before the normal
+// `i.CodexStartedAt = time.Now()` stamp, so a forked Codex child starts with no
+// start-time bound. If live-process detection misses, the fallback disk scan can
+// rebind the child to an older same-project rollout — including the parent it
+// just forked from — propagating the wrong codex_session_id. The fork-first-start
+// branch must therefore stamp CodexStartedAt itself, in both Start() and
+// StartWithMessage().
+func TestCodexForkStartStampsStartedAt(t *testing.T) {
+	requireCodexForkAwaitingStartStampsStartedAt(t, "Start")
+	requireCodexForkAwaitingStartStampsStartedAt(t, "StartWithMessage")
+}
+
+func requireCodexForkAwaitingStartStampsStartedAt(t *testing.T, funcName string) {
+	t.Helper()
+	body := extractFuncBodyInstance(funcName)
+	if body == "" {
+		t.Fatalf("%s body not found", funcName)
+	}
+	codexIdx := strings.Index(body, "case IsCodexCompatible(i.Tool):")
+	if codexIdx < 0 {
+		t.Fatalf("%s must have a Codex-compatible dispatch branch", funcName)
+	}
+	codexBody := body[codexIdx:]
+	if nextCase := strings.Index(codexBody[len("case IsCodexCompatible(i.Tool):"):], "\n\tcase "); nextCase >= 0 {
+		codexBody = codexBody[:len("case IsCodexCompatible(i.Tool):")+nextCase]
+	}
+	awaitingIdx := strings.Index(codexBody, "if i.IsForkAwaitingStart")
+	if awaitingIdx < 0 {
+		t.Fatalf("%s Codex branch must have a fork-awaiting-start block", funcName)
+	}
+	// Scope to the fork-awaiting-start block: from the `if` to its `break`
+	// statement. Match the statement (newline + indent + break), not the bare
+	// word, so a comment containing "break(s)" can't truncate the block early.
+	awaitingBlock := codexBody[awaitingIdx:]
+	if breakIdx := strings.Index(awaitingBlock, "\n\t\t\tbreak"); breakIdx >= 0 {
+		awaitingBlock = awaitingBlock[:breakIdx]
+	}
+	if !strings.Contains(awaitingBlock, "i.CodexStartedAt = ") {
+		t.Fatalf("%s Codex fork-awaiting-start branch MUST stamp i.CodexStartedAt (else the disk-scan fallback can rebind the fork to the parent's older rollout)", funcName)
+	}
+}
