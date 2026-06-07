@@ -65,6 +65,11 @@ func resolveRevision(dir, rev string) (string, error) {
 // lets a subsequent MaterializeWipFromParent reproduce the parent's WIP as
 // uncommitted changes rather than as an extra ancestor commit.
 func CreateWorkspaceAtRevision(repoDir, workspacePath, branchName, revision string) error {
+	// jj resolves the positional workspace path against the process working
+	// directory while -R points at repoDir; absolutize so the two can never
+	// disagree if a caller passes a relative path (or a future change sets
+	// cmd.Dir). workspaceNameFromPath also reads a stable basename either way.
+	workspacePath = absWorkspacePath(workspacePath)
 	wsName := workspaceNameFromPath(workspacePath)
 	if branchName != "" {
 		exists, err := BookmarkExists(repoDir, branchName)
@@ -112,6 +117,7 @@ func CreateWorkspaceAtRevision(repoDir, workspacePath, branchName, revision stri
 //     git's exclude machinery from the parent workspace root. If git metadata
 //     is unavailable, ignored-file copy is a documented no-op.
 func MaterializeWipFromParent(parentDir, workspacePath string, includeIgnored bool) error {
+	workspacePath = absWorkspacePath(workspacePath)
 	parentRev, err := WorkingCopyRevision(parentDir)
 	if err != nil {
 		return fmt.Errorf("resolve parent working copy: %w", err)
@@ -200,6 +206,17 @@ func copyGitignoredFromParent(parentDir, destDir string) error {
 func SupportsGitignoredCopy(dir string) bool {
 	_, ok := gitWorktreeRoot(dir)
 	return ok
+}
+
+// absWorkspacePath returns the absolute form of p, falling back to p unchanged
+// if resolution fails. jj commands here leave cmd.Dir unset, so a relative
+// workspace path would resolve against the process working directory; making it
+// absolute removes any ambiguity between the positional path and -R repoDir.
+func absWorkspacePath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 func gitWorktreeRoot(dir string) (string, bool) {

@@ -241,6 +241,29 @@ func TestSupportsGitignoredCopy(t *testing.T) {
 	require.False(t, SupportsGitignoredCopy(linked), "a linked jj workspace has no git worktree root, so ignored-file copy can't run")
 }
 
+// TestCreateWorkspaceAtRevision_RelativeWorkspacePathResolvesAbsolutely guards
+// the path-resolution hardening (Copilot review): a relative workspace path must
+// resolve to a stable absolute location for both the workspace creation and the
+// subsequent materialize, regardless of jj's -R repoDir argument.
+func TestCreateWorkspaceAtRevision_RelativeWorkspacePathResolvesAbsolutely(t *testing.T) {
+	requireJJ(t)
+	parent := setupJJParentWithWIP(t)
+	base, err := WorkingCopyParentRevision(parent)
+	require.NoError(t, err)
+
+	work := t.TempDir()
+	t.Chdir(work)
+	rel := "fork-rel"
+
+	require.NoError(t, CreateWorkspaceAtRevision(parent, rel, "forkrel", base))
+	require.DirExists(t, filepath.Join(work, rel), "relative workspace path must resolve under the process working directory, not repoDir")
+
+	require.NoError(t, MaterializeWipFromParent(parent, rel, false))
+	got, err := os.ReadFile(filepath.Join(work, rel, "tracked.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "base content\nWIP EDIT\n", string(got))
+}
+
 func jjWorkspaceList(t *testing.T, dir string) string {
 	t.Helper()
 	cmd := exec.Command("jj", "workspace", "list", "-R", dir)

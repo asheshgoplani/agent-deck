@@ -2,6 +2,9 @@ package ui
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,33 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// extractUIFuncBodySource returns the source text of funcName's body block from
+// fileName, so structural assertions can be scoped to one function instead of
+// searching the whole file (which can match comments or other functions, and is
+// brittle to unrelated refactors).
+func extractUIFuncBodySource(t *testing.T, fileName, funcName string) string {
+	t.Helper()
+	srcBytes, err := os.ReadFile(fileName)
+	if err != nil {
+		t.Fatalf("read %s: %v", fileName, err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, fileName, srcBytes, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", fileName, err)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == funcName && fn.Body != nil {
+			start := fset.Position(fn.Body.Pos()).Offset
+			end := fset.Position(fn.Body.End()).Offset
+			return string(srcBytes[start:end])
+		}
+	}
+	t.Fatalf("function %q not found in %s", funcName, fileName)
+	return ""
+}
 
 func TestForkDialogSubmitCapturesStateBeforeHide(t *testing.T) {
 	srcBytes, err := os.ReadFile("home.go")
@@ -216,11 +246,11 @@ func gitOutUI(t *testing.T, dir string, args ...string) string {
 // the git-direct calls — the safety property the old `!= vcs.TypeGit` early
 // guard provided, now enforced by the switch shape.
 func TestForkSessionCmdWithOptions_WithStateRoutesByBackend(t *testing.T) {
-	srcBytes, err := os.ReadFile("home.go")
-	if err != nil {
-		t.Fatalf("read home.go: %v", err)
-	}
-	src := string(srcBytes)
+	// Scope the structural assertions to forkSessionCmdWithOptions's body so the
+	// helper *definitions* (func forkWithStateWorktree / forkWithStateWorkspaceJJ,
+	// defined elsewhere) can't satisfy the call-site markers, and unrelated edits
+	// outside this function can't break the test.
+	src := extractUIFuncBodySource(t, "home.go", "forkSessionCmdWithOptions")
 	guard := strings.Index(src, "if forkState.WithState {")
 	gitCase := strings.Index(src, "case vcs.TypeGit:")
 	gitHelper := strings.Index(src, "forkWithStateWorktree(")
