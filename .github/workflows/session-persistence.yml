@@ -41,6 +41,7 @@ jobs:
   tests:
     name: TestPersistence_ suite (-race)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -62,6 +63,7 @@ jobs:
   verify-script:
     name: scripts/verify-session-persistence.sh
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -71,8 +73,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux and jq
+        run: sudo apt-get update && sudo apt-get install -y tmux jq
 
       - name: Enable user lingering (systemd user scope)
         run: loginctl enable-linger "$USER" || true
@@ -89,6 +91,7 @@ jobs:
 
   unit-xplat:
     name: harness unit tests (${{ matrix.os }})
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

@@ -175,12 +175,18 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
 
 - Scenario 2 (login-teardown) and the cgroup branch of scenario 1 `[SKIP]` on
   non-Linux — unchanged; these gate a Linux+systemd-only contract.
-- Scenarios 3/4 `[SKIP]` (never `[FAIL]`) when claude argv is unobservable for
-  the managed session (stub bypassed by a pre-existing shared tmux daemon, or
-  empty `pane_start_command`). The harness never asserts on host-wide processes.
+- Scenarios 3/4 `[SKIP]` on **non-stub hosts** (real `claude`, e.g.
+  macOS/no-systemd dev) when claude argv is unobservable for the managed session
+  (stub bypassed by a pre-existing shared tmux daemon, or empty
+  `pane_start_command`). The harness never asserts on host-wide processes.
+- In **stub mode** (`AGENT_DECK_VERIFY_USE_STUB=1`, i.e. CI) an unobservable
+  argv is a `[FAIL]`, not a `[SKIP]`: the stub is installed and MUST record
+  args, so a `[SKIP]` there would be a false-green on the mandatory gate.
 - Scenario 5 resolves its tmux session name via `session show --json`.
 - `jq` is an explicit harness dependency; missing `jq` is a preflight error, not
-  a silent `[SKIP]`.
+  a silent `[SKIP]`. A malformed-JSON payload from a SUCCESSFUL
+  `session show --json` is surfaced (loud error + nonzero), not degraded to an
+  empty name — only the EXPECTED not-found nonzero is swallowed.
 - The harness removes its own `${TMPDIR}/adeck-verify.*` tempdir and
   `verify-persist-*` sessions by full JSON title on exit.
 

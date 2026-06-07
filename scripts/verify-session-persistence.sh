@@ -76,21 +76,29 @@ cleanup() {
 # use it (the old `agent-deck list | awk /^adeck_/` parse was doubly wrong: list
 # never prints the tmux name, and the real prefix is `agentdeck_`).
 resolve_tmux_session() {
-  # `|| true` so a nonzero `agent-deck session show` (e.g. exit 2 not-found)
-  # under `set -o pipefail` does NOT abort callers' `var="$(resolve_tmux_session)"`
-  # assignments via set -e. Callers all degrade on empty output. Single-point
-  # fix shared by tmux_pid_for_session, tmux_pane_start_command_for_session,
-  # and scenario 5.
+  # Single-point resolver shared by tmux_pid_for_session,
+  # tmux_pane_start_command_for_session, and scenario 5. Distinguishes EXPECTED
+  # degradation (swallow) from a real broken interface (surface) — review P2:
+  #   - jq missing      -> explicit error, return 2 (preflight already gates this)
+  #   - session not-found / nonzero `session show` -> EXPECTED: return empty,
+  #     no set -e abort (its stderr "not found" message is just noise)
+  #   - empty output    -> unresolved, return empty
+  #   - malformed JSON from a SUCCESSFUL `session show` -> a real interface
+  #     breakage: surface it (loud error + nonzero) rather than mask it as an
+  #     empty name that would degrade to a false-green [SKIP].
   if ! command -v jq >/dev/null 2>&1; then
     printf '%sERROR%s: jq binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
     return 2
   fi
-  # agent-deck's stderr is suppressed (its "not found" message is expected
-  # noise), but jq's is NOT: a real malformed-JSON breakage surfaces loudly on
-  # stderr while `|| true` still degrades stdout to empty (caller SKIPs) and
-  # keeps set -e from aborting. We deliberately do NOT propagate jq's nonzero —
-  # that would re-introduce the silent set -e abort this `|| true` exists to fix.
-  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' || true
+  local json
+  json="$(agent-deck session show --json "$1" 2>/dev/null)" || return 0
+  [[ -z "${json}" ]] && return 0
+  local tsess
+  if ! tsess="$(printf '%s' "${json}" | jq -r '.tmux_session // empty')"; then
+    printf '%sERROR%s: malformed JSON from "agent-deck session show --json %s"\n' "${C_RED}" "${C_RESET}" "$1" >&2
+    return 3
+  fi
+  printf '%s\n' "${tsess}"
 }
 
 tmux_pid_for_session() {
@@ -189,6 +197,22 @@ create_and_start_session() {
   local name="$1" tool="$2"
   agent-deck add -t "${name}" -c "${tool}" -Q "${TMPROOT}" >/dev/null || return 1
   agent-deck session start "${name}" >/dev/null || return 1
+}
+
+# argv_unobservable emits the right outcome for scenario $1 when the launched
+# claude argv could not be captured (empty). Review P1: in stub mode the stub is
+# installed and MUST record args, so an empty capture means the gate could not
+# verify restart/fresh behavior — that is a real FAILURE (a [SKIP] there would
+# be a false-green on the mandatory gate, the #1294 class). On non-stub hosts
+# (macOS / no-systemd dev) an empty capture is EXPECTED degradation -> [SKIP].
+# $2 = scenario-specific contract description.
+argv_unobservable() {
+  local n="$1" ctx="$2"
+  if [[ "${USE_STUB:-0}" == "1" ]]; then
+    banner_fail "[${n}] stub mode but claude argv unobservable — stub never recorded args (never launched / died before write); gate cannot verify ${ctx}"
+  else
+    banner_skip "[${n}] argv unobservable (stub not exercised / empty pane_start_command — e.g. pre-existing tmux daemon); cannot assert ${ctx}"
+  fi
 }
 
 # ---------- Scenario 1 ----------
@@ -311,7 +335,7 @@ scenario_3_restart_resume() {
   log "captured claude argv: ${argv}"
   verdict="$(classify_argv resume "${argv}")"
   case "${verdict}" in
-    skip) banner_skip "[3] argv unobservable for ${name} (stub not exercised / empty pane_start_command — e.g. pre-existing tmux daemon); cannot assert resume shape" ;;
+    skip) argv_unobservable 3 "resume shape" ;;
     pass) banner_pass "[3] restart spawned claude with --resume or --session-id" ;;
     fail) banner_fail "[3] restart spawned claude WITHOUT --resume or --session-id: ${argv}" ;;
   esac
@@ -333,7 +357,7 @@ scenario_4_fresh_session_shape() {
   log "captured claude argv: ${argv}"
   verdict="$(classify_argv fresh "${argv}")"
   case "${verdict}" in
-    skip) banner_skip "[4] argv unobservable for ${name} (stub not exercised / empty pane_start_command); cannot assert fresh-session shape" ;;
+    skip) argv_unobservable 4 "fresh-session shape" ;;
     pass) banner_pass "[4] fresh session uses --session-id without --resume" ;;
     fail) banner_fail "[4] fresh session argv shape wrong: ${argv}" ;;
   esac

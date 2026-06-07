@@ -489,12 +489,13 @@ if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
 	}
 }
 
-func TestResolveTmuxSession_MalformedJSONSurfacesErrorWithoutAbort(t *testing.T) {
-	// Copilot review (PR #1309): a real malformed-JSON breakage from
-	// `agent-deck session show --json` must surface loudly (jq's stderr is no
-	// longer suppressed) — NOT silently degrade to an empty [SKIP]. It must
-	// still NOT abort the caller under set -e (|| true keeps the resolver at
-	// exit 0 and stdout empty so the caller degrades gracefully).
+func TestResolveTmuxSession_MalformedJSONSurfacesAsError(t *testing.T) {
+	// Repo-owner review P2 (PR #1309): when `agent-deck session show --json`
+	// SUCCEEDS but returns malformed JSON, that is a real broken-interface
+	// breakage. The resolver must SURFACE it (nonzero status + explicit error)
+	// rather than swallow it into an empty name that degrades to a false-green
+	// [SKIP]. Only the EXPECTED agent-deck not-found nonzero is swallowed
+	// (covered by TestResolveTmuxSession_NonzeroAgentDeckDoesNotAbortUnderSetE).
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Skip("jq not installed; resolver depends on jq")
 	}
@@ -511,14 +512,69 @@ exit 0
 	}
 	out, err := sourceAndRun(t,
 		[]string{"PATH=" + dir + ":" + os.Getenv("PATH")},
-		`tsess="$(resolve_tmux_session foo)"; echo "REACHED tsess=[${tsess}]"`)
+		`if msg="$(resolve_tmux_session foo 2>&1)"; then
+		   echo "UNEXPECTED_OK=[$msg]"
+		 else
+		   echo "STATUS=$? MSG=[$msg]"
+		 fi`)
 	if err != nil {
-		t.Fatalf("malformed JSON must not abort the caller under set -e: %v\n%s", err, out)
+		t.Fatalf("bash error: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "REACHED tsess=[]") {
-		t.Fatalf("resolver must degrade to empty without abort; got:\n%s", out)
+	if strings.Contains(out, "UNEXPECTED_OK") {
+		t.Fatalf("malformed JSON was silently swallowed as success (false-green):\n%s", out)
 	}
-	if !strings.Contains(strings.ToLower(out), "error") {
-		t.Fatalf("malformed JSON must surface a jq error on stderr (not be silenced); got:\n%s", out)
+	if !strings.Contains(out, "STATUS=3") || !strings.Contains(strings.ToLower(out), "malformed json") {
+		t.Fatalf("malformed JSON must surface as an explicit nonzero error; got:\n%s", out)
+	}
+}
+
+func TestArgvUnobservable_FailsInStubModeSkipsOtherwise(t *testing.T) {
+	// Repo-owner review P1 (PR #1309): an unobservable (empty) claude argv is
+	// expected degradation on non-stub hosts (macOS/no-systemd) -> [SKIP], but
+	// in stub mode (AGENT_DECK_VERIFY_USE_STUB=1 / USE_STUB=1) the stub MUST
+	// have recorded args, so empty means the gate could not verify -> [FAIL].
+	// A [SKIP] there would be a false-green on the mandatory gate.
+	stub, err := sourceAndRun(t, nil,
+		`FAILED=0; USE_STUB=1; argv_unobservable 3 "resume shape"; echo "FAILED=${FAILED}"`)
+	if err != nil {
+		t.Fatalf("bash error (stub): %v\n%s", err, stub)
+	}
+	if !strings.Contains(stub, "[FAIL]") || !strings.Contains(stub, "FAILED=1") {
+		t.Fatalf("stub mode + empty argv must FAIL (false-green guard); got:\n%s", stub)
+	}
+
+	nonstub, err := sourceAndRun(t, nil,
+		`FAILED=0; USE_STUB=0; argv_unobservable 3 "resume shape"; echo "FAILED=${FAILED}"`)
+	if err != nil {
+		t.Fatalf("bash error (non-stub): %v\n%s", err, nonstub)
+	}
+	if !strings.Contains(nonstub, "[SKIP]") || !strings.Contains(nonstub, "FAILED=0") {
+		t.Fatalf("non-stub + empty argv must SKIP (expected degradation); got:\n%s", nonstub)
+	}
+}
+
+func TestScenario3_StubModeUnobservableArgvFailsViaDispatch(t *testing.T) {
+	// P1 wiring: proves argv_unobservable actually fires inside the real
+	// scenario_3 dispatch path (the helper-only test above doesn't). In stub
+	// mode with an unobservable (empty) argv — all agent-deck calls succeed,
+	// only the capture comes back empty — scenario 3 must FAIL, not SKIP.
+	out, err := sourceAndRun(t, []string{"S3_TMPROOT=" + t.TempDir()}, `
+FAILED=0
+USE_STUB=1
+SESSION_PREFIX=verify-persist-test
+TMPROOT="${S3_TMPROOT}"
+ARGV_OUT="${TMPROOT}/argv.log"
+agent-deck() { return 0; }
+tmux() { return 0; }
+sleep() { :; }
+capture_claude_argv() { :; }   # empty argv -> classify=skip -> argv_unobservable
+scenario_3_restart_resume
+echo "FAILED=${FAILED}"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "FAILED=1") {
+		t.Fatalf("stub-mode unobservable argv must FAIL via scenario_3 dispatch; got:\n%s", out)
 	}
 }
