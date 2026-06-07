@@ -595,6 +595,20 @@ func (m *WebMutator) ArchiveSession(id string) error {
 		return fmt.Errorf("session not found: %s", id)
 	}
 
+	// Mirror the TUI 'A' hotkey / CLI `session archive`: archiving stops the
+	// agent process and tears down its tmux session — it is not a hide-only
+	// flag. Without this, a web-archived session keeps its tmux pane and tool
+	// process running indefinitely while the row claims to be set aside.
+	//
+	// Capture the live auto-name BEFORE Kill(), exactly as the TUI does: an
+	// auto-named row renders the live pane title, which Kill() tears down, so
+	// without this the row reverts to its bare random handle.
+	m.h.captureAutoNameBeforeStop(inst)
+	// Non-blocking Kill (not KillAndWait): the web server shares the long-lived
+	// TUI process, so the background process-tree reaper completes — unlike the
+	// short-lived CLI which must use KillAndWait (issue #59).
+	_ = inst.Kill()
+
 	inst.ArchivedAt = time.Now()
 
 	storage, err := session.NewStorageWithProfile(m.h.profile)

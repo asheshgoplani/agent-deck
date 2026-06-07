@@ -176,3 +176,28 @@ func TestWebMutator_MoveSessionToGroup_NotFound(t *testing.T) {
 		t.Fatalf("MoveSessionToGroup on missing id: expected error, got nil")
 	}
 }
+
+// TestWebMutator_ArchiveSession_StopsProcess pins the process-lifecycle half of
+// archive parity. The interface contract (web.SessionMutator.ArchiveSession)
+// says it "Mirrors the TUI 'A' hotkey / CLI session archive" — both of which
+// stop the agent process before hiding the row. The parity suite only checks
+// wire/data parity (the `archived` flag), so a missing Kill() slips through.
+// On a tmux-less seeded instance, Kill() resolves to Status=StatusStopped, so
+// status is the observable proxy for "the process was torn down".
+func TestWebMutator_ArchiveSession_StopsProcess(t *testing.T) {
+	inst := session.NewInstanceWithTool("archive-me", "/tmp/wm-archive", "claude")
+	inst.Status = session.StatusRunning
+
+	m, _ := newWebMutatorTestHarness(t, "_wm_archive", inst)
+
+	if err := m.ArchiveSession(inst.ID); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+
+	if inst.ArchivedAt.IsZero() {
+		t.Errorf("ArchivedAt not set; archive did not record the timestamp")
+	}
+	if got := inst.GetStatusThreadSafe(); got != session.StatusStopped {
+		t.Errorf("status = %q after web archive, want %q (archive must stop the process to mirror the TUI 'A' hotkey / CLI `session archive`)", got, session.StatusStopped)
+	}
+}
