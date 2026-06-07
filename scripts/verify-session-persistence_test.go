@@ -35,6 +35,32 @@ func sourceAndRun(t *testing.T, env []string, snippet string) (string, error) {
 	return string(out), err
 }
 
+func TestIsOwnTmproot_MatchesMktempOutputAnyParent(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/tmp/adeck-verify.AbC123", true},                       // Linux mktemp
+		{"/var/folders/23/xxxx/T/adeck-verify.AbC123", true},     // macOS $TMPDIR
+		{"/private/var/folders/q/y/T/adeck-verify.Z9", true},     // macOS realpath
+		{"/tmp", false},                                          // bare tmp — never rm
+		{"/home/user/important", false},                          // unrelated dir
+		{"", false},                                              // empty
+		{"/tmp/other-prefix.123", false},                         // wrong prefix
+	}
+	for _, c := range cases {
+		snippet := `if is_own_tmproot "` + c.path + `"; then echo YES; else echo NO; fi`
+		out, err := sourceAndRun(t, nil, snippet)
+		if err != nil {
+			t.Fatalf("path %q: bash error: %v\n%s", c.path, err, out)
+		}
+		got := strings.Contains(out, "YES")
+		if got != c.want {
+			t.Errorf("is_own_tmproot(%q) = %v, want %v (out: %s)", c.path, got, c.want, strings.TrimSpace(out))
+		}
+	}
+}
+
 func TestLibOnly_SourcesWithoutSideEffects(t *testing.T) {
 	// Sourcing with LIB_ONLY=1 must NOT run preflight/dispatch: no scenarios,
 	// no mktemp side effects, clean exit even with agent-deck absent from PATH.

@@ -27,6 +27,17 @@ banner_fail() { printf "${C_RED}[FAIL]${C_RESET} %s\n" "$*" >&2; FAILED=1; }
 banner_skip() { printf "${C_YELLOW}[SKIP]${C_RESET} %s\n" "$*"; }
 log() { printf '    %s\n' "$*"; }
 
+# is_own_tmproot returns 0 iff $1 is a tempdir THIS harness created via mktemp.
+# Matches on the leaf name (prefix adeck-verify.), NOT a hardcoded /tmp parent,
+# so it works on macOS where mktemp resolves under $TMPDIR (/var/folders/...).
+# Uses pure-bash parameter expansion (${p##*/}) — no fork, no BSD-vs-GNU
+# `basename --` portability question, works on bash 3.2. Callers add the `-d`
+# existence test before rm.
+is_own_tmproot() {
+  local p="$1"
+  [[ -n "$p" && "${p##*/}" == adeck-verify.* ]]
+}
+
 # ---------- cleanup ----------
 cleanup() {
   set +e
@@ -43,7 +54,7 @@ cleanup() {
     systemctl --user stop "${LOGINSIM_SCOPE}.scope" >/dev/null 2>&1 || true
   fi
   # Remove the script's OWN tempdir only (per CLAUDE.md, never rm user state).
-  if [[ -n "${TMPROOT}" && "${TMPROOT}" == /tmp/adeck-verify.* ]]; then
+  if is_own_tmproot "${TMPROOT:-}" && [[ -d "${TMPROOT}" ]]; then
     rm -rf "${TMPROOT}" 2>/dev/null || true
   fi
 }
