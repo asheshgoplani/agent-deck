@@ -171,6 +171,34 @@ func TestCaptureClaudeArgv_NeverScansHostWideProcesses(t *testing.T) {
 	}
 }
 
+func TestResolveTmuxSession_NonzeroAgentDeckDoesNotAbortUnderSetE(t *testing.T) {
+	// Regression: agent-deck `session show` exits 2 on not-found. Under the
+	// harness's `set -euo pipefail`, a bare `tsess="$(resolve_tmux_session ...)"`
+	// in a caller would abort the function instead of degrading to empty/SKIP.
+	// resolve_tmux_session must swallow the nonzero exit and yield empty.
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; resolver depends on jq")
+	}
+	dir := t.TempDir()
+	// Fake agent-deck that always exits 2 with no output (simulates not-found).
+	fake := "#!/usr/bin/env bash\nexit 2\n"
+	if err := os.WriteFile(filepath.Join(dir, "agent-deck"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mimic a caller's bare assignment under set -e, then a marker line. If
+	// resolve_tmux_session propagates the nonzero exit, set -e aborts before
+	// the marker and `err` is non-nil.
+	out, err := sourceAndRun(t,
+		[]string{"PATH=" + dir + ":" + os.Getenv("PATH")},
+		`tsess="$(resolve_tmux_session somesession)"; echo "REACHED=[$tsess]"`)
+	if err != nil {
+		t.Fatalf("set -e aborted before marker (regression present): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "REACHED=[]") {
+		t.Fatalf("expected empty resolution without abort; got: %s", strings.TrimSpace(out))
+	}
+}
+
 func TestLibOnly_SourcesWithoutSideEffects(t *testing.T) {
 	// Sourcing with LIB_ONLY=1 must NOT run preflight/dispatch: no scenarios,
 	// no mktemp side effects, clean exit even with agent-deck absent from PATH.

@@ -67,7 +67,12 @@ cleanup() {
 # use it (the old `agent-deck list | awk /^adeck_/` parse was doubly wrong: list
 # never prints the tmux name, and the real prefix is `agentdeck_`).
 resolve_tmux_session() {
-  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null
+  # `|| true` so a nonzero `agent-deck session show` (e.g. exit 2 not-found)
+  # under `set -o pipefail` does NOT abort callers' `var="$(resolve_tmux_session)"`
+  # assignments via set -e. Callers all degrade on empty output. Single-point
+  # fix shared by tmux_pid_for_session, tmux_pane_start_command_for_session,
+  # and scenario 5.
+  agent-deck session show --json "$1" 2>/dev/null | jq -r '.tmux_session // empty' 2>/dev/null || true
 }
 
 tmux_pid_for_session() {
