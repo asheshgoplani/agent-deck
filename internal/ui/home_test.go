@@ -2207,6 +2207,89 @@ func TestCuratedFooterRemoteSessionShowsAttach(t *testing.T) {
 	}
 }
 
+// TestCuratedFooterQueuedSessionNotAttachable covers PR #1289 review nit 2b: a
+// queued session has no tmux yet, so the curated footer must not advertise
+// "⏎ attach" or "restart" for it — only delete and new make sense.
+func TestCuratedFooterQueuedSessionNotAttachable(t *testing.T) {
+	home := curatedHome()
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{ID: "s1", Tool: "claude", Status: session.StatusQueued}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	if strings.Contains(result, "attach") {
+		t.Errorf("queued session (no tmux yet) must not advertise attach\nGot: %q", result)
+	}
+	if strings.Contains(result, "restart") {
+		t.Errorf("queued session (nothing running) must not advertise restart\nGot: %q", result)
+	}
+	if !strings.Contains(result, "delete") {
+		t.Errorf("queued session should advertise delete\nGot: %q", result)
+	}
+}
+
+// TestCuratedFooterNarrowKeepsSettingsAndHelp covers PR #1289 review nit 2a: on
+// a narrow terminal the curated footer drops lower-priority CONTEXT hints by
+// width rather than letting MaxWidth truncate the always-last settings/help
+// global hints off the right edge.
+func TestCuratedFooterNarrowKeepsSettingsAndHelp(t *testing.T) {
+	home := curatedHome()
+	home.width = 50 // narrow, but still >= layoutBreakpointSingle (curated, not tiny)
+	// Forkable live session → three context hints (attach/restart/fork) that
+	// would, together with settings+help, overflow 50 columns.
+	home.flatItems = []session.Item{
+		{Type: session.ItemTypeSession, Session: &session.Instance{
+			ID:               "s1",
+			Tool:             "claude",
+			Status:           session.StatusRunning,
+			ClaudeSessionID:  "abc",
+			ClaudeDetectedAt: time.Now(),
+		}},
+	}
+	home.cursor = 0
+
+	result := home.renderHelpBar()
+	settingsKey := home.actionKey(hotkeySettings)
+	helpKey := home.actionKey(hotkeyHelp)
+	if !strings.Contains(result, settingsKey+" settings") {
+		t.Errorf("narrow curated footer must keep the settings hint\nGot: %q", result)
+	}
+	if !strings.Contains(result, helpKey+" help") {
+		t.Errorf("narrow curated footer must keep the help hint\nGot: %q", result)
+	}
+}
+
+// TestFitCuratedHintsAlwaysKeepsGlobals exercises the width-fitting helper
+// directly: even when the bar is too narrow for any context hint, the global
+// hints survive; and context hints are kept front-to-back (highest priority
+// first) when there is room.
+func TestFitCuratedHintsAlwaysKeepsGlobals(t *testing.T) {
+	home := curatedHome()
+	globals := []footerHint{{key: "s", label: "settings"}, {key: "?", label: "help"}}
+	ctx := []footerHint{{key: "a", label: "attach"}, {key: "r", label: "restart"}, {key: "f", label: "fork"}}
+
+	// Width too small for any context hint: only globals remain.
+	home.width = 1
+	got := home.fitCuratedHints(ctx, globals)
+	if len(got) != len(globals) {
+		t.Fatalf("at width=1 expected only the %d global hints, got %d: %+v", len(globals), len(got), got)
+	}
+	if got[len(got)-1].label != "help" {
+		t.Errorf("help must remain the last hint, got %+v", got)
+	}
+
+	// Generous width: everything fits, context first then globals.
+	home.width = 200
+	got = home.fitCuratedHints(ctx, globals)
+	if len(got) != len(ctx)+len(globals) {
+		t.Fatalf("at width=200 expected all %d hints, got %d: %+v", len(ctx)+len(globals), len(got), got)
+	}
+	if got[0].label != "attach" || got[len(got)-1].label != "help" {
+		t.Errorf("expected attach first and help last, got %+v", got)
+	}
+}
+
 // TestFooterDefaultIsFull is the default-preserving guarantee for PR #1289:
 // with no [ui] footer config the footer is the historic verbose "full" bar,
 // not curated — so nobody's UI changes without an explicit opt-in.

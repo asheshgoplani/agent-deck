@@ -12048,6 +12048,50 @@ func (h *Home) curatedHint(hint footerHint) string {
 	return keyStyle.Render(hint.key) + " " + labelStyle.Render(hint.label)
 }
 
+// fitCuratedHints returns the global hints (settings/help) preceded by as many
+// of the context hints as fit within h.width, dropping the lowest-priority
+// context hints (those at the end of the slice) first. The global hints are
+// always kept, even if that means dropping every context hint, so the curated
+// footer never loses the settings and help keys to right-edge truncation on a
+// narrow terminal. Widths are measured with lipgloss.Width to match how the
+// joined content is rendered, including the two-space separators.
+func (h *Home) fitCuratedHints(contextHints, globalHints []footerHint) []footerHint {
+	const sepWidth = 2 // the "  " separator between rendered hints
+
+	width := func(hint footerHint) int {
+		return lipgloss.Width(h.curatedHint(hint))
+	}
+
+	// Baseline: the global hints always render. Their combined width is the
+	// floor we cannot trim below.
+	used := 0
+	for i, hint := range globalHints {
+		used += width(hint)
+		if i > 0 {
+			used += sepWidth
+		}
+	}
+
+	// Greedily keep context hints from the front (highest priority) while each
+	// still fits. h.width <= 0 (uninitialized) means "no constraint" — keep all.
+	rendered := used > 0 // whether anything has been counted yet (for separators)
+	kept := make([]footerHint, 0, len(contextHints)+len(globalHints))
+	for _, hint := range contextHints {
+		next := used + width(hint)
+		if rendered {
+			next += sepWidth
+		}
+		if h.width > 0 && next > h.width {
+			break
+		}
+		kept = append(kept, hint)
+		used = next
+		rendered = true
+	}
+
+	return append(kept, globalHints...)
+}
+
 // maxCuratedContextHints caps how many context-relevant shortcuts the curated
 // footer advertises for the selected row. The settings and help keys are added
 // on top of these by renderHelpBarCurated, so the bar stays short while still
@@ -12088,7 +12132,16 @@ func (h *Home) curatedContextHints(item session.Item) []footerHint {
 		if s == nil {
 			return hints
 		}
-		if sessionIsDead(s) {
+		if sessionIsQueued(s) {
+			// Queued: waiting for a group slot, no tmux yet — so it is neither
+			// attachable (no pane to enter) nor restartable (nothing running to
+			// restart). The only meaningful actions are dropping it from the
+			// queue or creating something else. Without this branch the curated
+			// footer advertised "⏎ attach"+restart for a session that has no
+			// tmux (PR #1289 review nit 2b).
+			add(h.actionKey(hotkeyDelete), "delete")
+			add(newQuick, "new")
+		} else if sessionIsDead(s) {
 			// Dead (stopped or error): restart, then restart-fresh when the
 			// tool tracks a session id, then delete — the actions for a session
 			// that broke or was parked, in order of likely intent.
@@ -12132,6 +12185,13 @@ func sessionIsDead(s *session.Instance) bool {
 	return status == session.StatusStopped || status == session.StatusError
 }
 
+// sessionIsQueued reports whether a session is waiting for a group slot and has
+// no tmux yet — so it is neither attachable nor restartable. Reads the status
+// via the thread-safe getter for the same concurrency reason as sessionIsDead.
+func sessionIsQueued(s *session.Instance) bool {
+	return s.GetStatusThreadSafe() == session.StatusQueued
+}
+
 // renderHelpBarCurated renders the lighter, context-aware footer (the default
 // "curated" style). It shows dim, plain inline hints for only the actions
 // relevant to the selected row, and always keeps the settings key then the help
@@ -12141,36 +12201,45 @@ func (h *Home) renderHelpBarCurated() string {
 	borderStyle := lipgloss.NewStyle().Foreground(ColorBorder)
 	border := borderStyle.Render(strings.Repeat("─", max(0, h.width)))
 
-	var hints []footerHint
+	// Context hints (jump / empty-list / selected-row actions) are
+	// lower-priority and listed in descending priority order, so they are the
+	// ones dropped first when the bar is too narrow.
+	var contextHints []footerHint
 
 	switch {
 	case h.jumpMode:
-		hints = append(hints, footerHint{key: "a-z", label: "jump"}, footerHint{key: "esc", label: "cancel"})
+		contextHints = append(contextHints, footerHint{key: "a-z", label: "jump"}, footerHint{key: "esc", label: "cancel"})
 	case len(h.flatItems) == 0:
 		// Empty list: the useful actions all create something — new session,
 		// import, or a group. Cap at the same budget as context hints.
 		add := func(key, label string) {
-			if len(hints) >= maxCuratedContextHints {
+			if len(contextHints) >= maxCuratedContextHints {
 				return
 			}
 			if strings.TrimSpace(key) != "" {
-				hints = append(hints, footerHint{key: key, label: label})
+				contextHints = append(contextHints, footerHint{key: key, label: label})
 			}
 		}
 		add(joinHotkeyLabels(h.actionKey(hotkeyNewSession), h.actionKey(hotkeyQuickCreate)), "new")
 		add(h.actionKey(hotkeyImport), "import")
 		add(h.actionKey(hotkeyCreateGroup), "group")
 	case h.cursor >= 0 && h.cursor < len(h.flatItems):
-		hints = append(hints, h.curatedContextHints(h.flatItems[h.cursor])...)
+		contextHints = append(contextHints, h.curatedContextHints(h.flatItems[h.cursor])...)
 	}
 
-	// Always keep settings then help as the LAST two items, in that order.
+	// Settings then help are the always-kept global hints, in that order. They
+	// are never dropped: when the terminal is too narrow, lower-priority context
+	// hints are trimmed from the right instead so these two always survive
+	// (PR #1289 review nit 2a — previously MaxWidth truncation could clip them).
+	var globalHints []footerHint
 	if key := h.actionKey(hotkeySettings); key != "" {
-		hints = append(hints, footerHint{key: key, label: "settings"})
+		globalHints = append(globalHints, footerHint{key: key, label: "settings"})
 	}
 	if key := h.actionKey(hotkeyHelp); key != "" {
-		hints = append(hints, footerHint{key: key, label: "help"})
+		globalHints = append(globalHints, footerHint{key: key, label: "help"})
 	}
+
+	hints := h.fitCuratedHints(contextHints, globalHints)
 
 	parts := make([]string, 0, len(hints))
 	for _, hint := range hints {
