@@ -1350,9 +1350,15 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		// No explicit path provided: use group default path first, then cwd fallback.
+		// No explicit path provided: use group default path first, then global
+		// config default_path, then cwd fallback.
 		if sessionGroup != "" {
 			path = groupTree.DefaultPathForGroup(sessionGroup)
+		}
+		if path == "" {
+			if userCfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
+				path = resolveConfiguredDefaultPath(userCfg.DefaultPath)
+			}
 		}
 		if path == "" {
 			path, err = os.Getwd()
@@ -1772,6 +1778,24 @@ func handleAdd(profile string, args []string) {
 			fmt.Println(line)
 		}
 	}
+}
+
+func resolveConfiguredDefaultPath(defaultPath string) string {
+	defaultPath = strings.TrimSpace(defaultPath)
+	if defaultPath == "" {
+		return ""
+	}
+
+	resolved, err := resolveAddPath(defaultPath)
+	if err != nil {
+		return ""
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return resolved
 }
 
 // handleList lists all sessions

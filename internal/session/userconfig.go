@@ -47,6 +47,10 @@ type UserConfig struct {
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool"`
 
+	// DefaultPath is the global fallback project directory for `agent-deck add`
+	// when no explicit path or group default_path is provided.
+	DefaultPath string `toml:"default_path"`
+
 	// Hotkeys overrides default keyboard shortcuts in the TUI.
 	// Keys are action names, values are key bindings (e.g., "delete" = "backspace").
 	// Set an action to "" to explicitly unbind it.

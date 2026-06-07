@@ -39,6 +39,16 @@ func TestDisplaySettings_IncludeCwdPrefix_TOML(t *testing.T) {
 	}
 }
 
+func TestUserConfig_DefaultPathTOML(t *testing.T) {
+	var cfg UserConfig
+	if _, err := toml.Decode(`default_path = "~/workspace"`+"\n", &cfg); err != nil {
+		t.Fatalf("toml decode: %v", err)
+	}
+	if got, want := cfg.DefaultPath, "~/workspace"; got != want {
+		t.Fatalf("DefaultPath = %q, want %q", got, want)
+	}
+}
+
 func TestGetCodexCommand_DefaultAndConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")
