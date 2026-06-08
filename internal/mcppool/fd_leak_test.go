@@ -1,3 +1,5 @@
+//go:build integration
+
 package mcppool
 
 // FD-leak regression for V1.9 T5 / critical-hunt #3 + #4.

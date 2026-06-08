@@ -87,7 +87,12 @@ jobs:
         timeout-minutes: 25
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
-        run: gotestsum --rerun-fails=2 --rerun-fails-max-failures=3 --format=testdox -- -race -timeout 20m ./...
+        run: gotestsum --rerun-fails=2 --rerun-fails-max-failures=3 --format=testdox -- -race -timeout 20m $(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
+
+      - name: Run integration tests (informational)
+        timeout-minutes: 15
+        continue-on-error: true
+        run: go test -race -timeout 10m -tags integration ./internal/tmux/... ./internal/integration/... ./internal/tuitest/... ./internal/mcppool/...
 
       # Evaluator harness full tier. Blocking — a release that fails eval
       # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).

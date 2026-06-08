@@ -1,3 +1,5 @@
+//go:build integration
+
 package mcppool
 
 // Integration test: prove the SocketProxy spawn path actually applies

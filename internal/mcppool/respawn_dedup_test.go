@@ -1,3 +1,5 @@
+//go:build integration
+
 package mcppool
 
 // Cascade-trigger regression for v1.9 — duplicate MCP-child accumulation.

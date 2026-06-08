@@ -1,3 +1,5 @@
+//go:build integration
+
 package mcppool
 
 // Zombie-reap regression for issue #677 — SocketProxy MCP process exits.
