@@ -68,6 +68,10 @@ type InstanceData struct {
 	// Instance.Account for full semantics.
 	Account string `json:"account,omitempty"`
 
+	// Pin anchors the session to the top/bottom of its group (pin-sessions).
+	// Round-trips through the pin column. Empty = not pinned.
+	Pin PinMode `json:"pin,omitempty"`
+
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
 	ClaudeDetectedAt time.Time `json:"claude_detected_at,omitempty"`
@@ -717,6 +721,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreeBranch:     inst.WorktreeBranch,
 		Account:            inst.Account,
 		ArchivedAt:         inst.ArchivedAt,
+		Pin:                string(inst.Pin),
 		ToolData:           toolData,
 	}, nil
 }
@@ -829,6 +834,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
 			Account:                   r.Account,
+			Pin:                       PinMode(r.Pin),
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -945,6 +951,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
 			Account:                   r.Account,
+			Pin:                       PinMode(r.Pin),
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -1195,6 +1202,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
 			WorktreeBranch:            instData.WorktreeBranch,
 			Account:                   instData.Account,
+			Pin:                       instData.Pin,
 			TmuxSocketName:            instData.TmuxSocketName,
 			ClaudeSessionID:           instData.ClaudeSessionID,
 			ClaudeDetectedAt:          instData.ClaudeDetectedAt,

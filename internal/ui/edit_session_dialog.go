@@ -25,8 +25,13 @@ type editField struct {
 	kind        editFieldKind
 	input       textinput.Model
 	pillOptions []string
-	pillCursor  int
-	checked     bool
+	// pillLabels, when set, supplies human display text for each pillOption
+	// (e.g. "Off"/"Top"/"Bottom" for the pin field). The committed value is
+	// still pillOptions[cursor]; only the rendering differs. nil = render the
+	// pillOptions verbatim as tool pills.
+	pillLabels []string
+	pillCursor int
+	checked    bool
 }
 
 // EditSessionDialog edits the slim set of session fields users iterate on
@@ -65,6 +70,13 @@ func (d *EditSessionDialog) Show(inst *session.Instance) {
 			input: mkInput("Session title", MaxNameLength, inst.Title)},
 		{key: session.FieldTool, label: "Tool (restart)", kind: editFieldPills,
 			pillOptions: tools, pillCursor: toolCursor},
+		// Pin position — anchors the session to the top/bottom of its group,
+		// exempt from the status/recency sort (pin-sessions feature). Applies
+		// to every tool, so it lives in the shared field block.
+		{key: session.FieldPin, label: "Pin position", kind: editFieldPills,
+			pillOptions: []string{string(session.PinNone), string(session.PinTop), string(session.PinBottom)},
+			pillLabels:  []string{"Off", "Top", "Bottom"},
+			pillCursor:  pinCursorFor(inst.Pin)},
 	}
 	if session.IsClaudeCompatible(inst.Tool) {
 		skip, auto := readClaudeFlags(inst)
@@ -124,6 +136,19 @@ func displayGroupName(groupPath string) string {
 		return groupPath[idx+1:]
 	}
 	return groupPath
+}
+
+// pinCursorFor maps the session's current pin mode to its pill index so the
+// dialog opens with the active option highlighted.
+func pinCursorFor(pin session.PinMode) int {
+	switch pin {
+	case session.PinTop:
+		return 1
+	case session.PinBottom:
+		return 2
+	default:
+		return 0
+	}
 }
 
 // toolPillsForInstance returns the pill list + cursor index for `tool`.
@@ -254,6 +279,8 @@ func fieldInitialValue(inst *session.Instance, field string) string {
 	case session.FieldAutoMode:
 		_, auto := readClaudeFlags(inst)
 		return strconv.FormatBool(auto)
+	case session.FieldPin:
+		return string(inst.Pin)
 	}
 	return ""
 }
@@ -396,7 +423,11 @@ func (d *EditSessionDialog) View() string {
 		case editFieldText:
 			content.WriteString(f.input.View())
 		case editFieldPills:
-			content.WriteString(renderToolPills(f.pillOptions, f.pillCursor))
+			if f.pillLabels != nil {
+				content.WriteString(renderLabelPills(f.pillLabels, f.pillCursor))
+			} else {
+				content.WriteString(renderToolPills(f.pillOptions, f.pillCursor))
+			}
 		}
 		content.WriteString("\n")
 	}
@@ -413,6 +444,26 @@ func (d *EditSessionDialog) View() string {
 
 	dialog := dialogStyle.Render(content.String())
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)
+}
+
+// renderLabelPills renders a row of plain-text pills (no tool icons) for
+// fields whose options are simple labels, e.g. the pin position. Visual
+// styling matches renderToolPills so the two pill kinds read identically.
+func renderLabelPills(labels []string, cursor int) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	selected := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorAccent).Bold(true).Padding(0, 2)
+	idle := lipgloss.NewStyle().Foreground(ColorTextDim).Background(ColorSurface).Padding(0, 2)
+	buttons := make([]string, len(labels))
+	for i, label := range labels {
+		if i == cursor {
+			buttons[i] = selected.Render(label)
+		} else {
+			buttons[i] = idle.Render(label)
+		}
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left, buttons...)
 }
 
 // renderToolPills mirrors newdialog's command pills (selected =

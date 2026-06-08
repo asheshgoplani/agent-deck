@@ -13852,7 +13852,13 @@ func (h *Home) renderSessionItem(
 		}
 	}
 
-	title := titleStyle.Render(inst.Title)
+	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
+	// the list conveys top vs bottom; the emoji conveys "this is pinned".
+	displayTitle := inst.Title
+	if inst.Pin != session.PinNone {
+		displayTitle = "📌 " + displayTitle
+	}
+	title := titleStyle.Render(displayTitle)
 	tool := toolStyle.Render(" " + instTool)
 
 	// YOLO badge for Gemini/Codex sessions with YOLO mode enabled

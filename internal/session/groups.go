@@ -108,9 +108,45 @@ func actionablePriority(s Status) int {
 	return 5
 }
 
+// pinZone maps a session to its outermost sort band (pin-sessions feature).
+// Lower bands surface higher in the group's list.
+//
+//	0  pin-top      fixed at the top, exempt from status/recency
+//	1  normal       the existing actionable sort (status → recency → Order)
+//	2  pin-bottom   fixed at the bottom, exempt from status/recency
+func pinZone(inst *Instance) int {
+	switch inst.Pin {
+	case PinTop:
+		return 0
+	case PinBottom:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// stablePinPartition reorders insts in place into pin-top, normal, and
+// pin-bottom bands (pinZone), preserving the relative order of sessions within
+// each band. Unlike SortInstancesByActionable it never reorders by
+// status/recency, so it is safe to run on every render (Flatten): it moves only
+// pinned rows, leaving the load-time actionable order — and any live K/J manual
+// order — of the normal band untouched. This is what makes a pin edit take
+// effect live instead of only after a restart.
+func stablePinPartition(insts []*Instance) {
+	sort.SliceStable(insts, func(i, j int) bool {
+		return pinZone(insts[i]) < pinZone(insts[j])
+	})
+}
+
 // SortInstancesByActionable sorts the given slice in place so the most
-// recently actionable sessions surface first within a group (issue #857).
-// Key precedence:
+// recently actionable sessions surface first within a group (issue #857),
+// while honoring per-session pins (pin-sessions feature). The outermost key is
+// the pin zone (see pinZone); within the normal zone the existing actionable
+// tiers apply, and within the pin-top/pin-bottom bands sessions are ordered by
+// Order alone (fully fixed — status and recency are ignored, so K/J reordering
+// still works inside a band).
+//
+// Normal zone key precedence:
 //
 //  1. actionablePriority(Status)   asc  — error/waiting/running first
 //  2. LastAccessedAt              desc  — recent attention first
@@ -120,6 +156,15 @@ func actionablePriority(s Status) int {
 //     TestSessionOrderMigration)
 func SortInstancesByActionable(insts []*Instance) {
 	sort.SliceStable(insts, func(i, j int) bool {
+		zi, zj := pinZone(insts[i]), pinZone(insts[j])
+		if zi != zj {
+			return zi < zj
+		}
+		// Pin-top (0) and pin-bottom (2) bands are fully fixed: Order only.
+		if zi == 0 || zi == 2 {
+			return insts[i].Order < insts[j].Order
+		}
+		// Normal (1) band keeps the actionable tiers.
 		pi, pj := actionablePriority(insts[i].Status), actionablePriority(insts[j].Status)
 		if pi != pj {
 			return pi < pj
@@ -462,6 +507,18 @@ func (t *GroupTree) Flatten() []Item {
 				} else {
 					parentSessions = append(parentSessions, sess)
 				}
+			}
+
+			// Apply pin ordering live (pin-sessions): a pin edit mutates
+			// Instance.Pin but does not rebuild the tree, so the load-time
+			// SortInstancesByActionable has not re-run. Stable-partition the
+			// display slices by pin zone here so a pinned session moves to the
+			// top/bottom of its group immediately — without this, the pin only
+			// takes effect after a restart. Operates on Flatten's local copies,
+			// never the tree's group.Sessions, and preserves unpinned order.
+			stablePinPartition(parentSessions)
+			for parentID := range subSessionsByParent {
+				stablePinPartition(subSessionsByParent[parentID])
 			}
 
 			// Count total top-level items (parent sessions + orphan sub-sessions whose parent is in different group)
