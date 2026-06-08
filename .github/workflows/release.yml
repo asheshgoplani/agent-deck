@@ -80,6 +80,7 @@ jobs:
           zoxide --version
 
       - name: Install gotestsum
+        timeout-minutes: 5
         run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Run tests
