@@ -79,11 +79,14 @@ jobs:
           sudo apt-get install -y zoxide
           zoxide --version
 
+      - name: Install gotestsum
+        run: go install gotest.tools/gotestsum@v1.13.0
+
       - name: Run tests
         timeout-minutes: 25
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
-        run: go test -race -timeout 20m ./...
+        run: gotestsum --rerun-fails=2 --rerun-fails-max-failures=3 --format=testdox -- -race -timeout 20m ./...
 
       # Evaluator harness full tier. Blocking — a release that fails eval
       # does not get a tag. See docs/rfc/EVALUATOR_HARNESS.md (#37).
