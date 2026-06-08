@@ -34,6 +34,7 @@ const (
 	FieldAutoMode           = "auto-mode"
 	FieldAccount            = "account"      // #924 per-session named account slot
 	FieldIdleTimeout        = "idle-timeout" // #1143 auto-stop dormant sessions
+	FieldPin                = "pin"          // pin-sessions: anchor top/bottom of group
 )
 
 var ValidMutableFields = []string{
@@ -57,6 +58,7 @@ var ValidMutableFields = []string{
 	FieldAutoMode,
 	FieldAccount,
 	FieldIdleTimeout,
+	FieldPin,
 }
 
 type FieldRestartPolicy int
@@ -351,6 +353,21 @@ func SetField(inst *Instance, field, value string, extraArgsTokens []string) (ol
 			return oldValue, nil, &MutationError{Field: field, Msg: perr.Error()}
 		}
 		inst.IdleTimeoutSecs = secs
+
+	case FieldPin:
+		// pin-sessions: anchor the session to the top/bottom of its group,
+		// exempt from the status/recency sort. "" clears the pin. Live: the
+		// next rebuildFlatItems re-sorts and the row lands in its band.
+		oldValue = string(inst.Pin)
+		switch PinMode(strings.TrimSpace(value)) {
+		case PinNone, PinTop, PinBottom:
+			inst.Pin = PinMode(strings.TrimSpace(value))
+		default:
+			return oldValue, nil, &MutationError{
+				Field: field,
+				Msg:   fmt.Sprintf("invalid pin %q — expected 'top', 'bottom', or '' to unpin", value),
+			}
+		}
 
 	default:
 		return "", nil, &MutationError{
