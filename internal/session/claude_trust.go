@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // PreAcceptClaudeTrust adds a `projects[parentDir].hasTrustDialogAccepted = true`
@@ -61,13 +63,8 @@ func PreAcceptClaudeTrust(claudeJSONPath, parentDir string) error {
 	if err != nil {
 		return fmt.Errorf("marshal claude config: %w", err)
 	}
-	tmp := claudeJSONPath + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, claudeJSONPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename %s: %w", claudeJSONPath, err)
+	if err := atomicfile.WriteFile(claudeJSONPath, out, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", claudeJSONPath, err)
 	}
 	return nil
 }
