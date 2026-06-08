@@ -28,6 +28,16 @@ banner_fail() { printf "${C_RED}[FAIL]${C_RESET} %s\n" "$*" >&2; FAILED=1; }
 banner_skip() { printf "${C_YELLOW}[SKIP]${C_RESET} %s\n" "$*"; }
 log() { printf '    %s\n' "$*"; }
 
+# make_run_id returns a per-invocation identifier that is NOT a bare (OS-
+# reusable) PID. SESSION_PREFIX is built from it, so a unique RUN_ID guarantees
+# no two harness runs ever generate identical session titles — closing a
+# PID-reuse identity collision where cleanup (remove-by-exact-title) could match
+# a hard-killed prior run's leftover session. PID + epoch seconds + ${RANDOM};
+# all portable on macOS bash 3.2 (no GNU-only `date %N`).
+make_run_id() {
+  printf '%s-%s-%s' "$$" "$(date +%s)" "${RANDOM}"
+}
+
 # is_own_tmproot returns 0 iff $1 is a tempdir THIS harness created via mktemp.
 # Matches on the leaf name (prefix adeck-verify.), NOT a hardcoded /tmp parent,
 # so it works on macOS where mktemp resolves under $TMPDIR (/var/folders/...).
@@ -449,7 +459,7 @@ scenario_5_reviver_respawns_killed_pipe() {
 # ---------- entrypoint ----------
 main() {
   FAILED=0
-  RUN_ID="$$"
+  RUN_ID="$(make_run_id)"
   TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/adeck-verify.XXXXXX")"
   SESSION_PREFIX="verify-persist-${RUN_ID}"
   LOGINSIM_SCOPE="adeck-verify-loginsim-${RUN_ID}"

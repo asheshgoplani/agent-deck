@@ -653,3 +653,44 @@ echo "FAILED=${FAILED}"
 		t.Fatalf("stub-mode unobservable argv must FAIL via scenario_3 dispatch; got:\n%s", out)
 	}
 }
+
+func TestMakeRunID_IsCollisionProofNotBarePID(t *testing.T) {
+	// Review: RUN_ID was a bare `$$` (an OS-reusable PID). Since
+	// SESSION_PREFIX="verify-persist-${RUN_ID}", a later run that gets a
+	// hard-killed prior run's PID would generate identical session titles, and
+	// cleanup (remove-by-exact-title) could then match the stale prior session.
+	// make_run_id must be per-invocation unique, not the bare PID.
+	out, err := sourceAndRun(t, nil, `
+ids=""
+for i in 1 2 3 4 5; do ids="${ids}${ids:+ }$(make_run_id)"; done
+printf 'IDS=%s\n' "${ids}"
+printf 'ONE=%s\n' "$(make_run_id)"
+printf 'PID=%s\n' "$$"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	var ids, one, pid string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "IDS="):
+			ids = strings.TrimPrefix(line, "IDS=")
+		case strings.HasPrefix(line, "ONE="):
+			one = strings.TrimPrefix(line, "ONE=")
+		case strings.HasPrefix(line, "PID="):
+			pid = strings.TrimPrefix(line, "PID=")
+		}
+	}
+	// Not the bare PID, and composite (PID-epoch-RANDOM => >= 2 dashes).
+	if one == pid || strings.Count(one, "-") < 2 {
+		t.Fatalf("run id %q must be composite (not the bare PID %q)", one, pid)
+	}
+	// Uniqueness: 5 invocations must not all collide (would-be title collision).
+	seen := map[string]bool{}
+	for _, id := range strings.Fields(ids) {
+		seen[id] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("make_run_id must vary per invocation; 5 calls gave %d distinct: %q", len(seen), ids)
+	}
+}

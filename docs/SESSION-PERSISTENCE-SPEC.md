@@ -201,6 +201,10 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
   path fired even on a failed preflight that created nothing — both data-loss
   risks. Empty created-list ⇒ no-op (e.g. failed preflight). Trade-off: a
   hard-killed run's sessions are not swept by a later run.
+- `RUN_ID` (hence every session title) is per-invocation unique — PID + epoch
+  seconds + `${RANDOM}`, not a bare reusable PID — so two runs can never
+  generate identical titles, and the exact-title cleanup can only ever match its
+  own sessions even if the OS reuses a PID across a hard-killed prior run.
 
 Unit-gated by `scripts/verify-session-persistence_test.go` on macOS + Linux CI.
 
