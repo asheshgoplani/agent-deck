@@ -4796,9 +4796,18 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 // The inner `tmux switch-client` runs inside the tmux server that fired the
 // run-shell hook, so it targets the correct socket automatically — no need to
 // thread -L through the shell string.
+//
+// Every interpolated value is shell-escaped via shellescape.Quote. targetSession
+// derives from the user-controlled session title, so raw single-quote wrapping
+// ('%s') would break — or be exploited — by a title containing a quote, space,
+// or shell metacharacter. The dir is created 0700 (matching the bind-time
+// os.MkdirAll) so the ack-signal dir/file is not exposed to other local users.
 func buildAckSwitchScript(signalFile, sessionID, targetSession string) string {
-	return fmt.Sprintf("mkdir -p '%s' && echo '%s' > '%s' && tmux switch-client -t '%s'",
-		filepath.Dir(signalFile), sessionID, signalFile, targetSession)
+	return fmt.Sprintf("mkdir -p -m 700 %s && echo %s > %s && tmux switch-client -t %s",
+		shellescape.Quote(filepath.Dir(signalFile)),
+		shellescape.Quote(sessionID),
+		shellescape.Quote(signalFile),
+		shellescape.Quote(targetSession))
 }
 
 const ackSignalLegacyMarker = ".ack-signal-legacy"
