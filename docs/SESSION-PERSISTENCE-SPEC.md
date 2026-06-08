@@ -184,11 +184,19 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
   args, so a `[SKIP]` there would be a false-green on the mandatory gate.
 - Scenario 5 resolves its tmux session name via `session show --json`.
 - `jq` is an explicit harness dependency; missing `jq` is a preflight error, not
-  a silent `[SKIP]`. A malformed-JSON payload from a SUCCESSFUL
-  `session show --json` is surfaced (loud error + nonzero), not degraded to an
-  empty name — only the EXPECTED not-found nonzero is swallowed.
-- The harness removes its own `${TMPDIR}/adeck-verify.*` tempdir and
-  `verify-persist-*` sessions by full JSON title on exit.
+  a silent `[SKIP]`. For `session show --json`, only the EXPECTED not-found
+  (`exit 2`, `ErrCodeNotFound`) is swallowed → unresolved/empty; ANY other
+  nonzero (`exit 1` = DB/load/permission/crash) and a malformed-JSON payload
+  from a SUCCESSFUL call are SURFACED (loud error + nonzero), never degraded to
+  an empty name and a false-green `[SKIP]`.
+- Cleanup removes ONLY the exact session titles this invocation created (tracked
+  in `CREATED_SESSIONS` as each is created) and its own
+  `${TMPDIR}/adeck-verify.*` tempdir. It NEVER prefix/text-parses
+  `agent-deck list`: `SESSION_PREFIX="verify-persist-${PID}"` is a bare prefix
+  that collides (PID `123` matches a foreign `verify-persist-1234-*`), and that
+  path fired even on a failed preflight that created nothing — both data-loss
+  risks. Empty created-list ⇒ no-op (e.g. failed preflight). Trade-off: a
+  hard-killed run's sessions are not swept by a later run.
 
 Unit-gated by `scripts/verify-session-persistence_test.go` on macOS + Linux CI.
 

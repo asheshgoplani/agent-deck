@@ -69,10 +69,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the stub must record args and a `[SKIP]` would be a false-green on the
   mandatory gate. Scenario 5 resolves its tmux name via `session show --json`,
   and a malformed-JSON payload from a successful `session show --json` is
-  surfaced (loud error) rather than masked as an empty name. The harness cleans
-  up its own tempdir and sessions by full JSON title, requires `jq` explicitly,
-  and the fake Claude stub no longer relies on GNU-only `sleep infinity`. Gated
-  by new macOS + Linux unit tests.
+  surfaced (loud error) rather than masked as an empty name; likewise any
+  non-not-found error from `session show --json` (exit 1 = DB/load/permission)
+  now surfaces instead of degrading to a false-green `[SKIP]`. Cleanup removes
+  ONLY the exact session titles this invocation created (tracked as each is
+  created) — never a `verify-persist-${PID}` prefix match on `agent-deck list`
+  output, which collided with foreign runs and fired even on a failed preflight
+  (data-loss risks). The harness cleans up its own tempdir, requires `jq`
+  explicitly, and the fake Claude stub no longer relies on GNU-only
+  `sleep infinity`. Gated by new macOS + Linux unit tests.
 
 ## [1.9.49] - 2026-06-07
 

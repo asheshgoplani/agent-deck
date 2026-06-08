@@ -42,21 +42,22 @@ is_own_tmproot() {
 # ---------- cleanup ----------
 cleanup() {
   set +e
-  # Stop any sessions we created. agent-deck has no `session ls` subcommand;
-  # use the top-level `agent-deck list --json` so long titles are not truncated.
-  if [[ -n "${SESSION_PREFIX:-}" ]] && command -v agent-deck >/dev/null 2>&1; then
-    if command -v jq >/dev/null 2>&1; then
-      while IFS= read -r n; do
-        [[ -n "${n}" ]] || continue
-        agent-deck session stop "$n" >/dev/null 2>&1 || true
-        agent-deck remove "$n" >/dev/null 2>&1 || true
-      done < <(agent-deck list --json 2>/dev/null | jq -r --arg P "${SESSION_PREFIX}" '.[]? | select((.title // "") | startswith($P)) | .title' 2>/dev/null || true)
-    else
-      for n in $(agent-deck list 2>/dev/null | awk -v P="${SESSION_PREFIX}" '$1 ~ "^"P {print $1}' || true); do
-        agent-deck session stop "$n" >/dev/null 2>&1 || true
-        agent-deck remove "$n" >/dev/null 2>&1 || true
-      done
-    fi
+  # Stop+remove ONLY the exact sessions THIS invocation created, tracked in
+  # CREATED_SESSIONS. We do NOT parse `agent-deck list`: a prefix/text match on
+  # SESSION_PREFIX="verify-persist-${PID}" collides (PID 123 matches a foreign
+  # verify-persist-1234-*) and that fallback fired even on a failed preflight
+  # that created nothing — both data-loss risks (review B1 + B2). Trade-off: a
+  # hard-killed run's sessions are no longer swept by a later run; we accept
+  # that for collision-safety. Empty array => no-op (bash 3.2 set -u safe).
+  if command -v agent-deck >/dev/null 2>&1; then
+    # `${arr[@]+"${arr[@]}"}` is bash 3.2 + set -u safe for an unset OR empty
+    # array (expands to nothing -> no-op); avoids the `${#arr[@]}` unbound crash.
+    local n
+    for n in ${CREATED_SESSIONS[@]+"${CREATED_SESSIONS[@]}"}; do
+      [[ -n "${n}" ]] || continue
+      agent-deck session stop "$n" >/dev/null 2>&1 || true
+      agent-deck remove "$n" >/dev/null 2>&1 || true
+    done
   fi
   # Tear down any lingering login-sim scope.
   if command -v systemctl >/dev/null 2>&1; then
@@ -78,20 +79,27 @@ cleanup() {
 resolve_tmux_session() {
   # Single-point resolver shared by tmux_pid_for_session,
   # tmux_pane_start_command_for_session, and scenario 5. Distinguishes EXPECTED
-  # degradation (swallow) from a real broken interface (surface) — review P2:
-  #   - jq missing      -> explicit error, return 2 (preflight already gates this)
-  #   - session not-found / nonzero `session show` -> EXPECTED: return empty,
-  #     no set -e abort (its stderr "not found" message is just noise)
-  #   - empty output    -> unresolved, return empty
-  #   - malformed JSON from a SUCCESSFUL `session show` -> a real interface
-  #     breakage: surface it (loud error + nonzero) rather than mask it as an
-  #     empty name that would degrade to a false-green [SKIP].
+  # degradation (swallow) from a real error (surface) — review P2 + ALSO:
+  #   - jq missing       -> explicit error, return 2 (preflight already gates it)
+  #   - `session show` exit 2 (ErrCodeNotFound) -> EXPECTED: return empty, no
+  #     set -e abort (its stderr "not found" message is just noise)
+  #   - `session show` ANY OTHER nonzero (exit 1 = DB/load/permission/crash) ->
+  #     a REAL error: surface it (loud error + that exit code), do NOT mask it
+  #     as empty -> false-green [SKIP]
+  #   - empty output     -> unresolved, return empty
+  #   - malformed JSON from a SUCCESSFUL `session show` -> real interface
+  #     breakage: surface it (loud error + nonzero)
   if ! command -v jq >/dev/null 2>&1; then
     printf '%sERROR%s: jq binary not on PATH.\n' "${C_RED}" "${C_RESET}" >&2
     return 2
   fi
-  local json
-  json="$(agent-deck session show --json "$1" 2>/dev/null)" || return 0
+  local json rc=0
+  json="$(agent-deck session show --json "$1" 2>/dev/null)" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    [[ "${rc}" -eq 2 ]] && return 0
+    printf '%sERROR%s: "agent-deck session show --json %s" failed (exit %s)\n' "${C_RED}" "${C_RESET}" "$1" "${rc}" >&2
+    return "${rc}"
+  fi
   [[ -z "${json}" ]] && return 0
   local tsess
   if ! tsess="$(printf '%s' "${json}" | jq -r '.tmux_session // empty')"; then
@@ -196,6 +204,10 @@ want_scenario() {
 create_and_start_session() {
   local name="$1" tool="$2"
   agent-deck add -t "${name}" -c "${tool}" -Q "${TMPROOT}" >/dev/null || return 1
+  # Track the exact title the moment `add` succeeds (the session record now
+  # exists) so cleanup removes it even if `start` below fails. Direct (non-
+  # subshell) call site, so this append reaches the global CREATED_SESSIONS.
+  CREATED_SESSIONS+=("${name}")
   agent-deck session start "${name}" >/dev/null || return 1
 }
 
@@ -425,6 +437,11 @@ main() {
   LOGINSIM_SCOPE="adeck-verify-loginsim-${RUN_ID}"
   ARGV_OUT="${TMPROOT}/argv.log"
   export AGENT_DECK_VERIFY_ARGV_OUT="${ARGV_OUT}"
+  # Exact titles this invocation created, in creation order. cleanup removes
+  # ONLY these — never a prefix/list-parse match (review B1) — and is a no-op
+  # when empty, e.g. when a failed preflight fires the trap having created
+  # nothing (review B2).
+  CREATED_SESSIONS=()
 
   trap cleanup EXIT INT TERM
 

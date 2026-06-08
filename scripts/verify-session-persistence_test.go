@@ -317,50 +317,120 @@ echo "FAILED=${FAILED}"
 	}
 }
 
-func TestCleanup_RemovesFullTitlesFromJSONList(t *testing.T) {
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not installed; cleanup JSON path depends on jq")
-	}
+func TestCleanup_RemovesOnlyTrackedCreatedSessions(t *testing.T) {
+	// Review B1: cleanup must remove ONLY the exact titles this invocation
+	// created (tracked in CREATED_SESSIONS) — never a prefix/list-parse match. A
+	// bare prefix collides (verify-persist-123 matches a foreign
+	// verify-persist-1234-*). cleanup must also never call `agent-deck list`
+	// (the unsafe text-parse path is removed entirely).
 	record := filepath.Join(t.TempDir(), "calls.log")
 	out, err := sourceAndRun(t, []string{"RECORD=" + record}, `
-SESSION_PREFIX=verify-persist-123456
 LOGINSIM_SCOPE=adeck-verify-loginsim-test
 TMPROOT=""
+CREATED_SESSIONS=("verify-persist-123-s1" "verify-persist-123-s5")
 agent-deck() {
-  if [[ "$1" == "list" && "${2:-}" == "--json" ]]; then
-    cat <<'JSON'
-[
-  {"title":"verify-persist-123456-s1","id":"id-1"},
-  {"title":"unrelated","id":"id-2"}
-]
-JSON
-    return 0
-  fi
-  if [[ "$1" == "list" ]]; then
-    printf 'TITLE                GROUP           PATH                                     ID\n'
-    printf 'verify-persist-12... T               /tmp/path                                id-1\n'
-    return 0
-  fi
-  if [[ "$1" == "session" && "$2" == "stop" ]]; then
-    printf 'stop:%s\n' "$3" >> "${RECORD}"
-    return 0
-  fi
-  if [[ "$1" == "remove" ]]; then
-    printf 'remove:%s\n' "$2" >> "${RECORD}"
-    return 0
-  fi
+  printf '%s\n' "$*" >> "${RECORD}.all"
+  if [[ "$1" == "session" && "$2" == "stop" ]]; then printf 'stop:%s\n' "$3" >> "${RECORD}"; return 0; fi
+  if [[ "$1" == "remove" ]]; then printf 'remove:%s\n' "$2" >> "${RECORD}"; return 0; fi
   return 0
 }
 systemctl() { return 0; }
 cleanup
-if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
+echo "---REMOVED---"; [[ -f "${RECORD}" ]] && cat "${RECORD}" || true
+echo "---ALLCALLS---"; [[ -f "${RECORD}.all" ]] && cat "${RECORD}.all" || true
 `)
 	if err != nil {
 		t.Fatalf("bash error: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "stop:verify-persist-123456-s1") ||
-		!strings.Contains(out, "remove:verify-persist-123456-s1") {
-		t.Fatalf("cleanup must use full JSON titles instead of truncated table output; got:\n%s", out)
+	for _, want := range []string{
+		"stop:verify-persist-123-s1", "remove:verify-persist-123-s1",
+		"stop:verify-persist-123-s5", "remove:verify-persist-123-s5",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("cleanup must remove tracked session %q; got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "list") {
+		t.Fatalf("cleanup must NOT call `agent-deck list` (unsafe prefix-parse path removed); got:\n%s", out)
+	}
+}
+
+func TestCleanup_NoOpWhenNothingCreated(t *testing.T) {
+	// Review B2: on a failed preflight (e.g. missing jq) the EXIT trap fires
+	// having created nothing — CREATED_SESSIONS is empty, so cleanup must remove
+	// NO sessions (no false-deletion of pre-existing matching sessions).
+	record := filepath.Join(t.TempDir(), "calls.log")
+	out, err := sourceAndRun(t, []string{"RECORD=" + record}, `
+LOGINSIM_SCOPE=adeck-verify-loginsim-test
+TMPROOT=""
+CREATED_SESSIONS=()
+agent-deck() { printf 'CALLED:%s\n' "$*" >> "${RECORD}"; return 0; }
+systemctl() { return 0; }
+cleanup
+echo "DONE"; [[ -f "${RECORD}" ]] && cat "${RECORD}" || true
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "DONE") {
+		t.Fatalf("cleanup did not complete; got:\n%s", out)
+	}
+	if strings.Contains(out, "CALLED:") {
+		t.Fatalf("cleanup with empty CREATED_SESSIONS must remove nothing; got:\n%s", out)
+	}
+}
+
+func TestCreateAndStartSession_TracksCreatedTitle(t *testing.T) {
+	// Wiring: a successful `agent-deck add` records the exact title in
+	// CREATED_SESSIONS so cleanup can later remove exactly it.
+	out, err := sourceAndRun(t, []string{"S_TMPROOT=" + t.TempDir()}, `
+CREATED_SESSIONS=()
+TMPROOT="${S_TMPROOT}"
+agent-deck() { return 0; }
+create_and_start_session "verify-persist-999-s1" claude
+printf 'TRACKED=[%s]\n' "${CREATED_SESSIONS[*]:-}"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "TRACKED=[verify-persist-999-s1]") {
+		t.Fatalf("create_and_start_session must track the created title; got:\n%s", out)
+	}
+}
+
+func TestResolveTmuxSession_RealErrorSurfaces(t *testing.T) {
+	// Review ALSO: `session show` exits 2 for genuine not-found (swallow) but
+	// exit 1 for a real error (DB/load/permission). A real error must SURFACE
+	// (nonzero + message), not silently degrade to empty -> false-green [SKIP].
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; resolver depends on jq")
+	}
+	dir := t.TempDir()
+	fake := `#!/usr/bin/env bash
+if [[ "$1" == "session" && "$2" == "show" ]]; then
+  echo "load error: database is locked" >&2
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "agent-deck"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := sourceAndRun(t,
+		[]string{"PATH=" + dir + ":" + os.Getenv("PATH")},
+		`if msg="$(resolve_tmux_session foo 2>&1)"; then
+		   echo "UNEXPECTED_OK=[$msg]"
+		 else
+		   echo "STATUS=$? MSG=[$msg]"
+		 fi`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "UNEXPECTED_OK") {
+		t.Fatalf("a real session-show error was swallowed as success (false-green):\n%s", out)
+	}
+	if !strings.Contains(out, "STATUS=1") || !strings.Contains(strings.ToLower(out), "failed") {
+		t.Fatalf("real session-show error must surface as nonzero + message; got:\n%s", out)
 	}
 }
 
@@ -446,46 +516,6 @@ echo "REACHED_AFTER FAILED=${FAILED}"
 	}
 	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "REACHED_AFTER FAILED=1") {
 		t.Fatalf("initial start failure must mark [FAIL] and not abort; got:\n%s", out)
-	}
-}
-
-func TestCleanup_HandlesNullTitleInJSONList(t *testing.T) {
-	// F4 regression: a session entry with a null `.title` must not error the jq
-	// filter (startswith on null) and abort the cleanup pass — matching sessions
-	// must still be removed. Null entry FIRST so the unguarded filter errors
-	// before reaching the matching one.
-	if _, err := exec.LookPath("jq"); err != nil {
-		t.Skip("jq not installed; cleanup JSON path depends on jq")
-	}
-	record := filepath.Join(t.TempDir(), "calls.log")
-	out, err := sourceAndRun(t, []string{"RECORD=" + record}, `
-SESSION_PREFIX=verify-persist-123456
-LOGINSIM_SCOPE=adeck-verify-loginsim-test
-TMPROOT=""
-agent-deck() {
-  if [[ "$1" == "list" && "${2:-}" == "--json" ]]; then
-    cat <<'JSON'
-[
-  {"title":null,"id":"id-null"},
-  {"title":"verify-persist-123456-s1","id":"id-1"}
-]
-JSON
-    return 0
-  fi
-  if [[ "$1" == "session" && "$2" == "stop" ]]; then printf 'stop:%s\n' "$3" >> "${RECORD}"; return 0; fi
-  if [[ "$1" == "remove" ]]; then printf 'remove:%s\n' "$2" >> "${RECORD}"; return 0; fi
-  return 0
-}
-systemctl() { return 0; }
-cleanup
-if [[ -f "${RECORD}" ]]; then cat "${RECORD}"; fi
-`)
-	if err != nil {
-		t.Fatalf("bash error: %v\n%s", err, out)
-	}
-	if !strings.Contains(out, "stop:verify-persist-123456-s1") ||
-		!strings.Contains(out, "remove:verify-persist-123456-s1") {
-		t.Fatalf("cleanup must skip null titles and still remove matching session; got:\n%s", out)
 	}
 }
 
