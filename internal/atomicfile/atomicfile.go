@@ -38,7 +38,21 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(target, data, perm)
+	return writeAtomic(target, data, perm, false)
+}
+
+// WriteFileDurable behaves like WriteFile but adds crash durability: the temp
+// file is fsync'd before the rename and the target's parent directory is
+// best-effort fsync'd after, so both the file contents and the rename survive a
+// power loss. Use it for files where a torn or lost write on crash matters (for
+// example agent-deck's own config.toml). The symlink-preserving resolution is
+// identical to WriteFile.
+func WriteFileDurable(path string, data []byte, perm os.FileMode) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(target, data, perm, true)
 }
 
 // resolveTarget returns the real file path that should be written. For a regular
@@ -109,8 +123,10 @@ func resolveDanglingLeaf(path string) (string, error) {
 
 // writeAtomic writes data to target via a uniquely-named temp file in target's
 // directory, then renames it onto target. The temp lives in the target's
-// directory so the rename stays on one filesystem.
-func writeAtomic(target string, data []byte, perm os.FileMode) error {
+// directory so the rename stays on one filesystem. When durable is set the temp
+// is fsync'd before the rename and the parent directory is best-effort fsync'd
+// after, so the contents and the rename survive a crash.
+func writeAtomic(target string, data []byte, perm os.FileMode, durable bool) error {
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("atomicfile: mkdir %s: %w", dir, err)
@@ -136,6 +152,12 @@ func writeAtomic(target string, data []byte, perm os.FileMode) error {
 		_ = tmp.Close()
 		return fmt.Errorf("atomicfile: write temp: %w", err)
 	}
+	if durable {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return fmt.Errorf("atomicfile: fsync temp: %w", err)
+		}
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("atomicfile: close temp: %w", err)
 	}
@@ -147,5 +169,15 @@ func writeAtomic(target string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("atomicfile: rename to %s: %w", target, err)
 	}
 	committed = true
+
+	if durable {
+		// Best-effort directory fsync so the rename itself is durable. Some
+		// filesystems reject directory fsync (EINVAL/ENOTSUP); the data fsync +
+		// atomic rename already give the core guarantee, so ignore the error.
+		if d, derr := os.Open(dir); derr == nil {
+			_ = d.Sync()
+			_ = d.Close()
+		}
+	}
 	return nil
 }

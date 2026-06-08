@@ -247,6 +247,54 @@ func TestWriteFile_RelativeDanglingChain(t *testing.T) {
 	}
 }
 
+func TestWriteFileDurable_NewFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.toml")
+
+	if err := atomicfile.WriteFileDurable(path, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("WriteFileDurable: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("data = %q, want %q", got, "hello")
+	}
+	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("perm = %o, want 600", fi.Mode().Perm())
+	}
+}
+
+func TestWriteFileDurable_PreservesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	realPath := filepath.Join(dir, "real.toml")
+	if err := os.WriteFile(realPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(realPath, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicfile.WriteFileDurable(link, []byte("durable"), 0o600); err != nil {
+		t.Fatalf("WriteFileDurable: %v", err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("symlink was clobbered into a regular file")
+	}
+	direct, _ := os.ReadFile(realPath)
+	if string(direct) != "durable" {
+		t.Fatalf("data at target = %q, want %q", direct, "durable")
+	}
+}
+
 func TestWriteFile_NoTempLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.json")

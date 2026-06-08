@@ -19,6 +19,7 @@ import (
 	dark "github.com/thiagokokada/dark-mode-go"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -2373,30 +2374,14 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
-	// ATOMIC WRITE PATTERN: Prevents data corruption on crash/power loss
-	// 1. Write to temporary file with 0600 permissions
-	// 2. fsync the temp file (ensures data reaches disk)
-	// 3. Atomic rename temp to final
+	// ATOMIC + DURABLE WRITE: Prevents data corruption on crash/power loss
+	// and preserves a dotfiles-managed config.toml symlink. The temp file is
+	// fsync'd before the rename and the parent dir is fsync'd after (see
+	// internal/atomicfile.WriteFileDurable). A symlinked config.toml is written
+	// through to its real target rather than replaced with a regular file.
 	// ═══════════════════════════════════════════════════════════════════
 
-	tmpPath := configPath + ".tmp"
-
-	// Step 1: Write to temporary file (0600 = owner read/write only for security)
-	if err := os.WriteFile(tmpPath, buf.Bytes(), 0o600); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	// Step 2: fsync the temp file to ensure data reaches disk before rename
-	if err := syncConfigFile(tmpPath); err != nil {
-		// Log but don't fail - atomic rename still provides some safety
-		// Note: We don't have access to log package here, so we just continue
-		_ = err
-	}
-
-	// Step 3: Atomic rename (this is atomic on POSIX systems)
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		// Clean up temp file on failure
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFileDurable(configPath, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("failed to finalize config save: %w", err)
 	}
 
@@ -2462,16 +2447,6 @@ func backupConfigFile(configPath string) error {
 		return err
 	}
 	return nil
-}
-
-// syncConfigFile calls fsync on a file to ensure data is written to disk
-func syncConfigFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
 }
 
 // ClearUserConfigCache clears the cached user config, allowing tests to reset state.
