@@ -1,8 +1,10 @@
 package tmux
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -62,6 +64,32 @@ func TestXDGPaths_LegacyAckSignalFallbackSurvivesSignalConsumption(t *testing.T)
 	ackPath, err := GetAckSignalPath()
 	require.NoError(t, err)
 	require.Equal(t, legacyAck, ackPath)
+}
+
+// TestQuickSwitchScript_EnsuresAckSignalDir is a regression test for #1327.
+//
+// The quick-switch bind (Ctrl+b <number>) runs a run-shell script that echoes
+// the session ID into the ack-signal file and then `tmux switch-client`s. On
+// the XDG layout the ack-signal dir (~/.local/share/agent-deck) may not exist,
+// so the echo fails, the `&&` short-circuits, and the switch never happens.
+// The bind script must `mkdir -p` the ack-signal dir first so the switch always
+// runs. This test fails on main (no mkdir) and passes with the fix.
+func TestQuickSwitchScript_EnsuresAckSignalDir(t *testing.T) {
+	_, data := isolateTmuxXDGPaths(t)
+	signalFile := filepath.Join(data, "agent-deck", "ack-signal")
+
+	script := buildAckSwitchScript(signalFile, "session-123", "agentdeck_demo")
+
+	signalDir := filepath.Dir(signalFile)
+	require.Contains(t, script, fmt.Sprintf("mkdir -p '%s'", signalDir),
+		"quick-switch script must ensure the ack-signal dir exists before writing (#1327)")
+
+	// The mkdir must precede (guard) the echo so the && chain can't short-circuit
+	// the switch-client when the dir is missing.
+	require.True(t,
+		strings.Index(script, "mkdir -p") < strings.Index(script, "echo "),
+		"mkdir must run before echo: %q", script)
+	require.Contains(t, script, "tmux switch-client -t 'agentdeck_demo'")
 }
 
 func TestXDGPaths_UnrelatedLegacyMarkerDoesNotForceTmuxPaths(t *testing.T) {

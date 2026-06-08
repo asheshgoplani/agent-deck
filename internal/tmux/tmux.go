@@ -4772,17 +4772,33 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 		return BindSwitchKey(key, targetSession)
 	}
 
-	// Create a compound command that:
-	// 1. Writes the session ID to a signal file (for agent-deck to acknowledge)
-	// 2. Switches to the target session
-	//
-	// The inner `tmux switch-client` runs inside the tmux server that fired
-	// the run-shell hook, so it targets the correct socket automatically —
-	// no need to thread -L through the shell string.
-	script := fmt.Sprintf("echo '%s' > '%s' && tmux switch-client -t '%s'",
-		sessionID, signalFile, targetSession)
+	// Ensure the signal directory exists at bind time as defense-in-depth.
+	// On the XDG layout the data dir (~/.local/share/agent-deck) may not exist
+	// yet, unlike the legacy ~/.agent-deck which was always present.
+	_ = os.MkdirAll(filepath.Dir(signalFile), 0o700)
+
+	script := buildAckSwitchScript(signalFile, sessionID, targetSession)
 	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "run-shell", script)
 	return cmd.Run()
+}
+
+// buildAckSwitchScript builds the run-shell command bound to a quick-switch key.
+//
+// It must:
+//  1. Ensure the signal directory exists. On the XDG layout the data dir
+//     (~/.local/share/agent-deck) may not exist when the key fires, unlike the
+//     legacy ~/.agent-deck which was always present. Without this mkdir the
+//     echo below fails and the `&&` short-circuits, so `tmux switch-client`
+//     never runs and the user sees "...returned 1" with no switch (#1327).
+//  2. Write the session ID to the signal file (for agent-deck to acknowledge).
+//  3. Switch to the target session.
+//
+// The inner `tmux switch-client` runs inside the tmux server that fired the
+// run-shell hook, so it targets the correct socket automatically — no need to
+// thread -L through the shell string.
+func buildAckSwitchScript(signalFile, sessionID, targetSession string) string {
+	return fmt.Sprintf("mkdir -p '%s' && echo '%s' > '%s' && tmux switch-client -t '%s'",
+		filepath.Dir(signalFile), sessionID, signalFile, targetSession)
 }
 
 const ackSignalLegacyMarker = ".ack-signal-legacy"
