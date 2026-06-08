@@ -202,10 +202,10 @@ func TestCaptureClaudeArgv_NeverScansHostWideProcesses(t *testing.T) {
 	}
 	defer func() { _ = foreign.Process.Kill() }()
 
-	// Force pane resolution to yield nothing (no real tmux session named this).
+	// Pane resolution yields nothing (unresolved -> empty, exit 0 — NOT an error).
 	out, err := sourceAndRun(t,
 		[]string{"ARGV_OUT=" + emptyArgv, "PATH=/usr/bin:/bin"},
-		`tmux_pane_start_command_for_session() { return 1; }
+		`tmux_pane_start_command_for_session() { return 0; }
 		 r="$(capture_claude_argv nonexistent-session)"
 		 echo "CAPTURED=[$r]"`)
 	if err != nil {
@@ -216,6 +216,51 @@ func TestCaptureClaudeArgv_NeverScansHostWideProcesses(t *testing.T) {
 	}
 	if strings.Contains(out, "claude-foreign-decoy") {
 		t.Fatalf("capture matched a FOREIGN process — false-FAIL bug present: %s", strings.TrimSpace(out))
+	}
+}
+
+func TestCaptureClaudeArgv_RealResolverErrorPropagates(t *testing.T) {
+	// Owner review (line 164): a REAL resolver error (nonzero from
+	// tmux_pane_start_command_for_session — e.g. resolve_tmux_session hit a DB
+	// error / malformed JSON, exit 1/3) must PROPAGATE out of capture so the
+	// scenario can FAIL loudly — not be flattened to empty/exit-0 (which would
+	// degrade to [SKIP] on non-stub hosts).
+	out, err := sourceAndRun(t, []string{"ARGV_OUT=/dev/null"},
+		`tmux_pane_start_command_for_session() { return 7; }
+		 rc=0; argv="$(capture_claude_argv s)" || rc=$?
+		 echo "rc=${rc} argv=[${argv}]"`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "rc=7") {
+		t.Fatalf("capture must propagate a real resolver error code; got:\n%s", out)
+	}
+}
+
+func TestScenario3_RealResolverErrorFailsEvenNonStub(t *testing.T) {
+	// Owner review (line 164): a real resolver/interface error during argv
+	// capture must FAIL scenario 3 even on a NON-stub host — not degrade to a
+	// [SKIP], which would contradict the "non-not-found errors fail loudly"
+	// contract. (Unresolved/empty argv still SKIPs on non-stub; see
+	// TestArgvUnobservable_FailsInStubModeSkipsOtherwise.)
+	out, err := sourceAndRun(t, []string{"S3_TMPROOT=" + t.TempDir()}, `
+FAILED=0
+USE_STUB=0
+SESSION_PREFIX=verify-persist-test
+TMPROOT="${S3_TMPROOT}"
+ARGV_OUT="${TMPROOT}/argv.log"
+agent-deck() { return 0; }
+tmux() { return 0; }
+sleep() { :; }
+capture_claude_argv() { printf 'ERROR: db locked\n' >&2; return 1; }
+scenario_3_restart_resume
+echo "FAILED=${FAILED}"
+`)
+	if err != nil {
+		t.Fatalf("bash error: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[FAIL]") || !strings.Contains(out, "FAILED=1") {
+		t.Fatalf("real resolver error must FAIL scenario 3 even non-stub; got:\n%s", out)
 	}
 }
 

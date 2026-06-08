@@ -182,6 +182,10 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
 - In **stub mode** (`AGENT_DECK_VERIFY_USE_STUB=1`, i.e. CI) an unobservable
   argv is a `[FAIL]`, not a `[SKIP]`: the stub is installed and MUST record
   args, so a `[SKIP]` there would be a false-green on the mandatory gate.
+- "Unobservable" (degrade) is distinct from a real resolver error: if argv
+  capture hits a genuine `session show` error (the nonzero cases below, not
+  not-found), scenarios 3/4 `[FAIL]` regardless of stub mode — the capture path
+  propagates the resolver's nonzero rather than flattening it to empty→`[SKIP]`.
 - Scenario 5 resolves its tmux session name via `session show --json`.
 - `jq` is an explicit harness dependency; missing `jq` is a preflight error, not
   a silent `[SKIP]`. For `session show --json`, only the EXPECTED not-found

@@ -140,11 +140,18 @@ tmux_pane_start_command_for_session() {
   # with (quoted exactly as agent-deck constructed it). Preferred over
   # `ps -ef | grep claude` which is ambiguous on hosts with many live
   # claude processes sharing the same tmux daemon.
-  local name="$1"
-  local tsess
-  tsess="$(resolve_tmux_session "${name}")"
+  local name="$1" tsess rc=0
+  tsess="$(resolve_tmux_session "${name}")" || rc=$?
+  # resolve_tmux_session returns 0 for resolved OR not-found (empty), and
+  # nonzero ONLY for a real error/breakage (jq missing=2, DB/load=1, malformed
+  # JSON=3). Propagate that nonzero so capture_claude_argv -> the scenario can
+  # FAIL loudly (review line-164); an unresolved session yields empty output at
+  # exit 0 (degrade -> SKIP), which is NOT an error.
+  if [[ "${rc}" -ne 0 ]]; then
+    return "${rc}"
+  fi
   if [[ -z "${tsess}" || "${tsess}" == "null" ]]; then
-    return 1
+    return 0
   fi
   tmux list-panes -t "${tsess}" -F '#{pane_start_command}' 2>/dev/null | head -1 || true
 }
@@ -153,15 +160,16 @@ tmux_pane_start_command_for_session() {
 # session-scoped sources: (1) the stub's ARGV_OUT file when populated, else
 # (2) the tmux pane_start_command for this session. It NEVER scans host-wide
 # `ps` — that matched unrelated claude processes and produced false FAILs.
-# Empty output means "unobservable for THIS session"; callers MUST treat that
-# as SKIP, not FAIL.
+# Empty output at exit 0 means "unobservable for THIS session" (caller degrades
+# to SKIP per stub mode). A NONZERO exit means a real resolver error/breakage
+# propagated (review line-164) — the caller MUST FAIL, not SKIP.
 capture_claude_argv() {
   local name="$1"
   if [[ -s "${ARGV_OUT:-/dev/null}" ]]; then
     cat "${ARGV_OUT}"
     return 0
   fi
-  tmux_pane_start_command_for_session "${name}" 2>/dev/null || true
+  tmux_pane_start_command_for_session "${name}"
 }
 
 # classify_argv echoes the verdict (skip|pass|fail) for a captured argv under a
@@ -342,8 +350,13 @@ scenario_3_restart_resume() {
     return
   fi
   sleep 2
-  local argv verdict
-  argv="$(capture_claude_argv "${name}")"
+  local argv verdict rc=0
+  argv="$(capture_claude_argv "${name}")" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    banner_fail "[3] real error resolving session ${name} during argv capture (exit ${rc}); see error above"
+    agent-deck session stop "${name}" >/dev/null 2>&1 || true
+    return
+  fi
   log "captured claude argv: ${argv}"
   verdict="$(classify_argv resume "${argv}")"
   case "${verdict}" in
@@ -364,8 +377,13 @@ scenario_4_fresh_session_shape() {
     return
   fi
   sleep 2
-  local argv verdict
-  argv="$(capture_claude_argv "${name}")"
+  local argv verdict rc=0
+  argv="$(capture_claude_argv "${name}")" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    banner_fail "[4] real error resolving session ${name} during argv capture (exit ${rc}); see error above"
+    agent-deck session stop "${name}" >/dev/null 2>&1 || true
+    return
+  fi
   log "captured claude argv: ${argv}"
   verdict="$(classify_argv fresh "${argv}")"
   case "${verdict}" in
