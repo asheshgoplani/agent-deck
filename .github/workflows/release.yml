@@ -43,7 +43,7 @@ jobs:
       REF_NAME: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           # Check out the tag itself so GoReleaser sees the version tag at HEAD,
           # even when dispatched against main.
@@ -51,7 +51,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
           go-version-file: go.mod
           # Disable the module cache in this write-permission workflow: a
@@ -99,7 +99,7 @@ jobs:
 
       - name: Run GoReleaser
         timeout-minutes: 15
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7
         with:
           version: '~> v2'
           args: release --clean
@@ -228,6 +228,6 @@ jobs:
 
       - name: Attest build provenance
         timeout-minutes: 10
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
           subject-path: 'dist-attest/*'
