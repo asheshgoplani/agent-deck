@@ -7133,12 +7133,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath && item.Path != h.groupScope {
+			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
+				// Protected default group: report instead of silently doing nothing.
+				// Checked before the scoped-root case so the message stays specific
+				// even when the TUI is scoped to the default group
+				// (groupScope == DefaultGroupPath), where both conditions would match.
+				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
+			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
 				h.setError(fmt.Errorf("cannot delete the scoped root group"))
-			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
-				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
 			}
 		}
 		return h, nil

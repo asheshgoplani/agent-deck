@@ -3460,31 +3460,34 @@ func TestHome_TerminalNavigationKeys(t *testing.T) {
 	})
 }
 
-// TestDeleteKeyOnDefaultGroupReportsError guards against the silent no-op where
-// pressing the delete key on the protected "My Sessions" default group did
-// nothing: no dialog, no message. The handler must surface an explanatory error
-// (mirroring the scoped-root case) and must not open the delete-group dialog.
-func TestDeleteKeyOnDefaultGroupReportsError(t *testing.T) {
-	items := []session.Item{
-		{
-			Type:  session.ItemTypeGroup,
-			Path:  session.DefaultGroupPath,
-			Level: 0,
-			Group: &session.Group{
-				Name:     session.DefaultGroupName,
-				Path:     session.DefaultGroupPath,
-				Expanded: true,
-			},
+// defaultGroupItem returns a flat item for the protected "My Sessions" group.
+func defaultGroupItem() session.Item {
+	return session.Item{
+		Type:  session.ItemTypeGroup,
+		Path:  session.DefaultGroupPath,
+		Level: 0,
+		Group: &session.Group{
+			Name:     session.DefaultGroupName,
+			Path:     session.DefaultGroupPath,
+			Expanded: true,
 		},
 	}
-	home := newTestHomeWithItems(100, 30, items)
+}
+
+// TestDeleteBindingOnDefaultGroupReportsError guards against the silent no-op
+// where pressing the delete binding ('d') on the protected "My Sessions"
+// default group did nothing: no dialog, no message. The handler must surface an
+// explanatory error (mirroring the scoped-root case) and must not open the
+// delete-group dialog.
+func TestDeleteBindingOnDefaultGroupReportsError(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
 	home.cursor = 0
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	h := model.(*Home)
 
 	if h.err == nil {
-		t.Fatal("pressing 'd' on the default group must set an error, got nil (silent no-op)")
+		t.Fatal("'d' on the default group must set an error, got nil (silent no-op)")
 	}
 	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
 		t.Errorf("error %q must name the default group %q", h.err.Error(), session.DefaultGroupName)
@@ -3494,10 +3497,31 @@ func TestDeleteKeyOnDefaultGroupReportsError(t *testing.T) {
 	}
 }
 
-// TestDeleteKeyOnNonDefaultGroupOpensDialog is the positive counterpart: a
+// TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault locks in the ordering of
+// the delete handler: when the TUI is scoped to the default group itself
+// (groupScope == DefaultGroupPath), both the default-group and scoped-root
+// conditions match. The default-group message must win so the feedback stays
+// specific.
+func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+	home.cursor = 0
+	home.groupScope = session.DefaultGroupPath
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	if h.err == nil {
+		t.Fatal("'d' on the scoped default group must set an error, got nil")
+	}
+	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
+		t.Errorf("scoped default group error %q must name the default group, not the scoped-root message", h.err.Error())
+	}
+}
+
+// TestDeleteBindingOnNonDefaultGroupOpensDialog is the positive counterpart: a
 // regular group still opens the delete confirmation, so the new default-group
 // branch does not shadow normal group deletion.
-func TestDeleteKeyOnNonDefaultGroupOpensDialog(t *testing.T) {
+func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 	items := []session.Item{
 		{
 			Type:  session.ItemTypeGroup,
