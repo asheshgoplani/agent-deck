@@ -138,7 +138,6 @@ type SettingsResponse struct {
 	ReadOnly     bool   `json:"readOnly"`
 	WebMutations bool   `json:"webMutations"`
 	Version      string `json:"version"`
-	Commit       string `json:"commit"`
 
 	// show_only_installed_tools filter (issue #1259). ToolFilter reports the
 	// flag is on; VisibleTools lists the tool names that resolved on PATH (the

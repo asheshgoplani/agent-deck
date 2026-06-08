@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/asheshgoplani/agent-deck/internal/buildinfo"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
@@ -105,7 +104,6 @@ func buildWebServer(profile string, args []string, menuData web.MenuDataLoader, 
 		ReadOnly:            *readOnly,
 		WebMutations:        resolveMutationsEnabled(*readOnly),
 		Token:               *token,
-		Commit:              buildinfo.Commit(Commit),
 		InsecureBind:        *insecureBind,
 		MenuData:            menuData,
 		PushVAPIDPublicKey:  resolvedPushPublic,

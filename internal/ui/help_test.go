@@ -47,48 +47,6 @@ func TestHelpOverlayShowsNotesShortcutWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestHelpOverlayShowsCommitHash(t *testing.T) {
-	prevV, prevC := Version, Commit
-	t.Cleanup(func() { Version, Commit = prevV, prevC })
-
-	Version = "1.9.45"
-	Commit = "ab44d360"
-
-	overlay := NewHelpOverlay()
-	overlay.SetSize(120, 400) // tall enough that the version footer is not below the scroll fold
-	overlay.Show()
-
-	view := overlay.View()
-	if !strings.Contains(view, "Agent Deck v1.9.45 (ab44d360)") {
-		t.Fatalf("help overlay should show version with commit hash, got %q", view)
-	}
-}
-
-func TestHelpOverlayOmitsCommitWhenVersionEmbedsIt(t *testing.T) {
-	// Local `make build` bakes `git describe` into Version (e.g.
-	// 1.9.45-49-gab44d360), which already ends in the short hash. The commit
-	// must not be appended a second time.
-	prevV, prevC := Version, Commit
-	t.Cleanup(func() { Version, Commit = prevV, prevC })
-
-	Version = "1.9.45-49-gab44d360"
-	Commit = "ab44d360"
-
-	overlay := NewHelpOverlay()
-	overlay.SetSize(120, 400) // tall enough that the version footer renders
-	overlay.Show()
-
-	view := overlay.View()
-	// The version footer must render (so the assertion is meaningful), and the
-	// commit must appear exactly once — embedded in the version, not appended.
-	if !strings.Contains(view, "Agent Deck v1.9.45-49-gab44d360") {
-		t.Fatalf("version footer not rendered, got %q", view)
-	}
-	if strings.Contains(view, "(ab44d360)") {
-		t.Fatalf("help overlay should not append commit when version already embeds it, got %q", view)
-	}
-}
-
 func TestWrapWithHangingIndent_ShortText_NoWrap(t *testing.T) {
 	got := wrapWithHangingIndent("Short text", 40, "    ")
 	want := "Short text"

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/asheshgoplani/agent-deck/internal/buildinfo"
 	"github.com/asheshgoplani/agent-deck/internal/costs"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -25,10 +24,6 @@ type Config struct {
 	ReadOnly     bool
 	WebMutations bool // When false, POST/PATCH/DELETE endpoints return 403
 	Token        string
-	// Commit is the build's git hash, injected via -ldflags by main and
-	// surfaced through GET /api/settings. Empty falls back to the embedded
-	// VCS revision (see internal/buildinfo).
-	Commit string
 	// InsecureBind explicitly acknowledges binding a non-loopback address
 	// with no auth token (an unauthenticated RCE surface). Without it the
 	// server refuses to start in that configuration. See bind.go / report #1.
@@ -237,7 +232,6 @@ func NewServer(cfg Config) *Server {
 			resp["readOnly"] = cfg.ReadOnly
 			resp["webMutations"] = cfg.WebMutations
 			resp["version"] = buildVersion()
-			resp["commit"] = buildinfo.Commit(cfg.Commit)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)

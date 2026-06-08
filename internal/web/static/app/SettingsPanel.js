@@ -26,7 +26,6 @@ export function SettingsPanel() {
     <div style="display: flex; flex-direction: column; gap: 2px;">
       <div class="kv"><span class="k">profile</span><span class="v">${settings.profile || 'default'}</span></div>
       <div class="kv"><span class="k">version</span><span class="v">${settings.version || 'unknown'}</span></div>
-      <div class="kv"><span class="k">commit</span><span class="v">${settings.commit || 'unknown'}</span></div>
       <div class="kv"><span class="k">read-only</span><span class=${`v ${settings.readOnly ? 'warn' : 'ok'}`}>${settings.readOnly ? 'yes' : 'no'}</span></div>
       <div class="kv"><span class="k">web mutations</span><span class=${`v ${settings.webMutations ? 'ok' : 'warn'}`}>${settings.webMutations ? 'enabled' : 'disabled'}</span></div>
     </div>
