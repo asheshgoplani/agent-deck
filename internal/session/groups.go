@@ -134,7 +134,20 @@ func pinZone(inst *Instance) int {
 // effect live instead of only after a restart.
 func stablePinPartition(insts []*Instance) {
 	sort.SliceStable(insts, func(i, j int) bool {
-		return pinZone(insts[i]) < pinZone(insts[j])
+		zi, zj := pinZone(insts[i]), pinZone(insts[j])
+		if zi != zj {
+			return zi < zj
+		}
+		// Pin-top (0) and pin-bottom (2) bands are fully fixed by Order, matching
+		// the load-time SortInstancesByActionable. Ordering them here means a
+		// freshly pinned row lands in its correct Order slot live — not wherever
+		// it happened to sit in slice order before the pin edit.
+		if zi == 0 || zi == 2 {
+			return insts[i].Order < insts[j].Order
+		}
+		// Normal (1) band is already actionable-sorted at load; return false so
+		// SliceStable leaves its relative order untouched.
+		return false
 	})
 }
 

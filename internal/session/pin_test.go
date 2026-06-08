@@ -1,7 +1,6 @@
 package session
 
 import (
-	"os"
 	"testing"
 	"time"
 )
@@ -107,13 +106,9 @@ func TestValidMutableFields_IncludesPin(t *testing.T) {
 // SaveWithGroups/LoadWithGroups, and that an unpinned session defaults to
 // PinNone after reload (the empty-string column default).
 func TestPin_SurvivesSaveLoad(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	ClearUserConfigCache()
-	t.Cleanup(func() {
-		os.Setenv("HOME", origHome)
-		ClearUserConfigCache()
-	})
+	t.Cleanup(ClearUserConfigCache)
 
 	storage, err := NewStorageWithProfile("_pin_roundtrip")
 	if err != nil {
@@ -143,6 +138,9 @@ func TestPin_SurvivesSaveLoad(t *testing.T) {
 		t.Fatalf("pinned session did not round-trip Pin=top; got %+v", got)
 	}
 	if got := byID[plain.ID]; got == nil || got.Pin != PinNone {
+		if got == nil {
+			t.Fatalf("unpinned session missing after reload")
+		}
 		t.Fatalf("unpinned session must default to PinNone; got pin=%q", got.Pin)
 	}
 }
@@ -180,6 +178,28 @@ func TestFlatten_LivePinBottomMovesToBottom(t *testing.T) {
 	got := sessionIDsInItems(tree.Flatten())
 	if len(got) == 0 || got[len(got)-1] != "a" {
 		t.Fatalf("pin-bottom session must sink to the end of its group live; got %v", got)
+	}
+}
+
+// TestFlatten_LiveMultiPinOrderedByOrder is the regression test for the
+// pinned-band drift bug: when a session is pinned live into a band that already
+// holds a pinned session, the band must stay ordered by Order (matching the
+// load-time SortInstancesByActionable), not by pre-pin slice order. Without the
+// Order comparator in stablePinPartition, the freshly pinned lower-Order row
+// would sit behind the already-pinned higher-Order row.
+func TestFlatten_LiveMultiPinOrderedByOrder(t *testing.T) {
+	// p1 is pinned at build time, so it lands in the pin-top band by Order.
+	p1 := &Instance{ID: "p1", Title: "p1", GroupPath: "g", Status: StatusIdle, Pin: PinTop, Order: 5}
+	x := &Instance{ID: "x", Title: "x", GroupPath: "g", Status: StatusIdle, Order: 1}
+	tree := NewGroupTree([]*Instance{p1, x})
+
+	// Simulate a live pin edit: x joins the pin-top band with a lower Order.
+	x.Pin = PinTop
+
+	got := sessionIDsInItems(tree.Flatten())
+	want := []string{"x", "p1"}
+	if !equalStrings(got, want) {
+		t.Fatalf("pin-top band must order by Order live; got %v want %v", got, want)
 	}
 }
 

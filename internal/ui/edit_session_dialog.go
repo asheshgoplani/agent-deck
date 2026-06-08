@@ -440,7 +440,7 @@ func (d *EditSessionDialog) View() string {
 	}
 
 	content.WriteString("\n")
-	content.WriteString(helpStyle.Render("Enter save │ Esc cancel │ Tab next │ ←/→ tool │ Space toggle"))
+	content.WriteString(helpStyle.Render("Enter save │ Esc cancel │ Tab next │ ←/→ options │ Space toggle"))
 
 	dialog := dialogStyle.Render(content.String())
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, dialog)
