@@ -6,8 +6,9 @@ package tmux
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // Regression tests for #1167: opening/attaching a claude session renders the
@@ -45,7 +46,10 @@ func newDetachedSession1167(t *testing.T, name string) string {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux binary not available")
 	}
-	socket := filepath.Join(t.TempDir(), "sock")
+	// Short /tmp-based socket: t.TempDir() on darwin overshoots the sun_path
+	// 104-byte limit for this long test name ("File name too long").
+	socket, sockCleanup := testutil.ShortTmuxSocket()
+	t.Cleanup(sockCleanup)
 	tmuxCtl1167(t, socket, "new-session", "-d", "-s", name)
 	tmuxCtl1167(t, socket, "set-option", "-t", name, "window-size", "largest")
 	tmuxCtl1167(t, socket, "set-window-option", "-t", name, "aggressive-resize", "on")
