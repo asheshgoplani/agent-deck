@@ -68,16 +68,27 @@ func TestInjectClaudeHooks_PreservesSymlink(t *testing.T) {
 func TestRemoveClaudeHooks_PreservesSymlink(t *testing.T) {
 	configDir := t.TempDir()
 	link := filepath.Join(configDir, "settings.json")
-	symlinkedFile(t, link, "{}")
+	realPath := symlinkedFile(t, link, "{}")
 
 	if _, err := session.InjectClaudeHooks(configDir); err != nil {
 		t.Fatalf("InjectClaudeHooks: %v", err)
 	}
-	if _, err := session.RemoveClaudeHooks(configDir); err != nil {
+	removed, err := session.RemoveClaudeHooks(configDir)
+	if err != nil {
 		t.Fatalf("RemoveClaudeHooks: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected hooks to be removed")
 	}
 
 	assertStillSymlink(t, link)
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "hook-handler") {
+		t.Fatalf("hooks not removed from symlink target; got: %s", data)
+	}
 }
 
 func TestPreAcceptClaudeTrust_PreservesSymlink(t *testing.T) {
