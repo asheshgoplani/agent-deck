@@ -24,9 +24,14 @@ func symlinkedFile(t *testing.T, linkPath, contents string) (realPath string) {
 	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// linkPath may be a process-global path (e.g. GetClaudeConfigDir()/.claude.json)
+	// shared across tests in this package's isolated HOME. Clear any leftover and
+	// remove ours on cleanup so tests don't collide.
+	_ = os.Remove(linkPath)
 	if err := os.Symlink(realPath, linkPath); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Remove(linkPath) })
 	return realPath
 }
 
@@ -95,5 +100,58 @@ func TestPreAcceptClaudeTrust_PreservesSymlink(t *testing.T) {
 	}
 	if !strings.Contains(string(data), parentDir) {
 		t.Fatalf("parentDir key missing from target; got: %s", data)
+	}
+}
+
+func TestWriteGlobalMCP_PreservesSymlink(t *testing.T) {
+	configFile := filepath.Join(session.GetClaudeConfigDir(), ".claude.json")
+	realPath := symlinkedFile(t, configFile, "{}")
+
+	if err := session.WriteGlobalMCP(nil); err != nil {
+		t.Fatalf("WriteGlobalMCP: %v", err)
+	}
+
+	assertStillSymlink(t, configFile)
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mcpServers") {
+		t.Fatalf("mcpServers not written through symlink to target; got: %s", data)
+	}
+}
+
+func TestWriteUserMCP_PreservesSymlink(t *testing.T) {
+	configFile := session.GetUserMCPRootPath()
+	if configFile == "" {
+		t.Skip("no user MCP root path resolved")
+	}
+	realPath := symlinkedFile(t, configFile, "{}")
+
+	if err := session.WriteUserMCP(nil); err != nil {
+		t.Fatalf("WriteUserMCP: %v", err)
+	}
+
+	assertStillSymlink(t, configFile)
+	data, err := os.ReadFile(realPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mcpServers") {
+		t.Fatalf("mcpServers not written through symlink to target; got: %s", data)
+	}
+}
+
+func TestClearProjectMCPs_PreservesSymlink(t *testing.T) {
+	configFile := filepath.Join(session.GetClaudeConfigDir(), ".claude.json")
+	realPath := symlinkedFile(t, configFile, `{"projects":{"/tmp/p":{"mcpServers":{"x":{}}}}}`)
+
+	if err := session.ClearProjectMCPs("/tmp/p"); err != nil {
+		t.Fatalf("ClearProjectMCPs: %v", err)
+	}
+
+	assertStillSymlink(t, configFile)
+	if _, err := os.Stat(realPath); err != nil {
+		t.Fatalf("target missing after write: %v", err)
 	}
 }

@@ -211,6 +211,42 @@ func TestWriteFile_SymlinkLoop(t *testing.T) {
 	}
 }
 
+func TestWriteFile_RelativeDanglingChain(t *testing.T) {
+	dir := t.TempDir()
+	leaf := filepath.Join(dir, "leaf.json") // missing target
+	mid := filepath.Join(dir, "mid.json")
+	top := filepath.Join(dir, "top.json")
+	// Relative link values, resolved against each link's own directory — the
+	// common dotfiles-manager shape (e.g. GNU Stow).
+	if err := os.Symlink("leaf.json", mid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("mid.json", top); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicfile.WriteFile(top, []byte("relative"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, l := range []string{top, mid} {
+		fi, err := os.Lstat(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was clobbered into a regular file", l)
+		}
+	}
+	got, err := os.ReadFile(leaf)
+	if err != nil {
+		t.Fatalf("leaf not created: %v", err)
+	}
+	if string(got) != "relative" {
+		t.Fatalf("data = %q, want %q", got, "relative")
+	}
+}
+
 func TestWriteFile_NoTempLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.json")
