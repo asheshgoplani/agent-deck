@@ -103,7 +103,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -167,7 +167,11 @@ type InstanceRow struct {
 	// ArchivedAt is the wall-clock time the session was archived (archive-sessions
 	// feature). Zero value means "not archived". Stored as Unix seconds (0 = zero).
 	ArchivedAt time.Time
-	ToolData   json.RawMessage // JSON blob for tool-specific data
+	// Pin anchors the session to the top/bottom of its group (pin-sessions
+	// feature). "", "top", or "bottom"; empty (the column default) means not
+	// pinned, so legacy rows need no backfill.
+	Pin      string
+	ToolData json.RawMessage // JSON blob for tool-specific data
 }
 
 // WatcherRow represents a watcher row in the database.
@@ -355,6 +359,7 @@ func (s *StateDB) Migrate() error {
 			archived_at       INTEGER NOT NULL DEFAULT 0,
 			auto_name              INTEGER NOT NULL DEFAULT 0,
 			auto_name_description  TEXT NOT NULL DEFAULT '',
+			pin             TEXT NOT NULL DEFAULT '',
 			tool_data       TEXT NOT NULL DEFAULT '{}',
 			acknowledged    INTEGER NOT NULL DEFAULT 0
 		)
@@ -515,6 +520,9 @@ func (s *StateDB) Migrate() error {
 		// their handle until they are recreated as quick sessions.
 		"ALTER TABLE instances ADD COLUMN auto_name INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE instances ADD COLUMN auto_name_description TEXT NOT NULL DEFAULT ''",
+		// v12 (pin-sessions): per-session pin to top/bottom of group. Default ''
+		// means "not pinned" for all pre-existing rows.
+		"ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -594,6 +602,13 @@ func (s *StateDB) Migrate() error {
 				}
 			}
 		}
+		if oldVer < 12 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN pin TEXT NOT NULL DEFAULT ''`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v12 pin: %w", err)
+				}
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -658,15 +673,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		archivedAtUnix, string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription,
+		archivedAtUnix, string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription, inst.Pin,
 	)
 	return err
 }
@@ -800,8 +815,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -842,7 +857,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			archivedAtUnix, string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription,
+			archivedAtUnix, string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription, inst.Pin,
 		); err != nil {
 			return err
 		}
@@ -871,7 +886,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			archived_at, tool_data, title_locked, auto_name, auto_name_description
+			archived_at, tool_data, title_locked, auto_name, auto_name_description, pin
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -891,7 +906,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-			&archivedAtUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription,
+			&archivedAtUnix, &toolDataStr, &titleLockedInt, &autoNameInt, &r.AutoNameDescription, &r.Pin,
 		); err != nil {
 			return nil, err
 		}

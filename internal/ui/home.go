@@ -13781,6 +13781,13 @@ func (h *Home) renderSessionItem(
 	// already cleaned by cleanPaneTitle, so an idle/just-started session (empty
 	// paneTitle) falls back to the handle automatically.
 	displayTitle := displaySessionTitle(inst, instState.paneTitle)
+	// Pin marker (pin-sessions): a 📌 prefix flags any pinned row. Position in
+	// the list conveys top vs bottom; the emoji conveys "this is pinned".
+	// Prepended before the AutoName truncation budget so width accounting below
+	// stays correct.
+	if inst.Pin != session.PinNone {
+		displayTitle = "📌 " + displayTitle
+	}
 	if inst.AutoName && instState.paneTitle != "" && h.width > 0 {
 		// Task descriptions can be long; truncate to the row's free width so the
 		// tool label and badges stay on-row. Keep the reserved terms below in
