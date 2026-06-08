@@ -7137,6 +7137,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
 				h.setError(fmt.Errorf("cannot delete the scoped root group"))
+			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
+				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
 			}
 		}
 		return h, nil
