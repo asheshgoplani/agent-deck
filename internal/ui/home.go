@@ -10059,17 +10059,31 @@ func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string
 	if !state.WithState {
 		return errors.New("forkWithStateWorkspaceJJ called without WithState")
 	}
+	// Validate the destination (read-only) BEFORE creating any filesystem state,
+	// mirroring the git path (forkWithStateWorktree validates before deps.mkdirAll)
+	// and the jj CLI path (session_cmd.go pre-checks BookmarkExists before its
+	// os.MkdirAll). Otherwise a refused fork would leave an empty worktrees
+	// container dir behind. CreateWorkspaceAtRevision re-checks the bookmark as a
+	// transactional guard — the same defense-in-depth the git path uses.
 	if _, statErr := os.Stat(workspacePath); statErr == nil {
 		return fmt.Errorf("workspace path already exists: %s", workspacePath)
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("failed to stat workspace path: %w", statErr)
 	}
-	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
+	if branch != "" {
+		if exists, bmErr := jujutsu.BookmarkExists(repoRoot, branch); bmErr != nil {
+			return fmt.Errorf("failed to validate destination: %w", bmErr)
+		} else if exists {
+			return fmt.Errorf("bookmark %q already exists; choose a new destination branch for --with-state", branch)
+		}
 	}
 	parentBase, err := jujutsu.WorkingCopyParentRevision(parentPath)
 	if err != nil {
 		return fmt.Errorf("failed to resolve parent session committed anchor: %w", err)
+	}
+	// All checks passed — now create the container dir and the workspace.
+	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
 	if err := jujutsu.CreateWorkspaceAtRevision(repoRoot, workspacePath, branch, parentBase); err != nil {
 		return fmt.Errorf("workspace creation failed: %w", err)

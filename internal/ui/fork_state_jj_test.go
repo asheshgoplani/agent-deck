@@ -106,6 +106,29 @@ func jjCommitIDUI(t *testing.T, dir, revset string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// TestForkWithStateWorkspaceJJ_BookmarkCollisionLeavesNoContainerDir guards the
+// Option-B ordering: a destination bookmark collision must be detected BEFORE
+// os.MkdirAll, so a refused fork never leaves an empty worktrees container dir
+// behind. This mirrors the git path (forkWithStateWorktree validates the
+// destination before deps.mkdirAll) and the jj CLI path (session_cmd.go
+// BookmarkExists before its os.MkdirAll). The destination is placed under a
+// not-yet-existing container so the stray-dir is observable.
+func TestForkWithStateWorkspaceJJ_BookmarkCollisionLeavesNoContainerDir(t *testing.T) {
+	requireJJWithIdentity(t)
+	repo := setupJJRepoWithWIPUI(t)
+	jjMustUI(t, repo, "bookmark", "create", "fork/taken", "-r", "@")
+
+	container := filepath.Join(t.TempDir(), "container")
+	dest := filepath.Join(container, "fork")
+
+	err := forkWithStateWorkspaceJJ(repo, repo, dest, "fork/taken",
+		git.WorktreeStateOptions{WithState: true})
+	require.Error(t, err, "a colliding destination bookmark must be refused")
+	require.Contains(t, err.Error(), "already exists")
+	require.NoDirExists(t, container,
+		"destination collision must be caught before MkdirAll — no empty container dir may be left behind")
+}
+
 // TestForkWithStateWorkspaceJJ_RejectsExistingDestination guards the
 // destination-collision refusal, mirroring the git path's path-existence check.
 func TestForkWithStateWorkspaceJJ_RejectsExistingDestination(t *testing.T) {
