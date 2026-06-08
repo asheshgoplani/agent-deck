@@ -31,6 +31,7 @@ export function CommandPalette() {
       { id: 'cmd-terminal',  sec: 'COMMANDS', label: 'Open Terminal',  tool: '›_', run: () => { activeTabSignal.value = 'terminal'; close() } },
       { id: 'cmd-costs',     sec: 'COMMANDS', label: 'Costs dashboard', tool: '$', run: () => { activeTabSignal.value = 'costs'; close() } },
       { id: 'cmd-search',    sec: 'COMMANDS', label: 'Session search', tool: '/', run: () => { activeTabSignal.value = 'search'; close() } },
+      { id: 'cmd-archived',  sec: 'COMMANDS', label: 'Archived sessions', tool: '⌂', run: () => { activeTabSignal.value = 'archived'; close() } },
       { id: 'cmd-tweaks',    sec: 'COMMANDS', label: 'Open Tweaks',    tool: 'T', run: () => { tweaksOpenSignal.value = true; close() } },
       { id: 'cmd-shortcuts', sec: 'COMMANDS', label: 'Keyboard shortcuts', tool: '?', run: () => { shortcutsOverlaySignal.value = true; close() } },
       { id: 'cmd-settings',  sec: 'COMMANDS', label: 'Settings drawer', tool: 'S', run: () => { infoDrawerOpenSignal.value = true; close() } },

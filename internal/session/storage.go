@@ -52,6 +52,7 @@ type InstanceData struct {
 	Status             Status    `json:"status"`
 	CreatedAt          time.Time `json:"created_at"`
 	LastAccessedAt     time.Time `json:"last_accessed_at,omitempty"`
+	ArchivedAt         time.Time `json:"archived_at,omitempty"`
 	TmuxSession        string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
@@ -715,6 +716,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreeRepo:       inst.WorktreeRepoRoot,
 		WorktreeBranch:     inst.WorktreeBranch,
 		Account:            inst.Account,
+		ArchivedAt:         inst.ArchivedAt,
 		ToolData:           toolData,
 	}, nil
 }
@@ -820,6 +822,7 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			Status:                    Status(r.Status),
 			CreatedAt:                 r.CreatedAt,
 			LastAccessedAt:            r.LastAccessed,
+			ArchivedAt:                r.ArchivedAt,
 			TmuxSession:               r.TmuxSession,
 			TmuxSocketName:            r.TmuxSocketName,
 			WorktreePath:              r.WorktreePath,
@@ -935,6 +938,7 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			Status:                    Status(r.Status),
 			CreatedAt:                 r.CreatedAt,
 			LastAccessedAt:            r.LastAccessed,
+			ArchivedAt:                r.ArchivedAt,
 			TmuxSession:               r.TmuxSession,
 			TmuxSocketName:            r.TmuxSocketName,
 			WorktreePath:              r.WorktreePath,
@@ -1186,6 +1190,7 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Status:                    instData.Status,
 			CreatedAt:                 instData.CreatedAt,
 			LastAccessedAt:            instData.LastAccessedAt,
+			ArchivedAt:                instData.ArchivedAt,
 			WorktreePath:              instData.WorktreePath,
 			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
 			WorktreeBranch:            instData.WorktreeBranch,

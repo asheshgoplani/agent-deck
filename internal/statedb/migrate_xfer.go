@@ -18,7 +18,7 @@ import (
 // does not exist. Any other error (driver, schema, etc.) is returned as-is.
 func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 	row := &InstanceRow{}
-	var createdUnix, accessedUnix int64
+	var createdUnix, accessedUnix, archivedUnix int64
 	var toolDataStr string
 	var isConductorInt, noTransitionNotifyInt, titleLockedInt int
 	err := s.db.QueryRow(`
@@ -26,16 +26,16 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch,
-			tool_data, title_locked
+			worktree_path, worktree_repo, worktree_branch, account,
+			archived_at, tool_data, title_locked
 		FROM instances WHERE id = ?
 	`, id).Scan(
 		&row.ID, &row.Title, &row.ProjectPath, &row.GroupPath, &row.Order,
 		&row.Command, &row.Wrapper, &row.Tool, &row.Status, &row.TmuxSession, &row.TmuxSocketName,
 		&createdUnix, &accessedUnix,
 		&row.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
-		&row.WorktreePath, &row.WorktreeRepo, &row.WorktreeBranch,
-		&toolDataStr, &titleLockedInt,
+		&row.WorktreePath, &row.WorktreeRepo, &row.WorktreeBranch, &row.Account,
+		&archivedUnix, &toolDataStr, &titleLockedInt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -46,6 +46,9 @@ func (s *StateDB) LoadInstanceByID(id string) (*InstanceRow, error) {
 	row.CreatedAt = time.Unix(createdUnix, 0)
 	if accessedUnix > 0 {
 		row.LastAccessed = time.Unix(accessedUnix, 0)
+	}
+	if archivedUnix > 0 {
+		row.ArchivedAt = time.Unix(archivedUnix, 0).UTC()
 	}
 	row.IsConductor = isConductorInt != 0
 	row.NoTransitionNotify = noTransitionNotifyInt != 0
@@ -61,8 +64,8 @@ func (s *StateDB) LoadInstanceChildren(parentID string) ([]*InstanceRow, error) 
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch,
-			tool_data, title_locked
+			worktree_path, worktree_repo, worktree_branch, account,
+			archived_at, tool_data, title_locked
 		FROM instances WHERE parent_session_id = ? ORDER BY sort_order
 	`, parentID)
 	if err != nil {
@@ -71,28 +74,10 @@ func (s *StateDB) LoadInstanceChildren(parentID string) ([]*InstanceRow, error) 
 	defer rows.Close()
 	var out []*InstanceRow
 	for rows.Next() {
-		r := &InstanceRow{}
-		var createdUnix, accessedUnix int64
-		var toolDataStr string
-		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
-		if err := rows.Scan(
-			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
-			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
-			&createdUnix, &accessedUnix,
-			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
-			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
-			&toolDataStr, &titleLockedInt,
-		); err != nil {
+		r, err := scanInstanceRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.CreatedAt = time.Unix(createdUnix, 0)
-		if accessedUnix > 0 {
-			r.LastAccessed = time.Unix(accessedUnix, 0)
-		}
-		r.IsConductor = isConductorInt != 0
-		r.NoTransitionNotify = noTransitionNotifyInt != 0
-		r.TitleLocked = titleLockedInt != 0
-		r.ToolData = json.RawMessage(toolDataStr)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -105,8 +90,8 @@ func (s *StateDB) LoadInstancesByGroup(groupPath string) ([]*InstanceRow, error)
 			command, wrapper, tool, status, tmux_session, tmux_socket_name,
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
-			worktree_path, worktree_repo, worktree_branch,
-			tool_data, title_locked
+			worktree_path, worktree_repo, worktree_branch, account,
+			archived_at, tool_data, title_locked
 		FROM instances WHERE group_path = ? ORDER BY sort_order
 	`, groupPath)
 	if err != nil {
@@ -115,31 +100,43 @@ func (s *StateDB) LoadInstancesByGroup(groupPath string) ([]*InstanceRow, error)
 	defer rows.Close()
 	var out []*InstanceRow
 	for rows.Next() {
-		r := &InstanceRow{}
-		var createdUnix, accessedUnix int64
-		var toolDataStr string
-		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
-		if err := rows.Scan(
-			&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
-			&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
-			&createdUnix, &accessedUnix,
-			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
-			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch,
-			&toolDataStr, &titleLockedInt,
-		); err != nil {
+		r, err := scanInstanceRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.CreatedAt = time.Unix(createdUnix, 0)
-		if accessedUnix > 0 {
-			r.LastAccessed = time.Unix(accessedUnix, 0)
-		}
-		r.IsConductor = isConductorInt != 0
-		r.NoTransitionNotify = noTransitionNotifyInt != 0
-		r.TitleLocked = titleLockedInt != 0
-		r.ToolData = json.RawMessage(toolDataStr)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// scanInstanceRow reads one instance row from an open query result.
+func scanInstanceRow(rows *sql.Rows) (*InstanceRow, error) {
+	r := &InstanceRow{}
+	var createdUnix, accessedUnix, archivedUnix int64
+	var toolDataStr string
+	var isConductorInt, noTransitionNotifyInt, titleLockedInt int
+	if err := rows.Scan(
+		&r.ID, &r.Title, &r.ProjectPath, &r.GroupPath, &r.Order,
+		&r.Command, &r.Wrapper, &r.Tool, &r.Status, &r.TmuxSession, &r.TmuxSocketName,
+		&createdUnix, &accessedUnix,
+		&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
+		&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
+		&archivedUnix, &toolDataStr, &titleLockedInt,
+	); err != nil {
+		return nil, err
+	}
+	r.CreatedAt = time.Unix(createdUnix, 0)
+	if accessedUnix > 0 {
+		r.LastAccessed = time.Unix(accessedUnix, 0)
+	}
+	if archivedUnix > 0 {
+		r.ArchivedAt = time.Unix(archivedUnix, 0).UTC()
+	}
+	r.IsConductor = isConductorInt != 0
+	r.NoTransitionNotify = noTransitionNotifyInt != 0
+	r.TitleLocked = titleLockedInt != 0
+	r.ToolData = json.RawMessage(toolDataStr)
+	return r, nil
 }
 
 // InsertInstanceRow inserts (or replaces) a single instance row. Unlike
@@ -169,16 +166,16 @@ func (s *StateDB) InsertInstanceRow(inst *InstanceRow) error {
 				command, wrapper, tool, status, tmux_session, tmux_socket_name,
 				created_at, last_accessed,
 				parent_session_id, is_conductor, no_transition_notify,
-				worktree_path, worktree_repo, worktree_branch,
-				tool_data, title_locked
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				worktree_path, worktree_repo, worktree_branch, account,
+				archived_at, tool_data, title_locked
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 			inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 			inst.CreatedAt.Unix(), instLastAccessedUnix(inst),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
-			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch,
-			string(toolData), titleLockedInt,
+			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt,
 		)
 		return err
 	})

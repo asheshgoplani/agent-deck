@@ -23,6 +23,7 @@ const TABS = [
   { id: 'watchers',  label: 'Watchers'  },
   { id: 'costs',     label: 'Costs'     },
   { id: 'search',    label: 'Search'    },
+  { id: 'archived',  label: 'Archived'  },
 ]
 
 export function Topbar() {

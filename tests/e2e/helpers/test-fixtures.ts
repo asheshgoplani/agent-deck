@@ -260,6 +260,41 @@ export async function mockSessionCRUD(page: Page, state: TestState): Promise<voi
           await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
           return route.fulfill({ json: { sessionId: forkId } })
         }
+        case 'archive': {
+          session.status = 'stopped'
+          session.archivedAt = new Date().toISOString()
+          state.menuItems = state.menuItems.filter(
+            item => !(item.type === 'session' && item.session && item.session.id === sessionId)
+          )
+          await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
+          await page.route('**/api/sessions/archived', r =>
+            r.fulfill({
+              json: {
+                profile: 'test',
+                sessions: Object.values(state.sessions).filter((s: any) => s.archivedAt),
+              },
+            })
+          )
+          return route.fulfill({ json: { sessionId } })
+        }
+        case 'unarchive': {
+          delete session.archivedAt
+          session.status = session.status || 'stopped'
+          const level = session.groupPath ? 1 : 0
+          state.menuItems.push({
+            type: 'session', level, index: state.menuItems.length, session,
+          })
+          await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
+          await page.route('**/api/sessions/archived', r =>
+            r.fulfill({
+              json: {
+                profile: 'test',
+                sessions: Object.values(state.sessions).filter((s: any) => s.archivedAt),
+              },
+            })
+          )
+          return route.fulfill({ json: { sessionId } })
+        }
         default:
           return route.fulfill({ status: 404, json: { error: { message: 'unknown action' } } })
       }

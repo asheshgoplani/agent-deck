@@ -51,6 +51,19 @@ func (m *MemoryMenuData) LoadMenuSnapshot() (*MenuSnapshot, error) {
 	return cloneMenuSnapshot(snapshot), nil
 }
 
+// LoadArchivedMenuSnapshot returns archived sessions from the storage fallback.
+func (m *MemoryMenuData) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	if m == nil || m.fallback == nil {
+		return nil, fmt.Errorf("menu snapshot is unavailable")
+	}
+	if loader, ok := m.fallback.(interface {
+		LoadArchivedMenuSnapshot() (*MenuSnapshot, error)
+	}); ok {
+		return loader.LoadArchivedMenuSnapshot()
+	}
+	return nil, fmt.Errorf("archived session list is not available")
+}
+
 // SetSnapshot replaces the stored menu snapshot.
 func (m *MemoryMenuData) SetSnapshot(snapshot *MenuSnapshot) {
 	if m == nil {

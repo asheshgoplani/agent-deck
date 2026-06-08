@@ -122,6 +122,8 @@ type Instance struct {
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
+	// ArchivedAt is set when the user archives the session (non-zero = archived).
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
 
 	// LastStartedAt is the wall-clock time of the most recent successful
 	// Start() / StartWithMessage() / Restart() call. Persisted so short-lived

@@ -3013,6 +3013,52 @@ func TestRebuildFlatItemsGroupScope(t *testing.T) {
 	}
 }
 
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderWithArchivedSessions(t *testing.T) {
+	h := &Home{}
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("collapsed group with active sessions: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup || h.flatItems[0].Path != "work" {
+		t.Fatalf("expected collapsed work group header, got %+v", h.flatItems[0])
+	}
+}
+
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderInArchivedView(t *testing.T) {
+	h := &Home{}
+	h.statusFilter = FilterModeArchived
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("archived view + collapsed group: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup {
+		t.Fatalf("expected group header in archived view, got %+v", h.flatItems[0])
+	}
+}
+
 func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
 	h := &Home{}
 	h.groupScope = "work"

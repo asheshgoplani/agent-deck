@@ -103,7 +103,7 @@ func withBusyRetry(op func() error) error {
 
 // SchemaVersion tracks the current database schema version.
 // Bump this when adding migrations.
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // StateDB wraps a SQLite database for session/group persistence.
 // Thread-safe for concurrent use from multiple goroutines within one process.
@@ -159,6 +159,8 @@ type InstanceRow struct {
 	// means "fall through to conductor/group/env/profile/global/default".
 	Account  string
 	ToolData json.RawMessage // JSON blob for tool-specific data
+	// ArchivedAt is non-zero when the session is archived (hidden from active lists).
+	ArchivedAt time.Time
 }
 
 // WatcherRow represents a watcher row in the database.
@@ -343,6 +345,7 @@ func (s *StateDB) Migrate() error {
 			worktree_repo     TEXT NOT NULL DEFAULT '',
 			worktree_branch   TEXT NOT NULL DEFAULT '',
 			account           TEXT NOT NULL DEFAULT '',
+			archived_at       INTEGER NOT NULL DEFAULT 0,
 			tool_data       TEXT NOT NULL DEFAULT '{}',
 			acknowledged    INTEGER NOT NULL DEFAULT 0
 		)
@@ -495,6 +498,8 @@ func (s *StateDB) Migrate() error {
 		// the pre-v1.9.22 behavior for legacy rows (fall through to
 		// conductor/group/env/profile/global/default).
 		"ALTER TABLE instances ADD COLUMN account TEXT NOT NULL DEFAULT ''",
+		// v10: user-archived sessions (hidden from active lists; 0 = active).
+		"ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, stmt := range alterMigrations {
 		if _, err := tx.Exec(stmt); err != nil {
@@ -555,6 +560,13 @@ func (s *StateDB) Migrate() error {
 				}
 			}
 		}
+		if oldVer < 10 {
+			if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("statedb: migrate v10 archived_at: %w", err)
+				}
+			}
+		}
 		if _, err := tx.Exec(`
 			UPDATE metadata SET value = ? WHERE key = 'schema_version'
 		`, schemaVersion); err != nil {
@@ -576,6 +588,13 @@ func (s *StateDB) IsEmpty() (bool, error) {
 }
 
 // --- Instance CRUD ---
+
+func archivedAtUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UTC().Unix()
+}
 
 // SaveInstance inserts or replaces a single instance.
 func (s *StateDB) SaveInstance(inst *InstanceRow) error {
@@ -611,15 +630,15 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		inst.ID, inst.Title, inst.ProjectPath, inst.GroupPath, inst.Order,
 		inst.Command, inst.Wrapper, inst.Tool, inst.Status, inst.TmuxSession, inst.TmuxSocketName,
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		string(toolData), titleLockedInt,
+		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt,
 	)
 	return err
 }
@@ -753,8 +772,8 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			archived_at, tool_data, title_locked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -787,7 +806,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			string(toolData), titleLockedInt,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt,
 		); err != nil {
 			return err
 		}
@@ -816,7 +835,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			created_at, last_accessed,
 			parent_session_id, is_conductor, no_transition_notify,
 			worktree_path, worktree_repo, worktree_branch, account,
-			tool_data, title_locked
+			archived_at, tool_data, title_locked
 		FROM instances ORDER BY sort_order
 	`)
 	if err != nil {
@@ -827,7 +846,7 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 	var result []*InstanceRow
 	for rows.Next() {
 		r := &InstanceRow{}
-		var createdUnix, accessedUnix int64
+		var createdUnix, accessedUnix, archivedUnix int64
 		var toolDataStr string
 		var isConductorInt, noTransitionNotifyInt, titleLockedInt int
 		if err := rows.Scan(
@@ -836,13 +855,16 @@ func (s *StateDB) LoadInstances() ([]*InstanceRow, error) {
 			&createdUnix, &accessedUnix,
 			&r.ParentSessionID, &isConductorInt, &noTransitionNotifyInt,
 			&r.WorktreePath, &r.WorktreeRepo, &r.WorktreeBranch, &r.Account,
-			&toolDataStr, &titleLockedInt,
+			&archivedUnix, &toolDataStr, &titleLockedInt,
 		); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(createdUnix, 0)
 		if accessedUnix > 0 {
 			r.LastAccessed = time.Unix(accessedUnix, 0)
+		}
+		if archivedUnix > 0 {
+			r.ArchivedAt = time.Unix(archivedUnix, 0).UTC()
 		}
 		r.IsConductor = isConductorInt != 0
 		r.NoTransitionNotify = noTransitionNotifyInt != 0

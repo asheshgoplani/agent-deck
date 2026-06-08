@@ -16,6 +16,9 @@ const (
 	hotkeyRestartFresh    = "restart_fresh"
 	hotkeyDelete          = "delete"
 	hotkeyCloseSession    = "close_session"
+	hotkeyArchiveSession  = "archive_session"
+	hotkeyUnarchiveSession = "unarchive_session"
+	hotkeyViewArchived    = "view_archived"
 	hotkeyUndoDelete      = "undo_delete"
 	hotkeyMoveToGroup     = "move_to_group"
 	hotkeyMCPManager      = "mcp_manager"
@@ -53,6 +56,9 @@ var hotkeyActionOrder = []string{
 	hotkeyRestartFresh,
 	hotkeyDelete,
 	hotkeyCloseSession,
+	hotkeyArchiveSession,
+	hotkeyUnarchiveSession,
+	hotkeyViewArchived,
 	hotkeyUndoDelete,
 	hotkeyMoveToGroup,
 	hotkeyMCPManager,
@@ -90,6 +96,9 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyRestartFresh:    "T",
 	hotkeyDelete:          "d",
 	hotkeyCloseSession:    "D",
+	hotkeyArchiveSession:  "A",
+	hotkeyUnarchiveSession: "shift+u",
+	hotkeyViewArchived:    "^",
 	hotkeyUndoDelete:      "ctrl+z",
 	hotkeyMoveToGroup:     "M",
 	hotkeyMCPManager:      "m",
