@@ -626,7 +626,7 @@ configure_tmux() {
     local TMUX_CONF="$HOME/.tmux.conf"
     local MARKER="# agent-deck configuration"
     local VERSION_MARKER="# agent-deck-tmux-config-version:"
-    local CURRENT_VERSION="3"  # Bump this when config changes
+    local CURRENT_VERSION="4"  # Bump this when config changes
     local NEEDS_UPDATE=false
     local HAS_CONFIG=false
 
@@ -646,6 +646,7 @@ configure_tmux() {
             fi
             echo ""
             echo -e "${BLUE}What's new in this update:${NC}"
+            echo "  • Deliver modified keys in csi-u form so Shift+Enter works (kitty etc.)"
             echo "  • Added extended-keys for Shift+Enter support (tmux 3.2+)"
             echo "  • Fixed mouse scrolling issues on WSL"
             echo "  • Added auto-enter copy-mode on scroll up"
@@ -746,6 +747,9 @@ set -g history-limit 50000
 
 # Extended keys: forward Shift+Enter and other modified keys to apps (tmux 3.2+)
 set -s extended-keys on
+# Deliver them as ESC[13;2u (the kitty keyboard-protocol form Claude Code reads)
+# rather than xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores.
+set -s extended-keys-format csi-u
 set -as terminal-features 'tmux-256color:extkeys'
 
 # Mouse support (scroll + drag-to-copy)
@@ -771,6 +775,16 @@ bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel \"$CLI
     echo "$CONFIG_BLOCK" >> "$TMUX_CONF"
 
     echo -e "${GREEN}tmux configured successfully!${NC}"
+
+    # kitty ignores xterm modifyOtherKeys (it only speaks its own CSI-u keyboard
+    # protocol), so tmux can't negotiate Shift+Enter with it. kitty must emit the
+    # sequence itself — we can't edit kitty.conf for the user, so just point it out.
+    if [[ -n "$KITTY_WINDOW_ID" || "$TERM" == "xterm-kitty" || "$TERM_PROGRAM" == "kitty" ]]; then
+        echo ""
+        echo -e "${YELLOW}kitty detected:${NC} for Shift+Enter to insert a newline, add to ~/.config/kitty/kitty.conf:"
+        echo "    map shift+enter send_text all \\x1b[13;2u"
+        echo "  then reload kitty (Ctrl+Shift+F5). See troubleshooting.md."
+    fi
 
     # Reload tmux config if tmux is running
     if tmux list-sessions &> /dev/null; then
