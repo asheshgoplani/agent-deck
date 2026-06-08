@@ -470,11 +470,24 @@ func main() {
 		}
 	}
 
-	// Set up signal handling for graceful shutdown and crash dumps
+	// Set up signal handling for graceful shutdown and crash dumps.
+	// SIGHUP is included so closing the terminal window/tab also runs cleanup;
+	// without it the default action is an abrupt terminate that leaks every
+	// `tmux -C attach-session` control client (they reparent to launchd and
+	// pile up against the single-threaded tmux server).
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		// Close control-mode pipes so their tmux clients detach cleanly instead
+		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
+		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
+		// in-app quit path already does this via performFinalShutdown; the
+		// signal path must too, or the clients leak (killStaleControlClients
+		// only sweeps them up on a later Connect).
+		if pm := tmux.GetPipeManager(); pm != nil {
+			pm.Close()
+		}
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.ResignPrimary()
 			_ = db.UnregisterInstance()
