@@ -38,7 +38,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.9.49" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.9.50" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Commit is the git hash of the build, injected via -ldflags
 // "-X main.Commit=...". When empty it falls back to the VCS revision the Go

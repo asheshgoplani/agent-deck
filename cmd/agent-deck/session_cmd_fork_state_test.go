@@ -482,3 +482,17 @@ func TestBranchCleanupHint_ShellQuotesPathAndBranch(t *testing.T) {
 		t.Errorf("expected branch name single-quoted, got %q", got)
 	}
 }
+
+func TestSessionFork_AdmitsOpenCode(t *testing.T) {
+	src, err := os.ReadFile("session_cmd.go")
+	if err != nil {
+		t.Fatalf("read session_cmd.go: %v", err)
+	}
+	s := string(src)
+	if !strings.Contains(s, `isOpenCodeFork := inst.Tool == "opencode"`) {
+		t.Fatal("fork gate must recognize opencode")
+	}
+	if !strings.Contains(s, "CreateForkedInstanceForTool") {
+		t.Fatal("fork dispatch must route through the shared cross-tool create method")
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // GeminiMCPConfig represents settings.json structure
@@ -45,7 +47,7 @@ func GetGeminiMCPInfo(projectPath string) *MCPInfo {
 
 // WriteGeminiMCPSettings writes MCPs to ~/.gemini/settings.json
 // Preserves existing config fields (security, theme, etc.)
-// Uses atomic write with .tmp file for safety
+// Uses a symlink-preserving atomic write (see internal/atomicfile)
 func WriteGeminiMCPSettings(enabledNames []string) error {
 	configFile := filepath.Join(GetGeminiConfigDir(), "settings.json")
 
@@ -101,13 +103,7 @@ func WriteGeminiMCPSettings(enabledNames []string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	tmpPath := configFile + ".tmp"
-	if err := os.WriteFile(tmpPath, newData, 0600); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configFile); err != nil {
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(configFile, newData, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 

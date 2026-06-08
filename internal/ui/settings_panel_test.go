@@ -941,6 +941,48 @@ func TestSettingsPanel_Worktree_GetConfigPreservesHiddenFields(t *testing.T) {
 	}
 }
 
+func TestSettingsPanel_Fork_GetConfigPreservesHiddenFields(t *testing.T) {
+	panel := NewSettingsPanel()
+
+	worktree := false
+	withState := false
+	withIgnored := false
+	dockerMode := "off"
+	original := &session.UserConfig{
+		Fork: session.ForkSettings{
+			InheritFromParent: true,
+			Worktree:          &worktree,
+			WithState:         &withState,
+			WithIgnored:       &withIgnored,
+			Docker:            &dockerMode,
+			BranchPrefix:      "wip/",
+		},
+	}
+	panel.LoadConfig(original)
+	panel.originalConfig = original
+
+	config := panel.GetConfig()
+
+	if !config.Fork.InheritFromParent {
+		t.Fatal("Fork.InheritFromParent should be preserved")
+	}
+	if config.Fork.Worktree == nil || *config.Fork.Worktree {
+		t.Fatalf("Fork.Worktree should preserve explicit false, got %v", config.Fork.Worktree)
+	}
+	if config.Fork.WithState == nil || *config.Fork.WithState {
+		t.Fatalf("Fork.WithState should preserve explicit false, got %v", config.Fork.WithState)
+	}
+	if config.Fork.WithIgnored == nil || *config.Fork.WithIgnored {
+		t.Fatalf("Fork.WithIgnored should preserve explicit false, got %v", config.Fork.WithIgnored)
+	}
+	if config.Fork.Docker == nil || *config.Fork.Docker != "off" {
+		t.Fatalf("Fork.Docker should preserve off, got %v", config.Fork.Docker)
+	}
+	if config.Fork.BranchPrefix != "wip/" {
+		t.Fatalf("Fork.BranchPrefix = %q, want %q", config.Fork.BranchPrefix, "wip/")
+	}
+}
+
 // TestSettingsPanel_Tmux_GetConfigPreservesHiddenFields guards #710.
 // The Settings TUI does not expose [tmux] fields, so GetConfig() must copy
 // them through from originalConfig — same as MCPs/Tools/Worktree. Before the

@@ -15,6 +15,11 @@ func withTempHomeAndConfig(t *testing.T, contents string) string {
 	tempDir := t.TempDir()
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tempDir)
+	// Keep XDG_CONFIG_HOME inside this temp HOME too. TestMain clears XDG so
+	// HOME-only isolation usually works, but this helper writes legacy config
+	// files and should stay isolated even if a caller adds an XDG override.
+	// An empty XDG config dir makes reads fall back to the legacy file below.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tempDir, ".config"))
 	t.Cleanup(func() {
 		os.Setenv("HOME", originalHome)
 		ClearUserConfigCache()

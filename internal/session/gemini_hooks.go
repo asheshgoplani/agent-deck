@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 const agentDeckGeminiHookCommand = "agent-deck hook-handler"
@@ -95,13 +97,8 @@ func InjectGeminiHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("create config dir: %w", err)
 	}
 
-	tmpPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tmpPath, finalData, 0644); err != nil {
-		return false, fmt.Errorf("write settings.json.tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, settingsPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return false, fmt.Errorf("rename settings.json: %w", err)
+	if err := atomicfile.WriteFile(settingsPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write settings.json: %w", err)
 	}
 
 	sessionLog.Info("gemini_hooks_installed", slog.String("config_dir", configDir))
@@ -166,13 +163,8 @@ func RemoveGeminiHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("marshal settings: %w", err)
 	}
 
-	tmpPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tmpPath, finalData, 0644); err != nil {
-		return false, fmt.Errorf("write settings.json.tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, settingsPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return false, fmt.Errorf("rename settings.json: %w", err)
+	if err := atomicfile.WriteFile(settingsPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write settings.json: %w", err)
 	}
 
 	sessionLog.Info("gemini_hooks_removed", slog.String("config_dir", configDir))

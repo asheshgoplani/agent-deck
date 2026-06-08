@@ -45,8 +45,7 @@ func setupClaudeTranscript(t *testing.T, initialLine string) (*Instance, string)
 	t.Cleanup(ClearUserConfigCache)
 
 	const sessionID = "sess-1187-aaaa-bbbb-cccc"
-	projectDirName := ConvertToClaudeDirName(projectPath)
-	projectDir := filepath.Join(configDir, "projects", projectDirName)
+	projectDir := claudeProjectDirForTest(t, configDir, projectPath)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir projectDir: %v", err)
 	}

@@ -33,6 +33,7 @@ function projectSession(item) {
     modelId: s.modelId || '',
     model: s.model || '',
     modelVersion: s.modelVersion || '',
+    canFork: !!s.canFork,
     status: s.status || 'idle',
     branch: s.branch || '—',
     path: s.projectPath || '',

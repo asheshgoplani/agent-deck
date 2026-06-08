@@ -193,7 +193,7 @@ func TestCapability_Lifecycle_Fork(t *testing.T) {
 	if err == nil {
 		t.Fatalf("fork of a non-Claude session should be refused, got success:\n%s", out)
 	}
-	if !strings.Contains(out, "not a Claude session") {
+	if !strings.Contains(out, "not a forkable session") {
 		t.Errorf("fork refusal should name the precondition, got:\n%s", out)
 	}
 	if _, ok := c.findByTitle(t, "cap-fork-fork"); ok {

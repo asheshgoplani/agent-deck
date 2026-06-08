@@ -31,6 +31,9 @@ import (
 // MUST already point at home for the helper to take effect.
 func writeUserConfigForTest(t *testing.T, home, body string) {
 	t.Helper()
+	// Keep XDG_CONFIG_HOME inside this temp HOME too. Empty XDG dir means reads
+	// fall back to the legacy config.toml written below.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	dir := filepath.Join(home, ".agent-deck")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir .agent-deck: %v", err)

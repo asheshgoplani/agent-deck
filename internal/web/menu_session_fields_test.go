@@ -33,6 +33,7 @@ func TestMenuSessionExposesAllEditableFields(t *testing.T) {
 		ID:                 "full-1",
 		Title:              "fully populated",
 		Tool:               "claude",
+		CanFork:            true,
 		Status:             session.StatusRunning,
 		GroupPath:          "work",
 		ProjectPath:        "/srv/app",
@@ -111,6 +112,7 @@ func TestMenuSessionExposesAllEditableFields(t *testing.T) {
 		key  string
 		want any
 	}{
+		{"canFork", true},
 		{"isConductor", true},
 		{"claudeSessionId", "claude-abc"},
 		{"geminiSessionId", "gemini-xyz"},
@@ -295,6 +297,7 @@ func TestToMenuSessionMapsInstanceFields(t *testing.T) {
 	inst.ID = "inst-1"
 	inst.IsConductor = true
 	inst.ClaudeSessionID = "claude-1"
+	inst.ClaudeDetectedAt = time.Now()
 	inst.GeminiSessionID = "gemini-1"
 	inst.GeminiModel = "gemini-2.5-pro"
 	inst.GeminiYoloMode = &yolo
@@ -330,6 +333,9 @@ func TestToMenuSessionMapsInstanceFields(t *testing.T) {
 
 	ms := toMenuSession(inst)
 
+	if !ms.CanFork {
+		t.Fatal("MenuSession.CanFork should mirror Instance.CanFork for forkable sessions")
+	}
 	if !ms.IsConductor {
 		t.Errorf("IsConductor not copied")
 	}

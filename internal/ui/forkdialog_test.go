@@ -34,9 +34,10 @@ func TestForkDialog_WorktreeControlsVisibleForBareProjectRoot(t *testing.T) {
 	// 'w' toggles worktree only while the group field has focus (B2 focus model;
 	// see the toggle-off test below). Move focus before pressing w.
 	d.setFocus(forkFocusGroup)
+	before := d.IsWorktreeEnabled()
 	updated, _ := d.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
-	if !updated.IsWorktreeEnabled() {
-		t.Fatal("pressing w should enable worktree mode for a bare project root")
+	if updated.IsWorktreeEnabled() == before {
+		t.Fatal("pressing w should toggle worktree mode for a bare project root")
 	}
 }
 
@@ -254,14 +255,17 @@ func TestForkDialog_Show_ClearsError(t *testing.T) {
 
 // ===== Fork-with-state dialog state (PR-B Task B1) =====
 
-func TestForkDialog_WithState_DefaultsFalseAfterShow(t *testing.T) {
+func TestForkDialog_WithState_HiddenWhenWorktreeUnavailable(t *testing.T) {
 	d := NewForkDialog()
-	d.Show("Test", "/path", "group", nil, "")
+	d.Show("Test", t.TempDir(), "group", nil, "")
+	if d.IsWorktreeEnabled() {
+		t.Fatal("worktree should be disabled when the project is not git-capable")
+	}
 	if d.IsWithStateEnabled() {
-		t.Error("IsWithStateEnabled should default false after Show")
+		t.Error("with-state should stay off when no worktree can be created")
 	}
 	if d.IsWithStateAndGitignoredEnabled() {
-		t.Error("IsWithStateAndGitignoredEnabled should default false after Show")
+		t.Error("gitignored should stay off when no worktree can be created")
 	}
 }
 

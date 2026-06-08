@@ -7,7 +7,7 @@
 package session
 
 import (
-	"os"
+	"errors"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -43,11 +43,6 @@ func TestSessionStop_ReapsMcpChildren_RegressionFor965(t *testing.T) {
 		_, _ = cmd.Process.Wait()
 	})
 
-	// Sanity: the child is alive before stop.
-	if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
-		t.Fatalf("fake MCP child PID %d not alive after Start: %v", pid, err)
-	}
-
 	inst := &Instance{ID: "test-965", Title: "issue965"}
 	inst.RegisterMCPChild(pid)
 
@@ -55,43 +50,60 @@ func TestSessionStop_ReapsMcpChildren_RegressionFor965(t *testing.T) {
 		t.Fatalf("Instance.Kill: %v", err)
 	}
 
-	// After Kill(), the child must be dead within a short window.
-	// Acceptable terminal states: ESRCH (gone), zombie ('Z'), exiting ('X').
-	if !waitChildDead(t, pid, 5*time.Second) {
-		t.Fatalf("fake MCP child PID %d still alive after Instance.Kill — orphan reap regression for #965", pid)
+	// After Kill(), the child must be waitable within a short window. This test
+	// owns the fake child process, so waiting is the portable way to distinguish
+	// a successfully-signaled zombie from a still-running process on macOS.
+	if err := waitCmdExited(cmd, 5*time.Second); err != nil {
+		t.Fatalf("fake MCP child PID %d still alive after Instance.Kill — orphan reap regression for #965: %v", pid, err)
 	}
-
-	// Reap the zombie if any so cleanup is clean.
-	_, _ = cmd.Process.Wait()
 }
 
-// waitChildDead polls until syscall.Kill(pid, 0) returns ESRCH (or the
-// process is in a zombie state). Returns true on death within the deadline.
+func waitCmdExited(cmd *exec.Cmd, within time.Duration) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := cmd.Process.Wait()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || errors.Is(err, syscall.ECHILD) {
+			return nil
+		}
+		return err
+	case <-time.After(within):
+		return errors.New("timed out waiting for command exit")
+	}
+}
+
+// waitChildDead polls until syscall.Kill(pid, 0) returns ESRCH or the process
+// is in a terminal zombie/exiting state. It is for children owned by tmux/init,
+// where the Go test process cannot call Wait.
 func waitChildDead(t *testing.T, pid int, within time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, syscall.Signal(0)); err != nil {
-			// ESRCH or EPERM → not addressable as a live process.
 			return true
 		}
-		// On Linux, a zombie still responds to Kill(0). Probe /proc.
-		if runtime.GOOS == "linux" {
-			data, rerr := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
-			if rerr != nil {
-				return true
-			}
-			for _, line := range strings.Split(string(data), "\n") {
-				if strings.HasPrefix(line, "State:") {
-					fields := strings.Fields(line)
-					if len(fields) >= 2 && (fields[1] == "Z" || fields[1] == "X") {
-						return true
-					}
-					break
-				}
-			}
+		if childIsZombieOrExiting(pid) {
+			return true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	return false
+}
+
+func TestChildIsZombieOrExitingDoesNotTreatPsLookupFailureAsTerminal(t *testing.T) {
+	if childIsZombieOrExiting(99999999) {
+		t.Fatal("nonexistent PID was classified as zombie/exiting")
+	}
+}
+
+func childIsZombieOrExiting(pid int) bool {
+	out, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	state := strings.TrimSpace(string(out))
+	return strings.HasPrefix(state, "Z") || strings.HasPrefix(state, "X")
 }

@@ -214,4 +214,38 @@ describe('menuModelSignal projection', () => {
     expect(subInItems.session.cost).toBe(1.23)
     expect(subInSessions.cost).toBe(1.23)
   })
+
+  // Regression guard from upstream #1299: canFork is a backend-supplied flag
+  // and must be carried through the projection independently of tool name.
+  it('carries backend canFork independently of tool name', async () => {
+    const { sessionsSignal } = await import(statePath)
+    const { menuModelSignal } = await import(dataModelPath)
+
+    sessionsSignal.value = [
+      {
+        type: 'session',
+        session: {
+          id: 'oc-1',
+          title: 'OpenCode forkable',
+          tool: 'opencode',
+          groupPath: 'default',
+          canFork: true,
+        },
+      },
+      {
+        type: 'session',
+        session: {
+          id: 'claude-1',
+          title: 'Claude not detected',
+          tool: 'claude',
+          groupPath: 'default',
+          canFork: false,
+        },
+      },
+    ]
+
+    const byID = new Map(menuModelSignal.value.sessions.map((s) => [s.id, s]))
+    expect(byID.get('oc-1').canFork).toBe(true)
+    expect(byID.get('claude-1').canFork).toBe(false)
+  })
 })

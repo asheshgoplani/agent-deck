@@ -9,6 +9,29 @@ afterEach(() => {
   cleanup()
 })
 
+// Some Node versions expose a disabled global localStorage unless
+// --localstorage-file is provided. Components read the bare localStorage global
+// at import time, so provide a deterministic in-memory implementation for unit
+// tests before any component modules load.
+if (!globalThis.localStorage) {
+  const store = new Map()
+  globalThis.localStorage = {
+    getItem(key) {
+      const k = String(key)
+      return store.has(k) ? store.get(k) : null
+    },
+    setItem(key, value) {
+      store.set(String(key), String(value))
+    },
+    removeItem(key) {
+      store.delete(String(key))
+    },
+    clear() {
+      store.clear()
+    },
+  }
+}
+
 // jsdom doesn't implement fetch — components that fetch on mount need it stubbed
 // per-test. Provide a default that throws loudly so unmocked fetches are obvious.
 if (typeof globalThis.fetch !== 'function') {

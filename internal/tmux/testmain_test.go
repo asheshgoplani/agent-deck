@@ -79,6 +79,16 @@ func TestMain(m *testing.M) {
 		return
 	}
 
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body. It exists so the cleanup defers
+// below actually run: TestMain calls os.Exit, which does NOT run deferred
+// functions, so registering them here and returning the exit code is the only
+// way to guarantee the bootstrap tmux server is killed and the isolated
+// TMUX_TMPDIR is removed. Skipping this leaked a tmux server (1 pty) on every
+// run — the 2026-06-07 pty-exhaustion incident.
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5). Placed after
 	// the child-helper guards above (those re-exec as subprocess tools and must
@@ -97,7 +107,9 @@ func TestMain(m *testing.M) {
 
 	// Bootstrap an idle tmux server in the isolated socket so the tests that
 	// depend on `tmux list-sessions` succeeding (#618 cleanup-attach OSC,
-	// etc.) actively run rather than silent-skipping on cold-boot.
+	// etc.) actively run rather than silent-skipping on cold-boot. Registered
+	// last so its kill-server defer runs FIRST — while TMUX_TMPDIR still points
+	// at the isolated socket, before cleanupTmux restores the env.
 	cleanupBootstrap := bootstrapTmuxServer()
 	defer cleanupBootstrap()
 
@@ -112,7 +124,7 @@ func TestMain(m *testing.M) {
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
 
-	os.Exit(code)
+	return code
 }
 
 // cleanupTestSessions kills any tmux sessions created during testing.

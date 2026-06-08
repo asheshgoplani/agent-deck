@@ -19,6 +19,7 @@ import (
 	dark "github.com/thiagokokada/dark-mode-go"
 
 	"github.com/asheshgoplani/agent-deck/internal/agentpaths"
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/platform"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
@@ -173,6 +174,9 @@ type UserConfig struct {
 
 	// Docker defines Docker sandbox settings for containerized sessions
 	Docker DockerSettings `toml:"docker"`
+
+	// Fork defines quick-fork (f) and fork-dialog (Shift+F) default behavior.
+	Fork ForkSettings `toml:"fork"`
 
 	// Remotes defines named SSH remote agent-deck instances
 	Remotes map[string]RemoteConfig `toml:"remotes"`
@@ -1962,6 +1966,94 @@ func (d DockerSettings) GetAutoCleanup() bool {
 	return *d.AutoCleanup
 }
 
+// ForkSettings controls quick-fork (f) and fork-dialog (Shift+F) defaults.
+// Unset structural toggles default to the comprehensive built-in (ON); these
+// defaults are independent of [worktree]/[docker] default_enabled, which govern
+// non-fork session creation. *bool is required so "absent" reads as ON.
+type ForkSettings struct {
+	// InheritFromParent, when true, makes the fork mirror the parent session and
+	// ignores the structural keys below. See Resolve.
+	InheritFromParent bool `toml:"inherit_from_parent"`
+
+	// Worktree creates a new worktree + branch. nil => true.
+	Worktree *bool `toml:"worktree"`
+	// WithState carries the parent's tracked uncommitted changes. nil => true.
+	WithState *bool `toml:"with_state"`
+	// WithIgnored also copies gitignored files (implies WithState). nil => true.
+	WithIgnored *bool `toml:"with_ignored"`
+	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
+	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
+	Docker *string `toml:"docker"`
+	// BranchPrefix is the auto branch-name prefix. "" => "fork/".
+	BranchPrefix string `toml:"branch_prefix"`
+}
+
+// GetWorktree reports whether forks create a worktree (default ON).
+func (f ForkSettings) GetWorktree() bool { return f.Worktree == nil || *f.Worktree }
+
+// GetWithState reports whether forks carry tracked state (default ON).
+func (f ForkSettings) GetWithState() bool { return f.WithState == nil || *f.WithState }
+
+// GetWithIgnored reports whether forks copy gitignored files (default ON).
+func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored == nil || *f.WithIgnored }
+
+// GetDocker returns the canonical docker mode: "auto" | "on" | "off".
+// Mirrors GetLaunchAs: lowercase/trim, unknown/nil -> "auto".
+func (f ForkSettings) GetDocker() string {
+	if f.Docker == nil {
+		return "auto"
+	}
+	switch v := strings.ToLower(strings.TrimSpace(*f.Docker)); v {
+	case "auto", "on", "off":
+		return v
+	default:
+		return "auto"
+	}
+}
+
+// GetBranchPrefix returns the auto branch-name prefix (default "fork/").
+func (f ForkSettings) GetBranchPrefix() string {
+	prefix := strings.TrimSpace(f.BranchPrefix)
+	if prefix == "" {
+		return "fork/"
+	}
+	return prefix
+}
+
+// ResolvedForkPlan is the effective set of structural fork toggles after
+// applying [fork] config + parent context.
+type ResolvedForkPlan struct {
+	Worktree    bool
+	WithState   bool
+	WithIgnored bool
+	Sandbox     bool
+}
+
+// Resolve turns ForkSettings + the parent's Docker state into a concrete plan.
+// parentSandboxed is source.IsSandboxed(). When InheritFromParent is set, the
+// fork mirrors the parent: worktree+state+gitignored ON (the parent is a real
+// working tree) and Sandbox matches the parent, ignoring the structural keys.
+func (f ForkSettings) Resolve(parentSandboxed bool) ResolvedForkPlan {
+	if f.InheritFromParent {
+		return ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: parentSandboxed}
+	}
+	sandbox := parentSandboxed
+	switch f.GetDocker() {
+	case "on":
+		sandbox = true
+	case "off":
+		sandbox = false
+	}
+	withIgnored := f.GetWithIgnored()
+	withState := f.GetWithState() || withIgnored
+	return ResolvedForkPlan{
+		Worktree:    f.GetWorktree(),
+		WithState:   withState,
+		WithIgnored: withIgnored,
+		Sandbox:     sandbox,
+	}
+}
+
 type StatusSettings struct {
 	// Reserved for future status detection settings.
 	// Control mode pipes are always enabled (no longer configurable).
@@ -2282,30 +2374,14 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════
-	// ATOMIC WRITE PATTERN: Prevents data corruption on crash/power loss
-	// 1. Write to temporary file with 0600 permissions
-	// 2. fsync the temp file (ensures data reaches disk)
-	// 3. Atomic rename temp to final
+	// ATOMIC + DURABLE WRITE: Prevents data corruption on crash/power loss
+	// and preserves a dotfiles-managed config.toml symlink. The temp file is
+	// fsync'd before the rename and the parent dir is fsync'd after (see
+	// internal/atomicfile.WriteFileDurable). A symlinked config.toml is written
+	// through to its real target rather than replaced with a regular file.
 	// ═══════════════════════════════════════════════════════════════════
 
-	tmpPath := configPath + ".tmp"
-
-	// Step 1: Write to temporary file (0600 = owner read/write only for security)
-	if err := os.WriteFile(tmpPath, buf.Bytes(), 0o600); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	// Step 2: fsync the temp file to ensure data reaches disk before rename
-	if err := syncConfigFile(tmpPath); err != nil {
-		// Log but don't fail - atomic rename still provides some safety
-		// Note: We don't have access to log package here, so we just continue
-		_ = err
-	}
-
-	// Step 3: Atomic rename (this is atomic on POSIX systems)
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		// Clean up temp file on failure
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFileDurable(configPath, buf.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("failed to finalize config save: %w", err)
 	}
 
@@ -2371,16 +2447,6 @@ func backupConfigFile(configPath string) error {
 		return err
 	}
 	return nil
-}
-
-// syncConfigFile calls fsync on a file to ensure data is written to disk
-func syncConfigFile(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Sync()
 }
 
 // ClearUserConfigCache clears the cached user config, allowing tests to reset state.

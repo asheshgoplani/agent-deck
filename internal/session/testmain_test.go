@@ -126,6 +126,16 @@ func skipIfNoClaudeBinary(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body. It exists so the cleanup defers
+// below actually run: TestMain calls os.Exit, which does NOT run deferred
+// functions, so registering them here and returning the exit code is the only
+// way to guarantee the bootstrap tmux server is killed and the isolated
+// TMUX_TMPDIR is removed. Skipping this leaked a tmux server (1 pty) on every
+// run — the 2026-06-07 pty-exhaustion incident.
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG FIRST so every path this package resolves (config.json,
 	// profiles/<p>/state.db, worker-scratch, logs) lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
@@ -167,7 +177,7 @@ func TestMain(m *testing.M) {
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
 
-	os.Exit(code)
+	return code
 }
 
 func isolatePackageHome(pattern string) {

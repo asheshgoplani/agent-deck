@@ -14,6 +14,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[hermes] Section](#hermes-section)
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
+- [[fork] Section](#fork-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
@@ -305,6 +306,31 @@ branch_prefix = "$USER/"          # "my-session" -> "dani/my-session"
 # No prefix (just the session name)
 branch_prefix = ""                # "my-session" -> "my-session"
 ```
+
+## [fork] Section
+
+Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. Quick fork is **comprehensive by default**: a new git worktree + branch, the parent's uncommitted working-tree state, matched Docker isolation, and inherited Claude launch options. Unset keys default to the comprehensive behavior. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
+
+```toml
+[fork]
+inherit_from_parent = false   # Mirror the parent and ignore the keys below
+worktree            = true    # Create a new worktree + branch for the fork
+with_state          = true    # Carry the parent's uncommitted changes into the fork
+with_ignored        = true    # Also copy gitignored files (implies with_state)
+docker              = "auto"  # "auto" (match parent) | "on" | "off"
+branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-title>
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state on, Docker matches parent) and the individual keys below are ignored. |
+| `worktree` | bool | `true` | Create a new git worktree + branch for the fork. |
+| `with_state` | bool | `true` | Carry the parent's tracked uncommitted changes (staged/unstaged/untracked) into the fork's worktree. |
+| `with_ignored` | bool | `true` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. Can be large — set `false` to skip. |
+| `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
+| `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
+
+> **Note:** Forking is supported across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
 
 ## [logs] Section
 

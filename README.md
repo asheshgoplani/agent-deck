@@ -100,10 +100,11 @@ One terminal. All your agents. Complete visibility.
 
 ### Fork Sessions
 
-Try different approaches without losing context. Fork Claude conversations and Pi sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
+Try different approaches without losing context. Fork Claude, OpenCode, Pi, and Codex sessions instantly. Each fork inherits the parent conversation history through the tool's native fork support.
 
 - Press `f` for quick fork, `F` to customize name/group
 - Fork your forks to explore as many branches as you need
+- Codex forking requires a codex CLI with `codex fork <session-id>` support (verified with `codex-cli 0.137.0`)
 
 ### MCP Manager
 
@@ -350,6 +351,32 @@ Set `auto_cleanup = false` to keep containers alive after session termination, w
 
 See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the full reference including overlay details, custom images, and troubleshooting.
 
+### Forking sessions
+
+Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, and Codex** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
+
+Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down").
+
+Tune the defaults in `~/.agent-deck/config.toml`:
+
+```toml
+[fork]
+inherit_from_parent = false   # true => mirror the parent and ignore the keys below
+worktree            = true    # create a new worktree + branch for the fork
+with_state          = true    # carry the parent's uncommitted changes into the fork
+with_ignored        = true    # also copy gitignored files (implies with_state)
+docker              = "auto"  # "auto" = match parent | "on" = always | "off" = never
+branch_prefix       = "fork/" # auto branch name = <branch_prefix><sanitized-title>
+```
+
+- Unset keys default to the comprehensive behavior shown above. The `[fork]` section is **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (those govern non-fork session creation).
+- `docker = "auto"` forks into a fresh container only when the parent is already sandboxed.
+- `branch_prefix` applies to both quick fork and the dialog's suggested branch name.
+- `with_ignored = true` copies gitignored content (e.g. `.env`, `node_modules`) into the new worktree — convenient but can be large; set it `false` to skip.
+
+> **Web/API fork** (`POST /api/sessions/{id}/fork`) is plain tool-native fork — it does **not** apply `[fork]` worktree/state/Docker defaults (those are TUI quick-fork/dialog scope).
+> **Codex** forking requires a codex CLI with `codex fork <session-id>` support.
+
 ### Conductor
 
 Conductors are persistent agent sessions that monitor and orchestrate all your other sessions. They watch for sessions that need help, auto-respond when confident, and escalate to you when they can't. Optionally connect **Telegram** and/or **Slack** for remote control.
@@ -559,8 +586,8 @@ Agent Deck works with any terminal-based AI tool:
 |------|-------------------|
 | **Claude Code** | Full (status, MCP, fork, resume) |
 | **Gemini CLI** | Full (status, MCP, resume) |
-| **OpenCode** | Status detection, organization |
-| **Codex** | Status detection, organization, conductor |
+| **OpenCode** | Status detection, organization, fork |
+| **Codex** | Status detection, organization, conductor, fork |
 | **Copilot** | Organization, launch |
 | **Crush** (charmbracelet/crush) | Status detection, organization, launch |
 | **Cursor** (terminal) | Status detection, organization |
@@ -783,7 +810,7 @@ See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalli
 ```bash
 agent-deck                        # Launch TUI
 agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a Claude/Pi session
+agent-deck session fork my-proj   # Fork a supported session
 agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
 agent-deck mcp attach my-proj exa # Attach MCP to session
 agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart

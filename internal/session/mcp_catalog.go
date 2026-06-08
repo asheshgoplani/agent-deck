@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/mcppool"
 )
@@ -344,13 +345,7 @@ func WriteGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	tmpPath := configFile + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configFile); err != nil {
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(configFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -451,13 +446,7 @@ func ClearProjectMCPs(projectPath string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	tmpPath := configFile + ".tmp"
-	if err := os.WriteFile(tmpPath, newData, 0600); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configFile); err != nil {
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(configFile, newData, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -568,13 +557,7 @@ func WriteUserMCP(enabledNames []string) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	tmpPath := configFile + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configFile); err != nil {
-		os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(configFile, data, 0600); err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 

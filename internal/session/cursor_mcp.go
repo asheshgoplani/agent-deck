@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // GetCursorConfigDir returns ~/.cursor (Cursor IDE / Agent CLI config).
@@ -242,13 +244,7 @@ func WriteCursorGlobalMCP(enabledNames []string) error {
 		return fmt.Errorf("marshal cursor mcp.json: %w", err)
 	}
 
-	tmpPath := configFile + ".tmp"
-	if err := os.WriteFile(tmpPath, newData, 0o600); err != nil {
-		return fmt.Errorf("write cursor mcp.json: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, configFile); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := atomicfile.WriteFile(configFile, newData, 0o600); err != nil {
 		return fmt.Errorf("save cursor mcp.json: %w", err)
 	}
 

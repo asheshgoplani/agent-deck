@@ -8,7 +8,7 @@ import (
 )
 
 // withIsolatedHomeAndConfig sets HOME to a temp dir, writes config.toml with
-// the supplied body, unsets CLAUDE_CONFIG_DIR + AGENTDECK_PROFILE, and clears
+// the supplied body, clears CLAUDE_CONFIG_DIR + AGENTDECK_PROFILE, and clears
 // the user-config cache. It restores everything on test cleanup. Returns the
 // temp HOME path so tests can build expected absolute paths.
 //
@@ -19,27 +19,13 @@ import (
 func withIsolatedHomeAndConfig(t *testing.T, configBody string) string {
 	t.Helper()
 	tmpHome := t.TempDir()
-	origHome := os.Getenv("HOME")
-	origProfile := os.Getenv("AGENTDECK_PROFILE")
-	origClaudeDir := os.Getenv("CLAUDE_CONFIG_DIR")
-	t.Cleanup(func() {
-		_ = os.Setenv("HOME", origHome)
-		if origProfile != "" {
-			_ = os.Setenv("AGENTDECK_PROFILE", origProfile)
-		} else {
-			_ = os.Unsetenv("AGENTDECK_PROFILE")
-		}
-		if origClaudeDir != "" {
-			_ = os.Setenv("CLAUDE_CONFIG_DIR", origClaudeDir)
-		} else {
-			_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
-		}
-		ClearUserConfigCache()
-	})
-
-	_ = os.Setenv("HOME", tmpHome)
-	_ = os.Unsetenv("CLAUDE_CONFIG_DIR")
-	_ = os.Unsetenv("AGENTDECK_PROFILE")
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("AGENTDECK_PROFILE", "")
+	// Keep XDG_CONFIG_HOME inside this temp HOME too. Empty XDG dir means reads
+	// fall back to the legacy config.toml written below.
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+	t.Cleanup(ClearUserConfigCache)
 
 	agentDeckDir := filepath.Join(tmpHome, ".agent-deck")
 	if err := os.MkdirAll(agentDeckDir, 0o700); err != nil {

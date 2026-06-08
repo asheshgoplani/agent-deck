@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/asheshgoplani/agent-deck/internal/atomicfile"
 )
 
 // agentDeckHookCommand is the marker command used to identify agent-deck hooks in settings.json.
@@ -122,13 +124,8 @@ func InjectClaudeHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("create config dir: %w", err)
 	}
 
-	tmpPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tmpPath, finalData, 0644); err != nil {
-		return false, fmt.Errorf("write settings.json.tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, settingsPath); err != nil {
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("rename settings.json: %w", err)
+	if err := atomicfile.WriteFile(settingsPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write settings.json: %w", err)
 	}
 
 	sessionLog.Info("claude_hooks_installed", slog.String("config_dir", configDir))
@@ -195,13 +192,8 @@ func RemoveClaudeHooks(configDir string) (bool, error) {
 		return false, fmt.Errorf("marshal settings: %w", err)
 	}
 
-	tmpPath := settingsPath + ".tmp"
-	if err := os.WriteFile(tmpPath, finalData, 0644); err != nil {
-		return false, fmt.Errorf("write settings.json.tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, settingsPath); err != nil {
-		os.Remove(tmpPath)
-		return false, fmt.Errorf("rename settings.json: %w", err)
+	if err := atomicfile.WriteFile(settingsPath, finalData, 0644); err != nil {
+		return false, fmt.Errorf("write settings.json: %w", err)
 	}
 
 	sessionLog.Info("claude_hooks_removed", slog.String("config_dir", configDir))

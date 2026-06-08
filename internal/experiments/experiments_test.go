@@ -12,6 +12,15 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain holds the real TestMain body so the deferred cleanup below
+// actually runs: TestMain calls os.Exit, which does NOT run deferred functions,
+// so registering the HOME-restore defer here and returning the exit code is the
+// only way to guarantee the temp dir is removed (2026-06-07 pty-exhaustion
+// incident class).
+func runTestMain(m *testing.M) int {
 	// Isolate HOME+XDG so agent-deck path resolution lands in a temp dir, never
 	// the real ~/.agent-deck (2026-06-04 data-loss incident, S5).
 	// See internal/testutil/homeenv.go for the postmortem.
@@ -28,7 +37,7 @@ func TestMain(m *testing.M) {
 	// See CLAUDE.md: "2026-01-20 Incident: 20+ Test-Skip-Regen sessions orphaned, wasting ~3GB RAM"
 	cleanupTestSessions()
 
-	os.Exit(code)
+	return code
 }
 
 // cleanupTestSessions kills any tmux sessions created during testing.

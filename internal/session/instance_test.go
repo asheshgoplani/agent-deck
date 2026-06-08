@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/stretchr/testify/require"
 )
@@ -1393,6 +1394,7 @@ func TestBuildCodexCommand_CustomWrapperPreservesToolIdentity(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 
 	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
@@ -1440,6 +1442,7 @@ func TestBuildCodexCommand_UsesConfiguredCommandForBuiltinCodex(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
@@ -1552,6 +1555,7 @@ func TestBuildCodexCommand_ConfiguredCommandResume(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1584,6 +1588,7 @@ func TestBuildCodexCommand_ExplicitCommandBeatsConfiguredCommand(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 	defer ClearUserConfigCache()
 
@@ -1608,6 +1613,7 @@ func TestBuildCodexCommand_InlineCodexHomeForRolloutCheck(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1641,6 +1647,7 @@ func TestBuildCodexCommand_QuotedInlineCodexHomeWithSpaces(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1692,6 +1699,7 @@ func TestBuildCodexCommand_InlineCodexHomeDropsStaleID(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1901,6 +1909,7 @@ func TestBuildCodexCommand_UsesProfileCodexConfigDirAsCodexHome(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	_ = os.Setenv("HOME", tmpDir)
 	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	_ = os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -1948,6 +1957,7 @@ func TestBuildCodexCommand_CreatesMissingExplicitCodexHomeDir(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	_ = os.Setenv("HOME", tmpDir)
 	defer func() { _ = os.Setenv("HOME", originalHome) }()
+	isolateConfigHomeXDG(t)
 	originalCodexHome := os.Getenv("CODEX_HOME")
 	_ = os.Unsetenv("CODEX_HOME")
 	defer func() {
@@ -2004,6 +2014,7 @@ func TestCanRestart_CustomCodexWrapperWithKnownID(t *testing.T) {
 	originalHome := os.Getenv("HOME")
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
 	ClearUserConfigCache()
 
 	agentDeckDir := filepath.Join(tmpDir, ".agent-deck")
@@ -2382,6 +2393,35 @@ func TestInstance_ForkOpenCode(t *testing.T) {
 	// tmux set-environment removed: host-side SetEnvironment handles propagation
 	if strings.Contains(script, "tmux set-environment") {
 		t.Errorf("Fork script should NOT contain tmux set-environment (host-side handles it), got: %s", script)
+	}
+}
+
+func TestInstance_ForkOpenCode_QuotesScriptInputs(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), `project with "quote"`)
+	inst := NewInstanceWithTool("test", workDir, "opencode")
+	inst.OpenCodeSessionID = "ses_abc123"
+	inst.OpenCodeDetectedAt = time.Now()
+
+	cmd, err := inst.ForkOpenCode("forked-test", "")
+	if err != nil {
+		t.Fatalf("ForkOpenCode() failed: %v", err)
+	}
+	scriptPath := strings.TrimPrefix(cmd, "bash '")
+	scriptPath = strings.TrimSuffix(scriptPath, "'")
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("Failed to read fork script at %s: %v", scriptPath, err)
+	}
+	script := string(scriptContent)
+
+	if strings.Contains(script, fmt.Sprintf(`cd "%s"`, workDir)) {
+		t.Fatalf("workDir must not be interpolated inside double quotes: %s", script)
+	}
+	if want := "cd " + shellescape.Quote(workDir); !strings.Contains(script, want) {
+		t.Fatalf("fork script should quote workDir with shellescape; want %q in %s", want, script)
+	}
+	if want := "opencode export " + shellescape.Quote(inst.OpenCodeSessionID); !strings.Contains(script, want) {
+		t.Fatalf("fork script should quote OpenCode session ID; want %q in %s", want, script)
 	}
 }
 

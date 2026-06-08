@@ -46,6 +46,7 @@ func seedConfigWithSections(t *testing.T) *UserConfig {
 // (a) S2: config.toml.bak is created before an overwrite.
 func TestSaveUserConfig_CreatesBackupBeforeOverwrite(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	configPath, err := GetUserConfigPath()
@@ -75,6 +76,7 @@ func TestSaveUserConfig_CreatesBackupBeforeOverwrite(t *testing.T) {
 // (c) S3: refuses to drop a populated [mcps] to empty without intent.
 func TestSaveUserConfig_RefusesDroppingMCPsToEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	cfg, err := LoadUserConfig()
@@ -105,6 +107,7 @@ func TestSaveUserConfig_RefusesDroppingMCPsToEmpty(t *testing.T) {
 // (c') S3: same protection for [groups].
 func TestSaveUserConfig_RefusesDroppingGroupsToEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	cfg, err := LoadUserConfig()
@@ -125,6 +128,7 @@ func TestSaveUserConfig_RefusesDroppingGroupsToEmpty(t *testing.T) {
 // (d) THE KEY ANTI-FALSE-POSITIVE TEST: removing ONE group (of two) succeeds.
 func TestSaveUserConfig_SingleGroupRemoval_StillSucceeds(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	cfg, err := LoadUserConfig()
@@ -163,6 +167,7 @@ func TestSaveUserConfig_SingleGroupRemoval_StillSucceeds(t *testing.T) {
 // is unaffected.
 func TestSaveUserConfig_NormalSave_Unaffected(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	cfg, err := LoadUserConfig()
@@ -185,6 +190,7 @@ func TestSaveUserConfig_NormalSave_Unaffected(t *testing.T) {
 // (f) The explicit-intent escape hatch DOES allow clearing a populated section.
 func TestSaveUserConfigWithIntent_AllowsSectionClear(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	cfg, err := LoadUserConfig()
@@ -206,6 +212,7 @@ func TestSaveUserConfigWithIntent_AllowsSectionClear(t *testing.T) {
 // the new save is the intent-cleared one — so the catalog is recoverable.
 func TestSaveUserConfig_BackupHoldsPreSaveSections(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	isolateConfigHomeXDG(t)
 	seedConfigWithSections(t)
 
 	configPath, _ := GetUserConfigPath()
