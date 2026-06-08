@@ -149,6 +149,68 @@ func TestWriteFile_DanglingSymlink(t *testing.T) {
 	}
 }
 
+func TestWriteFile_MultiHopDanglingChain(t *testing.T) {
+	dir := t.TempDir()
+	leaf := filepath.Join(dir, "leaf.json") // missing target
+	mid := filepath.Join(dir, "mid.json")
+	top := filepath.Join(dir, "top.json")
+	if err := os.Symlink(leaf, mid); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(mid, top); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicfile.WriteFile(top, []byte("multi"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Both intermediate links must survive — the write must land on the leaf.
+	for _, l := range []string{top, mid} {
+		fi, err := os.Lstat(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was clobbered into a regular file", l)
+		}
+	}
+	got, err := os.ReadFile(leaf)
+	if err != nil {
+		t.Fatalf("leaf not created: %v", err)
+	}
+	if string(got) != "multi" {
+		t.Fatalf("data = %q, want %q", got, "multi")
+	}
+}
+
+func TestWriteFile_SymlinkLoop(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.json")
+	b := filepath.Join(dir, "b.json")
+	if err := os.Symlink(b, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicfile.WriteFile(a, []byte("x"), 0o600); err == nil {
+		t.Fatal("expected an error writing through a symlink loop, got nil")
+	}
+
+	// Neither link may be clobbered into a regular file.
+	for _, l := range []string{a, b} {
+		fi, err := os.Lstat(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("%s was clobbered into a regular file", l)
+		}
+	}
+}
+
 func TestWriteFile_NoTempLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f.json")

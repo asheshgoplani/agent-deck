@@ -60,17 +60,51 @@ func resolveTarget(path string) (string, error) {
 	// (including intermediate symlinked directories) when the target exists.
 	if resolved, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
 		return resolved, nil
+	} else if !os.IsNotExist(evalErr) {
+		// A non-"not exist" failure (symlink loop / ELOOP, permission, ...) must
+		// NOT fall through to a write that could clobber a link. Refuse instead.
+		return "", fmt.Errorf("atomicfile: resolve symlink %s: %w", path, evalErr)
 	}
-	// Dangling symlink (target does not exist yet): resolve the raw link value
-	// relative to the link's own directory.
-	link, err := os.Readlink(path)
-	if err != nil {
-		return "", fmt.Errorf("atomicfile: readlink %s: %w", path, err)
+	// Dangling chain: the chain ends at a missing leaf. Walk it hop-by-hop to
+	// that leaf so the write lands past every symlink — a single Readlink would
+	// stop at an intermediate link and the rename would clobber it.
+	return resolveDanglingLeaf(path)
+}
+
+// resolveDanglingLeaf walks a chain of symlinks whose final target does not yet
+// exist, following each hop (relative links resolved against the link's own
+// directory) until it reaches a non-symlink or a missing leaf. It refuses
+// symlink loops rather than clobbering a link.
+func resolveDanglingLeaf(path string) (string, error) {
+	const maxHops = 40
+	current := path
+	visited := make(map[string]bool, maxHops)
+	for hop := 0; hop < maxHops; hop++ {
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return current, nil // missing leaf — safe to create here
+			}
+			return "", fmt.Errorf("atomicfile: lstat %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return current, nil // real non-symlink leaf
+		}
+		if visited[current] {
+			return "", fmt.Errorf("atomicfile: symlink loop at %s", current)
+		}
+		visited[current] = true
+
+		next, err := os.Readlink(current)
+		if err != nil {
+			return "", fmt.Errorf("atomicfile: readlink %s: %w", current, err)
+		}
+		if !filepath.IsAbs(next) {
+			next = filepath.Join(filepath.Dir(current), next)
+		}
+		current = next
 	}
-	if !filepath.IsAbs(link) {
-		link = filepath.Join(filepath.Dir(path), link)
-	}
-	return link, nil
+	return "", fmt.Errorf("atomicfile: too many symlink hops resolving %s", path)
 }
 
 // writeAtomic writes data to target via a uniquely-named temp file in target's
