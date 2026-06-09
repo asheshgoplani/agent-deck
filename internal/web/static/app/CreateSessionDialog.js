@@ -9,12 +9,9 @@ import {
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
+import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 
-const DEFAULT_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const CUSTOM_MODEL = '__custom__'
-const TOOL_LABELS = {
-  codex: 'ChatGPT',
-}
 
 const MODEL_ID_CATALOG = {
   claude: [
@@ -121,9 +118,7 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
-  const pickerTools = pickerToolsSignal.value
-  const shownTools = (pickerTools.length > 0 ? pickerTools : DEFAULT_TOOLS)
-    .filter((t, i, arr) => arr.indexOf(t) === i)
+  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -152,7 +147,7 @@ export function CreateSessionDialog() {
               ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
-                        onClick=${() => selectTool(t)}>${TOOL_LABELS[t] || t}</button>
+                        onClick=${() => selectTool(t)}>${displayLabelForTool(t)}</button>
               `)}
             </div>
             ${toolFilterFallbackSignal.value && html`

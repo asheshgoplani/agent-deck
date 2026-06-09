@@ -61,6 +61,8 @@ describe('module signals export', () => {
       'focusedIdSignal',
       'createSessionDialogSignal',
       'confirmDialogSignal',
+      'hiddenToolsSignal',
+      'pickerToolsSignal',
     ]
     for (const name of required) {
       expect(state[name], `expected exported signal ${name}`).toBeDefined()

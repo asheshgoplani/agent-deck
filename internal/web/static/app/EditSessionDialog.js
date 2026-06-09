@@ -14,9 +14,7 @@ import { editSessionDialogSignal, mutationsEnabledSignal, pickerToolsSignal } fr
 import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
-
-const DEFAULT_TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
-const TOOL_LABELS = { codex: 'ChatGPT' }
+import { displayLabelForTool, resolveEditSessionPickerTools } from './pickerTools.js'
 
 // Build PATCH body from form state. Only includes fields that differ from
 // the original — mirrors the TUI EditSessionDialog.GetChanges diff logic so
@@ -80,12 +78,8 @@ export function EditSessionDialog() {
 
   if (!open || !mutationsEnabledSignal.value || !session) return null
 
-  const baseTools = pickerToolsSignal.value.length > 0 ? pickerToolsSignal.value : DEFAULT_TOOLS
-  const shownTools = [...baseTools]
   const currentTool = session.tool || ''
-  if (currentTool && !shownTools.includes(currentTool)) {
-    shownTools.push(currentTool)
-  }
+  const shownTools = resolveEditSessionPickerTools(pickerToolsSignal.value, currentTool)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -158,7 +152,7 @@ export function EditSessionDialog() {
               ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
-                        onClick=${() => setTool(t)}>${TOOL_LABELS[t] || t}</button>
+                        onClick=${() => setTool(t)}>${displayLabelForTool(t)}</button>
               `)}
             </div>
           </div>
