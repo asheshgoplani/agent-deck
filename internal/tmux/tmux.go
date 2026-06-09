@@ -1934,6 +1934,7 @@ func (s *Session) Start(command string) error {
 	// Note: history-limit is NOT set here — the user's tmux.conf value is respected.
 	// Users can override via [tmux] options = { "history-limit" = "50000" } in config.toml.
 	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - extended-keys-format csi-u: Deliver them as ESC[13;2u (kitty form Claude Code reads), not xterm ESC[27;2;13~ (tmux 3.4+)
 	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+, server-wide)
 	//
 	// Note: remain-on-exit is NOT set here — it is only enabled for sandbox sessions
@@ -1958,6 +1959,11 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		"set", "-sq", "extended-keys-format", "csi-u", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
 	// control client (controlpipe.go) at the same time as native `tmux attach`
@@ -2258,6 +2264,7 @@ func (s *Session) EnableMouseMode() error {
 	// - set-clipboard on: OSC 52 clipboard integration (Warp, iTerm2, kitty, etc.)
 	// - allow-passthrough on: OSC 8 hyperlinks, advanced escape sequences (tmux 3.2+)
 	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - extended-keys-format csi-u: Deliver them as ESC[13;2u (kitty form Claude Code reads), not xterm ESC[27;2;13~ (tmux 3.4+)
 	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+)
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
@@ -2267,6 +2274,11 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		"set", "-sq", "extended-keys-format", "csi-u", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options
@@ -4772,17 +4784,42 @@ func BindSwitchKeyWithAck(key, targetSession, sessionID string) error {
 		return BindSwitchKey(key, targetSession)
 	}
 
-	// Create a compound command that:
-	// 1. Writes the session ID to a signal file (for agent-deck to acknowledge)
-	// 2. Switches to the target session
-	//
-	// The inner `tmux switch-client` runs inside the tmux server that fired
-	// the run-shell hook, so it targets the correct socket automatically —
-	// no need to thread -L through the shell string.
-	script := fmt.Sprintf("echo '%s' > '%s' && tmux switch-client -t '%s'",
-		sessionID, signalFile, targetSession)
+	// Ensure the signal directory exists at bind time as defense-in-depth.
+	// On the XDG layout the data dir (~/.local/share/agent-deck) may not exist
+	// yet, unlike the legacy ~/.agent-deck which was always present.
+	_ = os.MkdirAll(filepath.Dir(signalFile), 0o700)
+
+	script := buildAckSwitchScript(signalFile, sessionID, targetSession)
 	cmd := tmuxExec(DefaultSocketName(), "bind-key", key, "run-shell", script)
 	return cmd.Run()
+}
+
+// buildAckSwitchScript builds the run-shell command bound to a quick-switch key.
+//
+// It must:
+//  1. Ensure the signal directory exists. On the XDG layout the data dir
+//     (~/.local/share/agent-deck) may not exist when the key fires, unlike the
+//     legacy ~/.agent-deck which was always present. Without this mkdir the
+//     echo below fails and the `&&` short-circuits, so `tmux switch-client`
+//     never runs and the user sees "...returned 1" with no switch (#1327).
+//  2. Write the session ID to the signal file (for agent-deck to acknowledge).
+//  3. Switch to the target session.
+//
+// The inner `tmux switch-client` runs inside the tmux server that fired the
+// run-shell hook, so it targets the correct socket automatically — no need to
+// thread -L through the shell string.
+//
+// Every interpolated value is shell-escaped via shellescape.Quote. targetSession
+// derives from the user-controlled session title, so raw single-quote wrapping
+// ('%s') would break — or be exploited — by a title containing a quote, space,
+// or shell metacharacter. The dir is created 0700 (matching the bind-time
+// os.MkdirAll) so the ack-signal dir/file is not exposed to other local users.
+func buildAckSwitchScript(signalFile, sessionID, targetSession string) string {
+	return fmt.Sprintf("mkdir -p -m 700 %s && echo %s > %s && tmux switch-client -t %s",
+		shellescape.Quote(filepath.Dir(signalFile)),
+		shellescape.Quote(sessionID),
+		shellescape.Quote(signalFile),
+		shellescape.Quote(targetSession))
 }
 
 const ackSignalLegacyMarker = ".ack-signal-legacy"

@@ -2584,6 +2584,25 @@ func (i *Instance) GetGenericSessionID() string {
 	return sessionID
 }
 
+// DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
+// instance's tool, mirroring the per-tool branching in the right-pane render
+// so a copy of the preview info carries the same ID the user sees. Returns ""
+// when no session ID is known for the tool.
+func (i *Instance) DisplaySessionID() string {
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		return i.ClaudeSessionID
+	case i.Tool == "gemini":
+		return i.GeminiSessionID
+	case i.Tool == "opencode":
+		return i.OpenCodeSessionID
+	case i.Tool == "codex":
+		return i.CodexSessionID
+	default:
+		return i.GetGenericSessionID()
+	}
+}
+
 // CanRestartGeneric returns true if a custom tool can be restarted with session resume
 func (i *Instance) CanRestartGeneric() bool {
 	toolDef := GetToolDef(i.Tool)
@@ -2879,6 +2898,19 @@ func (i *Instance) Start() error {
 		// Record start time for session ID detection (Unix millis)
 		i.CopilotStartedAt = time.Now().UnixMilli()
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			// Wrap the deferred fork script through buildOpenCodeCommand so the
+			// first-start command is byte-identical to the pre-deferred behavior
+			// (the script carries its own env prefix); restart falls through to the
+			// resume/fresh branch below via the stable "opencode" base Command.
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
@@ -3105,6 +3137,15 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
@@ -6444,7 +6485,13 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
-	forked.Command = cmd
+	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
+	// script self-deletes after first run, so storing it as the persistent Command
+	// would make a later restart re-run a missing file. Command holds a stable base
+	// ("opencode") that restart resumes from via OpenCodeSessionID.
+	forked.Command = "opencode"
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
 	if worktreeRepoRoot != "" {
 		forked.WorktreePath = workDir

@@ -37,7 +37,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/web"
 )
 
-var Version = "1.9.50" // overridden at build time via -ldflags "-X main.Version=..."
+var Version = "1.9.52" // overridden at build time via -ldflags "-X main.Version=..."
 
 // Table column widths for list command output
 const (
@@ -470,11 +470,24 @@ func main() {
 		}
 	}
 
-	// Set up signal handling for graceful shutdown and crash dumps
+	// Set up signal handling for graceful shutdown and crash dumps.
+	// SIGHUP is included so closing the terminal window/tab also runs cleanup;
+	// without it the default action is an abrupt terminate that leaks every
+	// `tmux -C attach-session` control client (they reparent to launchd and
+	// pile up against the single-threaded tmux server).
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		<-sigChan
+		// Close control-mode pipes so their tmux clients detach cleanly instead
+		// of orphaning. PipeManager.Close drives the staged EOF teardown, which
+		// avoids the signal-driven detach that races tmux/tmux#4980. The clean
+		// in-app quit path already does this via performFinalShutdown; the
+		// signal path must too, or the clients leak (killStaleControlClients
+		// only sweeps them up on a later Connect).
+		if pm := tmux.GetPipeManager(); pm != nil {
+			pm.Close()
+		}
 		if db := statedb.GetGlobal(); db != nil {
 			_ = db.ResignPrimary()
 			_ = db.UnregisterInstance()
@@ -1350,9 +1363,15 @@ func handleAdd(profile string, args []string) {
 			os.Exit(1)
 		}
 	} else {
-		// No explicit path provided: use group default path first, then cwd fallback.
+		// No explicit path provided: use group default path first, then global
+		// config default_path, then cwd fallback.
 		if sessionGroup != "" {
 			path = groupTree.DefaultPathForGroup(sessionGroup)
+		}
+		if path == "" {
+			if userCfg, cfgErr := session.LoadUserConfig(); cfgErr == nil {
+				path = resolveConfiguredDefaultPath(userCfg.DefaultPath)
+			}
 		}
 		if path == "" {
 			path, err = os.Getwd()
@@ -1772,6 +1791,24 @@ func handleAdd(profile string, args []string) {
 			fmt.Println(line)
 		}
 	}
+}
+
+func resolveConfiguredDefaultPath(defaultPath string) string {
+	defaultPath = strings.TrimSpace(defaultPath)
+	if defaultPath == "" {
+		return ""
+	}
+
+	resolved, err := resolveAddPath(defaultPath)
+	if err != nil {
+		return ""
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return resolved
 }
 
 // handleList lists all sessions

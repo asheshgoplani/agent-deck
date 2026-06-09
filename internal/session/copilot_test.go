@@ -64,6 +64,7 @@ func TestNewCopilotOptions_Defaults(t *testing.T) {
 	opts := NewCopilotOptions(nil)
 	if opts == nil {
 		t.Fatal("NewCopilotOptions(nil) returned nil")
+		return
 	}
 	if opts.SessionMode != "new" {
 		t.Errorf("default SessionMode = %q, want %q", opts.SessionMode, "new")
@@ -81,6 +82,7 @@ func TestNewCopilotOptions_WithConfig(t *testing.T) {
 	opts := NewCopilotOptions(cfg)
 	if opts == nil {
 		t.Fatal("NewCopilotOptions returned nil")
+		return
 	}
 	if opts.SessionMode != "new" {
 		t.Errorf("SessionMode = %q, want %q", opts.SessionMode, "new")
@@ -115,6 +117,7 @@ func TestCopilotOptions_MarshalUnmarshalRoundtrip(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("UnmarshalCopilotOptions returned nil")
+		return
 	}
 	if got.SessionMode != "resume" || got.ResumeSessionID != "sess-42" {
 		t.Errorf("roundtrip mismatch: %+v", got)

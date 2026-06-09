@@ -47,12 +47,13 @@ const (
 	SettingStatsShowLoad
 	SettingSyncTitle
 	SettingShowSessionTimestamps
+	SettingShowPaneTitles
 	SettingShowOnlyInstalledTools
 	SettingVisibleTools
 )
 
 // Total number of navigable settings.
-const settingsCount = 33
+const settingsCount = 34
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -100,9 +101,10 @@ type SettingsPanel struct {
 	statsShowGPU        bool
 	statsShowLoad       bool
 
-	showSessionTimestamps bool
-	showOnlyInstalledTools bool
-	pendingToolVisibility bool
+	showSessionTimestamps   bool
+	showPaneTitles          bool
+	showOnlyInstalledTools  bool
+	pendingToolVisibility   bool
 
 	// Text input state
 	editingText bool
@@ -335,6 +337,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Display settings
 	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
+	s.showPaneTitles = config.Display.ShowPaneTitles
 
 	// UI tool picker settings
 	s.showOnlyInstalledTools = config.UI.ShowOnlyInstalledTools
@@ -467,6 +470,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Display settings
 	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
+	config.Display.ShowPaneTitles = s.showPaneTitles
 
 	// UI tool picker settings
 	config.UI.ShowOnlyInstalledTools = s.showOnlyInstalledTools
@@ -734,6 +738,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowSessionTimestamps:
 		s.showSessionTimestamps = !s.showSessionTimestamps
+		return true
+
+	case SettingShowPaneTitles:
+		s.showPaneTitles = !s.showPaneTitles
 		return true
 
 	case SettingShowOnlyInstalledTools:
@@ -1110,6 +1118,12 @@ func (s *SettingsPanel) View() string {
 	if s.cursor == int(SettingShowSessionTimestamps) {
 		line = highlightStyle.Render(line)
 	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n")
+
+	line = s.renderCheckbox("Show pane titles", s.showPaneTitles) + " - Task description per row"
+	if s.cursor == int(SettingShowPaneTitles) {
+		line = highlightStyle.Render(line)
+	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
 	// UI / TOOL PICKER
@@ -1195,6 +1209,7 @@ func (s *SettingsPanel) View() string {
 			51, // SettingStatsShowLoad
 			54, // SettingSyncTitle (SESSIONS section, after stats)
 			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			58, // SettingShowPaneTitles (DISPLAY section, after timestamps)
 			61, // SettingShowOnlyInstalledTools (TOOL PICKER section)
 			62, // SettingVisibleTools
 		}

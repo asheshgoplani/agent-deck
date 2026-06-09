@@ -34,6 +34,7 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/docker"
 	"github.com/asheshgoplani/agent-deck/internal/feedback"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/logging"
 	"github.com/asheshgoplani/agent-deck/internal/safego"
 	"github.com/asheshgoplani/agent-deck/internal/send"
@@ -423,6 +424,11 @@ type Home struct {
 	// Cached here so all rows of a single frame see the same value even if
 	// the user toggles the setting mid-frame. Reloaded after the panel saves.
 	showSessionTimestamps bool
+
+	// showPaneTitles, when true, renders the dim tmux pane-title (task
+	// description) suffix on every session row instead of only the selected
+	// one. Cached here so all rows of a frame agree; reloaded after panel save.
+	showPaneTitles bool
 
 	// Sessions/Preview split (issue #1092): percentage of width allocated to
 	// preview pane. Loaded from config.toml [ui] preview_pct, adjustable
@@ -1015,6 +1021,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.activeFilterExcludes = cfg.Display.GetActiveFilterExcludes()
 		tmux.SetHideCwdPrefixInTitle(!cfg.Display.GetIncludeCwdPrefix())
 		h.showSessionTimestamps = cfg.Display.ShowSessionTimestamps
+		h.showPaneTitles = cfg.Display.ShowPaneTitles
 		h.sysStatsConfig = cfg.SystemStats
 		h.costLineTemplate, h.costLineHideWhenZero = session.ResolveCostLineTemplate(cfg, actualProfile)
 		h.previewPct = cfg.UI.GetPreviewPct()
@@ -3860,6 +3867,10 @@ func appendClearScreen(cmd tea.Cmd) tea.Cmd {
 	return tea.Batch(cmd, tea.ClearScreen)
 }
 
+// updateInner is the core Bubble Tea update routine for Home. It dispatches a
+// single tea.Msg (key, mouse, tick, or async command result) to the focused
+// component or the appropriate handler and returns the updated model plus any
+// commands to run. Update wraps it to add cross-cutting concerns.
 func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -5465,6 +5476,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, _ = session.ReloadUserConfig()
 				h.reloadHotkeysFromConfig()
 				h.showSessionTimestamps = config.Display.ShowSessionTimestamps
+				h.showPaneTitles = config.Display.ShowPaneTitles
 
 				// Apply theme changes live
 				h.stopThemeWatcher()
@@ -5834,11 +5846,11 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 		launchModelID := h.newDialog.GetLaunchModelID()
 
-		// Resolve worktree target if enabled; actual worktree creation runs in async command.
+		// Resolve worktree/workspace target if enabled; actual creation runs in async command.
 		var worktreePath, worktreeRepoRoot string
 		if worktreeEnabled && branchName != "" {
-			// resolveWorktreeTarget validates the path is a git repo OR a
-			// bare-repo project root (#742 / #715) and implements the #1185
+			// resolveWorktreeTarget validates the path is a supported VCS repo
+			// (git or jujutsu; including bare-repo project roots) and implements the #1185
 			// fallback: a worktree enabled by config default (not an explicit
 			// user toggle) on a non-repo dir falls back to a normal session
 			// instead of erroring, while an explicit worktree still fails loud.
@@ -7180,7 +7192,13 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				h.confirmDialog.ShowDeleteSession(item.Session.ID, item.Session.Title, item.Session.IsSandboxed(), item.Session.IsWorktree())
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
-			} else if item.Type == session.ItemTypeGroup && item.Path != session.DefaultGroupPath && item.Path != h.groupScope {
+			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
+				// Protected default group: report instead of silently doing nothing.
+				// Checked before the scoped-root case so the message stays specific
+				// even when the TUI is scoped to the default group
+				// (groupScope == DefaultGroupPath), where both conditions would match.
+				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
+			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
 				h.setError(fmt.Errorf("cannot delete the scoped root group"))
@@ -9248,9 +9266,8 @@ func uniqueForkBranch(projectPath, base string) string {
 	if err != nil {
 		return base
 	}
-	repoRoot := backend.RepoDir()
 	candidate := base
-	for n := 2; forkBranchTaken(repoRoot, candidate); n++ {
+	for n := 2; forkBranchTaken(backend, candidate); n++ {
 		candidate = fmt.Sprintf("%s-%d", base, n)
 		if n > 1000 {
 			return candidate // pathological guard; never expected in practice
@@ -9259,18 +9276,18 @@ func uniqueForkBranch(projectPath, base string) string {
 	return candidate
 }
 
-// forkBranchTaken reports whether a branch name is already used by a local branch
-// or a linked worktree in repoRoot.
-func forkBranchTaken(repoRoot, branch string) bool {
-	if git.BranchExists(repoRoot, branch) {
+// forkBranchTaken reports whether a branch/bookmark name is already used by the
+// detected VCS backend or already has a linked worktree/workspace.
+func forkBranchTaken(backend vcs.Backend, branch string) bool {
+	if backend.BranchExists(branch) {
 		return true
 	}
-	wt, err := git.GetWorktreeForBranch(repoRoot, branch)
+	wt, err := backend.GetWorktreeForBranch(branch)
 	return err == nil && wt != ""
 }
 
 // resolveQuickForkSpec computes the comprehensive quick-fork spec and applies the
-// non-git with-state gate — i.e. the exact spec quickForkSession forks from
+// backend with-state gate — i.e. the exact spec quickForkSession forks from
 // (modulo the downstream unique-branch bump). Kept as a seam so the `f`-path
 // with-state decision is testable against real repos without the tmux/tea.Cmd
 // machinery.
@@ -9280,23 +9297,28 @@ func resolveQuickForkSpec(source *session.Instance, fork session.ForkSettings) q
 }
 
 // gateForkStateForBackend disables with-state materialization when the source
-// repo's VCS backend is not git. The comprehensive quick-fork default forces
-// WithState=true, but with-state is git-only — the downstream fork path rejects
-// it on jujutsu ("--with-state is only supported for git repositories"), so the
-// unconditional default regressed `f` on jj repos from "create the supported
-// workspace fork" to "error". For non-git (jj) or undetectable backends we
-// degrade to a plain (workspace) fork; the worktree/workspace itself is still
-// created. Proper jj with-state support is tracked in #1305.
+// repo's VCS backend cannot carry working state. The comprehensive quick-fork
+// default forces WithState=true; git and jujutsu both support with-state (git
+// via forkWithStateWorktree, jj via forkWithStateWorkspaceJJ since #1305), so
+// only a truly unsupported or undetectable backend degrades to a plain
+// (workspace) fork. The worktree/workspace itself is still created either way.
 func gateForkStateForBackend(in quickForkSpec, projectPath string) quickForkSpec {
 	if !in.Plan.WithState {
 		return in
 	}
 	backend, err := vcsbackend.Detect(projectPath)
-	if err != nil || backend.Type() != vcs.TypeGit {
+	if err != nil || !backendSupportsWithState(backend.Type()) {
 		in.Plan.WithState = false
 		in.Plan.WithIgnored = false
 	}
 	return in
+}
+
+// backendSupportsWithState reports whether a VCS backend can materialize a
+// parent's working state into a fork. git and jujutsu qualify; everything else
+// degrades to a plain workspace fork.
+func backendSupportsWithState(t vcs.Type) bool {
+	return t == vcs.TypeGit || t == vcs.TypeJujutsu
 }
 
 // quickForkSession performs a comprehensive quick fork: new worktree+branch,
@@ -9710,7 +9732,9 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 			return nil
 		},
 		startInstance: func(inst *session.Instance) error { return inst.Start() },
-		rollback:      rollbackForkWithStateWorktree,
+		rollback: func(repoRoot, worktreePath, branch string) {
+			_ = rollbackForkWithStateWorktree(repoRoot, worktreePath, branch)
+		},
 	}
 }
 
@@ -9805,7 +9829,7 @@ func (h *Home) buildForkCmd(
 			opts.WorktreeBranch = branchName
 			worktreeApplied = true
 		} else {
-			notice = "forked without worktree: not a git repo"
+			notice = "forked without worktree: not a git or jujutsu repo"
 		}
 	}
 	forkState := git.WorktreeStateOptions{WithState: withState, WithIgnored: withIgnored}
@@ -9897,22 +9921,41 @@ func (h *Home) forkSessionCmdWithOptions(
 				return sessionForkedMsg{err: fmt.Errorf("failed to detect VCS: %w", err), sourceID: sourceID}
 			}
 
-			// With-state forks are git-only and never reuse an existing worktree;
-			// otherwise check for an existing worktree for this branch before
-			// creating a new one.
+			// With-state forks are routed by backend and never reuse an existing
+			// worktree/workspace; otherwise check for an existing worktree for this
+			// branch before creating a new one.
 			if forkState.WithState {
-				if backend.Type() != vcs.TypeGit {
-					return sessionForkedMsg{err: fmt.Errorf("--with-state is only supported for git repositories"), sourceID: sourceID}
-				}
-				if err := forkWithStateWorktree(
-					source.ProjectPath,
-					opts.WorktreeRepoRoot,
-					opts.WorktreePath,
-					opts.WorktreeBranch,
-					forkState,
-					defaultForkWithStateWorktreeDeps(),
-				); err != nil {
-					return sessionForkedMsg{err: err, sourceID: sourceID}
+				switch backend.Type() {
+				case vcs.TypeGit:
+					if err := forkWithStateWorktree(
+						source.ProjectPath,
+						opts.WorktreeRepoRoot,
+						opts.WorktreePath,
+						opts.WorktreeBranch,
+						forkState,
+						defaultForkWithStateWorktreeDeps(),
+					); err != nil {
+						return sessionForkedMsg{err: err, sourceID: sourceID}
+					}
+				case vcs.TypeJujutsu:
+					if err := forkWithStateWorkspaceJJ(
+						source.ProjectPath,
+						opts.WorktreeRepoRoot,
+						opts.WorktreePath,
+						opts.WorktreeBranch,
+						forkState,
+					); err != nil {
+						return sessionForkedMsg{err: err, sourceID: sourceID}
+					}
+					// gitignored files are copied via git's exclude machinery; a jj
+					// repo with no git worktree root (pure jj, or a linked workspace)
+					// can't enumerate them, so tell the user instead of dropping them
+					// silently.
+					if forkState.WithIgnored && !jujutsu.SupportsGitignoredCopy(source.ProjectPath) {
+						forkNotice = joinForkNotices(forkNotice, "forked without gitignored files: this jj repo has no git metadata to copy them")
+					}
+				default:
+					return sessionForkedMsg{err: fmt.Errorf("--with-state is not supported for this repository's VCS backend"), sourceID: sourceID}
 				}
 				withStateWorktreeCreated = true
 			} else if existingPath, err := backend.GetWorktreeForBranch(opts.WorktreeBranch); err == nil && existingPath != "" {
@@ -9937,17 +9980,43 @@ func (h *Home) forkSessionCmdWithOptions(
 	}
 }
 
-// rollbackForkWithStateWorktree best-effort removes a worktree and deletes the
-// branch created by forkWithStateWorktree, used when a later step (instance
-// create or start) fails after the helper already succeeded. Failures are
-// logged, not returned, so the caller's original error is preserved.
-func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) {
-	if err := git.RemoveWorktree(repoRoot, worktreePath, true); err != nil {
-		uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+// rollbackForkWithStateWorktree removes the worktree/workspace and deletes the
+// branch created by the with-state fork helpers, used when a later step fails
+// after the helper already succeeded. Failures are both logged and returned
+// (joined): the completeFork post-create path discards the return as best-effort
+// so the caller's original error is preserved, while forkWithStateWorkspaceJJ
+// uses it to report an accurate "cleaned up" vs "cleanup also failed" message
+// instead of claiming success over an orphaned workspace.
+//
+// It re-detects the VCS backend so jj forks roll back via `jj workspace forget`
+// (and bookmark delete) rather than git's worktree/branch removal — using the
+// wrong VCS here would leave the new workspace orphaned. On detection failure it
+// falls back to git semantics (the pre-#1305 behavior).
+func rollbackForkWithStateWorktree(repoRoot, worktreePath, branch string) error {
+	var errs []string
+	removeWorktree := func(rmErr error) {
+		if rmErr != nil {
+			uiLog.Warn("fork_with_state_rollback_worktree_failed", slog.String("path", worktreePath), slog.String("err", rmErr.Error()))
+			errs = append(errs, fmt.Sprintf("worktree remove failed: %v", rmErr))
+		}
 	}
-	if err := git.DeleteBranch(repoRoot, branch, true); err != nil {
-		uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", err.Error()))
+	deleteBranch := func(brErr error) {
+		if brErr != nil {
+			uiLog.Warn("fork_with_state_rollback_branch_failed", slog.String("branch", branch), slog.String("err", brErr.Error()))
+			errs = append(errs, fmt.Sprintf("branch delete failed: %v", brErr))
+		}
 	}
+	if backend, err := vcsbackend.Detect(repoRoot); err != nil {
+		removeWorktree(git.RemoveWorktree(repoRoot, worktreePath, true))
+		deleteBranch(git.DeleteBranch(repoRoot, branch, true))
+	} else {
+		removeWorktree(backend.RemoveWorktree(worktreePath, true))
+		deleteBranch(backend.DeleteBranch(branch, true))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // forkWithStateWorktree creates the fork's worktree, anchors it to the parent
@@ -10035,6 +10104,64 @@ func forkWithStateWorktree(parentPath, repoRoot, worktreePath, branch string, st
 		// #1263's CLI, which warns on a failed setup script rather than failing
 		// the whole fork.
 		uiLog.Warn("fork_with_state_setup_failed", slog.String("path", worktreePath), slog.String("err", err.Error()))
+	}
+	return nil
+}
+
+// forkWithStateWorkspaceJJ is the jujutsu equivalent of forkWithStateWorktree:
+// it creates the fork's jj workspace anchored at the parent session's committed
+// point (@-) and materializes the parent's uncommitted working-copy state into
+// it. Wired into forkSessionCmdWithOptions for jj backends (#1305).
+//
+// jj's model makes this leaner than git: the working copy is a commit and
+// untracked files are auto-snapshotted, so a single restore carries tracked +
+// untracked state; only gitignored files need a filesystem copy. There is also
+// no staging area or in-progress rebase/merge/cherry-pick state to guard
+// against, so the git path's index/operation safeguards do not apply.
+func forkWithStateWorkspaceJJ(parentPath, repoRoot, workspacePath, branch string, state git.WorktreeStateOptions) error {
+	if state.WithIgnored {
+		state.WithState = true
+	}
+	if !state.WithState {
+		return errors.New("forkWithStateWorkspaceJJ called without WithState")
+	}
+	// Validate the destination (read-only) BEFORE creating any filesystem state,
+	// mirroring the git path (forkWithStateWorktree validates before deps.mkdirAll)
+	// and the jj CLI path (session_cmd.go pre-checks BookmarkExists before its
+	// os.MkdirAll). Otherwise a refused fork would leave an empty worktrees
+	// container dir behind. CreateWorkspaceAtRevision re-checks the bookmark as a
+	// transactional guard — the same defense-in-depth the git path uses.
+	if _, statErr := os.Stat(workspacePath); statErr == nil {
+		return fmt.Errorf("workspace path already exists: %s", workspacePath)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat workspace path: %w", statErr)
+	}
+	if branch != "" {
+		if exists, bmErr := jujutsu.BookmarkExists(repoRoot, branch); bmErr != nil {
+			return fmt.Errorf("failed to validate destination: %w", bmErr)
+		} else if exists {
+			return fmt.Errorf("bookmark %q already exists; choose a new destination branch for --with-state", branch)
+		}
+	}
+	parentBase, err := jujutsu.WorkingCopyParentRevision(parentPath)
+	if err != nil {
+		return fmt.Errorf("failed to resolve parent session committed anchor: %w", err)
+	}
+	// All checks passed — now create the container dir and the workspace.
+	if err := os.MkdirAll(filepath.Dir(workspacePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+	if err := jujutsu.CreateWorkspaceAtRevision(repoRoot, workspacePath, branch, parentBase); err != nil {
+		return fmt.Errorf("workspace creation failed: %w", err)
+	}
+	if err := jujutsu.MaterializeWipFromParent(parentPath, workspacePath, state.WithIgnored); err != nil {
+		// Roll back the workspace we just created so a materialize failure does
+		// not leave an orphaned workspace behind — and report accurately whether
+		// that cleanup actually succeeded.
+		if cleanupErr := rollbackForkWithStateWorktree(repoRoot, workspacePath, branch); cleanupErr != nil {
+			return fmt.Errorf("failed to materialize parent state: %w; cleanup also failed (%s); manual cleanup may be required: rm -rf %q", err, cleanupErr, workspacePath)
+		}
+		return fmt.Errorf("failed to materialize parent state: %w; new workspace cleaned up", err)
 	}
 	return nil
 }
@@ -13162,6 +13289,11 @@ func (h *Home) renderCreatingSessionItem(
 	b.WriteString("\n")
 }
 
+// renderSessionItem renders a single session row into b, including the tree
+// connector, status badge, tool label, and the dim tmux pane-title suffix.
+// The pane-title suffix appears on the selected row, or on every row when
+// show_pane_titles is enabled, and is truncated to listWidth so it never
+// overflows the SESSIONS panel.
 func (h *Home) renderSessionItem(
 	b *strings.Builder,
 	item session.Item,
@@ -13428,7 +13560,7 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if selected && instState.paneTitle != "" {
+	if (selected || h.showPaneTitles) && instState.paneTitle != "" {
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate

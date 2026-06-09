@@ -11,13 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The comprehensive quick-fork default forces WithState=true for every repo, but
-// with-state materialization is git-only — the downstream fork path rejects it on
-// jujutsu ("--with-state is only supported for git repositories"). So the default
-// `f` keystroke regressed non-git backends from "create the supported jj workspace"
-// to "error". gateForkStateForBackend must disable with-state on non-git backends
-// so quick fork degrades to a plain (workspace) fork. Proper jj with-state support
-// is tracked in #1305.
+// The comprehensive quick-fork default forces WithState=true for every repo.
+// gateForkStateForBackend keeps that stateful default only on backends that can
+// materialize parent state (git and jujutsu as of #1305); unsupported or
+// undetectable paths degrade to a plain workspace fork instead of failing.
 
 // nonGit dir is neither git nor jj → vcsbackend.Detect errors → state must be off.
 func TestGateForkStateForBackend_NonGitDegradesWithState(t *testing.T) {
@@ -80,10 +77,11 @@ func TestGateForkStateForBackend_GitRepoKeepsWithState(t *testing.T) {
 	assert.True(t, out.Plan.WithIgnored, "git repos keep the with-ignored default")
 }
 
-// A colocated jujutsu repo must degrade just like any non-git backend. Skipped
-// where the jj binary is absent (most CI); the non-git case above guards the
-// detection-error branch deterministically.
-func TestGateForkStateForBackend_JujutsuDegradesWithState(t *testing.T) {
+// A colocated jujutsu repo is state-capable as of #1305 (jj-native with-state
+// materialization), so the gate must KEEP with-state on jj — only truly
+// unsupported/undetectable backends still degrade (see the non-git case above).
+// Skipped where the jj binary is absent (most CI).
+func TestGateForkStateForBackend_JujutsuKeepsWithState(t *testing.T) {
 	if _, err := exec.LookPath("jj"); err != nil {
 		t.Skip("jj not on PATH")
 	}
@@ -100,7 +98,7 @@ func TestGateForkStateForBackend_JujutsuDegradesWithState(t *testing.T) {
 
 	out := gateForkStateForBackend(in, repo)
 
-	assert.False(t, out.Plan.WithState, "jujutsu must degrade to a plain workspace fork")
-	assert.False(t, out.Plan.WithIgnored)
+	assert.True(t, out.Plan.WithState, "jujutsu is state-capable (#1305) — with-state must be kept")
+	assert.True(t, out.Plan.WithIgnored, "with-ignored follows with-state on jj")
 	assert.True(t, out.Plan.Worktree)
 }
