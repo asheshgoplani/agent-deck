@@ -339,7 +339,7 @@ func TestCompleteFork_RollsBackOnInstanceCreateFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", false, opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on create failure, got %v", inst)
 	}
@@ -370,7 +370,7 @@ func TestCompleteFork_RollsBackOnMultiRepoDirFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", false, opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on multi-repo-dir failure, got %v", inst)
 	}
@@ -401,7 +401,7 @@ func TestCompleteFork_RollsBackOnStartFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", false, opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on start failure, got %v", inst)
 	}
@@ -431,7 +431,7 @@ func TestCompleteFork_NoRollbackOnSuccess(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", false, opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if err != nil {
 		t.Fatalf("expected no error on success, got %v", err)
 	}
@@ -459,7 +459,7 @@ func TestCompleteFork_NoRollbackWhenWorktreeNotCreated(t *testing.T) {
 
 	// withStateWorktreeCreated=false and a nil opts: the rollback gate must not
 	// fire, so opts is never dereferenced.
-	inst, err := completeFork(source, "title", "group", false, nil, false, "", "", false, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, nil, "", "", false, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on create failure, got %v", inst)
 	}

@@ -14,7 +14,7 @@ import (
 type claudeSessionMeta struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
-	UpdatedAt int64  `json:"updatedAt"` // unix ms; 0 when absent
+	UpdatedAt *int64 `json:"updatedAt"` // unix ms; nil when absent
 }
 
 // ClaudeSessionNameIn scans claudeDir/sessions/*.json and returns the trimmed
@@ -57,11 +57,11 @@ func ClaudeSessionNameIn(claudeDir, sessionID string) string {
 		if meta.SessionID != sessionID {
 			continue
 		}
-		ts := meta.UpdatedAt
-		if ts == 0 {
-			if info, err := entry.Info(); err == nil {
-				ts = info.ModTime().UnixMilli()
-			}
+		var ts int64
+		if meta.UpdatedAt != nil {
+			ts = *meta.UpdatedAt
+		} else if info, err := entry.Info(); err == nil {
+			ts = info.ModTime().UnixMilli()
 		}
 		if ts > bestTime {
 			bestTime = ts

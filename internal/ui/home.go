@@ -8714,12 +8714,15 @@ func (h *Home) handleForkDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				parentPath := h.forkDialog.GetParentProjectPath()
 				result := h.buildForkCmd(
 					source, title, groupPath, branchName,
-					worktreeEnabled,
-					h.forkDialog.IsWithStateEnabled(),
-					h.forkDialog.IsWithStateAndGitignoredEnabled(),
-					h.forkDialog.IsSandboxEnabled(),
-					h.forkDialog.IsWorktreeExplicit(),
-					true, // dialog title is explicit user intent: lock against #572 name sync
+					forkToggles{
+						Worktree:         worktreeEnabled,
+						WithState:        h.forkDialog.IsWithStateEnabled(),
+						WithIgnored:      h.forkDialog.IsWithStateAndGitignoredEnabled(),
+						Sandbox:          h.forkDialog.IsSandboxEnabled(),
+						ExplicitWorktree: h.forkDialog.IsWorktreeExplicit(),
+						// Dialog title is explicit user intent: lock against #572 name sync.
+						LockTitle: true,
+					},
 					opts,
 					parentID, parentPath,
 				)
@@ -9357,9 +9360,16 @@ func (h *Home) quickForkSession(source *session.Instance) tea.Cmd {
 
 	result := h.buildForkCmd(
 		source, in.Title, in.GroupPath, in.Branch,
-		in.Plan.Worktree, in.Plan.WithState, in.Plan.WithIgnored, in.Plan.Sandbox,
-		false, // quick fork worktree is config-default, not an explicit toggle (#1185)
-		false, // auto-generated "<title> (fork)" name is not user intent: keep name sync
+		forkToggles{
+			Worktree:    in.Plan.Worktree,
+			WithState:   in.Plan.WithState,
+			WithIgnored: in.Plan.WithIgnored,
+			Sandbox:     in.Plan.Sandbox,
+			// ExplicitWorktree stays false: quick fork worktree is
+			// config-default, not an explicit toggle (#1185). LockTitle stays
+			// false: the auto-generated "<title> (fork)" name is not user
+			// intent, so the #572 name sync stays enabled.
+		},
 		opts,
 		source.ParentSessionID, source.ParentProjectPath,
 	)
@@ -9750,17 +9760,16 @@ func defaultForkInstanceDeps() forkInstanceDeps {
 // it rolls back the new worktree+branch. Free function: it needs nothing from
 // *Home.
 //
-// lockTitle marks the new instance TitleLocked: a forked Claude session
-// inherits the parent's session name (e.g. an auto-assigned plan title), so
-// without the lock the #572 name sync clobbers the title the user typed in
-// the fork dialog on the fork's first hook event. Quick fork passes false —
-// its "<title> (fork)" name is auto-generated, not user intent.
+// toggles.LockTitle marks the new instance TitleLocked: a forked Claude
+// session inherits the parent's session name (e.g. an auto-assigned plan
+// title), so without the lock the #572 name sync clobbers the title the user
+// typed in the fork dialog on the fork's first hook event. Quick fork leaves
+// it false — its "<title> (fork)" name is auto-generated, not user intent.
 func completeFork(
 	source *session.Instance,
 	title, groupPath string,
-	lockTitle bool,
+	toggles forkToggles,
 	opts *session.ClaudeOptions,
-	sandboxEnabled bool,
 	parentSessionID, parentProjectPath string,
 	withStateWorktreeCreated bool,
 	deps forkInstanceDeps,
@@ -9772,12 +9781,12 @@ func completeFork(
 		}
 		return nil, fmt.Errorf("cannot create forked instance: %w", err)
 	}
-	if lockTitle {
+	if toggles.LockTitle {
 		inst.TitleLocked = true
 	}
 
 	// Apply sandbox config to forked instance.
-	if sandboxEnabled {
+	if toggles.Sandbox {
 		inst.Sandbox = session.NewSandboxConfig("")
 	}
 
@@ -9814,6 +9823,25 @@ type forkBuildResult struct {
 	errMsg          string
 }
 
+// forkToggles groups the fork pipeline's boolean knobs so call sites stay
+// self-documenting instead of a positional true/false list.
+type forkToggles struct {
+	// Worktree creates the fork in a new worktree on a new branch.
+	Worktree bool
+	// WithState materializes the parent's working-tree state into the worktree.
+	WithState bool
+	// WithIgnored also copies gitignored files (implies WithState).
+	WithIgnored bool
+	// Sandbox runs the forked session in a Docker sandbox.
+	Sandbox bool
+	// ExplicitWorktree marks Worktree as an explicit user toggle rather than a
+	// config default, gating the #1185 non-repo fallback.
+	ExplicitWorktree bool
+	// LockTitle sets TitleLocked on the fork: the title is explicit user
+	// intent (fork dialog), so the #572 Claude-name sync must not clobber it.
+	LockTitle bool
+}
+
 // buildForkCmd resolves the worktree target (when requested + git-capable),
 // populates the worktree fields on opts, builds WorktreeStateOptions, and
 // returns the async fork command plus any non-fatal success notice. Shared by
@@ -9824,14 +9852,14 @@ type forkBuildResult struct {
 func (h *Home) buildForkCmd(
 	source *session.Instance,
 	title, groupPath, branchName string,
-	worktreeEnabled, withState, withIgnored, sandboxEnabled, explicitWorktree, lockTitle bool,
+	toggles forkToggles,
 	opts *session.ClaudeOptions,
 	parentSessionID, parentProjectPath string,
 ) forkBuildResult {
 	worktreeApplied := false
 	notice := ""
-	if worktreeEnabled && branchName != "" {
-		worktreePath, repoRoot, fallback, errMsg := resolveWorktreeTarget(source.ProjectPath, branchName, explicitWorktree)
+	if toggles.Worktree && branchName != "" {
+		worktreePath, repoRoot, fallback, errMsg := resolveWorktreeTarget(source.ProjectPath, branchName, toggles.ExplicitWorktree)
 		if errMsg != "" {
 			return forkBuildResult{errMsg: errMsg}
 		}
@@ -9848,13 +9876,13 @@ func (h *Home) buildForkCmd(
 			notice = "forked without worktree: not a git or jujutsu repo"
 		}
 	}
-	forkState := git.WorktreeStateOptions{WithState: withState, WithIgnored: withIgnored}
+	forkState := git.WorktreeStateOptions{WithState: toggles.WithState, WithIgnored: toggles.WithIgnored}
 	if !worktreeApplied {
 		// State materialization requires a freshly created worktree.
 		forkState = git.WorktreeStateOptions{}
 	}
 	return forkBuildResult{
-		cmd:             h.forkSessionCmdWithOptions(source, title, groupPath, lockTitle, opts, sandboxEnabled, forkState, parentSessionID, parentProjectPath, notice),
+		cmd:             h.forkSessionCmdWithOptions(source, title, groupPath, toggles, opts, forkState, parentSessionID, parentProjectPath, notice),
 		worktreeApplied: worktreeApplied,
 		notice:          notice,
 	}
@@ -9888,9 +9916,8 @@ func noticeError(existing error, notice string) error {
 func (h *Home) forkSessionCmdWithOptions(
 	source *session.Instance,
 	title, groupPath string,
-	lockTitle bool,
+	toggles forkToggles,
 	opts *session.ClaudeOptions,
-	sandboxEnabled bool,
 	forkState git.WorktreeStateOptions,
 	parentSessionID, parentProjectPath string,
 	notice string,
@@ -9914,11 +9941,11 @@ func (h *Home) forkSessionCmdWithOptions(
 			return sessionForkedMsg{err: fmt.Errorf("cannot fork session: %w", err), sourceID: sourceID}
 		}
 
-		effectiveSandbox := sandboxEnabled
+		// toggles is a value copy, so degrading Sandbox here is local to this fork.
 		forkNotice := notice
-		if effectiveSandbox {
+		if toggles.Sandbox {
 			if err := docker.CheckAvailability(context.Background()); err != nil {
-				effectiveSandbox = false
+				toggles.Sandbox = false
 				forkNotice = joinForkNotices(forkNotice, "forked without Docker: not available")
 			}
 		}
@@ -9988,7 +10015,7 @@ func (h *Home) forkSessionCmdWithOptions(
 			}
 		}
 
-		inst, err := completeFork(source, title, groupPath, lockTitle, opts, effectiveSandbox, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
+		inst, err := completeFork(source, title, groupPath, toggles, opts, parentSessionID, parentProjectPath, withStateWorktreeCreated, defaultForkInstanceDeps())
 		if err != nil {
 			return sessionForkedMsg{err: err, sourceID: sourceID}
 		}

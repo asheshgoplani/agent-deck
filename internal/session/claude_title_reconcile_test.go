@@ -18,7 +18,10 @@ func seedClaudeSession(t *testing.T, home, sessionID, name string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
-	b, _ := json.Marshal(map[string]any{"sessionId": sessionID, "name": name})
+	b, err := json.Marshal(map[string]any{"sessionId": sessionID, "name": name})
+	if err != nil {
+		t.Fatalf("marshal session fields: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "1234.json"), b, 0o644); err != nil {
 		t.Fatalf("write session file: %v", err)
 	}
@@ -119,7 +122,10 @@ func seedClaudeSessionFile(t *testing.T, home, file string, fields map[string]an
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
-	b, _ := json.Marshal(fields)
+	b, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal session fields: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, file), b, 0o644); err != nil {
 		t.Fatalf("write session file: %v", err)
 	}

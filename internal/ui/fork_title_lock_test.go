@@ -25,7 +25,7 @@ func forkTitleLockDeps(fake *session.Instance) forkInstanceDeps {
 
 func TestCompleteFork_LockTitleSetsTitleLocked(t *testing.T) {
 	fake := &session.Instance{}
-	inst, err := completeFork(&session.Instance{}, "my fork", "group", true, nil, false, "", "", false, forkTitleLockDeps(fake))
+	inst, err := completeFork(&session.Instance{}, "my fork", "group", forkToggles{LockTitle: true}, nil, "", "", false, forkTitleLockDeps(fake))
 	if err != nil {
 		t.Fatalf("completeFork: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestCompleteFork_LockTitleSetsTitleLocked(t *testing.T) {
 
 func TestCompleteFork_NoLockKeepsTitleSyncEnabled(t *testing.T) {
 	fake := &session.Instance{}
-	inst, err := completeFork(&session.Instance{}, "parent (fork)", "group", false, nil, false, "", "", false, forkTitleLockDeps(fake))
+	inst, err := completeFork(&session.Instance{}, "parent (fork)", "group", forkToggles{}, nil, "", "", false, forkTitleLockDeps(fake))
 	if err != nil {
 		t.Fatalf("completeFork: %v", err)
 	}
