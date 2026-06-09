@@ -330,9 +330,6 @@ func (r *Registry) FilterVisibleNames(names []string) []string {
 
 // HiddenToolNames returns the configured [ui].hidden_tools denylist.
 func (r *Registry) HiddenToolNames() []string {
-	if len(r.userHidden) == 0 {
-		return nil
-	}
 	out := make([]string, 0, len(r.userHidden))
 	for name := range r.userHidden {
 		out = append(out, name)

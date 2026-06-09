@@ -260,6 +260,20 @@ func TestHiddenTools_DenylistAlone(t *testing.T) {
 	}
 }
 
+// TestHiddenTools_EmptyReturnsNonNilSlice guards the JSON-array contract: when
+// no tools are hidden, HiddenToolNames must return a non-nil, length-0 slice so
+// GET /api/settings serializes "hiddenTools":[] (a JSON array) rather than null.
+func TestHiddenTools_EmptyReturnsNonNilSlice(t *testing.T) {
+	r := InitFiltered(nil, false, nil)
+	got := r.HiddenToolNames()
+	if got == nil {
+		t.Fatal("HiddenToolNames() = nil, want non-nil empty slice (serializes as JSON [] not null)")
+	}
+	if len(got) != 0 {
+		t.Errorf("HiddenToolNames() = %v, want empty slice", got)
+	}
+}
+
 func TestHiddenTools_ComposesWithInstalledFilter(t *testing.T) {
 	withStubbedProbe(t, []string{"claude", "gemini", "codex"}, func() {
 		r := InitFiltered(nil, true, []string{"codex"})
