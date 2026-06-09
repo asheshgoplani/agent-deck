@@ -6,7 +6,9 @@ import "testing"
 // field omitted from the function silently fails to persist. This test
 // pins the Display.ShowPaneTitles overlay so the wiring can't regress to
 // "toggle does nothing" behavior.
-
+//
+// TestMergePanelConfigOntoDisk_PropagatesShowPaneTitles pins the
+// Display.ShowPaneTitles overlay for both the on and off transitions.
 func TestMergePanelConfigOntoDisk_PropagatesShowPaneTitles(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ClearUserConfigCache()

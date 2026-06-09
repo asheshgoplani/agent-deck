@@ -12,7 +12,9 @@ import (
 // not just the selected one. With the flag off it stays selected-only — the
 // original hardcoded behavior. The flag is cached on Home at startup and
 // refreshed when the settings panel saves.
-
+//
+// renderRowWithPaneTitle renders one session row with the given selection and
+// show_pane_titles flag and returns the rendered string for assertions.
 func renderRowWithPaneTitle(t *testing.T, selected, showAll bool, paneTitle string) string {
 	t.Helper()
 	forceTrueColorProfile()
@@ -44,6 +46,8 @@ func renderRowWithPaneTitle(t *testing.T, selected, showAll bool, paneTitle stri
 
 const sampleTaskTitle = "Explore messaging support features"
 
+// TestPaneTitle_ShowAllRendersOnUnselectedRow verifies show_pane_titles=true
+// renders the pane-title suffix on an unselected row.
 func TestPaneTitle_ShowAllRendersOnUnselectedRow(t *testing.T) {
 	row := renderRowWithPaneTitle(t, false, true, sampleTaskTitle)
 	if !strings.Contains(row, sampleTaskTitle) {
@@ -52,6 +56,8 @@ func TestPaneTitle_ShowAllRendersOnUnselectedRow(t *testing.T) {
 	}
 }
 
+// TestPaneTitle_ShowAllOffOmitsOnUnselectedRow verifies show_pane_titles=false
+// keeps the pane-title suffix off an unselected row.
 func TestPaneTitle_ShowAllOffOmitsOnUnselectedRow(t *testing.T) {
 	row := renderRowWithPaneTitle(t, false, false, sampleTaskTitle)
 	if strings.Contains(row, sampleTaskTitle) {
@@ -60,6 +66,8 @@ func TestPaneTitle_ShowAllOffOmitsOnUnselectedRow(t *testing.T) {
 	}
 }
 
+// TestPaneTitle_SelectedRowAlwaysRenders verifies the selected row renders its
+// pane-title suffix even when show_pane_titles is off.
 func TestPaneTitle_SelectedRowAlwaysRenders(t *testing.T) {
 	// Selected-only behavior must be preserved when the toggle is off.
 	row := renderRowWithPaneTitle(t, true, false, sampleTaskTitle)

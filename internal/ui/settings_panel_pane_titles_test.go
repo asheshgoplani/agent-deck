@@ -10,7 +10,9 @@ import (
 // Settings panel wiring for [display] show_pane_titles. The toggle must load
 // from the on-disk Display struct, flip on space, and round-trip back through
 // GetConfig() unchanged.
-
+//
+// TestSettingsPanel_ShowPaneTitles_LoadConfig verifies the panel mirrors
+// Display.ShowPaneTitles on load and defaults to false for an empty config.
 func TestSettingsPanel_ShowPaneTitles_LoadConfig(t *testing.T) {
 	panel := NewSettingsPanel()
 
@@ -33,6 +35,9 @@ func TestSettingsPanel_ShowPaneTitles_LoadConfig(t *testing.T) {
 	}
 }
 
+// TestSettingsPanel_ShowPaneTitles_ToggleAndPersist verifies that Space flips
+// the setting, reports changed=true, and round-trips through GetConfig() so
+// SaveUserConfig persists it.
 func TestSettingsPanel_ShowPaneTitles_ToggleAndPersist(t *testing.T) {
 	// Isolate from the real ~/.agent-deck/config.toml — Show() would otherwise
 	// load the developer's actual setting and the precondition below would
