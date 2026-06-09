@@ -482,6 +482,11 @@ func TestHomeRenameSessionComplete(t *testing.T) {
 	if h.instances[0].Title != "new-name" {
 		t.Errorf("Session title = %s, want new-name", h.instances[0].Title)
 	}
+	// The r-hotkey rename must lock the title so the #572 Claude-name sync
+	// (e.g. an auto-assigned plan title) can't revert it on the next hook event.
+	if !h.instances[0].TitleLocked {
+		t.Error("TitleLocked = false after r-hotkey rename, want true")
+	}
 }
 
 func TestHomeMoveSessionWithDuplicateGroupNamesUsesSelectedPath(t *testing.T) {

@@ -2239,8 +2239,13 @@ func handleRename(profile string, args []string) {
 		}
 	}
 
-	inst.Title = newTitle
-	inst.SyncTmuxDisplayName()
+	// Route through SetField so the rename also sets TitleLocked — a direct
+	// Title assignment would be reverted by the #572 Claude-name sync on the
+	// next hook event.
+	if _, _, err := session.SetField(inst, session.FieldTitle, newTitle, nil); err != nil {
+		out.Error(fmt.Sprintf("failed to rename: %v", err), ErrCodeInvalidOperation)
+		os.Exit(1)
+	}
 
 	groupTree := session.NewGroupTreeWithGroups(instances, groups)
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {

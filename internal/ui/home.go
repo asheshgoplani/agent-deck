@@ -8646,10 +8646,14 @@ func (h *Home) handleGroupDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 				} else {
 					// Local session rename
-					// Find and rename the session (O(1) lookup)
+					// Find and rename the session (O(1) lookup). Route through
+					// SetField so the rename also sets TitleLocked — a direct
+					// Title assignment would be reverted by the #572
+					// Claude-name sync on the next hook event.
 					if inst := h.getInstanceByID(sessionID); inst != nil {
-						inst.Title = newName
-						inst.SyncTmuxDisplayName()
+						if _, _, err := session.SetField(inst, session.FieldTitle, newName, nil); err != nil {
+							h.setError(err)
+						}
 					}
 					// Store pending title change so it survives reload races.
 					// If saveInstances() is skipped (isReloading=true), the reload
