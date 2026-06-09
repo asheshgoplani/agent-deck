@@ -291,10 +291,13 @@ func normalizeUIHiddenTools(ui *UISettings, customTools map[string]ToolDef) {
 	}
 	known := make(map[string]bool, len(builtinTools())+len(customTools))
 	for _, bt := range builtinTools() {
-		known[bt.Name] = true
+		known[strings.ToLower(strings.TrimSpace(bt.Name))] = true
 	}
 	for name := range customTools {
-		known[name] = true
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n != "" {
+			known[n] = true
+		}
 	}
 
 	seen := make(map[string]bool, len(ui.HiddenTools))

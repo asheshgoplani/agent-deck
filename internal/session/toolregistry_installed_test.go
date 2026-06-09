@@ -261,7 +261,7 @@ func TestHiddenTools_DenylistAlone(t *testing.T) {
 }
 
 func TestHiddenTools_ComposesWithInstalledFilter(t *testing.T) {
-	withStubbedProbe(t, []string{"claude", "gemini"}, func() {
+	withStubbedProbe(t, []string{"claude", "gemini", "codex"}, func() {
 		r := InitFiltered(nil, true, []string{"codex"})
 		if !r.IsVisible("claude") || !r.IsVisible("gemini") {
 			t.Fatal("installed tools should be visible")

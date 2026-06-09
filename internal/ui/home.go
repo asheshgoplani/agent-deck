@@ -3902,6 +3902,9 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if h.setupWizard.IsVisible() {
 				return h, nil
 			}
+			if h.toolVisibilityPanel != nil && h.toolVisibilityPanel.IsVisible() {
+				return h, nil
+			}
 			if h.settingsPanel.IsVisible() {
 				if msg.Button == tea.MouseButtonWheelUp {
 					h.settingsPanel.ScrollUp()
@@ -5456,6 +5459,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var shouldSave bool
 			h.settingsPanel, cmd, shouldSave = h.settingsPanel.Update(msg)
 			if h.settingsPanel.ConsumeToolVisibilityRequest() {
+				h.settingsPanel.Hide()
 				h.toolVisibilityPanel.Show()
 				h.toolVisibilityPanel.SetSize(h.width, h.height)
 				return h, cmd

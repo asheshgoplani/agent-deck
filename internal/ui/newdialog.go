@@ -270,14 +270,16 @@ func buildPresetCommands() []string {
 
 // RefreshPresetCommands rebuilds the tool picker after config changes.
 func (d *NewDialog) RefreshPresetCommands() {
+	prev := d.GetSelectedCommand()
 	d.presetCommands = buildPresetCommands()
-	if d.commandCursor >= len(d.presetCommands) {
-		if len(d.presetCommands) > 0 {
-			d.commandCursor = len(d.presetCommands) - 1
-		} else {
-			d.commandCursor = 0
+	d.commandCursor = 0
+	for i, cmd := range d.presetCommands {
+		if cmd == prev {
+			d.commandCursor = i
+			break
 		}
 	}
+	d.updateToolOptions()
 }
 
 // newSessionEnterAdvancesFromConfig reads config.toml [ui]

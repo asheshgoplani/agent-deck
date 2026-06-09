@@ -14,6 +14,16 @@ func TestNormalizeUIHiddenTools(t *testing.T) {
 	}
 }
 
+func TestNormalizeUIHiddenTools_CustomToolCase(t *testing.T) {
+	ui := UISettings{HiddenTools: []string{"MyTool"}}
+	custom := map[string]ToolDef{"MyTool": {Command: "my-tool"}}
+	normalizeUIHiddenTools(&ui, custom)
+	want := []string{"mytool"}
+	if !reflect.DeepEqual(ui.HiddenTools, want) {
+		t.Fatalf("HiddenTools = %v, want %v", ui.HiddenTools, want)
+	}
+}
+
 func TestMergePanelConfig_ShowOnlyInstalledTools(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ClearUserConfigCache()

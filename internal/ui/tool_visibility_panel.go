@@ -25,6 +25,7 @@ type ToolVisibilityPanel struct {
 	scrollOffset int
 	toolNames    []string
 	visibleTools map[string]bool // name -> shown in picker
+	loadOK       bool            // false when config load failed; blocks persist
 }
 
 // NewToolVisibilityPanel creates a tool visibility editor.
@@ -39,7 +40,12 @@ func (p *ToolVisibilityPanel) Show() {
 	p.visible = true
 	p.cursor = 0
 	p.scrollOffset = 0
-	config, _ := session.LoadUserConfig()
+	config, err := session.LoadUserConfig()
+	if err != nil {
+		p.loadOK = false
+		return
+	}
+	p.loadOK = true
 	p.LoadConfig(config)
 }
 
@@ -115,7 +121,7 @@ func (p *ToolVisibilityPanel) Update(msg tea.KeyMsg) (*ToolVisibilityPanel, tea.
 	switch msg.String() {
 	case "esc", "enter":
 		p.Hide()
-		return p, nil, true
+		return p, nil, p.loadOK
 	case "up", "k":
 		if p.cursor > 0 {
 			p.cursor--
