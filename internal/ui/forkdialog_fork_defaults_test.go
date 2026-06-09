@@ -34,7 +34,7 @@ func forkDefaultsGitRepo(t *testing.T) string {
 
 // With no [fork] config present, the dialog opens reflecting the built-in
 // defaults: worktree + with-state ON, gitignored OFF (opt-in).
-func TestForkDialog_Show_SeedsComprehensiveWithStateDefault(t *testing.T) {
+func TestForkDialog_Show_SeedsWithStateDefaultGitignoredOff(t *testing.T) {
 	repo := forkDefaultsGitRepo(t)
 
 	d := NewForkDialog()

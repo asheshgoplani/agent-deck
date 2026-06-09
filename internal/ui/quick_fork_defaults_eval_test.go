@@ -12,13 +12,13 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-// TestEval_ForkDialog_ComprehensiveDefaultsVisibleOnOpen proves that, with NO
+// TestEval_ForkDialog_BuiltInDefaultsVisibleOnOpen proves that, with NO
 // [fork] config present, the fork dialog opens on a git project with the
 // built-in defaults (worktree + carry-state) ALREADY checked while
 // include-gitignored renders unchecked — i.e. the user SEES the safe default
 // and can opt into the unbounded gitignored copy without it firing silently.
 // This is the disclosure-visible contract that pure getter tests can't express.
-func TestEval_ForkDialog_ComprehensiveDefaultsVisibleOnOpen(t *testing.T) {
+func TestEval_ForkDialog_BuiltInDefaultsVisibleOnOpen(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
