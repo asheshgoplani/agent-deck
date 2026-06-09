@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
@@ -107,6 +108,77 @@ func TestReconcileTitleFromClaude_NoopWhenSyncDisabled(t *testing.T) {
 	}
 	if inst.Title != "loupe" {
 		t.Errorf("Title = %q, want unchanged loupe", inst.Title)
+	}
+}
+
+// seedClaudeSessionFile writes ~/.claude/sessions/<file> with explicit fields,
+// for tests that need several per-PID entries for the same sessionId.
+func seedClaudeSessionFile(t *testing.T, home, file string, fields map[string]any) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	b, _ := json.Marshal(fields)
+	if err := os.WriteFile(filepath.Join(dir, file), b, 0o644); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+}
+
+// TestClaudeSessionNameIn_FreshestEntryWins: a resumed session leaves one
+// per-PID file per run, all sharing the sessionId. The entry with the highest
+// updatedAt is authoritative — not whichever sorts first in the directory.
+func TestClaudeSessionNameIn_FreshestEntryWins(t *testing.T) {
+	home := t.TempDir()
+	// "1111.json" sorts before "2222.json"; the old behavior returned its name.
+	seedClaudeSessionFile(t, home, "1111.json", map[string]any{
+		"sessionId": "sid-x", "name": "stale plan title", "updatedAt": int64(1000),
+	})
+	seedClaudeSessionFile(t, home, "2222.json", map[string]any{
+		"sessionId": "sid-x", "name": "current name", "updatedAt": int64(2000),
+	})
+
+	got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-x")
+	if got != "current name" {
+		t.Errorf("ClaudeSessionNameIn = %q, want %q", got, "current name")
+	}
+}
+
+// TestClaudeSessionNameIn_FreshestUnnamedSuppressesStaleName: when the live
+// (freshest) process has no name, a stale named entry must not resurrect the
+// old name.
+func TestClaudeSessionNameIn_FreshestUnnamedSuppressesStaleName(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1111.json", map[string]any{
+		"sessionId": "sid-y", "name": "old name", "updatedAt": int64(1000),
+	})
+	seedClaudeSessionFile(t, home, "2222.json", map[string]any{
+		"sessionId": "sid-y", "updatedAt": int64(2000),
+	})
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-y"); got != "" {
+		t.Errorf("ClaudeSessionNameIn = %q, want empty (freshest entry has no name)", got)
+	}
+}
+
+// TestClaudeSessionNameIn_MtimeFallbackWhenNoUpdatedAt: entries without
+// updatedAt (older Claude versions) fall back to file mtime for ordering.
+func TestClaudeSessionNameIn_MtimeFallbackWhenNoUpdatedAt(t *testing.T) {
+	home := t.TempDir()
+	seedClaudeSessionFile(t, home, "1111.json", map[string]any{
+		"sessionId": "sid-z", "name": "older",
+	})
+	seedClaudeSessionFile(t, home, "2222.json", map[string]any{
+		"sessionId": "sid-z", "name": "newer",
+	})
+	dir := filepath.Join(home, ".claude", "sessions")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "1111.json"), old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if got := ClaudeSessionNameIn(filepath.Join(home, ".claude"), "sid-z"); got != "newer" {
+		t.Errorf("ClaudeSessionNameIn = %q, want %q", got, "newer")
 	}
 }
 
