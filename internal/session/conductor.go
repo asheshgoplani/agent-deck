@@ -1590,6 +1590,7 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=-/bin/mkdir -p __LOG_DIR__
 ExecStart=__PYTHON3__ __BRIDGE_PATH__
 Restart=always
 RestartSec=10
@@ -1615,6 +1616,7 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=-/bin/mkdir -p __LOG_DIR__
 ExecStart=__AGENT_DECK__ notify-daemon
 Restart=always
 RestartSec=5
@@ -1733,6 +1735,7 @@ func GenerateSystemdBridgeService() (string, error) {
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
+	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	agentDeckPath := FindAgentDeck()
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
@@ -1789,6 +1792,7 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
+	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil
