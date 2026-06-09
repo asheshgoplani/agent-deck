@@ -107,6 +107,8 @@ func parseConductorSetupArgs(fs *flag.FlagSet, args []string) (string, []string,
 	return remaining[0], remaining[1:], nil
 }
 
+func yesAnswer(s string) bool { return s == "y" || s == "yes" }
+
 // handleConductorSetup sets up a named conductor with directories, sessions, and optionally the Telegram bridge
 func handleConductorSetup(profile string, args []string) {
 	fs := flag.NewFlagSet("conductor setup", flag.ExitOnError)
@@ -301,13 +303,13 @@ func handleConductorSetup(profile string, args []string) {
 		var slack session.SlackSettings
 		var discord session.DiscordSettings
 
-		if channelAnswer == "y" || channelAnswer == "yes" {
+		if yesAnswer(channelAnswer) {
 			// Ask about Telegram
 			fmt.Print("Connect Telegram bot for mobile control? (y/N): ")
 			tgAnswer, _ := reader.ReadString('\n')
 			tgAnswer = strings.TrimSpace(strings.ToLower(tgAnswer))
 
-			if tgAnswer == "y" || tgAnswer == "yes" {
+			if yesAnswer(tgAnswer) {
 				fmt.Println()
 				fmt.Println("  1. Message @BotFather on Telegram -> /newbot -> copy the token")
 				fmt.Println("  2. Message @userinfobot on Telegram -> copy your user ID")
@@ -339,7 +341,7 @@ func handleConductorSetup(profile string, args []string) {
 			slackAnswer, _ := reader.ReadString('\n')
 			slackAnswer = strings.TrimSpace(strings.ToLower(slackAnswer))
 
-			if slackAnswer == "y" || slackAnswer == "yes" {
+			if yesAnswer(slackAnswer) {
 				fmt.Println()
 				fmt.Println("  1. Create a Slack app at https://api.slack.com/apps")
 				fmt.Println("  2. Enable Socket Mode -> generate an app-level token (xapp-...)")
@@ -382,7 +384,7 @@ func handleConductorSetup(profile string, args []string) {
 			dcAnswer, _ := reader.ReadString('\n')
 			dcAnswer = strings.TrimSpace(strings.ToLower(dcAnswer))
 
-			if dcAnswer == "y" || dcAnswer == "yes" {
+			if yesAnswer(dcAnswer) {
 				fmt.Println()
 				fmt.Println("  1. Create an application at https://discord.com/developers/applications")
 				fmt.Println("  2. Bot tab -> create bot, copy the token")
@@ -564,24 +566,24 @@ func handleConductorSetup(profile string, args []string) {
 	// TODO(#1310): evaluate heartbeat value in local-only mode — currently skipped
 	// when no channels are configured unless --heartbeat is explicitly passed.
 	channelsConfigured := telegramConfigured || slackConfigured || discordConfigured
-	if heartbeatEnabled && (!channelsConfigured && !heartbeatExplicit) {
-		if !*jsonOutput {
+	if heartbeatEnabled {
+		if channelsConfigured || heartbeatExplicit {
+			interval := settings.GetHeartbeatInterval()
+			if interval <= 0 {
+				if !*jsonOutput {
+					fmt.Println("  [skip] Heartbeat disabled (interval = 0)")
+				}
+			} else {
+				if err := session.InstallHeartbeatScript(name, resolvedProfile); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
+				} else if err := session.InstallHeartbeatDaemon(name, resolvedProfile, interval); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat daemon: %v\n", err)
+				} else if !*jsonOutput {
+					fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
+				}
+			}
+		} else if !*jsonOutput {
 			fmt.Println("  [skip] Heartbeat skipped (no remote channels configured; pass --heartbeat to force)")
-		}
-	} else if heartbeatEnabled {
-		interval := settings.GetHeartbeatInterval()
-		if interval <= 0 {
-			if !*jsonOutput {
-				fmt.Println("  [skip] Heartbeat disabled (interval = 0)")
-			}
-		} else {
-			if err := session.InstallHeartbeatScript(name, resolvedProfile); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
-			} else if err := session.InstallHeartbeatDaemon(name, resolvedProfile, interval); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat daemon: %v\n", err)
-			} else if !*jsonOutput {
-				fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
-			}
 		}
 	}
 
@@ -695,7 +697,7 @@ func handleConductorSetup(profile string, args []string) {
 	} else {
 		fmt.Printf("  1. Start the conductor:  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
 		fmt.Println("  2. Interact via the TUI: switch to the conductor session in the session list")
-		fmt.Println("  3. Or use the CLI:       agent-deck conductor send <name> \"your message\"")
+		fmt.Printf("  3. Or use the CLI:       agent-deck session send %s \"your message\"\n", sessionTitle)
 		fmt.Println()
 		fmt.Println("  To add remote channels later: re-run `agent-deck conductor setup <name>`")
 	}
