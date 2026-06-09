@@ -21,7 +21,7 @@ func TestGateForkStateForBackend_NonGitDegradesWithState(t *testing.T) {
 	src := session.NewInstanceWithTool("feat", t.TempDir(), "claude")
 	in := quickForkInputs(src, session.ForkSettings{}, false)
 	require.True(t, in.Plan.WithState, "precondition: comprehensive default forces with-state")
-	require.True(t, in.Plan.WithIgnored, "precondition: comprehensive default forces with-ignored")
+	require.False(t, in.Plan.WithIgnored, "precondition: with-ignored is opt-in (off by default)")
 
 	out := gateForkStateForBackend(in, src.ProjectPath)
 
@@ -57,7 +57,7 @@ func TestResolveQuickForkSpec_GitRepoKeepsWithState(t *testing.T) {
 	spec := resolveQuickForkSpec(src, session.ForkSettings{})
 
 	assert.True(t, spec.Plan.WithState, "git repos keep the with-state default through the f path")
-	assert.True(t, spec.Plan.WithIgnored)
+	assert.False(t, spec.Plan.WithIgnored, "with-ignored is opt-in; off by default even on git")
 }
 
 // A real git repo must keep the with-state default untouched.
@@ -74,7 +74,7 @@ func TestGateForkStateForBackend_GitRepoKeepsWithState(t *testing.T) {
 	out := gateForkStateForBackend(in, repo)
 
 	assert.True(t, out.Plan.WithState, "git repos keep the with-state default")
-	assert.True(t, out.Plan.WithIgnored, "git repos keep the with-ignored default")
+	assert.False(t, out.Plan.WithIgnored, "with-ignored stays off by default (opt-in) even on git")
 }
 
 // A colocated jujutsu repo is state-capable as of #1305 (jj-native with-state
@@ -99,6 +99,6 @@ func TestGateForkStateForBackend_JujutsuKeepsWithState(t *testing.T) {
 	out := gateForkStateForBackend(in, repo)
 
 	assert.True(t, out.Plan.WithState, "jujutsu is state-capable (#1305) — with-state must be kept")
-	assert.True(t, out.Plan.WithIgnored, "with-ignored follows with-state on jj")
+	assert.False(t, out.Plan.WithIgnored, "with-ignored is opt-in; off by default on jj")
 	assert.True(t, out.Plan.Worktree)
 }

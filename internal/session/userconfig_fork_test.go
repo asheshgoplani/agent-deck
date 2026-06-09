@@ -20,7 +20,7 @@ func TestForkSettings_StructuralDefaults_WhenSectionAbsent(t *testing.T) {
 	cfg := decodeForkConfig(t, ``)
 	assert.True(t, cfg.Fork.GetWorktree(), "worktree default ON when unset")
 	assert.True(t, cfg.Fork.GetWithState(), "with_state default ON when unset")
-	assert.True(t, cfg.Fork.GetWithIgnored(), "with_ignored default ON when unset")
+	assert.False(t, cfg.Fork.GetWithIgnored(), "with_ignored default OFF when unset (opt-in: unbounded copy + may carry secrets)")
 	assert.Equal(t, "auto", cfg.Fork.GetDocker(), "docker default 'auto' when unset")
 	assert.Equal(t, "fork/", cfg.Fork.GetBranchPrefix(), "branch_prefix default when unset")
 	assert.False(t, cfg.Fork.InheritFromParent, "inherit_from_parent default false")
@@ -61,9 +61,10 @@ func TestForkSettings_GetBranchPrefix_TrimsWhitespace(t *testing.T) {
 
 func TestForkSettings_Resolve_ComprehensiveDefault_DockerAuto(t *testing.T) {
 	cfg := decodeForkConfig(t, ``) // all defaults
-	// parent NOT sandboxed -> auto resolves sandbox off
+	// parent NOT sandboxed -> auto resolves sandbox off. with_ignored is opt-in,
+	// so the default plan carries tracked state but not the gitignored tree.
 	p := cfg.Fork.Resolve(false)
-	assert.Equal(t, ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: true, Sandbox: false}, p)
+	assert.Equal(t, ResolvedForkPlan{Worktree: true, WithState: true, WithIgnored: false, Sandbox: false}, p)
 	// parent sandboxed -> auto resolves sandbox on
 	p = cfg.Fork.Resolve(true)
 	assert.True(t, p.Sandbox, "docker=auto with sandboxed parent -> sandbox on")

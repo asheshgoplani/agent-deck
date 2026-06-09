@@ -310,24 +310,24 @@ branch_prefix = ""                # "my-session" -> "my-session"
 
 ## [fork] Section
 
-Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. Quick fork is **comprehensive by default**: a new git worktree + branch, the parent's uncommitted working-tree state, matched Docker isolation, and inherited Claude launch options. Unset keys default to the comprehensive behavior. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
+Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. By default a fork creates a new git worktree + branch, carries the parent's tracked uncommitted state, matches Docker isolation, and inherits the Claude launch options. Copying **gitignored** files is **opt-in** (`with_ignored = false`): that tree is unbounded (data sets, virtual envs, `node_modules`) and can carry secrets, so it would otherwise block the fork silently. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
 
 ```toml
 [fork]
 inherit_from_parent = false   # Mirror the parent and ignore the keys below
 worktree            = true    # Create a new worktree + branch for the fork
 with_state          = true    # Carry the parent's uncommitted changes into the fork
-with_ignored        = true    # Also copy gitignored files (implies with_state)
+with_ignored        = false   # Also copy gitignored files (implies with_state); opt-in
 docker              = "auto"  # "auto" (match parent) | "on" | "off"
 branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-title>
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state on, Docker matches parent) and the individual keys below are ignored. |
+| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state + gitignored on, Docker matches parent) and the individual keys below are ignored. |
 | `worktree` | bool | `true` | Create a new git worktree + branch for the fork. |
 | `with_state` | bool | `true` | Carry the parent's tracked uncommitted changes (staged/unstaged/untracked) into the fork's worktree. |
-| `with_ignored` | bool | `true` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. Can be large — set `false` to skip. |
+| `with_ignored` | bool | `false` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. **Opt-in:** the gitignored tree is unbounded and may contain secrets, and the copy is blocking with no size cap. Set `true` to include it, or use `inherit_from_parent` to mirror the parent wholesale. |
 | `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
 | `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
 

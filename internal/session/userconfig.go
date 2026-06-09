@@ -2028,7 +2028,9 @@ type ForkSettings struct {
 	Worktree *bool `toml:"worktree"`
 	// WithState carries the parent's tracked uncommitted changes. nil => true.
 	WithState *bool `toml:"with_state"`
-	// WithIgnored also copies gitignored files (implies WithState). nil => true.
+	// WithIgnored also copies gitignored files (implies WithState). nil => false:
+	// the gitignored tree is unbounded (data sets, virtual envs, node_modules)
+	// and may carry secrets (.env), so copying it is opt-in. See GetWithIgnored.
 	WithIgnored *bool `toml:"with_ignored"`
 	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
 	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
@@ -2043,8 +2045,13 @@ func (f ForkSettings) GetWorktree() bool { return f.Worktree == nil || *f.Worktr
 // GetWithState reports whether forks carry tracked state (default ON).
 func (f ForkSettings) GetWithState() bool { return f.WithState == nil || *f.WithState }
 
-// GetWithIgnored reports whether forks copy gitignored files (default ON).
-func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored == nil || *f.WithIgnored }
+// GetWithIgnored reports whether forks copy gitignored files (default OFF).
+// Off by default because the gitignored tree is unbounded (data sets, virtual
+// envs, node_modules) and can carry secrets (.env); copying it silently blocks
+// the fork with no size cap or progress. Opt in per fork via the Shift+F
+// dialog, globally via [fork].with_ignored = true, or wholesale via
+// inherit_from_parent.
+func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored != nil && *f.WithIgnored }
 
 // GetDocker returns the canonical docker mode: "auto" | "on" | "off".
 // Mirrors GetLaunchAs: lowercase/trim, unknown/nil -> "auto".
