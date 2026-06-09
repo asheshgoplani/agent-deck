@@ -96,10 +96,15 @@ func IsolateTmuxSocket() func() {
 func ShortTmuxSocket() (socket string, cleanup func()) {
 	dir, err := os.MkdirTemp(shortTmuxTmpBase(), "ad-sock-")
 	if err != nil {
-		// Mirror IsolateTmuxSocket's failure-mode fallback: a short,
-		// PID-keyed path that still fits sun_path and won't collide.
-		dir = fmt.Sprintf("/tmp/agent-deck-test-sock-%d", os.Getpid())
-		_ = os.MkdirAll(dir, 0o700)
+		// Primary MkdirTemp failed. Retry directly under /tmp so each call
+		// still gets a UNIQUE dir (MkdirTemp's random suffix) that fits
+		// sun_path; a PID-keyed path would be process-constant and collide
+		// across calls, racing one call's cleanup against another's socket.
+		// A static PID path remains only as an absolute last resort.
+		if dir, err = os.MkdirTemp("/tmp", "agent-deck-test-sock-"); err != nil {
+			dir = fmt.Sprintf("/tmp/agent-deck-test-sock-%d", os.Getpid())
+			_ = os.MkdirAll(dir, 0o700)
+		}
 	}
 	return filepath.Join(dir, "s"), func() { _ = os.RemoveAll(dir) }
 }
