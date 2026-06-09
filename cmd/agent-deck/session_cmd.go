@@ -17,6 +17,7 @@ import (
 
 	"github.com/asheshgoplani/agent-deck/internal/clipboard"
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/profile"
 	"github.com/asheshgoplani/agent-deck/internal/send"
 	"github.com/asheshgoplani/agent-deck/internal/session"
@@ -624,11 +625,11 @@ func handleSessionFork(profile string, args []string) {
 	titleShort := fs.String("t", "", "Title for forked session (short)")
 	group := fs.String("group", "", "Group for forked session")
 	groupShort := fs.String("g", "", "Group for forked session (short)")
-	worktreeBranch := fs.String("w", "", "Create fork in git worktree for branch")
-	worktreeBranchLong := fs.String("worktree", "", "Create fork in git worktree for branch")
-	newBranch := fs.Bool("b", false, "Create new branch (use with --worktree)")
-	newBranchLong := fs.Bool("new-branch", false, "Create new branch")
-	withState := fs.Bool("with-state", false, "Copy parent's staged+unstaged+untracked files into the new worktree (#1029, requires -w)")
+	worktreeBranch := fs.String("w", "", "Create fork in a worktree/workspace for branch (git or jj)")
+	worktreeBranchLong := fs.String("worktree", "", "Create fork in a worktree/workspace for branch (git or jj)")
+	newBranch := fs.Bool("b", false, "Create new branch/bookmark (use with --worktree)")
+	newBranchLong := fs.Bool("new-branch", false, "Create new branch/bookmark")
+	withState := fs.Bool("with-state", false, "Carry parent's uncommitted working state into the new worktree/workspace (git or jj; #1029/#1305, requires -w)")
 	withStateGitignored := fs.Bool("with-state-and-gitignored", false, "Like --with-state, plus gitignored files (e.g. .env). Implies --with-state. Requires -w.")
 	sandbox := fs.Bool("sandbox", false, "Run forked session in Docker sandbox")
 	sandboxImage := fs.String("sandbox-image", "", "Docker image for sandbox (overrides config default)")
@@ -744,15 +745,13 @@ func handleSessionFork(profile string, args []string) {
 		worktreeType = string(backend.Type())
 		repoRoot := backend.RepoDir()
 
-		// --with-state* is git-specific: it anchors the new worktree at the
-		// parent's HEAD and materializes the parent's index/stash. Enforce the
-		// git requirement HERE, before the git-direct collision gate and the
-		// parent-HEAD anchoring below. This early guard — not the call routing —
-		// is what makes those git-direct calls jujutsu-safe: a jujutsu backend
-		// can never reach them. (The late jujutsu branch below keeps a
-		// belt-and-suspenders rejection for non-state paths.)
-		if wantState && backend.Type() != vcs.TypeGit {
-			out.Error("--with-state is only supported for git repositories", ErrCodeInvalidOperation)
+		// --with-state* anchors the new worktree/workspace at the parent's
+		// committed point and materializes the parent's working state. git and
+		// jujutsu both support it (jj since #1305); any other backend can't, so
+		// reject early. The git-direct collision gate and anchoring below are
+		// reached only on the git branch; jujutsu has its own branch.
+		if wantState && backend.Type() != vcs.TypeGit && backend.Type() != vcs.TypeJujutsu {
+			out.Error("--with-state is not supported for this repository's VCS backend", ErrCodeInvalidOperation)
 			os.Exit(1)
 		}
 
@@ -767,7 +766,7 @@ func handleSessionFork(profile string, args []string) {
 		// upstream's "branch must already exist (use -b to create)" contract.
 		// These two are mutually exclusive: with-state requires the branch ABSENT,
 		// the else-branch requires it PRESENT — never flatten them.
-		if wantState {
+		if wantState && backend.Type() == vcs.TypeGit {
 			if err := git.ValidateForkWithStateDestination(repoRoot, wtBranch); err != nil {
 				var collErr *git.DestinationCollisionError
 				if errors.As(err, &collErr) {
@@ -782,6 +781,19 @@ func handleSessionFork(profile string, args []string) {
 					os.Exit(1)
 				}
 				out.Error(fmt.Sprintf("failed to validate destination: %v", err), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+		} else if wantState {
+			// jujutsu with-state: a fresh destination bookmark is required, mirroring
+			// the git collision gate. (Workspace-path collision is caught by the
+			// os.Stat check below.)
+			exists, bmErr := jujutsu.BookmarkExists(repoRoot, wtBranch)
+			if bmErr != nil {
+				out.Error(fmt.Sprintf("failed to validate destination: %v", bmErr), ErrCodeInvalidOperation)
+				os.Exit(1)
+			}
+			if exists {
+				out.Error(fmt.Sprintf("bookmark '%s' already exists; choose a new destination branch for --with-state", wtBranch), ErrCodeInvalidOperation)
 				os.Exit(1)
 			}
 		} else if !createNewBranch && !backend.BranchExists(wtBranch) {
@@ -820,8 +832,7 @@ func handleSessionFork(profile string, args []string) {
 			}
 
 			var setupErr error
-			if wantState {
-				// git-only, guaranteed by the early guard above.
+			if wantState && backend.Type() == vcs.TypeGit {
 				//
 				// Mid-op refusal: surface an actionable error BEFORE creating the
 				// worktree, so the user sees the exact abort command for their
@@ -889,6 +900,37 @@ func handleSessionFork(profile string, args []string) {
 					fmt.Fprintf(os.Stderr, "worktreeinclude: %v\n", inclErr)
 				}
 				setupErr = git.RunWorktreeSetupAfterCreate(repoRoot, worktreePath, os.Stdout, os.Stderr, session.GetWorktreeSettings().SetupTimeout())
+			} else if wantState {
+				// jujutsu with-state (#1305): anchor the new workspace at the
+				// parent's committed point (@-) and materialize its working copy.
+				parentBase, pbErr := jujutsu.WorkingCopyParentRevision(inst.ProjectPath)
+				if pbErr != nil {
+					out.Error(fmt.Sprintf("failed to resolve parent session committed anchor: %v", pbErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if cwErr := jujutsu.CreateWorkspaceAtRevision(repoRoot, worktreePath, wtBranch, parentBase); cwErr != nil {
+					out.Error(fmt.Sprintf("workspace creation failed: %v", cwErr), ErrCodeInvalidOperation)
+					os.Exit(1)
+				}
+				if matErr := jujutsu.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored); matErr != nil {
+					var cleanupErrs []string
+					if rmErr := backend.RemoveWorktree(worktreePath, true); rmErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("workspace forget failed: %v", rmErr))
+					}
+					if brErr := backend.DeleteBranch(wtBranch, true); brErr != nil {
+						cleanupErrs = append(cleanupErrs, fmt.Sprintf("bookmark delete failed: %v", brErr))
+					}
+					if len(cleanupErrs) == 0 {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; new workspace cleaned up", matErr), ErrCodeInvalidOperation)
+					} else {
+						out.Error(fmt.Sprintf("failed to materialize parent state: %v; cleanup also failed (%s); manual cleanup required: rm -rf %s",
+							matErr, strings.Join(cleanupErrs, "; "), shellescape.Quote(worktreePath)), ErrCodeInvalidOperation)
+					}
+					os.Exit(1)
+				}
+				if *withStateGitignored && !jujutsu.SupportsGitignoredCopy(inst.ProjectPath) {
+					fmt.Fprintln(os.Stderr, "Warning: forked without gitignored files: this jj repo has no git metadata to copy them")
+				}
 			} else if backend.Type() == vcs.TypeGit {
 				// Non-with-state git path: upstream's combined wrapper unchanged.
 				var cwErr error

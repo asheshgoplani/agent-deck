@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/asheshgoplani/agent-deck/internal/git"
+	"github.com/asheshgoplani/agent-deck/internal/jujutsu"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
@@ -213,7 +214,11 @@ func (d *ForkDialog) ShowWithParentSandboxed(originalName, projectPath, groupPat
 	d.withStateEnabled = false
 	d.withStateAndGitignored = false
 	d.sandboxEnabled = false
-	d.worktreeCapable = git.IsGitRepoOrBareProjectRoot(projectPath)
+	// jj repos are worktree- and (since #1305) state-capable too. Detect jj
+	// explicitly rather than relying on git's findNestedBareRepo coincidentally
+	// finding .jj/repo/store/git, so a native-backend jj repo (no nested git
+	// store) still presents the worktree + with-state options.
+	d.worktreeCapable = git.IsGitRepoOrBareProjectRoot(projectPath) || jujutsu.IsJJRepo(projectPath)
 
 	// Conductor parent selector
 	d.conductorSessions = conductors
@@ -681,7 +686,7 @@ func (d *ForkDialog) View() string {
 		conductorSection += "\n"
 	}
 
-	// Worktree checkbox and branch input (only for git repos)
+	// Worktree/workspace checkbox and branch input (git and jujutsu repos)
 	worktreeSection := ""
 	if d.worktreeCapable {
 		checkboxStyle := lipgloss.NewStyle().Foreground(ColorText)

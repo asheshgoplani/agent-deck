@@ -139,6 +139,40 @@ func TestCodexForkStartDispatchConsumesAwaitingStart(t *testing.T) {
 	requireCodexForkStartGuard(t, "StartWithMessage")
 }
 
+// TestOpenCodeForkStartDispatchConsumesAwaitingStart guards the OpenCode arm of
+// the same deferred-fork pattern: the opencode dispatch branch must consume the
+// one-shot ForkStartCommand on first start rather than re-running i.Command,
+// whose script self-deletes (so a restart would reference a missing file).
+func TestOpenCodeForkStartDispatchConsumesAwaitingStart(t *testing.T) {
+	requireOpenCodeForkStartGuard(t, "Start")
+	requireOpenCodeForkStartGuard(t, "StartWithMessage")
+}
+
+func requireOpenCodeForkStartGuard(t *testing.T, funcName string) {
+	t.Helper()
+	body := extractFuncBodyInstance(funcName)
+	if body == "" {
+		t.Fatalf("%s body not found", funcName)
+	}
+	caseHdr := "case i.Tool == \"opencode\":"
+	idx := strings.Index(body, caseHdr)
+	if idx < 0 {
+		t.Fatalf("%s must have an opencode dispatch branch", funcName)
+	}
+	branch := body[idx+len(caseHdr):]
+	if next := strings.Index(branch, "\n\tcase "); next >= 0 {
+		branch = branch[:next]
+	}
+	sentinelIdx := strings.Index(branch, "if i.IsForkAwaitingStart")
+	consumeIdx := strings.Index(branch, "consumeForkStartCommand")
+	if sentinelIdx < 0 || consumeIdx < 0 {
+		t.Fatalf("%s opencode branch must consume IsForkAwaitingStart via consumeForkStartCommand before normal dispatch", funcName)
+	}
+	if sentinelIdx > consumeIdx {
+		t.Fatalf("%s opencode branch must check IsForkAwaitingStart before consuming the fork command", funcName)
+	}
+}
+
 func requireCodexForkStartGuard(t *testing.T, funcName string) {
 	t.Helper()
 	body := extractFuncBodyInstance(funcName)
