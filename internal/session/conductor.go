@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -868,7 +869,12 @@ func isExecutablePath(path string) bool {
 // processes (launchd, systemd) that don't inherit the user's shell PATH can
 // still find the agent-deck binary.
 func buildDaemonPath(agentDeckPath string) string {
-	baseEntries := []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	baseEntries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	if runtime.GOOS == "darwin" {
+		// Homebrew on Apple Silicon installs to /opt/homebrew/bin; that path
+		// does not exist on Linux, so only include it on macOS.
+		baseEntries = []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	}
 	ordered := make([]string, 0, len(baseEntries)+1)
 	seen := map[string]struct{}{}
 
