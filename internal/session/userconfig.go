@@ -2106,6 +2106,11 @@ type DisplaySettings struct {
 	// Default: false — opt-in to avoid crowding existing badges. See
 	// renderSessionItem for the timestamp source.
 	ShowSessionTimestamps bool `toml:"show_session_timestamps"`
+
+	// ShowPaneTitles shows the dim tmux pane-title (task description) suffix on
+	// every session row, not just the selected one. Default: false — opt-in to
+	// avoid crowding narrow sidebars. See renderSessionItem for the source.
+	ShowPaneTitles bool `toml:"show_pane_titles"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter

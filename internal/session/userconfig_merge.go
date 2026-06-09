@@ -90,6 +90,7 @@ func MergePanelConfigOntoDisk(panel *UserConfig) (*UserConfig, error) {
 	// ── Display subset (panel manages ShowSessionTimestamps; FullRepaint
 	//    and filter prefs stay from disk) ───────────────────────────────
 	merged.Display.ShowSessionTimestamps = panel.Display.ShowSessionTimestamps
+	merged.Display.ShowPaneTitles = panel.Display.ShowPaneTitles
 
 	// ── SystemStats subset ─────────────────────────────────────────────
 	if panel.SystemStats.Enabled != nil {

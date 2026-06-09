@@ -47,10 +47,11 @@ const (
 	SettingStatsShowLoad
 	SettingSyncTitle
 	SettingShowSessionTimestamps
+	SettingShowPaneTitles
 )
 
 // Total number of navigable settings.
-const settingsCount = 31
+const settingsCount = 32
 
 // SettingsPanel displays and edits user configuration
 type SettingsPanel struct {
@@ -99,6 +100,7 @@ type SettingsPanel struct {
 	statsShowLoad       bool
 
 	showSessionTimestamps bool
+	showPaneTitles        bool
 
 	// Text input state
 	editingText bool
@@ -331,6 +333,7 @@ func (s *SettingsPanel) LoadConfig(config *session.UserConfig) {
 
 	// Display settings
 	s.showSessionTimestamps = config.Display.ShowSessionTimestamps
+	s.showPaneTitles = config.Display.ShowPaneTitles
 }
 
 func (s *SettingsPanel) buildToolLists(config *session.UserConfig) {
@@ -460,6 +463,7 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 
 	// Display settings
 	config.Display.ShowSessionTimestamps = s.showSessionTimestamps
+	config.Display.ShowPaneTitles = s.showPaneTitles
 
 	// Preserve original MCPs, Tools, and Docker settings.
 	if s.originalConfig != nil {
@@ -711,6 +715,10 @@ func (s *SettingsPanel) toggleValue() bool {
 
 	case SettingShowSessionTimestamps:
 		s.showSessionTimestamps = !s.showSessionTimestamps
+		return true
+
+	case SettingShowPaneTitles:
+		s.showPaneTitles = !s.showPaneTitles
 		return true
 	}
 
@@ -1085,6 +1093,12 @@ func (s *SettingsPanel) View() string {
 	}
 	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
 
+	line = s.renderCheckbox("Show pane titles", s.showPaneTitles) + " - Task description per row"
+	if s.cursor == int(SettingShowPaneTitles) {
+		line = highlightStyle.Render(line)
+	}
+	content.WriteString("  " + labelStyle.Render(line) + "\n\n")
+
 	// MCP & TOOLS
 	content.WriteString(sectionStyle.Render("MCP SERVERS & CUSTOM TOOLS"))
 	content.WriteString("\n")
@@ -1149,6 +1163,7 @@ func (s *SettingsPanel) View() string {
 			51, // SettingStatsShowLoad
 			54, // SettingSyncTitle (SESSIONS section, after stats)
 			57, // SettingShowSessionTimestamps (DISPLAY section, after SESSIONS)
+			59, // SettingShowPaneTitles (DISPLAY section, after timestamps)
 		}
 		cursorLine := cursorToLine[s.cursor]
 
