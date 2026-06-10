@@ -331,7 +331,6 @@ func handleConductorSetup(profile string, args []string) {
 				}
 
 				telegram = session.TelegramSettings{Token: token, UserID: userID}
-				telegramConfigured = true
 			}
 
 			// Ask about Slack
@@ -374,7 +373,6 @@ func handleConductorSetup(profile string, args []string) {
 				}
 
 				slack = session.SlackSettings{BotToken: botToken, AppToken: appToken, ChannelID: channelID}
-				slackConfigured = true
 			}
 
 			// Ask about Discord
@@ -428,7 +426,6 @@ func handleConductorSetup(profile string, args []string) {
 				}
 
 				discord = session.DiscordSettings{BotToken: dcBotToken, GuildID: dcGuildID, ChannelID: dcChannelID, UserID: dcUserID}
-				discordConfigured = true
 			}
 		}
 
