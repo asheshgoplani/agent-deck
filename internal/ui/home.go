@@ -147,11 +147,17 @@ const (
 // (shows all sessions except error/stopped). Change this constant to rebind.
 const FilterKeyActive = "%"
 
+// FilterKeyArchived toggles the archived-sessions list view.
+const FilterKeyArchived = "^"
+
 // FilterModeActive is the filter value for "open" sessions: excludes the
 // configured set of statuses (see DisplaySettings.ActiveFilterExcludes; default
 // {error}). This is NOT a session status (never assigned to a session), just a
 // filter mode.
 const FilterModeActive session.Status = "active"
+
+// FilterModeArchived shows only user-archived sessions (not a real session status).
+const FilterModeArchived session.Status = "archived"
 
 // Mouse interaction thresholds
 const doubleClickThreshold = 500 * time.Millisecond
@@ -1709,8 +1715,32 @@ func (h *Home) rebuildFlatItems() {
 
 	allItems := h.groupTree.Flatten()
 
-	// Apply status filter if active
-	if h.statusFilter != "" {
+	// Archived-only view ('^' filter): keep only archived sessions and the
+	// groups that contain them. Group membership is resolved from the full
+	// group tree — not the flattened view — so collapsed groups still show
+	// their headers when they contain matches. Outside this view, archived
+	// rows are left in place for FilterArchived below, which implements
+	// hide-by-default plus the ctrl+a toggle and the just-archived sticky row.
+	viewArchived := h.statusFilter == FilterModeArchived
+	if viewArchived {
+		groupsWithMatches := h.archiveGroupsWithMatches(viewArchived)
+		partitioned := make([]session.Item, 0, len(allItems))
+		for _, item := range allItems {
+			if item.Type == session.ItemTypeGroup {
+				if groupsWithMatches[item.Path] {
+					partitioned = append(partitioned, item)
+				}
+			} else if item.Type == session.ItemTypeSession && item.Session != nil {
+				if item.Session.IsArchived() {
+					partitioned = append(partitioned, item)
+				}
+			}
+		}
+		allItems = partitioned
+	}
+
+	// Apply status filter if active (skip when browsing archived list).
+	if h.statusFilter != "" && h.statusFilter != FilterModeArchived {
 		// First pass: identify groups that have matching sessions
 		groupsWithMatches := make(map[string]bool)
 		for _, item := range allItems {
@@ -1758,7 +1788,11 @@ func (h *Home) rebuildFlatItems() {
 	// status filter above and the group-scope/partition passes below: archived
 	// rows are dropped here (and any group that lost all its rows), so windows
 	// and partitioning only ever see the visible set. Identity when shown.
-	h.flatItems = session.FilterArchived(h.flatItems, h.showArchived, h.stickyArchivedID)
+	// Skipped in the archived-only view, where the partition pass above
+	// already reduced the list to exactly the archived rows.
+	if !viewArchived {
+		h.flatItems = session.FilterArchived(h.flatItems, h.showArchived, h.stickyArchivedID)
+	}
 
 	// Apply group scope filter (composes with status filter above)
 	if h.groupScope != "" {
@@ -1829,7 +1863,7 @@ func (h *Home) rebuildFlatItems() {
 	}
 	h.remoteSessionsMu.RUnlock()
 	sort.Strings(remoteNames)
-	if len(remotes) > 0 {
+	if len(remotes) > 0 && h.statusFilter != FilterModeArchived {
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
 			// Add remote group header
@@ -4643,6 +4677,28 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		return h, nil
 
+	case sessionArchivedMsg:
+		if msg.killErr != nil {
+			h.setError(fmt.Errorf("failed to archive: %w", msg.killErr))
+			return h, nil
+		}
+		h.cachedStatusCounts.valid.Store(false)
+		h.invalidatePreviewCache(msg.sessionID)
+		h.rebuildFlatItems()
+		h.saveInstances()
+		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			h.setError(fmt.Errorf("archived '%s' (^ to view)", inst.Title))
+		}
+		return h, nil
+
+	case sessionUnarchivedMsg:
+		h.rebuildFlatItems()
+		h.saveInstances()
+		if inst := h.getInstanceByID(msg.sessionID); inst != nil {
+			h.setError(fmt.Errorf("unarchived '%s'", inst.Title))
+		}
+		return h, nil
+
 	case sessionRestoredMsg:
 		h.reloadMu.Lock()
 		reloading := h.isReloading
@@ -7434,6 +7490,18 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.saveUIState()
 		return h, h.fetchSelectedPreview()
 
+	case "shift+u":
+		if h.statusFilter != FilterModeArchived {
+			return h, nil
+		}
+		if h.cursor < len(h.flatItems) {
+			item := h.flatItems[h.cursor]
+			if item.Type == session.ItemTypeSession && item.Session != nil && item.Session.IsArchived() {
+				h.confirmDialog.ShowUnarchiveSession(item.Session.ID, item.Session.Title)
+			}
+		}
+		return h, nil
+
 	case "X":
 		// Status-gated registry-only remove. For stopped/errored sessions only;
 		// use 'd' for destructive delete (kills process + removes worktree).
@@ -7867,6 +7935,15 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.rebuildFlatItems()
 		return h, nil
+
+	case FilterKeyArchived, "shift+6":
+		if h.statusFilter == FilterModeArchived {
+			h.statusFilter = ""
+		} else {
+			h.statusFilter = FilterModeArchived
+		}
+		h.rebuildFlatItems()
+		return h, nil
 	}
 
 	return h, nil
@@ -7965,6 +8042,18 @@ func (h *Home) confirmAction() tea.Cmd {
 		if inst := h.getInstanceByID(sessionID); inst != nil {
 			h.confirmDialog.Hide()
 			return h.closeSession(inst)
+		}
+	case ConfirmArchiveSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.archiveSession(inst)
+		}
+	case ConfirmUnarchiveSession:
+		sessionID := h.confirmDialog.GetTargetID()
+		if inst := h.getInstanceByID(sessionID); inst != nil {
+			h.confirmDialog.Hide()
+			return h.unarchiveSession(inst)
 		}
 	case ConfirmDeleteGroup:
 		groupPath := h.confirmDialog.GetTargetID()
@@ -10486,6 +10575,15 @@ type archiveStopCompletedMsg struct {
 	killErr   error
 }
 
+type sessionArchivedMsg struct {
+	sessionID string
+	killErr   error
+}
+
+type sessionUnarchivedMsg struct {
+	sessionID string
+}
+
 // sessionRestoredMsg signals that an undo-delete restore completed
 type sessionRestoredMsg struct {
 	instance *session.Instance
@@ -10656,6 +10754,27 @@ func (h *Home) closeSession(inst *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		killErr := inst.Kill()
 		return sessionClosedMsg{sessionID: id, killErr: killErr}
+	}
+}
+
+// archiveSession stops a session and marks it archived.
+func (h *Home) archiveSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		if killErr := inst.Kill(); killErr != nil {
+			return sessionArchivedMsg{sessionID: id, killErr: killErr}
+		}
+		inst.ArchivedAt = time.Now().UTC()
+		return sessionArchivedMsg{sessionID: id}
+	}
+}
+
+// unarchiveSession clears the archive flag without restarting tmux.
+func (h *Home) unarchiveSession(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	return func() tea.Msg {
+		inst.ArchivedAt = time.Time{}
+		return sessionUnarchivedMsg{sessionID: id}
 	}
 }
 
@@ -16688,6 +16807,40 @@ func renderBar(percent float64, width int) string {
 	return filledStyle.Render(strings.Repeat("█", filled)) + emptyStyle.Render(strings.Repeat("░", empty))
 }
 
+// archiveGroupsWithMatches returns group paths that contain at least one
+// session matching the archive partition (active vs archived-only view).
+func (h *Home) archiveGroupsWithMatches(viewArchived bool) map[string]bool {
+	groupsWithMatches := make(map[string]bool)
+	if h == nil || h.groupTree == nil {
+		return groupsWithMatches
+	}
+	for _, group := range h.groupTree.GroupList {
+		if group == nil {
+			continue
+		}
+		for _, sess := range group.Sessions {
+			if sess == nil {
+				continue
+			}
+			if viewArchived != sess.IsArchived() {
+				continue
+			}
+			markGroupPathAndAncestors(groupsWithMatches, group.Path)
+		}
+	}
+	return groupsWithMatches
+}
+
+func markGroupPathAndAncestors(groupsWithMatches map[string]bool, groupPath string) {
+	if groupsWithMatches == nil || groupPath == "" {
+		return
+	}
+	parts := strings.Split(groupPath, "/")
+	for i := range parts {
+		groupsWithMatches[strings.Join(parts[:i+1], "/")] = true
+	}
+}
+
 // matchesStatusFilter reports whether status passes the current filter.
 // FilterModeActive consults [display].active_filter_excludes; concrete
 // filters require exact match.
@@ -16721,7 +16874,9 @@ func (h *Home) renderFilterBarHint() string {
 		mark("0", h.statusFilter == "") +
 		dim.Render(" all • ") +
 		mark(FilterKeyActive, h.statusFilter == FilterModeActive) +
-		dim.Render(" open")
+		dim.Render(" open • ") +
+		mark(FilterKeyArchived, h.statusFilter == FilterModeArchived) +
+		dim.Render(" archived")
 
 	// View-mode indicator (running-on-top / populated-on-top), only when active.
 	if h.groupViewMode != session.GroupViewNormal {

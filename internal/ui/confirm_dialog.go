@@ -23,6 +23,8 @@ const (
 	ConfirmCloseRemoteSession
 	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
+	ConfirmArchiveSession
+	ConfirmUnarchiveSession
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -74,6 +76,26 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 	c.worktree = worktree
 	c.buttonCount = 2
 	c.focusedButton = 1 // default to Cancel
+}
+
+// ShowArchiveSession shows confirmation for archiving a session.
+func (c *ConfirmDialog) ShowArchiveSession(sessionID string, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmArchiveSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowUnarchiveSession shows confirmation for restoring an archived session.
+func (c *ConfirmDialog) ShowUnarchiveSession(sessionID string, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmUnarchiveSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.buttonCount = 2
+	c.focusedButton = 1
 }
 
 // ShowCloseSession shows confirmation for non-destructive session close.
@@ -309,6 +331,28 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmArchiveSession:
+		title = "Archive Session?"
+		warning = fmt.Sprintf("Archive this session:\n\n  \"%s\"", c.targetName)
+		details = "• The tmux process will be stopped\n• The session will move to the archived list\n• You can unarchive later (^ view, Shift+U restore)"
+		borderColor = ColorYellow
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Archive", ColorYellow, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y archive · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmUnarchiveSession:
+		title = "Unarchive Session?"
+		warning = fmt.Sprintf("Restore this session to the active list:\n\n  \"%s\"", c.targetName)
+		details = "• Metadata returns to the main session list\n• The process is not started automatically"
+		borderColor = ColorGreen
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Unarchive", ColorGreen, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y unarchive · n cancel · ←/→ navigate · Enter select · Esc"))
 
 	case ConfirmCloseSession:
 		title = "Close Session?"

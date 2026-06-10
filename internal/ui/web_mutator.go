@@ -649,6 +649,9 @@ func (m *WebMutator) UnarchiveSession(id string) error {
 	if inst == nil {
 		return fmt.Errorf("session not found: %s", id)
 	}
+	if !inst.IsArchived() {
+		return fmt.Errorf("session is not archived: %s", id)
+	}
 
 	inst.ArchivedAt = time.Time{}
 

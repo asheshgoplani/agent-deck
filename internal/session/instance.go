@@ -612,12 +612,6 @@ func (inst *Instance) IsWorktree() bool {
 	return inst.WorktreePath != ""
 }
 
-// IsArchived returns true if this session has been archived (set aside but
-// retained). Archived sessions are hidden from the list by default.
-func (inst *Instance) IsArchived() bool {
-	return !inst.ArchivedAt.IsZero()
-}
-
 // SetParent sets the parent session ID
 func (inst *Instance) SetParent(parentID string) {
 	inst.ParentSessionID = parentID

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -235,6 +236,25 @@ func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 			// POST /api/sessions/{id}/archive — archive (set ArchivedAt=now).
 			// Mirrors the TUI 'A' hotkey / CLI `session archive`.
 			if err := s.mutator.ArchiveSession(sessionID); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+					return
+				}
+				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+				return
+			}
+			s.notifyMenuChanged()
+			writeJSON(w, http.StatusOK, SessionActionResponse{SessionID: sessionID})
+		case "unarchive":
+			if err := s.mutator.UnarchiveSession(sessionID); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					writeAPIError(w, http.StatusNotFound, ErrCodeNotFound, err.Error())
+					return
+				}
+				if strings.Contains(err.Error(), "not archived") {
+					writeAPIError(w, http.StatusBadRequest, ErrCodeBadRequest, err.Error())
+					return
+				}
 				writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 				return
 			}
@@ -471,4 +491,46 @@ func updatesFromRequest(req UpdateSessionRequest) map[string]string {
 		out[session.FieldAutoMode] = strconv.FormatBool(*req.AutoMode)
 	}
 	return out
+}
+
+type archivedSessionsResponse struct {
+	Sessions []*MenuSession `json:"sessions"`
+	Profile  string         `json:"profile"`
+}
+
+// handleArchivedSessions is GET /api/sessions/archived — archived sessions only.
+func (s *Server) handleArchivedSessions(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
+		return
+	}
+	snapshot, err := s.loadArchivedMenuSnapshot()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, "failed to load archived sessions")
+		return
+	}
+	refreshSnapshotHookStatuses(snapshot, s.hookStatusLoader)
+	resp := archivedSessionsResponse{
+		Sessions: make([]*MenuSession, 0),
+		Profile:  snapshot.Profile,
+	}
+	for _, item := range snapshot.Items {
+		if item.Type == MenuItemTypeSession && item.Session != nil {
+			resp.Sessions = append(resp.Sessions, item.Session)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) loadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	if loader, ok := s.menuData.(interface {
+		LoadArchivedMenuSnapshot() (*MenuSnapshot, error)
+	}); ok {
+		return loader.LoadArchivedMenuSnapshot()
+	}
+	return nil, fmt.Errorf("archived session list is not available")
 }

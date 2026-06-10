@@ -250,6 +250,7 @@ func NewServer(cfg Config) *Server {
 	// ServeMux precedence routes it cleanly instead of treating
 	// "undelete" as a sessionID.
 	mux.HandleFunc("POST /api/sessions/undelete", s.handleSessionUndelete)
+	mux.HandleFunc("/api/sessions/archived", s.handleArchivedSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionByAction)
 	mux.HandleFunc("/api/groups", s.handleGroupsCollection)
 	mux.HandleFunc("/api/groups/", s.handleGroupByPath)

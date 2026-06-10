@@ -3061,6 +3061,92 @@ func TestRebuildFlatItemsGroupScope(t *testing.T) {
 	}
 }
 
+// RemoteSession N/A for collapsed-group headers: archive partitioning applies to
+// local ItemTypeSession rows; remote rows are excluded (see
+// TestRebuildFlatItemsArchivedViewOmitsRemoteSessions).
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderWithArchivedSessions(t *testing.T) {
+	h := &Home{}
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("collapsed group with active sessions: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup || h.flatItems[0].Path != "work" {
+		t.Fatalf("expected collapsed work group header, got %+v", h.flatItems[0])
+	}
+}
+
+func TestRebuildFlatItemsCollapsedGroupKeepsHeaderInArchivedView(t *testing.T) {
+	h := NewHome()
+	h.statusFilter = FilterModeArchived
+
+	instances := []*session.Instance{
+		session.NewInstanceWithGroup("active", "/tmp/a", "work"),
+		session.NewInstanceWithGroup("archived", "/tmp/b", "work"),
+	}
+	instances[1].ArchivedAt = time.Now().UTC()
+	h.instancesMu.Lock()
+	h.instances = instances
+	h.instanceByID[instances[0].ID] = instances[0]
+	h.instanceByID[instances[1].ID] = instances[1]
+	h.instancesMu.Unlock()
+
+	h.groupTree = session.NewGroupTree(instances)
+	h.groupTree.CollapseGroup("work")
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.rebuildFlatItems()
+	if h.statusFilter != FilterModeArchived {
+		t.Fatalf("statusFilter = %q, want %q", h.statusFilter, FilterModeArchived)
+	}
+
+	if len(h.flatItems) != 1 {
+		t.Fatalf("archived view + collapsed group: got %d flat items, want 1 group header", len(h.flatItems))
+	}
+	if h.flatItems[0].Type != session.ItemTypeGroup || h.flatItems[0].Path != "work" {
+		t.Fatalf("expected group header in archived view, got %+v", h.flatItems[0])
+	}
+}
+
+func TestRebuildFlatItemsArchivedViewOmitsRemoteSessions(t *testing.T) {
+	h := NewHome()
+	h.statusFilter = FilterModeArchived
+
+	inst := session.NewInstanceWithGroup("archived", "/tmp/b", "work")
+	inst.ArchivedAt = time.Now().UTC()
+	h.instancesMu.Lock()
+	h.instances = []*session.Instance{inst}
+	h.instanceByID[inst.ID] = inst
+	h.instancesMu.Unlock()
+
+	h.groupTree = session.NewGroupTree(h.instances)
+	h.windowsCollapsed = make(map[string]bool)
+
+	h.remoteSessionsMu.Lock()
+	h.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {{ID: "remote-1", Title: "remote-session", RemoteName: "dev"}},
+	}
+	h.remoteSessionsMu.Unlock()
+
+	h.rebuildFlatItems()
+
+	for _, item := range h.flatItems {
+		if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
+			t.Fatalf("archived view should omit remote rows, got %+v", item)
+		}
+	}
+}
+
 func TestRebuildFlatItemsGroupScopeComposesWithStatusFilter(t *testing.T) {
 	h := &Home{}
 	h.groupScope = "work"

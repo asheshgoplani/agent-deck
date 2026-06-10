@@ -76,6 +76,21 @@ function doAction(action, s) {
   if (action === 'stop')    return apiFetch('POST', `/api/sessions/${id}/stop`).catch(() => {})
   if (action === 'restart') return apiFetch('POST', `/api/sessions/${id}/restart`).catch(() => {})
   if (action === 'fork')    return apiFetch('POST', `/api/sessions/${id}/fork`, { title: s.title + '-fork' }).catch(() => {})
+  if (action === 'archive') {
+    confirmDialogSignal.value = {
+      message: `Archive session "${s.title}"? The process will be stopped and hidden from the active list.`,
+      onConfirm: () => apiFetch('POST', `/api/sessions/${id}/archive`)
+        .then(() => {
+          if (selectedIdSignal.value === id) {
+            selectedIdSignal.value = null
+            if (window.location.pathname.startsWith('/s/')) {
+              history.replaceState(null, '', '/')
+            }
+          }
+        })
+        .catch(() => {}),
+    }
+  }
   if (action === 'delete') {
     confirmDialogSignal.value = {
       message: `Delete session "${s.title}"? This stops the tmux session and removes metadata.`,
@@ -180,6 +195,7 @@ function SessionRow({ s, level, sel, onSelect, showCols, mutable, menuOpen, onMe
         <button class="mini" title="Edit" data-testid="edit-session-btn" onClick=${() => doAction('edit', s)}><${Icon} d=${ICONS.edit} size=${12}/></button>
         ${s.canFork && html`<button class="mini fork" title="Fork" onClick=${() => doAction('fork', s)}><${Icon} d=${ICONS.fork} size=${12}/></button>`}
         ${s.worktree && html`<button class="mini" title="Finish worktree (merge + cleanup)" onClick=${() => doAction('worktreeFinish', s)} data-action="worktree-finish">⎇✓</button>`}
+        <button class="mini" title="Archive" onClick=${() => doAction('archive', s)}>⌂</button>
         <button class="mini danger" title="Delete" onClick=${() => doAction('delete', s)}><${Icon} d=${ICONS.trash} size=${12}/></button>
       </div>
       ${menuOpen && html`

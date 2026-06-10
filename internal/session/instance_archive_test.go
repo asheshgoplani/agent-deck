@@ -5,21 +5,6 @@ import (
 	"time"
 )
 
-func TestIsArchived(t *testing.T) {
-	var inst Instance
-	if inst.IsArchived() {
-		t.Fatal("zero ArchivedAt must report not archived")
-	}
-	inst.ArchivedAt = time.Now()
-	if !inst.IsArchived() {
-		t.Fatal("non-zero ArchivedAt must report archived")
-	}
-	inst.ArchivedAt = time.Time{}
-	if inst.IsArchived() {
-		t.Fatal("cleared ArchivedAt must report not archived again")
-	}
-}
-
 func TestSortInstancesByActionable_ArchivedSinkToBottom(t *testing.T) {
 	now := time.Now()
 	archived := &Instance{ID: "arch", Status: StatusWaiting, ArchivedAt: now} // high priority status...

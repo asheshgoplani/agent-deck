@@ -204,7 +204,34 @@ func (s *SessionDataService) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		s.refreshStatuses(instances)
 	}
 
-	return BuildMenuSnapshot(s.profile, instances, groupsData, s.now()), nil
+	active := session.FilterInstancesByArchive(instances, false)
+	return BuildMenuSnapshot(s.profile, active, groupsData, s.now()), nil
+}
+
+// LoadArchivedMenuSnapshot returns a menu containing only archived sessions.
+func (s *SessionDataService) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	if s == nil {
+		return nil, fmt.Errorf("session data service is nil")
+	}
+	if s.openStorage == nil {
+		return nil, fmt.Errorf("storage opener is not configured")
+	}
+	if s.now == nil {
+		s.now = time.Now
+	}
+
+	storage, err := s.openStorage(s.profile)
+	if err != nil {
+		return nil, fmt.Errorf("open storage for profile %q: %w", s.profile, err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	instances, groupsData, err := storage.LoadWithGroups()
+	if err != nil {
+		return nil, fmt.Errorf("load sessions for profile %q: %w", s.profile, err)
+	}
+	archived := session.FilterInstancesByArchive(instances, true)
+	return BuildMenuSnapshot(s.profile, archived, groupsData, s.now()), nil
 }
 
 func toMenuSession(inst *session.Instance) *MenuSession {

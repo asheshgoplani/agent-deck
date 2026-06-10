@@ -1062,7 +1062,7 @@ func TestSessionArchiveMutatorError(t *testing.T) {
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
 		archiveFn: func(id string) error {
-			return fmt.Errorf("session not found: %s", id)
+			return fmt.Errorf("kill failed: %s", id)
 		},
 	}
 
@@ -1698,5 +1698,90 @@ func TestSessionPatchUnicodeAndLongTitle(t *testing.T) {
 	}
 	if gotTitle != newTitle {
 		t.Errorf("title mangled: got %q want %q", gotTitle, newTitle)
+	}
+}
+
+func TestSessionArchiveOK(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		archiveFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "test-id" {
+		t.Errorf("archive: mutator saw id=%q, want %q", gotID, "test-id")
+	}
+}
+
+func TestSessionUnarchiveOK(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		unarchiveFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/unarchive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unarchive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "test-id" {
+		t.Errorf("unarchive: mutator saw id=%q, want %q", gotID, "test-id")
+	}
+}
+
+func TestArchivedSessionsList(t *testing.T) {
+	archivedSnap := &MenuSnapshot{
+		Profile:       "test",
+		TotalSessions: 1,
+		Items: []MenuItem{{
+			Type: MenuItemTypeSession,
+			Session: &MenuSession{
+				ID:         "arch-1",
+				Title:      "old",
+				ArchivedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			},
+		}},
+	}
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	srv.menuData = &fakeMenuDataLoader{
+		snapshot:         &MenuSnapshot{},
+		archivedSnapshot: archivedSnap,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/archived", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archived list: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"arch-1"`) {
+		t.Errorf("archived list: expected arch-1 in body: %s", rr.Body.String())
 	}
 }

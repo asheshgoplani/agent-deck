@@ -1603,3 +1603,199 @@ func TestSaveWatcherEvent_BodyRoundTrip(t *testing.T) {
 		t.Errorf("Subject: want %q, got %q", "first line", rows[0].Subject)
 	}
 }
+
+// TestMigrate_OldSchema_AddArchivedAt verifies v9→v10 adds archived_at and preserves data.
+func TestMigrate_OldSchema_AddArchivedAt(t *testing.T) {
+	db := createV9SchemaDB(t)
+
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate() on v9 schema failed: %v", err)
+	}
+
+	rows, err := db.DB().Query("PRAGMA table_info(instances)")
+	if err != nil {
+		t.Fatalf("PRAGMA table_info: %v", err)
+	}
+	defer rows.Close()
+
+	var found bool
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan column info: %v", err)
+		}
+		if name == "archived_at" {
+			found = true
+			if colType != "INTEGER" {
+				t.Errorf("archived_at type: want INTEGER, got %q", colType)
+			}
+			if notNull != 1 {
+				t.Errorf("archived_at notnull: want 1, got %d", notNull)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate column info: %v", err)
+	}
+	if !found {
+		t.Fatal("archived_at column not found after Migrate()")
+	}
+
+	archived := time.Date(2026, 6, 2, 15, 30, 0, 0, time.UTC)
+	if err := db.SaveInstance(&InstanceRow{
+		ID:          "arch-test",
+		Title:       "Archived",
+		ProjectPath: "/tmp",
+		GroupPath:   "grp",
+		Tool:        "shell",
+		Status:      "stopped",
+		CreatedAt:   time.Now(),
+		ArchivedAt:  archived,
+		ToolData:    json.RawMessage("{}"),
+	}); err != nil {
+		t.Fatalf("SaveInstance with ArchivedAt: %v", err)
+	}
+
+	loaded, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	var row *InstanceRow
+	var foundExisting bool
+	for _, r := range loaded {
+		if r.ID == "existing-1" {
+			foundExisting = true
+			if !r.ArchivedAt.IsZero() {
+				t.Fatalf("existing-1 should remain unarchived after migrate, got %v", r.ArchivedAt)
+			}
+		}
+		if r.ID == "arch-test" {
+			row = r
+		}
+	}
+	if !foundExisting {
+		t.Fatal("existing-1 instance not found after migrate")
+	}
+	if row == nil {
+		t.Fatal("arch-test instance not found after save")
+	}
+	if row.ArchivedAt.IsZero() {
+		t.Fatal("ArchivedAt not round-tripped")
+	}
+	if !row.ArchivedAt.Equal(archived) {
+		t.Errorf("ArchivedAt: got %v want %v", row.ArchivedAt, archived)
+	}
+
+	var ver string
+	if err := db.DB().QueryRow(`SELECT value FROM metadata WHERE key = 'schema_version'`).Scan(&ver); err != nil {
+		t.Fatalf("schema_version: %v", err)
+	}
+	if ver != fmt.Sprintf("%d", SchemaVersion) {
+		t.Errorf("schema_version: got %q want %d", ver, SchemaVersion)
+	}
+}
+
+func TestInsertInstanceRow_ArchivedAtRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	archived := time.Date(2026, 6, 2, 9, 0, 0, 0, time.UTC)
+	row := &InstanceRow{
+		ID:          "xfer-arch",
+		Title:       "Xfer Archived",
+		ProjectPath: "/tmp",
+		GroupPath:   "grp",
+		Tool:        "shell",
+		Status:      "stopped",
+		Account:     "work@example.com",
+		CreatedAt:   time.Now(),
+		ArchivedAt:  archived,
+		ToolData:    json.RawMessage("{}"),
+	}
+	if err := db.InsertInstanceRow(row); err != nil {
+		t.Fatalf("InsertInstanceRow: %v", err)
+	}
+	loaded, err := db.LoadInstanceByID("xfer-arch")
+	if err != nil {
+		t.Fatalf("LoadInstanceByID: %v", err)
+	}
+	if loaded.ArchivedAt.IsZero() {
+		t.Fatal("ArchivedAt not round-tripped via InsertInstanceRow/LoadInstanceByID")
+	}
+	if !loaded.ArchivedAt.Equal(archived) {
+		t.Errorf("ArchivedAt: got %v want %v", loaded.ArchivedAt, archived)
+	}
+	if loaded.Account != row.Account {
+		t.Errorf("Account: got %q want %q", loaded.Account, row.Account)
+	}
+}
+
+func createV9SchemaDB(t *testing.T) *StateDB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := rawDB.Exec(pragma); err != nil {
+			t.Fatalf("pragma: %v", err)
+		}
+	}
+	stmts := []string{
+		`CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+		`INSERT INTO metadata (key, value) VALUES ('schema_version', '9')`,
+		`CREATE TABLE instances (
+			id              TEXT PRIMARY KEY,
+			title           TEXT NOT NULL,
+			project_path    TEXT NOT NULL,
+			group_path      TEXT NOT NULL DEFAULT 'my-sessions',
+			sort_order      INTEGER NOT NULL DEFAULT 0,
+			command         TEXT NOT NULL DEFAULT '',
+			wrapper         TEXT NOT NULL DEFAULT '',
+			tool            TEXT NOT NULL DEFAULT 'shell',
+			status          TEXT NOT NULL DEFAULT 'error',
+			tmux_session    TEXT NOT NULL DEFAULT '',
+			tmux_socket_name TEXT NOT NULL DEFAULT '',
+			created_at      INTEGER NOT NULL,
+			last_accessed   INTEGER NOT NULL DEFAULT 0,
+			parent_session_id TEXT NOT NULL DEFAULT '',
+			is_conductor            INTEGER NOT NULL DEFAULT 0,
+			no_transition_notify    INTEGER NOT NULL DEFAULT 0,
+			title_locked            INTEGER NOT NULL DEFAULT 0,
+			worktree_path     TEXT NOT NULL DEFAULT '',
+			worktree_repo     TEXT NOT NULL DEFAULT '',
+			worktree_branch   TEXT NOT NULL DEFAULT '',
+			account           TEXT NOT NULL DEFAULT '',
+			tool_data       TEXT NOT NULL DEFAULT '{}',
+			acknowledged    INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT INTO instances (id, title, project_path, group_path, tool, status, created_at, tool_data)
+		 VALUES ('existing-1', 'Keep', '/tmp', 'grp', 'shell', 'idle', 1700000000, '{}')`,
+		`CREATE TABLE groups (
+			path         TEXT PRIMARY KEY,
+			name         TEXT NOT NULL,
+			expanded     INTEGER NOT NULL DEFAULT 1,
+			sort_order   INTEGER NOT NULL DEFAULT 0,
+			default_path TEXT NOT NULL DEFAULT ''
+		)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := rawDB.Exec(stmt); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+	rawDB.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
