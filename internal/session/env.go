@@ -37,7 +37,18 @@ func (i *Instance) buildEnvSourceCommand() string {
 		}
 	}
 
-	config, _ := LoadUserConfig()
+	config, cfgErr := LoadUserConfig()
+	if cfgErr != nil {
+		// A broken config.toml degrades EVERY per-group / per-conductor /
+		// global tool override to defaults, and the parse error is
+		// discarded at most call sites — historically "my env_file stopped
+		// injecting" with zero diagnostics. Surface it in the pane (the
+		// spawn still proceeds on defaults) and in the debug log.
+		sessionLog.Warn("user config load failed at spawn; config.toml overrides inactive",
+			slog.String("session", i.Title),
+			slog.String("error", cfgErr.Error()))
+		sources = append(sources, paneWarning("config.toml error — overrides inactive: "+cfgErr.Error()))
+	}
 	if config == nil {
 		if len(sources) == 0 {
 			return ""
@@ -69,6 +80,20 @@ func (i *Instance) buildEnvSourceCommand() string {
 	toolEnvFile := i.getToolEnvFile()
 	if toolEnvFile != "" {
 		resolved := resolvePath(toolEnvFile, i.ProjectPath)
+		if _, statErr := os.Stat(resolved); statErr != nil {
+			// An explicitly configured env_file that is absent at spawn is a
+			// misconfiguration, not a soft default — the silent `[ -f ] &&`
+			// skip below is exactly how a typo'd env_file stanza goes
+			// unnoticed. Warn in the pane and the debug log; the
+			// ignore_missing_env_files=false hard-fail path is unchanged.
+			sessionLog.Warn("configured env_file missing at spawn",
+				slog.String("session", i.Title),
+				slog.String("tool", i.Tool),
+				slog.String("env_file", resolved))
+			if ignoreMissing {
+				sources = append(sources, paneWarning("env_file not found: "+resolved))
+			}
+		}
 		sources = append(sources, buildSourceCmd(resolved, ignoreMissing))
 	}
 
@@ -159,6 +184,16 @@ func colorfgbgMatchesTheme(colorfgbg, theme string) (bool, bool) {
 	}
 	isLight := bg >= 8
 	return (theme == "light") == isLight, true
+}
+
+// paneWarning returns a shell command that prints an agent-deck warning to
+// the pane's stderr. It always exits 0 so it can sit in the `&&` source
+// chain without blocking the spawn — loud, not fatal. Newlines are
+// flattened so a multi-line TOML parse error stays one pane line.
+func paneWarning(msg string) string {
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	escaped := strings.ReplaceAll("agent-deck: warning: "+msg, "'", "'\\''")
+	return fmt.Sprintf("echo '%s' >&2", escaped)
 }
 
 // buildSourceCmd creates a shell command to source a file.
