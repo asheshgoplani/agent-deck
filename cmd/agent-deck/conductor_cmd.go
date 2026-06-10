@@ -479,6 +479,12 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("[ok] Shared LEARNINGS.md installed")
 	}
 
+	// Heartbeat only takes effect when remote channels are configured or explicitly forced
+	channelsConfigured := telegramConfigured || slackConfigured || discordConfigured
+	if heartbeatEnabled && !channelsConfigured && !heartbeatExplicit {
+		heartbeatEnabled = false
+	}
+
 	// Step 4: Set up the named conductor
 	if !*jsonOutput {
 		fmt.Printf("\nSetting up conductor: %s (profile: %s)\n", name, resolvedProfile)
@@ -563,28 +569,23 @@ func handleConductorSetup(profile string, args []string) {
 	}
 
 	// Step 6: Install heartbeat timer (if heartbeat enabled and interval > 0)
-	// TODO(#1310): evaluate heartbeat value in local-only mode — currently skipped
-	// when no channels are configured unless --heartbeat is explicitly passed.
-	channelsConfigured := telegramConfigured || slackConfigured || discordConfigured
 	if heartbeatEnabled {
-		if channelsConfigured || heartbeatExplicit {
-			interval := settings.GetHeartbeatInterval()
-			if interval <= 0 {
-				if !*jsonOutput {
-					fmt.Println("  [skip] Heartbeat disabled (interval = 0)")
-				}
-			} else {
-				if err := session.InstallHeartbeatScript(name, resolvedProfile); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
-				} else if err := session.InstallHeartbeatDaemon(name, resolvedProfile, interval); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat daemon: %v\n", err)
-				} else if !*jsonOutput {
-					fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
-				}
+		interval := settings.GetHeartbeatInterval()
+		if interval <= 0 {
+			if !*jsonOutput {
+				fmt.Println("  [skip] Heartbeat disabled (interval = 0)")
 			}
-		} else if !*jsonOutput {
-			fmt.Println("  [skip] Heartbeat skipped (no remote channels configured; pass --heartbeat to force)")
+		} else {
+			if err := session.InstallHeartbeatScript(name, resolvedProfile); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat script: %v\n", err)
+			} else if err := session.InstallHeartbeatDaemon(name, resolvedProfile, interval); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to install heartbeat daemon: %v\n", err)
+			} else if !*jsonOutput {
+				fmt.Printf("  [ok] Heartbeat timer installed (every %d min)\n", interval)
+			}
 		}
+	} else if !channelsConfigured && !*noHeartbeat && !*jsonOutput {
+		fmt.Println("  [skip] Heartbeat skipped (no remote channels configured; pass --heartbeat to force)")
 	}
 
 	// Step 7: Install bridge (if Telegram, Slack, or Discord is configured)
