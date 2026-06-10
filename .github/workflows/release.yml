@@ -89,7 +89,8 @@ jobs:
           PERF_BUDGET_MULTIPLIER: '2.0'
         run: |
           go install gotest.tools/gotestsum@v1.13.0
-          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --format=testdox -- -race -timeout 20m $(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
+          PACKAGES=$(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="$PACKAGES" -- -race -timeout 20m
 
       - name: Run integration tests (informational)
         timeout-minutes: 15
