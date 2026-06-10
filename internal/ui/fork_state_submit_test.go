@@ -2,6 +2,9 @@ package ui
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +15,33 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/git"
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
+
+// extractUIFuncBodySource returns the source text of funcName's body block from
+// fileName, so structural assertions can be scoped to one function instead of
+// searching the whole file (which can match comments or other functions, and is
+// brittle to unrelated refactors).
+func extractUIFuncBodySource(t *testing.T, fileName, funcName string) string {
+	t.Helper()
+	srcBytes, err := os.ReadFile(fileName)
+	if err != nil {
+		t.Fatalf("read %s: %v", fileName, err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, fileName, srcBytes, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", fileName, err)
+	}
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == funcName && fn.Body != nil {
+			start := fset.Position(fn.Body.Pos()).Offset
+			end := fset.Position(fn.Body.End()).Offset
+			return string(srcBytes[start:end])
+		}
+	}
+	t.Fatalf("function %q not found in %s", funcName, fileName)
+	return ""
+}
 
 func TestForkDialogSubmitCapturesStateBeforeHide(t *testing.T) {
 	srcBytes, err := os.ReadFile("home.go")
@@ -209,20 +239,36 @@ func gitOutUI(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func TestForkSessionCmdWithOptions_WithStateRejectsNonGitBeforeGitDirectCalls(t *testing.T) {
-	srcBytes, err := os.ReadFile("home.go")
-	if err != nil {
-		t.Fatalf("read home.go: %v", err)
-	}
-	src := string(srcBytes)
+// With-state forks route by backend type (#1305): git → forkWithStateWorktree
+// (internal/git-direct calls), jj → forkWithStateWorkspaceJJ, anything else →
+// rejection. This structural test asserts the git-direct helper is reachable
+// only from inside the git case, so a non-git backend can never fall through to
+// the git-direct calls — the safety property the old `!= vcs.TypeGit` early
+// guard provided, now enforced by the switch shape.
+func TestForkSessionCmdWithOptions_WithStateRoutesByBackend(t *testing.T) {
+	// Scope the structural assertions to forkSessionCmdWithOptions's body so the
+	// helper *definitions* (func forkWithStateWorktree / forkWithStateWorkspaceJJ,
+	// defined elsewhere) can't satisfy the call-site markers, and unrelated edits
+	// outside this function can't break the test.
+	src := extractUIFuncBodySource(t, "home.go", "forkSessionCmdWithOptions")
 	guard := strings.Index(src, "if forkState.WithState {")
-	reject := strings.Index(src, `backend.Type() != vcs.TypeGit`)
-	validate := strings.Index(src, "forkWithStateWorktree(")
-	if guard < 0 || reject < 0 || validate < 0 {
-		t.Fatalf("missing with-state guard/reject/helper call: guard=%d reject=%d helper=%d", guard, reject, validate)
+	gitCase := strings.Index(src, "case vcs.TypeGit:")
+	gitHelper := strings.Index(src, "forkWithStateWorktree(")
+	jjCase := strings.Index(src, "case vcs.TypeJujutsu:")
+	jjHelper := strings.Index(src, "forkWithStateWorkspaceJJ(")
+	reject := strings.Index(src, "is not supported for this repository's VCS backend")
+	if guard < 0 || gitCase < 0 || gitHelper < 0 || jjCase < 0 || jjHelper < 0 || reject < 0 {
+		t.Fatalf("missing with-state routing markers: guard=%d gitCase=%d gitHelper=%d jjCase=%d jjHelper=%d reject=%d",
+			guard, gitCase, gitHelper, jjCase, jjHelper, reject)
 	}
-	if reject > validate {
-		t.Fatalf("non-git rejection must happen before git-direct helper call; reject=%d helper=%d", reject, validate)
+	if !(guard < gitCase && gitCase < gitHelper) {
+		t.Fatalf("git-direct helper must sit inside the git case after the with-state guard; guard=%d gitCase=%d gitHelper=%d", guard, gitCase, gitHelper)
+	}
+	if !(gitHelper < jjCase && jjCase < jjHelper) {
+		t.Fatalf("jj case must route to the jj workspace helper after the git case; gitHelper=%d jjCase=%d jjHelper=%d", gitHelper, jjCase, jjHelper)
+	}
+	if reject < jjHelper {
+		t.Fatalf("unsupported-backend rejection must be the default after both cases; reject=%d jjHelper=%d", reject, jjHelper)
 	}
 }
 
@@ -293,7 +339,7 @@ func TestCompleteFork_RollsBackOnInstanceCreateFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on create failure, got %v", inst)
 	}
@@ -324,7 +370,7 @@ func TestCompleteFork_RollsBackOnMultiRepoDirFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on multi-repo-dir failure, got %v", inst)
 	}
@@ -355,7 +401,7 @@ func TestCompleteFork_RollsBackOnStartFailure(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on start failure, got %v", inst)
 	}
@@ -385,7 +431,7 @@ func TestCompleteFork_NoRollbackOnSuccess(t *testing.T) {
 		rollback:           rec.fn,
 	}
 
-	inst, err := completeFork(source, "title", "group", opts, false, "", "", true, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, opts, "", "", true, deps)
 	if err != nil {
 		t.Fatalf("expected no error on success, got %v", err)
 	}
@@ -413,7 +459,7 @@ func TestCompleteFork_NoRollbackWhenWorktreeNotCreated(t *testing.T) {
 
 	// withStateWorktreeCreated=false and a nil opts: the rollback gate must not
 	// fire, so opts is never dereferenced.
-	inst, err := completeFork(source, "title", "group", nil, false, "", "", false, deps)
+	inst, err := completeFork(source, "title", "group", forkToggles{}, nil, "", "", false, deps)
 	if inst != nil {
 		t.Fatalf("expected nil instance on create failure, got %v", inst)
 	}

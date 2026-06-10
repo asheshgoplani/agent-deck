@@ -148,6 +148,8 @@ export const mutationsEnabledSignal = signal(true)
 export const toolFilterSignal = signal(false)
 export const visibleToolsSignal = signal([])
 export const toolFilterFallbackSignal = signal(false)
+export const hiddenToolsSignal = signal([])
+export const pickerToolsSignal = signal([])
 
 // POL-1 (Phase 9, plan 01): sidebar load state for skeleton render gate.
 // Initialized false; flipped to true on the first /api/menu response OR the

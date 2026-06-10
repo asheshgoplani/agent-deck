@@ -29,6 +29,7 @@ import {
   groupNameDialogSignal, mutationsEnabledSignal, infoDrawerOpenSignal,
   profilesSignal, systemStatsSignal,
   toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
+  hiddenToolsSignal, pickerToolsSignal,
 } from './state.js'
 import {
   activeTabSignal, paletteOpenSignal, tweaksOpenSignal,
@@ -146,6 +147,12 @@ export function AppShell() {
         }
         if (typeof data.toolFilterFallback === 'boolean') {
           toolFilterFallbackSignal.value = data.toolFilterFallback
+        }
+        if (Array.isArray(data.hiddenTools)) {
+          hiddenToolsSignal.value = data.hiddenTools
+        }
+        if (Array.isArray(data.pickerTools) && data.pickerTools.length > 0) {
+          pickerToolsSignal.value = data.pickerTools
         }
       })
       .catch(() => {})

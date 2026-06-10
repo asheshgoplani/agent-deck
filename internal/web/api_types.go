@@ -106,6 +106,12 @@ type SettingsResponse struct {
 	ToolFilter         bool     `json:"toolFilter"`
 	VisibleTools       []string `json:"visibleTools"`
 	ToolFilterFallback bool     `json:"toolFilterFallback"`
+
+	// hidden_tools denylist from [ui]. HiddenTools is the configured list;
+	// PickerTools is the ordered new-session picker after hidden_tools and
+	// show_only_installed_tools ("" mapped to "shell" for web).
+	HiddenTools []string `json:"hiddenTools"`
+	PickerTools []string `json:"pickerTools"`
 }
 
 // ProfilesResponse is returned by GET /api/profiles.

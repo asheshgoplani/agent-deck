@@ -56,6 +56,40 @@ func TestBuildSessionInfoForCopy_PlainSession(t *testing.T) {
 	}
 }
 
+// TestBuildSessionInfoForCopy_IncludesSessionID verifies the copied payload
+// carries the same session ID the PREVIEW pane shows, so the user can yank it
+// with the existing C / shift+C shortcut.
+func TestBuildSessionInfoForCopy_IncludesSessionID(t *testing.T) {
+	inst := &session.Instance{
+		Title:           "steady-oak",
+		ProjectPath:     "/Users/doozyx/DoozyX/Adaptam/ui",
+		Tool:            "claude",
+		ClaudeSessionID: "cabd9818-a55c-4f87-bdb2-ebfc4cf7d947",
+	}
+
+	got := buildSessionInfoForCopy(inst)
+
+	if !strings.Contains(got, "Session: cabd9818-a55c-4f87-bdb2-ebfc4cf7d947") {
+		t.Errorf("expected payload to contain the session ID line, got:\n%s", got)
+	}
+}
+
+// TestBuildSessionInfoForCopy_NoSessionIDLine verifies sessions without a
+// detected ID don't emit an empty "Session:" line.
+func TestBuildSessionInfoForCopy_NoSessionIDLine(t *testing.T) {
+	inst := &session.Instance{
+		Title:       "scratch",
+		ProjectPath: "/tmp/scratch",
+		Tool:        "claude",
+	}
+
+	got := buildSessionInfoForCopy(inst)
+
+	if strings.Contains(got, "Session:") {
+		t.Errorf("session without an ID should not emit a Session line, got:\n%s", got)
+	}
+}
+
 // TestBuildSessionInfoForCopy_MultiRepo verifies that multi-repo sessions
 // surface every project path so the user can paste the full set.
 func TestBuildSessionInfoForCopy_MultiRepo(t *testing.T) {

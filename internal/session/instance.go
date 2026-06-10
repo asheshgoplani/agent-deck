@@ -2452,7 +2452,16 @@ func (i *Instance) updateCodexSession(excludeIDs map[string]bool, forceProbe boo
 		}
 	}
 
-	// 3. Detect same-project session rotation (e.g. /new) from disk.
+	// 3. Use disk scan only as a bootstrap fallback. Once a session ID is
+	// known, rotation must come from authoritative live evidence above (tmux
+	// env, hook payload, or the Codex process' open rollout file). Polling the
+	// full historical $CODEX_HOME/sessions tree for every active Codex session
+	// burns CPU on large histories and has no stronger ownership signal than the
+	// current binding.
+	if i.CodexSessionID != "" {
+		return missingProbeDep
+	}
+
 	// Only allow unscoped fallback when we don't have a known session ID yet.
 	allowUnscoped := envSessionID == "" && i.CodexSessionID == "" && i.CodexStartedAt > 0
 	if !i.shouldScanCodexSession(allowUnscoped) {
@@ -2582,6 +2591,25 @@ func (i *Instance) GetGenericSessionID() string {
 		return ""
 	}
 	return sessionID
+}
+
+// DisplaySessionID returns the session ID the PREVIEW pane surfaces for this
+// instance's tool, mirroring the per-tool branching in the right-pane render
+// so a copy of the preview info carries the same ID the user sees. Returns ""
+// when no session ID is known for the tool.
+func (i *Instance) DisplaySessionID() string {
+	switch {
+	case IsClaudeCompatible(i.Tool):
+		return i.ClaudeSessionID
+	case i.Tool == "gemini":
+		return i.GeminiSessionID
+	case i.Tool == "opencode":
+		return i.OpenCodeSessionID
+	case i.Tool == "codex":
+		return i.CodexSessionID
+	default:
+		return i.GetGenericSessionID()
+	}
 }
 
 // CanRestartGeneric returns true if a custom tool can be restarted with session resume
@@ -2879,6 +2907,19 @@ func (i *Instance) Start() error {
 		// Record start time for session ID detection (Unix millis)
 		i.CopilotStartedAt = time.Now().UnixMilli()
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			// Wrap the deferred fork script through buildOpenCodeCommand so the
+			// first-start command is byte-identical to the pre-deferred behavior
+			// (the script carries its own env prefix); restart falls through to the
+			// resume/fresh branch below via the stable "opencode" base Command.
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		// Record start time for session ID detection (Unix millis)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
@@ -3105,6 +3146,15 @@ func (i *Instance) StartWithMessage(message string) error {
 	case i.Tool == "gemini":
 		command = i.buildGeminiCommand(i.Command)
 	case i.Tool == "opencode":
+		if i.IsForkAwaitingStart {
+			command = i.buildOpenCodeCommand(i.consumeForkStartCommand())
+			i.OpenCodeStartedAt = time.Now().UnixMilli()
+			sessionLog.Info("resume: none reason=fork_awaiting_start",
+				slog.String("instance_id", i.ID),
+				slog.String("path", i.ProjectPath),
+				slog.String("reason", "fork_awaiting_start"))
+			break
+		}
 		command = i.buildOpenCodeCommand(i.Command)
 		i.OpenCodeStartedAt = time.Now().UnixMilli()
 	case IsCodexCompatible(i.Tool):
@@ -3852,6 +3902,22 @@ func (i *Instance) UpdateHookStatus(status *HookStatus) {
 		if status.Event == "PermissionRequest" || status.Event == "Notification" {
 			i.tmuxSession.ResetAcknowledged()
 		}
+	}
+
+	// Issue #1349 defense-in-depth #1: never bind a session id from a terminal
+	// hook event (e.g. SessionEnd). The status/event/ack bookkeeping above still
+	// applies, but a terminal payload's session_id is stale by definition and
+	// must not become a bind source — that is exactly what re-binds a
+	// stopped/removed session every poll cycle and collides session ids.
+	//
+	// Accepted tradeoff: if the daemon's first-ever observation of a session is
+	// a SessionEnd (e.g. it was down during the SessionStart/UserPromptSubmit
+	// edges and only the latest event survives in the hook file), the bind is
+	// skipped and the prior ClaudeSessionID stays. That is the correct call —
+	// the session is already gone, so binding its (possibly reused) id onto a
+	// now-dead instance is the corruption we are preventing, not a feature.
+	if isTerminalHookEvent(status.Event) {
+		return
 	}
 
 	// Resolve session ID from hook payload first, then sidecar anchor.
@@ -4650,6 +4716,67 @@ func (i *Instance) GetLastResponseBestEffort() (*ResponseOutput, error) {
 	}
 
 	return nil, err
+}
+
+// ClaudeSessionIDCollidesWith reports whether another LIVE instance in peers
+// would resolve to the SAME transcript as this instance: it shares this
+// instance's (non-empty) ClaudeSessionID AND resolves to the same transcript
+// directory (same Claude config dir + same encoded project path). A many-to-one
+// session-id → live-instance mapping on one transcript is the data-integrity
+// hazard #1349 describes: two live instances pointed at one transcript would
+// cross-route input/output. Two instances that happen to share a session id but
+// resolve to different transcript dirs (different project/config) are NOT a
+// collision and are not blocked.
+func (i *Instance) ClaudeSessionIDCollidesWith(peers []*Instance) bool {
+	if i.ClaudeSessionID == "" {
+		return false
+	}
+	mine := i.claudeTranscriptDir()
+	for _, p := range peers {
+		if p == nil || p.ID == i.ID {
+			continue
+		}
+		if p.ClaudeSessionID != i.ClaudeSessionID || !isLiveSessionStatus(p.Status) {
+			continue
+		}
+		if p.claudeTranscriptDir() == mine {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeTranscriptDir returns the directory that GetJSONLPath would place this
+// instance's transcript in (config dir + encoded project path), used to decide
+// whether two instances would collide on the same transcript file. It mirrors
+// GetJSONLPath's resolution (GetClaudeConfigDir + i.ProjectPath) exactly, so the
+// collision verdict matches the path the guard protects.
+func (i *Instance) claudeTranscriptDir() string {
+	configDir := GetClaudeConfigDir()
+	resolvedPath := i.ProjectPath
+	if resolved, err := filepath.EvalSymlinks(i.ProjectPath); err == nil {
+		resolvedPath = resolved
+	}
+	return filepath.Join(configDir, "projects", ConvertToClaudeDirName(resolvedPath))
+}
+
+// GetJSONLPathChecked is the collision-aware variant of GetJSONLPath (issue
+// #1349 defense-in-depth #2). Given the set of instances it shares a profile
+// with, it refuses to resolve a transcript path when this instance's
+// ClaudeSessionID collides with another LIVE instance's ClaudeSessionID —
+// because two live instances mapped to one session-id would otherwise read the
+// same transcript, corrupting routing. When there is no collision it delegates
+// to GetJSONLPath.
+func (i *Instance) GetJSONLPathChecked(peers []*Instance) (string, error) {
+	if i.ClaudeSessionIDCollidesWith(peers) {
+		_ = WriteSessionIDLifecycleEvent(SessionIDLifecycleEvent{
+			InstanceID: i.ID, Tool: i.Tool, Action: "reject",
+			Source: "jsonl_resolve", OldID: i.ClaudeSessionID, Candidate: i.ClaudeSessionID,
+			Reason: "claude_session_id_collision_across_live_instances",
+		})
+		return "", fmt.Errorf("claude_session_id %q is shared by more than one live instance; refusing to resolve a colliding transcript path for instance %s", i.ClaudeSessionID, i.ID)
+	}
+	return i.GetJSONLPath(), nil
 }
 
 // GetJSONLPath returns the path to the Claude session JSONL file for analytics
@@ -6444,7 +6571,13 @@ func (i *Instance) CreateForkedOpenCodeInstanceWithOptionsAndWorkDir(
 	} else {
 		forked.GroupPath = i.GroupPath
 	}
-	forked.Command = cmd
+	// Defer the one-shot fork script via ForkStartCommand (Pi/Codex pattern): the
+	// script self-deletes after first run, so storing it as the persistent Command
+	// would make a later restart re-run a missing file. Command holds a stable base
+	// ("opencode") that restart resumes from via OpenCodeSessionID.
+	forked.Command = "opencode"
+	forked.ForkStartCommand = cmd
+	forked.IsForkAwaitingStart = true
 	forked.Tool = "opencode"
 	if worktreeRepoRoot != "" {
 		forked.WorktreePath = workDir

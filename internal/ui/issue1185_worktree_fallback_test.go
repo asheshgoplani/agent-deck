@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,20 @@ func TestResolveWorktreeTarget_ExplicitRepo_CreatesWorktree(t *testing.T) {
 
 	if errMsg != "" || fallback || wtPath == "" || repoRoot == "" {
 		t.Fatalf("explicit worktree on a git repo must create a worktree: errMsg=%q fallback=%v wtPath=%q repoRoot=%q", errMsg, fallback, wtPath, repoRoot)
+	}
+}
+
+func TestResolveWorktreeTarget_UsesVCSBackendDetection(t *testing.T) {
+	src, err := os.ReadFile("worktree_target.go")
+	if err != nil {
+		t.Fatalf("read worktree_target.go: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "vcsbackend.Detect") {
+		t.Fatal("resolveWorktreeTarget must use vcsbackend.Detect so jj support does not depend on git internals")
+	}
+	if strings.Contains(body, "git.IsGitRepoOrBareProjectRoot") {
+		t.Fatal("resolveWorktreeTarget must not use the git-only repo capability check")
 	}
 }
 

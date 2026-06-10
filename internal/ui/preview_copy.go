@@ -47,6 +47,13 @@ func buildSessionInfoForCopy(inst *session.Instance) string {
 		fmt.Fprintf(&b, "Path: %s\n", inst.ProjectPath)
 	}
 
+	// Session ID line (matches the "Session:" value shown in the preview pane),
+	// emitted only when the tool has a detected session so empty sessions don't
+	// produce a dangling label.
+	if id := inst.DisplaySessionID(); id != "" {
+		fmt.Fprintf(&b, "Session: %s\n", id)
+	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 

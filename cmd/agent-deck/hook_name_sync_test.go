@@ -149,6 +149,7 @@ func TestApplyClaudeTitleSync_UpdatesInstance(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatal("instance disappeared")
+		return
 	}
 	if found.Title != "renamed-by-user" {
 		t.Errorf("post-sync Title = %q, want %q (#572)", found.Title, "renamed-by-user")
@@ -304,6 +305,7 @@ func TestApplyClaudeTitleSync_NoopWhenTitleLocked(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatal("instance disappeared")
+		return
 	}
 	if found.Title != "SCRUM-351" {
 		t.Errorf("post-sync Title = %q, want %q (#697 TitleLocked must block sync)", found.Title, "SCRUM-351")

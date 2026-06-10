@@ -123,6 +123,7 @@ func TestReadCopilotSessionStart(t *testing.T) {
 	evt := readCopilotSessionStart(eventsPath)
 	if evt == nil {
 		t.Fatal("expected non-nil event")
+		return
 	}
 	if evt.Data.SessionID != "abc-123" {
 		t.Errorf("expected abc-123, got %q", evt.Data.SessionID)

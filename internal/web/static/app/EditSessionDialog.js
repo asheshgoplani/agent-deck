@@ -10,13 +10,11 @@
 
 import { html } from 'htm/preact'
 import { useState, useMemo } from 'preact/hooks'
-import { editSessionDialogSignal, mutationsEnabledSignal } from './state.js'
+import { editSessionDialogSignal, mutationsEnabledSignal, pickerToolsSignal } from './state.js'
 import { menuModelSignal } from './dataModel.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
-
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
-const TOOL_LABELS = { codex: 'ChatGPT' }
+import { displayLabelForTool, resolveEditSessionPickerTools } from './pickerTools.js'
 
 // Build PATCH body from form state. Only includes fields that differ from
 // the original — mirrors the TUI EditSessionDialog.GetChanges diff logic so
@@ -79,6 +77,9 @@ export function EditSessionDialog() {
   }
 
   if (!open || !mutationsEnabledSignal.value || !session) return null
+
+  const currentTool = session.tool || ''
+  const shownTools = resolveEditSessionPickerTools(pickerToolsSignal.value, currentTool)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -148,10 +149,10 @@ export function EditSessionDialog() {
           <div class="field">
             <label>TOOL (restart required)</label>
             <div class="seg-row">
-              ${TOOLS.map(t => html`
+              ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
-                        onClick=${() => setTool(t)}>${TOOL_LABELS[t] || t}</button>
+                        onClick=${() => setTool(t)}>${displayLabelForTool(t)}</button>
               `)}
             </div>
           </div>

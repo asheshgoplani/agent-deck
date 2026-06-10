@@ -3,8 +3,8 @@
 // sizes — the harness from TEST-PLAN.md §6.1 / TUI-TEST-PLAN.md §6.8
 // for the "two web clients hijacking pane size" regression (J4 / F2).
 //
-// Every harness instance gets its own socket under t.TempDir(), never
-// touching the user's real tmux server. Cleanup tears down the server,
+// Every harness instance gets its own socket under a short isolated temp
+// dir, never touching the user's real tmux server. Cleanup tears down the server,
 // kills all spawned client processes, and removes the socket.
 //
 // Usage:
@@ -18,13 +18,13 @@ package multiclienttmux
 import (
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 	"github.com/creack/pty"
 )
 
@@ -55,8 +55,11 @@ func New(t *testing.T, sessionName string) *Harness {
 		t.Skip("multiclienttmux: tmux binary not available")
 	}
 
-	socketDir := t.TempDir()
-	socketPath := filepath.Join(socketDir, "sock")
+	// Use a short /tmp-based socket path: t.TempDir() on darwin resolves under
+	// /var/folders/<hash>/T/<TestName>... and overshoots the sun_path 104-byte
+	// limit for long test names ("File name too long").
+	socketPath, sockCleanup := testutil.ShortTmuxSocket()
+	t.Cleanup(sockCleanup)
 
 	// Detached new-session on the isolated socket. -x/-y set the initial
 	// window size; clients attaching later may shrink it depending on

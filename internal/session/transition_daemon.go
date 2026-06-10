@@ -191,7 +191,18 @@ func (d *TransitionDaemon) syncProfile(profile string) time.Duration {
 		byID[inst.ID] = inst
 		if IsClaudeCompatible(inst.Tool) || inst.Tool == "codex" || inst.Tool == "gemini" {
 			if hs := d.hookStatusForInstance(inst.ID); hs != nil {
-				inst.UpdateHookStatus(hs)
+				// Issue #1349: only let a hook status rebind the session id when
+				// the instance is actually LIVE (running/waiting/idle with a real
+				// tmux session). A stopped/removed session keeps a stale
+				// SessionEnd hook file for up to 24h; without this gate the daemon
+				// rebinds its session id every poll cycle from that stale record,
+				// colliding two ids onto one session-id and corrupting routing
+				// (wrong transcript, dropped completions, mis-delivered input).
+				// Done-signal / transition-candidate handling stays unguarded so
+				// terminal completions are still observed.
+				if isLiveSessionStatus(inst.Status) && inst.Exists() {
+					inst.UpdateHookStatus(hs)
+				}
 				hookStatuses[inst.ID] = hs
 				if candidate, ok := terminalHookTransitionCandidate(inst.Tool, hs); ok {
 					hookCandidates[inst.ID] = candidate
@@ -551,6 +562,30 @@ func terminalHookTransitionCandidate(tool string, hs *HookStatus) (hookTransitio
 		}
 	}
 	return hookTransitionCandidate{}, false
+}
+
+// isTerminalHookEvent reports whether a hook event name denotes session/thread
+// termination (issue #1349). It mirrors the allowlist in
+// cmd/agent-deck/hook_handler.go:isTerminalHookEvent (kept in the main package
+// for the hook writer); this copy lets the session package refuse to bind a
+// session id from a terminal payload. A SessionEnd record must never be a bind
+// source — by the time it fires the session is gone, so its session_id is at
+// best stale and at worst belongs to a different live session after id reuse.
+func isTerminalHookEvent(event string) bool {
+	norm := strings.ToLower(strings.TrimSpace(event))
+	if norm == "" {
+		return false
+	}
+	norm = strings.NewReplacer(".", "", "-", "", "_", "", "/", "", " ", "").Replace(norm)
+	switch norm {
+	case "sessionend", "sessionended", "sessionclose", "sessionclosed", "sessiondone", "sessionexit", "sessionexited",
+		"onsessionend",
+		"threadend", "threadended", "threadterminate", "threadterminated", "threadclose", "threadclosed",
+		"threaddone", "threadexit", "threadexited":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCodexTerminalHookEvent(event string) bool {

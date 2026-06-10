@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
@@ -153,10 +154,24 @@ func bootstrapTmuxServer() func() {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return func() {}
 	}
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "bootstrapTmuxServer(tmux): new-session failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
-		return func() {}
+	start := func() bool {
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", bootstrapSessionName, "sh", "-c", "sleep 3600")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "bootstrapTmuxServer(tmux): new-session failed: %v (%s)\n", err, strings.TrimSpace(string(out)))
+			return false
+		}
+		return true
+	}
+	ok := start()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("tmux", "has-session", "-t", bootstrapSessionName).Run(); err == nil {
+			break
+		}
+		if !ok {
+			ok = start()
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		_ = exec.Command("tmux", "kill-server").Run()
@@ -168,14 +183,25 @@ func bootstrapTmuxServer() func() {
 // against F3 silent-skip trap.
 func TestTmuxBootstrap_ServerIsRunning(t *testing.T) {
 	skipIfNoTmuxBinary(t)
-	if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
-		t.Fatalf("tmux list-sessions failed after bootstrap: %v", err)
+	var lastErr error
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("tmux", "list-sessions").Run(); err != nil {
+			lastErr = fmt.Errorf("list-sessions: %w", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+		if err != nil {
+			lastErr = fmt.Errorf("list-sessions -F: %w", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if strings.Contains(string(out), bootstrapSessionName) {
+			return
+		}
+		lastErr = fmt.Errorf("bootstrap session %q not present; got: %s", bootstrapSessionName, string(out))
+		time.Sleep(100 * time.Millisecond)
 	}
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	if err != nil {
-		t.Fatalf("list-sessions -F: %v", err)
-	}
-	if !strings.Contains(string(out), bootstrapSessionName) {
-		t.Fatalf("bootstrap session %q not present; got: %s", bootstrapSessionName, string(out))
-	}
+	t.Fatalf("tmux bootstrap not ready within 10s: %v", lastErr)
 }

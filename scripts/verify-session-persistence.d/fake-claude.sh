@@ -4,7 +4,7 @@
 # Contract:
 #   - Writes the full argv ("$@") as one line to $AGENT_DECK_VERIFY_ARGV_OUT
 #     (default: /tmp/adeck-verify-argv.$PPID). One invocation appends one line.
-#   - Then execs `sleep infinity` so the tmux pane stays alive while the
+#   - Then sleeps in a portable loop so the tmux pane stays alive while the
 #     harness runs its assertions.
 #   - Never mutates user state. Never needs network.
 #
@@ -22,4 +22,6 @@ mkdir -p "$(dirname "$OUT")"
 # required here — the harness only greps for --resume / --session-id tokens.
 printf '%s\n' "$*" >> "$OUT"
 
-exec sleep infinity
+while :; do
+  sleep 86400
+done
