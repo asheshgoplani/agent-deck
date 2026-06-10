@@ -90,12 +90,8 @@ func (b *JJBackend) GetCurrentBranch() (string, error) {
 
 // BranchExists checks if a bookmark exists in the repository.
 func (b *JJBackend) BranchExists(branchName string) bool {
-	cmd := exec.Command("jj", "bookmark", "list", "--name", branchName, "-R", b.repoDir, "--ignore-working-copy") // #nosec G204 -- jj invocations with slice args, not shell-formed
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(output)) != ""
+	exists, err := BookmarkExists(b.repoDir, branchName)
+	return err == nil && exists
 }
 
 // Workspace represents a jj workspace parsed from `jj workspace list`.

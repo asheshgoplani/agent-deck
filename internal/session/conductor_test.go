@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -1317,7 +1318,7 @@ func TestBuildDaemonPath(t *testing.T) {
 			name:          "custom path included",
 			agentDeckPath: "/custom/tools/bin/agent-deck",
 			wantPrefix:    "/custom/tools/bin",
-			wantContains:  "/opt/homebrew/bin",
+			wantContains:  "/usr/local/bin",
 		},
 	}
 
@@ -1335,6 +1336,21 @@ func TestBuildDaemonPath(t *testing.T) {
 				t.Errorf("buildDaemonPath(%q) = %q, contains double colon", tt.agentDeckPath, result)
 			}
 		})
+	}
+}
+
+// TestBuildDaemonPath_HomebrewDarwinOnly verifies that /opt/homebrew/bin is
+// only injected into the daemon PATH base entries on macOS. On Linux the path
+// does not exist, so generated systemd units must not reference it.
+func TestBuildDaemonPath_HomebrewDarwinOnly(t *testing.T) {
+	// Use a non-homebrew agent-deck path so the only way /opt/homebrew/bin can
+	// appear is via the base entries.
+	result := buildDaemonPath("/custom/tools/bin/agent-deck")
+	hasHomebrew := strings.Contains(result, "/opt/homebrew/bin")
+	wantHomebrew := runtime.GOOS == "darwin"
+	if hasHomebrew != wantHomebrew {
+		t.Errorf("buildDaemonPath on GOOS=%q = %q; homebrew present=%v, want %v",
+			runtime.GOOS, result, hasHomebrew, wantHomebrew)
 	}
 }
 

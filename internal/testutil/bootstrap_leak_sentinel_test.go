@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asheshgoplani/agent-deck/internal/testutil"
 )
 
 // TestTestMainDoesNotLeakBootstrapServer is the behavioral guard for the
@@ -37,6 +39,9 @@ func TestTestMainDoesNotLeakBootstrapServer(t *testing.T) {
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go not on PATH")
+	}
+	if testutil.RaceEnabled {
+		t.Skip("spawns nested `go test` subprocesses; skipped under -race to avoid the resource contention that destabilizes the full -race suite. The static audit TestNoTestMainLeaksCleanupBehindOsExit covers the os.Exit-skips-defer pattern on every run; this runtime guard still runs in non-race invocations.")
 	}
 
 	_, thisFile, _, ok := runtime.Caller(0)

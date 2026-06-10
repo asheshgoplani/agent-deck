@@ -567,3 +567,183 @@ func TestResolveAddPath(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleAddUsesGlobalDefaultPath(t *testing.T) {
+	home, _, profile := setupAddDefaultPathTest(t)
+	defaultPath := filepath.Join(home, "workspace")
+	if err := os.MkdirAll(defaultPath, 0o755); err != nil {
+		t.Fatalf("mkdir default path: %v", err)
+	}
+	writeAddUserConfig(t, home, `default_path = "`+defaultPath+`"`+"\n")
+
+	handleAdd(profile, []string{"--title", "global-default", "--quiet"})
+
+	if got := onlyAddedSessionPath(t, profile); got != defaultPath {
+		t.Fatalf("added path = %q, want global default_path %q", got, defaultPath)
+	}
+}
+
+func TestHandleAddExplicitPathIgnoresGlobalDefaultPath(t *testing.T) {
+	home, _, profile := setupAddDefaultPathTest(t)
+	defaultPath := filepath.Join(home, "workspace")
+	explicitPath := filepath.Join(home, "explicit")
+	for _, dir := range []string{defaultPath, explicitPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	writeAddUserConfig(t, home, `default_path = "`+defaultPath+`"`+"\n")
+
+	handleAdd(profile, []string{"--title", "explicit", "--quiet", explicitPath})
+
+	if got := onlyAddedSessionPath(t, profile); got != explicitPath {
+		t.Fatalf("added path = %q, want explicit path %q", got, explicitPath)
+	}
+}
+
+func TestHandleAddGroupDefaultPathPrecedesGlobalDefaultPath(t *testing.T) {
+	home, _, profile := setupAddDefaultPathTest(t)
+	globalPath := filepath.Join(home, "global")
+	groupPath := filepath.Join(home, "group")
+	for _, dir := range []string{globalPath, groupPath} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	writeAddUserConfig(t, home, `default_path = "`+globalPath+`"`+"\n")
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	groupTree := session.NewGroupTreeWithGroups(nil, []*session.GroupData{
+		{Name: "Work", Path: "work", Expanded: true, DefaultPath: groupPath},
+	})
+	if err := storage.SaveWithGroups(nil, groupTree); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+	if err := storage.Close(); err != nil {
+		t.Fatalf("Close storage: %v", err)
+	}
+
+	handleAdd(profile, []string{"--group", "work", "--title", "group-default", "--quiet"})
+
+	if got := onlyAddedSessionPath(t, profile); got != groupPath {
+		t.Fatalf("added path = %q, want group default_path %q", got, groupPath)
+	}
+}
+
+func TestHandleAddFallsBackToCwdWithoutGlobalDefaultPath(t *testing.T) {
+	_, cwd, profile := setupAddDefaultPathTest(t)
+
+	handleAdd(profile, []string{"--title", "cwd-default", "--quiet"})
+
+	if got := onlyAddedSessionPath(t, profile); got != cwd {
+		t.Fatalf("added path = %q, want cwd %q", got, cwd)
+	}
+}
+
+func TestHandleAddExpandsGlobalDefaultPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		configValue func(t *testing.T, home string) (string, string)
+	}{
+		{
+			name: "tilde",
+			configValue: func(t *testing.T, home string) (string, string) {
+				want := filepath.Join(home, "workspace")
+				return "~/workspace", want
+			},
+		},
+		{
+			name: "env var",
+			configValue: func(t *testing.T, home string) (string, string) {
+				root := filepath.Join(home, "env-root")
+				t.Setenv("AGENT_DECK_TEST_ROOT", root)
+				want := filepath.Join(root, "workspace")
+				return "$AGENT_DECK_TEST_ROOT/workspace", want
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home, _, profile := setupAddDefaultPathTest(t)
+			configPath, want := tt.configValue(t, home)
+			if err := os.MkdirAll(want, 0o755); err != nil {
+				t.Fatalf("mkdir default path: %v", err)
+			}
+			writeAddUserConfig(t, home, `default_path = "`+configPath+`"`+"\n")
+
+			handleAdd(profile, []string{"--title", tt.name, "--quiet"})
+
+			if got := onlyAddedSessionPath(t, profile); got != want {
+				t.Fatalf("added path = %q, want expanded default_path %q", got, want)
+			}
+		})
+	}
+}
+
+func TestHandleAddFallsBackToCwdWhenGlobalDefaultPathMissing(t *testing.T) {
+	home, cwd, profile := setupAddDefaultPathTest(t)
+	missingPath := filepath.Join(home, "missing")
+	writeAddUserConfig(t, home, `default_path = "`+missingPath+`"`+"\n")
+
+	handleAdd(profile, []string{"--title", "missing-default", "--quiet"})
+
+	if got := onlyAddedSessionPath(t, profile); got != cwd {
+		t.Fatalf("added path = %q, want cwd %q", got, cwd)
+	}
+}
+
+func setupAddDefaultPathTest(t *testing.T) (home, cwd, profile string) {
+	t.Helper()
+
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	cwd = filepath.Join(home, "cwd")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	t.Chdir(cwd)
+
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	return home, cwd, "add_default_path"
+}
+
+func writeAddUserConfig(t *testing.T, home, content string) {
+	t.Helper()
+
+	configDir := filepath.Join(home, ".config", "agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	session.ClearUserConfigCache()
+}
+
+func onlyAddedSessionPath(t *testing.T, profile string) string {
+	t.Helper()
+
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	defer storage.Close()
+	instances, _, err := storage.LoadWithGroups()
+	if err != nil {
+		t.Fatalf("LoadWithGroups: %v", err)
+	}
+	if len(instances) != 1 {
+		t.Fatalf("loaded %d sessions, want 1", len(instances))
+	}
+	return instances[0].ProjectPath
+}

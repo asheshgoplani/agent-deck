@@ -483,6 +483,140 @@ func TestBranchCleanupHint_ShellQuotesPathAndBranch(t *testing.T) {
 	}
 }
 
+func initJJRepoWithWIPForForkStateTest(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	run := func(args ...string) {
+		cmd := exec.Command("jj", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("jj %v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "init", "--colocate")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write tracked: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ign/\n"), 0o644); err != nil {
+		t.Fatalf("write gitignore: %v", err)
+	}
+	run("describe", "-m", "base")
+	run("new", "-m", "wip")
+	// Uncommitted working-copy state to carry into the fork.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("base\nWIP\n"), 0o644); err != nil {
+		t.Fatalf("write tracked wip: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ign"), 0o755); err != nil {
+		t.Fatalf("mkdir ign: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ign", "secret.env"), []byte("secret=1\n"), 0o644); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+}
+
+// TestSessionFork_WithState_JujutsuMaterializesWorkspace is the end-to-end BUG-03
+// guard: `agent-deck session fork --with-state-and-gitignored` on a colocated jj
+// repo must create a new jj workspace whose working copy carries the parent's
+// uncommitted tracked + gitignored changes (no "git only" rejection).
+func TestSessionFork_WithState_JujutsuMaterializesWorkspace(t *testing.T) {
+	if _, err := exec.LookPath("jj"); err != nil {
+		t.Skip("jj not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	jjCfg := filepath.Join(t.TempDir(), "jjconfig.toml")
+	if err := os.WriteFile(jjCfg, []byte("[user]\nname = \"Test User\"\nemail = \"test@example.com\"\n"), 0o644); err != nil {
+		t.Fatalf("write jj config: %v", err)
+	}
+	t.Setenv("JJ_CONFIG", jjCfg)
+	session.ClearUserConfigCache()
+	t.Cleanup(session.ClearUserConfigCache)
+
+	configDir := filepath.Join(home, ".agent-deck")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("[worktree]\nbranch_prefix = \"\"\ndefault_location = \"sibling\"\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	session.ClearUserConfigCache()
+
+	repo := filepath.Join(home, "repo")
+	initJJRepoWithWIPForForkStateTest(t, repo)
+
+	parent := session.NewInstanceWithGroupAndTool("parent", repo, "grp", "claude")
+	parent.ClaudeSessionID = "00000000-0000-4000-8000-000000000001"
+	parent.ClaudeDetectedAt = time.Now()
+
+	profile := "fork_state_jj"
+	storage, err := session.NewStorageWithProfile(profile)
+	if err != nil {
+		t.Fatalf("NewStorageWithProfile: %v", err)
+	}
+	if err := storage.SaveWithGroups([]*session.Instance{parent}, session.NewGroupTreeWithGroups([]*session.Instance{parent}, nil)); err != nil {
+		t.Fatalf("SaveWithGroups: %v", err)
+	}
+
+	var capturedFork *session.Instance
+	oldHook := sessionForkBeforeStartHook
+	sessionForkBeforeStartHook = func(_ *session.Instance, forked *session.Instance, _ git.WorktreeStateOptions) {
+		capturedFork = forked
+	}
+	t.Cleanup(func() { sessionForkBeforeStartHook = oldHook })
+
+	handleSessionFork(profile, []string{
+		"parent",
+		"--with-state-and-gitignored",
+		"-w", "fork/jj-state",
+		"-t", "forked",
+	})
+
+	if capturedFork == nil {
+		t.Fatal("hook did not capture forked instance — jj with-state fork did not reach the pre-start hook")
+	}
+	ws := capturedFork.WorktreePath
+	if ws == "" {
+		t.Fatal("forked instance has no WorktreePath")
+	}
+	got, err := os.ReadFile(filepath.Join(ws, "tracked.txt"))
+	if err != nil {
+		t.Fatalf("read forked tracked.txt: %v", err)
+	}
+	if string(got) != "base\nWIP\n" {
+		t.Fatalf("forked tracked.txt = %q, want parent WIP carried", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(ws, "ign", "secret.env")); err != nil {
+		t.Fatalf("gitignored secret.env must carry with --with-state-and-gitignored: %v", err)
+	}
+}
+
+// TestSessionFork_WithState_RoutesJujutsu pins BUG-03: the CLI must no longer
+// reject --with-state outright on a jujutsu backend, and must route it through
+// the jj-native materialization (parity with the TUI's forkWithStateWorkspaceJJ).
+func TestSessionFork_WithState_RoutesJujutsu(t *testing.T) {
+	body := mustExtractHandleSessionFork(t)
+	folded := foldSpaces(body)
+
+	if strings.Contains(folded, "--with-state is only supported for git repositories") {
+		t.Error("with-state must no longer be rejected outright on non-git backends; jujutsu is supported (BUG-03)")
+	}
+	for _, m := range []string{
+		"jujutsu.WorkingCopyParentRevision(inst.ProjectPath)",
+		"jujutsu.CreateWorkspaceAtRevision(repoRoot, worktreePath, wtBranch",
+		"jujutsu.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored)",
+	} {
+		if !strings.Contains(folded, m) {
+			t.Errorf("handleSessionFork must wire jj with-state materialization: missing %q", m)
+		}
+	}
+	// The git path's markers must still be present (parity, not replacement).
+	if !strings.Contains(folded, "git.MaterializeWipFromParent(inst.ProjectPath, worktreePath, *withStateGitignored)") {
+		t.Error("git with-state materialization must remain for git backends")
+	}
+}
+
 func TestSessionFork_AdmitsOpenCode(t *testing.T) {
 	src, err := os.ReadFile("session_cmd.go")
 	if err != nil {

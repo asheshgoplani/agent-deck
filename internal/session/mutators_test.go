@@ -21,6 +21,27 @@ func TestSetField_Title_UpdatesAndReturnsOldValue(t *testing.T) {
 	}
 }
 
+// An explicit rename must lock the title, otherwise the #572 Claude-name sync
+// (e.g. an auto-assigned plan title) reverts it on the next hook event.
+func TestSetField_Title_LocksTitle(t *testing.T) {
+	inst := &Instance{Title: "old-title"}
+
+	if _, _, err := SetField(inst, FieldTitle, "my-rename", nil); err != nil {
+		t.Fatalf("SetField returned error: %v", err)
+	}
+	if !inst.TitleLocked {
+		t.Error("TitleLocked = false after explicit rename, want true")
+	}
+
+	// The lock stays user-controllable: title-locked=false re-enables sync.
+	if _, _, err := SetField(inst, FieldTitleLocked, "false", nil); err != nil {
+		t.Fatalf("SetField(title-locked) returned error: %v", err)
+	}
+	if inst.TitleLocked {
+		t.Error("TitleLocked = true after explicit unlock, want false")
+	}
+}
+
 func TestSetField_Color_Valid(t *testing.T) {
 	cases := []struct {
 		name  string

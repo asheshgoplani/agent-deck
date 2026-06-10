@@ -5,17 +5,14 @@ import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
 import {
   createSessionDialogSignal, mutationsEnabledSignal,
-  toolFilterSignal, visibleToolsSignal, toolFilterFallbackSignal,
+  toolFilterFallbackSignal, pickerToolsSignal,
 } from './state.js'
 import { Icon, ICONS } from './icons.js'
 import { apiFetch } from './api.js'
 import { menuModelSignal } from './dataModel.js'
+import { displayLabelForTool, resolveCreateSessionPickerTools } from './pickerTools.js'
 
-const TOOLS = ['claude', 'codex', 'gemini', 'opencode', 'shell']
 const CUSTOM_MODEL = '__custom__'
-const TOOL_LABELS = {
-  codex: 'ChatGPT',
-}
 
 const MODEL_ID_CATALOG = {
   claude: [
@@ -127,15 +124,7 @@ export function CreateSessionDialog() {
   const close = () => (createSessionDialogSignal.value = false)
   const handleBackdropClick = (e) => { if (e.target === e.currentTarget) close() }
   const modelIDs = modelIDsForTool(tool)
-  // show_only_installed_tools filter (issue #1259): when the flag is on (and the
-  // empty-fallback did NOT engage), intersect the static tool list against the
-  // server's PATH-resolved set. shell is always kept. With the flag off, or in
-  // fallback, every tool is shown — byte-identical to before.
-  const toolFilterOn = toolFilterSignal.value && !toolFilterFallbackSignal.value
-  const visibleToolSet = new Set(visibleToolsSignal.value)
-  const shownTools = toolFilterOn
-    ? TOOLS.filter(t => t === 'shell' || visibleToolSet.has(t))
-    : TOOLS
+  const shownTools = resolveCreateSessionPickerTools(pickerToolsSignal.value)
   const needsCustomModel = modelId === CUSTOM_MODEL
   const submitDisabled = submitting || !title || !path || (needsCustomModel && !customModel.trim())
 
@@ -173,7 +162,7 @@ export function CreateSessionDialog() {
               ${shownTools.map(t => html`
                 <button type="button" key=${t}
                         class=${`seg-btn ${tool === t ? 'on' : ''}`}
-                        onClick=${() => selectTool(t)}>${TOOL_LABELS[t] || t}</button>
+                        onClick=${() => selectTool(t)}>${displayLabelForTool(t)}</button>
               `)}
             </div>
             ${toolFilterFallbackSignal.value && html`

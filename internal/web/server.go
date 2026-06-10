@@ -193,11 +193,17 @@ func NewServer(cfg Config) *Server {
 		menuData = NewSessionDataService(cfg.Profile)
 	}
 
+	mutationLimiter := rate.NewLimiter(rate.Limit(20), 40) // 20 req/s, burst 40
+	if cfg.Profile == "fixture" {
+		// Playwright e2e hammers mutations across 400+ serial cases on one
+		// process; production limits would flake skills/mcps/session specs.
+		mutationLimiter = rate.NewLimiter(rate.Inf, 0)
+	}
 	s := &Server{
 		cfg:              cfg,
 		menuData:         menuData,
 		menuSubscribers:  make(map[chan struct{}]struct{}),
-		mutationLimiter:  rate.NewLimiter(rate.Limit(20), 40), // 20 req/s, burst 40
+		mutationLimiter:  mutationLimiter,
 		hookStatusLoader: defaultLoadHookStatuses,
 	}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.Background())

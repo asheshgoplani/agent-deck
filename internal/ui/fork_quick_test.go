@@ -20,7 +20,7 @@ func TestQuickForkInputs_DefaultsAndBranchSlug(t *testing.T) {
 	assert.Equal(t, "fork/my-feature", in.Branch)
 	assert.True(t, in.Plan.Worktree)
 	assert.True(t, in.Plan.WithState)
-	assert.True(t, in.Plan.WithIgnored)
+	assert.False(t, in.Plan.WithIgnored, "with_ignored is opt-in; off by default")
 	assert.False(t, in.Plan.Sandbox)
 }
 

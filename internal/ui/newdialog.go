@@ -268,6 +268,20 @@ func buildPresetCommands() []string {
 	return session.FilterVisibleToolNames(presets)
 }
 
+// RefreshPresetCommands rebuilds the tool picker after config changes.
+func (d *NewDialog) RefreshPresetCommands() {
+	prev := d.GetSelectedCommand()
+	d.presetCommands = buildPresetCommands()
+	d.commandCursor = 0
+	for i, cmd := range d.presetCommands {
+		if cmd == prev {
+			d.commandCursor = i
+			break
+		}
+	}
+	d.updateToolOptions()
+}
+
 // newSessionEnterAdvancesFromConfig reads config.toml [ui]
 // new_session_enter_advances (PR #1295). Default false (config missing or
 // unset) preserves today's behavior: Enter on Name/Branch submits the form.

@@ -28,6 +28,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		ToolFilter:         session.ToolFilterActive(),
 		VisibleTools:       session.VisibleToolNames(),
 		ToolFilterFallback: session.ToolFilterFallbackActive(),
+		HiddenTools:        session.ConfiguredHiddenToolNames(),
+		PickerTools:        session.PickerToolNames(),
 	})
 }
 

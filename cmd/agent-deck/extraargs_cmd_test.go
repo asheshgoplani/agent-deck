@@ -152,6 +152,7 @@ func TestSessionSetExtraArgs(t *testing.T) {
 	}
 	if match == nil {
 		t.Fatalf("session %s not found in list", addResp.ID)
+		return
 	}
 	for _, tok := range match.ExtraArgs {
 		if tok == "" {

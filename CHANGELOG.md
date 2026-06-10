@@ -7,21 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.55] - 2026-06-10
+
+### Fixed
+
+- **Codex session detector no longer polls full history after a session ID is bound** ([#1324](https://github.com/asheshgoplani/agent-deck/pull/1324)). Once `CodexSessionID` is populated, `updateCodexSession` returns early instead of walking the entire `$CODEX_HOME/sessions` tree on every poll tick. The disk scan is preserved as a bootstrap fallback for sessions that have not yet acquired a binding. Fixes unnecessary CPU burn on large Codex session histories (reported in v1.9.47).
+
+## [1.9.54] - 2026-06-10
+
 ### Added
 
-- **Comprehensive quick fork with configurable defaults**. The TUI quick fork (`f`) now creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options — instead of a conversation-only fork. A new `[fork]` config section (`worktree`, `with_state`, `with_ignored`, `docker = "auto"|"on"|"off"`, `branch_prefix`, `inherit_from_parent`) makes these defaults configurable; unset keys default to the comprehensive behavior. **Behavior change:** the `Shift+F` fork dialog now opens pre-seeded from `[fork]` defaults (comprehensive, "tweak down") rather than honoring `[worktree].default_enabled` / `[docker].default_enabled`.
-- **Cross-tool fork parity (Claude / OpenCode / Pi / Codex)**. Forking now works consistently across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) from the TUI, CLI (`agent-deck session fork <id>`), and Web UI, routed through one shared tool-specific dispatcher. Adds Codex session forking (`codex fork <session-id>`), OpenCode CLI fork + worktree support, and Web fork affordances driven by backend forkability instead of hardcoded Claude checks.
-- **Fork quality + safety hardening**. `Shift+F` honors `[fork].branch_prefix`; OpenCode/Codex session-id mutators validate IDs and generated fork shell commands are shell-quoted; settings preserve `[fork]` on save; and real-binary fork evals now fail on tool fork errors instead of only checking worktree creation.
+- **Configurable agent tool-visibility denylist** ([#1346](https://github.com/asheshgoplani/agent-deck/pull/1346)). A new `[ui].hidden_tools` config option lets you hide selected agent tools from the picker (TUI + web), with a picker UI for managing the list. The `shell` tool is always available regardless of the denylist.
+
+### Fixed
+
+- **Quick fork no longer hangs on heavy repos** ([#1354](https://github.com/asheshgoplani/agent-deck/pull/1354)). Copying gitignored files during a fork is now opt-in via `[fork].with_ignored` (default off), fixing quick-fork hanging indefinitely on repos with large gitignored trees (regression since v1.9.49, [#1299](https://github.com/asheshgoplani/agent-deck/pull/1299)).
+- **Claude name-sync no longer clobbers user renames or fork titles** ([#1355](https://github.com/asheshgoplani/agent-deck/pull/1355)). Syncing a session's name from Claude no longer overwrites a title the user set manually or a fork's title. Renames now set `TitleLocked` consistently across the TUI, web, and CLI.
+
+### Changed
+
+- **Hardened the cross-platform persistence-verification harness** ([#1309](https://github.com/asheshgoplani/agent-deck/pull/1309)). `verify-session-persistence.sh` now degrades truthfully on macOS/non-systemd hosts: scenarios 3/4 `[SKIP]` when claude argv is unobservable on non-stub hosts — but `[FAIL]` in stub mode (`AGENT_DECK_VERIFY_USE_STUB=1`, i.e. CI), where the stub must record args and a `[SKIP]` would be a false-green on the mandatory gate. Scenario 5 resolves its tmux name via `session show --json`, and a malformed-JSON payload from a successful `session show --json` is surfaced (loud error) rather than masked as an empty name; likewise any non-not-found error from `session show --json` (exit 1 = DB/load/permission) now surfaces instead of degrading to a false-green `[SKIP]` — including down the argv-capture path, where scenarios 3/4 now `[FAIL]` on a real resolver error regardless of stub mode (vs flattening it to empty→`[SKIP]`). Cleanup removes ONLY the exact session titles this invocation created (tracked as each is created) — never a `verify-persist-${PID}` prefix match on `agent-deck list` output, which collided with foreign runs and fired even on a failed preflight (data-loss risks). `RUN_ID` is now per-invocation unique (PID + epoch seconds + `${RANDOM}`) rather than a bare reusable PID, so two runs can never generate identical titles and cleanup can only match its own sessions even across a reused PID. The harness cleans up its own tempdir, requires `jq` explicitly, and the fake Claude stub no longer relies on GNU-only `sleep infinity`. Gated by new macOS + Linux unit tests.
+
+## [1.9.53] - 2026-06-09
+
+### Fixed
+
+- **Notify-daemon no longer rebinds stopped/removed sessions from a stale SessionEnd hook** ([#1352](https://github.com/asheshgoplani/agent-deck/pull/1352)). A late-arriving `SessionEnd` hook could re-bind a session that had already been stopped or removed, causing session-id collisions that led to `session output` reading the wrong pane, dropped child-completion notifications, and mis-delivered input. The daemon now ignores stale rebind requests for sessions that are no longer active. Closes [#1349](https://github.com/asheshgoplani/agent-deck/issues/1349).
+- **Create the notifier/bridge systemd log dir before start** ([#1347](https://github.com/asheshgoplani/agent-deck/pull/1347)). The conductor now creates the notifier/bridge log directory before launching the unit, avoiding a 209/STDOUT systemd crash-loop when the directory did not yet exist.
+- **Only inject `/opt/homebrew/bin` into generated systemd unit PATH on macOS** ([#1348](https://github.com/asheshgoplani/agent-deck/pull/1348)). The generated conductor systemd unit now adds `/opt/homebrew/bin` to `PATH` only on macOS, instead of unconditionally.
+
+## [1.9.52] - 2026-06-09
+
+### Fixed
+
+- **Shift+Enter and other modified keys work under the kitty keyboard protocol** ([#1333](https://github.com/asheshgoplani/agent-deck/pull/1333)). Modified keys are now delivered in CSI-u form so that Shift+Enter (and other modifier combinations) reach the underlying agent correctly in kitty.
+- **Deleting the default group reports an error instead of a silent no-op** ([#1334](https://github.com/asheshgoplani/agent-deck/pull/1334)). The TUI now surfaces an error when a user attempts to delete the default group, rather than silently doing nothing.
+
+### Changed
+
+- **Bump go-minor-patch dependency group** ([#1340](https://github.com/asheshgoplani/agent-deck/pull/1340)). Bumps `golang.org/x/sync` (0.20 → 0.21), `golang.org/x/sys` (0.45 → 0.46), `golang.org/x/term` (0.43 → 0.44), and `modernc.org/sqlite` (1.51 → 1.52).
+
+## [1.9.51] - 2026-06-09
+
+### Added
+
+- **Global `default_path` config key for `agent-deck add`** ([#1303](https://github.com/asheshgoplani/agent-deck/pull/1303)). A new top-level `default_path` key in `~/.config/agent-deck/config.toml` (or `~/.agent-deck/config.toml`) provides a persistent fallback directory for `agent-deck add` when no explicit path or group `default_path` is specified. Tilde, `$VAR`, and `${VAR}` expansion are applied; if the resolved path does not exist the tool falls through to `cwd`.
+- **`show_pane_titles` display toggle** ([#1343](https://github.com/asheshgoplani/agent-deck/pull/1343)). A new `[display] show_pane_titles = true` config key (and matching Settings panel toggle) shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected one.
+- **Session ID in preview copy** ([#1339](https://github.com/asheshgoplani/agent-deck/pull/1339)). The `C` / `Shift+C` preview copy now includes a `Session: <id>` line matching the ID shown in the preview pane, so users can yank the session ID along with the other session info.
+- **Jujutsu quick-fork with-state materialization** ([#1311](https://github.com/asheshgoplani/agent-deck/pull/1311)). `f` (quick fork) and `Shift+F` on a jj repo now materialise the parent's uncommitted and gitignored working state into the new jj workspace — matching the existing git with-state path. Lifts the interim `gateForkStateForBackend` gate for jj; the ForkDialog no longer pre-checks with-state and fails on submit for jj repos.
+
+### Fixed
+
+- **OpenClaw bridge protocol version bump 3 → 4** ([#1342](https://github.com/asheshgoplani/agent-deck/pull/1342)). Aligns the client's `ProtocolVersion` constant with the gateway's current version 4.
+- **Serialize mcppool stdin writes to prevent JSON-RPC framing corruption** ([#1329](https://github.com/asheshgoplani/agent-deck/pull/1329)). Concurrent `handleClient` goroutines could interleave their writes to the MCP process stdin, corrupting JSON-RPC framing. A `stdinMu sync.Mutex` now serialises each complete `payload + newline` write atomically.
+- **Close tmux control pipes on signal exit to prevent orphaned clients** ([#1332](https://github.com/asheshgoplani/agent-deck/pull/1332)). `SIGHUP` (terminal window close) is now caught alongside `SIGINT`/`SIGTERM`, and `PipeManager.Close()` is called before the DB resignation so control-mode clients detach cleanly instead of reparenting and piling up against the tmux server.
 
 ## [1.9.50] - 2026-06-08
 
 ### Fixed
 
+- **Data-loss: preserve dotfiles-managed symlinks on config writes**. A new `internal/atomicfile` helper performs symlink-preserving atomic writes: when a config path is a symlink it resolves the real target and writes there (handling dangling chains and symlink loops), so a dotfiles-managed config file stays a symlink instead of being clobbered by a regular file. Applied to the Claude config files ([#1314](https://github.com/asheshgoplani/agent-deck/pull/1314)), Gemini config files ([#1316](https://github.com/asheshgoplani/agent-deck/pull/1316)), Hermes config file ([#1318](https://github.com/asheshgoplani/agent-deck/pull/1318)), Cursor `mcp.json` ([#1320](https://github.com/asheshgoplani/agent-deck/pull/1320)), and `config.toml` ([#1322](https://github.com/asheshgoplani/agent-deck/pull/1322)). Strengthened remove-hooks symlink regression assertion ([#1323](https://github.com/asheshgoplani/agent-deck/pull/1323)).
+- **tmux quick-switch now works on the XDG layout** ([#1328](https://github.com/asheshgoplani/agent-deck/pull/1328), [#1327](https://github.com/asheshgoplani/agent-deck/pull/1327)). The ack-signal directory is now created before use so `ctrl+b <n>` quick-switch works under the XDG path layout, and the bind script is shell-escaped to harden against injection.
+- **Quick-create shell sessions no longer send a literal "shell" command** ([#1307](https://github.com/asheshgoplani/agent-deck/pull/1307)). The TUI quick-create path stopped injecting the literal `shell` string into shell sessions.
+- **gg-detection timer reset when group dialog closes** ([#1312](https://github.com/asheshgoplani/agent-deck/pull/1312)).
 - **PTY exhaustion from test cleanup: TestMain defer leak plugged** ([#1310](https://github.com/asheshgoplani/agent-deck/pull/1310)). All 11 package `TestMain` functions that ended with `os.Exit(code)` while holding `defer cleanup()` registrations now route through a `runTestMain` helper so the defers actually run. This prevented tmux bootstrap servers and isolated TMUX_TMPDIR sockets from being killed on test binary exit, silently accumulating pty handles until the OS pty pool (`kern.tty.ptmx_max=511`) was exhausted. Adds an AST-level audit test and a behavioral sentinel test (drives the real `TestMain` exit path in a child process) to prevent regression.
 
 ### Added
 
+- **Comprehensive quick fork + cross-tool fork parity (Claude / OpenCode / Pi / Codex / jj)** ([#1299](https://github.com/asheshgoplani/agent-deck/pull/1299)). The TUI quick fork (`f`) now creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options — instead of a conversation-only fork. A new `[fork]` config section (`worktree`, `with_state`, `with_ignored`, `docker = "auto"|"on"|"off"`, `branch_prefix`, `inherit_from_parent`) makes these defaults configurable; unset keys default to the comprehensive behavior. Forking now works consistently across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) from the TUI, CLI (`agent-deck session fork <id>`), and Web UI, routed through one shared tool-specific dispatcher; adds Codex session forking (`codex fork <session-id>`), OpenCode CLI fork + worktree support, and Web fork affordances driven by backend forkability. `Shift+F` honors `[fork].branch_prefix`; session-id mutators validate IDs and generated fork shell commands are shell-quoted; settings preserve `[fork]` on save. **Behavior change:** the `Shift+F` fork dialog now opens pre-seeded from `[fork]` defaults (comprehensive, "tweak down") rather than honoring `[worktree].default_enabled` / `[docker].default_enabled`.
 - **Reproducible Flox dev environment** ([#1302](https://github.com/asheshgoplani/agent-deck/pull/1302)). Adds `.flox/env/manifest.toml` and `manifest.lock` pinning the full dev/test toolchain (Go, golangci-lint, tmux, jq, gh, Node.js 20, goreleaser, and the three agent CLIs) across macOS and Linux on both arm64 and x86_64. Activate with `flox activate` in any checkout.
+
+### Changed
+
+- **Pin GitHub Actions to commit SHAs in the release workflow** ([#1326](https://github.com/asheshgoplani/agent-deck/pull/1326)). Supply-chain hardening: third-party actions in `release.yml` are pinned to immutable commit SHAs.
+- **Reconcile XDG test isolation after rebase** ([#1304](https://github.com/asheshgoplani/agent-deck/pull/1304)).
 
 ## [1.9.49] - 2026-06-07
 

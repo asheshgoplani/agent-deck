@@ -169,6 +169,45 @@ The session-id binding contract is documented at `docs/session-id-lifecycle.md` 
 - No scope creep — if a plan wants to refactor code outside the paths named above, stop and escalate to the conductor.
 - No mocking of tmux or systemd in the persistence tests — use the real binaries; skip on hosts that don't have them.
 
+### Cross-platform degradation contract (v1.5.2 harness hardening)
+
+`scripts/verify-session-persistence.sh` MUST run cleanly on non-systemd hosts:
+
+- Scenario 2 (login-teardown) and the cgroup branch of scenario 1 `[SKIP]` on
+  non-Linux — unchanged; these gate a Linux+systemd-only contract.
+- Scenarios 3/4 `[SKIP]` on **non-stub hosts** (real `claude`, e.g.
+  macOS/no-systemd dev) when claude argv is unobservable for the managed session
+  (stub bypassed by a pre-existing shared tmux daemon, or empty
+  `pane_start_command`). The harness never asserts on host-wide processes.
+- In **stub mode** (`AGENT_DECK_VERIFY_USE_STUB=1`, i.e. CI) an unobservable
+  argv is a `[FAIL]`, not a `[SKIP]`: the stub is installed and MUST record
+  args, so a `[SKIP]` there would be a false-green on the mandatory gate.
+- "Unobservable" (degrade) is distinct from a real resolver error: if argv
+  capture hits a genuine `session show` error (the nonzero cases below, not
+  not-found), scenarios 3/4 `[FAIL]` regardless of stub mode — the capture path
+  propagates the resolver's nonzero rather than flattening it to empty→`[SKIP]`.
+- Scenario 5 resolves its tmux session name via `session show --json`.
+- `jq` is an explicit harness dependency; missing `jq` is a preflight error, not
+  a silent `[SKIP]`. For `session show --json`, only the EXPECTED not-found
+  (`exit 2`, `ErrCodeNotFound`) is swallowed → unresolved/empty; ANY other
+  nonzero (`exit 1` = DB/load/permission/crash) and a malformed-JSON payload
+  from a SUCCESSFUL call are SURFACED (loud error + nonzero), never degraded to
+  an empty name and a false-green `[SKIP]`.
+- Cleanup removes ONLY the exact session titles this invocation created (tracked
+  in `CREATED_SESSIONS` as each is created) and its own
+  `${TMPDIR}/adeck-verify.*` tempdir. It NEVER prefix/text-parses
+  `agent-deck list`: `SESSION_PREFIX="verify-persist-${PID}"` is a bare prefix
+  that collides (PID `123` matches a foreign `verify-persist-1234-*`), and that
+  path fired even on a failed preflight that created nothing — both data-loss
+  risks. Empty created-list ⇒ no-op (e.g. failed preflight). Trade-off: a
+  hard-killed run's sessions are not swept by a later run.
+- `RUN_ID` (hence every session title) is per-invocation unique — PID + epoch
+  seconds + `${RANDOM}`, not a bare reusable PID — so two runs can never
+  generate identical titles, and the exact-title cleanup can only ever match its
+  own sessions even if the OS reuses a PID across a hard-killed prior run.
+
+Unit-gated by `scripts/verify-session-persistence_test.go` on macOS + Linux CI.
+
 ## Success criteria for the milestone
 
 1. On the user's conductor host, after installing v1.5.2, `launch_in_user_scope` is effectively `true` without any config edit. Proof: `systemctl --user status` shows `agentdeck-tmux-*.scope` units.

@@ -73,6 +73,7 @@ func forceSetStatus(t *testing.T, home, id string, status session.Status) {
 	}
 	if target == nil {
 		t.Fatalf("instance %s not found (had %d instances)", id, len(instances))
+		return
 	}
 	target.Status = status
 	tree := session.NewGroupTreeWithGroups(instances, groups)

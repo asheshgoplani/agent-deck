@@ -48,6 +48,10 @@ type UserConfig struct {
 	// If empty or invalid, defaults to "shell" (no pre-selection)
 	DefaultTool string `toml:"default_tool"`
 
+	// DefaultPath is the global fallback project directory for `agent-deck add`
+	// when no explicit path or group default_path is provided.
+	DefaultPath string `toml:"default_path"`
+
 	// Hotkeys overrides default keyboard shortcuts in the TUI.
 	// Keys are action names, values are key bindings (e.g., "delete" = "backspace").
 	// Set an action to "" to explicitly unbind it.
@@ -248,6 +252,11 @@ type UISettings struct {
 	// tool.
 	ShowOnlyInstalledTools bool `toml:"show_only_installed_tools"`
 
+	// HiddenTools lists tool names to hide from the new-session picker (TUI + web).
+	// Denylist: absent or empty shows every tool (subject to show_only_installed_tools).
+	// shell is always shown and cannot be hidden.
+	HiddenTools []string `toml:"hidden_tools"`
+
 	// Footer controls the style of the bottom hint bar. Valid values:
 	//   "full" (default)    — the historic verbose bar: filled key chips,
 	//                         width-adaptive, advertising every action. This is
@@ -272,6 +281,46 @@ type UISettings struct {
 	// Ctrl+S becomes the explicit submit shortcut. Ctrl+S submits in BOTH modes —
 	// it is strictly additive and always available regardless of this toggle.
 	NewSessionEnterAdvances bool `toml:"new_session_enter_advances"`
+}
+
+// normalizeUIHiddenTools lowercases, dedupes, and drops unknown entries from
+// [ui].hidden_tools. shell cannot be hidden. Unknown names log a warning.
+func normalizeUIHiddenTools(ui *UISettings, customTools map[string]ToolDef) {
+	if ui == nil || len(ui.HiddenTools) == 0 {
+		return
+	}
+	known := make(map[string]bool, len(builtinTools())+len(customTools))
+	for _, bt := range builtinTools() {
+		known[strings.ToLower(strings.TrimSpace(bt.Name))] = true
+	}
+	for name := range customTools {
+		n := strings.ToLower(strings.TrimSpace(name))
+		if n != "" {
+			known[n] = true
+		}
+	}
+
+	seen := make(map[string]bool, len(ui.HiddenTools))
+	out := make([]string, 0, len(ui.HiddenTools))
+	for _, raw := range ui.HiddenTools {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" || name == "shell" {
+			continue
+		}
+		if !known[name] {
+			registryLog.Warn("ignored unknown hidden_tools entry",
+				"name", raw,
+				"hint", "use a built-in or custom tool name from config.toml")
+			continue
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	ui.HiddenTools = out
 }
 
 // DefaultPreviewPct is the default preview-pane width percentage.
@@ -1979,7 +2028,9 @@ type ForkSettings struct {
 	Worktree *bool `toml:"worktree"`
 	// WithState carries the parent's tracked uncommitted changes. nil => true.
 	WithState *bool `toml:"with_state"`
-	// WithIgnored also copies gitignored files (implies WithState). nil => true.
+	// WithIgnored also copies gitignored files (implies WithState). nil => false:
+	// the gitignored tree is unbounded (data sets, virtual envs, node_modules)
+	// and may carry secrets (.env), so copying it is opt-in. See GetWithIgnored.
 	WithIgnored *bool `toml:"with_ignored"`
 	// Docker selects sandbox behavior: "auto" (match parent) | "on" | "off".
 	// nil/unknown => "auto". Mirrors the [tmux].launch_as string-enum convention.
@@ -1994,8 +2045,13 @@ func (f ForkSettings) GetWorktree() bool { return f.Worktree == nil || *f.Worktr
 // GetWithState reports whether forks carry tracked state (default ON).
 func (f ForkSettings) GetWithState() bool { return f.WithState == nil || *f.WithState }
 
-// GetWithIgnored reports whether forks copy gitignored files (default ON).
-func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored == nil || *f.WithIgnored }
+// GetWithIgnored reports whether forks copy gitignored files (default OFF).
+// Off by default because the gitignored tree is unbounded (data sets, virtual
+// envs, node_modules) and can carry secrets (.env); copying it silently blocks
+// the fork with no size cap or progress. Opt in per fork via the Shift+F
+// dialog, globally via [fork].with_ignored = true, or wholesale via
+// inherit_from_parent.
+func (f ForkSettings) GetWithIgnored() bool { return f.WithIgnored != nil && *f.WithIgnored }
 
 // GetDocker returns the canonical docker mode: "auto" | "on" | "off".
 // Mirrors GetLaunchAs: lowercase/trim, unknown/nil -> "auto".
@@ -2106,6 +2162,11 @@ type DisplaySettings struct {
 	// Default: false — opt-in to avoid crowding existing badges. See
 	// renderSessionItem for the timestamp source.
 	ShowSessionTimestamps bool `toml:"show_session_timestamps"`
+
+	// ShowPaneTitles shows the dim tmux pane-title (task description) suffix on
+	// every session row, not just the selected one. Default: false — opt-in to
+	// avoid crowding narrow sidebars. See renderSessionItem for the source.
+	ShowPaneTitles bool `toml:"show_pane_titles"`
 }
 
 // GetActiveFilterExcludes returns the resolved set of statuses the % filter
@@ -2282,6 +2343,8 @@ func LoadUserConfig() (*UserConfig, error) {
 	if config.Plugins == nil {
 		config.Plugins = make(map[string]PluginDef)
 	}
+
+	normalizeUIHiddenTools(&config.UI, config.Tools)
 
 	userConfigCache = &config
 	userConfigCacheMtime = currentMtime

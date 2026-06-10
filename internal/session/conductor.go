@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -868,7 +869,12 @@ func isExecutablePath(path string) bool {
 // processes (launchd, systemd) that don't inherit the user's shell PATH can
 // still find the agent-deck binary.
 func buildDaemonPath(agentDeckPath string) string {
-	baseEntries := []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	baseEntries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	if runtime.GOOS == "darwin" {
+		// Homebrew on Apple Silicon installs to /opt/homebrew/bin; that path
+		// does not exist on Linux, so only include it on macOS.
+		baseEntries = []string{"/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}
+	}
 	ordered := make([]string, 0, len(baseEntries)+1)
 	seen := map[string]struct{}{}
 
@@ -1590,6 +1596,7 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=-/bin/mkdir -p __LOG_DIR__
 ExecStart=__PYTHON3__ __BRIDGE_PATH__
 Restart=always
 RestartSec=10
@@ -1615,6 +1622,7 @@ After=network.target
 
 [Service]
 Type=simple
+ExecStartPre=-/bin/mkdir -p __LOG_DIR__
 ExecStart=__AGENT_DECK__ notify-daemon
 Restart=always
 RestartSec=5
@@ -1733,6 +1741,7 @@ func GenerateSystemdBridgeService() (string, error) {
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
+	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	agentDeckPath := FindAgentDeck()
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
@@ -1789,6 +1798,7 @@ func GenerateSystemdTransitionNotifierService() (string, error) {
 
 	unit := strings.ReplaceAll(systemdTransitionNotifierServiceTemplate, "__AGENT_DECK__", execPath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
+	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil

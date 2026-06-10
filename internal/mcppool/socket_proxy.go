@@ -60,6 +60,11 @@ type SocketProxy struct {
 	// Key type: int64; value type: idMapping.
 	idMap sync.Map
 
+	// stdinMu serializes writes to mcpStdin. Each request must be written as
+	// a complete JSON line (payload + newline) atomically; without this, concurrent
+	// handleClient goroutines can interleave their writes and corrupt the framing.
+	stdinMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -413,8 +418,10 @@ func (p *SocketProxy) handleClient(sessionID string, conn net.Conn) {
 			}
 		}
 
+		p.stdinMu.Lock()
 		_, _ = p.mcpStdin.Write(line)
 		_, _ = p.mcpStdin.Write([]byte("\n"))
+		p.stdinMu.Unlock()
 
 		logging.Aggregate(logging.CompPool, "mcp_request",
 			slog.String("mcp", p.name),
