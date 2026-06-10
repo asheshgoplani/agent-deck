@@ -31,6 +31,7 @@ All options for `~/.agent-deck/config.toml`.
 
 ```toml
 default_tool = "claude"   # Pre-selected tool when creating sessions
+default_path = ""         # Fallback project directory for add/launch without a path
 sync_title   = true       # Let agents rename sessions from their session-name
 group_sort   = "creation" # within-group order: "creation" (default) or "actionable"
 ```
@@ -38,6 +39,7 @@ group_sort   = "creation" # within-group order: "creation" (default) or "actiona
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_tool` | string | `"claude"` | Pre-selected tool when creating sessions. |
+| `default_path` | string | `""` | Fallback project directory for `add` and `launch` when no path argument is given (#1303). Resolution chain: explicit path arg (including `.`, which always means the current directory) → target group's `default_path` (DB-resident, set via `group update` or the TUI) → this key → cwd. Supports `~` and `$VAR` expansion; silently skipped if the directory doesn't exist. |
 | `sync_title` | bool | `true` | When `true`, agent-deck overwrites a session's title with the agent's own session-name (e.g. Claude's `--name` / `/rename`, issues #572/#697). Set `false` to keep the title you gave the session — globally, for every tool. The per-session title-lock (`agent-deck session set-title-lock <id> on`) remains as a finer-grained override. Also toggleable in the TUI Settings panel (`S`) under **SESSIONS**. |
 | `group_sort` | string | `"creation"` | Order of sessions within a group. `"creation"` (default) keeps the order sessions were created in, and respects the `K`/`J` manual reorder. `"actionable"` restores the issue #857 sort that surfaces the most recently actionable sessions (error → waiting → running → idle → stopped, then recency) to the top of each group. Pin and Maestro rows are unaffected by this setting. |
 
