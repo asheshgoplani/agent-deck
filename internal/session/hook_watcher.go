@@ -28,6 +28,10 @@ type HookStatus struct {
 	// detected on the Stop edge (issue #1186). Empty for ordinary turns.
 	DoneStatus  string // "ok" or "fail" when a completion sentinel was seen
 	DoneSummary string // free-text completion summary
+	// TranscriptPath is set when the Stop-edge sentinel scan was inconclusive
+	// because the turn's assistant record had not flushed yet (issue #1186
+	// flush race). The transition daemon re-scans this path on its poll loop.
+	TranscriptPath string
 }
 
 // StatusFileWatcher watches ~/.agent-deck/hooks/ for status file changes
@@ -192,24 +196,26 @@ func (w *StatusFileWatcher) scanDisk() map[string]*HookStatus {
 			continue
 		}
 		var raw struct {
-			Status      string `json:"status"`
-			SessionID   string `json:"session_id"`
-			Event       string `json:"event"`
-			Timestamp   int64  `json:"ts"`
-			DoneStatus  string `json:"done_status"`
-			DoneSummary string `json:"done_summary"`
+			Status         string `json:"status"`
+			SessionID      string `json:"session_id"`
+			Event          string `json:"event"`
+			Timestamp      int64  `json:"ts"`
+			DoneStatus     string `json:"done_status"`
+			DoneSummary    string `json:"done_summary"`
+			TranscriptPath string `json:"transcript_path"`
 		}
 		if uerr := json.Unmarshal(data, &raw); uerr != nil {
 			continue
 		}
 		instanceID := strings.TrimSuffix(entry.Name(), ".json")
 		out[instanceID] = &HookStatus{
-			Status:      raw.Status,
-			SessionID:   raw.SessionID,
-			Event:       raw.Event,
-			UpdatedAt:   time.Unix(raw.Timestamp, 0),
-			DoneStatus:  raw.DoneStatus,
-			DoneSummary: raw.DoneSummary,
+			Status:         raw.Status,
+			SessionID:      raw.SessionID,
+			Event:          raw.Event,
+			UpdatedAt:      time.Unix(raw.Timestamp, 0),
+			DoneStatus:     raw.DoneStatus,
+			DoneSummary:    raw.DoneSummary,
+			TranscriptPath: raw.TranscriptPath,
 		}
 	}
 	return out
@@ -277,12 +283,13 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	}
 
 	var status struct {
-		Status      string `json:"status"`
-		SessionID   string `json:"session_id"`
-		Event       string `json:"event"`
-		Timestamp   int64  `json:"ts"`
-		DoneStatus  string `json:"done_status"`
-		DoneSummary string `json:"done_summary"`
+		Status         string `json:"status"`
+		SessionID      string `json:"session_id"`
+		Event          string `json:"event"`
+		Timestamp      int64  `json:"ts"`
+		DoneStatus     string `json:"done_status"`
+		DoneSummary    string `json:"done_summary"`
+		TranscriptPath string `json:"transcript_path"`
 	}
 	if err := json.Unmarshal(data, &status); err != nil {
 		hookLog.Warn("hook_file_corrupt",
@@ -299,12 +306,13 @@ func (w *StatusFileWatcher) processFile(filePath string) {
 	instanceID := strings.TrimSuffix(base, ".json")
 
 	hookStatus := &HookStatus{
-		Status:      status.Status,
-		SessionID:   status.SessionID,
-		Event:       status.Event,
-		UpdatedAt:   time.Unix(status.Timestamp, 0),
-		DoneStatus:  status.DoneStatus,
-		DoneSummary: status.DoneSummary,
+		Status:         status.Status,
+		SessionID:      status.SessionID,
+		Event:          status.Event,
+		UpdatedAt:      time.Unix(status.Timestamp, 0),
+		DoneStatus:     status.DoneStatus,
+		DoneSummary:    status.DoneSummary,
+		TranscriptPath: status.TranscriptPath,
 	}
 
 	w.mu.Lock()
