@@ -1660,7 +1660,7 @@ func handleAdd(profile string, args []string) {
 	groupTree = session.NewGroupTreeWithGroups(instances, groups)
 	// Ensure the session's group exists
 	if newInstance.GroupPath != "" {
-		groupTree.CreateGroup(newInstance.GroupPath)
+		groupTree.CreateGroupPath(newInstance.GroupPath)
 	}
 
 	if err := storage.SaveWithGroups(instances, groupTree); err != nil {
