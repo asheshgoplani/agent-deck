@@ -3519,6 +3519,17 @@ func hookFastPathFreshnessForTool(tool, hookStatus string) time.Duration {
 	}
 }
 
+// deadPaneStatusLocked returns the status an unreachable or dead tmux session
+// should surface. Archived sessions were stopped deliberately — a missing tmux
+// session is their expected end state, not an error — so they report stopped
+// where a live session would flip to error. Callers must hold i.mu.
+func (i *Instance) deadPaneStatusLocked() Status {
+	if !i.ArchivedAt.IsZero() {
+		return StatusStopped
+	}
+	return StatusError
+}
+
 // UpdateStatus updates the session status by checking tmux.
 // Thread-safe: acquires write lock to protect Status, Tool, and internal cache fields.
 func (i *Instance) UpdateStatus() error {
@@ -3546,7 +3557,7 @@ func (i *Instance) UpdateStatus() error {
 
 	if i.tmuxSession == nil {
 		if i.Status != StatusStopped {
-			i.Status = StatusError
+			i.Status = i.deadPaneStatusLocked()
 		}
 		return nil
 	}
@@ -3562,7 +3573,7 @@ func (i *Instance) UpdateStatus() error {
 	// Check if tmux session exists
 	if !i.tmuxSession.Exists() {
 		if i.Status != StatusStopped {
-			i.Status = StatusError
+			i.Status = i.deadPaneStatusLocked()
 		}
 		i.lastErrorCheck = time.Now() // Record when we confirmed error/stopped
 		return nil
@@ -3642,7 +3653,7 @@ func (i *Instance) UpdateStatus() error {
 				}
 			}
 		case "dead":
-			i.Status = StatusError
+			i.Status = i.deadPaneStatusLocked()
 		}
 		if i.hookSessionID != "" {
 			switch {
@@ -3707,7 +3718,7 @@ func (i *Instance) UpdateStatus() error {
 	}
 
 	if err != nil {
-		i.Status = StatusError
+		i.Status = i.deadPaneStatusLocked()
 		return err
 	}
 

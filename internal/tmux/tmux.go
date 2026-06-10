@@ -2291,6 +2291,21 @@ func (s *Session) EnableMouseMode() error {
 // Like RespawnPane, this captures the process tree first and ensures all
 // processes actually die. tmux kill-session sends SIGHUP which some CLI
 // tools (e.g. Claude Code 2.1.27+) ignore, leaving orphan processes.
+// isSessionAlreadyGone reports whether a failed kill-session means the target
+// session (or its whole server) was already dead. That is the outcome
+// kill-session exists to produce, so callers treat it as success — without
+// this, archiving an already-dead session surfaced a kill error and the
+// StatusStopped persist was skipped, leaving the row stuck in error status.
+// stderr text is the only signal: tmux uses exit status 1 for both "not
+// found" and genuine failures.
+func isSessionAlreadyGone(out []byte) bool {
+	msg := string(out)
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "session not found") ||
+		strings.Contains(msg, "no server running") ||
+		strings.Contains(msg, "error connecting to")
+}
+
 func (s *Session) Kill() error {
 	// Disconnect control mode pipe
 	if pm := GetPipeManager(); pm != nil {
@@ -2309,7 +2324,10 @@ func (s *Session) Kill() error {
 
 	// Kill the tmux session
 	cmd := s.tmuxCmd("kill-session", "-t", s.Name)
-	err := cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil && isSessionAlreadyGone(out) {
+		err = nil
+	}
 
 	// Verify old processes are dead; escalate to SIGKILL if needed
 	if len(oldPIDs) > 0 {

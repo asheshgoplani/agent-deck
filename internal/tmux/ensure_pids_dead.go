@@ -169,7 +169,10 @@ func (s *Session) KillAndWait() error {
 	_, oldPIDs := s.getPaneProcessTree()
 
 	cmd := execCommand("tmux", "kill-session", "-t", s.Name)
-	killErr := cmd.Run()
+	out, killErr := cmd.CombinedOutput()
+	if killErr != nil && isSessionAlreadyGone(out) {
+		killErr = nil
+	}
 
 	if len(oldPIDs) > 0 {
 		EnsurePIDsDead(oldPIDs, 3*time.Second)
