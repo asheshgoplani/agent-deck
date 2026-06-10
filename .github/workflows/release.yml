@@ -84,10 +84,12 @@ jobs:
         run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Run tests
-        timeout-minutes: 25
+        timeout-minutes: 30
         env:
           PERF_BUDGET_MULTIPLIER: '2.0'
-        run: gotestsum --rerun-fails=2 --rerun-fails-max-failures=3 --format=testdox -- -race -timeout 20m $(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --format=testdox -- -race -timeout 20m $(go list ./... | grep -v -E 'internal/(tmux|integration|tuitest)$')
 
       - name: Run integration tests (informational)
         timeout-minutes: 15

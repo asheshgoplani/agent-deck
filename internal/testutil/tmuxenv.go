@@ -3,6 +3,7 @@ package testutil
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Name of the marker env var set during test isolation. Runtime guards in
@@ -81,6 +82,31 @@ func IsolateTmuxSocket() func() {
 		// the kernel removes them when the bound tmux server exits.
 		_ = os.RemoveAll(dir)
 	}
+}
+
+// ShortTmuxSocket returns a tmux -S socket path under a short base dir (/tmp
+// when writable, via shortTmuxTmpBase) that fits the darwin sun_path 104-byte
+// limit regardless of $TMPDIR length or test name, plus a cleanup func that
+// removes the dir. Use for any test that passes its own `tmux -S <path>`;
+// t.TempDir() on darwin resolves under /var/folders/<hash>/T/<TestName>... and
+// overshoots the limit for long test names ("File name too long").
+//
+//	socket, cleanup := testutil.ShortTmuxSocket()
+//	t.Cleanup(cleanup)
+func ShortTmuxSocket() (socket string, cleanup func()) {
+	dir, err := os.MkdirTemp(shortTmuxTmpBase(), "ad-sock-")
+	if err != nil {
+		// Primary MkdirTemp failed. Retry directly under /tmp so each call
+		// still gets a UNIQUE dir (MkdirTemp's random suffix) that fits
+		// sun_path; a PID-keyed path would be process-constant and collide
+		// across calls, racing one call's cleanup against another's socket.
+		// A static PID path remains only as an absolute last resort.
+		if dir, err = os.MkdirTemp("/tmp", "agent-deck-test-sock-"); err != nil {
+			dir = fmt.Sprintf("/tmp/agent-deck-test-sock-%d", os.Getpid())
+			_ = os.MkdirAll(dir, 0o700)
+		}
+	}
+	return filepath.Join(dir, "s"), func() { _ = os.RemoveAll(dir) }
 }
 
 // shortTmuxTmpBase returns a short base directory for the per-test TMUX_TMPDIR.

@@ -43,6 +43,9 @@ type Registry struct {
 	filterInstalled bool            // the flag was on at Init (probe ran)
 	installed       map[string]bool // name -> command resolved on PATH (shell always true)
 	fallback        bool            // filter on AND nothing but shell resolved -> show all + hint
+
+	// userHidden is the [ui].hidden_tools denylist (always applied).
+	userHidden map[string]bool
 }
 
 var registryLog = logging.ForComponent(logging.CompSession)
@@ -89,7 +92,7 @@ func probeInstalled(command string) bool {
 // UNFILTERED registry (show_only_installed_tools off): no PATH probing happens,
 // so behavior is byte-identical to before issue #1259.
 func Init(custom map[string]ToolDef) *Registry {
-	return InitFiltered(custom, false)
+	return InitFiltered(custom, false, nil)
 }
 
 // InitFiltered builds a Registry, optionally running the show_only_installed_tools
@@ -101,7 +104,7 @@ func Init(custom map[string]ToolDef) *Registry {
 // registry (currentRegistry) rebuilds whenever the cached *UserConfig pointer
 // changes, so a mid-session config edit re-probes on the next dialog open. There
 // is deliberately no separate timer/refresh path (issue #1259 caching note).
-func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool) *Registry {
+func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool, hiddenTools []string) *Registry {
 	r := &Registry{
 		builtins: make(map[string]builtinTool),
 		custom:   make(map[string]ToolDef),
@@ -118,6 +121,13 @@ func InitFiltered(custom map[string]ToolDef, showOnlyInstalled bool) *Registry {
 			continue
 		}
 		r.custom[name] = def
+	}
+
+	if len(hiddenTools) > 0 {
+		r.userHidden = make(map[string]bool, len(hiddenTools))
+		for _, name := range hiddenTools {
+			r.userHidden[name] = true
+		}
 	}
 
 	if showOnlyInstalled {
@@ -263,13 +273,17 @@ func (r *Registry) All() []ToolDef {
 // consults these methods, so `agent-deck launch -c <hidden-tool>` still works.
 
 // IsVisible reports whether a tool name should appear in the new-session dialogs.
-// It returns true (show everything) when the filter is off or the empty-fallback
-// is active. "shell" (and its empty-command alias "") is always visible.
+// The [ui].hidden_tools denylist is always applied. show_only_installed_tools
+// is applied when enabled unless the empty-fallback is active. "shell" (and its
+// empty-command alias "") is always visible.
 func (r *Registry) IsVisible(name string) bool {
-	if !r.filterInstalled || r.fallback {
+	if name == "" || name == "shell" {
 		return true
 	}
-	if name == "" || name == "shell" {
+	if r.userHidden[name] {
+		return false
+	}
+	if !r.filterInstalled || r.fallback {
 		return true
 	}
 	return r.installed[name]
@@ -303,18 +317,24 @@ func (r *Registry) Visible() []ToolDef {
 }
 
 // FilterVisibleNames returns names with hidden tools removed. The empty command
-// "" (shell) is always kept. With the filter off (or in fallback) the input is
-// returned unchanged, preserving each call site's existing ordering byte-for-byte.
+// "" (shell) is always kept.
 func (r *Registry) FilterVisibleNames(names []string) []string {
-	if !r.filterInstalled || r.fallback {
-		return names
-	}
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if r.IsVisible(n) {
 			out = append(out, n)
 		}
 	}
+	return out
+}
+
+// HiddenToolNames returns the configured [ui].hidden_tools denylist.
+func (r *Registry) HiddenToolNames() []string {
+	out := make([]string, 0, len(r.userHidden))
+	for name := range r.userHidden {
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -347,11 +367,13 @@ func currentRegistry() *Registry {
 
 	var custom map[string]ToolDef
 	showOnlyInstalled := false
+	var hiddenTools []string
 	if cfg != nil {
 		custom = cfg.Tools
 		showOnlyInstalled = cfg.UI.ShowOnlyInstalledTools
+		hiddenTools = cfg.UI.HiddenTools
 	}
-	registryCache = InitFiltered(custom, showOnlyInstalled)
+	registryCache = InitFiltered(custom, showOnlyInstalled, hiddenTools)
 	registryCacheCfg = cfg
 	return registryCache
 }
@@ -405,4 +427,33 @@ func ToolFilterActive() bool {
 // nothing but shell resolved) so dialogs can surface the "showing all" hint.
 func ToolFilterFallbackActive() bool {
 	return currentRegistry().FilterFallback()
+}
+
+// ConfiguredHiddenToolNames returns the [ui].hidden_tools denylist from config.
+func ConfiguredHiddenToolNames() []string {
+	return currentRegistry().HiddenToolNames()
+}
+
+// pickerPresetOrder matches buildPresetCommands in internal/ui/newdialog.go.
+var pickerPresetOrder = []string{"", "claude", "gemini", "opencode", "codex", "pi", "copilot", "crush", "cursor", "hermes"}
+
+// PickerToolNames returns tool names for the new-session picker after applying
+// hidden_tools and show_only_installed_tools. The empty command "" is mapped
+// to "shell" for web consumers.
+func PickerToolNames() []string {
+	r := currentRegistry()
+	presets := append([]string{}, pickerPresetOrder...)
+	if custom := r.CustomNames(); len(custom) > 0 {
+		presets = append(presets, custom...)
+	}
+	filtered := r.FilterVisibleNames(presets)
+	out := make([]string, 0, len(filtered))
+	for _, name := range filtered {
+		if name == "" {
+			out = append(out, "shell")
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }

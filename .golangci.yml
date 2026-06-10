@@ -40,6 +40,19 @@ linters:
           - errcheck
           - gosec
         path: _test\.go
+      # SA5011 ("possible nil pointer dereference") false-positives in tests.
+      # The idiomatic table-test guard `if ptr == nil { t.Fatal(...) }` followed
+      # by `ptr.Field` is safe because t.Fatal terminates the goroutine, but
+      # staticcheck's flow analysis (as resolved by golangci-lint-action's
+      # bundled version) does not always model t.Fatal as terminating and flags
+      # the later deref. This had cycled the lint workflow repeatedly because the
+      # `max-same-issues: 3` cap hid sites until they were fixed one batch at a
+      # time. Suppress SA5011 in test files permanently — these are never real
+      # bugs in production code.
+      - linters:
+          - staticcheck
+        path: _test\.go
+        text: 'SA5011'
       # forbidigo (os.Environ ban, #1163) applies to spawn paths. Test files,
       # the childenv chokepoint itself, and non-spawn helpers are exempt:
       #   - internal/childenv: the one allow-listed home for os.Environ()

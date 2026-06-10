@@ -1934,6 +1934,7 @@ func (s *Session) Start(command string) error {
 	// Note: history-limit is NOT set here — the user's tmux.conf value is respected.
 	// Users can override via [tmux] options = { "history-limit" = "50000" } in config.toml.
 	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - extended-keys-format csi-u: Deliver them as ESC[13;2u (kitty form Claude Code reads), not xterm ESC[27;2;13~ (tmux 3.4+)
 	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+, server-wide)
 	//
 	// Note: remain-on-exit is NOT set here — it is only enabled for sandbox sessions
@@ -1958,6 +1959,11 @@ func (s *Session) Start(command string) error {
 		"set-option", "-t", s.Name, "set-clipboard", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		"set", "-sq", "extended-keys-format", "csi-u", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Multi-client size negotiation. Web's xterm.js connects via a tmux -C
 	// control client (controlpipe.go) at the same time as native `tmux attach`
@@ -2258,6 +2264,7 @@ func (s *Session) EnableMouseMode() error {
 	// - set-clipboard on: OSC 52 clipboard integration (Warp, iTerm2, kitty, etc.)
 	// - allow-passthrough on: OSC 8 hyperlinks, advanced escape sequences (tmux 3.2+)
 	// - extended-keys on: Forward Shift+Enter and other modified keys to apps (tmux 3.2+)
+	// - extended-keys-format csi-u: Deliver them as ESC[13;2u (kitty form Claude Code reads), not xterm ESC[27;2;13~ (tmux 3.4+)
 	// - terminal-features hyperlinks+extkeys: Track hyperlinks and enable extended key reporting (tmux 3.4+)
 	// - escape-time 10: Fast Vim/editor responsiveness (default 500ms is too slow)
 	//
@@ -2267,6 +2274,11 @@ func (s *Session) EnableMouseMode() error {
 		"set-option", "-t", s.Name, "-q", "allow-passthrough", "on", ";",
 		"set-option", "-t", s.Name, "escape-time", "10", ";",
 		"set", "-sq", "extended-keys", "on", ";",
+		// csi-u so modified keys reach the pane as ESC[13;2u (the kitty
+		// keyboard-protocol form Claude Code reads) rather than the default
+		// xterm modifyOtherKeys ESC[27;2;13~, which Claude Code ignores —
+		// otherwise Shift+Enter collapses to a bare Enter and submits.
+		"set", "-sq", "extended-keys-format", "csi-u", ";",
 		"set", "-asq", "terminal-features", ",*:hyperlinks:extkeys")
 	// Ignore errors - all these are non-fatal enhancements
 	// Older tmux versions may not support some options

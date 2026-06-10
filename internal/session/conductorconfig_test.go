@@ -79,6 +79,7 @@ config_dir = "~/conductor-x"
 	}
 	if cfg == nil {
 		t.Fatalf("LoadUserConfig returned nil cfg")
+		return
 	}
 
 	fooBlock, ok := cfg.Conductors["foo"]

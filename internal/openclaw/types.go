@@ -6,7 +6,7 @@ import (
 )
 
 // Protocol version supported by this client.
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 // Frame types for the gateway WebSocket protocol.
 const (

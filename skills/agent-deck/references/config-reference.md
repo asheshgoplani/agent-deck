@@ -18,6 +18,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
+- [[ui] Section](#ui-section)
 - [[global_search] Section](#global_search-section)
 - [Skills Registry (Outside config.toml)](#skills-registry-outside-configtoml)
 - [[mcp_pool] Section](#mcp_pool-section)
@@ -309,24 +310,24 @@ branch_prefix = ""                # "my-session" -> "my-session"
 
 ## [fork] Section
 
-Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. Quick fork is **comprehensive by default**: a new git worktree + branch, the parent's uncommitted working-tree state, matched Docker isolation, and inherited Claude launch options. Unset keys default to the comprehensive behavior. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
+Defaults for forking a session — the TUI quick fork (`f`) and the `Shift+F` dialog. By default a fork creates a new git worktree + branch, carries the parent's uncommitted working-tree changes (staged, unstaged, and untracked files), matches Docker isolation, and inherits the Claude launch options. Copying **gitignored** files is **opt-in** (`with_ignored = false`): that tree is unbounded (data sets, virtual envs, `node_modules`) and can carry secrets, so it would otherwise block the fork silently. These settings are **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (which govern non-fork session creation).
 
 ```toml
 [fork]
 inherit_from_parent = false   # Mirror the parent and ignore the keys below
 worktree            = true    # Create a new worktree + branch for the fork
 with_state          = true    # Carry the parent's uncommitted changes into the fork
-with_ignored        = true    # Also copy gitignored files (implies with_state)
+with_ignored        = false   # Also copy gitignored files (implies with_state); opt-in
 docker              = "auto"  # "auto" (match parent) | "on" | "off"
 branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-title>
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state on, Docker matches parent) and the individual keys below are ignored. |
+| `inherit_from_parent` | bool | `false` | When `true`, the fork mirrors the parent (worktree + state + gitignored on, Docker matches parent) and the individual keys below are ignored. |
 | `worktree` | bool | `true` | Create a new git worktree + branch for the fork. |
-| `with_state` | bool | `true` | Carry the parent's tracked uncommitted changes (staged/unstaged/untracked) into the fork's worktree. |
-| `with_ignored` | bool | `true` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. Can be large — set `false` to skip. |
+| `with_state` | bool | `true` | Carry the parent's uncommitted working-tree changes (staged, unstaged, and untracked files; gitignored excluded unless `with_ignored`) into the fork's worktree. |
+| `with_ignored` | bool | `false` | Also copy gitignored files (e.g. `.env`, `node_modules`) into the worktree. Implies `with_state`. **Opt-in:** the gitignored tree is unbounded and may contain secrets, and the copy is blocking with no size cap. Set `true` to include it, or use `inherit_from_parent` to mirror the parent wholesale. |
 | `docker` | string | `"auto"` | Docker isolation for the fork: `"auto"` matches the parent (sandboxed parent → a fresh container; otherwise none), `"on"` always sandboxes, `"off"` never. |
 | `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
 
@@ -380,6 +381,7 @@ full_repaint = false                              # Force full screen clear ever
 default_filter = "active"                         # Initial status filter: "", "active", "running", "waiting", "idle", "error"
 active_filter_label = "Open"                      # Label for the active filter pill (default: "Open")
 active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter hides (default: ["error", "stopped"])
+show_pane_titles = false                          # Show the pane title (task description) on every row, not just the selected one
 ```
 
 | Key | Type | Default | Description |
@@ -388,6 +390,24 @@ active_filter_excludes = ["error", "stopped"]     # Statuses the % "Open" filter
 | `default_filter` | string | `""` | Status filter applied on TUI startup. `"active"` engages the configurable Open filter. Auto-clears if no sessions match. |
 | `active_filter_label` | string | `"Open"` | Label shown on the filter pill when active filter is engaged (e.g., "Active", "Live", "Open"). |
 | `active_filter_excludes` | []string | `["error", "stopped"]` | Statuses hidden when the `%` "Open" filter is engaged. Default matches the original hardcoded behavior. Valid values: `running`, `waiting`, `idle`, `error`, `starting`, `stopped`. Unknown entries are dropped silently; if the resulting list is empty the default applies. **Set to `["error"]`** to keep stopped/closed sessions visible while still hiding errors — fixes the over-broad "Open" semantics where closed sessions disappeared from view. Extend with `idle` for an aggressive "show only running/waiting" definition of open. |
+| `show_pane_titles` | bool | `false` | Shows the dim tmux pane-title (task description) suffix on every session row instead of only the selected row. Also toggleable in the TUI Settings panel (`S`) under **DISPLAY**. |
+
+## [ui] Section
+
+New-session tool picker visibility (TUI + web). Display filters only — CLI launch and existing sessions are unaffected.
+
+```toml
+[ui]
+hidden_tools = ["gemini", "opencode", "pi"]   # Denylist: hide these from the picker
+show_only_installed_tools = true              # Also hide tools not found on PATH
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `hidden_tools` | []string | `[]` | Tool names to hide from the new-session picker. `shell` is always shown and cannot be hidden. Unknown names log a warning and are ignored. Edit via TUI **Settings (`S`) → Visible tools…** or by hand in `config.toml`. |
+| `show_only_installed_tools` | bool | `false` | When `true`, hides built-in and custom tools whose command does not resolve on the host `PATH`. `shell` stays visible. If nothing else resolves, the picker falls back to showing all tools with a one-line hint. Toggle in TUI Settings under **TOOL PICKER**. |
+
+Filters compose: `hidden_tools` is applied first, then `show_only_installed_tools` (when enabled).
 
 ## [global_search] Section
 

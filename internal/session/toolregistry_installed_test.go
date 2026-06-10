@@ -76,7 +76,7 @@ func TestInstalled_FilterOffNoProbe(t *testing.T) {
 // whose command resolves are kept and missing ones are dropped — except shell.
 func TestInstalled_FilterDropsMissing(t *testing.T) {
 	withStubbedProbe(t, []string{"claude", "codex"}, func() {
-		r := InitFiltered(nil, true)
+		r := InitFiltered(nil, true, nil)
 
 		// All() is the UNFILTERED data view — still the full 11.
 		if got := len(r.All()); got != len(canonicalBuiltins) {
@@ -104,7 +104,7 @@ func TestInstalled_FilterDropsMissing(t *testing.T) {
 // name would not resolve via LookPath, it is hardcoded visible.
 func TestInstalled_ShellAlwaysShown(t *testing.T) {
 	withStubbedProbe(t, []string{"claude"}, func() { // note: "shell" NOT in the set
-		r := InitFiltered(nil, true)
+		r := InitFiltered(nil, true, nil)
 		if !r.IsVisible("shell") {
 			t.Error("IsVisible(shell) = false, want true (shell is always shown)")
 		}
@@ -126,7 +126,7 @@ func TestInstalled_CustomWrapperTreatedInstalled(t *testing.T) {
 		r := InitFiltered(map[string]ToolDef{
 			"wrapped": {Command: "my-wrapper claude"},
 			"inline":  {Command: `bash -c "exec claude"`},
-		}, true)
+		}, true, nil)
 		if !r.IsVisible("wrapped") {
 			t.Error("IsVisible(wrapped) = false, want true (whitespace wrapper -> installed)")
 		}
@@ -144,7 +144,7 @@ func TestInstalled_CompatibleWithOwnCommand(t *testing.T) {
 	withStubbedProbe(t, []string{"claude"}, func() {
 		r := InitFiltered(map[string]ToolDef{
 			"myclaude": {Command: "my-missing-claude", CompatibleWith: "claude"},
-		}, true)
+		}, true, nil)
 		if r.IsVisible("myclaude") {
 			t.Error("IsVisible(myclaude) = true, want false (own command missing; must NOT inherit claude)")
 		}
@@ -160,7 +160,7 @@ func TestInstalled_CompatibleWithOwnCommand(t *testing.T) {
 // fallback signal the dialogs read is set.
 func TestInstalled_EmptyFallback(t *testing.T) {
 	withStubbedProbe(t, nil, func() { // nothing resolves
-		r := InitFiltered(nil, true)
+		r := InitFiltered(nil, true, nil)
 		if !r.FilterFallback() {
 			t.Fatal("FilterFallback() = false, want true (nothing but shell resolved)")
 		}
@@ -186,7 +186,7 @@ func TestInstalled_FilterVisibleNames(t *testing.T) {
 	}
 
 	withStubbedProbe(t, []string{"claude"}, func() {
-		r := InitFiltered(nil, true)
+		r := InitFiltered(nil, true, nil)
 		want := []string{"", "claude"} // "" kept (shell), gemini/codex dropped
 		if got := r.FilterVisibleNames(presets); !reflect.DeepEqual(got, want) {
 			t.Errorf("FilterVisibleNames (on) = %v, want %v", got, want)
@@ -200,7 +200,7 @@ func TestInstalled_FilterVisibleNames(t *testing.T) {
 // still maps a gemini command to "gemini".
 func TestInstalled_DispatchIgnoresFilter(t *testing.T) {
 	withStubbedProbe(t, nil, func() { // gemini (and everything) hidden
-		r := InitFiltered(nil, true)
+		r := InitFiltered(nil, true, nil)
 		if r.IsVisible("gemini") && !r.FilterFallback() {
 			t.Fatal("precondition: gemini should be hidden by the filter")
 		}
@@ -218,7 +218,7 @@ func TestInstalled_AbsolutePathCustom(t *testing.T) {
 		r := InitFiltered(map[string]ToolDef{
 			"real":  {Command: "/opt/bin/real-tool"},
 			"ghost": {Command: "/opt/bin/missing-tool"},
-		}, true)
+		}, true, nil)
 		if !r.IsVisible("real") {
 			t.Error("IsVisible(real) = false, want true (absolute path exists)")
 		}
@@ -235,11 +235,75 @@ func TestInstalled_CustomNamesUnaffectedByFilter(t *testing.T) {
 		r := InitFiltered(map[string]ToolDef{
 			"a": {Command: "missing-a"},
 			"b": {Command: "missing-b"},
-		}, true)
+		}, true, nil)
 		got := r.CustomNames()
 		sort.Strings(got)
 		if !reflect.DeepEqual(got, []string{"a", "b"}) {
 			t.Errorf("CustomNames() = %v, want [a b] (data view unfiltered)", got)
 		}
 	})
+}
+
+func TestHiddenTools_DenylistAlone(t *testing.T) {
+	r := InitFiltered(nil, false, []string{"gemini", "codex"})
+	if r.IsVisible("gemini") || r.IsVisible("codex") {
+		t.Fatal("hidden tools should not be visible")
+	}
+	if !r.IsVisible("claude") {
+		t.Fatal("non-hidden tool should remain visible")
+	}
+	if !r.IsVisible("shell") || !r.IsVisible("") {
+		t.Fatal("shell must always be visible")
+	}
+	if got := r.HiddenToolNames(); !reflect.DeepEqual(got, []string{"codex", "gemini"}) {
+		t.Errorf("HiddenToolNames() = %v", got)
+	}
+}
+
+// TestHiddenTools_EmptyReturnsNonNilSlice guards the JSON-array contract: when
+// no tools are hidden, HiddenToolNames must return a non-nil, length-0 slice so
+// GET /api/settings serializes "hiddenTools":[] (a JSON array) rather than null.
+func TestHiddenTools_EmptyReturnsNonNilSlice(t *testing.T) {
+	r := InitFiltered(nil, false, nil)
+	got := r.HiddenToolNames()
+	if got == nil {
+		t.Fatal("HiddenToolNames() = nil, want non-nil empty slice (serializes as JSON [] not null)")
+	}
+	if len(got) != 0 {
+		t.Errorf("HiddenToolNames() = %v, want empty slice", got)
+	}
+}
+
+func TestHiddenTools_ComposesWithInstalledFilter(t *testing.T) {
+	withStubbedProbe(t, []string{"claude", "gemini", "codex"}, func() {
+		r := InitFiltered(nil, true, []string{"codex"})
+		if !r.IsVisible("claude") || !r.IsVisible("gemini") {
+			t.Fatal("installed tools should be visible")
+		}
+		if r.IsVisible("codex") {
+			t.Fatal("codex is hidden via denylist even when installed filter is on")
+		}
+		if r.IsVisible("opencode") {
+			t.Fatal("opencode not on PATH should be hidden")
+		}
+	})
+}
+
+func TestPickerToolNames_MapsShellAlias(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ClearUserConfigCache()
+	t.Cleanup(ClearUserConfigCache)
+	if err := SaveUserConfig(&UserConfig{UI: UISettings{HiddenTools: []string{"gemini"}}}); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	got := PickerToolNames()
+	if len(got) == 0 || got[0] != "shell" {
+		t.Fatalf("PickerToolNames() = %v, want shell first", got)
+	}
+	for _, name := range got {
+		if name == "gemini" {
+			t.Fatalf("PickerToolNames() should not include hidden gemini: %v", got)
+		}
+	}
 }

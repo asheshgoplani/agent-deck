@@ -1,14 +1,15 @@
 # Session persistence CI gate for v1.5.2.
 #
 # Runs on every PR that touches any file under the v1.5.2 mandate (see
-# CLAUDE.md "Session persistence: mandatory test coverage" section). Two
-# jobs, both required:
-#   1. tests        — go test -run TestPersistence_ -race -count=1
+# CLAUDE.md "Session persistence: mandatory test coverage" section). Three
+# jobs, all required:
+#   1. tests         — go test -run TestPersistence_ -race -count=1
 #   2. verify-script — bash scripts/verify-session-persistence.sh
+#   3. unit-xplat    — go test ./scripts/... on macOS + Linux
 #
 # Either red blocks the PR. Branch protection rules are user-managed and
 # not part of this workflow; the CLAUDE.md mandate instructs reviewers to
-# require both jobs green plus the test output (or CI link) in the PR body.
+# require all jobs green plus the test output (or CI link) in the PR body.
 #
 # Do NOT modify .github/workflows/release.yml. This workflow is strictly
 # additive.
@@ -27,6 +28,7 @@ on:
       - 'cmd/restart_cmd.go'
       - 'scripts/verify-session-persistence.sh'
       - 'scripts/verify-session-persistence.d/**'
+      - 'scripts/verify-session-persistence_test.go'
       - 'internal/session/session_persistence_test.go'
       - 'CLAUDE.md'
       - '.github/workflows/session-persistence.yml'
@@ -39,6 +41,7 @@ jobs:
   tests:
     name: TestPersistence_ suite (-race)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -48,8 +51,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux and jq
+        run: sudo apt-get update && sudo apt-get install -y tmux jq
 
       - name: Enable user lingering (systemd user scope)
         run: loginctl enable-linger "$USER" || true
@@ -60,6 +63,7 @@ jobs:
   verify-script:
     name: scripts/verify-session-persistence.sh
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -69,8 +73,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux and jq
+        run: sudo apt-get update && sudo apt-get install -y tmux jq
 
       - name: Enable user lingering (systemd user scope)
         run: loginctl enable-linger "$USER" || true
@@ -84,3 +88,34 @@ jobs:
         env:
           AGENT_DECK_VERIFY_USE_STUB: '1'
         run: bash scripts/verify-session-persistence.sh
+
+  unit-xplat:
+    name: harness unit tests (${{ matrix.os }})
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Ensure jq present
+        # Only jq is needed: the unit tests stub the tmux-calling helper and
+        # never invoke real tmux. (Don't install tmux here — wasted brew time.)
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            command -v jq >/dev/null || brew install jq
+          else
+            command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+          fi
+
+      - name: go test ./scripts/...
+        run: go test ./scripts/... -count=1 -v

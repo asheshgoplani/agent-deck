@@ -14,11 +14,18 @@ import (
 type claudeSessionMeta struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
+	UpdatedAt *int64 `json:"updatedAt"` // unix ms; nil when absent
 }
 
 // ClaudeSessionNameIn scans claudeDir/sessions/*.json and returns the trimmed
 // `name` of the entry whose sessionId matches. Empty string when there's no
 // match, no name, or the sessions dir is unreadable.
+//
+// The files are per-PID, so a resumed session can match several entries — the
+// live process plus stale files left by earlier runs. The freshest entry (by
+// updatedAt, falling back to file mtime) is authoritative, even when its name
+// is empty: returning a stale file's old name would re-sync a title the user
+// has since changed or cleared.
 //
 // Issue #572: Claude Code writes per-process metadata here when the user starts
 // with `claude --name X` or runs `/rename X` mid-session. claudeDir is an
@@ -33,6 +40,8 @@ func ClaudeSessionNameIn(claudeDir, sessionID string) string {
 	if err != nil {
 		return ""
 	}
+	bestName := ""
+	bestTime := int64(-1)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -45,11 +54,21 @@ func ClaudeSessionNameIn(claudeDir, sessionID string) string {
 		if err := json.Unmarshal(data, &meta); err != nil {
 			continue
 		}
-		if meta.SessionID == sessionID {
-			return strings.TrimSpace(meta.Name)
+		if meta.SessionID != sessionID {
+			continue
+		}
+		var ts int64
+		if meta.UpdatedAt != nil {
+			ts = *meta.UpdatedAt
+		} else if info, err := entry.Info(); err == nil {
+			ts = info.ModTime().UnixMilli()
+		}
+		if ts > bestTime {
+			bestTime = ts
+			bestName = strings.TrimSpace(meta.Name)
 		}
 	}
-	return ""
+	return bestName
 }
 
 // ClaudeSessionName resolves the user's ~/.claude and returns the Claude
