@@ -15,6 +15,7 @@ All options for `~/.agent-deck/config.toml`.
 - [[docker] Section](#docker-section)
 - [[worktree] Section](#worktree-section)
 - [[fork] Section](#fork-section)
+- [[conductor] Section](#conductor-section)
 - [[logs] Section](#logs-section)
 - [[updates] Section](#updates-section)
 - [[display] Section](#display-section)
@@ -332,6 +333,23 @@ branch_prefix       = "fork/" # Auto branch name = <branch_prefix><sanitized-tit
 | `branch_prefix` | string | `"fork/"` | Prefix for the auto-suggested fork branch name. Applies to both quick fork and the `Shift+F` dialog. |
 
 > **Note:** Forking is supported across Claude, OpenCode, Pi, and Codex (and Codex-compatible custom tools) via each tool's native fork, in the TUI, CLI (`agent-deck session fork <id>`), and Web UI. The Web/API endpoint (`POST /api/sessions/{id}/fork`) performs a plain tool-native fork and does **not** apply these `[fork]` worktree/state/Docker defaults — those are TUI quick-fork/dialog scope. Codex forking requires a codex CLI with `codex fork <session-id>` support.
+
+## [conductor] Section
+
+Conductor (meta-agent orchestration) settings. The `[conductor]` block also carries the conductor-system toggles (`enabled`, `heartbeat_interval`, Telegram/Slack/Discord integration) — see the conductor setup docs; the key below governs where conductor state lives.
+
+```toml
+[conductor]
+dir = ""   # Override the base conductor directory (default: <data-dir>/conductor)
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dir` | string | `""` | Base directory for conductor homes (`meta.json`, `CLAUDE.md`, heartbeat scripts). Empty uses the default resolution: `$XDG_DATA_HOME/agent-deck/conductor` with a legacy `~/.agent-deck/conductor` fallback. Tilde and `$VAR` are expanded. |
+
+> **Note:** Each conductor's `heartbeat.sh` embeds the resolved conductor root as a literal at install time. If you change `dir` after conductors are set up, re-run `agent-deck conductor setup` for each conductor (or reinstall its heartbeat script) so the scripts point at the new root.
+
+> **Note:** The Telegram/Discord bridge (`bridge.py`) resolves the conductor directory itself (XDG with legacy fallback, #1350) and does not read `[conductor].dir` yet — with an override set, bridge-routed conductors are still looked up under the default root. Teaching the bridge resolver to honor the key is a planned follow-up.
 
 ## [logs] Section
 

@@ -84,6 +84,14 @@ type ConductorSettings struct {
 
 	// Discord defines Discord bot integration settings
 	Discord DiscordSettings `toml:"discord"`
+
+	// Dir overrides the base conductor directory. Empty = default
+	// (<data-dir>/conductor with legacy ~/.agent-deck/conductor fallback).
+	// Tilde and $VAR are expanded. Note: heartbeat.sh embeds the resolved
+	// conductor root at install time, so changing dir after setup requires
+	// re-running 'conductor setup' for each conductor (see
+	// InstallHeartbeatScript).
+	Dir string `toml:"dir"`
 }
 
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
@@ -359,8 +367,16 @@ func normalizeConductorProfile(profile string) string {
 	return profile
 }
 
-// ConductorDir returns the base conductor directory (~/.agent-deck/conductor)
+// ConductorDir returns the base conductor directory. When [conductor].dir is
+// set in config.toml it takes precedence (tilde and $VAR expanded); empty
+// falls through to the default <data-dir>/conductor resolution (XDG with
+// legacy ~/.agent-deck/conductor fallback).
 func ConductorDir() (string, error) {
+	if cfg, err := LoadUserConfig(); err == nil {
+		if dir := strings.TrimSpace(cfg.Conductor.Dir); dir != "" {
+			return ExpandPath(dir), nil
+		}
+	}
 	return dataPath("conductor", "conductor")
 }
 
@@ -703,6 +719,11 @@ func SetupConductorWithAgent(name, profile, agent string, heartbeatEnabled bool,
 
 // InstallHeartbeatScript writes the heartbeat.sh script for a conductor.
 // This is a standalone heartbeat that works without Telegram.
+//
+// The script embeds the conductor root (renderConductorHeartbeatScript's
+// {CONDUCTOR_ROOT} substitution, which honors [conductor].dir) as a literal
+// at install time. Installed scripts go stale if [conductor].dir changes
+// later: re-run 'conductor setup' per conductor to rewrite them.
 func InstallHeartbeatScript(name, profile string) error {
 	dir, err := ConductorNameDir(name)
 	if err != nil {
