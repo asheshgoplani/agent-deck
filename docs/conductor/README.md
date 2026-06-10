@@ -3,7 +3,7 @@
 A **conductor** is one persistent AI session whose job is to supervise all your other agent-deck sessions.
 Think of it as the foreman on a jobsite: you send instructions to the foreman, the foreman assigns them to workers (child sessions), and you never need to stand next to each worker — you just need to know the foreman is reachable.
 
-![Conductor overview](assets/conductor-overview.png)
+![Conductor overview](assets/conductor-overview.svg)
 
 ## Quickstart (local, two minutes)
 
@@ -65,7 +65,7 @@ Under the hood, a conductor is:
 - Optionally, one or more remote channels attached (Telegram, Slack, Discord) so you can talk to it from your phone.
 - Optionally, a heartbeat daemon that pings the conductor on a schedule.
 
-![Fleet topology: user phone or TUI, conductor, child sessions, with watchers on the side](assets/fleet-topology.png)
+![Fleet topology: user phone or TUI, conductor, child sessions, with watchers on the side](assets/fleet-topology.svg)
 
 The conductor reads its `CLAUDE.md` on every session start or resume.
 It consults `POLICY.md` to decide what to auto-respond to and what to escalate.
@@ -178,7 +178,7 @@ They are optional — the conductor works fully without them.
 - [Slack](slack.md) — channel-based control with slash commands and threaded replies
 - [Discord](discord.md) — server-based control with permission scopes
 
-![Channels topology — one bot per conductor](assets/channels-topology.png)
+![Channels topology — one bot per conductor](assets/channels-topology.svg)
 
 Each conductor pairs one-to-one with its own bot.
 Bots cannot be shared between conductors.
