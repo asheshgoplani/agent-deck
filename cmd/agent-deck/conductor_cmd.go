@@ -274,18 +274,21 @@ func handleConductorSetup(profile string, args []string) {
 		}
 	}
 
-	// Step 2: If conductor system not enabled, run first-time setup
-	if !settings.Enabled {
-		fmt.Println("Conductor Setup")
-		fmt.Println("===============")
-		fmt.Println()
-		fmt.Printf("The conductor system lets you create named persistent %s conductor sessions that\n", spec.DisplayName)
-		fmt.Println("monitor and orchestrate all your agent-deck sessions.")
-		fmt.Println()
-		fmt.Println("Conductors work locally by default — interact via the TUI or CLI.")
-		fmt.Println("You can optionally connect remote channels (Telegram, Slack, Discord)")
-		fmt.Println("for mobile and remote access.")
-		fmt.Println()
+	// Step 2: If conductor system not enabled or no channels configured, run setup wizard
+	channelsAlreadyConfigured := settings.Telegram.Token != "" || settings.Slack.BotToken != "" || settings.Discord.BotToken != ""
+	if !settings.Enabled || !channelsAlreadyConfigured {
+		if !settings.Enabled {
+			fmt.Println("Conductor Setup")
+			fmt.Println("===============")
+			fmt.Println()
+			fmt.Printf("The conductor system lets you create named persistent %s conductor sessions that\n", spec.DisplayName)
+			fmt.Println("monitor and orchestrate all your agent-deck sessions.")
+			fmt.Println()
+			fmt.Println("Conductors work locally by default — interact via the TUI or CLI.")
+			fmt.Println("You can optionally connect remote channels (Telegram, Slack, Discord)")
+			fmt.Println("for mobile and remote access.")
+			fmt.Println()
+		}
 
 		reader := bufio.NewReader(os.Stdin)
 
@@ -430,14 +433,30 @@ func handleConductorSetup(profile string, args []string) {
 		}
 
 		// Update config (no longer stores profiles list, conductors are on disk)
-		settings = session.ConductorSettings{
-			Enabled:           true,
-			HeartbeatInterval: 15,
-			Telegram:          telegram,
-			Slack:             slack,
-			Discord:           discord,
+		if !settings.Enabled {
+			settings = session.ConductorSettings{
+				Enabled:           true,
+				HeartbeatInterval: 15,
+				Telegram:          telegram,
+				Slack:             slack,
+				Discord:           discord,
+			}
+		} else {
+			if telegram.Token != "" {
+				settings.Telegram = telegram
+			}
+			if slack.BotToken != "" {
+				settings.Slack = slack
+			}
+			if discord.BotToken != "" {
+				settings.Discord = discord
+			}
 		}
 		config.Conductor = settings
+
+		telegramConfigured = settings.Telegram.Token != ""
+		slackConfigured = settings.Slack.BotToken != ""
+		discordConfigured = settings.Discord.BotToken != ""
 
 		if err := session.SaveUserConfig(config); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
@@ -693,7 +712,7 @@ func handleConductorSetup(profile string, args []string) {
 	} else {
 		fmt.Printf("  1. Start the conductor:  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
 		fmt.Println("  2. Interact via the TUI: switch to the conductor session in the session list")
-		fmt.Printf("  3. Or use the CLI:       agent-deck session send %s \"your message\"\n", sessionTitle)
+		fmt.Printf("  3. Or use the CLI:       agent-deck -p %s session send %s \"your message\"\n", resolvedProfile, sessionTitle)
 		fmt.Println()
 		fmt.Println("  To add remote channels later: re-run `agent-deck conductor setup <name>`")
 	}
@@ -1388,7 +1407,7 @@ func printConductorHelp() {
 	fmt.Println("Multiple conductors can exist per profile.")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  setup <name>     Set up a named conductor (directory, session, bridge)")
+	fmt.Println("  setup <name>     Set up a named conductor")
 	fmt.Println("  teardown <name>  Stop and optionally remove a conductor (or --all)")
 	fmt.Println("  status [name]    Show conductor health (all or specific)")
 	fmt.Println("  list             List all configured conductors")

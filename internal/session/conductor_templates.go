@@ -90,7 +90,7 @@ AUTO: frontend - told it to use the existing auth middleware
 NEED: api-fix - asking whether to run integration tests against staging or prod
 ` + "```" + `
 
-The bridge parses your response: if it contains ` + "`" + `NEED:` + "`" + ` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log).
+Your response is parsed: if it contains ` + "`" + `NEED:` + "`" + ` lines, those get forwarded to the user (via remote channels if configured, or visible in the TUI/task-log).
 
 ## State Management
 
