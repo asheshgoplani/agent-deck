@@ -115,7 +115,7 @@ func handleConductorSetup(profile string, args []string) {
 	agent := fs.String("agent", session.ConductorAgentClaude, "Conductor agent runtime (claude or codex)")
 	noClearOnCompact := fs.Bool("no-clear-on-compact", false, "Claude-only: allow normal compaction instead of /clear when context fills up")
 	description := fs.String("description", "", "Description for this conductor")
-	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
+	heartbeat := fs.Bool("heartbeat", false, "Force-enable heartbeat even without remote channels")
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
 	heartbeatIdleMinutes := fs.Int("heartbeat-idle-minutes", 0, "Minutes of idle time before pausing heartbeats (default 0=disabled, negative also disabled)")
 	instructionsMD := fs.String("instructions-md", "", "Custom instructions file for this conductor (agent-specific, e.g., ~/docs/conductor-ops.md)")
@@ -145,7 +145,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("  -description string")
 		fmt.Println("        Description for this conductor")
 		fmt.Println("  -heartbeat")
-		fmt.Println("        Enable heartbeat for this conductor (default)")
+		fmt.Println("        Force-enable heartbeat even without remote channels")
 		fmt.Println("  -no-heartbeat")
 		fmt.Println("        Disable heartbeat for this conductor")
 		fmt.Println("  -heartbeat-idle-minutes int")
@@ -232,17 +232,12 @@ func handleConductorSetup(profile string, args []string) {
 	runAutoMigration(*jsonOutput)
 
 	// Determine heartbeat setting
-	heartbeatExplicit := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "heartbeat" {
-			heartbeatExplicit = true
-		}
-	})
+	// --heartbeat forces heartbeat even without channels;
+	// --heartbeat-idle-minutes implies the same intent
+	heartbeatExplicit := *heartbeat || *heartbeatIdleMinutes > 0
 	heartbeatEnabled := true
 	if *noHeartbeat {
 		heartbeatEnabled = false
-	} else if *heartbeat {
-		heartbeatEnabled = true
 	}
 
 	// Step 1: Load config and check if conductor system is enabled
@@ -681,8 +676,8 @@ func handleConductorSetup(profile string, args []string) {
 	}
 	fmt.Println()
 	fmt.Println("Next steps:")
-	condDir, _ := session.ConductorDir()
 	if telegramConfigured || slackConfigured || discordConfigured {
+		condDir, _ := session.ConductorDir()
 		fmt.Printf("  agent-deck -p %s session start %s\n", resolvedProfile, sessionTitle)
 		fmt.Println()
 		if telegramConfigured {
