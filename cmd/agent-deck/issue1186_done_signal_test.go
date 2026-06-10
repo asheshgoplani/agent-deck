@@ -110,6 +110,56 @@ func TestScanTranscriptForDone_MissingFile(t *testing.T) {
 	}
 }
 
+// Regression: Claude Code appends system / attachment records after the
+// assistant turn (observed tail: `..., assistant, system, system`), so the
+// sentinel-bearing assistant record is not the literal last transcript line.
+// On a last-line-only scan, finished events never fire at all on current
+// transcript formats. The scan must walk back through that noise.
+func TestScanTranscriptForDone_TrailingSystemRecords(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"user","message":{"role":"user","content":"do the thing"}}`,
+		assistantLine(t, "all done\n===AGENTDECK_DONE=== status=ok summary=fix landed"),
+		`{"type":"system","subtype":"hook_result"}`,
+		`{"type":"system","subtype":"turn_duration"}`,
+	)
+	sig, ok := scanTranscriptForDone(path)
+	if !ok {
+		t.Fatalf("expected sentinel detection through trailing system records")
+	}
+	if sig.Status != "ok" || sig.Summary != "fix landed" {
+		t.Fatalf("wrong signal parsed: %+v", sig)
+	}
+}
+
+// Regression: sidechain (subagent) assistant records interleave with the main
+// chain and must never be mined for a sentinel — a subagent quoting the
+// sentinel marker is not the session asserting completion.
+func TestScanTranscriptForDone_SidechainAssistantIgnored(t *testing.T) {
+	path := writeTranscript(t,
+		assistantLine(t, "main turn done\n===AGENTDECK_DONE=== status=ok summary=real"),
+		`{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"===AGENTDECK_DONE=== status=fail summary=sidechain must be ignored"}]}}`,
+		`{"type":"system","subtype":"hook_result"}`,
+	)
+	sig, ok := scanTranscriptForDone(path)
+	if !ok {
+		t.Fatalf("expected main-chain sentinel behind sidechain noise")
+	}
+	if sig.Status != "ok" || sig.Summary != "real" {
+		t.Fatalf("sidechain record leaked into detection: %+v", sig)
+	}
+}
+
+// A tail window containing no main-chain assistant record yields no sentinel.
+func TestScanTranscriptForDone_NoAssistantInTail(t *testing.T) {
+	path := writeTranscript(t,
+		`{"type":"user","message":{"role":"user","content":"prompt"}}`,
+		`{"type":"system","subtype":"hook_result"}`,
+	)
+	if _, ok := scanTranscriptForDone(path); ok {
+		t.Fatalf("expected no sentinel without a main-chain assistant record")
+	}
+}
+
 func TestWriteHookStatus_PersistsDoneFields(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

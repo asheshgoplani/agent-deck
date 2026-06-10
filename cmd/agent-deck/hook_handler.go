@@ -655,13 +655,20 @@ func writeCostEvent(instanceID string, rawPayload []byte) {
 }
 
 // transcriptContentMessage extracts the assistant message content blocks from
-// the last transcript line, for completion-sentinel detection (issue #1186).
+// a transcript line, for completion-sentinel detection (issue #1186).
 type transcriptContentMessage struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	Message     struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
+
+// doneScanTailLines bounds the backward walk over transcript records when
+// looking for the just-finished assistant turn. Post-assistant noise observed
+// in the wild is 1-4 records (system/attachment); 25 leaves generous margin
+// without rescanning history.
+const doneScanTailLines = 25
 
 // detectDoneSentinel parses transcript_path out of a Stop hook payload and
 // scans the transcript tail for a worker-printed completion sentinel. It
@@ -687,24 +694,34 @@ func detectDoneSentinel(rawPayload []byte) (session.DoneSignal, bool) {
 	return scanTranscriptForDone(cleanPath)
 }
 
-// scanTranscriptForDone reads the last transcript line, and if it is an
-// assistant turn, scans its text content for a completion sentinel. The path
-// is the injectable source: tests point it at a temp file, no live agent
-// required. A missing/unreadable file or a non-assistant tail yields no
-// sentinel rather than an error.
+// scanTranscriptForDone scans the transcript tail for a completion sentinel
+// in the most recent MAIN-CHAIN assistant turn. The sentinel-bearing assistant
+// record is NOT reliably the literal last line: Claude Code appends system /
+// attachment records after the assistant turn (observed: `..., assistant,
+// system, system` — a last-line-only scan made issue-#1186 finished events
+// never fire at all on current transcript formats). Walk backwards over a
+// bounded tail window, skip non-assistant records and sidechain (subagent)
+// traffic, and scan the first assistant record found — that IS the turn that
+// just stopped; earlier turns are never reached. The path is the injectable
+// source: tests point it at a temp file, no live agent required. A
+// missing/unreadable file or no assistant in the window yields no sentinel
+// rather than an error.
 func scanTranscriptForDone(path string) (session.DoneSignal, bool) {
-	lastLine, err := readLastLine(path)
+	lines, err := readLastLines(path, doneScanTailLines)
 	if err != nil {
 		return session.DoneSignal{}, false
 	}
-	var msg transcriptContentMessage
-	if err := json.Unmarshal([]byte(lastLine), &msg); err != nil {
-		return session.DoneSignal{}, false
+	for i := len(lines) - 1; i >= 0; i-- {
+		var msg transcriptContentMessage
+		if err := json.Unmarshal([]byte(lines[i]), &msg); err != nil {
+			continue
+		}
+		if msg.IsSidechain || msg.Type != "assistant" {
+			continue
+		}
+		return session.ScanDoneSentinel(transcriptText(msg.Message.Content))
 	}
-	if msg.Type != "assistant" {
-		return session.DoneSignal{}, false
-	}
-	return session.ScanDoneSentinel(transcriptText(msg.Message.Content))
+	return session.DoneSignal{}, false
 }
 
 // transcriptText flattens an assistant message's content into plain text.
@@ -735,52 +752,63 @@ func transcriptText(content json.RawMessage) string {
 	return sb.String()
 }
 
-// readLastLine reads the last non-empty line from a file.
-func readLastLine(path string) (string, error) {
+// readLastLines returns up to n trailing non-empty lines of the file, oldest
+// first. It reads at most the trailing 512KB — transcript records are single
+// JSONL lines comfortably under that; a line truncated by the byte cut is
+// discarded rather than half-parsed.
+func readLastLines(path string, n int) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer f.Close()
 
 	stat, err := f.Stat()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
 	size := stat.Size()
 	if size == 0 {
-		return "", fmt.Errorf("empty file")
+		return nil, fmt.Errorf("empty file")
 	}
 
-	// Read backwards in chunks to find the last complete line
-	buf := make([]byte, 0, 16384)
-	offset := size
-
-	for offset > 0 {
-		readSize := int64(16384)
-		if readSize > offset {
-			readSize = offset
-		}
-		offset -= readSize
-
-		chunk := make([]byte, readSize)
-		if _, err := f.ReadAt(chunk, offset); err != nil {
-			return "", err
-		}
-		buf = append(chunk, buf...)
-
-		// Strip trailing whitespace/newlines for consistent handling
-		trimmed := strings.TrimRight(string(buf), "\n\r ")
-		// Find the last newline in the trimmed content
-		lastNL := strings.LastIndexByte(trimmed, '\n')
-		if lastNL >= 0 {
-			return trimmed[lastNL+1:], nil
-		}
+	const maxTailBytes = int64(512 * 1024)
+	offset := int64(0)
+	if size > maxTailBytes {
+		offset = size - maxTailBytes
+	}
+	buf := make([]byte, size-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil {
+		return nil, err
 	}
 
-	// Entire file is one line
-	return strings.TrimSpace(string(buf)), nil
+	rawLines := strings.Split(strings.TrimRight(string(buf), "\n\r "), "\n")
+	if offset > 0 && len(rawLines) > 0 {
+		rawLines = rawLines[1:] // first line may be cut mid-record by the offset
+	}
+	start := 0
+	if len(rawLines) > n {
+		start = len(rawLines) - n
+	}
+	lines := make([]string, 0, n)
+	for _, raw := range rawLines[start:] {
+		if s := strings.TrimSpace(raw); s != "" {
+			lines = append(lines, s)
+		}
+	}
+	return lines, nil
+}
+
+// readLastLine reads the last non-empty line from a file.
+func readLastLine(path string) (string, error) {
+	lines, err := readLastLines(path, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no non-empty line")
+	}
+	return lines[0], nil
 }
 
 // logCostDebug writes debug messages to the XDG cache cost-debug.log.
