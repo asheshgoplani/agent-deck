@@ -1,7 +1,6 @@
 version: "2"
 linters:
   enable:
-    - gofmt
     - gosec
     - forbidigo
   settings:
@@ -110,6 +109,8 @@ linters:
       - builtin$
       - examples$
 formatters:
+  enable:
+    - gofmt
   exclusions:
     generated: lax
     paths:
