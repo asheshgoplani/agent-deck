@@ -139,9 +139,9 @@ func TestSessionDataService_LoadMenuSnapshotExcludesArchived(t *testing.T) {
 		groups:    []*session.GroupData{{Name: "work", Path: "work", Expanded: true, Order: 0}},
 	}
 	svc := &SessionDataService{
-		profile: "p",
+		profile:     "p",
 		openStorage: func(string) (storageLoader, error) { return fake, nil },
-		now:     func() time.Time { return time.Now() },
+		now:         func() time.Time { return time.Now() },
 	}
 
 	menu, err := svc.LoadMenuSnapshot()

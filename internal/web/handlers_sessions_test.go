@@ -15,21 +15,21 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn  func(title, tool, projectPath, groupPath, modelID string) (string, error)
-	startSessionFn   func(id string) error
-	stopSessionFn    func(id string) error
-	restartSessionFn func(id string) error
-	deleteSessionFn  func(id string) error
-	closeSessionFn    func(id string) error
-	archiveSessionFn  func(id string) error
+	createSessionFn    func(title, tool, projectPath, groupPath, modelID string) (string, error)
+	startSessionFn     func(id string) error
+	stopSessionFn      func(id string) error
+	restartSessionFn   func(id string) error
+	deleteSessionFn    func(id string) error
+	closeSessionFn     func(id string) error
+	archiveSessionFn   func(id string) error
 	unarchiveSessionFn func(id string) error
-	undoDeleteFn      func() (string, error)
-	forkSessionFn    func(id string) (string, error)
-	updateSessionFn  func(id string, updates map[string]string) ([]string, bool, error)
-	createGroupFn    func(name, parentPath string) (string, error)
-	renameGroupFn    func(groupPath, newName string) error
-	deleteGroupFn    func(groupPath string) error
-	finishWorktreeFn func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
+	undoDeleteFn       func() (string, error)
+	forkSessionFn      func(id string) (string, error)
+	updateSessionFn    func(id string, updates map[string]string) ([]string, bool, error)
+	createGroupFn      func(name, parentPath string) (string, error)
+	renameGroupFn      func(groupPath, newName string) error
+	deleteGroupFn      func(groupPath string) error
+	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
 func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
@@ -772,6 +772,7 @@ func TestMutationNotifiesSSE(t *testing.T) {
 		t.Error("expected SSE notification within 250ms, got none")
 	}
 }
+
 // --- PATCH /api/sessions/{id} ---------------------------------------------
 //
 // Covers the surfaces in ~/.agent-deck/skills/pool/agent-deck-tdd-feature/
