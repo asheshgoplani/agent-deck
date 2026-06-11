@@ -561,7 +561,7 @@ type GroupClaudeSettings struct {
 type GroupHermesSettings struct {
 	Command      string `toml:"command,omitempty"`
 	EnvFile      string `toml:"env_file,omitempty"`
-	YoloMode     bool `toml:"yolo_mode,omitempty"`
+	YoloMode     bool   `toml:"yolo_mode,omitempty"`
 	GatewayURL   string `toml:"gateway_url,omitempty"`
 	DashboardURL string `toml:"dashboard_url,omitempty"`
 	APITokenEnv  string `toml:"api_token_env,omitempty"`
@@ -600,7 +600,7 @@ type ConductorClaudeSettings struct {
 type ConductorHermesSettings struct {
 	Command      string `toml:"command,omitempty"`
 	EnvFile      string `toml:"env_file,omitempty"`
-	YoloMode     bool `toml:"yolo_mode,omitempty"`
+	YoloMode     bool   `toml:"yolo_mode,omitempty"`
 	GatewayURL   string `toml:"gateway_url,omitempty"`
 	DashboardURL string `toml:"dashboard_url,omitempty"`
 	APITokenEnv  string `toml:"api_token_env,omitempty"`
@@ -2501,13 +2501,34 @@ func guardConfigSectionDrop(configPath string, newContent []byte) error {
 		return fmt.Errorf("session: failed to round-trip new config for section-drop guard: %w", err)
 	}
 
-	if len(onDisk.MCPs) > 0 && len(next.MCPs) == 0 {
-		return fmt.Errorf("%w: [mcps] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.MCPs))
+	if countFunctionalMCPs(onDisk.MCPs) > 0 && len(next.MCPs) == 0 {
+		return fmt.Errorf("%w: [mcps] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, countFunctionalMCPs(onDisk.MCPs))
 	}
-	if len(onDisk.Groups) > 0 && len(next.Groups) == 0 {
-		return fmt.Errorf("%w: [groups] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, len(onDisk.Groups))
+	if countFunctionalGroups(onDisk.Groups) > 0 && len(next.Groups) == 0 {
+		return fmt.Errorf("%w: [groups] had %d entries on disk, new config has none", ErrRefusingConfigSectionDrop, countFunctionalGroups(onDisk.Groups))
 	}
 	return nil
+}
+
+func countFunctionalMCPs(mcps map[string]MCPDef) int {
+	count := 0
+	for _, m := range mcps {
+		if m.Command != "" || m.URL != "" || len(m.Args) > 0 || len(m.Env) > 0 || m.Description != "" || len(m.Headers) > 0 || m.Transport != "" || m.Server != nil {
+			count++
+		}
+	}
+	return count
+}
+
+func countFunctionalGroups(groups map[string]GroupSettings) int {
+	var zero GroupSettings
+	count := 0
+	for _, g := range groups {
+		if g.Claude != zero.Claude || g.Hermes != zero.Hermes {
+			count++
+		}
+	}
+	return count
 }
 
 // stripEmptyTOMLSections removes TOML section headers that have no key=value
@@ -3746,7 +3767,7 @@ func GetPluginDef(name string) *PluginDef {
 type CostsSettings struct {
 	Currency      string `toml:"currency,omitempty"`
 	Timezone      string `toml:"timezone,omitempty"`
-	RetentionDays int `toml:"retention_days,omitzero"`
+	RetentionDays int    `toml:"retention_days,omitzero"`
 	// CostLineTemplate overrides the home status-bar cost segment.
 	// Three-state pointer: nil falls through to the next layer
 	// (profile -> global -> hardcoded); explicit empty string disables.
@@ -3754,8 +3775,8 @@ type CostsSettings struct {
 	// CostLineHideWhenZero hides the segment when every recognized variable
 	// in the active template renders to $0.00. Three-state pointer; default
 	// is true (preserves the legacy "no events, no segment" behavior).
-	CostLineHideWhenZero *bool `toml:"cost_line_hide_when_zero,omitempty"`
-	Budgets              BudgetSettings `toml:"budgets,omitempty"`
+	CostLineHideWhenZero *bool           `toml:"cost_line_hide_when_zero,omitempty"`
+	Budgets              BudgetSettings  `toml:"budgets,omitempty"`
 	Pricing              PricingSettings `toml:"pricing,omitempty"`
 }
 
@@ -3763,7 +3784,7 @@ type CostsSettings struct {
 // Pointer fields use the same fall-through semantics as CostsSettings.
 type ProfileCosts struct {
 	CostLineTemplate     *string `toml:"cost_line_template,omitempty"`
-	CostLineHideWhenZero *bool `toml:"cost_line_hide_when_zero,omitempty"`
+	CostLineHideWhenZero *bool   `toml:"cost_line_hide_when_zero,omitempty"`
 }
 
 // defaultCostLineTemplate is the hardcoded fallback that preserves the
@@ -3817,10 +3838,10 @@ func ResolveCostLineTemplate(cfg *UserConfig, profile string) (template string, 
 }
 
 type BudgetSettings struct {
-	DailyLimit   float64 `toml:"daily_limit,omitzero"`
-	WeeklyLimit  float64 `toml:"weekly_limit,omitzero"`
-	MonthlyLimit float64 `toml:"monthly_limit,omitzero"`
-	Groups       map[string]GroupBudget `toml:"groups,omitempty"`
+	DailyLimit   float64                  `toml:"daily_limit,omitzero"`
+	WeeklyLimit  float64                  `toml:"weekly_limit,omitzero"`
+	MonthlyLimit float64                  `toml:"monthly_limit,omitzero"`
+	Groups       map[string]GroupBudget   `toml:"groups,omitempty"`
 	Sessions     map[string]SessionBudget `toml:"sessions,omitempty"`
 }
 
