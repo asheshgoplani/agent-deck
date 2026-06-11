@@ -65,16 +65,17 @@ test.describe('command palette (Ctrl/Cmd+K)', () => {
     const palette = page.locator('[data-testid="command-palette"]')
     await expect(palette.locator('.sec')).toHaveText(['COMMANDS', 'SESSIONS'])
 
-    // 8 commands: New session (mutations enabled in the fixture) + the 7
+    // 9 commands: New session (mutations enabled in the fixture) + the 8
     // static entries, in source order from CommandPalette.js.
     const cmdRows = palette.locator('[data-testid="palette-cmd-row"]')
-    await expect(cmdRows).toHaveCount(8)
+    await expect(cmdRows).toHaveCount(9)
     await expect(cmdRows).toContainText([
       'New session',
       'Open Fleet',
       'Open Terminal',
       'Costs dashboard',
       'Session search',
+      'Archived sessions',
       'Open Tweaks',
       'Keyboard shortcuts',
       'Settings drawer',
