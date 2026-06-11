@@ -4675,7 +4675,20 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			h.setError(msg.err)
 		}
-		return h, h.fetchRemoteSessions
+		// This message is returned after tea.Exec finishes the remote
+		// create+attach. Mirror the statusUpdateMsg attach-return cleanup so
+		// detaching from a newly created remote session leaves the terminal in
+		// the same state as detaching from an existing one: re-enable mouse
+		// reporting, restore legacy keyboard mode, force a resize, and schedule
+		// the delayed repaint (see the statusUpdateMsg case for the rationale).
+		h.beginAttachReturnGrace(time.Now())
+		return h, tea.Batch(
+			h.fetchRemoteSessions,
+			tea.EnableMouseCellMotion,
+			RestoreLegacyKeyboardCmd(os.Stdout),
+			tea.WindowSize(),
+			tea.Tick(attachReturnRefreshDelay, func(time.Time) tea.Msg { return attachReturnRefreshMsg{} }),
+		)
 
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
@@ -6027,8 +6040,11 @@ func (h *Home) showRemoteNewSessionDialog(item session.Item) {
 		}
 		defaultPath = item.RemoteSession.Path
 	} else if item.Type == session.ItemTypeRemoteGroup {
-		groupPath = "remotes/" + remoteName
-		groupName = groupPath
+		// "remotes/<host>" is a synthetic local UI bucket, not a user-defined
+		// remote group. Keep the default group so handleNewDialogKey doesn't
+		// forward it to CreateSessionWithOptions and create a bogus remote group.
+		groupPath = session.DefaultGroupPath
+		groupName = session.DefaultGroupName
 		defaultPath = "."
 	} else if len(paths) > 0 {
 		defaultPath = paths[0]
