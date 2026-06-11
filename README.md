@@ -15,44 +15,92 @@
 [![Latest Release](https://img.shields.io/github/v/release/asheshgoplani/agent-deck?style=for-the-badge&color=e0af68&labelColor=1a1b26)](https://github.com/asheshgoplani/agent-deck/releases)
 [![Discord](https://img.shields.io/discord/1469423271144587379?style=for-the-badge&logo=discord&logoColor=white&label=Discord&color=5865F2&labelColor=1a1b26)](https://discord.gg/e4xSs6NBN8)
 
-[Features](#features) . [Conductor](#conductor) . [Install](#installation) . [Quick Start](#quick-start) . [Docs](#documentation) . [Discord](https://discord.gg/e4xSs6NBN8) . [FAQ](#faq)
+[Install](#installation) . [Quick Start](#quick-start) . [Features](#features) . [Conductor](#conductor) . [Docs](#documentation) . [Discord](https://discord.gg/e4xSs6NBN8) . [FAQ](#faq)
 
 </div>
 
+**Agent Deck is mission control for your AI coding agents.** Running Claude Code on ten projects, OpenCode on five more, another agent somewhere in the background? One terminal shows every session — running, waiting, or done — and one keystroke switches between them. Groups, search, forking, git worktrees, cost tracking, and a phone-controlled [conductor](#conductor) keep a whole fleet manageable.
+
+https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
+
+## Installation
+
+**Works on:** macOS, Linux, Windows (WSL)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
+```
+
+Then run: `agent-deck`
+
 <details>
-<summary><b>Ask AI about Agent Deck</b></summary>
+<summary>Other install methods</summary>
 
-**Option 1: Claude Code Skill** (recommended for Claude Code users)
+**Homebrew**
 ```bash
-/plugin marketplace add asheshgoplani/agent-deck
-/plugin install agent-deck@agent-deck-help
+brew install asheshgoplani/tap/agent-deck
 ```
-Then ask: *"How do I set up MCP pooling?"*
 
-**Option 2: OpenCode** (has built-in Claude skill compatibility)
+**Go**
 ```bash
-# Create skill directory
-mkdir -p ~/.claude/skills/agent-deck/references
-
-# Download skill and references
-curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/SKILL.md \
-  > ~/.claude/skills/agent-deck/SKILL.md
-for f in cli-reference config-reference tui-reference troubleshooting; do
-  curl -sL "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/references/${f}.md" \
-    > ~/.claude/skills/agent-deck/references/${f}.md
-done
+go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest
 ```
-OpenCode will auto-discover the skill from `~/.claude/skills/`.
 
-**Option 3: Any LLM** (ChatGPT, Claude, Gemini, etc.)
-```
-Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt
-and answer: How do I fork a session?
+**From Source**
+```bash
+git clone https://github.com/asheshgoplani/agent-deck.git && cd agent-deck && make install
 ```
 
 </details>
 
-https://github.com/user-attachments/assets/e4f55917-435c-45ba-92cc-89737d0d1401
+<details>
+<summary>Uninstalling</summary>
+
+```bash
+agent-deck uninstall              # Interactive uninstall
+agent-deck uninstall --keep-data  # Remove binary only, keep sessions
+```
+
+See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalling) for full details.
+
+</details>
+
+## Quick Start
+
+```bash
+agent-deck                        # Launch TUI
+agent-deck add . -c claude        # Add current dir with Claude
+agent-deck session fork my-proj   # Fork a supported session
+agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
+agent-deck mcp attach my-proj exa # Attach MCP to session
+agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
+agent-deck web                    # Start web UI on http://127.0.0.1:8420
+```
+
+> **⚠️ Changed in v1.9.55:** in the new-session dialog (`n`), **Enter advances to the next field** on the Name and Branch inputs instead of submitting — typing a name and hitting Enter no longer creates a session with all defaults. **Ctrl+S creates the session from any field.** The dialog also remembers your last-used tool. Restore the old behavior with `[ui].new_session_enter_advances = false`.
+
+### Key Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Attach to session |
+| `n` | New session |
+| `f` / `F` | Fork (quick / dialog) |
+| `A` / `Shift+U` | Archive / unarchive session |
+| `^` | Show archived sessions |
+| `m` | MCP Manager |
+| `s` | Skills Manager |
+| `$` | Cost Dashboard |
+| `M` | Move session to group |
+| `S` | Settings |
+| `/` / `G` | Search / Global search |
+| `r` | Restart session |
+| `d` | Delete |
+| `b` | Re-run worktree setup script |
+| `E` | Container shell (sandboxed sessions) |
+| `?` | Full help |
+
+See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
 ## Quickstart: orchestrate a fleet of AI agents
 
@@ -78,23 +126,7 @@ Two short guides to read next:
 - [**`docs/WATCHER-SETUP.md`**](docs/WATCHER-SETUP.md) — add "doorbells" so the outside world
   (GitHub events, gmail, ntfy pushes, meetings) can wake the conductor up.
 
-![Fleet topology: phone → conductor → child sessions, with watchers on the side](docs/images/fleet-topology.png)
-
-## The Problem
-
-Running Claude Code on 10 projects? OpenCode on 5 more? Another agent somewhere in the background?
-
-**Managing multiple AI sessions gets messy fast.** Too many terminal tabs. Hard to track what's running, what's waiting, what's done. Switching between projects means hunting through windows.
-
-## The Solution
-
-**Agent Deck is mission control for your AI coding agents.**
-
-One terminal. All your agents. Complete visibility.
-
-- **See everything at a glance** — running, waiting, or idle status for every agent instantly
-- **Switch in milliseconds** — jump between any session with a single keystroke
-- **Stay organized** — groups, search, notifications, and git worktrees keep everything manageable
+![Fleet topology: phone → conductor → child sessions, with watchers on the side](docs/conductor/fleet-topology.svg)
 
 ## Features
 
@@ -164,6 +196,10 @@ This means a single `[conductors.gsd-v154.claude]` line replaces the need to dup
 Backward compat: sessions in the `conductor` group with NO matching `[conductors.<name>.claude]` block continue to resolve via `[groups."conductor".claude]` as they did in v1.5.4 Phase 1–3.
 
 Closes [issue #602](https://github.com/asheshgoplani/agent-deck/issues/602).
+
+#### Switch a session's account on the fly
+
+`agent-deck session switch-account <session> <account>` moves an existing session to another Claude account — **conversation included**. The session stops, its conversation file is migrated into the target account's config dir (copy-only, with a destination backup and size verification), the account is set, and the session restarts with `--resume`. `session set <session> account <name>` auto-migrates too.
 
 ### MCP Socket Pool
 
@@ -355,27 +391,38 @@ See the [Docker Sandbox Guide](skills/agent-deck/references/sandbox.md) for the 
 
 Press `f` to **quick-fork** the selected session, or `Shift+F` for the fork **dialog** (customize title, group, branch, and toggles). A fork inherits the parent's conversation context through each tool's native fork — supported for **Claude, OpenCode, Pi, and Codex** (and Codex-compatible custom tools) across the TUI, CLI (`agent-deck session fork <id>`), and Web UI.
 
-Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state (including gitignored files), matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down").
+Quick fork (`f`) is **comprehensive by default**: it creates a new git worktree + branch, carries the parent's uncommitted working-tree state, matches the parent's Docker isolation, and inherits the parent's Claude launch options. The `Shift+F` dialog opens pre-seeded from the same defaults ("comprehensive, tweak down"). Jujutsu (jj) repos are supported too — the fork materializes the parent's working state into a new jj workspace.
 
-Tune the defaults in `~/.agent-deck/config.toml`:
+Tune the defaults in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`):
 
 ```toml
 [fork]
 inherit_from_parent = false   # true => mirror the parent and ignore the keys below
 worktree            = true    # create a new worktree + branch for the fork
 with_state          = true    # carry the parent's uncommitted changes into the fork
-with_ignored        = true    # also copy gitignored files (implies with_state)
+with_ignored        = false   # also copy gitignored files (implies with_state) — opt-in
 docker              = "auto"  # "auto" = match parent | "on" = always | "off" = never
 branch_prefix       = "fork/" # auto branch name = <branch_prefix><sanitized-title>
 ```
 
-- Unset keys default to the comprehensive behavior shown above. The `[fork]` section is **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (those govern non-fork session creation).
+- Unset keys default to the values shown above. The `[fork]` section is **independent** of `[worktree].default_enabled` / `[docker].default_enabled` (those govern non-fork session creation).
 - `docker = "auto"` forks into a fresh container only when the parent is already sandboxed.
 - `branch_prefix` applies to both quick fork and the dialog's suggested branch name.
-- `with_ignored = true` copies gitignored content (e.g. `.env`, `node_modules`) into the new worktree — convenient but can be large; set it `false` to skip.
+- `with_ignored` is **off by default** (since v1.9.54): the gitignored tree is unbounded (`node_modules`, datasets, virtual envs) and can carry secrets (`.env`), and copying it silently can block the fork on heavy repos. Opt in globally here, or per fork in the `Shift+F` dialog.
 
 > **Web/API fork** (`POST /api/sessions/{id}/fork`) is plain tool-native fork — it does **not** apply `[fork]` worktree/state/Docker defaults (those are TUI quick-fork/dialog scope).
 > **Codex** forking requires a codex CLI with `codex fork <session-id>` support.
+
+### Archive Sessions
+
+Done with a session but not ready to delete it? Archive it. Archiving stops the tmux process and hides the session from the default list — the conversation, metadata, worktree, and parent linkage are all preserved.
+
+- `A` archives the selected session; `Shift+U` restores it to the active list **without** auto-starting the process
+- `^` filters the TUI to archived sessions; the web UI has a dedicated **Archived** tab
+- Search and filters work across archived sessions
+- Deleting (`d`) is the destructive cousin — it removes the session from the registry (with a 30-second `Ctrl+Z` undo window)
+
+![Session lifecycle: create → run → stop, with archive/unarchive, fork, and worktree branches](docs/diagrams/session-lifecycle.svg)
 
 ### Conductor
 
@@ -594,6 +641,8 @@ Agent Deck works with any terminal-based AI tool:
 | **Hermes Agent** | Organization, launch |
 | **Custom tools** | Configurable via `[tools.*]` in config.toml |
 
+Hide tools you don't use from the new-session picker with `[ui].hidden_tools` (applies to TUI and web; `shell` is always available).
+
 ### Cost Tracking Dashboard
 
 Track token usage and costs across all your AI agent sessions in real-time.
@@ -738,6 +787,8 @@ agent-deck remote update dev      # specific remote
 
 Remote configuration is stored under `[remotes]` in `$XDG_CONFIG_HOME/agent-deck/config.toml` (default `~/.config/agent-deck/config.toml`). All `remote` subcommands support `--json` output for scripting. Run `agent-deck remote --help` for the full flag reference.
 
+Pressing `n` on a remote group or session opens the full new-session dialog in **remote mode**: path suggestions come from the remote host, the remote session's group is pre-filled, and the create routes over SSH with your chosen tool — sessions are never accidentally created on localhost.
+
 #### Security
 
 - **SSH host-key stance.** agent-deck verifies remote host keys against your `~/.ssh/known_hosts` using OpenSSH's secure default — it never sets `StrictHostKeyChecking=no` and never points `UserKnownHostsFile` at `/dev/null`. Every connection (list, attach, deploy) runs with `BatchMode=yes`, so an **unknown or changed host key fails fast** with a clear `Host key verification failed` error instead of silently trusting the host or hanging on a prompt. Add each remote to `known_hosts` first (e.g. `ssh user@host` once interactively, or `ssh-keyscan`), and authenticate with keys/an agent (BatchMode disables interactive password prompts). A changed host key is treated as a potential MITM and refused until you resolve it.
@@ -754,70 +805,7 @@ Setup once:
 
 This is why agent-deck does not ship native SSH `-L`/`-R` forwarding: Tailscale solves the same problem more robustly with no per-session configuration.
 
-## Installation
-
-**Works on:** macOS, Linux, Windows (WSL)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/install.sh | bash
-```
-
-Then run: `agent-deck`
-
-<details>
-<summary>Other install methods</summary>
-
-**Homebrew**
-```bash
-brew install asheshgoplani/tap/agent-deck
-```
-
-**Go**
-```bash
-go install github.com/asheshgoplani/agent-deck/cmd/agent-deck@latest
-```
-
-**From Source**
-```bash
-git clone https://github.com/asheshgoplani/agent-deck.git && cd agent-deck && make install
-```
-
-</details>
-
-### Claude Code Skill
-
-Install the agent-deck skill for AI-assisted session management:
-
-```bash
-/plugin marketplace add asheshgoplani/agent-deck
-/plugin install agent-deck@agent-deck
-```
-
-<details>
-<summary>Uninstalling</summary>
-
-```bash
-agent-deck uninstall              # Interactive uninstall
-agent-deck uninstall --keep-data  # Remove binary only, keep sessions
-```
-
-See [Troubleshooting](skills/agent-deck/references/troubleshooting.md#uninstalling) for full details.
-
-</details>
-
-## Quick Start
-
-```bash
-agent-deck                        # Launch TUI
-agent-deck add . -c claude        # Add current dir with Claude
-agent-deck session fork my-proj   # Fork a supported session
-agent-deck session remove my-proj # Remove stopped/errored session from registry (transcripts preserved)
-agent-deck mcp attach my-proj exa # Attach MCP to session
-agent-deck skill attach my-proj docs --source pool --restart # Attach skill + restart
-agent-deck web                    # Start web UI on http://127.0.0.1:8420
-```
-
-### Web Mode
+## Web Mode
 
 Open the left menu + browser terminal UI:
 
@@ -843,27 +831,6 @@ Protect API + WebSocket access with a bearer token:
 agent-deck web --token my-secret
 # then open: http://127.0.0.1:8420/?token=my-secret
 ```
-
-### Key Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Attach to session |
-| `n` | New session |
-| `f` / `F` | Fork (quick / dialog) |
-| `m` | MCP Manager |
-| `s` | Skills Manager |
-| `$` | Cost Dashboard |
-| `M` | Move session to group |
-| `S` | Settings |
-| `/` / `G` | Search / Global search |
-| `r` | Restart session |
-| `d` | Delete |
-| `S` | Settings |
-| `T` | Container shell (sandboxed sessions) |
-| `?` | Full help |
-
-See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all shortcuts and [CLI Reference](skills/agent-deck/references/cli-reference.md) for all commands.
 
 ## Documentation
 
@@ -892,11 +859,43 @@ See [TUI Reference](skills/agent-deck/references/tui-reference.md) for all short
 | [Docker Sandbox](skills/agent-deck/references/sandbox.md) | Containers, overlays, custom images, troubleshooting |
 | [TUI Reference](skills/agent-deck/references/tui-reference.md) | Keyboard shortcuts, status indicators, navigation |
 | [Troubleshooting](skills/agent-deck/references/troubleshooting.md) | Common issues, debugging, recovery, uninstalling |
+| [Capability Checklist](docs/verification/README.md) | User-level verification matrix: every capability exercised against the real binary, per surface |
+| [Architecture Diagrams](docs/conductor/) | D2 sources + rendered SVGs for the conductor, channels, fleet, and session-lifecycle diagrams |
 
 Additional resources:
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [CHANGELOG.md](CHANGELOG.md) — release history
 - [llms-full.txt](llms-full.txt) — full context for LLMs
+
+### Ask AI about Agent Deck
+
+**Option 1: Claude Code Skill** (recommended for Claude Code users)
+```bash
+/plugin marketplace add asheshgoplani/agent-deck
+/plugin install agent-deck@agent-deck
+```
+Then ask: *"How do I set up MCP pooling?"*
+
+**Option 2: OpenCode** (has built-in Claude skill compatibility)
+```bash
+# Create skill directory
+mkdir -p ~/.claude/skills/agent-deck/references
+
+# Download skill and references
+curl -sL https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/SKILL.md \
+  > ~/.claude/skills/agent-deck/SKILL.md
+for f in cli-reference config-reference tui-reference troubleshooting; do
+  curl -sL "https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/skills/agent-deck/references/${f}.md" \
+    > ~/.claude/skills/agent-deck/references/${f}.md
+done
+```
+OpenCode will auto-discover the skill from `~/.claude/skills/`.
+
+**Option 3: Any LLM** (ChatGPT, Claude, Gemini, etc.)
+```
+Read https://raw.githubusercontent.com/asheshgoplani/agent-deck/main/llms-full.txt
+and answer: How do I fork a session?
+```
 
 ### Updates
 
@@ -947,7 +946,7 @@ agent-deck hooks status
 agent-deck hooks status -p work
 ```
 
-See [Configuration Reference](skills/agent-deck/references/config-reference.md#claude-section) for full details.
+See [Configuration Reference](skills/agent-deck/references/config-reference.md#claude-section) for full details. To move an *existing* session to another account — conversation included — use `agent-deck session switch-account <session> <account>`.
 
 </details>
 

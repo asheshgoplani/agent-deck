@@ -1,0 +1,122 @@
+# Fleet topology — phone → conductor → child sessions, watchers on the side.
+# Regenerate: d2 fleet-topology.d2 fleet-topology.svg
+
+direction: right
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  brain: {
+    style: {
+      fill: "#e7edff"
+      stroke: "#7aa2f7"
+      stroke-width: 2
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  worker: {
+    style: {
+      fill: "#eaf6e6"
+      stroke: "#9ece6a"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  sense: {
+    style: {
+      fill: "#fdf3e3"
+      stroke: "#e0af68"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  infra: {
+    style: {
+      fill: "#f2f0fa"
+      stroke: "#bb9af7"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+}
+
+you: "You\n(phone or desktop)" {
+  shape: person
+  style.font-color: "#1a1b26"
+}
+
+machine: "Your machine — one agent-deck profile" {
+  style: {
+    fill: "#fafbff"
+    stroke: "#c0caf5"
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+
+  bridge: "bridge.py\nchannel daemon" { class: infra }
+  conductor: "Conductor session\nthe brain — delegates, monitors, escalates" { class: brain }
+  heartbeat: "Heartbeat timer\nsystemd / launchd" { class: infra }
+
+  workers: "Child sessions — the hands" {
+    style: {
+      fill: "transparent"
+      stroke: "#9ece6a"
+      stroke-dash: 3
+      border-radius: 12
+      font-color: "#565a6e"
+    }
+    w1: "api\nfix #123" { class: worker }
+    w2: "frontend\nnew feature" { class: worker }
+    w3: "infra\ninvestigation" { class: worker }
+  }
+
+  watchers: "Watchers — the senses" {
+    style: {
+      fill: "transparent"
+      stroke: "#e0af68"
+      stroke-dash: 3
+      border-radius: 12
+      font-color: "#565a6e"
+    }
+    gh: "GitHub" { class: sense }
+    mail: "Gmail" { class: sense }
+    ntfy: "ntfy.sh" { class: sense }
+  }
+
+  bridge <-> conductor: "session send / output" {
+    style.stroke: "#bb9af7"
+  }
+  heartbeat -> conductor: "[HEARTBEAT]\nevery 15 min" {
+    style: {
+      stroke: "#bb9af7"
+      stroke-dash: 3
+    }
+  }
+  conductor -> workers: "launch -parent …" {
+    style.stroke: "#9ece6a"
+  }
+  workers -> conductor: "completions via\ndurable inbox" {
+    style.stroke: "#9ece6a"
+  }
+  watchers -> conductor: "doorbell trigger\n(short, normalized)" {
+    style.stroke: "#e0af68"
+  }
+}
+
+you <-> machine.bridge: "Telegram / Slack\n/ Discord bot" {
+  style: {
+    stroke: "#7aa2f7"
+    stroke-width: 2
+  }
+}
+machine.conductor -> you: "NEED: escalations" {
+  style: {
+    stroke: "#f7768e"
+    stroke-dash: 3
+  }
+}

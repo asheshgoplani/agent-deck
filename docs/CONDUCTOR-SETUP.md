@@ -8,7 +8,7 @@ This is the **onboarding** guide. Once you have a conductor running and
 talking to you, the deeper reference lives in
 [`documentation/CONDUCTOR.md`](../documentation/CONDUCTOR.md).
 
-![Fleet topology: user phone → conductor → child sessions, with watchers ringing the conductor from the side](images/fleet-topology.png)
+![Fleet topology: user phone → conductor → child sessions, with watchers ringing the conductor from the side](conductor/fleet-topology.svg)
 
 ---
 
@@ -140,7 +140,8 @@ Next steps:
 That single command:
 
 - Created `$XDG_DATA_HOME/agent-deck/conductor/<name>/` (default
-  `~/.local/share/agent-deck/conductor/<name>/`) with `CLAUDE.md`,
+  `~/.local/share/agent-deck/conductor/<name>/`; existing pre-XDG installs
+  keep using `~/.agent-deck/conductor/<name>/`) with `CLAUDE.md`,
   `POLICY.md`, `LEARNINGS.md`, `meta.json`, `state.json`, `task-log.md`.
 - Stored the Telegram token in the conductor `.env` file (chmod 600).
   **Never commit this file.**

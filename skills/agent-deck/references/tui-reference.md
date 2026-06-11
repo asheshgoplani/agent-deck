@@ -29,9 +29,12 @@ Complete reference for agent-deck Terminal UI features.
 | `m` | Open MCP Manager (Claude/Gemini) |
 | `s` | Open Skills Manager |
 | `d` | Delete session or group |
+| `A` | Archive session (stops tmux, hides from default list; conversations/metadata untouched) |
+| `Shift+U` | Unarchive session (restores to list; does NOT auto-start tmux) |
+| `b` | Re-run worktree setup script (`.agent-deck/worktree-setup.sh`) |
 | `u` | Mark unread (idle -> waiting) |
-| `f` | Quick fork (Claude/Pi) |
-| `F` | Fork with options (Claude/Pi) |
+| `f` | Quick fork (Claude/OpenCode/Pi/Codex) |
+| `F` | Fork with options (Claude/OpenCode/Pi/Codex) |
 
 ### Group Actions
 
@@ -52,6 +55,7 @@ Complete reference for agent-deck Terminal UI features.
 | `@` | Filter: waiting only (toggle) |
 | `#` | Filter: idle only (toggle) |
 | `$` | Filter: error only (toggle) |
+| `^` | Filter: view archived sessions (toggle) |
 
 ### Global
 
@@ -77,14 +81,18 @@ Complete reference for agent-deck Terminal UI features.
 
 ### New Session (`n`)
 
-**Fields:**
+**Fields (order: Name → Tool → Path):**
 - Session name (required)
+- Command (claude/gemini/opencode/codex/custom) — the dialog remembers the last-used tool (persisted per profile, never written to config.toml; an explicit `default_tool` in config wins)
 - Project path (required, supports `~/`)
-- Command (claude/gemini/opencode/codex/custom)
 - Parent group (auto-selected)
 - Claude options (when Claude is selected): permission mode, Chrome, teammate mode, extra args, and start query
 
-**Controls:** `Tab` move fields | `Enter` create | `Esc` cancel
+**Controls:** `Tab` move fields | `Enter` advance to next field (on free-text Name/Branch fields) | `Ctrl+S` create from any field | `Esc` cancel
+
+Enter-advances is the default (`[ui].new_session_enter_advances = true`), so typing a name and pressing Enter no longer silently creates a session with all defaults. Set `[ui].new_session_enter_advances = false` to restore the legacy Enter-submits behavior; `Ctrl+S` submits in both modes.
+
+Pressing `n` on a remote group/session opens a remote-aware dialog (remote paths and group pre-filled); the session is created over SSH on the remote, never on localhost.
 
 Claude New Session defaults are remembered in `~/.agent-deck/config.toml` under `[claude]`, except start query and resume IDs, which are per-launch values.
 

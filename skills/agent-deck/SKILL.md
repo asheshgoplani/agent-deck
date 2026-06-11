@@ -85,7 +85,7 @@ The table above is what *agent-deck* does. This one is what the *CLI inside a se
 | In-session capability | claude (Claude Code) | codex | gemini |
 |---|---|---|---|
 | **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ❌ single-agent — fan out by launching codex *peers* via agent-deck | ❌ not exposed — fan out via agent-deck peers |
-| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`) | ❌ | ✅ `gemini skills` |
+| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`; new installs `$XDG_DATA_HOME/agent-deck/skills/pool/`, default `~/.local/share/agent-deck/skills/pool/`) | ❌ | ✅ `gemini skills` |
 | **MCP servers** | ✅ `claude mcp` / `--mcp-config`; agent-deck `mcp attach` | ✅ `codex mcp`; also runs **as** a server (`codex mcp-server`) | ✅ `gemini mcp`, `--allowed-mcp-server-names` |
 | **Built-in code review** | ✅ `ultrareview` (cloud multi-agent) + `/code-review` skill | ✅ `codex review` / `codex exec review --uncommitted` | via prompt only |
 | **Plan / read-only mode** | `--permission-mode plan` | `-s read-only` | `--approval-mode plan` |
@@ -342,7 +342,7 @@ agent-deck conductor status
 agent-deck conductor list
 ```
 
-Each conductor lives at `~/.agent-deck/conductor/<name>/` with its own `CLAUDE.md` (or `AGENTS.md` for Codex), `meta.json`, `state.json`, and `task-log.md`. Multiple conductors per profile are supported and each can pair with its own bot.
+Each conductor lives at `~/.agent-deck/conductor/<name>/` (new installs: `$XDG_DATA_HOME/agent-deck/conductor/<name>/`, default `~/.local/share/agent-deck/conductor/<name>/`) with its own `CLAUDE.md` (or `AGENTS.md` for Codex), `meta.json`, `state.json`, and `task-log.md`. Multiple conductors per profile are supported and each can pair with its own bot.
 
 ### Channels (Telegram / Slack)
 
@@ -373,8 +373,10 @@ Key constraints:
 | `r/R` | Restart (reloads MCPs) |
 | `m` | MCP Manager |
 | `s` | Skills Manager |
-| `f/F` | Fork Claude/Pi session |
+| `f/F` | Fork Claude/OpenCode/Pi/Codex session |
 | `d` | Delete |
+| `A` | Archive (stops tmux, hides from default list) |
+| `Shift+U` | Unarchive (does not auto-start tmux) |
 | `M` | Move to group |
 
 ### Search & Filter
@@ -383,6 +385,7 @@ Key constraints:
 | `/` | Local search |
 | `G` | Global search (all Claude conversations) |
 | `!@#$` | Filter by status (running/waiting/idle/error) |
+| `^` | View archived sessions |
 
 ### Global
 | Key | Action |
@@ -671,7 +674,7 @@ The verifier requirement attaches to claims about external mutable state: PRs, r
 
 ## Configuration
 
-**File:** `~/.agent-deck/config.toml`
+**File:** `~/.agent-deck/config.toml` (new installs: `~/.config/agent-deck/config.toml`; legacy `~/.agent-deck/config.toml` still honored)
 
 ```toml
 [claude]

@@ -1,0 +1,122 @@
+# Channels topology — one bot per conductor, one state dir per bot. Never shared.
+# Regenerate: d2 channels-topology.d2 channels-topology.svg
+
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+classes: {
+  bot: {
+    style: {
+      fill: "#e7edff"
+      stroke: "#7aa2f7"
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  conductor: {
+    style: {
+      fill: "#eaf6e6"
+      stroke: "#9ece6a"
+      stroke-width: 2
+      border-radius: 8
+      font-color: "#1a1b26"
+    }
+  }
+  statedir: {
+    shape: cylinder
+    style: {
+      fill: "#fffdf5"
+      stroke: "#e0af68"
+      font-color: "#1a1b26"
+      font-size: 14
+    }
+  }
+}
+
+phone: "Your Telegram account" {
+  style: {
+    fill: "#fafbff"
+    stroke: "#c0caf5"
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  bot-work: "@work_bot" { class: bot }
+  bot-personal: "@personal_bot" { class: bot }
+}
+
+work: "conductor-work" {
+  style: {
+    fill: "transparent"
+    stroke: "#9ece6a"
+    stroke-dash: 3
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  session: "claude + plugin:telegram\n(per-session via channels field,\nnever globally enabled)" { class: conductor }
+  state: "TELEGRAM_STATE_DIR\nchannels/telegram-work/" { class: statedir }
+  session -> state: "token + poller state\n(.env, chmod 600)" {
+    style.stroke: "#e0af68"
+  }
+}
+
+personal: "conductor-personal" {
+  style: {
+    fill: "transparent"
+    stroke: "#9ece6a"
+    stroke-dash: 3
+    border-radius: 12
+    font-color: "#565a6e"
+  }
+  session: "claude + plugin:telegram\n(per-session via channels field,\nnever globally enabled)" { class: conductor }
+  state: "TELEGRAM_STATE_DIR\nchannels/telegram-personal/" { class: statedir }
+  session -> state: "token + poller state\n(.env, chmod 600)" {
+    style.stroke: "#e0af68"
+  }
+}
+
+config: "config.toml\n[conductors.<name>.claude]\nenv_file = …/.envrc → exports TELEGRAM_STATE_DIR" {
+  shape: page
+  style: {
+    fill: "#f2f0fa"
+    stroke: "#bb9af7"
+    font-color: "#1a1b26"
+    font-size: 14
+  }
+}
+
+phone.bot-work <-> work.session: "1:1 — dedicated bot" {
+  style: {
+    stroke: "#7aa2f7"
+    stroke-width: 2
+  }
+}
+phone.bot-personal <-> personal.session: "1:1 — dedicated bot" {
+  style: {
+    stroke: "#7aa2f7"
+    stroke-width: 2
+  }
+}
+config -> work.session: "injected on every\nstart / restart / resume" {
+  style: {
+    stroke: "#bb9af7"
+    stroke-dash: 3
+  }
+}
+config -> personal.session: "injected on every\nstart / restart / resume" {
+  style: {
+    stroke: "#bb9af7"
+    stroke-dash: 3
+  }
+}
+phone.bot-work -> personal.session: "NEVER:\nshared bot = 409 conflicts\n+ cross-routed messages" {
+  style: {
+    stroke: "#f7768e"
+    stroke-dash: 5
+    font-color: "#f7768e"
+  }
+}

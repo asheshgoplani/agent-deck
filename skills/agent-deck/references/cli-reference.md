@@ -8,6 +8,7 @@ Complete reference for all agent-deck CLI commands.
 - [Basic Commands](#basic-commands)
 - [Web Command](#web-command)
 - [Session Commands](#session-commands)
+- [Worktree Commands](#worktree-commands)
 - [MCP Commands](#mcp-commands)
 - [Skill Commands](#skill-commands)
 - [Group Commands](#group-commands)
@@ -93,6 +94,14 @@ agent-deck status [-v|-q|--json]
 - `-v`: Detailed list by status
 - `-q`: Just waiting count (for scripts)
 
+### migrate-paths - Copy legacy data into XDG layout
+
+```bash
+agent-deck migrate-paths [--dry-run] [--force]
+```
+
+Copies known legacy `~/.agent-deck` files into the split XDG layout (config under `~/.config/agent-deck`, durable data under `~/.local/share/agent-deck`, cache under `~/.cache/agent-deck`) without deleting the legacy directory. Use `--dry-run` to preview what would be copied.
+
 ## Web Command
 
 ### web - Start browser UI
@@ -146,13 +155,15 @@ agent-deck session restart <id|title>
 
 Reloads MCPs without losing conversation (Claude/Gemini).
 
-### session fork (Claude and Pi)
+### session fork (Claude, OpenCode, Pi, Codex)
 
 ```bash
 agent-deck session fork <id|title> [-t "title"] [-g "group"]
 ```
 
 Creates a new session with the same conversation context for supported tools.
+
+In the TUI, quick fork (`f`) is comprehensive by default: it creates a new git worktree + branch, carries the parent's uncommitted state, matches Docker isolation, and inherits the Claude launch options. Defaults are configured in the `[fork]` section — see [config-reference.md](config-reference.md#fork-section). The Web/API fork is a plain tool-native fork and does not apply the `[fork]` defaults.
 
 **Requirements:**
 - Claude sessions must have a valid Claude session ID
@@ -213,7 +224,9 @@ agent-deck session current --json
 agent-deck session set <id|title> <field> <value>
 ```
 
-**Fields:** title, path, command, tool, claude-session-id, gemini-session-id
+**Fields:** title, path, command, tool, claude-session-id, gemini-session-id, account
+
+Setting `account` auto-migrates the Claude conversation into the target account's config dir (same migration as `session switch-account`, but without the automatic stop/restart).
 
 ### session send
 
@@ -241,6 +254,46 @@ Get last response from Claude/Gemini session.
 agent-deck session set-parent <session> <parent>
 agent-deck session unset-parent <session>
 ```
+
+### session switch-account
+
+```bash
+agent-deck session switch-account <session> <account>
+```
+
+Moves a session — conversation included — to another configured Claude account: stops the session, migrates the Claude conversation file into the target account's config dir (copy-only, with a destination backup and size verification), sets the account, and restarts with `--resume`.
+
+```bash
+agent-deck session switch-account "My Project" work
+```
+
+Accounts are the profiles named in `config.toml` (`[profiles.<name>.claude].config_dir`).
+
+## Worktree Commands
+
+### worktree list
+
+```bash
+agent-deck worktree list
+```
+
+Lists worktrees and their associated sessions.
+
+### worktree info
+
+```bash
+agent-deck worktree info <session>
+```
+
+Shows detailed worktree info for a session.
+
+### worktree cleanup
+
+```bash
+agent-deck worktree cleanup [--force]
+```
+
+Finds orphaned worktrees/sessions. Dry-run by default; `--force` performs the cleanup.
 
 ## MCP Commands
 

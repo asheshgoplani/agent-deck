@@ -1,6 +1,6 @@
 # Conductor: a persistent orchestrator for your agent-deck sessions
 
-![Conductor overview](assets/conductor-overview.png)
+![Conductor overview](../docs/conductor/conductor-overview.svg)
 
 A **conductor** is one long-lived Claude Code session whose whole job is to supervise other sessions. You do not code in it. You do not read files with it. You talk to it (from your terminal, from Telegram, from Slack, from anywhere you have a bot) and it delegates the work to child sessions, watches what they do, and reports back.
 
@@ -13,12 +13,14 @@ A conductor is the foreman on a jobsite. You send instructions to the foreman. T
 Under the hood, a conductor is:
 
 - A `claude` process pinned inside a named tmux session managed by agent-deck.
-- A directory at `~/.agent-deck/conductor/<name>/` that holds its instructions, policy, learnings, state, and task log.
+- A directory at `~/.agent-deck/conductor/<name>/` (XDG installs: `~/.local/share/agent-deck/conductor/<name>/`) that holds its instructions, policy, learnings, state, and task log.
 - An agent-deck session record (`agent-deck list` will show it) with `is_conductor: true`.
 - Optionally, one or more channels attached (Telegram today, more planned) so you can talk to it remotely.
 - Optionally, a heartbeat daemon that pings the conductor on a schedule, keeping it honest about idle-while-work-is-pending states.
 
 Everything else (which models it uses, which policy it follows, how it splits work) is configured through the files in its directory. Those files are the contract.
+
+> **Path note.** Examples in this guide use the legacy `~/.agent-deck/` layout. On new installs (v1.9.48+) durable conductor state lives under `$XDG_DATA_HOME/agent-deck/` (default `~/.local/share/agent-deck/`) and `config.toml` under `$XDG_CONFIG_HOME/agent-deck/` (default `~/.config/agent-deck/`). Existing `~/.agent-deck` installs keep working via legacy fallback, and `agent-deck migrate-paths` copies a legacy layout into the XDG one.
 
 ## Why you would want one
 
@@ -68,7 +70,7 @@ agent-deck session output my-conductor
 
 ### 3. Attach a Telegram channel (optional but recommended)
 
-![Channels topology — one bot per conductor](assets/channels-topology.png)
+![Channels topology — one bot per conductor](../docs/conductor/channels-topology.svg)
 
 Attaching a channel is what makes the conductor reachable remotely.
 
@@ -133,7 +135,7 @@ Send a message to the bot in Telegram. The conductor should receive it within a 
 
 ## State files: what each is for
 
-Everything lives under `~/.agent-deck/conductor/<name>/`.
+Everything lives under `~/.agent-deck/conductor/<name>/` (XDG installs: `~/.local/share/agent-deck/conductor/<name>/`).
 
 ### `CLAUDE.md`
 
@@ -265,4 +267,4 @@ The `--remove` flag is destructive: it deletes `~/.agent-deck/conductor/<name>/`
 
 - [SKILLS.md](SKILLS.md): conductors lean on skills heavily; how the two-tier skill system works.
 - [WATCHDOG.md](WATCHDOG.md): optional ops script that keeps a flaky conductor alive by auto-restarting it and catching stuck children.
-- [SESSION-PERSISTENCE-SPEC.md](SESSION-PERSISTENCE-SPEC.md): the underlying session-persistence rules conductors inherit.
+- [SESSION-PERSISTENCE-SPEC.md](../docs/SESSION-PERSISTENCE-SPEC.md): the underlying session-persistence rules conductors inherit.

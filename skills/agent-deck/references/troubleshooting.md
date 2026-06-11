@@ -244,6 +244,8 @@ Data stored in SQLite:
 ~/.agent-deck/profiles/default/state.db
 ```
 
+Note: new installs store profiles under `$XDG_DATA_HOME/agent-deck/profiles/` (default `~/.local/share/agent-deck/profiles/`); a legacy `~/.agent-deck/` directory is still honored when present.
+
 Recovery (if state.db is corrupted):
 ```bash
 # If sessions.json.migrated still exists, delete state.db and restart.

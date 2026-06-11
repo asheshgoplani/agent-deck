@@ -6,6 +6,8 @@ A watcher is the thing that rings the doorbell. It does not carry the package in
 
 This doc explains the watcher framework that ships in `internal/watcher/`, the philosophy behind it, and how to extend it with your own custom sources.
 
+> **Path note.** Examples below use the legacy `~/.agent-deck/watcher/` layout. On new installs (v1.9.48+) watcher state lives under `$XDG_DATA_HOME/agent-deck/watcher/` (default `~/.local/share/agent-deck/watcher/`); existing `~/.agent-deck` installs keep working via legacy fallback.
+
 ## The doorbell model
 
 A conductor is an expensive, context-heavy Claude session. Every token you hand it at wake-up time is a token it cannot spend on actual work. So the rule is:
