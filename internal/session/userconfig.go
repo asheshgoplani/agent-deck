@@ -2427,7 +2427,8 @@ func SaveUserConfigWithIntent(config *UserConfig, allowSectionDrop bool) error {
 
 	// Strip empty TOML sections left behind by omitempty/omitzero (the encoder
 	// emits section headers even when all fields within are skipped).
-	buf = *bytes.NewBuffer(stripEmptyTOMLSections(buf.Bytes()))
+	stripped := stripEmptyTOMLSections(buf.Bytes())
+	buf = *bytes.NewBuffer(stripped)
 
 	// ═══════════════════════════════════════════════════════════════════
 	// S3 data-loss safeguard (2026-06-04 incident): refuse a save that would
@@ -2528,14 +2529,13 @@ func stripEmptyTOMLSections(data []byte) []byte {
 		// the next section header (or EOF).
 		hasContent := false
 		for peek := idx + 1; peek < len(lines); peek++ {
-			pt := bytes.TrimSpace(lines[peek])
-			if len(pt) == 0 {
+			nextLine := bytes.TrimSpace(lines[peek])
+			if len(nextLine) == 0 {
 				continue
 			}
-			if pt[0] == '[' {
+			if nextLine[0] == '[' {
 				break
 			}
-			// A non-empty, non-header line means this section has content.
 			hasContent = true
 			break
 		}

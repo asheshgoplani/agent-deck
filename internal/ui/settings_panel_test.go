@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func ptrFalse() *bool { f := false; return &f }
+func boolPtr(v bool) *bool { return &v }
 
 func setSettingsPanelHotkeyConfigForTest(t *testing.T, tomlBody string) {
 	t.Helper()
@@ -69,13 +69,13 @@ func TestSettingsPanel_LoadConfig(t *testing.T) {
 			ConfigDir:     "~/.claude-work",
 		},
 		Updates: session.UpdateSettings{
-			CheckEnabled: ptrFalse(),
+			CheckEnabled: boolPtr(false),
 			AutoUpdate:   true,
 		},
 		Logs: session.LogSettings{
 			MaxSizeMB:     20,
 			MaxLines:      5000,
-			RemoveOrphans: ptrFalse(),
+			RemoveOrphans: boolPtr(false),
 		},
 		GlobalSearch: session.GlobalSearchSettings{
 			Enabled:    true,
