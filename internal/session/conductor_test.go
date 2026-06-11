@@ -307,7 +307,7 @@ func TestGetHeartbeatInterval(t *testing.T) {
 		interval *int
 		expected int
 	}{
-		{"nil defaults to 15", nil, 15},
+		{"nil means disabled", nil, 0},
 		{"zero means disabled", intPtr(0), 0},
 		{"custom 10", intPtr(10), 10},
 		{"custom 30", intPtr(30), 30},
@@ -2324,10 +2324,11 @@ func TestGetHeartbeatInterval_ZeroMeansDisabled(t *testing.T) {
 		interval *int
 		expected int
 	}{
-		{"nil means default", nil, 15},
+		{"nil means disabled", nil, 0},
+		{"negative means disabled", intPtr(-1), 0},
 		{"zero means disabled", intPtr(0), 0},
 		{"custom value", intPtr(30), 30},
-		{"explicit default", intPtr(15), 15},
+		{"explicit fifteen", intPtr(15), 15},
 	}
 
 	for _, tt := range tests {
