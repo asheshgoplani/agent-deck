@@ -69,8 +69,8 @@ type ConductorSettings struct {
 	Enabled bool `toml:"enabled,omitempty"`
 
 	// HeartbeatInterval is the interval in minutes between heartbeat checks
-	// Default: 15
-	HeartbeatInterval int `toml:"heartbeat_interval,omitzero"`
+	// nil = default (15), 0 = disabled, >0 = configured
+	HeartbeatInterval *int `toml:"heartbeat_interval,omitempty"`
 
 	// Profiles is the list of agent-deck profiles to manage
 	// Kept for backward compat but ignored after migration to meta.json-based discovery
@@ -237,17 +237,12 @@ func GetConductorAgentSpec(agent string) (ConductorAgentSpec, error) {
 var conductorNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // GetHeartbeatInterval returns the heartbeat interval in minutes.
-// Returns 0 when HeartbeatInterval is 0 (explicitly disabled).
-// Returns 15 (default) when HeartbeatInterval is negative.
-// Returns the configured value when HeartbeatInterval is positive.
+// nil = default (15), 0 = disabled, >0 = configured.
 func (c *ConductorSettings) GetHeartbeatInterval() int {
-	if c.HeartbeatInterval == 0 {
-		return 0 // explicitly disabled
+	if c.HeartbeatInterval == nil {
+		return 15
 	}
-	if c.HeartbeatInterval < 0 {
-		return 15 // negative = use default
-	}
-	return c.HeartbeatInterval
+	return *c.HeartbeatInterval
 }
 
 // GetHeartbeatIdleMinutes returns the heartbeat idle threshold in minutes.

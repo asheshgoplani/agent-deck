@@ -416,11 +416,10 @@ func handleConductorSetup(profile string, args []string) {
 
 		// Update config (no longer stores profiles list, conductors are on disk)
 		settings = session.ConductorSettings{
-			Enabled:           true,
-			HeartbeatInterval: 15,
-			Telegram:          telegram,
-			Slack:             slack,
-			Discord:           discord,
+			Enabled:  true,
+			Telegram: telegram,
+			Slack:    slack,
+			Discord:  discord,
 		}
 		config.Conductor = settings
 
