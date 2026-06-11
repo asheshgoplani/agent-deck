@@ -546,9 +546,8 @@ func TestSaveUserConfig(t *testing.T) {
 			ConfigDir:     "~/.claude-work",
 		},
 		Logs: LogSettings{
-			MaxSizeMB:     20,
-			MaxLines:      5000,
-			RemoveOrphans: true,
+			MaxSizeMB: 20,
+			MaxLines:  5000,
 		},
 	}
 
@@ -718,8 +717,8 @@ auto_cleanup = false
 	if !config.Worktree.DefaultEnabled {
 		t.Error("Expected DefaultEnabled to be true")
 	}
-	if config.Worktree.AutoCleanup {
-		t.Error("Expected AutoCleanup to be false")
+	if config.Worktree.AutoCleanup != nil && *config.Worktree.AutoCleanup {
+		t.Error("Expected AutoCleanup to be nil or false")
 	}
 }
 
@@ -743,8 +742,8 @@ func TestWorktreeConfigDefaults(t *testing.T) {
 	if config.Worktree.DefaultLocation != "" {
 		t.Errorf("Expected empty DefaultLocation (zero value), got %q", config.Worktree.DefaultLocation)
 	}
-	if config.Worktree.AutoCleanup {
-		t.Error("AutoCleanup should be false when not specified (zero value)")
+	if config.Worktree.AutoCleanup != nil {
+		t.Error("AutoCleanup should be nil when not specified")
 	}
 }
 
@@ -760,7 +759,7 @@ func TestGetWorktreeSettings(t *testing.T) {
 	if settings.DefaultLocation != "subdirectory" {
 		t.Errorf("GetWorktreeSettings DefaultLocation: got %q, want %q", settings.DefaultLocation, "subdirectory")
 	}
-	if !settings.AutoCleanup {
+	if !settings.GetAutoCleanup() {
 		t.Error("GetWorktreeSettings AutoCleanup: should default to true")
 	}
 }
@@ -775,11 +774,12 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	// Create config with custom worktree settings
 	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
 	_ = os.MkdirAll(agentDeckDir, 0700)
+	autoCleanupFalse := false
 	config := &UserConfig{
 		Worktree: WorktreeSettings{
 			DefaultLocation: "subdirectory",
 			DefaultEnabled:  true,
-			AutoCleanup:     false,
+			AutoCleanup:     &autoCleanupFalse,
 		},
 	}
 	_ = SaveUserConfig(config)
@@ -792,7 +792,7 @@ func TestGetWorktreeSettings_FromConfig(t *testing.T) {
 	if !settings.DefaultEnabled {
 		t.Error("GetWorktreeSettings DefaultEnabled: should be true from config")
 	}
-	if settings.AutoCleanup {
+	if settings.GetAutoCleanup() {
 		t.Error("GetWorktreeSettings AutoCleanup: should be false from config")
 	}
 }
@@ -1251,7 +1251,7 @@ func TestNotificationsConfig_Defaults(t *testing.T) {
 
 	// With no config file, GetNotificationsSettings should return defaults
 	settings := GetNotificationsSettings()
-	if !settings.Enabled {
+	if !settings.GetEnabled() {
 		t.Error("notifications should be enabled by default")
 	}
 	if settings.MaxShown != 6 {
@@ -1278,7 +1278,7 @@ max_shown = 4
 		t.Fatalf("Failed to decode: %v", err)
 	}
 
-	if !config.Notifications.Enabled {
+	if !config.Notifications.GetEnabled() {
 		t.Error("Expected Notifications.Enabled to be true")
 	}
 	if config.Notifications.MaxShown != 4 {
@@ -1309,7 +1309,7 @@ max_shown = 8
 	ClearUserConfigCache()
 
 	settings := GetNotificationsSettings()
-	if !settings.Enabled {
+	if !settings.GetEnabled() {
 		t.Error("GetNotificationsSettings Enabled: should be true from config")
 	}
 	if settings.MaxShown != 8 {
@@ -1373,7 +1373,7 @@ enabled = true
 	ClearUserConfigCache()
 
 	settings := GetNotificationsSettings()
-	if !settings.Enabled {
+	if !settings.GetEnabled() {
 		t.Error("GetNotificationsSettings Enabled: should be true")
 	}
 	if settings.MaxShown != 6 {
@@ -2195,5 +2195,237 @@ footer = "full"
 	}
 	if got := c.UI.GetFooter(); got != FooterFull {
 		t.Errorf("GetFooter() = %q, want %q", got, FooterFull)
+	}
+}
+
+// TestSaveUserConfig_OmitsZeroValueFields verifies that SaveUserConfig does not
+// bloat config.toml with zero-value fields the user never set (issue #1360).
+func TestSaveUserConfig_OmitsZeroValueFields(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	branchPrefix := ""
+	dangerousFalse := false
+	config := &UserConfig{
+		DefaultTool: "claude",
+		Theme:       "dark",
+		Claude: ClaudeSettings{
+			DangerousMode:      &dangerousFalse,
+			AllowDangerousMode: false,
+		},
+		Worktree: WorktreeSettings{
+			BranchPrefix: &branchPrefix,
+		},
+		Updates: UpdateSettings{
+			AutoUpdate: false,
+		},
+		Feedback: FeedbackSettings{
+			Disabled: true,
+		},
+		UI: UISettings{
+			HiddenTools: []string{"codex", "copilot"},
+		},
+	}
+
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+
+	content := string(raw)
+
+	// Zero-value sections that were never set must NOT appear.
+	for _, absent := range []string{
+		"[gemini]",
+		"[opencode]",
+		"[codex]",
+		"[copilot]",
+		"[crush]",
+		"[hermes]",
+		"[global_search]",
+		"[logs]",
+		"[mcp_pool]",
+		"[conductor]",
+		"[docker]",
+		"[openclaw]",
+		"[costs]",
+		"[system_stats]",
+		"[watcher]",
+		"[terminal]",
+		"[web]",
+		"[notifications]",
+		"[maintenance]",
+		"[status]",
+		"[display]",
+		"[instances]",
+		"[shell]",
+		"[fork]",
+	} {
+		if strings.Contains(content, absent) {
+			t.Errorf("config.toml should not contain zero-value section %q", absent)
+		}
+	}
+
+	// Fields that ARE set must be present.
+	for _, present := range []string{
+		`default_tool = "claude"`,
+		"[feedback]",
+		"disabled = true",
+		"[worktree]",
+		`branch_prefix = ""`,
+		"[ui]",
+		"hidden_tools",
+	} {
+		if !strings.Contains(content, present) {
+			t.Errorf("config.toml should contain %q", present)
+		}
+	}
+
+	// The file must be compact — under 50 lines for a minimal config.
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) > 50 {
+		t.Errorf("config.toml is %d lines; expected under 50 for a minimal config.\nContent:\n%s", len(lines), content)
+	}
+}
+
+// TestSaveUserConfig_LoadMutateSavePreservesExistingFields simulates the
+// persistClaudeDialogDefaults path: load existing config, mutate a few fields,
+// save. The existing user settings must survive the round-trip without bloat.
+func TestSaveUserConfig_LoadMutateSavePreservesExistingFields(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	// Write a minimal config (what a dotfile user would have).
+	initial := `default_tool = "claude"
+theme = "dark"
+
+[claude]
+  dangerous_mode = false
+  allow_dangerous_mode = false
+
+[worktree]
+  branch_prefix = ""
+
+[updates]
+  check_enabled = false
+
+[feedback]
+  disabled = true
+
+[ui]
+  hidden_tools = ["codex", "copilot"]
+`
+	configPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(initial), 0600); err != nil {
+		t.Fatalf("write initial config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	// Simulate persistClaudeDialogDefaults: load, mutate, save.
+	cfg, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+	skipPerms := false
+	cfg.Claude.DangerousMode = &skipPerms
+	cfg.Claude.AllowDangerousMode = false
+	cfg.Claude.AutoMode = false
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	content := string(raw)
+
+	// The file must NOT have bloated with zero-value sections.
+	for _, absent := range []string{
+		"[gemini]",
+		"[opencode]",
+		"[codex]",
+		"[copilot]",
+		"[conductor]",
+		"[docker]",
+	} {
+		if strings.Contains(content, absent) {
+			t.Errorf("after load-mutate-save, config.toml should not contain %q\nContent:\n%s", absent, content)
+		}
+	}
+
+	// Existing settings must be preserved.
+	for _, present := range []string{
+		`default_tool = "claude"`,
+		"[feedback]",
+		"disabled = true",
+		"[worktree]",
+		`branch_prefix = ""`,
+		"[ui]",
+		"hidden_tools",
+		"[updates]",
+		"check_enabled = false",
+	} {
+		if !strings.Contains(content, present) {
+			t.Errorf("after load-mutate-save, config.toml should contain %q\nContent:\n%s", present, content)
+		}
+	}
+}
+
+// TestSaveUserConfig_PreservesPointerFalse verifies that *bool fields set to
+// explicit false survive the save round-trip (they must not be stripped by
+// omitempty since nil and *false have different semantics).
+func TestSaveUserConfig_PreservesPointerFalse(t *testing.T) {
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", originalHome)
+	isolateConfigHomeXDG(t)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+
+	dangerousFalse := false
+	config := &UserConfig{
+		Claude: ClaudeSettings{
+			DangerousMode: &dangerousFalse,
+		},
+	}
+
+	if err := SaveUserConfig(config); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	ClearUserConfigCache()
+	loaded, err := LoadUserConfig()
+	if err != nil {
+		t.Fatalf("LoadUserConfig: %v", err)
+	}
+
+	if loaded.Claude.DangerousMode == nil {
+		t.Fatal("DangerousMode should be non-nil (*false), got nil")
+	}
+	if *loaded.Claude.DangerousMode {
+		t.Fatal("DangerousMode should be *false, got *true")
 	}
 }

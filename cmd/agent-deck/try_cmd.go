@@ -87,7 +87,7 @@ func handleTry(profile string, args []string) {
 	}
 
 	// Find or create experiment
-	exp, created, err := experiments.FindOrCreate(settings.Directory, name, settings.DatePrefix)
+	exp, created, err := experiments.FindOrCreate(settings.Directory, name, settings.GetDatePrefix())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

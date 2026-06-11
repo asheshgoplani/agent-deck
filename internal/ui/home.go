@@ -1064,7 +1064,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	// Initialize notification manager if enabled in config and tmux status injection is allowed.
 	// All instances manage the notification bar (they share SQLite state, so produce identical output)
 	notifSettings := session.GetNotificationsSettings()
-	if notifSettings.Enabled && h.manageTmuxNotifications {
+	if notifSettings.GetEnabled() && h.manageTmuxNotifications {
 		h.notificationsEnabled = true
 		h.notificationManager = session.NewNotificationManager(notifSettings.MaxShown, notifSettings.ShowAll, notifSettings.Minimal)
 
@@ -1261,7 +1261,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 	h.lastLogCheck = time.Now()
 	safego.Go(uiLog, "startup_log_maintenance", func() {
 		logSettings := session.GetLogSettings()
-		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.RemoveOrphans)
+		tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
 	})
 
 	// v1.7.60: one-shot nav-discoverability hint. Reuses the maintenance-banner
@@ -5322,7 +5322,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.lastLogMaintenance = time.Now()
 			go func() {
 				logSettings := session.GetLogSettings()
-				tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.RemoveOrphans)
+				tmux.RunLogMaintenance(logSettings.MaxSizeMB, logSettings.MaxLines, logSettings.GetRemoveOrphans())
 			}()
 		}
 
