@@ -622,6 +622,19 @@ def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
     return all_sessions
 
 
+def _find_session_by_title(sessions: list, title: str, profile: str) -> dict | None:
+    """Find an exact title match from a profile-scoped session list."""
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        if session.get("title") != title:
+            continue
+        session_profile = session.get("profile")
+        if session_profile in (None, "", profile):
+            return session
+    return None
+
+
 async def ensure_conductor_running(name: str, profile: str) -> bool:
     """Ensure the conductor session exists and is running."""
     session_title = conductor_session_title(name)
@@ -639,33 +652,70 @@ async def ensure_conductor_running(name: str, profile: str) -> bool:
             )
         )
         if result.returncode != 0:
-            # Session might not exist, try creating it
-            log.info("Creating conductor session for %s...", name)
-            session_path = str(CONDUCTOR_DIR / name)
-            result = await loop.run_in_executor(
-                None, functools.partial(
-                    run_cli,
-                    "add", session_path,
-                    "-t", session_title,
-                    "-c", "claude",
-                    "-g", "conductor",
-                    profile=profile,
-                    timeout=60,
-                )
+            log.warning(
+                "Failed to start conductor %s before dedupe: %s",
+                name,
+                result.stderr.strip(),
             )
-            if result.returncode != 0:
-                log.error(
-                    "Failed to create conductor %s: %s",
-                    name,
-                    result.stderr.strip(),
-                )
-                return False
-            # Start the newly created session
-            await loop.run_in_executor(
-                None, functools.partial(
-                    run_cli, "session", "start", session_title, profile=profile, timeout=60
-                )
+            sessions = await loop.run_in_executor(
+                None, functools.partial(get_sessions_list, profile=profile)
             )
+            existing = _find_session_by_title(sessions, session_title, profile)
+            if existing is not None:
+                log.info(
+                    "Reusing existing conductor session %s in profile %s",
+                    session_title,
+                    profile,
+                )
+                retry = await loop.run_in_executor(
+                    None, functools.partial(
+                        run_cli,
+                        "session",
+                        "start",
+                        session_title,
+                        profile=profile,
+                        timeout=60,
+                    )
+                )
+                if retry.returncode != 0:
+                    log.warning(
+                        "Failed to start existing conductor %s: %s",
+                        name,
+                        retry.stderr.strip(),
+                    )
+            else:
+                # Session is absent from this profile, so create it.
+                log.info("Creating conductor session for %s...", name)
+                session_path = str(CONDUCTOR_DIR / name)
+                result = await loop.run_in_executor(
+                    None, functools.partial(
+                        run_cli,
+                        "add", session_path,
+                        "-t", session_title,
+                        "-c", "claude",
+                        "-g", "conductor",
+                        profile=profile,
+                        timeout=60,
+                    )
+                )
+                if result.returncode != 0:
+                    log.error(
+                        "Failed to create conductor %s: %s",
+                        name,
+                        result.stderr.strip(),
+                    )
+                    return False
+                # Start the newly created session
+                await loop.run_in_executor(
+                    None, functools.partial(
+                        run_cli,
+                        "session",
+                        "start",
+                        session_title,
+                        profile=profile,
+                        timeout=60,
+                    )
+                )
 
         # Wait a moment for the session to initialize (non-blocking)
         await asyncio.sleep(5)
