@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -831,7 +832,11 @@ func getDefaultRemote(repoDir string) (string, error) {
 		output, err := cmd.Output()
 		if err == nil {
 			remote := strings.TrimSpace(string(output))
-			if remote != "" {
+			// branch.<name>.remote may hold a bare URL (e.g. after pulling a
+			// PR branch directly from a fork URL). A URL is fetchable but is
+			// not a remote-tracking ref prefix, so "<url>/main" later fails
+			// with "invalid reference" — only accept configured remote names.
+			if remote != "" && slices.Contains(remotes, remote) {
 				return remote, nil
 			}
 		}
