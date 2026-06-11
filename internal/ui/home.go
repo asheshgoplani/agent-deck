@@ -351,12 +351,13 @@ type Home struct {
 	updateNudgeDismissed bool
 
 	// Launching animation state (for newly created sessions)
-	launchingSessions  map[string]time.Time        // sessionID -> creation time
-	resumingSessions   map[string]time.Time        // sessionID -> resume time (for restart/resume)
-	mcpLoadingSessions map[string]time.Time        // sessionID -> MCP reload time
-	forkingSessions    map[string]time.Time        // sessionID -> fork start time (fork in progress)
-	creatingSessions   map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
-	animationFrame     int                         // Current frame for spinner animation
+	launchingSessions    map[string]time.Time        // sessionID -> creation time
+	resumingSessions     map[string]time.Time        // sessionID -> resume time (for restart/resume)
+	mcpLoadingSessions   map[string]time.Time        // sessionID -> MCP reload time
+	forkingSessions      map[string]time.Time        // sessionID -> fork start time (fork in progress)
+	setupRunningSessions map[string]time.Time        // sessionID -> setup script start time
+	creatingSessions     map[string]*CreatingSession // tempID -> placeholder for worktree creation in progress
+	animationFrame       int                         // Current frame for spinner animation
 
 	// Context for cleanup
 	ctx    context.Context
@@ -871,6 +872,13 @@ type worktreeDirtyCheckMsg struct {
 	err       error
 }
 
+// worktreeSetupResultMsg is sent when re-running the worktree setup script completes
+type worktreeSetupResultMsg struct {
+	sessionID    string
+	sessionTitle string
+	err          error
+}
+
 // worktreeFinishResultMsg is sent when the worktree finish operation completes
 type worktreeFinishResultMsg struct {
 	sessionID    string
@@ -988,6 +996,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
 		forkingSessions:      make(map[string]time.Time),
+		setupRunningSessions: make(map[string]time.Time),
 		creatingSessions:     make(map[string]*CreatingSession),
 		lastLogActivity:      make(map[string]time.Time),
 		windowsCollapsed:     make(map[string]bool),
@@ -5090,6 +5099,15 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case worktreeSetupResultMsg:
+		delete(h.setupRunningSessions, msg.sessionID)
+		if msg.err != nil {
+			h.setError(msg.err)
+		} else {
+			h.setError(fmt.Errorf("worktree setup completed for '%s'", msg.sessionTitle))
+		}
+		return h, nil
+
 	case worktreeFinishResultMsg:
 		if msg.err != nil {
 			// Show error in dialog (user can go back or cancel)
@@ -5346,6 +5364,7 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cleanupExpiredAnimations(h.resumingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.mcpLoadingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.forkingSessions, claudeTimeout, defaultTimeout)
+		h.cleanupExpiredAnimations(h.setupRunningSessions, 90*time.Second, 90*time.Second)
 
 		// Notification bar sync handled by background worker (syncNotificationsBackground)
 		// which runs even when TUI is paused during tea.Exec
@@ -6930,6 +6949,27 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return h, nil
+
+	case "b":
+		// Re-run worktree setup script (bootstrap)
+		if h.cursor >= len(h.flatItems) {
+			return h, nil
+		}
+		item := h.flatItems[h.cursor]
+		if item.Type != session.ItemTypeSession || item.Session == nil {
+			return h, nil
+		}
+		inst := item.Session
+		if !inst.IsWorktree() {
+			h.setError(fmt.Errorf("session '%s' is not a worktree", inst.Title))
+			return h, nil
+		}
+		if _, running := h.setupRunningSessions[inst.ID]; running {
+			h.setError(fmt.Errorf("setup script already running for '%s'", inst.Title))
+			return h, nil
+		}
+		h.setupRunningSessions[inst.ID] = time.Now()
+		return h, h.runWorktreeSetup(inst)
 
 	case "W", "shift+w":
 		// Worktree finish - merge + cleanup for worktree sessions
@@ -14153,6 +14193,50 @@ func (h *Home) renderMcpLoadingState(inst *session.Instance, width int, startTim
 }
 
 // renderForkingState renders the forking animation when session is being forked
+func (h *Home) renderSetupRunningState(inst *session.Instance, width int, startTime time.Time) string {
+	var b strings.Builder
+	centerStyle := lipgloss.NewStyle().
+		Width(width - 4).
+		Align(lipgloss.Center)
+
+	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+	spinner := spinnerFrames[h.animationFrame]
+
+	spinnerStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen).
+		Bold(true)
+	spinnerLine := spinnerStyle.Render(spinner + "  " + spinner + "  " + spinner)
+	b.WriteString(centerStyle.Render(spinnerLine))
+	b.WriteString("\n\n")
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen).
+		Bold(true)
+	b.WriteString(centerStyle.Render(titleStyle.Render("Running Worktree Setup")))
+	b.WriteString("\n\n")
+
+	descStyle := lipgloss.NewStyle().
+		Foreground(ColorText).
+		Italic(true)
+	b.WriteString(centerStyle.Render(descStyle.Render("Executing .agent-deck/worktree-setup.sh...")))
+	b.WriteString("\n\n")
+
+	dotsCount := (h.animationFrame % 4) + 1
+	dots := strings.Repeat("●", dotsCount) + strings.Repeat("○", 4-dotsCount)
+	dotsStyle := lipgloss.NewStyle().
+		Foreground(ColorGreen)
+	b.WriteString(centerStyle.Render(dotsStyle.Render(dots)))
+	b.WriteString("\n\n")
+
+	elapsed := time.Since(startTime).Round(time.Second)
+	timeStyle := lipgloss.NewStyle().
+		Foreground(ColorYellow).
+		Italic(true)
+	b.WriteString(centerStyle.Render(timeStyle.Render(fmt.Sprintf("Running... %s", elapsed))))
+
+	return b.String()
+}
+
 func (h *Home) renderForkingState(inst *session.Instance, width int, startTime time.Time) string {
 	var b strings.Builder
 
@@ -14484,6 +14568,14 @@ func (h *Home) renderPreviewPane(width, height int) string {
 		b.WriteString(wtLabelStyle.Render("Status:  "))
 		b.WriteString(dirtyStyle.Render(dirtyLabel))
 		b.WriteString("\n")
+
+		// Setup hint
+		if setupKey := h.actionKey(hotkeyWorktreeSetup); setupKey != "" {
+			b.WriteString(wtHintStyle.Render("Setup:   "))
+			b.WriteString(wtKeyStyle.Render(setupKey))
+			b.WriteString(wtHintStyle.Render(" re-run setup script"))
+			b.WriteString("\n")
+		}
 
 		// Finish hint
 		if finishKey := h.actionKey(hotkeyWorktreeFinish); finishKey != "" {
@@ -15224,8 +15316,12 @@ func (h *Home) renderPreviewPane(width, height int) string {
 	preview, hasCached := h.previewCache[pvKey]
 	h.previewCacheMu.RUnlock()
 
-	// Show forking animation when fork is in progress (highest priority)
-	if showForkingAnimation {
+	// Show worktree setup animation when setup script is running
+	setupTime, isSetupRunning := h.setupRunningSessions[selected.ID]
+	if isSetupRunning {
+		b.WriteString("\n")
+		b.WriteString(h.renderSetupRunningState(selected, width, setupTime))
+	} else if showForkingAnimation {
 		b.WriteString("\n")
 		b.WriteString(h.renderForkingState(selected, width, forkTime))
 	} else if showMcpLoadingAnimation {
@@ -16064,6 +16160,31 @@ func (h *Home) handleWorktreeFinishDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	}
 
 	return h, nil
+}
+
+// runWorktreeSetup re-runs the repo's worktree setup script for an existing
+// worktree session, reporting completion via worktreeSetupResultMsg.
+func (h *Home) runWorktreeSetup(inst *session.Instance) tea.Cmd {
+	id := inst.ID
+	repoRoot := inst.WorktreeRepoRoot
+	wtPath := inst.WorktreePath
+	title := inst.Title
+	return func() tea.Msg {
+		scriptPath, scriptMode := git.FindWorktreeSetupScript(repoRoot)
+		if scriptPath == "" {
+			return worktreeSetupResultMsg{
+				sessionID:    id,
+				sessionTitle: title,
+				err:          fmt.Errorf("no setup script found at .agent-deck/worktree-setup.sh"),
+			}
+		}
+		var buf bytes.Buffer
+		err := git.RunWorktreeSetupScript(scriptPath, scriptMode, repoRoot, wtPath, &buf, &buf, session.GetWorktreeSettings().SetupTimeout())
+		if err != nil {
+			return worktreeSetupResultMsg{sessionID: id, sessionTitle: title, err: err}
+		}
+		return worktreeSetupResultMsg{sessionID: id, sessionTitle: title}
+	}
 }
 
 // finishWorktree performs the worktree finish operation asynchronously:

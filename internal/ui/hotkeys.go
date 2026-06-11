@@ -33,6 +33,7 @@ const (
 	hotkeyEditNotes       = "edit_notes"
 	hotkeyEditPaths       = "edit_paths"
 	hotkeyEditSession     = "edit_session"
+	hotkeyWorktreeSetup   = "worktree_setup"
 	hotkeyWorktreeFinish  = "worktree_finish"
 	hotkeyCreateGroup     = "create_group"
 	hotkeySearch          = "search"
@@ -70,6 +71,7 @@ var hotkeyActionOrder = []string{
 	hotkeyEditNotes,
 	hotkeyEditPaths,
 	hotkeyEditSession,
+	hotkeyWorktreeSetup,
 	hotkeyWorktreeFinish,
 	hotkeyCreateGroup,
 	hotkeySearch,
@@ -107,6 +109,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyEditNotes:       "e",
 	hotkeyEditPaths:       "p",
 	hotkeyEditSession:     "P",
+	hotkeyWorktreeSetup:   "b",
 	hotkeyWorktreeFinish:  "W",
 	hotkeyCreateGroup:     "g",
 	hotkeySearch:          "/",
