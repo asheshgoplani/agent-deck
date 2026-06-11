@@ -767,7 +767,7 @@ type AnalyticsDisplaySettings struct {
 	// ShowSessionInfo shows duration, turns, start time (default: false)
 	ShowSessionInfo *bool `toml:"show_session_info,omitempty"`
 
-	// ShowTools shows the top tool calls (default: true)
+	// ShowTools shows the top tool calls (default: false)
 	ShowTools *bool `toml:"show_tools,omitempty"`
 
 	// ShowCost shows the estimated cost (default: false)
