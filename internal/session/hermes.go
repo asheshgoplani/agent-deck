@@ -190,4 +190,3 @@ func GetHermesGatewayURL() string {
 	}
 	return DiscoverHermesGatewayURL()
 }
-

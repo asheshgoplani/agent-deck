@@ -91,14 +91,14 @@ func TestCapability_Issue1225_BusyParentReceivesCompletionAtTurnBoundary(t *test
 
 	// PHASE 1: the child finishes WHILE the parent is busy → durable commit only.
 	c.commitToParentInbox(t, parent.ID, map[string]any{
-		"child_session_id": child.ID,
-		"child_title":      "busy-child",
-		"profile":          "default",
-		"from_status":      "running",
-		"to_status":        "waiting",
-		"timestamp":        time.Now().Format(time.RFC3339Nano),
+		"child_session_id":  child.ID,
+		"child_title":       "busy-child",
+		"profile":           "default",
+		"from_status":       "running",
+		"to_status":         "waiting",
+		"timestamp":         time.Now().Format(time.RFC3339Nano),
 		"target_session_id": parent.ID,
-		"turn_fingerprint": child.ID + "@turn-busy-1",
+		"turn_fingerprint":  child.ID + "@turn-busy-1",
 	})
 
 	// DURABILITY: while the parent stays busy, the record persists on disk.
