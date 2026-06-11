@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.56] - 2026-06-11
+
+### Added
+
+- **Session-create flow is now diagnosable from debug.log** ([#1378](https://github.com/asheshgoplani/agent-deck/pull/1378)). `setError` logs footer errors at ERROR level; `sessionCreatedMsg` and `createSessionInGroupWithWorktreeAndOptions` log INFO breadcrumbs that bracket the create flow, so silent session-creation failures leave a trace.
+
+### Fixed
+
+- **Worktree creation no longer fails when `branch.<name>.remote` holds a fork URL** ([#1376](https://github.com/asheshgoplani/agent-deck/pull/1376)). `getDefaultRemote` now only accepts the `branch.<name>.remote` value when it matches a configured remote name; otherwise resolution falls through to the origin/single-remote logic. Fixes "fatal: invalid reference: git@github.com:/.git/main: exit status 128" when checking out PR branches from fork URLs.
+- **Badge-update watcher no longer leaks a goroutine and fsnotify watcher on every attach** ([#1375](https://github.com/asheshgoplani/agent-deck/pull/1375)). `WatchBadgeUpdates` was launched before `context.WithCancel` in `Attach()`, so it captured `context.Background()` on the TUI path and was never stopped. After a day of deck hopping this accumulated ~400 leaked goroutines (250 ms poll tickers each) and hundreds of inotify file descriptors consuming ~70% of one CPU core. Fix: move the goroutine launch after the `WithCancel` call.
+- **`agent-deck add -g work/bar` no longer creates a spurious flat `work-bar` group** ([#1367](https://github.com/asheshgoplani/agent-deck/pull/1367)). `CreateGroup`'s `sanitizeGroupName` replaced `/` with `-` before splitting on it, so a nested group path created the correct nested hierarchy AND a phantom flat group at the root. New `CreateGroupPath` helper splits on `/` and chains `CreateGroup`/`CreateSubgroup` for each level.
+- **`n` on a remote group/session now opens the new-session dialog instead of silently creating a shell** ([#1364](https://github.com/asheshgoplani/agent-deck/pull/1364)). Previously pressing `n` while on a remote group quick-created a shell session with no tool selection. The dialog now opens with the remote target recorded; on submit the create routes to the remote over SSH with the chosen tool, preserving the #743 invariant that sessions are never created on localhost.
+
 ## [1.9.55] - 2026-06-10
 
 ### Fixed
