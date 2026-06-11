@@ -1009,7 +1009,7 @@ func handleSessionFork(profile string, args []string) {
 	// Rebuild group tree and ensure group exists
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if forkedInst.GroupPath != "" {
-		groupTree.CreateGroup(forkedInst.GroupPath)
+		groupTree.CreateGroupPath(forkedInst.GroupPath)
 	}
 
 	// Save

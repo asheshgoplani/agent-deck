@@ -943,6 +943,32 @@ func (t *GroupTree) CreateSubgroup(parentPath, name string) *Group {
 	return group
 }
 
+// CreateGroupPath ensures every level of a (possibly nested) group path exists,
+// creating any missing intermediate groups, and returns the leaf group.
+//
+// Unlike CreateGroup, it treats "/" as a path separator instead of letting
+// sanitizeGroupName flatten it into a hyphen, so "work/bar" creates "work" and
+// "work/bar" rather than a single flat "work-bar" group (see issue #1357).
+func (t *GroupTree) CreateGroupPath(path string) *Group {
+	var parentPath string
+	var leaf *Group
+	for _, segment := range strings.Split(path, "/") {
+		if strings.TrimSpace(segment) == "" {
+			continue // tolerate leading/trailing/duplicate separators
+		}
+		if parentPath == "" {
+			leaf = t.CreateGroup(segment)
+		} else {
+			leaf = t.CreateSubgroup(parentPath, segment)
+		}
+		if leaf == nil {
+			return nil
+		}
+		parentPath = leaf.Path
+	}
+	return leaf
+}
+
 // RenameGroup renames a group and updates all subgroups
 func (t *GroupTree) RenameGroup(oldPath, newName string) {
 	group, exists := t.Groups[oldPath]

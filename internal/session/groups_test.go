@@ -38,6 +38,46 @@ func TestNewGroupTree(t *testing.T) {
 	}
 }
 
+// TestCreateGroupPathNestedPreservesHierarchy guards against issue #1357: a
+// nested group path must create the intermediate group(s) and the leaf, and
+// must NOT create a flattened "work-bar" root group.
+func TestCreateGroupPathNestedPreservesHierarchy(t *testing.T) {
+	tree := NewGroupTree(nil)
+
+	leaf := tree.CreateGroupPath("work/bar")
+
+	if leaf == nil {
+		t.Fatal("CreateGroupPath returned nil leaf group")
+	}
+	if leaf.Path != "work/bar" {
+		t.Errorf("leaf group path = %q, want %q", leaf.Path, "work/bar")
+	}
+	if _, ok := tree.Groups["work"]; !ok {
+		t.Errorf("parent group %q was not created", "work")
+	}
+	if _, ok := tree.Groups["work/bar"]; !ok {
+		t.Errorf("nested group %q was not created", "work/bar")
+	}
+	if g, ok := tree.Groups["work-bar"]; ok {
+		t.Errorf("regression #1357: phantom flat group %q was created (%+v)", "work-bar", g)
+	}
+}
+
+// TestCreateGroupPathSingleLevel confirms the helper is a safe drop-in for flat
+// names: a path with no separator behaves exactly like CreateGroup.
+func TestCreateGroupPathSingleLevel(t *testing.T) {
+	tree := NewGroupTree(nil)
+
+	leaf := tree.CreateGroupPath("work")
+
+	if leaf == nil || leaf.Path != "work" {
+		t.Fatalf("CreateGroupPath(\"work\") = %+v, want path %q", leaf, "work")
+	}
+	if _, ok := tree.Groups["work"]; !ok {
+		t.Errorf("group %q was not created", "work")
+	}
+}
+
 func TestNewGroupTreeEmptyGroupPath(t *testing.T) {
 	instances := []*Instance{
 		{ID: "1", Title: "session-1", GroupPath: ""},
