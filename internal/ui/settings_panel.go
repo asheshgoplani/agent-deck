@@ -409,13 +409,15 @@ func (s *SettingsPanel) GetConfig() *session.UserConfig {
 	config.Hermes.YoloMode = s.hermesYoloMode
 
 	// Update settings
-	config.Updates.CheckEnabled = &s.checkForUpdates
+	checkForUpdates := s.checkForUpdates
+	config.Updates.CheckEnabled = &checkForUpdates
 	config.Updates.AutoUpdate = s.autoUpdate
 
 	// Log settings
 	config.Logs.MaxSizeMB = s.logMaxSizeMB
 	config.Logs.MaxLines = s.logMaxLines
-	config.Logs.RemoveOrphans = &s.removeOrphans
+	removeOrphans := s.removeOrphans
+	config.Logs.RemoveOrphans = &removeOrphans
 
 	// Global search settings
 	config.GlobalSearch.Enabled = s.globalSearchEnabled
