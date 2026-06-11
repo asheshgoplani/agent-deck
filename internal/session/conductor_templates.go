@@ -533,7 +533,10 @@ def load_config() -> dict:
     # Telegram config
     tg = conductor_cfg.get("telegram", {})
     tg_token = _resolve_secret(tg.get("token", ""))
-    tg_user_id = tg.get("user_id", 0)
+    # Resolve user_id like the token so it may be an env-var reference
+    # (e.g. "$TELEGRAM_USER_ID" / "${TELEGRAM_USER_ID}"); a literal integer
+    # in config.toml still works. Empty/unset resolves to "" -> int 0 below.
+    tg_user_id = _resolve_secret(str(tg.get("user_id", "") or ""))
     tg_configured = bool(tg_token and tg_user_id)
 
     # Slack config
@@ -550,7 +553,9 @@ def load_config() -> dict:
     dc_bot_token = _resolve_secret(dc.get("bot_token", ""))
     dc_guild_id = dc.get("guild_id", 0)
     dc_channel_id = dc.get("channel_id", 0)
-    dc_user_id = dc.get("user_id", 0)
+    # Resolve user_id like the bot token so it may be an env-var reference
+    # (e.g. "$DISCORD_USER_ID"); a literal integer in config.toml still works.
+    dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))
     dc_listen_mode = dc.get("listen_mode", "all")  # "mentions" or "all"
     dc_ignore_replies_to_others = dc.get("ignore_replies_to_others", False)
     dc_configured = bool(dc_bot_token and dc_guild_id and dc_channel_id and dc_user_id)

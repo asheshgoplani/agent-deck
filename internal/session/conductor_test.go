@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2096,7 +2097,7 @@ func TestBridgeTemplate_DiscordConfigLoading(t *testing.T) {
 		`dc_bot_token = _resolve_secret(dc.get("bot_token", ""))`,
 		`dc_guild_id = dc.get("guild_id", 0)`,
 		`dc_channel_id = dc.get("channel_id", 0)`,
-		`dc_user_id = dc.get("user_id", 0)`,
+		`dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))`,
 		`dc_listen_mode = dc.get("listen_mode", "all")`,
 		`dc_ignore_replies_to_others = dc.get("ignore_replies_to_others", False)`,
 		`"listen_mode": dc_listen_mode,`,
@@ -2106,6 +2107,86 @@ func TestBridgeTemplate_DiscordConfigLoading(t *testing.T) {
 	for _, pattern := range patterns {
 		if !strings.Contains(template, pattern) {
 			t.Errorf("template should contain Discord config pattern: %q", pattern)
+		}
+	}
+}
+
+// TestBridgeTemplate_UserIDResolvedViaSecret asserts that the bridge template
+// resolves telegram/discord user_id through _resolve_secret (so it accepts an
+// env-var reference like "$TELEGRAM_USER_ID"), mirroring the bot-token style,
+// while still coercing the resolved value to int in the returned config.
+func TestBridgeTemplate_UserIDResolvedViaSecret(t *testing.T) {
+	template := conductorBridgePy
+	patterns := []string{
+		`tg_user_id = _resolve_secret(str(tg.get("user_id", "") or ""))`,
+		`dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))`,
+		`"user_id": int(tg_user_id) if tg_user_id else 0,`,
+		`"user_id": int(dc_user_id) if dc_user_id else 0,`,
+	}
+	for _, pattern := range patterns {
+		if !strings.Contains(template, pattern) {
+			t.Errorf("template should contain user_id resolution pattern: %q", pattern)
+		}
+	}
+}
+
+// TestBridgeTemplate_UserIDResolutionBehavior exercises the real _resolve_secret
+// function (sliced from the shipped template) against the exact user_id
+// resolution expression, covering: string env ref -> int, literal int unchanged,
+// and unset/empty -> 0. Skips if python3 is unavailable.
+func TestBridgeTemplate_UserIDResolutionBehavior(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available; skipping behavioral test")
+	}
+
+	template := conductorBridgePy
+	start := strings.Index(template, "def _resolve_secret")
+	end := strings.Index(template, "def load_config")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("could not slice _resolve_secret from template")
+	}
+	resolveSecretSrc := template[start:end]
+
+	// Harness reuses the real _resolve_secret and mirrors the template's
+	// user_id resolution line exactly (asserted statically above).
+	harness := `import os
+class _Log:
+    def warning(self, *a, **k):
+        pass
+log = _Log()
+` + resolveSecretSrc + `
+def resolve_user_id(cfg):
+    user_id = _resolve_secret(str(cfg.get("user_id", "") or ""))
+    return int(user_id) if user_id else 0
+
+os.environ["TELEGRAM_USER_ID"] = "123456"
+os.environ.pop("NOPE_UNSET", None)
+print(resolve_user_id({"user_id": "$TELEGRAM_USER_ID"}))  # string env ref -> int
+print(resolve_user_id({"user_id": "${TELEGRAM_USER_ID}"}))  # braced env ref -> int
+print(resolve_user_id({"user_id": 123456}))                 # literal int unchanged
+print(resolve_user_id({}))                                  # missing -> 0
+print(resolve_user_id({"user_id": "$NOPE_UNSET"}))          # unset env ref -> 0
+`
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "harness.py")
+	if err := os.WriteFile(scriptPath, []byte(harness), 0o644); err != nil {
+		t.Fatalf("failed to write harness: %v", err)
+	}
+
+	out, err := exec.Command(py, scriptPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python harness failed: %v\noutput:\n%s", err, out)
+	}
+
+	got := strings.Fields(strings.TrimSpace(string(out)))
+	want := []string{"123456", "123456", "123456", "0", "0"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d output lines, got %d: %q", len(want), len(got), string(out))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("case %d: got %q, want %q", i, got[i], want[i])
 		}
 	}
 }
