@@ -5,10 +5,10 @@ package session
 // Before this file, the built-in list lived split across two hand-synced
 // functions (issue #1258):
 //   - detectTool()        in cmd/agent-deck/main.go  — the strings.Contains
-//                          heuristic dispatcher (command string -> tool name).
+//     heuristic dispatcher (command string -> tool name).
 //   - isBuiltinToolName()  in internal/session/userconfig.go — the strict
-//                          allowlist used to stop custom [tools.<name>] entries
-//                          from shadowing a built-in.
+//     allowlist used to stop custom [tools.<name>] entries
+//     from shadowing a built-in.
 //
 // Both are now derived from the single builtinTools() slice below.
 //

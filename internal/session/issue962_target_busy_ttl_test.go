@@ -18,7 +18,6 @@ import (
 // entries spanning 4 days (7 unique children) growing unbounded on every
 // busy day.
 
-
 // TestTransitionNotifier_TargetBusyEntries_TTLEnforced_RegressionFor962Variant
 // asserts: inbox entries persisted longer ago than the configured TTL
 // are removed by the TTL sweep. Without this, even a fixed cleanup-on-
