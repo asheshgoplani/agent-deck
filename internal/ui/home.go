@@ -5364,7 +5364,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.cleanupExpiredAnimations(h.resumingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.mcpLoadingSessions, claudeTimeout, defaultTimeout)
 		h.cleanupExpiredAnimations(h.forkingSessions, claudeTimeout, defaultTimeout)
-		h.cleanupExpiredAnimations(h.setupRunningSessions, 90*time.Second, 90*time.Second)
+		// setupRunningSessions is deliberately NOT timer-pruned: it doubles as
+		// the b-hotkey re-entrancy lock, and the setup script may legitimately
+		// run past any UI timeout (setup_timeout_seconds is user-configurable,
+		// including unlimited). It is cleared only by worktreeSetupResultMsg,
+		// which runWorktreeSetup always delivers; the script-runner timeout
+		// bounds runaway scripts.
 
 		// Notification bar sync handled by background worker (syncNotificationsBackground)
 		// which runs even when TUI is paused during tea.Exec
