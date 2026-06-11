@@ -1315,10 +1315,81 @@ func TestRemoteRestartReturnsRemoteCommand(t *testing.T) {
 	_ = h
 }
 
-// TestRemoteSelectionNOpensNewDialog was removed with the #743 fix: it
-// codified d9a5de8's broken contract (n on a remote session opens the local
-// dialog). The regression guard now lives in
-// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog.
+func TestRemoteSelectionNOpensRemoteAwareNewDialog(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:         "remote-123",
+		Title:      "remote-session",
+		RemoteName: "myserver",
+		Path:       "/srv/project",
+		Group:      "work",
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, cmd := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h, ok := model.(*Home)
+	if !ok {
+		t.Fatal("handleMainKey should return *Home")
+	}
+	if cmd != nil {
+		t.Fatal("pressing n on a remote session should open the dialog, not quick-create")
+	}
+	if !h.newDialog.IsVisible() {
+		t.Fatal("pressing n on a remote session should open the new-session dialog")
+	}
+	if h.pendingRemoteName != "myserver" {
+		t.Fatalf("pendingRemoteName = %q, want myserver", h.pendingRemoteName)
+	}
+	if got := h.newDialog.GetSelectedGroup(); got != "work" {
+		t.Fatalf("selected group = %q, want work", got)
+	}
+	_, gotPath, _ := h.newDialog.GetRemoteValues()
+	if gotPath != "/srv/project" {
+		t.Fatalf("dialog path = %q, want /srv/project", gotPath)
+	}
+}
+
+func TestRemoteNewDialogCustomizationPreservesRemoteValues(t *testing.T) {
+	home := NewHome()
+	home.width = 100
+	home.height = 30
+
+	remote := session.RemoteSessionInfo{
+		ID:         "remote-123",
+		Title:      "remote-session",
+		RemoteName: "myserver",
+		Path:       "/srv/project",
+		Group:      "work",
+	}
+	home.flatItems = []session.Item{{Type: session.ItemTypeRemoteSession, RemoteSession: &remote, RemoteName: "myserver"}}
+	home.cursor = 0
+
+	model, _ := home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	h := model.(*Home)
+	h.newDialog.nameInput.SetValue("custom remote")
+	h.newDialog.pathInput.SetValue("~/custom-project")
+	h.newDialog.SetDefaultTool("codex")
+
+	name, path, command := h.newDialog.GetRemoteValues()
+	if name != "custom remote" {
+		t.Fatalf("name = %q, want custom remote", name)
+	}
+	if path != "~/custom-project" {
+		t.Fatalf("path = %q, want ~/custom-project", path)
+	}
+	if command != "codex" {
+		t.Fatalf("command = %q, want codex", command)
+	}
+	group := h.newDialog.GetSelectedGroup()
+	if group != "work" {
+		t.Fatalf("group = %q, want work", group)
+	}
+
+}
 
 func TestSelectedRemotePreviewTarget(t *testing.T) {
 	home := NewHome()
@@ -1392,9 +1463,8 @@ func TestRenderRemotePreviewIncludesCachedResponse(t *testing.T) {
 	}
 }
 
-// TestRemoteGroupSelectionNOpensNewDialog was removed with the #743 fix —
-// see the note on TestRemoteSelectionNOpensNewDialog above. Guard lives in
-// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog.
+// Remote group `n` behavior is covered by
+// TestRegression743_NOnRemoteGroup_OpensRemoteDialog.
 
 func TestRenderRemotePreviewShowsEmptyStateAfterFetch(t *testing.T) {
 	home := NewHome()

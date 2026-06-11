@@ -1017,29 +1017,47 @@ func (d *NewDialog) IsVisible() bool {
 	return d.visible
 }
 
+func (d *NewDialog) sanitizePath(raw string) string {
+	path := strings.Trim(strings.TrimSpace(raw), "'\"")
+	// Fix malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
+	// This can happen when textinput suggestion appends instead of replaces.
+	if idx := strings.Index(path, "~/"); idx > 0 {
+		path = path[idx:]
+	}
+	return path
+}
+
+func (d *NewDialog) resolveCommand() string {
+	if d.commandCursor < len(d.presetCommands) {
+		if command := d.presetCommands[d.commandCursor]; command != "" {
+			return command
+		}
+	}
+	return strings.TrimSpace(d.commandInput.Value())
+}
+
 // GetValues returns the current dialog values with expanded paths
 func (d *NewDialog) GetValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
-	path = strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
-
-	// Fix malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
-	// This can happen when textinput suggestion appends instead of replaces
-	if idx := strings.Index(path, "~/"); idx > 0 {
-		path = path[idx:]
-	}
+	path = d.sanitizePath(d.pathInput.Value())
 
 	// Expand environment variables and ~ prefix
 	path = session.ExpandPath(path)
 
 	// Get command - either from preset or custom input
-	if d.commandCursor < len(d.presetCommands) {
-		command = d.presetCommands[d.commandCursor]
-	}
-	if command == "" && d.commandInput.Value() != "" {
-		command = strings.TrimSpace(d.commandInput.Value())
-	}
+	command = d.resolveCommand()
 
+	return name, path, command
+}
+
+// GetRemoteValues returns dialog values for a remote host. Unlike GetValues,
+// it does not expand ~ or environment variables locally because those paths
+// belong to the remote machine.
+func (d *NewDialog) GetRemoteValues() (name, path, command string) {
+	name = strings.TrimSpace(d.nameInput.Value())
+	path = d.sanitizePath(d.pathInput.Value())
+	command = d.resolveCommand()
 	return name, path, command
 }
 

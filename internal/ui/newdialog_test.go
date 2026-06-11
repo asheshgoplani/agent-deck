@@ -2104,13 +2104,9 @@ func TestNewDialog_CtrlW_BranchField(t *testing.T) {
 // Tests the overlay placement math. Dropdowns are placed relative
 // to the associated dialog's top-left corner.
 //
-// Remote-parity: not applicable. NewDialog is the local new-session dialog
-// only; pressing `n` on a remote group/session routes through
-// createRemoteSession (SSH) and never opens this dialog (#743), so this
-// overlay-positioning fix has no remote surface. That routing — and the fact
-// the dialog never opens on a remote selection — is itself covered by
-// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog and
-// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog in home_test.go.
+// Remote-parity: NewDialog is also used for remote-aware creation. The routing
+// that marks it remote-targeted is covered by the #743 regression tests in
+// home_test.go; this test remains focused on shared overlay placement math.
 func TestDialogOrigin(t *testing.T) {
 	tests := []struct {
 		name                           string

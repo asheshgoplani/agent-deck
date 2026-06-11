@@ -4671,6 +4671,12 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.setError(fmt.Errorf("restarted '%s' on %s", msg.title, msg.remoteName))
 		return h, h.fetchRemoteSessions
 
+	case remoteSessionCreatedMsg:
+		if msg.err != nil {
+			h.setError(msg.err)
+		}
+		return h, h.fetchRemoteSessions
+
 	case MaintenanceCompleteMsg:
 		return h, func() tea.Msg {
 			return maintenanceCompleteMsg{result: msg.Result}
@@ -5852,22 +5858,18 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return h, nil
 		}
 
-		// Get values including worktree settings.
-		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
-
-		// #1353: when the dialog was opened on a remote group/session, create
-		// the session on that remote via SSH with the chosen tool. All
-		// local-only logic below (worktree resolution, directory-exists
-		// check, local create) must be skipped — it would act on the LOCAL
-		// filesystem (#743).
 		if h.pendingRemoteName != "" {
 			remoteName := h.pendingRemoteName
-			h.pendingRemoteName = ""
+			name, path, command := h.newDialog.GetRemoteValues()
+			groupPath := h.newDialog.GetSelectedGroup()
 			h.newDialog.Hide()
+			h.pendingRemoteName = ""
 			h.clearError()
-			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path)
+			return h, h.createRemoteSessionWithOptions(remoteName, command, name, path, groupPath)
 		}
 
+		// Get values including worktree settings.
+		name, path, command, branchName, worktreeEnabled := h.newDialog.GetValuesWithWorktree()
 		groupPath := h.newDialog.GetSelectedGroup()
 		claudeOpts := h.newDialog.GetClaudeOptions() // Get Claude options if applicable.
 		launchModelID := h.newDialog.GetLaunchModelID()
@@ -6001,6 +6003,72 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	h.newDialog, cmd = h.newDialog.Update(msg)
 	return h, cmd
+}
+
+func (h *Home) showRemoteNewSessionDialog(item session.Item) {
+	remoteName := item.RemoteName
+	if remoteName == "" {
+		return
+	}
+
+	paths := h.remotePathSuggestions(remoteName)
+	h.newDialog.SetPathSuggestions(paths)
+	h.newDialog.SetRecentSessions(nil)
+	h.newDialog.SetDefaultTool(session.GetDefaultTool())
+	h.pendingRemoteName = remoteName
+
+	groupPath := session.DefaultGroupPath
+	groupName := session.DefaultGroupName
+	defaultPath := ""
+	if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
+		if item.RemoteSession.Group != "" {
+			groupPath = item.RemoteSession.Group
+			groupName = item.RemoteSession.Group
+		}
+		defaultPath = item.RemoteSession.Path
+	} else if item.Type == session.ItemTypeRemoteGroup {
+		groupPath = "remotes/" + remoteName
+		groupName = groupPath
+		defaultPath = "."
+	} else if len(paths) > 0 {
+		defaultPath = paths[0]
+	}
+
+	h.newDialog.ShowInGroup(groupPath, groupName, defaultPath, nil, "")
+	if defaultPath == "" {
+		h.newDialog.pathInput.SetValue(".")
+		h.newDialog.pathSoftSelected = true
+	}
+	// Remote creation goes through the remote CLI. Disable local-only defaults
+	// that ShowInGroup may have inherited from this machine's config.
+	h.newDialog.worktreeEnabled = false
+	h.newDialog.worktreeToggled = false
+	h.newDialog.sandboxEnabled = false
+	h.newDialog.multiRepoEnabled = false
+	h.newDialog.multiRepoPaths = nil
+	h.newDialog.rebuildFocusTargets()
+}
+
+func (h *Home) remotePathSuggestions(remoteName string) []string {
+	h.remoteSessionsMu.RLock()
+	sessions := append([]session.RemoteSessionInfo(nil), h.remoteSessions[remoteName]...)
+	h.remoteSessionsMu.RUnlock()
+
+	seen := make(map[string]struct{}, len(sessions))
+	paths := make([]string, 0, len(sessions))
+	for _, rs := range sessions {
+		path := strings.TrimSpace(rs.Path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func persistClaudeDialogDefaults(opts *session.ClaudeOptions, args []string) {
@@ -7100,14 +7168,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
 			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
-				h.pendingRemoteName = item.RemoteName
-				// Local path suggestions and recent sessions don't apply on
-				// the remote filesystem; default the path to "." (remote CWD)
-				// so no local path leaks into the SSH create.
-				h.newDialog.SetPathSuggestions(nil)
-				h.newDialog.SetRecentSessions(nil)
-				h.newDialog.SetDefaultTool(session.GetDefaultTool())
-				h.newDialog.ShowInGroup("remotes/"+item.RemoteName, "remotes/"+item.RemoteName, ".", nil, "")
+				h.showRemoteNewSessionDialog(item)
 				return h, nil
 			}
 		}
@@ -10457,6 +10518,10 @@ type remoteSessionRestartedMsg struct {
 	err        error
 }
 
+type remoteSessionCreatedMsg struct {
+	err error
+}
+
 // deleteRemoteSession deletes a remote session and refreshes the remote list.
 func (h *Home) deleteRemoteSession(remoteName, sessionID, title string) tea.Cmd {
 	return func() tea.Msg {
@@ -10702,14 +10767,57 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // createRemoteSession creates a new session on a remote and auto-attaches to it.
 // Used by quick-create (N): auto-generated name, remote defaults (shell).
 func (h *Home) createRemoteSession(remoteName string) tea.Cmd {
-	return h.createRemoteSessionWithOptions(remoteName, "", "", "")
+	return h.createRemoteSessionWithOptions(remoteName, "", "", "", "")
 }
 
+// remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
+type remoteCreateAndAttachCmd struct {
+	runner    *session.SSHRunner
+	tool      string
+	title     string
+	path      string
+	group     string
+	createCtx context.Context
+}
+
+type remoteAttachFailedError struct {
+	err error
+}
+
+func (e remoteAttachFailedError) Error() string {
+	return e.err.Error()
+}
+
+func (e remoteAttachFailedError) Unwrap() error {
+	return e.err
+}
+
+func (r remoteCreateAndAttachCmd) Run() error {
+	baseCtx := r.createCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, 20*time.Second)
+	defer cancel()
+	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path, r.group)
+	if err != nil {
+		return err
+	}
+	if err := r.runner.Attach(sessionID); err != nil {
+		return remoteAttachFailedError{err: err}
+	}
+	return nil
+}
+
+func (r remoteCreateAndAttachCmd) SetStdin(reader io.Reader)  {}
+func (r remoteCreateAndAttachCmd) SetStdout(writer io.Writer) {}
+func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
+
 // createRemoteSessionWithOptions creates a new session on a remote with an
-// explicit tool/title/path from the new-session dialog (#1353), then
+// explicit tool/title/path/group from the new-session dialog (#1353), then
 // auto-attaches to it. Empty values fall back to remote defaults (shell,
 // auto-generated name, remote CWD).
-func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path string) tea.Cmd {
+func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path, group string) tea.Cmd {
 	config, err := session.LoadUserConfig()
 	if err != nil || config == nil || config.Remotes == nil {
 		return func() tea.Msg {
@@ -10724,37 +10832,18 @@ func (h *Home) createRemoteSessionWithOptions(remoteName, tool, title, path stri
 	}
 	runner := session.NewSSHRunner(remoteName, rc)
 	h.isAttaching.Store(true)
-	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path}, func(err error) tea.Msg {
+	return tea.Exec(remoteCreateAndAttachCmd{runner: runner, tool: tool, title: title, path: path, group: group, createCtx: h.ctx}, func(err error) tea.Msg {
 		h.isAttaching.Store(false)
 		if err != nil {
+			var attachErr remoteAttachFailedError
+			if errors.As(err, &attachErr) {
+				return remoteSessionCreatedMsg{err: fmt.Errorf("failed to attach to remote session after creating it: %w", attachErr)}
+			}
 			return sessionCreatedMsg{err: fmt.Errorf("failed to create remote session: %w", err)}
 		}
-		return statusUpdateMsg{}
+		return remoteSessionCreatedMsg{}
 	})
 }
-
-// remoteCreateAndAttachCmd creates a session on the remote, then attaches to it.
-// tool/title/path are optional overrides from the new-session dialog (#1353);
-// empty values use remote defaults.
-type remoteCreateAndAttachCmd struct {
-	runner *session.SSHRunner
-	tool   string
-	title  string
-	path   string
-}
-
-func (r remoteCreateAndAttachCmd) Run() error {
-	ctx := context.Background()
-	sessionID, err := r.runner.CreateSessionWithOptions(ctx, r.tool, r.title, r.path)
-	if err != nil {
-		return err
-	}
-	return r.runner.Attach(sessionID)
-}
-
-func (r remoteCreateAndAttachCmd) SetStdin(reader io.Reader)  {}
-func (r remoteCreateAndAttachCmd) SetStdout(writer io.Writer) {}
-func (r remoteCreateAndAttachCmd) SetStderr(writer io.Writer) {}
 
 // attachWindowCmd implements tea.ExecCommand for attaching to a specific tmux window
 type attachWindowCmd struct {
