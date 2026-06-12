@@ -25,6 +25,7 @@ const (
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 	ConfirmArchiveSession
 	ConfirmUnarchiveSession
+	ConfirmNotice            // acknowledge-only message (single OK button), e.g. protected-action blocks
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -40,6 +41,10 @@ type ConfirmDialog struct {
 	worktree    bool // Whether the session has an associated git worktree.
 
 	remoteName string // Remote name for remote session confirmations.
+
+	// Notice (ConfirmNotice) carries an acknowledge-only title/body.
+	noticeTitle string
+	noticeBody  string
 
 	// focusedButton tracks which button has arrow-key focus.
 	// 0 = confirm (left), 1 = cancel (right).
@@ -166,6 +171,22 @@ func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
 	c.focusedButton = 1
 }
 
+// ShowNotice shows an acknowledge-only message in the same centered modal used
+// for confirmations. Unlike a transient bottom-of-screen error banner (which the
+// final viewport clamp can truncate when the panel fills the height), this dialog
+// replaces the whole view while visible, so the message is always seen. Dismissed
+// with Enter/Esc/o.
+func (c *ConfirmDialog) ShowNotice(title, body string) {
+	c.visible = true
+	c.confirmType = ConfirmNotice
+	c.noticeTitle = title
+	c.noticeBody = body
+	c.targetID = ""
+	c.targetName = ""
+	c.buttonCount = 1
+	c.focusedButton = 0
+}
+
 // ShowQuitWithPool shows confirmation for quitting with MCP pool running
 func (c *ConfirmDialog) ShowQuitWithPool(mcpCount int) {
 	c.visible = true
@@ -230,6 +251,8 @@ func (c *ConfirmDialog) Hide() {
 	c.targetName = ""
 	c.sandboxed = false
 	c.remoteName = ""
+	c.noticeTitle = ""
+	c.noticeBody = ""
 }
 
 // IsVisible returns whether the dialog is visible
@@ -444,6 +467,14 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorRed, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y create · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmNotice:
+		title = c.noticeTitle
+		warning = c.noticeBody
+		borderColor = ColorYellow
+		buttons = lipgloss.JoinVertical(lipgloss.Left,
+			renderButton("OK", ColorAccent, true),
+			hintStyle.Render("Enter / Esc / o dismiss"))
 
 	case ConfirmInstallHooks:
 		title = "Claude Code Hooks"

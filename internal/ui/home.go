@@ -7459,11 +7459,16 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
 			} else if item.Type == session.ItemTypeGroup && item.Path == session.DefaultGroupPath {
-				// Protected default group: report instead of silently doing nothing.
-				// Checked before the scoped-root case so the message stays specific
-				// even when the TUI is scoped to the default group
-				// (groupScope == DefaultGroupPath), where both conditions would match.
-				h.setError(fmt.Errorf("cannot delete the default %q group", session.DefaultGroupName))
+				// Protected default group: surface the block in the same centered modal
+				// used for the delete confirmation, so it can't be clamped off the bottom
+				// of the viewport like a transient error banner. Checked before the
+				// scoped-root case so the message stays specific even when the TUI is
+				// scoped to the default group (groupScope == DefaultGroupPath), where both
+				// conditions would match.
+				h.confirmDialog.ShowNotice(
+					"⚠  Can't Delete Group",
+					fmt.Sprintf("%q is the default\ngroup and can't be deleted.\n\nSessions always need a home.", session.DefaultGroupName),
+				)
 			} else if item.Type == session.ItemTypeGroup && item.Path != h.groupScope {
 				h.confirmDialog.ShowDeleteGroup(item.Path, item.Group.Name)
 			} else if item.Type == session.ItemTypeGroup && item.Path == h.groupScope {
@@ -7964,6 +7969,15 @@ func (h *Home) handleConfirmDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			h.confirmDialog.Hide()
 			return h, nil
 		case "n", "N", "esc":
+			h.confirmDialog.Hide()
+			return h, nil
+		}
+		return h, nil
+
+	case ConfirmNotice:
+		// Acknowledge-only: any of the usual dismiss keys closes it.
+		switch msg.String() {
+		case "enter", "esc", "o", "O", "y", "Y", "n", "N", " ":
 			h.confirmDialog.Hide()
 			return h, nil
 		}

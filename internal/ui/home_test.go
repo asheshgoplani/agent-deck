@@ -3638,35 +3638,86 @@ func defaultGroupItem() session.Item {
 	}
 }
 
-// TestDeleteBindingOnDefaultGroupReportsError guards against the silent no-op
-// where pressing the delete binding ('d') on the protected "My Sessions"
-// default group did nothing: no dialog, no message. The handler must surface an
-// explanatory error (mirroring the scoped-root case) and must not open the
-// delete-group dialog.
-func TestDeleteBindingOnDefaultGroupReportsError(t *testing.T) {
+// TestDeleteBindingOnDefaultGroupShowsNotice guards against the silent no-op
+// where pressing the delete binding ('d') on the protected "My Sessions" default
+// group did nothing: no dialog, no message. The handler must open the
+// acknowledge-only notice modal (the same centered modal used for the delete
+// confirmation, so it can't be clamped off the viewport) and must not set a
+// transient error banner.
+func TestDeleteBindingOnDefaultGroupShowsNotice(t *testing.T) {
 	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
 	home.cursor = 0
 
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	h := model.(*Home)
 
-	if h.err == nil {
-		t.Fatal("'d' on the default group must set an error, got nil (silent no-op)")
+	if !h.confirmDialog.IsVisible() {
+		t.Fatal("'d' on the default group must open the notice modal, got nothing (silent no-op)")
 	}
-	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
-		t.Errorf("error %q must name the default group %q", h.err.Error(), session.DefaultGroupName)
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmNotice {
+		t.Errorf("default-group block must use ConfirmNotice, got %v", got)
 	}
-	if h.confirmDialog.IsVisible() {
-		t.Error("delete-group confirmation must not open for the protected default group")
+	if h.err != nil {
+		t.Errorf("notice modal must not also set a transient error banner, got %v", h.err)
 	}
 }
 
-// TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault locks in the ordering of
+// TestDeleteBindingOnDefaultGroupRendersNotice closes the gap left by #1334: the
+// handler set h.err, but the error banner is appended below a full-height panel
+// and clampViewToViewport sliced it off the bottom of the viewport, so the user
+// saw nothing - the no-op stayed silent in practice. Routing through the modal
+// fixes that. Assert the rendered View actually contains the message.
+func TestDeleteBindingOnDefaultGroupRendersNotice(t *testing.T) {
+	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+	home.cursor = 0
+
+	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	h := model.(*Home)
+
+	out := h.View()
+	if !strings.Contains(out, session.DefaultGroupName) {
+		t.Errorf("rendered View must show the default-group notice naming %q; got none", session.DefaultGroupName)
+	}
+	if !strings.Contains(out, "can't be deleted") {
+		t.Error("rendered View must explain the group can't be deleted")
+	}
+}
+
+// TestNoticeModalDismisses verifies the acknowledge-only modal closes on the
+// usual dismiss keys and leaves no lingering error state.
+func TestNoticeModalDismisses(t *testing.T) {
+	for _, key := range []rune{'\r', '\x1b', 'o'} { // Enter, Esc, o
+		home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
+		home.cursor = 0
+		model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+		h := model.(*Home)
+		if !h.confirmDialog.IsVisible() {
+			t.Fatal("precondition: notice modal must be open")
+		}
+
+		var msg tea.KeyMsg
+		switch key {
+		case '\r':
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case '\x1b':
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		default:
+			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}}
+		}
+		model, _ = h.Update(msg)
+		h = model.(*Home)
+		if h.confirmDialog.IsVisible() {
+			t.Errorf("notice modal must close after dismiss key %q", string(key))
+		}
+	}
+}
+
+// TestDeleteBindingOnDefaultGroupWhenScopedShowsNotice locks in the ordering of
 // the delete handler: when the TUI is scoped to the default group itself
 // (groupScope == DefaultGroupPath), both the default-group and scoped-root
-// conditions match. The default-group message must win so the feedback stays
+// conditions match. The default-group notice must win so the feedback stays
 // specific.
-func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
+func TestDeleteBindingOnDefaultGroupWhenScopedShowsNotice(t *testing.T) {
 	home := newTestHomeWithItems(100, 30, []session.Item{defaultGroupItem()})
 	home.cursor = 0
 	home.groupScope = session.DefaultGroupPath
@@ -3674,11 +3725,15 @@ func TestDeleteBindingOnDefaultGroupWhenScopedNamesDefault(t *testing.T) {
 	model, _ := home.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	h := model.(*Home)
 
-	if h.err == nil {
-		t.Fatal("'d' on the scoped default group must set an error, got nil")
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmNotice {
+		t.Fatalf("scoped default group must show the default-group notice, got type %v", got)
 	}
-	if !strings.Contains(h.err.Error(), session.DefaultGroupName) {
-		t.Errorf("scoped default group error %q must name the default group, not the scoped-root message", h.err.Error())
+	out := h.View()
+	if !strings.Contains(out, session.DefaultGroupName) {
+		t.Error("scoped default-group notice must name the default group, not the scoped-root message")
+	}
+	if h.err != nil {
+		t.Errorf("notice path must not set a transient error, got %v", h.err)
 	}
 }
 
@@ -3702,6 +3757,9 @@ func TestDeleteBindingOnNonDefaultGroupOpensDialog(t *testing.T) {
 
 	if !h.confirmDialog.IsVisible() {
 		t.Error("delete-group confirmation must open for a non-default group")
+	}
+	if got := h.confirmDialog.GetConfirmType(); got != ConfirmDeleteGroup {
+		t.Errorf("non-default group must open the real delete confirmation, got type %v", got)
 	}
 	if h.err != nil {
 		t.Errorf("non-default group delete must not set an error, got %v", h.err)
