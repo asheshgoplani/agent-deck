@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pytest
 
-BRIDGE_DIR = Path(__file__).parent.parent
+# Canonical bridge source lives at internal/session/conductor_bridge.py
+# (embedded into the binary); there is no conductor/bridge.py in the repo.
+BRIDGE_DIR = Path(__file__).resolve().parents[2] / "internal" / "session"
 
 
 def _run_probe(env_overrides: dict[str, str]) -> dict:
@@ -39,7 +41,7 @@ def _run_probe(env_overrides: dict[str, str]) -> dict:
     probe = (
         "import json, sys\n"
         f"sys.path.insert(0, {str(BRIDGE_DIR)!r})\n"
-        "import bridge\n"
+        "import conductor_bridge as bridge\n"
         "out = {\n"
         "    'conductor_dir': str(bridge.CONDUCTOR_DIR),\n"
         "    'config_path': str(bridge.CONFIG_PATH),\n"

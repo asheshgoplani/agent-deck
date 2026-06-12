@@ -2826,9 +2826,11 @@ func TestBridgeTemplate_DoesNotHardcodeLegacyAgentDeckRoot(t *testing.T) {
 	}
 }
 
-// TestBridgeTemplate_ResolverMirrorsRealBridgeFile ensures the embedded const
-// and the on-disk conductor/bridge.py share a byte-identical resolver region,
-// so a fix to one is never silently dropped from the other.
+// TestBridgeTemplate_ResolverMirrorsRealBridgeFile ensures the embedded value
+// and the canonical on-disk bridge source share a byte-identical resolver
+// region. There is now a single canonical file
+// (internal/session/conductor_bridge.py) embedded directly, so this also guards
+// that the #1350 resolver markers remain present in the deployed bytes.
 func TestBridgeTemplate_ResolverMirrorsRealBridgeFile(t *testing.T) {
 	const marker = "# --- issue #1350: XDG path resolution (mirror of internal/agentpaths) ---"
 	const endMarker = "# --- end issue #1350 resolver ---"
@@ -2845,23 +2847,22 @@ func TestBridgeTemplate_ResolverMirrorsRealBridgeFile(t *testing.T) {
 		return src[start : start+end+len(endMarker)]
 	}
 
-	embedded := extract(conductorBridgePy, "embedded const")
+	embedded := extract(conductorBridgePy, "embedded value")
 
-	// Locate conductor/bridge.py relative to this test file.
+	// Locate the canonical internal/session/conductor_bridge.py next to this test.
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
-	bridgePath := filepath.Join(repoRoot, "conductor", "bridge.py")
+	bridgePath := filepath.Join(filepath.Dir(thisFile), "conductor_bridge.py")
 	data, err := os.ReadFile(bridgePath)
 	if err != nil {
 		t.Fatalf("read %s: %v", bridgePath, err)
 	}
-	onDisk := extract(string(data), "conductor/bridge.py")
+	onDisk := extract(string(data), "conductor_bridge.py")
 
 	if embedded != onDisk {
-		t.Errorf("resolver region drift between embedded const and conductor/bridge.py:\n--- embedded ---\n%s\n--- on disk ---\n%s", embedded, onDisk)
+		t.Errorf("resolver region drift between embedded value and conductor_bridge.py:\n--- embedded ---\n%s\n--- on disk ---\n%s", embedded, onDisk)
 	}
 }
 

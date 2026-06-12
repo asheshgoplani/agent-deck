@@ -7,13 +7,13 @@ name: python-compat
 on:
   pull_request:
     paths:
-      - 'conductor/bridge.py'
+      - 'internal/session/conductor_bridge.py'
       - 'conductor/tests/**'
       - '.github/workflows/python-compat.yml'
   push:
     branches: [main]
     paths:
-      - 'conductor/bridge.py'
+      - 'internal/session/conductor_bridge.py'
       - 'conductor/tests/**'
       - '.github/workflows/python-compat.yml'
 
@@ -34,8 +34,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install toml aiogram pytest
       - name: Compile-check
-        run: python -m py_compile conductor/bridge.py
+        run: python -m py_compile internal/session/conductor_bridge.py
       - name: Import-check
-        run: python -c "import sys; sys.path.insert(0, 'conductor'); import bridge"
+        run: python -c "import sys; sys.path.insert(0, 'internal/session'); import conductor_bridge"
       - name: Compatibility test suite
         run: python -m pytest conductor/tests/test_python_compat.py -v

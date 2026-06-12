@@ -183,7 +183,6 @@ def _resolve_secret(value: str) -> str:
     if value.startswith("keychain:"):
         service_name = value[len("keychain:"):]
         try:
-            import subprocess
             result = subprocess.run(
                 ["/usr/bin/security", "find-generic-password", "-s", service_name, "-w"],
                 capture_output=True, text=True, timeout=5,
@@ -1105,41 +1104,50 @@ def parse_discord_message_parts(text: str) -> list[tuple[str, str]]:
 
 
 async def send_discord_output(channel, text: str, name_tag: str = ""):
-    """Send Discord output, uploading [IMAGE:/path] markers as attachments."""
+    """Send Discord output, uploading [IMAGE:/path] markers as attachments.
+
+    The optional name_tag prefix is applied to the FIRST emitted segment only
+    (matching the Telegram/Slack handlers), not repeated on every chunk.
+    """
     prefix = name_tag if name_tag else ""
-    attachment_content = name_tag.strip() if name_tag else None
+    prefix_applied = False
+
+    def _apply_prefix(body: str) -> str:
+        nonlocal prefix_applied
+        if prefix and not prefix_applied:
+            prefix_applied = True
+            return f"{prefix}{body}"
+        return body
 
     for part_type, payload in parse_discord_message_parts(text):
         if part_type == "text":
             if not payload.strip():
                 continue
             for chunk in split_message(payload, max_len=DISCORD_MAX_LENGTH):
-                prefixed = f"{prefix}{chunk}" if prefix else chunk
-                await channel.send(prefixed)
+                await channel.send(_apply_prefix(chunk))
             continue
 
         image_path = Path(payload).expanduser()
         if not image_path.is_absolute():
-            warning = f"[Image path must be absolute: {payload}]"
-            prefixed = f"{prefix}{warning}" if prefix else warning
-            await channel.send(prefixed)
+            await channel.send(_apply_prefix(f"[Image path must be absolute: {payload}]"))
             continue
         if not image_path.is_file():
-            warning = f"[Image not found: {image_path}]"
-            prefixed = f"{prefix}{warning}" if prefix else warning
-            await channel.send(prefixed)
+            await channel.send(_apply_prefix(f"[Image not found: {image_path}]"))
             continue
 
         try:
+            # Carry the prefix as the upload's message content only once.
+            content = None
+            if prefix and not prefix_applied:
+                content = prefix.strip()
+                prefix_applied = True
             await channel.send(
-                content=attachment_content,
+                content=content,
                 file=discord.File(str(image_path)),
             )
         except Exception as e:
             log.error("Failed to upload Discord image %s: %s", image_path, e)
-            warning = f"[Failed to upload image: {image_path}]"
-            prefixed = f"{prefix}{warning}" if prefix else warning
-            await channel.send(prefixed)
+            await channel.send(_apply_prefix(f"[Failed to upload image: {image_path}]"))
 
 
 # ---------------------------------------------------------------------------

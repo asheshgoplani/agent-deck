@@ -18,7 +18,14 @@ from pathlib import Path
 
 import pytest
 
-BRIDGE_PATH = Path(__file__).parent.parent / "bridge.py"
+# Canonical bridge source lives at internal/session/conductor_bridge.py
+# (embedded into the binary); there is no conductor/bridge.py in the repo.
+BRIDGE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "internal"
+    / "session"
+    / "conductor_bridge.py"
+)
 
 # collections.abc names that are NOT subscriptable until Python 3.9 (PEP 585).
 COLLECTIONS_ABC_GENERICS = {
