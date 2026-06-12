@@ -129,6 +129,14 @@ const (
 	spacingLarge  = 4 // Between major areas (e.g., info sections in preview)
 )
 
+// leftGutterWidth is the fixed cell width reserved at the start of every
+// left-panel row for a root group's hotkey number ("N·"). Reserving it on all
+// rows — even those without a number — keeps per-level indentation honest: a
+// numbered root no longer steals an indent level from its children, so nesting
+// reads consistently whether or not the root carries a hotkey. Must equal the
+// rendered width of the "N·" hotkey label.
+const leftGutterWidth = 2
+
 // Minimum terminal size requirements (reduced for mobile support)
 const (
 	minTerminalWidth  = 40 // Reduced from 80 - supports mobile terminals
@@ -1592,6 +1600,11 @@ func (h *Home) restoreState(state reloadState) {
 			h.cursor = 0
 		}
 	}
+
+	// The clamp above can land the cursor on a non-selectable divider row
+	// (dividers carry a nil Session). Nudge off it so the initial preview shows
+	// a real session rather than the empty state, mirroring j/k navigation.
+	h.skipDivider(1)
 
 	// Restore scroll position (clamped to valid range)
 	if len(h.flatItems) > 0 {
@@ -4360,6 +4373,13 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					}
+					// The restored/leftover cursor can sit on a non-selectable
+					// divider row (present only in non-Normal view modes) — e.g.
+					// when the persisted session no longer exists and no group
+					// path matched, leaving the cursor at a stale index. Nudge
+					// off it so the first preview shows a real session. No-op
+					// when already on a selectable row.
+					h.skipDivider(1)
 					h.pendingCursorRestore = nil
 					h.syncViewport()
 				}
@@ -13735,8 +13755,18 @@ func (h *Home) renderGroupItem(
 ) {
 	group := item.Group
 
-	// Calculate indentation based on nesting level (no tree lines, just spaces)
-	// Uses spacingNormal (2 chars) per level for consistent hierarchy visualization
+	// Fixed-width hotkey gutter, reserved on every row (see leftGutterWidth). It
+	// holds the root group's hotkey number ("N·") when present; otherwise blanks.
+	// Keeping it a constant width means the number no longer eats a level of
+	// indentation, so a numbered root and its children stay properly nested.
+	gutter := strings.Repeat(" ", leftGutterWidth)
+	if item.Level == 0 && !selected && item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
+		gutter = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
+	}
+
+	// Calculate indentation based on nesting level (no tree lines, just spaces).
+	// Uses spacingNormal (2 chars) per level for consistent hierarchy
+	// visualization, applied after the hotkey gutter.
 	indent := strings.Repeat(strings.Repeat(" ", spacingNormal), max(0, item.Level))
 
 	// Expand/collapse indicator with filled triangles (using cached styles)
@@ -13752,15 +13782,6 @@ func (h *Home) renderGroupItem(
 			expandIcon = GroupExpandStyle.Render("▾") // Filled triangle for expanded
 		} else {
 			expandIcon = GroupExpandStyle.Render("▸") // Filled triangle for collapsed
-		}
-	}
-
-	// Hotkey indicator (subtle, only for root groups, hidden when selected)
-	// Uses pre-computed RootGroupNum from rebuildFlatItems() - O(1) lookup instead of O(n) loop
-	hotkeyStr := ""
-	if item.Level == 0 && !selected {
-		if item.RootGroupNum >= 1 && item.RootGroupNum <= 9 {
-			hotkeyStr = GroupHotkeyStyle.Render(fmt.Sprintf("%d·", item.RootGroupNum))
 		}
 	}
 
@@ -13784,11 +13805,11 @@ func (h *Home) renderGroupItem(
 		statusStr += " " + GroupStatusWaiting.Render(fmt.Sprintf("◐ %d", stats.waiting))
 	}
 
-	// Build the row: [indent][hotkey][expand] [name](count) [status]
+	// Build the row: [hotkey gutter][indent][expand] [name](count) [status]
 	row := fmt.Sprintf(
 		"%s%s%s %s%s%s",
+		gutter,
 		indent,
-		hotkeyStr,
 		expandIcon,
 		nameStyle.Render(group.Name),
 		countStr,
@@ -13865,6 +13886,9 @@ func (h *Home) renderCreatingSessionItem(
 ) {
 	spinnerFrames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
 	spinner := spinnerFrames[h.animationFrame]
+
+	// Leading hotkey gutter so creating rows align with group/session rows.
+	b.WriteString(strings.Repeat(" ", leftGutterWidth))
 
 	// Selection styling
 	if selected {
@@ -14164,9 +14188,12 @@ func (h *Home) renderSessionItem(
 		windowChevron = chevronStyle.Render(chevronChar)
 	}
 
-	// Build row: [baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
+	// Build row: [gutter][baseIndent][selection][tree][chevron][status] [title] [tool] [badges]
+	// The leading gutter (leftGutterWidth) keeps sessions aligned with group
+	// rows, which reserve the same gutter for root hotkey numbers.
 	row := fmt.Sprintf(
-		"%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		"%s%s%s%s%s%s %s%s%s%s%s%s%s%s%s",
+		strings.Repeat(" ", leftGutterWidth),
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -14264,7 +14291,8 @@ func (h *Home) renderWindowItem(b *strings.Builder, item session.Item, selected 
 	}
 
 	row := fmt.Sprintf(
-		"%s%s%s %s%s%s",
+		"%s%s%s%s %s%s%s",
+		strings.Repeat(" ", leftGutterWidth), // align with group/session hotkey gutter
 		baseIndent,
 		selectionPrefix,
 		treeStyle.Render(treeConnector),
@@ -14390,7 +14418,8 @@ func (h *Home) renderRemoteGroupItem(b *strings.Builder, item session.Item, sele
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s%s %s%s%s\n",
+		strings.Repeat(" ", leftGutterWidth), // align with group hotkey gutter
 		selPrefix,
 		expandIcon,
 		nameStyle.Render("remotes/"+item.RemoteName),
@@ -14499,7 +14528,8 @@ func (h *Home) renderRemoteSessionItem(b *strings.Builder, item session.Item, se
 		selPrefix = "▶ "
 	}
 
-	b.WriteString(fmt.Sprintf("%s  %s %s %s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s  %s %s %s%s\n",
+		strings.Repeat(" ", leftGutterWidth), // align with group/session hotkey gutter
 		selPrefix,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
@@ -14935,6 +14965,24 @@ func (h *Home) renderPreviewPane(width, height int) string {
 			return h.renderCreatingPreview(creating, width, height)
 		}
 		return ""
+	}
+
+	// Defensive: dividers and any other non-session rows carry a nil Session.
+	// The cursor should never come to rest on one (skipDivider on navigation,
+	// and the restore/clamp below nudges off dividers), but View() must be total
+	// over every flatItems state and must never panic. Mirror the "No Selection"
+	// empty state used when the cursor is out of range.
+	if item.Session == nil {
+		content := renderEmptyStateResponsive(EmptyStateConfig{
+			Icon:     "◇",
+			Title:    "No Selection",
+			Subtitle: "Select a session to preview",
+			Hints:    nil,
+		}, width, height)
+		if statsBlock := h.renderSystemStatsBlock(width); statsBlock != "" {
+			content += "\n" + statsBlock
+		}
+		return content
 	}
 
 	// Session preview
