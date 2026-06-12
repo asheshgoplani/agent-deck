@@ -25,7 +25,7 @@ const (
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
 	ConfirmArchiveSession
 	ConfirmUnarchiveSession
-	ConfirmNotice            // acknowledge-only message (single OK button), e.g. protected-action blocks
+	ConfirmNotice // acknowledge-only message (single OK button), e.g. protected-action blocks
 )
 
 // ConfirmDialog handles confirmation for destructive actions
