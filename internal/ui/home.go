@@ -3114,7 +3114,7 @@ func shouldPersistAutoNameDesc(autoName bool, paneTitle, lastPersisted string) (
 }
 
 func displaySessionTitle(inst *session.Instance, paneTitle string) string {
-	if inst.AutoName {
+	if inst.GetAutoName() {
 		// Prefer the live task description; fall back to the last one we
 		// persisted so the name still shows on reopen when the session is
 		// stopped/idle (no live pane title); finally fall back to the handle.
@@ -3623,7 +3623,7 @@ func (h *Home) backgroundStatusUpdate() {
 		// empty/idle pane must not clobber a previously captured description.
 		for _, inst := range instances {
 			desc, write := shouldPersistAutoNameDesc(
-				inst.AutoName,
+				inst.GetAutoName(),
 				h.getSessionRenderState(inst).paneTitle,
 				h.lastPersistedAutoNameDesc[inst.ID],
 			)
@@ -3631,7 +3631,12 @@ func (h *Home) backgroundStatusUpdate() {
 				continue
 			}
 			inst.SetAutoNameDescription(desc)
-			_ = db.WriteAutoNameDescription(inst.ID, desc)
+			if err := db.WriteAutoNameDescription(inst.ID, desc); err != nil {
+				uiLog.Warn("autoname_persist_failed",
+					slog.String("id", inst.ID),
+					slog.String("error", err.Error()))
+				continue
+			}
 			h.lastPersistedAutoNameDesc[inst.ID] = desc
 		}
 		for id := range h.lastPersistedAutoNameDesc {
@@ -4322,14 +4327,16 @@ func (h *Home) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(h.pendingTitleChanges) > 0 {
 				applied := false
 				for id, title := range h.pendingTitleChanges {
-					if inst := h.getInstanceByID(id); inst != nil && inst.Title != title {
-						inst.Title = title
-						inst.AutoName = false // re-applied pending title is a genuine rename; keep the user-chosen name
-						inst.SyncTmuxDisplayName()
-						applied = true
-						uiLog.Info("pending_rename_reapplied",
-							slog.String("session_id", id),
-							slog.String("title", title))
+					if inst := h.getInstanceByID(id); inst != nil {
+						if inst.Title != title {
+							inst.Title = title
+							inst.SyncTmuxDisplayName()
+							applied = true
+							uiLog.Info("pending_rename_reapplied",
+								slog.String("session_id", id),
+								slog.String("title", title))
+						}
+						inst.SetAutoName(false) // pending title is a genuine rename; keep the user-chosen name
 					}
 				}
 				// Clear pending changes and persist if any were re-applied
@@ -9472,7 +9479,7 @@ func (h *Home) createSessionInGroupWithWorktreeAndOptions(
 			inst = session.NewInstanceWithTool(name, path, tool)
 		}
 		inst.Command = command
-		inst.AutoName = autoName // quick-create paths pass true; see render substitution
+		inst.SetAutoName(autoName) // quick-create paths pass true; see render substitution
 
 		// Set worktree fields if provided
 		if worktreePath != "" {
@@ -10744,10 +10751,19 @@ func (h *Home) deleteSession(inst *session.Instance) tea.Cmd {
 // the statusWorker goroutine — writing it from the UI goroutine would be a
 // data race.
 func (h *Home) captureAutoNameBeforeStop(inst *session.Instance) {
-	if inst == nil || !inst.AutoName {
+	if inst == nil || !inst.GetAutoName() {
 		return
 	}
-	live := h.getSessionRenderState(inst).paneTitle
+	live := ""
+	if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+		tmux.RefreshPaneInfoCache()
+		if paneInfo, ok := tmux.GetCachedPaneInfo(tmuxSess.Name); ok {
+			live = cleanPaneTitle(paneInfo.Title)
+		}
+	}
+	if live == "" {
+		live = h.getSessionRenderState(inst).paneTitle
+	}
 	if live == "" || live == inst.GetAutoNameDescription() {
 		return
 	}
@@ -14165,16 +14181,17 @@ func (h *Home) renderSessionItem(
 	if isMaestro {
 		displayTitle = "⬢ " + displayTitle
 	}
-	if inst.AutoName && instState.paneTitle != "" && h.width > 0 {
+	if inst.GetAutoName() && listWidth > 0 {
 		// Task descriptions can be long; truncate to the row's free width so the
 		// tool label and badges stay on-row. Keep the reserved terms below in
 		// sync with the row format that follows.
 		reserved := cellWidth(baseIndent) + cellWidth(selectionPrefix) +
 			cellWidth(treeStyle.Render(treeConnector)) + cellWidth(windowChevron) +
 			cellWidth(status) + 1 /* space before title */ + cellWidth(tool) +
-			cellWidth(yoloBadge) + cellWidth(worktreeBadge) + cellWidth(sandboxBadge) +
-			cellWidth(multiRepoBadge) + cellWidth(sshBadge)
-		budget := h.width - reserved - 1 // -1 trailing margin
+			cellWidth(maestroBadge) + cellWidth(yoloBadge) + cellWidth(worktreeBadge) +
+			cellWidth(sandboxBadge) + cellWidth(multiRepoBadge) + cellWidth(sshBadge) +
+			cellWidth(timestampBadge)
+		budget := listWidth - reserved - 1 // -1 trailing margin
 		if budget > 0 && cellWidth(displayTitle) > budget {
 			displayTitle = cellTruncate(displayTitle, budget, "…")
 		}
@@ -14208,7 +14225,7 @@ func (h *Home) renderSessionItem(
 	// so the prior measurement let the trailing pane-title text overflow
 	// the panel and shove subsequent rows down by one cell. See
 	// internal/ui/cellwidth.go for the upstream disagreement.
-	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.AutoName {
+	if (selected || h.showPaneTitles) && instState.paneTitle != "" && !inst.GetAutoName() {
 		// Dual layout: sidebar is narrower than h.width (#937). Using full
 		// terminal width here overflows the SESSIONS pane, then lipgloss
 		// truncation disagrees from terminal cells — wrapped lines duplicate

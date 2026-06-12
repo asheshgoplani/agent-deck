@@ -738,7 +738,7 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		IsConductor:         inst.IsConductor,
 		NoTransitionNotify:  inst.NoTransitionNotify,
 		TitleLocked:         inst.TitleLocked,
-		AutoName:            inst.AutoName,
+		AutoName:            inst.GetAutoName(),
 		AutoNameDescription: inst.GetAutoNameDescription(),
 		WorktreePath:        inst.WorktreePath,
 		WorktreeRepo:        inst.WorktreeRepoRoot,

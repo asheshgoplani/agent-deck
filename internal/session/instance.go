@@ -112,6 +112,8 @@ type Instance struct {
 	// session's live Claude task description (tmux pane title) in place of the
 	// handle. Any explicit rename clears this so the user-chosen name is shown
 	// verbatim. See docs/superpowers/specs/2026-06-01-quick-session-claude-name-design.md.
+	// Guarded by i.mu for runtime reads/writes; use GetAutoName/SetAutoName once
+	// an Instance is shared with background workers or the TUI render loop.
 	AutoName bool `json:"auto_name,omitempty"`
 
 	// autoNameDescription is the last non-empty Claude task description (the
@@ -4141,11 +4143,29 @@ func (i *Instance) GetAutoNameDescription() string {
 	return i.autoNameDescription
 }
 
+// GetAutoName reports whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) GetAutoName() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.AutoName
+}
+
+// SetAutoName updates whether this session should display a captured/live task
+// description instead of its machine-generated handle. Thread-safe.
+func (i *Instance) SetAutoName(autoName bool) {
+	i.mu.Lock()
+	i.AutoName = autoName
+	i.mu.Unlock()
+}
+
 // SetAutoNameDescription records the latest Claude task description for an
 // AutoName session so it can be persisted and shown on reopen. Thread-safe.
 func (i *Instance) SetAutoNameDescription(desc string) {
 	i.mu.Lock()
-	i.autoNameDescription = desc
+	if strings.TrimSpace(desc) != "" {
+		i.autoNameDescription = desc
+	}
 	i.mu.Unlock()
 }
 

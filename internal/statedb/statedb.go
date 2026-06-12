@@ -174,6 +174,34 @@ type InstanceRow struct {
 	ArchivedAt time.Time
 }
 
+type existingAutoNameFields struct {
+	found       bool
+	autoName    bool
+	description string
+}
+
+func mergeAutoNameFields(inst *InstanceRow, existing existingAutoNameFields) (bool, string) {
+	if !existing.found {
+		return inst.AutoName, inst.AutoNameDescription
+	}
+
+	autoName := inst.AutoName
+	if !existing.autoName && inst.AutoName {
+		// A stale full-row save must not resurrect AutoName after a newer writer
+		// cleared it through an explicit rename/title sync.
+		autoName = false
+	}
+
+	description := inst.AutoNameDescription
+	if description == "" && existing.description != "" {
+		// The capture path writes non-empty descriptions with a targeted UPDATE.
+		// Keep that fresher value when a stale snapshot still has the old empty
+		// column value.
+		description = existing.description
+	}
+	return autoName, description
+}
+
 // WatcherRow represents a watcher row in the database.
 type WatcherRow struct {
 	ID         string
@@ -649,8 +677,14 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	// manually-set clear_on_compact). Without this merge, every
 	// INSERT OR REPLACE silently drops user-managed extras.
 	var existingToolData []byte
+	existingAutoName := existingAutoNameFields{}
 	if err := s.db.QueryRow("SELECT tool_data FROM instances WHERE id = ?", inst.ID).Scan(&existingToolData); err == nil {
 		toolData = MergeToolDataExtras(json.RawMessage(existingToolData), toolData)
+	}
+	var existingAutoNameInt int
+	if err := s.db.QueryRow("SELECT auto_name, auto_name_description FROM instances WHERE id = ?", inst.ID).Scan(&existingAutoNameInt, &existingAutoName.description); err == nil {
+		existingAutoName.found = true
+		existingAutoName.autoName = existingAutoNameInt != 0
 	}
 
 	isConductorInt := 0
@@ -665,8 +699,9 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 	if inst.TitleLocked {
 		titleLockedInt = 1
 	}
+	autoName, autoNameDescription := mergeAutoNameFields(inst, existingAutoName)
 	autoNameInt := 0
-	if inst.AutoName {
+	if autoName {
 		autoNameInt = 1
 	}
 	_, err := s.db.Exec(`
@@ -684,7 +719,7 @@ func (s *StateDB) SaveInstance(inst *InstanceRow) error {
 		inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 		inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 		inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription, inst.Pin,
+		archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
 	)
 	return err
 }
@@ -704,11 +739,9 @@ func (s *StateDB) SaveInstances(insts []*InstanceRow) error {
 }
 
 func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
-	// Pre-fetch existing tool_data per instance ID so we can preserve any
-	// keys not modeled by the typed schema (e.g., manually-set
-	// clear_on_compact). Without this merge, every INSERT OR REPLACE
-	// silently drops user-managed extras. One batch SELECT instead of N
-	// individual reads.
+	// Pre-fetch existing mutable columns per instance ID so we can preserve state
+	// written by targeted UPDATE paths. Without this merge, every INSERT OR
+	// REPLACE can silently drop fresher data from another process.
 	//
 	// IMPORTANT: this read runs OUTSIDE the write transaction below.
 	// In SQLite WAL mode, beginning a transaction with a read and then
@@ -720,6 +753,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 	// extras keys are rarely-mutated user-managed flags and the worst-case
 	// outcome is one stale-overlay save, recoverable on next save.
 	existingToolData := make(map[string]json.RawMessage, len(insts))
+	existingAutoNames := make(map[string]existingAutoNameFields, len(insts))
 	if len(insts) > 0 {
 		placeholders := make([]string, len(insts))
 		args := make([]any, len(insts))
@@ -729,14 +763,21 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 		}
 		// #nosec G202 -- placeholders is a fixed sequence of "?" tokens generated
 		// from len(insts); all values flow through args[], never the SQL string.
-		query := "SELECT id, tool_data FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+		query := "SELECT id, tool_data, auto_name, auto_name_description FROM instances WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 		rows, queryErr := s.db.Query(query, args...)
 		if queryErr == nil {
 			for rows.Next() {
 				var id string
 				var td []byte
-				if scanErr := rows.Scan(&id, &td); scanErr == nil {
+				var autoNameInt int
+				var autoNameDescription string
+				if scanErr := rows.Scan(&id, &td, &autoNameInt, &autoNameDescription); scanErr == nil {
 					existingToolData[id] = json.RawMessage(td)
+					existingAutoNames[id] = existingAutoNameFields{
+						found:       true,
+						autoName:    autoNameInt != 0,
+						description: autoNameDescription,
+					}
 				}
 			}
 			_ = rows.Close()
@@ -846,8 +887,9 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 		if inst.TitleLocked {
 			titleLockedInt = 1
 		}
+		autoName, autoNameDescription := mergeAutoNameFields(inst, existingAutoNames[inst.ID])
 		autoNameInt := 0
-		if inst.AutoName {
+		if autoName {
 			autoNameInt = 1
 		}
 		if _, err := stmt.Exec(
@@ -856,7 +898,7 @@ func (s *StateDB) saveInstancesOnce(insts []*InstanceRow) error {
 			inst.CreatedAt.Unix(), inst.LastAccessed.Unix(),
 			inst.ParentSessionID, isConductorInt, noTransitionNotifyInt,
 			inst.WorktreePath, inst.WorktreeRepo, inst.WorktreeBranch, inst.Account,
-			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, inst.AutoNameDescription, inst.Pin,
+			archivedAtUnix(inst.ArchivedAt), string(toolData), titleLockedInt, autoNameInt, autoNameDescription, inst.Pin,
 		); err != nil {
 			return err
 		}

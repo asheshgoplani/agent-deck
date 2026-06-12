@@ -48,3 +48,14 @@ func TestAutoNameOmitemptyZeroValue(t *testing.T) {
 		t.Errorf("zero-value AutoName should be omitted (omitempty); got:\n%s", string(data))
 	}
 }
+
+func TestSetAutoNameDescriptionIgnoresEmptyInput(t *testing.T) {
+	inst := NewInstance("lively-fjord", t.TempDir())
+	inst.SetAutoNameDescription("Review and improve SketchUp house models")
+
+	inst.SetAutoNameDescription(" \t\n")
+
+	if got := inst.GetAutoNameDescription(); got != "Review and improve SketchUp house models" {
+		t.Errorf("description after empty update = %q, want previous meaningful title", got)
+	}
+}

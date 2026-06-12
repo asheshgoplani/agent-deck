@@ -107,6 +107,61 @@ func TestSaveLoadInstances(t *testing.T) {
 	}
 }
 
+func TestSaveInstancesPreservesFreshAutoNameFieldsFromStaleSnapshot(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+	row := &InstanceRow{
+		ID:          "auto-1",
+		Title:       "lively-fjord",
+		ProjectPath: "/tmp/project",
+		GroupPath:   "grp",
+		Tool:        "claude",
+		Status:      "idle",
+		CreatedAt:   now,
+		ToolData:    json.RawMessage("{}"),
+		AutoName:    true,
+	}
+	if err := db.SaveInstances([]*InstanceRow{row}); err != nil {
+		t.Fatalf("seed SaveInstances: %v", err)
+	}
+
+	if err := db.WriteAutoNameDescription(row.ID, "Review SketchUp house models"); err != nil {
+		t.Fatalf("WriteAutoNameDescription: %v", err)
+	}
+
+	stale := *row
+	stale.AutoNameDescription = ""
+	if err := db.SaveInstances([]*InstanceRow{&stale}); err != nil {
+		t.Fatalf("stale SaveInstances: %v", err)
+	}
+
+	loaded, err := db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("loaded %d rows, want 1", len(loaded))
+	}
+	if got := loaded[0].AutoNameDescription; got != "Review SketchUp house models" {
+		t.Errorf("AutoNameDescription after stale SaveInstances = %q, want fresh DB value", got)
+	}
+
+	if _, err := db.DB().Exec(`UPDATE instances SET auto_name = 0 WHERE id = ?`, row.ID); err != nil {
+		t.Fatalf("clear auto_name directly: %v", err)
+	}
+	stale.AutoName = true
+	if err := db.SaveInstances([]*InstanceRow{&stale}); err != nil {
+		t.Fatalf("stale AutoName SaveInstances: %v", err)
+	}
+	loaded, err = db.LoadInstances()
+	if err != nil {
+		t.Fatalf("LoadInstances after stale AutoName save: %v", err)
+	}
+	if loaded[0].AutoName {
+		t.Error("AutoName resurrected after stale SaveInstances, want cleared DB value preserved")
+	}
+}
+
 func TestSaveLoadGroups(t *testing.T) {
 	db := newTestDB(t)
 

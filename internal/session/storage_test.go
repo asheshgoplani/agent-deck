@@ -458,6 +458,12 @@ func TestStorageSaveWithGroups_PersistsAutoName(t *testing.T) {
 	if got := liteByID["auto-1"].AutoNameDescription; got != "Review and improve SketchUp house models" {
 		t.Errorf("LoadLite auto-1.AutoNameDescription = %q, want the saved task title", got)
 	}
+	if liteByID["plain-1"].AutoName {
+		t.Errorf("LoadLite plain-1.AutoName = true, want false")
+	}
+	if got := liteByID["plain-1"].AutoNameDescription; got != "" {
+		t.Errorf("LoadLite plain-1.AutoNameDescription = %q, want empty", got)
+	}
 }
 
 // TestSaveSessionData_PreservesGroupSortOrder verifies that saving session data
