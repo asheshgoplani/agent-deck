@@ -14,7 +14,7 @@ function GroupCard({ name, items, onSelect }) {
   const errors  = items.filter(s => s.status === 'error').length
   const dominant = errors ? 'error' : waiting ? 'waiting' : running ? 'running' : ''
   return html`
-    <div class=${`group-card ${dominant}`}>
+    <div class=${`group-card ${dominant}`} data-testid="fleet-group-card" data-group-name=${name}>
       <div class="gc-head">
         <span class="t">${name}</span>
         <span class="health"><span class=${`d ${dominant || 'idle'}`}/></span>
@@ -22,7 +22,7 @@ function GroupCard({ name, items, onSelect }) {
       </div>
       <div class="gc-tiles">
         ${items.slice(0, 6).map(s => html`
-          <button key=${s.id} class="tile" onClick=${() => onSelect(s.id)}>
+          <button key=${s.id} class="tile" data-testid="fleet-session-tile" data-session-id=${s.id} onClick=${() => onSelect(s.id)}>
             <span class=${`tdot ${s.status}`}/>
             <span class="tn">${s.title}</span>
             ${s.tool && html`<span class="ttool">${s.tool}</span>`}
@@ -33,7 +33,7 @@ function GroupCard({ name, items, onSelect }) {
         <span class="cn"><span class="d running"/>${running}</span>
         <span class="cn"><span class="d waiting"/>${waiting}</span>
         <span class="cn"><span class="d error"/>${errors}</span>
-        <span class="path">${items.length} session${items.length === 1 ? '' : 's'}</span>
+        <span class="path" data-testid="fleet-group-session-count">${items.length} session${items.length === 1 ? '' : 's'}</span>
       </div>
     </div>
   `
@@ -55,14 +55,14 @@ export function FleetPane() {
   }
 
   return html`
-    <div class="fleet">
+    <div class="fleet" data-testid="fleet-pane">
       <div class="fleet-stats">
-        <div class="stat"><div class="lbl">RUNNING</div><div class="num running">${counts.running}</div></div>
-        <div class="stat"><div class="lbl">WAITING</div><div class="num waiting">${counts.waiting}</div></div>
-        <div class="stat"><div class="lbl">ERROR</div><div class="num error">${counts.error}</div></div>
-        <div class="stat"><div class="lbl">IDLE</div><div class="num idle">${counts.idle}</div></div>
-        <div class="stat"><div class="lbl">SPEND · TODAY</div><div class="num cost">$${totalCost.toFixed(2)}</div></div>
-        <div class="stat"><div class="lbl">SESSIONS</div><div class="num">${sessions.length}</div></div>
+        <div class="stat" data-testid="fleet-stat-running"><div class="lbl">RUNNING</div><div class="num running">${counts.running}</div></div>
+        <div class="stat" data-testid="fleet-stat-waiting"><div class="lbl">WAITING</div><div class="num waiting">${counts.waiting}</div></div>
+        <div class="stat" data-testid="fleet-stat-error"><div class="lbl">ERROR</div><div class="num error">${counts.error}</div></div>
+        <div class="stat" data-testid="fleet-stat-idle"><div class="lbl">IDLE</div><div class="num idle">${counts.idle}</div></div>
+        <div class="stat" data-testid="fleet-stat-cost"><div class="lbl">SPEND · TODAY</div><div class="num cost">$${totalCost.toFixed(2)}</div></div>
+        <div class="stat" data-testid="fleet-stat-sessions"><div class="lbl">SESSIONS</div><div class="num">${sessions.length}</div></div>
       </div>
 
       <div class="fleet-section">

@@ -143,7 +143,7 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 			case len(args) > 0 && args[0] == "add":
 				return []byte(`{"id":"good-abc","title":"x"}`), nil
 			case len(args) >= 2 && args[0] == "session" && args[1] == "start":
-				return []byte(""), nil
+				return []byte(`{"success":true,"id":"good-abc","title":"x"}`), nil
 			}
 			return nil, errors.New("unexpected runner call")
 		},
@@ -160,5 +160,123 @@ func TestSSHRunnerCreateSession_NoCleanupOnSuccess(t *testing.T) {
 		if len(c) > 0 && c[0] == "remove" {
 			t.Fatalf("unexpected remove call on success path: %v", c)
 		}
+	}
+}
+
+// TestRemoteAddArgs covers the `agent-deck add` argument builder used when the
+// new-session dialog targets a remote (#1353): the chosen tool must be passed
+// via -c (previously every remote `n` create was a bare `add --quick` shell),
+// an explicit title uses -t while an empty one falls back to --quick, -g carries
+// the selected group, and "." / empty path means "remote CWD" so no path
+// argument is sent.
+func TestRemoteAddArgs(t *testing.T) {
+	cases := []struct {
+		name                     string
+		tool, title, path, group string
+		want                     []string
+	}{
+		{
+			name: "defaults (quick shell, remote CWD)",
+			want: []string{"add", "--json", "--quick"},
+		},
+		{
+			name: "tool and title from dialog",
+			tool: "claude", title: "my task", path: ".",
+			want: []string{"add", "--json", "-t", "my task", "-c", "claude"},
+		},
+		{
+			name: "group from dialog",
+			tool: "claude", title: "my task", group: "work", path: ".",
+			want: []string{"add", "--json", "-t", "my task", "-g", "work", "-c", "claude"},
+		},
+		{
+			name: "explicit remote path",
+			tool: "codex", title: "fix", path: "/srv/project",
+			want: []string{"add", "--json", "-t", "fix", "-c", "codex", "/srv/project"},
+		},
+		{
+			name: "tool without title auto-names via --quick",
+			tool: "pi",
+			want: []string{"add", "--json", "--quick", "-c", "pi"},
+		},
+		{
+			name: "whitespace-only values fall back to defaults",
+			tool: "  ", title: " ", group: " ", path: " . ",
+			want: []string{"add", "--json", "--quick"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := remoteAddArgs(tc.tool, tc.title, tc.path, tc.group)
+			if len(got) != len(tc.want) {
+				t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("remoteAddArgs(%q,%q,%q,%q) = %v, want %v", tc.tool, tc.title, tc.path, tc.group, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestSSHRunnerCreateSessionWithOptions_UsesDialogValues(t *testing.T) {
+	var calls [][]string
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, append([]string(nil), args...))
+			switch {
+			case len(args) > 0 && args[0] == "add":
+				return []byte(`{"id":"remote-abc","title":"Remote Work"}`), nil
+			case len(args) >= 2 && args[0] == "session" && args[1] == "start":
+				return []byte(`{"success":true,"id":"remote-abc","title":"Remote Work"}`), nil
+			}
+			return nil, errors.New("unexpected runner call")
+		},
+	}
+
+	id, err := runner.CreateSessionWithOptions(context.Background(), "codex", "Remote Work", "~/project", "work")
+	if err != nil {
+		t.Fatalf("CreateSessionWithOptions unexpected error: %v", err)
+	}
+	if id != "remote-abc" {
+		t.Fatalf("id = %q, want remote-abc", id)
+	}
+	if len(calls) < 2 {
+		t.Fatalf("calls = %v, want add and start", calls)
+	}
+	add := strings.Join(calls[0], " ")
+	for _, want := range []string{"add", "--json", "-t", "Remote Work", "-g", "work", "-c", "codex", "~/project"} {
+		if !strings.Contains(add, want) {
+			t.Fatalf("remote add call = %q, want token %q", add, want)
+		}
+	}
+	if strings.Contains(add, "--quick") {
+		t.Fatalf("remote add call = %q, did not expect --quick with explicit title", add)
+	}
+	start := strings.Join(calls[1], " ")
+	for _, want := range []string{"session", "start", "--json", "remote-abc"} {
+		if !strings.Contains(start, want) {
+			t.Fatalf("remote start call = %q, want token %q", start, want)
+		}
+	}
+}
+
+func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing.T) {
+	runner := &SSHRunner{
+		runFn: func(ctx context.Context, args ...string) ([]byte, error) {
+			switch {
+			case len(args) > 0 && args[0] == "add":
+				return []byte(`{"id":"queued-abc","title":"queued-title"}`), nil
+			case len(args) >= 2 && args[0] == "session" && args[1] == "start":
+				return []byte(`{"success":true,"id":"queued-abc","title":"queued-title","status":"queued"}`), nil
+			}
+			return nil, errors.New("unexpected runner call")
+		},
+	}
+
+	_, err := runner.CreateSessionWithOptions(context.Background(), "claude", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "queued") {
+		t.Fatalf("CreateSessionWithOptions error = %v, want queued error", err)
 	}
 }

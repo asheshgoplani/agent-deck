@@ -8,40 +8,44 @@ import (
 )
 
 const (
-	hotkeyQuit            = "quit"
-	hotkeyNewSession      = "new_session"
-	hotkeyQuickCreate     = "quick_create"
-	hotkeyRename          = "rename"
-	hotkeyRestart         = "restart"
-	hotkeyRestartFresh    = "restart_fresh"
-	hotkeyDelete          = "delete"
-	hotkeyCloseSession    = "close_session"
-	hotkeyUndoDelete      = "undo_delete"
-	hotkeyMoveToGroup     = "move_to_group"
-	hotkeyMCPManager      = "mcp_manager"
-	hotkeyPluginManager   = "plugin_manager"
-	hotkeySkillsManager   = "skills_manager"
-	hotkeyTogglePreview   = "toggle_preview"
-	hotkeyMarkUnread      = "mark_unread"
-	hotkeyQuickApprove    = "quick_approve"
-	hotkeyToggleYolo      = "toggle_yolo"
-	hotkeyQuickFork       = "quick_fork"
-	hotkeyForkWithOptions = "fork_with_options"
-	hotkeyCopyOutput      = "copy_output"
-	hotkeySendOutput      = "send_output"
-	hotkeyExecShell       = "exec_shell"
-	hotkeyEditNotes       = "edit_notes"
-	hotkeyEditPaths       = "edit_paths"
-	hotkeyEditSession     = "edit_session"
-	hotkeyWorktreeFinish  = "worktree_finish"
-	hotkeyCreateGroup     = "create_group"
-	hotkeySearch          = "search"
-	hotkeyHelp            = "help"
-	hotkeySettings        = "settings"
-	hotkeyImport          = "import"
-	hotkeyReload          = "reload"
-	hotkeyDetach          = "detach"
-	hotkeyWatcherPanel    = "watcher_panel"
+	hotkeyQuit             = "quit"
+	hotkeyNewSession       = "new_session"
+	hotkeyQuickCreate      = "quick_create"
+	hotkeyRename           = "rename"
+	hotkeyRestart          = "restart"
+	hotkeyRestartFresh     = "restart_fresh"
+	hotkeyDelete           = "delete"
+	hotkeyCloseSession     = "close_session"
+	hotkeyArchiveSession   = "archive_session"
+	hotkeyUnarchiveSession = "unarchive_session"
+	hotkeyViewArchived     = "view_archived"
+	hotkeyUndoDelete       = "undo_delete"
+	hotkeyMoveToGroup      = "move_to_group"
+	hotkeyMCPManager       = "mcp_manager"
+	hotkeyPluginManager    = "plugin_manager"
+	hotkeySkillsManager    = "skills_manager"
+	hotkeyTogglePreview    = "toggle_preview"
+	hotkeyMarkUnread       = "mark_unread"
+	hotkeyQuickApprove     = "quick_approve"
+	hotkeyToggleYolo       = "toggle_yolo"
+	hotkeyQuickFork        = "quick_fork"
+	hotkeyForkWithOptions  = "fork_with_options"
+	hotkeyCopyOutput       = "copy_output"
+	hotkeySendOutput       = "send_output"
+	hotkeyExecShell        = "exec_shell"
+	hotkeyEditNotes        = "edit_notes"
+	hotkeyEditPaths        = "edit_paths"
+	hotkeyEditSession      = "edit_session"
+	hotkeyWorktreeSetup    = "worktree_setup"
+	hotkeyWorktreeFinish   = "worktree_finish"
+	hotkeyCreateGroup      = "create_group"
+	hotkeySearch           = "search"
+	hotkeyHelp             = "help"
+	hotkeySettings         = "settings"
+	hotkeyImport           = "import"
+	hotkeyReload           = "reload"
+	hotkeyDetach           = "detach"
+	hotkeyWatcherPanel     = "watcher_panel"
 )
 
 var hotkeyActionOrder = []string{
@@ -53,6 +57,9 @@ var hotkeyActionOrder = []string{
 	hotkeyRestartFresh,
 	hotkeyDelete,
 	hotkeyCloseSession,
+	hotkeyArchiveSession,
+	hotkeyUnarchiveSession,
+	hotkeyViewArchived,
 	hotkeyUndoDelete,
 	hotkeyMoveToGroup,
 	hotkeyMCPManager,
@@ -70,6 +77,7 @@ var hotkeyActionOrder = []string{
 	hotkeyEditNotes,
 	hotkeyEditPaths,
 	hotkeyEditSession,
+	hotkeyWorktreeSetup,
 	hotkeyWorktreeFinish,
 	hotkeyCreateGroup,
 	hotkeySearch,
@@ -82,40 +90,44 @@ var hotkeyActionOrder = []string{
 }
 
 var defaultHotkeyBindings = map[string]string{
-	hotkeyQuit:            "q",
-	hotkeyNewSession:      "n",
-	hotkeyQuickCreate:     "N",
-	hotkeyRename:          "r",
-	hotkeyRestart:         "R",
-	hotkeyRestartFresh:    "T",
-	hotkeyDelete:          "d",
-	hotkeyCloseSession:    "D",
-	hotkeyUndoDelete:      "ctrl+z",
-	hotkeyMoveToGroup:     "M",
-	hotkeyMCPManager:      "m",
-	hotkeyPluginManager:   "L",
-	hotkeySkillsManager:   "s",
-	hotkeyTogglePreview:   "v",
-	hotkeyMarkUnread:      "u",
-	hotkeyQuickApprove:    "a",
-	hotkeyToggleYolo:      "y",
-	hotkeyQuickFork:       "f",
-	hotkeyForkWithOptions: "F",
-	hotkeyCopyOutput:      "c",
-	hotkeySendOutput:      "x",
-	hotkeyExecShell:       "E",
-	hotkeyEditNotes:       "e",
-	hotkeyEditPaths:       "p",
-	hotkeyEditSession:     "P",
-	hotkeyWorktreeFinish:  "W",
-	hotkeyCreateGroup:     "g",
-	hotkeySearch:          "/",
-	hotkeyHelp:            "?",
-	hotkeySettings:        "S",
-	hotkeyImport:          "i",
-	hotkeyReload:          "ctrl+r",
-	hotkeyDetach:          "ctrl+q",
-	hotkeyWatcherPanel:    "w",
+	hotkeyQuit:             "q",
+	hotkeyNewSession:       "n",
+	hotkeyQuickCreate:      "N",
+	hotkeyRename:           "r",
+	hotkeyRestart:          "R",
+	hotkeyRestartFresh:     "T",
+	hotkeyDelete:           "d",
+	hotkeyCloseSession:     "D",
+	hotkeyArchiveSession:   "A",
+	hotkeyUnarchiveSession: "shift+u",
+	hotkeyViewArchived:     "^",
+	hotkeyUndoDelete:       "ctrl+z",
+	hotkeyMoveToGroup:      "M",
+	hotkeyMCPManager:       "m",
+	hotkeyPluginManager:    "L",
+	hotkeySkillsManager:    "s",
+	hotkeyTogglePreview:    "v",
+	hotkeyMarkUnread:       "u",
+	hotkeyQuickApprove:     "a",
+	hotkeyToggleYolo:       "y",
+	hotkeyQuickFork:        "f",
+	hotkeyForkWithOptions:  "F",
+	hotkeyCopyOutput:       "c",
+	hotkeySendOutput:       "x",
+	hotkeyExecShell:        "E",
+	hotkeyEditNotes:        "e",
+	hotkeyEditPaths:        "p",
+	hotkeyEditSession:      "P",
+	hotkeyWorktreeSetup:    "b",
+	hotkeyWorktreeFinish:   "W",
+	hotkeyCreateGroup:      "g",
+	hotkeySearch:           "/",
+	hotkeyHelp:             "?",
+	hotkeySettings:         "S",
+	hotkeyImport:           "i",
+	hotkeyReload:           "ctrl+r",
+	hotkeyDetach:           "ctrl+q",
+	hotkeyWatcherPanel:     "w",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{

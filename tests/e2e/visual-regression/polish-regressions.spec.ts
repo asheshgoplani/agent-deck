@@ -1,46 +1,25 @@
+// Polish regression baselines — rewritten for the redesigned Preact shell
+// (issue #1298).
+//
+// Mapping from the legacy suite:
+//   POL-1 skeleton loading + skeleton-to-loaded -> DROPPED: the redesigned
+//     Sidebar.js has no skeleton state. sessionsLoadedSignal still exists in
+//     state.js but no component consumes it, and no skeleton markup/class
+//     exists in app.css. There is nothing left to protect.
+//   POL-4 group density tight -> kept (multiple expanded groups in the new
+//     .side-list markup).
+//   POL-6 light theme sidebar -> DROPPED: the redesigned shell is dark-only.
+//     design-tokens.css defines a single (Tokyo Night) palette with no light
+//     variant, and no theme toggle exists in the new UI. The "visual theming"
+//     protective intent is kept via the accent-token test below, plus a
+//     baseline for the TweaksPanel itself (the new theming surface).
 import { test, expect } from '@playwright/test';
 import {
   freezeClock, mockEndpoints, prepareForScreenshot,
-  getDynamicContentMasks, killAnimations,
-  FIXTURE_COSTS_SUMMARY, FIXTURE_COSTS_DAILY,
-  FIXTURE_COSTS_MODELS, FIXTURE_PROFILES, FIXTURE_SETTINGS,
+  getDynamicContentMasks,
 } from './visual-helpers.js';
 
 test.describe('Polish regression baselines', () => {
-  test('POL-1: skeleton loading state at 1280x800', async ({ page }) => {
-    await freezeClock(page);
-    // Mock all endpoints EXCEPT menu and SSE: the sidebar will show skeleton
-    await page.route('**/api/costs/summary*', r => r.fulfill({ json: FIXTURE_COSTS_SUMMARY }));
-    await page.route('**/api/costs/daily*', r => r.fulfill({ json: FIXTURE_COSTS_DAILY }));
-    await page.route('**/api/costs/models*', r => r.fulfill({ json: FIXTURE_COSTS_MODELS }));
-    await page.route('**/api/profiles*', r => r.fulfill({ json: FIXTURE_PROFILES }));
-    await page.route('**/api/settings*', r => r.fulfill({ json: FIXTURE_SETTINGS }));
-    await page.route('**/events/menu*', r => r.abort());
-    // Delay the menu response so the skeleton is visible
-    await page.route('**/api/menu*', () => {
-      // Never fulfill: keep the skeleton visible
-      return new Promise(() => {}); // hang forever
-    });
-    await page.goto('/?token=test');
-    // Wait for header to mount (app bootstrap)
-    await page.waitForSelector('header', { state: 'attached', timeout: 15000 });
-    await killAnimations(page);
-    await page.waitForTimeout(200);
-    const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('skeleton-loading-1280x800.png', { mask: masks });
-  });
-
-  test('POL-1: skeleton-to-loaded transition at 1280x800', async ({ page }) => {
-    await freezeClock(page);
-    await mockEndpoints(page);
-    await page.goto('/?token=test');
-    await prepareForScreenshot(page);
-    // Verify skeleton is gone and real content is showing
-    await page.waitForSelector('#preact-session-list', { state: 'attached', timeout: 10000 });
-    const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('skeleton-to-loaded-1280x800.png', { mask: masks });
-  });
-
   test('POL-4: group density tight at 1280x800', async ({ page }) => {
     await freezeClock(page);
     // Use menu with multiple groups to verify tight group spacing
@@ -58,25 +37,39 @@ test.describe('Polish regression baselines', () => {
     });
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
+    await expect(page.locator('.sidebar .side-group-head')).toHaveCount(3);
     const masks = await getDynamicContentMasks(page);
     await expect(page).toHaveScreenshot('group-density-tight-1280x800.png', { mask: masks });
   });
 
-  test('POL-6: light theme sidebar at 1280x800', async ({ page }) => {
-    // Force light theme via localStorage before SPA bootstraps
+  test('POL-6: green accent tokens at 1280x800', async ({ page }) => {
+    // Replaces the light-theme test: accent swap via design tokens is the
+    // theming mechanism of the redesigned shell. uiState.js reads JSON from
+    // localStorage agentdeck.accent; [data-accent="green"] swaps --accent.
     await page.addInitScript(() => {
-      localStorage.setItem('theme', 'light');
+      localStorage.setItem('agentdeck.accent', JSON.stringify('green'));
     });
     await freezeClock(page);
     await mockEndpoints(page);
     await page.goto('/?token=test');
     await prepareForScreenshot(page);
-    // Verify light theme is active
-    const isDark = await page.evaluate(() =>
-      document.documentElement.classList.contains('dark'),
-    );
-    expect(isDark).toBe(false);
+    const accent = await page.evaluate(() => document.documentElement.dataset.accent);
+    expect(accent).toBe('green');
     const masks = await getDynamicContentMasks(page);
-    await expect(page).toHaveScreenshot('light-theme-sidebar-1280x800.png', { mask: masks });
+    await expect(page).toHaveScreenshot('accent-green-1280x800.png', { mask: masks });
+  });
+
+  test('POL-7: tweaks panel open at 1280x800', async ({ page }) => {
+    await freezeClock(page);
+    await mockEndpoints(page);
+    await page.goto('/?token=test');
+    await prepareForScreenshot(page);
+    // Topbar.js: the Tweaks toggle is the icon button with aria-label="Tweaks"
+    await page.locator('button[aria-label="Tweaks"]').click();
+    // TweaksPanel.js renders role="dialog" aria-label="Tweaks" with .tweaks class
+    await page.waitForSelector('.tweaks', { state: 'visible', timeout: 5000 });
+    await prepareForScreenshot(page);
+    const masks = await getDynamicContentMasks(page);
+    await expect(page).toHaveScreenshot('tweaks-panel-1280x800.png', { mask: masks });
   });
 });

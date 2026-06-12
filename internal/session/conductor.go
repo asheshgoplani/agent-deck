@@ -1421,6 +1421,28 @@ func GetConductorSettings() ConductorSettings {
 	return config.Conductor
 }
 
+// bridgeXDGBaseDirs returns the effective XDG base directories (the parents of
+// the agent-deck subdir) that agentpaths resolves against. Injecting these into
+// the bridge daemon env (issue #1350) makes the bridge's XDG branch land in the
+// same place the Go side wrote the conductors/config, instead of relying on the
+// legacy fallback. Mirrors agentpaths.xdgDir base selection: an absolute
+// $XDG_*_HOME wins, else ~/.local/share or ~/.config.
+func bridgeXDGBaseDirs() (dataBase, configBase string, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	base := func(envName string, fallbackParts ...string) string {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" && filepath.IsAbs(v) {
+			return v
+		}
+		return filepath.Join(append([]string{home}, fallbackParts...)...)
+	}
+	dataBase = base("XDG_DATA_HOME", ".local", "share")
+	configBase = base("XDG_CONFIG_HOME", ".config")
+	return dataBase, configBase, nil
+}
+
 // LaunchdPlistName is the launchd label for the conductor bridge daemon
 const LaunchdPlistName = "com.agentdeck.conductor-bridge"
 
@@ -1448,10 +1470,17 @@ func GenerateLaunchdPlist() (string, error) {
 	bridgePath := filepath.Join(condDir, "bridge.py")
 	logPath := filepath.Join(condDir, "bridge.log")
 
+	dataBase, configBase, err := bridgeXDGBaseDirs()
+	if err != nil {
+		return "", err
+	}
+
 	plist := strings.ReplaceAll(conductorPlistTemplate, "__PYTHON3__", python3Path)
 	plist = strings.ReplaceAll(plist, "__BRIDGE_PATH__", bridgePath)
 	plist = strings.ReplaceAll(plist, "__LOG_PATH__", logPath)
 	plist = strings.ReplaceAll(plist, "__HOME__", homeDir)
+	plist = strings.ReplaceAll(plist, "__XDG_DATA_HOME__", dataBase)
+	plist = strings.ReplaceAll(plist, "__XDG_CONFIG_HOME__", configBase)
 	agentDeckPath := FindAgentDeck()
 	plist = strings.ReplaceAll(plist, "__PATH__", buildDaemonPath(agentDeckPath))
 
@@ -1535,6 +1564,10 @@ const conductorPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
         <string>__PATH__</string>
         <key>HOME</key>
         <string>__HOME__</string>
+        <key>XDG_DATA_HOME</key>
+        <string>__XDG_DATA_HOME__</string>
+        <key>XDG_CONFIG_HOME</key>
+        <string>__XDG_CONFIG_HOME__</string>
     </dict>
 
     <key>ThrottleInterval</key>
@@ -1605,7 +1638,7 @@ StandardOutput=append:__LOG_PATH__
 StandardError=append:__LOG_PATH__
 Environment=PATH=__PATH__
 Environment=HOME=__HOME__
-
+__XDG_ENV__
 [Install]
 WantedBy=default.target
 `
@@ -1738,11 +1771,18 @@ func GenerateSystemdBridgeService() (string, error) {
 	bridgePath := filepath.Join(condDir, "bridge.py")
 	logPath := filepath.Join(condDir, "bridge.log")
 
+	dataBase, configBase, err := bridgeXDGBaseDirs()
+	if err != nil {
+		return "", err
+	}
+	xdgEnv := "Environment=XDG_DATA_HOME=" + dataBase + "\nEnvironment=XDG_CONFIG_HOME=" + configBase
+
 	unit := strings.ReplaceAll(systemdBridgeServiceTemplate, "__PYTHON3__", python3Path)
 	unit = strings.ReplaceAll(unit, "__BRIDGE_PATH__", bridgePath)
 	unit = strings.ReplaceAll(unit, "__LOG_PATH__", logPath)
 	unit = strings.ReplaceAll(unit, "__LOG_DIR__", filepath.Dir(logPath))
 	unit = strings.ReplaceAll(unit, "__HOME__", homeDir)
+	unit = strings.ReplaceAll(unit, "__XDG_ENV__", xdgEnv)
 	agentDeckPath := FindAgentDeck()
 	unit = strings.ReplaceAll(unit, "__PATH__", buildDaemonPath(agentDeckPath))
 	return unit, nil

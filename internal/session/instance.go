@@ -59,6 +59,17 @@ const (
 
 const wrapperPlaceholder = "{command}"
 
+// PinMode anchors a session to a fixed slot within its group, exempt from the
+// status/recency actionable sort (pin-sessions feature). The empty value is the
+// default so existing rows migrate cleanly through the `pin` column default.
+type PinMode string
+
+const (
+	PinNone   PinMode = ""       // default; not pinned, participates in the normal sort
+	PinTop    PinMode = "top"    // fixed at the top of the group's session list
+	PinBottom PinMode = "bottom" // fixed at the bottom of the group's session list
+)
+
 const (
 	hookFastPathWindow             = 2 * time.Minute
 	codexHookRunningFastPathWindow = 20 * time.Second
@@ -76,15 +87,18 @@ const (
 
 // Instance represents a single agent/shell session
 type Instance struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	ProjectPath        string `json:"project_path"`
-	GroupPath          string `json:"group_path"`                     // e.g., "projects/devops"
-	Order              int    `json:"order"`                          // Position within group (for reorder persistence)
-	ParentSessionID    string `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
-	ParentProjectPath  string `json:"parent_project_path,omitempty"`  // Parent's project path (for --add-dir access)
-	IsConductor        bool   `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
-	NoTransitionNotify bool   `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	ProjectPath string `json:"project_path"`
+	GroupPath   string `json:"group_path"` // e.g., "projects/devops"
+	Order       int    `json:"order"`      // Position within group (for reorder persistence)
+	// Pin anchors this session to the top or bottom of its group, exempt from
+	// the status/recency sort (pin-sessions feature). PinNone is the default.
+	Pin                PinMode `json:"pin,omitempty"`
+	ParentSessionID    string  `json:"parent_session_id,omitempty"`    // Links to parent session (makes this a sub-session)
+	ParentProjectPath  string  `json:"parent_project_path,omitempty"`  // Parent's project path (for --add-dir access)
+	IsConductor        bool    `json:"is_conductor,omitempty"`         // True if this session is a conductor orchestrator
+	NoTransitionNotify bool    `json:"no_transition_notify,omitempty"` // Suppress transition event dispatch for this session
 
 	// TitleLocked, when true, blocks Claude's session name from syncing into
 	// the agent-deck Title (issue #697). Conductors launch workers with a
@@ -122,6 +136,8 @@ type Instance struct {
 	Status         Status    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastAccessedAt time.Time `json:"last_accessed_at,omitempty"` // When user last attached
+	// ArchivedAt is set when the user archives the session (non-zero = archived).
+	ArchivedAt time.Time `json:"archived_at,omitempty"`
 
 	// LastStartedAt is the wall-clock time of the most recent successful
 	// Start() / StartWithMessage() / Restart() call. Persisted so short-lived
@@ -1030,6 +1046,10 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 	// Plugin channels: subscribe the claude session to inbound messages from
 	// each listed plugin channel. Persisted on Instance.Channels and refreshed
 	// on every Start/Restart/resume because every command-build flows here.
+	// Heal first: a conductor whose persisted Channels lost the telegram
+	// entry (index wipe, record rebuild) is restored from conductor config
+	// so the wiring can't silently disappear (telegram_reliability.go).
+	reconcileConductorTelegramChannel(i)
 	if len(i.Channels) > 0 {
 		flags = append(flags, "--channels "+shellescape.Quote(strings.Join(i.Channels, ","))) // audit F1
 	}

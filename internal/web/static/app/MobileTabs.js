@@ -13,10 +13,11 @@ const MOBILE_TABS = [
 export function MobileTabs() {
   const activeTab = activeTabSignal.value
   return html`
-    <div class="mob-tabs">
+    <div class="mob-tabs" data-testid="mobile-tabs">
       ${MOBILE_TABS.map(t => html`
         <button key=${t.id}
                 class=${`mob-tab ${activeTab === t.id ? 'on' : ''}`}
+                data-testid=${`mobile-tab-${t.id}`}
                 onClick=${() => (activeTabSignal.value = t.id)}>
           <span class="mt-ic">${t.icon}</span><span>${t.label}</span>
         </button>

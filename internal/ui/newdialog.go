@@ -283,12 +283,15 @@ func (d *NewDialog) RefreshPresetCommands() {
 }
 
 // newSessionEnterAdvancesFromConfig reads config.toml [ui]
-// new_session_enter_advances (PR #1295). Default false (config missing or
-// unset) preserves today's behavior: Enter on Name/Branch submits the form.
+// new_session_enter_advances. Enter-advances is the default (mechanism from PR
+// #1295): when the config is missing or the key is unset, this returns true so
+// Enter advances between fields and Ctrl+S submits. A literal `= false` opts
+// out. Defaulting to true on load error keeps the safer behavior even when the
+// config can't be read.
 func newSessionEnterAdvancesFromConfig() bool {
 	cfg, err := session.LoadUserConfig()
 	if err != nil || cfg == nil {
-		return false
+		return true
 	}
 	return cfg.UI.GetNewSessionEnterAdvances()
 }
@@ -1017,29 +1020,47 @@ func (d *NewDialog) IsVisible() bool {
 	return d.visible
 }
 
+func (d *NewDialog) sanitizePath(raw string) string {
+	path := strings.Trim(strings.TrimSpace(raw), "'\"")
+	// Fix malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
+	// This can happen when textinput suggestion appends instead of replaces.
+	if idx := strings.Index(path, "~/"); idx > 0 {
+		path = path[idx:]
+	}
+	return path
+}
+
+func (d *NewDialog) resolveCommand() string {
+	if d.commandCursor < len(d.presetCommands) {
+		if command := d.presetCommands[d.commandCursor]; command != "" {
+			return command
+		}
+	}
+	return strings.TrimSpace(d.commandInput.Value())
+}
+
 // GetValues returns the current dialog values with expanded paths
 func (d *NewDialog) GetValues() (name, path, command string) {
 	name = strings.TrimSpace(d.nameInput.Value())
 	// Fix: sanitize input to remove surrounding quotes that cause path issues
-	path = strings.Trim(strings.TrimSpace(d.pathInput.Value()), "'\"")
-
-	// Fix malformed paths that have ~ in the middle (e.g., "/some/path~/actual/path")
-	// This can happen when textinput suggestion appends instead of replaces
-	if idx := strings.Index(path, "~/"); idx > 0 {
-		path = path[idx:]
-	}
+	path = d.sanitizePath(d.pathInput.Value())
 
 	// Expand environment variables and ~ prefix
 	path = session.ExpandPath(path)
 
 	// Get command - either from preset or custom input
-	if d.commandCursor < len(d.presetCommands) {
-		command = d.presetCommands[d.commandCursor]
-	}
-	if command == "" && d.commandInput.Value() != "" {
-		command = strings.TrimSpace(d.commandInput.Value())
-	}
+	command = d.resolveCommand()
 
+	return name, path, command
+}
+
+// GetRemoteValues returns dialog values for a remote host. Unlike GetValues,
+// it does not expand ~ or environment variables locally because those paths
+// belong to the remote machine.
+func (d *NewDialog) GetRemoteValues() (name, path, command string) {
+	name = strings.TrimSpace(d.nameInput.Value())
+	path = d.sanitizePath(d.pathInput.Value())
+	command = d.resolveCommand()
 	return name, path, command
 }
 
@@ -1342,15 +1363,18 @@ func (d *NewDialog) indexOf(target focusTarget) int {
 // rebuildFocusTargets builds the ordered list of active focusable elements
 // based on current dialog state (sandbox, worktree, tool options visibility).
 func (d *NewDialog) rebuildFocusTargets() {
-	var targets []focusTarget
-	if d.multiRepoEnabled {
-		// Multi-repo replaces the single path field with a path list under focusMultiRepo
-		targets = []focusTarget{focusName, focusMultiRepo, focusCommand}
-	} else {
-		targets = []focusTarget{focusName, focusMultiRepo, focusPath, focusCommand}
-	}
+	// UX top-3 #3: the hot path is Name -> Tool -> (Model) -> Path. The Model
+	// override stays grouped with the tool selector; Path follows. The Multi-repo
+	// toggle moves below the common fields ("below the fold") so the 90% flow
+	// (type name, tool already right, submit) is never interrupted by an advanced
+	// option. In multi-repo mode the single Path field is hidden — its path list
+	// lives under focusMultiRepo below the fold instead.
+	targets := []focusTarget{focusName, focusCommand}
 	if d.selectedToolSupportsModel() {
 		targets = append(targets, focusModel)
+	}
+	if !d.multiRepoEnabled {
+		targets = append(targets, focusPath)
 	}
 	targets = append(targets, focusWorktree, focusSandbox)
 	if len(d.conductorSessions) > 0 {
@@ -1362,6 +1386,8 @@ func (d *NewDialog) rebuildFocusTargets() {
 	if d.worktreeEnabled {
 		targets = append(targets, focusBranch)
 	}
+	// Multi-repo toggle below the fold (its path list renders here when enabled).
+	targets = append(targets, focusMultiRepo)
 	if d.toolOptions != nil {
 		targets = append(targets, focusOptions)
 	}
@@ -2213,6 +2239,217 @@ func dialogOrigin(termWidth, termHeight, dialogWidth, dialogHeight int) (row, co
 }
 
 // View renders the dialog.
+// --- new-session field renderers (UX top-3 #3: Name -> Tool -> Path order) ---
+// These render one logical field block each into content, so View() can lay
+// them out in the hot-path order with the Multi-repo toggle below the fold.
+
+// renderCommandSection renders the Tool (command) pill selector, the
+// show_only_installed_tools fallback hint, and the custom-command input (shell).
+func (d *NewDialog) renderCommandSection(content *strings.Builder, cur focusTarget) {
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+
+	if cur == focusCommand {
+		content.WriteString(activeLabelStyle.Render("▶ Command:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Command:"))
+	}
+	content.WriteString("\n  ")
+
+	// Render command options as consistent pill buttons.
+	var cmdButtons []string
+	for i, cmd := range d.presetCommands {
+		displayName := cmd
+		if displayName == "" {
+			displayName = "shell"
+		} else {
+			displayName = displayCommandPreset(cmd)
+		}
+		// Prepend icon for custom tools.
+		if icon := session.GetToolIcon(cmd); cmd != "" && icon != "" {
+			if toolDef := session.GetToolDef(cmd); toolDef != nil && toolDef.Icon != "" {
+				displayName = icon + " " + displayName
+			}
+		}
+
+		var btnStyle lipgloss.Style
+		if i == d.commandCursor {
+			btnStyle = lipgloss.NewStyle().
+				Foreground(ColorBg).
+				Background(ColorAccent).
+				Bold(true).
+				Padding(0, 2)
+		} else {
+			btnStyle = lipgloss.NewStyle().
+				Foreground(ColorTextDim).
+				Background(ColorSurface).
+				Padding(0, 2)
+		}
+
+		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
+	}
+	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, cmdButtons...))
+	content.WriteString("\n")
+
+	// show_only_installed_tools empty-fallback hint (issue #1259).
+	if session.ToolFilterFallbackActive() {
+		hintStyle := lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true)
+		content.WriteString("  ")
+		content.WriteString(hintStyle.Render("No tools matched PATH; showing all. Set show_only_installed_tools = false to silence."))
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
+
+	// Custom command input (only if shell is selected).
+	if d.commandCursor == 0 {
+		if cur == focusCommand {
+			content.WriteString(activeLabelStyle.Render("  ▸ Custom:"))
+		} else {
+			content.WriteString(labelStyle.Render("    Custom:"))
+		}
+		content.WriteString("\n    ")
+		content.WriteString(d.commandInput.View())
+		content.WriteString("\n\n")
+	}
+}
+
+// renderModelSection renders the optional per-session model override for tools
+// that support it, recording the dropdown overlay offset.
+func (d *NewDialog) renderModelSection(content *strings.Builder, cur focusTarget, dialogWidth int) {
+	if !d.selectedToolSupportsModel() {
+		return
+	}
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	if cur == focusModel {
+		content.WriteString(activeLabelStyle.Render("▶ Model ID:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Model ID:"))
+	}
+	content.WriteString("\n  ")
+	content.WriteString(d.modelInput.View())
+	// #1162 bug 1: position the dropdown overlay using the *visual* (wrapped)
+	// line count, not the raw newline count, because the command-button row above
+	// the model field wraps at narrow widths.
+	innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content.String())
+	d.modelLineOffset = lipgloss.Height(wrapped)
+	if hint := d.modelInputHint(); hint != "" {
+		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+		content.WriteString("\n  ")
+		content.WriteString(dimStyle.Render(hint))
+	}
+	content.WriteString("\n\n")
+}
+
+// renderSinglePathSection renders the single project-path input (the common
+// case). In multi-repo mode this is skipped — the path list renders under the
+// Multi-repo toggle below the fold instead.
+func (d *NewDialog) renderSinglePathSection(content *strings.Builder, cur focusTarget, dialogWidth int) {
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+	if cur == focusPath {
+		content.WriteString(activeLabelStyle.Render("▶ Path:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Path:"))
+	}
+	content.WriteString("\n")
+	content.WriteString("  ")
+	if cur == focusPath && d.pathSoftSelected && d.pathInput.Value() != "" {
+		// Soft-select highlight: render the textinput's own View() with reverse
+		// colors so the blinking cursor is preserved (#765).
+		savedTextStyle := d.pathInput.TextStyle
+		d.pathInput.TextStyle = lipgloss.NewStyle().
+			Background(ColorAccent).
+			Foreground(ColorBg)
+		content.WriteString(d.pathInput.View())
+		d.pathInput.TextStyle = savedTextStyle
+	} else {
+		content.WriteString(d.pathInput.View())
+	}
+	content.WriteString("\n")
+
+	// Record line offset for the path suggestions overlay. The Tool pills above
+	// can wrap at narrow widths, so use the visual (wrapped) height rather than a
+	// raw newline count (mirrors the model field).
+	innerWidth := dialogWidth - 8
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content.String())
+	d.suggestionsLineOffset = lipgloss.Height(wrapped)
+	content.WriteString("\n")
+}
+
+// renderMultiRepoSection renders the Multi-repo toggle and, when enabled, the
+// path list. It lives below the common fields (below the fold).
+func (d *NewDialog) renderMultiRepoSection(content *strings.Builder, cur focusTarget) {
+	labelStyle := lipgloss.NewStyle().Foreground(ColorText)
+	activeLabelStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+
+	multiRepoLabel := "Multi-repo mode"
+	if cur == focusCommand {
+		multiRepoLabel = "Multi-repo mode (m)"
+	}
+	content.WriteString(renderCheckboxLine(multiRepoLabel, d.multiRepoEnabled, cur == focusMultiRepo))
+	if !d.multiRepoEnabled {
+		return
+	}
+
+	dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
+	pathFocused := cur == focusMultiRepo
+	if pathFocused {
+		content.WriteString(activeLabelStyle.Render("▶ Paths:"))
+	} else {
+		content.WriteString(labelStyle.Render("  Paths:"))
+	}
+	content.WriteString("\n")
+	if pathFocused {
+		for i, p := range d.multiRepoPaths {
+			isSelected := i == d.multiRepoPathCursor
+			prefix := "    "
+			if isSelected {
+				prefix = "  ▸ "
+			}
+			if isSelected && d.multiRepoEditing {
+				content.WriteString(fmt.Sprintf("%s%d. ", prefix, i+1))
+				content.WriteString(d.pathInput.View())
+				content.WriteString("\n")
+			} else {
+				display := p
+				if display == "" {
+					display = "(empty)"
+				}
+				if isSelected {
+					content.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(
+						fmt.Sprintf("%s%d. %s", prefix, i+1, display)))
+				} else {
+					content.WriteString(dimStyle.Render(
+						fmt.Sprintf("%s%d. %s", prefix, i+1, display)))
+				}
+				content.WriteString("\n")
+			}
+		}
+		content.WriteString(dimStyle.Render("    [a: add, d: remove, enter: edit, ↑↓: navigate]"))
+		content.WriteString("\n")
+		// Record line offset for suggestions overlay (rendered after dialog is placed).
+		d.suggestionsLineOffset = strings.Count(content.String(), "\n")
+	} else {
+		for i, p := range d.multiRepoPaths {
+			display := p
+			if display == "" {
+				display = "(empty)"
+			}
+			content.WriteString(dimStyle.Render(fmt.Sprintf("    %d. %s", i+1, display)))
+			content.WriteString("\n")
+		}
+	}
+	content.WriteString("\n")
+}
+
 func (d *NewDialog) View() string {
 	if !d.visible {
 		return ""
@@ -2325,194 +2562,18 @@ func (d *NewDialog) View() string {
 	content.WriteString(d.nameInput.View())
 	content.WriteString("\n\n")
 
-	// Multi-repo checkbox — rendered above path, toggles between single path and path list.
-	multiRepoLabel := "Multi-repo mode"
-	if cur == focusCommand {
-		multiRepoLabel = "Multi-repo mode (m)"
-	}
-	content.WriteString(renderCheckboxLine(multiRepoLabel, d.multiRepoEnabled, cur == focusMultiRepo))
-
-	if d.multiRepoEnabled {
-		// Multi-repo path list replaces the single path field.
-		dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-		pathFocused := cur == focusMultiRepo
-		if pathFocused {
-			content.WriteString(activeLabelStyle.Render("▶ Paths:"))
-		} else {
-			content.WriteString(labelStyle.Render("  Paths:"))
-		}
-		content.WriteString("\n")
-		if pathFocused {
-			for i, p := range d.multiRepoPaths {
-				isSelected := i == d.multiRepoPathCursor
-				prefix := "    "
-				if isSelected {
-					prefix = "  ▸ "
-				}
-				if isSelected && d.multiRepoEditing {
-					content.WriteString(fmt.Sprintf("%s%d. ", prefix, i+1))
-					content.WriteString(d.pathInput.View())
-					content.WriteString("\n")
-				} else {
-					display := p
-					if display == "" {
-						display = "(empty)"
-					}
-					if isSelected {
-						content.WriteString(lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(
-							fmt.Sprintf("%s%d. %s", prefix, i+1, display)))
-					} else {
-						content.WriteString(dimStyle.Render(
-							fmt.Sprintf("%s%d. %s", prefix, i+1, display)))
-					}
-					content.WriteString("\n")
-				}
-			}
-			content.WriteString(dimStyle.Render("    [a: add, d: remove, enter: edit, ↑↓: navigate]"))
-			content.WriteString("\n")
-			// Record line offset for suggestions overlay (rendered after dialog is placed).
-			d.suggestionsLineOffset = strings.Count(content.String(), "\n")
-		} else {
-			for i, p := range d.multiRepoPaths {
-				display := p
-				if display == "" {
-					display = "(empty)"
-				}
-				content.WriteString(dimStyle.Render(fmt.Sprintf("    %d. %s", i+1, display)))
-				content.WriteString("\n")
-			}
-		}
-	} else {
-		// Single path input (original behavior).
-		if cur == focusPath {
-			content.WriteString(activeLabelStyle.Render("▶ Path:"))
-		} else {
-			content.WriteString(labelStyle.Render("  Path:"))
-		}
-		content.WriteString("\n")
-		content.WriteString("  ")
-		if cur == focusPath && d.pathSoftSelected && d.pathInput.Value() != "" {
-			// Soft-select highlight: render the textinput's own View() (which
-			// includes Bubble Tea's blinking cursor) with TextStyle set to
-			// reverse colors. The previous static-string render dropped the
-			// cursor entirely, leaving users editing blind (#765). Saving and
-			// restoring the prior TextStyle keeps this branch's mutation local
-			// to the soft-select case.
-			savedTextStyle := d.pathInput.TextStyle
-			d.pathInput.TextStyle = lipgloss.NewStyle().
-				Background(ColorAccent).
-				Foreground(ColorBg)
-			content.WriteString(d.pathInput.View())
-			d.pathInput.TextStyle = savedTextStyle
-		} else {
-			content.WriteString(d.pathInput.View())
-		}
-		content.WriteString("\n")
-
-		// Record line offset for suggestions overlay (rendered after dialog is placed).
-		d.suggestionsLineOffset = strings.Count(content.String(), "\n")
-	}
-	content.WriteString("\n")
-
-	// Command selection
-	if cur == focusCommand {
-		content.WriteString(activeLabelStyle.Render("▶ Command:"))
-	} else {
-		content.WriteString(labelStyle.Render("  Command:"))
-	}
-	content.WriteString("\n  ")
-
-	// Render command options as consistent pill buttons
-	var cmdButtons []string
-	for i, cmd := range d.presetCommands {
-		displayName := cmd
-		if displayName == "" {
-			displayName = "shell"
-		} else {
-			displayName = displayCommandPreset(cmd)
-		}
-		// Prepend icon for custom tools
-		if icon := session.GetToolIcon(cmd); cmd != "" && icon != "" {
-			// Only prepend for custom tools (not built-ins which are recognizable by name)
-			if toolDef := session.GetToolDef(cmd); toolDef != nil && toolDef.Icon != "" {
-				displayName = icon + " " + displayName
-			}
-		}
-
-		var btnStyle lipgloss.Style
-		if i == d.commandCursor {
-			// Selected: bright background, bold (active pill)
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorBg).
-				Background(ColorAccent).
-				Bold(true).
-				Padding(0, 2)
-		} else {
-			// Unselected: subtle background pill (consistent style)
-			btnStyle = lipgloss.NewStyle().
-				Foreground(ColorTextDim).
-				Background(ColorSurface).
-				Padding(0, 2)
-		}
-
-		cmdButtons = append(cmdButtons, btnStyle.Render(displayName))
-	}
-	content.WriteString(lipgloss.JoinHorizontal(lipgloss.Left, cmdButtons...))
-	content.WriteString("\n")
-
-	// show_only_installed_tools empty-fallback hint (issue #1259): when the
-	// filter is on but nothing other than shell resolved on PATH we show the full
-	// list instead of trapping the user, and explain why here.
-	if session.ToolFilterFallbackActive() {
-		hintStyle := lipgloss.NewStyle().Foreground(ColorTextDim).Italic(true)
-		content.WriteString("  ")
-		content.WriteString(hintStyle.Render("No tools matched PATH; showing all. Set show_only_installed_tools = false to silence."))
-		content.WriteString("\n")
-	}
-	content.WriteString("\n")
-
-	// Custom command input (only if shell is selected)
-	if d.commandCursor == 0 {
-		// Show active indicator when command field is focused
-		if cur == focusCommand {
-			content.WriteString(activeLabelStyle.Render("  ▸ Custom:"))
-		} else {
-			content.WriteString(labelStyle.Render("    Custom:"))
-		}
-		content.WriteString("\n    ")
-		content.WriteString(d.commandInput.View())
-		content.WriteString("\n\n")
+	// Hot path (UX top-3 #3): Tool -> (Model) -> Path render right after Name.
+	// The Multi-repo toggle and its path list move below the common fields
+	// (see renderMultiRepoSection, called after the Branch input). In multi-repo
+	// mode the single Path field is hidden — its list renders below the fold.
+	d.renderCommandSection(&content, cur)
+	d.renderModelSection(&content, cur, dialogWidth)
+	if !d.multiRepoEnabled {
+		d.renderSinglePathSection(&content, cur, dialogWidth)
 	}
 
-	// Optional model/version override for supported tools.
-	if d.selectedToolSupportsModel() {
-		if cur == focusModel {
-			content.WriteString(activeLabelStyle.Render("▶ Model ID:"))
-		} else {
-			content.WriteString(labelStyle.Render("  Model ID:"))
-		}
-		content.WriteString("\n  ")
-		content.WriteString(d.modelInput.View())
-		// #1162 bug 1: position the dropdown overlay using the *visual* (wrapped)
-		// line count, not the raw newline count. The command-button row above the
-		// model field wraps to extra lines at narrow widths; a newline count would
-		// undercount those and paint the dropdown directly over the model input,
-		// hiding whatever the user typed. lipgloss.Height of the width-wrapped
-		// content-so-far yields the row just below the input (the path field has
-		// no wrapping above it, so its newline count already lands correctly).
-		innerWidth := dialogWidth - 8 // Padding(2,4) → 4 columns each side.
-		if innerWidth < 1 {
-			innerWidth = 1
-		}
-		wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content.String())
-		d.modelLineOffset = lipgloss.Height(wrapped)
-		if hint := d.modelInputHint(); hint != "" {
-			dimStyle := lipgloss.NewStyle().Foreground(ColorComment)
-			content.WriteString("\n  ")
-			content.WriteString(dimStyle.Render(hint))
-		}
-		content.WriteString("\n\n")
-	}
+	// (Tool, Model, and the single Path field render above, right after Name —
+	// see renderCommandSection / renderModelSection / renderSinglePathSection.)
 
 	// Worktree checkbox — individually focusable.
 	worktreeLabel := "Create in worktree"
@@ -2623,6 +2684,11 @@ func (d *NewDialog) View() string {
 			content.WriteString("\n")
 		}
 	}
+
+	// Multi-repo toggle (below the fold, UX top-3 #3). Its path list renders
+	// here when enabled; in the common single-repo case it's just a checkbox.
+	content.WriteString("\n")
+	d.renderMultiRepoSection(&content, cur)
 
 	// Tool options panel
 	if d.toolOptions != nil {

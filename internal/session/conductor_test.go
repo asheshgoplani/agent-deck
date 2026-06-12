@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2096,7 +2097,7 @@ func TestBridgeTemplate_DiscordConfigLoading(t *testing.T) {
 		`dc_bot_token = _resolve_secret(dc.get("bot_token", ""))`,
 		`dc_guild_id = dc.get("guild_id", 0)`,
 		`dc_channel_id = dc.get("channel_id", 0)`,
-		`dc_user_id = dc.get("user_id", 0)`,
+		`dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))`,
 		`dc_listen_mode = dc.get("listen_mode", "all")`,
 		`dc_ignore_replies_to_others = dc.get("ignore_replies_to_others", False)`,
 		`"listen_mode": dc_listen_mode,`,
@@ -2106,6 +2107,86 @@ func TestBridgeTemplate_DiscordConfigLoading(t *testing.T) {
 	for _, pattern := range patterns {
 		if !strings.Contains(template, pattern) {
 			t.Errorf("template should contain Discord config pattern: %q", pattern)
+		}
+	}
+}
+
+// TestBridgeTemplate_UserIDResolvedViaSecret asserts that the bridge template
+// resolves telegram/discord user_id through _resolve_secret (so it accepts an
+// env-var reference like "$TELEGRAM_USER_ID"), mirroring the bot-token style,
+// while still coercing the resolved value to int in the returned config.
+func TestBridgeTemplate_UserIDResolvedViaSecret(t *testing.T) {
+	template := conductorBridgePy
+	patterns := []string{
+		`tg_user_id = _resolve_secret(str(tg.get("user_id", "") or ""))`,
+		`dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))`,
+		`"user_id": int(tg_user_id) if tg_user_id else 0,`,
+		`"user_id": int(dc_user_id) if dc_user_id else 0,`,
+	}
+	for _, pattern := range patterns {
+		if !strings.Contains(template, pattern) {
+			t.Errorf("template should contain user_id resolution pattern: %q", pattern)
+		}
+	}
+}
+
+// TestBridgeTemplate_UserIDResolutionBehavior exercises the real _resolve_secret
+// function (sliced from the shipped template) against the exact user_id
+// resolution expression, covering: string env ref -> int, literal int unchanged,
+// and unset/empty -> 0. Skips if python3 is unavailable.
+func TestBridgeTemplate_UserIDResolutionBehavior(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available; skipping behavioral test")
+	}
+
+	template := conductorBridgePy
+	start := strings.Index(template, "def _resolve_secret")
+	end := strings.Index(template, "def load_config")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatal("could not slice _resolve_secret from template")
+	}
+	resolveSecretSrc := template[start:end]
+
+	// Harness reuses the real _resolve_secret and mirrors the template's
+	// user_id resolution line exactly (asserted statically above).
+	harness := `import os
+class _Log:
+    def warning(self, *a, **k):
+        pass
+log = _Log()
+` + resolveSecretSrc + `
+def resolve_user_id(cfg):
+    user_id = _resolve_secret(str(cfg.get("user_id", "") or ""))
+    return int(user_id) if user_id else 0
+
+os.environ["TELEGRAM_USER_ID"] = "123456"
+os.environ.pop("NOPE_UNSET", None)
+print(resolve_user_id({"user_id": "$TELEGRAM_USER_ID"}))  # string env ref -> int
+print(resolve_user_id({"user_id": "${TELEGRAM_USER_ID}"}))  # braced env ref -> int
+print(resolve_user_id({"user_id": 123456}))                 # literal int unchanged
+print(resolve_user_id({}))                                  # missing -> 0
+print(resolve_user_id({"user_id": "$NOPE_UNSET"}))          # unset env ref -> 0
+`
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "harness.py")
+	if err := os.WriteFile(scriptPath, []byte(harness), 0o644); err != nil {
+		t.Fatalf("failed to write harness: %v", err)
+	}
+
+	out, err := exec.Command(py, scriptPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("python harness failed: %v\noutput:\n%s", err, out)
+	}
+
+	got := strings.Fields(strings.TrimSpace(string(out)))
+	want := []string{"123456", "123456", "123456", "0", "0"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d output lines, got %d: %q", len(want), len(got), string(out))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("case %d: got %q, want %q", i, got[i], want[i])
 		}
 	}
 }
@@ -2699,5 +2780,204 @@ func TestConductorMeta_InactivityPauseJSON(t *testing.T) {
 	}
 	if loaded.HeartbeatIdleMinutes != 30 {
 		t.Errorf("HeartbeatIdleMinutes after unmarshal = %d, want 30", loaded.HeartbeatIdleMinutes)
+	}
+}
+
+// --- Issue #1350: bridge.py XDG path resolution ---
+
+// TestBridgeTemplate_DoesNotHardcodeLegacyAgentDeckRoot guards against the
+// embedded conductorBridgePy const drifting back to the hardcoded
+// ~/.agent-deck roots that broke conductor routing on fresh XDG installs
+// (issue #1350). The bridge must resolve CONDUCTOR_DIR / CONFIG_PATH through
+// XDG-with-legacy-fallback resolvers that mirror internal/agentpaths.
+func TestBridgeTemplate_DoesNotHardcodeLegacyAgentDeckRoot(t *testing.T) {
+	template := conductorBridgePy
+
+	// The old hardcoded root assignment must be gone.
+	if strings.Contains(template, `AGENT_DECK_DIR = Path.home() / ".agent-deck"`) {
+		t.Error("template must not hardcode AGENT_DECK_DIR = Path.home() / \".agent-deck\" (issue #1350)")
+	}
+	if strings.Contains(template, `CONFIG_PATH = AGENT_DECK_DIR / "config.toml"`) {
+		t.Error("template must not derive CONFIG_PATH from a hardcoded legacy root (issue #1350)")
+	}
+	if strings.Contains(template, `CONDUCTOR_DIR = AGENT_DECK_DIR / "conductor"`) {
+		t.Error("template must not derive CONDUCTOR_DIR from a hardcoded legacy root (issue #1350)")
+	}
+
+	// The XDG-aware resolvers must be present.
+	if !strings.Contains(template, "XDG_DATA_HOME") {
+		t.Error("template must reference XDG_DATA_HOME for data path resolution (issue #1350)")
+	}
+	if !strings.Contains(template, "XDG_CONFIG_HOME") {
+		t.Error("template must reference XDG_CONFIG_HOME for config path resolution (issue #1350)")
+	}
+
+	// Legacy fallback must be preserved so existing installs keep working.
+	if !strings.Contains(template, `.agent-deck`) {
+		t.Error("template must retain a legacy ~/.agent-deck fallback (issue #1350)")
+	}
+
+	// CONDUCTOR_DIR / CONFIG_PATH must be computed via the resolvers.
+	if !strings.Contains(template, `CONDUCTOR_DIR = resolve_data_dir("conductor")`) {
+		t.Error("template must compute CONDUCTOR_DIR via resolve_data_dir (issue #1350)")
+	}
+	if !strings.Contains(template, `CONFIG_PATH = resolve_config_path("config.toml")`) {
+		t.Error("template must compute CONFIG_PATH via resolve_config_path (issue #1350)")
+	}
+}
+
+// TestBridgeTemplate_ResolverMirrorsRealBridgeFile ensures the embedded const
+// and the on-disk conductor/bridge.py share a byte-identical resolver region,
+// so a fix to one is never silently dropped from the other.
+func TestBridgeTemplate_ResolverMirrorsRealBridgeFile(t *testing.T) {
+	const marker = "# --- issue #1350: XDG path resolution (mirror of internal/agentpaths) ---"
+	const endMarker = "# --- end issue #1350 resolver ---"
+
+	extract := func(src, where string) string {
+		start := strings.Index(src, marker)
+		if start < 0 {
+			t.Fatalf("%s: resolver start marker not found", where)
+		}
+		end := strings.Index(src[start:], endMarker)
+		if end < 0 {
+			t.Fatalf("%s: resolver end marker not found", where)
+		}
+		return src[start : start+end+len(endMarker)]
+	}
+
+	embedded := extract(conductorBridgePy, "embedded const")
+
+	// Locate conductor/bridge.py relative to this test file.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
+	bridgePath := filepath.Join(repoRoot, "conductor", "bridge.py")
+	data, err := os.ReadFile(bridgePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", bridgePath, err)
+	}
+	onDisk := extract(string(data), "conductor/bridge.py")
+
+	if embedded != onDisk {
+		t.Errorf("resolver region drift between embedded const and conductor/bridge.py:\n--- embedded ---\n%s\n--- on disk ---\n%s", embedded, onDisk)
+	}
+}
+
+// TestGenerateSystemdBridgeService_InjectsXDGEnv verifies the systemd bridge
+// unit propagates the effective XDG dirs so the bridge daemon's XDG branch
+// resolves to the same place the Go side wrote the conductors (issue #1350).
+func TestGenerateSystemdBridgeService_InjectsXDGEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd not used on windows")
+	}
+	home := t.TempDir()
+	xdgData := filepath.Join(home, "xdgdata")
+	xdgConfig := filepath.Join(home, "xdgconfig")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	// Ensure a python3 is discoverable so generation does not error.
+	if findPython3() == "" {
+		t.Skip("python3 not found; cannot generate bridge unit")
+	}
+
+	unit, err := GenerateSystemdBridgeService()
+	if err != nil {
+		t.Fatalf("GenerateSystemdBridgeService: %v", err)
+	}
+	if !strings.Contains(unit, "Environment=XDG_DATA_HOME="+xdgData) {
+		t.Errorf("systemd unit must inject XDG_DATA_HOME=%q:\n%s", xdgData, unit)
+	}
+	if !strings.Contains(unit, "Environment=XDG_CONFIG_HOME="+xdgConfig) {
+		t.Errorf("systemd unit must inject XDG_CONFIG_HOME=%q:\n%s", xdgConfig, unit)
+	}
+}
+
+// TestGenerateLaunchdPlist_InjectsXDGEnv verifies the launchd plist propagates
+// the effective XDG dirs to the bridge daemon (issue #1350).
+func TestGenerateLaunchdPlist_InjectsXDGEnv(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, "xdgdata")
+	xdgConfig := filepath.Join(home, "xdgconfig")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	if findPython3() == "" {
+		t.Skip("python3 not found; cannot generate bridge plist")
+	}
+
+	plist, err := GenerateLaunchdPlist()
+	if err != nil {
+		t.Fatalf("GenerateLaunchdPlist: %v", err)
+	}
+	if !strings.Contains(plist, "<key>XDG_DATA_HOME</key>") || !strings.Contains(plist, "<string>"+xdgData+"</string>") {
+		t.Errorf("launchd plist must inject XDG_DATA_HOME=%q:\n%s", xdgData, plist)
+	}
+	if !strings.Contains(plist, "<key>XDG_CONFIG_HOME</key>") || !strings.Contains(plist, "<string>"+xdgConfig+"</string>") {
+		t.Errorf("launchd plist must inject XDG_CONFIG_HOME=%q:\n%s", xdgConfig, plist)
+	}
+}
+
+// TestBridgeXDGEnv_AgreesWithConductorDir verifies the XDG base injected into
+// the bridge daemon, combined with the bridge's resolver formula
+// (<XDG_DATA_HOME>/agent-deck/conductor), points at exactly the directory the Go
+// side computes via ConductorDir() for the same env (issue #1350). This is the
+// path-agreement guarantee: the Go writer and the Python reader land together.
+func TestBridgeXDGEnv_AgreesWithConductorDir(t *testing.T) {
+	home := t.TempDir()
+	xdgData := filepath.Join(home, "xdgdata")
+	xdgConfig := filepath.Join(home, "xdgconfig")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+
+	// Create the conductor marker so EffectiveDataDir selects XDG (as it would
+	// on a fresh XDG install after conductor setup).
+	if err := os.MkdirAll(filepath.Join(xdgData, "agent-deck", "conductor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dataBase, configBase, err := bridgeXDGBaseDirs()
+	if err != nil {
+		t.Fatalf("bridgeXDGBaseDirs: %v", err)
+	}
+	if dataBase != xdgData {
+		t.Errorf("dataBase = %q, want %q", dataBase, xdgData)
+	}
+	if configBase != xdgConfig {
+		t.Errorf("configBase = %q, want %q", configBase, xdgConfig)
+	}
+
+	condDir, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	// The bridge computes resolve_data_dir("conductor") / "conductor" where
+	// resolve_data_dir returns <XDG_DATA_HOME>/agent-deck. That must equal
+	// ConductorDir().
+	bridgeComputed := filepath.Join(dataBase, "agent-deck", "conductor")
+	if bridgeComputed != condDir {
+		t.Errorf("bridge-computed conductor dir %q != ConductorDir() %q", bridgeComputed, condDir)
+	}
+
+	// Config agreement. The bridge reads config.toml (the user config), which
+	// the Go side resolves via GetUserConfigPath -> EffectiveConfigPath.
+	bridgeCfg := filepath.Join(configBase, "agent-deck", "config.toml")
+	// EffectiveConfigPath returns the XDG path only if it exists; create it to
+	// match the fresh-XDG-install scenario.
+	if err := os.MkdirAll(filepath.Join(configBase, "agent-deck"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bridgeCfg, []byte("[telegram]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath, err := GetUserConfigPath()
+	if err != nil {
+		t.Fatalf("GetUserConfigPath: %v", err)
+	}
+	if bridgeCfg != cfgPath {
+		t.Errorf("bridge-computed config path %q != GetUserConfigPath() %q", bridgeCfg, cfgPath)
 	}
 }

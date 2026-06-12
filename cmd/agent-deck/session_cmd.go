@@ -67,6 +67,8 @@ func handleSession(profile string, args []string) {
 		handleSessionSetTitleLock(profile, args[1:])
 	case "set":
 		handleSessionSet(profile, args[1:])
+	case "switch-account":
+		handleSessionSwitchAccount(profile, args[1:])
 	case "move", "mv":
 		handleSessionMove(profile, args[1:])
 	case "send":
@@ -103,6 +105,7 @@ func printSessionHelp() {
 	fmt.Println("  show [id]               Show session details (auto-detect current if no id)")
 	fmt.Println("  current                 Show current session and profile (auto-detect)")
 	fmt.Println("  set <id> <field> <value>  Update session property")
+	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
 	fmt.Println("  output <id>             Get the last response from a session")
@@ -1009,7 +1012,7 @@ func handleSessionFork(profile string, args []string) {
 	// Rebuild group tree and ensure group exists
 	groupTree := session.NewGroupTreeWithGroups(instances, groupsData)
 	if forkedInst.GroupPath != "" {
-		groupTree.CreateGroup(forkedInst.GroupPath)
+		groupTree.CreateGroupPath(forkedInst.GroupPath)
 	}
 
 	// Save
@@ -1406,6 +1409,13 @@ func handleSessionSet(profile string, args []string) {
 		return // unreachable, satisfies staticcheck SA5011
 	}
 
+	// #924 follow-up: the conversation follows the account. Capture the old
+	// account's config dir before SetField mutates resolution.
+	var preAccountConfigDir string
+	if field == session.FieldAccount && inst.Tool == "claude" {
+		preAccountConfigDir = session.GetClaudeConfigDirForInstance(inst)
+	}
+
 	// Delegate to session.SetField so CLI and TUI share validation. The
 	// extraArgTokens slice carries pre-tokenized argv for extra-args (CLI
 	// preserves values with spaces); SetField ignores it for other fields.
@@ -1419,6 +1429,20 @@ func handleSessionSet(profile string, args []string) {
 	// until after instancesMu.Unlock.
 	if postCommit != nil {
 		postCommit()
+	}
+
+	// Copy the conversation into the new account's config dir so the
+	// restart-required switch resumes with full context. Copy-only; a fresh
+	// session (no conversation yet) is not an error.
+	if preAccountConfigDir != "" {
+		targetDir := session.GetClaudeConfigDirForInstance(inst)
+		if migrated, merr := session.MigrateConversationFrom(inst, preAccountConfigDir, targetDir); merr != nil {
+			if !errors.Is(merr, session.ErrNoConversation) {
+				fmt.Fprintf(os.Stderr, "Warning: account set, but conversation not migrated: %v\n", merr)
+			}
+		} else if migrated != "" && !quietMode && !*jsonOutput {
+			fmt.Printf("Conversation migrated to %s\n", migrated)
+		}
 	}
 
 	// Save

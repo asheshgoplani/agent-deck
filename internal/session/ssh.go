@@ -684,12 +684,40 @@ func (r *SSHRunner) buildAttachArgs(sessionID string) []string {
 	return append(args, r.Host, remoteCmd)
 }
 
-// CreateSession creates and starts a new session on the remote, returning its ID.
-// It runs "add --quick --json" to create the session, then "session start" to
-// launch the tmux process, so the session is ready to attach.
+// CreateSession creates and starts a quick new session on the remote, returning its ID.
 func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
+	return r.CreateSessionWithOptions(ctx, "", "", "", "")
+}
+
+// remoteAddArgs builds the `agent-deck add` argument list for creating a
+// session on a remote with explicit dialog values (#1353). Empty values fall
+// back to remote defaults: no -c means shell, no -t means --quick
+// (auto-generated name), and an empty or "." path means remote CWD.
+func remoteAddArgs(tool, title, path, group string) []string {
+	args := []string{"add", "--json"}
+	if t := strings.TrimSpace(title); t != "" {
+		args = append(args, "-t", t)
+	} else {
+		args = append(args, "--quick")
+	}
+	if g := strings.TrimSpace(group); g != "" {
+		args = append(args, "-g", g)
+	}
+	if c := strings.TrimSpace(tool); c != "" {
+		args = append(args, "-c", c)
+	}
+	if p := strings.TrimSpace(path); p != "" && p != "." {
+		args = append(args, p)
+	}
+	return args
+}
+
+// CreateSessionWithOptions creates and starts a new session on the remote with
+// an explicit tool/title/path/group from the new-session dialog (#1353),
+// returning its ID. Empty values fall back to remote defaults (see remoteAddArgs).
+func (r *SSHRunner) CreateSessionWithOptions(ctx context.Context, tool, title, path, group string) (string, error) {
 	// Step 1: Create the session
-	output, err := r.Run(ctx, "add", "--quick", "--json")
+	output, err := r.Run(ctx, remoteAddArgs(tool, title, path, group)...)
 	if err != nil {
 		return "", fmt.Errorf("failed to create remote session: %w", err)
 	}
@@ -709,7 +737,8 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 	// Use ID to avoid ambiguity when titles are duplicated.
 	startCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if _, err := r.run(startCtx, "session", "start", result.ID); err != nil {
+	startOutput, err := r.run(startCtx, "session", "start", "--json", result.ID)
+	if err != nil {
 		// Compensate: the remote DB has the row but no tmux process. Best-effort
 		// delete with a fresh context so an upstream cancellation doesn't skip
 		// the cleanup. Surface the original start failure.
@@ -717,6 +746,12 @@ func (r *SSHRunner) CreateSession(ctx context.Context) (string, error) {
 		defer cleanupCancel()
 		_ = r.DeleteSession(cleanupCtx, result.ID)
 		return "", fmt.Errorf("failed to start remote session: %w", err)
+	}
+	var startResult struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(startOutput), &startResult); err == nil && startResult.Status == string(StatusQueued) {
+		return "", fmt.Errorf("remote session %q was queued and is not ready to attach", result.Title)
 	}
 
 	return result.ID, nil

@@ -31,9 +31,9 @@ const AVAIL_PANELS = [
   { id: 'events',   label: 'Events (watcher)' },
 ]
 
-function Card({ title, badge, children }) {
+function Card({ title, badge, testid, children }) {
   return html`
-    <div class="card">
+    <div class="card" data-testid=${testid}>
       <div class="card-head">
         <span class="name">${title}</span>
         ${badge && html`<span class="pill">${badge}</span>`}
@@ -125,7 +125,7 @@ export function RightRail() {
 
   if (!session) {
     return html`
-      <div class="rightrail">
+      <div class="rightrail" data-testid="right-rail">
         <div class="rail-head"><span class="t">SESSION</span></div>
         <div class="rail-body">
           <div style="padding: 18px; font-family: var(--mono); font-size: 11px; color: var(--muted);">
@@ -141,7 +141,7 @@ export function RightRail() {
   }
 
   return html`
-    <div class="rightrail">
+    <div class="rightrail" data-testid="right-rail">
       <div class="rail-head">
         <span class="t">SESSION</span>
         <div class="spacer"/>
@@ -149,7 +149,7 @@ export function RightRail() {
       </div>
       <div class="rail-body">
         ${panels.overview && html`
-          <${Card} title="OVERVIEW" badge=${session.status}>
+          <${Card} title="OVERVIEW" badge=${session.status} testid="rail-card-overview">
             <div class="kv"><span class="k">kind</span><span class="v">${session.kind}</span></div>
             <div class="kv"><span class="k">tool</span><span class="v">${session.tool || '—'}</span></div>
             ${session.model && html`
@@ -168,7 +168,7 @@ export function RightRail() {
           </${Card}>
         `}
         ${panels.usage && html`
-          <${Card} title="USAGE">
+          <${Card} title="USAGE" testid="rail-card-usage">
             ${session.cost > 0
               ? html`<div class="kv"><span class="k">cost</span><span class="v ok">$${session.cost.toFixed(2)}</span></div>`
               : html`<${NoData} msg="cost data not available for this session"/>`}
@@ -176,22 +176,22 @@ export function RightRail() {
           </${Card}>
         `}
         ${panels.mcps && html`
-          <${Card} title="MCPS">
+          <${Card} title="MCPS" testid="rail-card-mcps">
             <${NoData} msg="MCP attachments not exposed via web API. Use TUI (m key)."/>
           </${Card}>
         `}
         ${panels.skills && html`
-          <${Card} title="SKILLS">
+          <${Card} title="SKILLS" testid="rail-card-skills">
             <${NoData} msg="Skill attachments not exposed via web API. Use TUI (s key)."/>
           </${Card}>
         `}
         ${panels.children && session.kind === 'conductor' && html`
-          <${Card} title="CHILDREN" badge="conductor">
+          <${Card} title="CHILDREN" badge="conductor" testid="rail-card-children">
             <${ChildrenTree} rootId=${session.id} sessions=${sessions}/>
           </${Card}>
         `}
         ${panels.events && session.kind === 'watcher' && html`
-          <${Card} title="EVENTS">
+          <${Card} title="EVENTS" testid="rail-card-events">
             <${NoData} msg="Watcher event stream not exposed via web API."/>
           </${Card}>
         `}
@@ -200,6 +200,7 @@ export function RightRail() {
           <div class="opts">
             ${AVAIL_PANELS.map(p => html`
               <span key=${p.id}
+                    data-testid=${`rail-panel-toggle-${p.id}`}
                     class=${`opt ${panels[p.id] ? 'on' : ''}`}
                     onClick=${() => togglePanel(p.id)}>
                 ${p.label}

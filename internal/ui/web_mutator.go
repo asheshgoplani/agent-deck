@@ -167,6 +167,60 @@ func (m *WebMutator) CloseSession(id string) error {
 	return inst.Kill()
 }
 
+// ArchiveSession stops the session process and marks it archived so it
+// is hidden from active lists but retained in storage.
+func (m *WebMutator) ArchiveSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	if err := inst.Kill(); err != nil {
+		return fmt.Errorf("failed to stop session: %w", err)
+	}
+	m.h.instancesMu.Lock()
+	inst.ArchivedAt = time.Now().UTC()
+	m.h.instancesMu.Unlock()
+	return m.persistAllInstances()
+}
+
+// UnarchiveSession clears the archive flag without starting tmux.
+func (m *WebMutator) UnarchiveSession(id string) error {
+	m.h.instancesMu.RLock()
+	inst := m.h.instanceByID[id]
+	m.h.instancesMu.RUnlock()
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	m.h.instancesMu.Lock()
+	if !inst.IsArchived() {
+		m.h.instancesMu.Unlock()
+		return fmt.Errorf("session is not archived: %s", id)
+	}
+	inst.ArchivedAt = time.Time{}
+	m.h.instancesMu.Unlock()
+	return m.persistAllInstances()
+}
+
+func (m *WebMutator) persistAllInstances() error {
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	instances := make([]*session.Instance, len(m.h.instances))
+	copy(instances, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	if err := storage.SaveWithGroups(instances, m.h.groupTree); err != nil {
+		return fmt.Errorf("save sessions: %w", err)
+	}
+	return nil
+}
+
 // UndoDelete restores the most-recently deleted session if its delete
 // timestamp is within the configured undo window. Returns the restored
 // session id. Returns web.ErrUndoNothing if the stack is empty, or
