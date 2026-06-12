@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -472,12 +473,30 @@ func (r *SSHRunner) remoteExec(ctx context.Context, remoteCmd string, stdin []by
 	return stdout.Bytes(), nil
 }
 
-// parseRemoteVersion extracts the version from `agent-deck version` output,
-// e.g. "Agent Deck v0.20.2" -> "0.20.2".
+// remoteVersionRe matches the first semver-looking token (with optional
+// dotted/pre-release tail) in `agent-deck version` output. The leading "v" is
+// optional and not captured.
+var remoteVersionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+(?:[.\-+][0-9A-Za-z.\-]+)?)`)
+
+// parseRemoteVersion extracts the binary's ACTUAL current version from
+// `agent-deck version` output, e.g. "Agent Deck v0.20.2" -> "0.20.2".
+//
+// It returns the FIRST semver token, which is the real current version right
+// after "Agent Deck v". This matters because a binary one release behind prints
+// its version with an "(update available: vNEWER)" suffix, e.g.
+// "Agent Deck v1.9.49 (update available: v1.9.55)". A naive
+// strings.LastIndex(out, "v") landed on the advertised newer version and
+// returned "1.9.55)" (trailing paren and all), so callers mis-read the remote
+// as already up to date and skipped the update — a catch-22 where a remote
+// could never be updated while it advertised one. Anchoring on the first
+// semver token fixes that and is robust to trailing punctuation/whitespace.
+//
+// Falls back to the trimmed raw input when no semver token is found so callers
+// still behave.
 func parseRemoteVersion(raw string) string {
 	out := strings.TrimSpace(raw)
-	if idx := strings.LastIndex(out, "v"); idx >= 0 {
-		return strings.TrimSpace(out[idx+1:])
+	if m := remoteVersionRe.FindStringSubmatch(out); m != nil {
+		return m[1]
 	}
 	return out
 }

@@ -280,3 +280,60 @@ func TestSSHRunnerCreateSessionWithOptions_QueuedStartIsNotAttachable(t *testing
 		t.Fatalf("CreateSessionWithOptions error = %v, want queued error", err)
 	}
 }
+
+func TestParseRemoteVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			// The bug: a binary one release behind advertises an available
+			// update, and LastIndex("v") used to return "1.9.55)" instead of the
+			// real current version "1.9.49".
+			name: "update available suffix returns current version",
+			raw:  "Agent Deck v1.9.49 (update available: v1.9.55)",
+			want: "1.9.49",
+		},
+		{
+			name: "plain version",
+			raw:  "Agent Deck v1.9.55",
+			want: "1.9.55",
+		},
+		{
+			name: "trailing newline",
+			raw:  "Agent Deck v1.9.55\n",
+			want: "1.9.55",
+		},
+		{
+			name: "bare v-prefixed version",
+			raw:  "v1.9.55",
+			want: "1.9.55",
+		},
+		{
+			name: "bare version",
+			raw:  "1.9.55",
+			want: "1.9.55",
+		},
+		{
+			name: "pre-release tail",
+			raw:  "Agent Deck v1.9.55-rc.1",
+			want: "1.9.55-rc.1",
+		},
+		{
+			// No semver token: fall back to the trimmed raw input so callers
+			// still behave.
+			name: "garbage falls back to trimmed raw",
+			raw:  "  no version here  ",
+			want: "no version here",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseRemoteVersion(tt.raw); got != tt.want {
+				t.Errorf("parseRemoteVersion(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
