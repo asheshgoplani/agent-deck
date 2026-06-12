@@ -6404,6 +6404,17 @@ func (i *Instance) CreateForkedInstanceWithOptions(
 	}
 	forked.Tool = "claude"
 
+	// #1407: persist the parent's ExtraArgs onto the fork record. The baked
+	// one-shot fork command below inherits them implicitly via the builder
+	// (which reads the PARENT's ExtraArgs), but without persisting them on
+	// the fork they silently drop on the fork's first restart
+	// (buildClaudeResumeCommand reads the fork's own ExtraArgs) and a
+	// fork-of-a-fork never sees them at all. Mirrors how ClaudeOptions are
+	// persisted via SetClaudeOptions further down. Copied, not aliased.
+	if len(i.ExtraArgs) > 0 {
+		forked.ExtraArgs = append([]string(nil), i.ExtraArgs...)
+	}
+
 	cmd, err := i.buildClaudeForkCommandForTarget(forked, opts)
 	if err != nil {
 		return nil, "", err
