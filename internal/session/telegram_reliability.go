@@ -195,3 +195,87 @@ func EmitTelegramChannelDriftWarning(title, instanceID, configDir string, channe
 		slog.String("hint", "agent-deck telegram-doctor reports per-conductor health; the scratch CLAUDE_CONFIG_DIR is rewritten on every restart and should heal this drift on the next session restart."),
 	)
 }
+
+// conductorTelegramEnvFile resolves the [conductors.<name>].claude.env_file
+// path for a conductor name. Package var so tests can override (mirrors
+// hostHasTelegramConductor in worker_scratch.go).
+var conductorTelegramEnvFile = func(name string) string {
+	cfg, err := LoadUserConfig()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	return cfg.GetConductorClaudeEnvFile(name)
+}
+
+// envFileDeclaresTelegram reports whether the env_file at path exports
+// TELEGRAM_STATE_DIR. Same detection idiom as configDeclaresTelegram —
+// a missing or unreadable env_file is not a telegram declaration.
+func envFileDeclaresTelegram(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	data, err := os.ReadFile(ExpandPath(path))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "TELEGRAM_STATE_DIR")
+}
+
+// reconcileConductorTelegramChannel restores the telegram channel id onto
+// a conductor whose persisted Channels list lost it.
+//
+// Why. Every telegram defense keys off Instance.Channels containing
+// "plugin:telegram@…": the channel-owner scratch gate, the `--channels`
+// flag, the force-correct scratch pass, and the drift warning
+// (VerifyTelegramChannelEnabled is vacuously OK when Channels is empty).
+// That makes the persisted Channels list a single upstream point of
+// failure: lose the field — index wipe + manual record rebuild, migration,
+// hand edit — and the conductor silently respawns as a plain
+// `claude --resume` with no channel wiring while every defense disarms
+// without a warning. Observed live 2026-06-11: 4 of 7 conductor records
+// lost the field after the 2026-06-04 index wipe; the deaf bots were then
+// "revived" by re-flipping the #941 global antipattern, which recreated
+// the duplicate-poller 409 class.
+//
+// Contract. The conductor's config is the durable source of truth for
+// channel ownership; the persisted Channels list is a cache. A session
+// qualifies for restore when ALL hold:
+//   - claude tool, conductor-titled (conductorNameFromInstance != "")
+//   - [conductors.<name>].claude.env_file exports TELEGRAM_STATE_DIR
+//   - Channels has no plugin:telegram@… entry already
+//   - PluginChannelLinkDisabled is false (explicit opt-out wins)
+//
+// To intentionally run a conductor without telegram, remove
+// TELEGRAM_STATE_DIR from its env_file (or set PluginChannelLinkDisabled).
+//
+// In-memory only: callers on the spawn path get the healed Channels for
+// this spawn; the heal re-runs on every subsequent spawn, so a stale DB
+// record can never silently disarm the channel wiring again.
+//
+// Returns true when a channel was restored.
+func reconcileConductorTelegramChannel(i *Instance) bool {
+	if i == nil || i.Tool != "claude" || i.PluginChannelLinkDisabled {
+		return false
+	}
+	if sessionHasTelegramChannel(i) {
+		return false // cache is intact; nothing to heal
+	}
+	name := conductorNameFromInstance(i)
+	if name == "" {
+		return false // not a conductor
+	}
+	if !envFileDeclaresTelegram(conductorTelegramEnvFile(name)) {
+		return false // config does not declare telegram for this conductor
+	}
+
+	i.Channels = append(i.Channels, "plugin:"+telegramPluginID)
+	sessionLog.Warn("telegram_channel_restored_from_config",
+		slog.String("instance_id", i.ID),
+		slog.String("title", i.Title),
+		slog.String("conductor", name),
+		slog.String("channel", "plugin:"+telegramPluginID),
+		slog.String("reason", "persisted Channels lost the telegram entry but [conductors."+name+"].claude.env_file declares TELEGRAM_STATE_DIR; restoring so --channels, the scratch gate, and drift detection re-arm"),
+		slog.String("hint", "persist the repair with: agent-deck session set "+i.Title+" channels plugin:"+telegramPluginID),
+	)
+	return true
+}

@@ -78,6 +78,32 @@ What agent-deck does, at the noun level (independent of which surface — CLI / 
 
 Status legend: ✅ verified, 🟡 partial, 🔴 known broken, ⚪ unknown. To update for your own machine, see [Self-Improvement](#self-improvement) below.
 
+## Per-CLI Capabilities (what a launched session can do)
+
+The table above is what *agent-deck* does. This one is what the *CLI inside a session* can do — agent-deck launches one per session (`-c claude|codex|gemini`). A conductor uses this to pick the right tool for a child; a launched child uses it to know its own powers without being told. This is a capability **map**, not a manual — run `<cli> --help` for exact flags. Verified 2026-06 against claude 2.1.x, codex-cli 0.137, gemini 0.45.
+
+| In-session capability | claude (Claude Code) | codex | gemini |
+|---|---|---|---|
+| **Multi-agent fan-out *inside one session*** | ✅ **Agent tool** (parallel subagents, each its own context window; `run_in_background`) **and Workflow tool** (deterministic JS: `agent()`/`pipeline()`/`parallel()` over item lists, structured-output schemas, phases) | ❌ single-agent — fan out by launching codex *peers* via agent-deck | ❌ not exposed — fan out via agent-deck peers |
+| **Skills** | ✅ Skill tool + agent-deck pool skills (`~/.agent-deck/skills/pool/`) | ❌ | ✅ `gemini skills` |
+| **MCP servers** | ✅ `claude mcp` / `--mcp-config`; agent-deck `mcp attach` | ✅ `codex mcp`; also runs **as** a server (`codex mcp-server`) | ✅ `gemini mcp`, `--allowed-mcp-server-names` |
+| **Built-in code review** | ✅ `ultrareview` (cloud multi-agent) + `/code-review` skill | ✅ `codex review` / `codex exec review --uncommitted` | via prompt only |
+| **Plan / read-only mode** | `--permission-mode plan` | `-s read-only` | `--approval-mode plan` |
+| **Autonomy / sandbox** | `--permission-mode acceptEdits\|bypassPermissions`; config `dangerous_mode` | `-s read-only\|workspace-write\|danger-full-access`; `--dangerously-bypass-approvals-and-sandbox` | `--approval-mode auto_edit\|yolo`, `-s/--sandbox` |
+| **Structured output** | `--json-schema`, `--output-format json` | `codex exec` json event stream | `-o json\|stream-json` |
+| **Image input (multimodal)** | paste / `Read` an image | `-i/--image` (attach to prompt; not image *generation*) | multimodal prompt |
+| **Apply a diff to working tree** | Edit/Write tools | `codex apply` (git-apply the last agent diff) | Edit tools |
+| **Git worktree** | `-w/--worktree` | via agent-deck `--worktree` | `-w/--worktree` |
+| **Plugins / extensions / hooks / channels** | `plugin`, `--plugin-dir/-url`, hooks, `--channels` | `codex plugin` | `extensions`, `hooks` |
+| **Resume / fork conversation** | `-r/--resume`, `--fork-session` | `codex resume` / `codex fork` | `--resume`, `--session-file` |
+| **Local / OSS models** | 3P providers (Bedrock/Vertex) | `--oss`, `--local-provider lmstudio\|ollama` | `gemini gemma` routing |
+
+**Choosing the `-c` tool for a child:** default to **claude** — only it has in-session multi-agent fan-out (Agent + Workflow tools) *and* pool skills, so it can own a whole task end-to-end and orchestrate its own sub-work. Reach for **codex** for a fast non-interactive second opinion or code review (`codex review`) and sandboxed exec; **gemini** for a third opinion or large-context reads. For codex/gemini, parallelism comes from launching multiple agent-deck *peers*, not from inside the session.
+
+**agent-deck powers every child also has** (independent of CLI): `agent-deck mcp attach/detach` then `session restart`; `launch` further child or peer sessions (`-no-parent` for peers); load pool skills on demand; `session send` to talk to sibling sessions. See [Sub-Agent Launch](#sub-agent-launch), [Peer (Root) Sessions vs Sub-Agents](#peer-root-sessions-vs-sub-agents), [MCP Management](#mcp-management).
+
+**When to go inline vs Agent tool vs Workflow** (for claude children) is owned by the shared conductor template's *Delegation* section (`~/.agent-deck/conductor/conductor-claude.md`) and is not duplicated here: 1 task = inline; a few independent subtasks = Agent tool; a sweep / audit / matrix = Workflow — and always adversarially verify findings with a second agent told to refute.
+
 ## Essential Commands
 
 | Command | Purpose |
@@ -89,6 +115,7 @@ Status legend: ✅ verified, 🟡 partial, 🔴 known broken, ⚪ unknown. To up
 | `agent-deck session output <name>` | Get last response |
 | `agent-deck session current [-q\|--json]` | Auto-detect current session |
 | `agent-deck session fork <name>` | Fork Claude/Pi conversation |
+| `agent-deck session switch-account <name> <account>` | Switch Claude account, conversation follows |
 | `agent-deck mcp list` | List available MCPs |
 | `agent-deck mcp attach <name> <mcp>` | Attach MCP (then restart) |
 | `agent-deck status` | Quick status summary |
@@ -718,6 +745,44 @@ $SKILL_DIR/../session-share/scripts/import.sh ~/Downloads/session-file.json
 ```
 
 **See:** [session-share skill](../session-share/SKILL.md) for full documentation.
+
+## Switch a Session to Another Claude Account
+
+Move a session — conversation included — to a different Claude account (work/personal/client) and continue exactly where it left off.
+
+**Use when:** User says "switch account", "move this conversation to my other account", "continue this session on account X", "this session should use the <name> account".
+
+**One-time setup** — name each account in `~/.agent-deck/config.toml` (the target profile must already be logged in: `CLAUDE_CONFIG_DIR=<dir> claude` → `/login`):
+
+```toml
+[profiles.personal.claude]
+  config_dir = "~/.claude"
+[profiles.work.claude]
+  config_dir = "~/.claude-work"
+```
+
+**Commands:**
+
+```bash
+# Full flow: stop → copy conversation into the target account → set account → restart with --resume
+agent-deck session switch-account <session> <account>
+
+# Skip the restart (e.g. switch several sessions, restart later)
+agent-deck session switch-account <session> <account> --no-restart
+
+# Equivalent low-level form — also migrates the conversation; restart required
+agent-deck session set <session> account <account>
+```
+
+**How it works / guarantees:**
+
+- The conversation `.jsonl` is **copied** into `<target-config-dir>/projects/<encoded-path>/` — the old account keeps its copy; a conflicting file in the target is backed up as `.bak-<timestamp>` first. The session id does not change.
+- `claude --resume` is a pure file lookup, so the restarted session continues with full history under the new account's auth.
+- Tools/MCPs/plugins and usage limits follow the **new** account; enable any needed plugins in the target profile (e.g. `CLAUDE_CONFIG_DIR=<dir> claude plugin enable telegram@claude-plugins-official` for channel owners).
+- A fresh session with no conversation yet switches cleanly (nothing to migrate).
+- Unknown account names error and list the configured ones.
+
+**Make a whole group/conductor use the account going forward:** set `[groups.<name>.claude].config_dir` / `[conductors.<name>.claude].config_dir` to the same dir in config.toml — new sessions there spawn on that account; `switch-account` is what carries existing conversations over.
 
 ## Critical Rules
 

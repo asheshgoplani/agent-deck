@@ -439,9 +439,60 @@ except ImportError:
 # Configuration
 # ---------------------------------------------------------------------------
 
-AGENT_DECK_DIR = Path.home() / ".agent-deck"
-CONFIG_PATH = AGENT_DECK_DIR / "config.toml"
-CONDUCTOR_DIR = AGENT_DECK_DIR / "conductor"
+# --- issue #1350: XDG path resolution (mirror of internal/agentpaths) ---
+# The Go side (internal/agentpaths) resolves agent-deck paths XDG-first with a
+# legacy ~/.agent-deck fallback. bridge.py must mirror that exactly, or on a
+# fresh XDG install the Go side writes conductors/config under XDG while the
+# bridge reads ~/.agent-deck -> routing dies (issue #1350). Keep this region
+# byte-identical with the embedded copy in conductor_templates.go.
+APP_DIR_NAME = "agent-deck"
+
+
+def _xdg_dir(env_name: str, *fallback_parts: str) -> Path:
+    """Mirror agentpaths.xdgDir: $XDG_*/agent-deck if absolute, else ~/<fallback>/agent-deck."""
+    value = os.environ.get(env_name, "").strip()
+    if value and os.path.isabs(value):
+        return Path(value) / APP_DIR_NAME
+    return Path.home().joinpath(*fallback_parts, APP_DIR_NAME)
+
+
+def _legacy_dir() -> Path:
+    """Mirror agentpaths.LegacyDir: ~/.agent-deck."""
+    return Path.home() / ".agent-deck"
+
+
+def resolve_config_path(name: str) -> Path:
+    """Mirror agentpaths.EffectiveConfigPath: XDG config file if it exists, else
+    legacy file if it exists, else default XDG path."""
+    base = os.path.basename(name)
+    xdg_path = _xdg_dir("XDG_CONFIG_HOME", ".config") / base
+    if xdg_path.exists():
+        return xdg_path
+    legacy_path = _legacy_dir() / base
+    if legacy_path.exists():
+        return legacy_path
+    return xdg_path
+
+
+def resolve_data_dir(*markers: str) -> Path:
+    """Mirror agentpaths.EffectiveDataDir: return the XDG data dir if any marker
+    exists there, else legacy if any marker exists there, else default XDG.
+    The returned path is the agent-deck data root; callers join the marker."""
+    data_dir = _xdg_dir("XDG_DATA_HOME", ".local", "share")
+    clean = [m for m in markers if m]
+    if not clean:
+        return data_dir
+    if any((data_dir / m).exists() for m in clean):
+        return data_dir
+    legacy = _legacy_dir()
+    if any((legacy / m).exists() for m in clean):
+        return legacy
+    return data_dir
+
+
+CONDUCTOR_DIR = resolve_data_dir("conductor") / "conductor"
+CONFIG_PATH = resolve_config_path("config.toml")
+# --- end issue #1350 resolver ---
 LOG_PATH = CONDUCTOR_DIR / "bridge.log"
 
 # Telegram message length limit
@@ -533,7 +584,10 @@ def load_config() -> dict:
     # Telegram config
     tg = conductor_cfg.get("telegram", {})
     tg_token = _resolve_secret(tg.get("token", ""))
-    tg_user_id = tg.get("user_id", 0)
+    # Resolve user_id like the token so it may be an env-var reference
+    # (e.g. "$TELEGRAM_USER_ID" / "${TELEGRAM_USER_ID}"); a literal integer
+    # in config.toml still works. Empty/unset resolves to "" -> int 0 below.
+    tg_user_id = _resolve_secret(str(tg.get("user_id", "") or ""))
     tg_configured = bool(tg_token and tg_user_id)
 
     # Slack config
@@ -550,7 +604,9 @@ def load_config() -> dict:
     dc_bot_token = _resolve_secret(dc.get("bot_token", ""))
     dc_guild_id = dc.get("guild_id", 0)
     dc_channel_id = dc.get("channel_id", 0)
-    dc_user_id = dc.get("user_id", 0)
+    # Resolve user_id like the bot token so it may be an env-var reference
+    # (e.g. "$DISCORD_USER_ID"); a literal integer in config.toml still works.
+    dc_user_id = _resolve_secret(str(dc.get("user_id", "") or ""))
     dc_listen_mode = dc.get("listen_mode", "all")  # "mentions" or "all"
     dc_ignore_replies_to_others = dc.get("ignore_replies_to_others", False)
     dc_configured = bool(dc_bot_token and dc_guild_id and dc_channel_id and dc_user_id)
@@ -796,6 +852,19 @@ def get_sessions_list_all(profiles: list[str]) -> list[tuple[str, dict]]:
     return all_sessions
 
 
+def _find_session_by_title(sessions: list, title: str, profile: str) -> dict | None:
+    """Find an exact title match from a profile-scoped session list."""
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        if session.get("title") != title:
+            continue
+        session_profile = session.get("profile")
+        if session_profile in (None, "", profile):
+            return session
+    return None
+
+
 def ensure_conductor_running(name: str, profile: str) -> bool:
     """Ensure the conductor session exists and is running."""
     profile = profile or "default"
@@ -811,29 +880,52 @@ def ensure_conductor_running(name: str, profile: str) -> bool:
             "session", "start", session_title, profile=profile, timeout=60
         )
         if result.returncode != 0:
-            # Session might not exist, try creating it
-            log.info("Creating conductor session for %s...", name)
-            session_path = str(CONDUCTOR_DIR / name)
-            result = run_cli(
-                "add", session_path,
-                "-t", session_title,
-                "-c", "claude",
-                "-g", "conductor",
-                profile=profile,
-                timeout=60,
+            log.warning(
+                "Failed to start conductor %s before dedupe: %s",
+                name,
+                result.stderr.strip(),
             )
-            if result.returncode != 0:
-                log.error(
-                    "Failed to create conductor %s: %s",
-                    name,
-                    result.stderr.strip(),
+            sessions = get_sessions_list(profile=profile)
+            existing = _find_session_by_title(sessions, session_title, profile)
+            if existing is not None:
+                log.info(
+                    "Reusing existing conductor session %s in profile %s",
+                    session_title,
+                    profile,
                 )
-                return False
-            # Start the newly created session
-            run_cli(
-                "session", "start", session_title,
-                profile=profile, timeout=60,
-            )
+                retry = run_cli(
+                    "session", "start", session_title, profile=profile, timeout=60
+                )
+                if retry.returncode != 0:
+                    log.warning(
+                        "Failed to start existing conductor %s: %s",
+                        name,
+                        retry.stderr.strip(),
+                    )
+            else:
+                # Session is absent from this profile, so create it.
+                log.info("Creating conductor session for %s...", name)
+                session_path = str(CONDUCTOR_DIR / name)
+                result = run_cli(
+                    "add", session_path,
+                    "-t", session_title,
+                    "-c", "claude",
+                    "-g", "conductor",
+                    profile=profile,
+                    timeout=60,
+                )
+                if result.returncode != 0:
+                    log.error(
+                        "Failed to create conductor %s: %s",
+                        name,
+                        result.stderr.strip(),
+                    )
+                    return False
+                # Start the newly created session
+                run_cli(
+                    "session", "start", session_title,
+                    profile=profile, timeout=60,
+                )
 
         # Wait a moment for the session to initialize
         time.sleep(5)

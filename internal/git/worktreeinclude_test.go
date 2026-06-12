@@ -290,6 +290,52 @@ func TestProcessWorktreeInclude_MissingSourceSkipped(t *testing.T) {
 	}
 }
 
+// Regression: the include walk must not descend into nested worktrees living
+// under the repo (e.g. agent-deck's own .worktrees/ output). Otherwise it finds
+// every other worktree's gitignored .env, recreates the full nested path, and
+// the .worktrees forest grows one level deeper on every spawn — eventually
+// gigabytes of duplicated skeletons that make each new spawn crawl.
+func TestProcessWorktreeInclude_DoesNotDescendIntoNestedWorktrees(t *testing.T) {
+	repoDir := t.TempDir()
+	initGitRepo(t, repoDir)
+
+	writeFile(t, filepath.Join(repoDir, ".gitignore"), ".env\n.worktrees/\n")
+	gitAdd(t, repoDir, ".gitignore")
+
+	writeFile(t, filepath.Join(repoDir, ".env"), "ROOT")
+	writeFile(t, filepath.Join(repoDir, ".worktreeinclude"), ".env\n")
+	gitAdd(t, repoDir, ".worktreeinclude")
+	gitCommit(t, repoDir, "setup")
+
+	// A real linked worktree under .worktrees/ — it has its own .git pointer
+	// file, marking a worktree boundary the walk must stop at.
+	nested := filepath.Join(repoDir, ".worktrees", "other")
+	cmd := exec.Command("git", "worktree", "add", "-b", "other", nested)
+	cmd.Dir = repoDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	writeFile(t, filepath.Join(nested, ".env"), "NESTED")
+
+	worktreeDir := t.TempDir()
+
+	var stderr bytes.Buffer
+	if err := ProcessWorktreeInclude(repoDir, worktreeDir, &stderr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The repo's own .env is copied.
+	got, err := os.ReadFile(filepath.Join(worktreeDir, ".env"))
+	if err != nil || string(got) != "ROOT" {
+		t.Fatalf("expected root .env to be copied, got %q (err=%v)", got, err)
+	}
+
+	// The nested worktree's .env must NOT be reconstructed under the new worktree.
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".worktrees")); !os.IsNotExist(err) {
+		t.Errorf(".worktrees forest was copied into the new worktree (err=%v)", err)
+	}
+}
+
 func TestProcessWorktreeInclude_NoFileIsNoop(t *testing.T) {
 	repoDir := t.TempDir()
 	initGitRepo(t, repoDir)

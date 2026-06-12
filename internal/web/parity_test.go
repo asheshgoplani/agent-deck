@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,6 +165,46 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 			},
 		},
 		{
+			name: "archive_session",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				const id = "sess-005"
+
+				req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/archive", nil)
+				w := httptest.NewRecorder()
+				webFx.server.handleSessionByAction(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("web archive: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if err := directFx.store.ArchiveSession(id); err != nil {
+					t.Fatalf("direct ArchiveSession: %v", err)
+				}
+				return id
+			},
+		},
+		{
+			name: "unarchive_session",
+			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
+				_, _ = webFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				_, _ = directFx.store.CreateSession("seed", "claude", "/srv/seed", "work", "")
+				const id = "sess-005"
+				_ = webFx.store.ArchiveSession(id)
+				_ = directFx.store.ArchiveSession(id)
+
+				req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/unarchive", nil)
+				w := httptest.NewRecorder()
+				webFx.server.handleSessionByAction(w, req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("web unarchive: status=%d body=%s", w.Code, w.Body.String())
+				}
+				if err := directFx.store.UnarchiveSession(id); err != nil {
+					t.Fatalf("direct UnarchiveSession: %v", err)
+				}
+				return id
+			},
+		},
+		{
 			name: "delete_group",
 			fire: func(t *testing.T, webFx, directFx *parityFixture) string {
 				// Seed an extra group so deleting one doesn't leave the
@@ -235,8 +276,34 @@ func TestParity_WebActionMatchesDirectMutator(t *testing.T) {
 				return
 			}
 
+			if tc.name == "archive_session" {
+				if webSess != nil || directSess != nil {
+					t.Fatalf("archive: expected absent from active menu, got web=%+v direct=%+v", webSess, directSess)
+				}
+				webArch, err := webFx.store.LoadArchivedMenuSnapshot()
+				if err != nil {
+					t.Fatalf("web archived snapshot: %v", err)
+				}
+				directArch, err := directFx.store.LoadArchivedMenuSnapshot()
+				if err != nil {
+					t.Fatalf("direct archived snapshot: %v", err)
+				}
+				if findSessionByID(webArch, id) == nil || findSessionByID(directArch, id) == nil {
+					t.Fatalf("archive: session %q missing from archived list", id)
+				}
+				if webArch.TotalSessions != directArch.TotalSessions {
+					t.Fatalf("archived count drift: web=%d direct=%d", webArch.TotalSessions, directArch.TotalSessions)
+				}
+				return
+			}
+
 			if webSess == nil || directSess == nil {
 				t.Fatalf("post-action session missing: web=%v direct=%v (id=%q)", webSess != nil, directSess != nil, id)
+			}
+			if tc.name == "unarchive_session" {
+				if !webSess.ArchivedAt.IsZero() || !directSess.ArchivedAt.IsZero() {
+					t.Fatalf("unarchive: expected cleared ArchivedAt, web=%v direct=%v", webSess.ArchivedAt, directSess.ArchivedAt)
+				}
 			}
 			if webSess.Status != directSess.Status {
 				t.Fatalf("status drift: web=%q direct=%q (id=%q)", webSess.Status, directSess.Status, id)
@@ -376,11 +443,13 @@ func (s *parityStore) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		items = append(items, MenuItem{Index: idx, Type: MenuItemTypeGroup, Path: g.Path, Group: g})
 		idx++
 	}
+	active := 0
 	for _, id := range s.order {
 		sess, ok := s.sessions[id]
-		if !ok {
+		if !ok || !sess.ArchivedAt.IsZero() {
 			continue
 		}
+		active++
 		items = append(items, MenuItem{Index: idx, Type: MenuItemTypeSession, Session: sess})
 		idx++
 	}
@@ -388,7 +457,31 @@ func (s *parityStore) LoadMenuSnapshot() (*MenuSnapshot, error) {
 		Profile:       "parity-test",
 		GeneratedAt:   s.now(),
 		TotalGroups:   len(s.groups),
-		TotalSessions: len(s.sessions),
+		TotalSessions: active,
+		Items:         items,
+	}, nil
+}
+
+func (s *parityStore) LoadArchivedMenuSnapshot() (*MenuSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := make([]MenuItem, 0)
+	idx := 0
+	archived := 0
+	for _, id := range s.order {
+		sess, ok := s.sessions[id]
+		if !ok || sess.ArchivedAt.IsZero() {
+			continue
+		}
+		archived++
+		items = append(items, MenuItem{Index: idx, Type: MenuItemTypeSession, Session: sess})
+		idx++
+	}
+	return &MenuSnapshot{
+		Profile:       "parity-test",
+		GeneratedAt:   s.now(),
+		TotalGroups:   0,
+		TotalSessions: archived,
 		Items:         items,
 	}, nil
 }
@@ -412,6 +505,32 @@ func (s *parityStore) StartSession(id string) error   { return s.transition(id, 
 func (s *parityStore) StopSession(id string) error    { return s.transition(id, session.StatusStopped) }
 func (s *parityStore) RestartSession(id string) error { return s.transition(id, session.StatusRunning) }
 func (s *parityStore) CloseSession(id string) error   { return s.transition(id, session.StatusStopped) }
+
+func (s *parityStore) ArchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	sess.Status = session.StatusStopped
+	sess.ArchivedAt = s.now()
+	return nil
+}
+
+func (s *parityStore) UnarchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return errNotFound(id)
+	}
+	if sess.ArchivedAt.IsZero() {
+		return fmt.Errorf("session is not archived: %s", id)
+	}
+	sess.ArchivedAt = time.Time{}
+	return nil
+}
 
 // UndoDelete is unused by the parity tests; returning ErrUndoNothing
 // keeps the SessionMutator interface satisfied.

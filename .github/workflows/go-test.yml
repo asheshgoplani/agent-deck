@@ -1,0 +1,81 @@
+# Full Go test suite as a PR gate (#1363, proposed by @spawnia).
+#
+# Why this exists: the per-package PR smoke gates (perf-smoke,
+# session-persistence, eval-smoke, golangci-lint) each run a SUBSET of the
+# suite, so a regression that only manifests when the WHOLE suite runs
+# together — shared global state, cross-package ordering, data races surfaced
+# only under `-race ./...` — slips past PR review and is caught for the first
+# time at the release gate. That happened four times: it broke the
+# v1.9.49 / v1.9.50 / v1.9.51 / v1.9.53 releases.
+#
+# This workflow closes that gap by running the EXACT proven release-gate test
+# step (release.yml "Run tests") on every PR, so full-suite-only regressions
+# fail at PR time instead of blocking a release.
+#
+# Steel-thread parity: the toolchain setup, the zoxide dependency, the
+# PERF_BUDGET_MULTIPLIER env, and the gotestsum invocation are copied verbatim
+# from .github/workflows/release.yml. Keep them in lockstep — if the release
+# gate's test step changes, mirror it here.
+
+name: Go tests
+
+on:
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/go-test.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/go-test.yml'
+
+# One in-flight run per PR (or per branch on push). Rapid follow-up pushes
+# cancel the stale run instead of stacking 20-minute jobs.
+concurrency:
+  group: go-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  full-test-suite:
+    name: Full test suite (PR gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go.mod
+
+      # tmux + zoxide back the session and quick-open picker tests that the
+      # full `./...` run exercises. tmux is preinstalled on ubuntu-latest (the
+      # release gate relies on that); install both explicitly here so this gate
+      # is never weaker than the release gate it mirrors.
+      - name: Install tmux and zoxide
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y tmux zoxide
+          tmux -V
+          zoxide --version
+
+      # Mirrors release.yml "Run tests" exactly — same gotestsum flags, same
+      # -race, same 20m per-package timeout, same PERF_BUDGET_MULTIPLIER.
+      - name: Run tests
+        timeout-minutes: 30
+        env:
+          PERF_BUDGET_MULTIPLIER: '2.0'
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          gotestsum --rerun-fails=2 --rerun-fails-abort-on-data-race --packages="./..." -- -race -timeout 20m

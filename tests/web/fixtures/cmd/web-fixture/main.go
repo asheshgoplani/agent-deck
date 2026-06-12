@@ -262,11 +262,13 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 		})
 		idx++
 	}
+	active := 0
 	for _, id := range s.order {
 		sess, ok := s.sessions[id]
-		if !ok {
+		if !ok || !sess.ArchivedAt.IsZero() {
 			continue
 		}
+		active++
 		items = append(items, web.MenuItem{
 			Index: idx, Type: web.MenuItemTypeSession, Session: sess, Level: 1,
 		})
@@ -277,7 +279,34 @@ func (s *fixtureStore) LoadMenuSnapshot() (*web.MenuSnapshot, error) {
 		Profile:       s.profile,
 		GeneratedAt:   s.now(),
 		TotalGroups:   len(s.groups),
-		TotalSessions: len(s.sessions),
+		TotalSessions: active,
+		Items:         items,
+	}, nil
+}
+
+// LoadArchivedMenuSnapshot implements the optional archived-only menu loader.
+func (s *fixtureStore) LoadArchivedMenuSnapshot() (*web.MenuSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	items := make([]web.MenuItem, 0)
+	idx := 0
+	archived := 0
+	for _, id := range s.order {
+		sess, ok := s.sessions[id]
+		if !ok || sess.ArchivedAt.IsZero() {
+			continue
+		}
+		archived++
+		items = append(items, web.MenuItem{
+			Index: idx, Type: web.MenuItemTypeSession, Session: sess, Level: 0,
+		})
+		idx++
+	}
+	return &web.MenuSnapshot{
+		Profile:       s.profile,
+		GeneratedAt:   s.now(),
+		TotalSessions: archived,
 		Items:         items,
 	}, nil
 }
@@ -338,6 +367,32 @@ func (s *fixtureStore) DeleteSession(id string) error {
 // keep its metadata in storage (web parity row "Close session").
 func (s *fixtureStore) CloseSession(id string) error {
 	return s.transition(id, session.StatusStopped)
+}
+
+func (s *fixtureStore) ArchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	sess.Status = session.StatusStopped
+	sess.ArchivedAt = s.now()
+	return nil
+}
+
+func (s *fixtureStore) UnarchiveSession(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session %q not found", id)
+	}
+	if sess.ArchivedAt.IsZero() {
+		return fmt.Errorf("session is not archived: %s", id)
+	}
+	sess.ArchivedAt = time.Time{}
+	return nil
 }
 
 // UndoDelete restores the most-recently deleted session if its delete

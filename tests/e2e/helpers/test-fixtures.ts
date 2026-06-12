@@ -158,6 +158,46 @@ function rebuildMenu(state: TestState): any {
   return { items: state.menuItems }
 }
 
+function syncActiveMenuItems(state: TestState): void {
+  const byGroup = new Map<string, any[]>()
+  const ungrouped: any[] = []
+  for (const session of Object.values(state.sessions)) {
+    if (session.archivedAt) continue
+    if (session.groupPath) {
+      const list = byGroup.get(session.groupPath) || []
+      list.push(session)
+      byGroup.set(session.groupPath, list)
+    } else {
+      ungrouped.push(session)
+    }
+  }
+
+  const groupPaths = Object.keys(state.groups).sort(
+    (a, b) => (state.groups[a].order || 0) - (state.groups[b].order || 0),
+  )
+  const items: any[] = []
+  let index = 0
+  for (const path of groupPaths) {
+    const sessions = (byGroup.get(path) || []).sort(
+      (a, b) => (a.order || 0) - (b.order || 0),
+    )
+    if (sessions.length === 0) continue
+    items.push({
+      type: 'group',
+      level: 0,
+      index: index++,
+      group: { ...state.groups[path], sessionCount: sessions.length },
+    })
+    for (const session of sessions) {
+      items.push({ type: 'session', level: 1, index: index++, session })
+    }
+  }
+  for (const session of ungrouped.sort((a, b) => (a.order || 0) - (b.order || 0))) {
+    items.push({ type: 'session', level: 0, index: index++, session })
+  }
+  state.menuItems = items
+}
+
 export async function mockSessionCRUD(page: Page, state: TestState): Promise<void> {
   // Intercept POST /api/sessions (collection endpoint for create)
   // and POST/DELETE /api/sessions/{id}[/{action}] (per-session actions).
@@ -259,6 +299,36 @@ export async function mockSessionCRUD(page: Page, state: TestState): Promise<voi
           state.menuItems.push({ type: 'session', level: 1, index: state.menuItems.length, session: forked })
           await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
           return route.fulfill({ json: { sessionId: forkId } })
+        }
+        case 'archive': {
+          session.status = 'stopped'
+          session.archivedAt = new Date().toISOString()
+          syncActiveMenuItems(state)
+          await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
+          await page.route('**/api/sessions/archived', r =>
+            r.fulfill({
+              json: {
+                profile: 'test',
+                sessions: Object.values(state.sessions).filter((s: any) => s.archivedAt),
+              },
+            })
+          )
+          return route.fulfill({ json: { sessionId } })
+        }
+        case 'unarchive': {
+          delete session.archivedAt
+          session.status = session.status || 'stopped'
+          syncActiveMenuItems(state)
+          await page.route('**/api/menu*', r => r.fulfill({ json: rebuildMenu(state) }))
+          await page.route('**/api/sessions/archived', r =>
+            r.fulfill({
+              json: {
+                profile: 'test',
+                sessions: Object.values(state.sessions).filter((s: any) => s.archivedAt),
+              },
+            })
+          )
+          return route.fulfill({ json: { sessionId } })
         }
         default:
           return route.fulfill({ status: 404, json: { error: { message: 'unknown action' } } })

@@ -23,6 +23,9 @@ const (
 	ConfirmCloseRemoteSession
 	ConfirmRemoveSession     // status-gated registry-only remove (TUI 'X')
 	ConfirmBulkRemoveErrored // bulk remove of all errored sessions (TUI Ctrl+X)
+	ConfirmArchiveSession
+	ConfirmUnarchiveSession
+	ConfirmNotice // acknowledge-only message (single OK button), e.g. protected-action blocks
 )
 
 // ConfirmDialog handles confirmation for destructive actions
@@ -38,6 +41,10 @@ type ConfirmDialog struct {
 	worktree    bool // Whether the session has an associated git worktree.
 
 	remoteName string // Remote name for remote session confirmations.
+
+	// Notice (ConfirmNotice) carries an acknowledge-only title/body.
+	noticeTitle string
+	noticeBody  string
 
 	// focusedButton tracks which button has arrow-key focus.
 	// 0 = confirm (left), 1 = cancel (right).
@@ -74,6 +81,26 @@ func (c *ConfirmDialog) ShowDeleteSession(sessionID string, sessionName string, 
 	c.worktree = worktree
 	c.buttonCount = 2
 	c.focusedButton = 1 // default to Cancel
+}
+
+// ShowArchiveSession shows confirmation for archiving a session.
+func (c *ConfirmDialog) ShowArchiveSession(sessionID string, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmArchiveSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.buttonCount = 2
+	c.focusedButton = 1
+}
+
+// ShowUnarchiveSession shows confirmation for restoring an archived session.
+func (c *ConfirmDialog) ShowUnarchiveSession(sessionID string, sessionName string) {
+	c.visible = true
+	c.confirmType = ConfirmUnarchiveSession
+	c.targetID = sessionID
+	c.targetName = sessionName
+	c.buttonCount = 2
+	c.focusedButton = 1
 }
 
 // ShowCloseSession shows confirmation for non-destructive session close.
@@ -144,6 +171,22 @@ func (c *ConfirmDialog) ShowDeleteGroup(groupPath, groupName string) {
 	c.focusedButton = 1
 }
 
+// ShowNotice shows an acknowledge-only message in the same centered modal used
+// for confirmations. Unlike a transient bottom-of-screen error banner (which the
+// final viewport clamp can truncate when the panel fills the height), this dialog
+// replaces the whole view while visible, so the message is always seen. Dismissed
+// with Enter/Esc/o.
+func (c *ConfirmDialog) ShowNotice(title, body string) {
+	c.visible = true
+	c.confirmType = ConfirmNotice
+	c.noticeTitle = title
+	c.noticeBody = body
+	c.targetID = ""
+	c.targetName = ""
+	c.buttonCount = 1
+	c.focusedButton = 0
+}
+
 // ShowQuitWithPool shows confirmation for quitting with MCP pool running
 func (c *ConfirmDialog) ShowQuitWithPool(mcpCount int) {
 	c.visible = true
@@ -208,6 +251,8 @@ func (c *ConfirmDialog) Hide() {
 	c.targetName = ""
 	c.sandboxed = false
 	c.remoteName = ""
+	c.noticeTitle = ""
+	c.noticeBody = ""
 }
 
 // IsVisible returns whether the dialog is visible
@@ -310,6 +355,28 @@ func (c *ConfirmDialog) View() string {
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y delete · n cancel · ←/→ navigate · Enter select · Esc"))
 
+	case ConfirmArchiveSession:
+		title = "Archive Session?"
+		warning = fmt.Sprintf("Archive this session:\n\n  \"%s\"", c.targetName)
+		details = "• The tmux process will be stopped\n• The session will move to the archived list\n• You can unarchive later (^ view, Shift+U restore)"
+		borderColor = ColorYellow
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Archive", ColorYellow, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y archive · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmUnarchiveSession:
+		title = "Unarchive Session?"
+		warning = fmt.Sprintf("Restore this session to the active list:\n\n  \"%s\"", c.targetName)
+		details = "• Metadata returns to the main session list\n• The process is not started automatically"
+		borderColor = ColorGreen
+		buttonRow := lipgloss.JoinHorizontal(lipgloss.Center,
+			renderButton("Unarchive", ColorGreen, c.focusedButton == 0), "  ",
+			renderButton("Cancel", ColorAccent, c.focusedButton == 1))
+		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
+			hintStyle.Render("y unarchive · n cancel · ←/→ navigate · Enter select · Esc"))
+
 	case ConfirmCloseSession:
 		title = "Close Session?"
 		warning = fmt.Sprintf("This will close the running process for:\n\n  \"%s\"", c.targetName)
@@ -400,6 +467,14 @@ func (c *ConfirmDialog) View() string {
 			renderButton("Cancel", ColorRed, c.focusedButton == 1))
 		buttons = lipgloss.JoinVertical(lipgloss.Left, buttonRow,
 			hintStyle.Render("y create · n cancel · ←/→ navigate · Enter select · Esc"))
+
+	case ConfirmNotice:
+		title = c.noticeTitle
+		warning = c.noticeBody
+		borderColor = ColorYellow
+		buttons = lipgloss.JoinVertical(lipgloss.Left,
+			renderButton("OK", ColorAccent, true),
+			hintStyle.Render("Enter / Esc / o dismiss"))
 
 	case ConfirmInstallHooks:
 		title = "Claude Code Hooks"

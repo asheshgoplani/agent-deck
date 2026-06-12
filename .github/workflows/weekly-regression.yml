@@ -10,6 +10,15 @@
 #   gh workflow run weekly-regression.yml
 #   Or: GitHub Actions UI > Weekly Regression Check > Run workflow
 #
+# Baseline regeneration (the ONLY supported way to produce committed
+# baselines — they must be generated on the CI runner environment):
+#   gh workflow run weekly-regression.yml --ref <branch> -f update_baselines=true
+#   Then download the visual-baselines-<run_id> artifact and commit its
+#   contents to tests/e2e/visual-regression/__screenshots__/.
+#   update_baselines runs Playwright with --update-snapshots, uploads the
+#   regenerated screenshots as an artifact, and skips Lighthouse + issue
+#   creation. skip_issue=true runs the normal checks but never files an issue.
+#
 # Configure assignee:
 #   Edit the `assignees: [context.repo.owner]` line in the "Create or update
 #   regression issue" step to assign to a different user or team.
@@ -35,7 +44,17 @@ on:
     # Every Sunday at midnight UTC
     - cron: '0 0 * * 0'
   workflow_dispatch:
-    # Manual trigger for testing the workflow itself
+    # Manual trigger for testing the workflow itself, regenerating
+    # baselines, or running checks without filing an issue.
+    inputs:
+      update_baselines:
+        description: 'Regenerate visual baselines (--update-snapshots), upload them as an artifact, and skip issue creation'
+        type: boolean
+        default: false
+      skip_issue:
+        description: 'Run the checks but skip creating/updating the regression issue'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -111,6 +130,10 @@ jobs:
           done
 
       - name: Run visual regression tests
+        # Skipped in baseline-regeneration mode (see the next two steps).
+        # NOTE: `inputs.*` is empty for scheduled runs, so `!= true` keeps
+        # the cron behavior identical.
+        if: inputs.update_baselines != true
         id: visual
         continue-on-error: true
         working-directory: tests/e2e
@@ -121,7 +144,28 @@ jobs:
         env:
           PLAYWRIGHT_BASE_URL: http://127.0.0.1:18420/?token=test
 
+      - name: Regenerate visual baselines
+        # Baseline-regeneration mode (workflow_dispatch + update_baselines).
+        # Regenerates EVERY baseline on the CI runner — the canonical
+        # rendering environment — and uploads them as an artifact for a
+        # human to review and commit. Never pushes anything itself.
+        if: inputs.update_baselines == true
+        working-directory: tests/e2e
+        run: |
+          npx playwright test --config=pw-visual-regression.config.ts --update-snapshots
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:18420/?token=test
+
+      - name: Upload regenerated baselines
+        if: inputs.update_baselines == true
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-baselines-${{ github.run_id }}
+          retention-days: 30
+          path: tests/e2e/visual-regression/__screenshots__/
+
       - name: Run Lighthouse CI
+        if: inputs.update_baselines != true
         id: lighthouse
         continue-on-error: true
         run: |
@@ -148,7 +192,12 @@ jobs:
           fi
 
       - name: Create or update regression issue
-        if: steps.visual.outcome == 'failure' || steps.lighthouse.outcome == 'failure'
+        # Skipped when regenerating baselines or when skip_issue is set.
+        # `inputs.*` is empty for scheduled runs, so the cron path is unchanged.
+        if: >-
+          (steps.visual.outcome == 'failure' || steps.lighthouse.outcome == 'failure') &&
+          inputs.update_baselines != true &&
+          inputs.skip_issue != true
         uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}

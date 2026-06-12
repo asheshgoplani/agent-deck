@@ -351,13 +351,13 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 				return groupDir, "group"
 			}
 		}
-		if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-			return ExpandPath(envDir), "env"
+		if envDir := envClaudeConfigDirIgnoringScratchLeak(); envDir != "" {
+			return envDir, "env"
 		}
 	} else {
 		// Group chain: env wins.
-		if envDir := os.Getenv("CLAUDE_CONFIG_DIR"); envDir != "" {
-			return ExpandPath(envDir), "env"
+		if envDir := envClaudeConfigDirIgnoringScratchLeak(); envDir != "" {
+			return envDir, "env"
 		}
 		if userConfig != nil {
 			if groupDir := userConfig.GetGroupClaudeConfigDir(groupPath); groupDir != "" {
@@ -378,6 +378,33 @@ func resolveClaudeConfigDir(opts resolveOpts) (path, source string) {
 
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".claude"), "default"
+}
+
+// envClaudeConfigDirIgnoringScratchLeak returns the expanded CLAUDE_CONFIG_DIR
+// env var, or "" when it is unset OR points inside the worker-scratch root.
+//
+// Nested-scratch credential chain (successor to #1222/#1224): when agent-deck
+// runs INSIDE a scratch-pinned worker (a session that itself spawns children),
+// the parent's scratch CLAUDE_CONFIG_DIR is the ambient env value. Honoring it
+// as the "env" priority level makes children inherit ANOTHER WORKER'S scratch
+// dir as their source profile, so their credentials symlink lands on the
+// parent's scratch entry — possibly a forked real-file copy (post-/login
+// clobber) that reassertCredentialSymlink can then never collapse to the real
+// canonical. A worker-scratch dir is an ephemeral, agent-deck-owned mirror; it
+// is never a legitimate user profile, so it is never a legitimate env
+// override. Ignoring it falls through to profile/global/default — the real
+// canonical chain. ChildLaunchEnv (#1163) already strips the var from child
+// envs; this guards the resolver itself for in-process resolution paths.
+func envClaudeConfigDirIgnoringScratchLeak() string {
+	envDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if envDir == "" {
+		return ""
+	}
+	expanded := ExpandPath(envDir)
+	if pathUnderWorkerScratch(expanded) {
+		return ""
+	}
+	return expanded
 }
 
 // GetClaudeConfigDir returns the Claude config directory for the active profile.

@@ -29,7 +29,9 @@ export default defineConfig({
     },
   },
   use: {
-    baseURL: 'http://127.0.0.1:18420/?token=test',
+    // CI (weekly-regression.yml) and local runs against a non-default port
+    // override via PLAYWRIGHT_BASE_URL; default matches the README server.
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:18420/?token=test',
     headless: true,
     viewport: { width: 1280, height: 800 },
     colorScheme: 'dark',

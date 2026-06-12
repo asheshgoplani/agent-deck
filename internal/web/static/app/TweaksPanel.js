@@ -21,11 +21,11 @@ export function TweaksPanel() {
   const close = () => (tweaksOpenSignal.value = false)
 
   return html`
-    <div class="tweaks" role="dialog" aria-label="Tweaks">
+    <div class="tweaks" role="dialog" aria-label="Tweaks" data-testid="tweaks-panel">
       <div class="th">
         <${Icon} d=${ICONS.settings} size=${14}/>
         <div class="t">Tweaks</div>
-        <button class="icon-btn" onClick=${close} aria-label="Close tweaks">
+        <button class="icon-btn" data-testid="tweaks-close" onClick=${close} aria-label="Close tweaks">
           <${Icon} d=${ICONS.x}/>
         </button>
       </div>
@@ -35,6 +35,7 @@ export function TweaksPanel() {
           <div class="swatch-row">
             ${SWATCHES.map(s => html`
               <div key=${s.id}
+                   data-testid=${`tweaks-accent-${s.id}`}
                    class=${`swatch ${accent === s.id ? 'on' : ''}`}
                    style=${{ background: s.color }}
                    onClick=${() => (accentSignal.value = s.id)}/>
@@ -46,6 +47,7 @@ export function TweaksPanel() {
           <div class="seg-row">
             ${['compact','balanced','comfortable'].map(d => html`
               <button key=${d}
+                      data-testid=${`tweaks-density-${d}`}
                       class=${`seg-btn ${density === d ? 'on' : ''}`}
                       onClick=${() => (densitySignal.value = d)}>${d}</button>
             `)}
@@ -55,6 +57,7 @@ export function TweaksPanel() {
           <label>RIGHT RAIL</label>
           <div style="display: flex; align-items: center; gap: 8px;">
             <div class=${`switch ${rail === 'visible' ? 'on' : ''}`}
+                 data-testid="tweaks-rail-switch"
                  onClick=${() => (railSignal.value = rail === 'visible' ? 'hidden' : 'visible')}/>
             <span style="font-family: var(--mono); font-size: 11px; color: var(--text-dim);">
               ${rail === 'visible' ? 'visible' : 'hidden'}

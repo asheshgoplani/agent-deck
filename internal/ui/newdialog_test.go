@@ -126,8 +126,10 @@ func TestNewDialog_ModelSuggestions_FilterAndSelectCodex(t *testing.T) {
 	if got := d.GetLaunchModelID(); got != "gpt-5.5" {
 		t.Fatalf("GetLaunchModelID() = %q, want gpt-5.5", got)
 	}
-	if d.currentTarget() != focusWorktree {
-		t.Fatalf("currentTarget after accepting model = %v, want focusWorktree", d.currentTarget())
+	// UX top-3 #3: order is Tool -> Model -> Path, so accepting a model advances
+	// focus to the Path field (previously Worktree).
+	if d.currentTarget() != focusPath {
+		t.Fatalf("currentTarget after accepting model = %v, want focusPath", d.currentTarget())
 	}
 }
 
@@ -198,8 +200,10 @@ func TestNewDialog_ModelDropdown_TabAndShiftTabMoveFocus(t *testing.T) {
 	if d.IsModelSuggestionsActive() {
 		t.Fatal("tab should close the model dropdown")
 	}
-	if d.currentTarget() != focusWorktree {
-		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusWorktree", d.currentTarget())
+	// UX top-3 #3: the order is Tool -> Model -> Path, so Tab from Model lands
+	// on the Path field (previously it advanced to Worktree).
+	if d.currentTarget() != focusPath {
+		t.Fatalf("currentTarget after tab from model dropdown = %v, want focusPath", d.currentTarget())
 	}
 }
 
@@ -884,7 +888,7 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 	dialog.inheritedSettings = nil
 	dialog.commandCursor = 1 // preset command (not custom input)
 	dialog.rebuildFocusTargets()
-	dialog.focusIndex = 3 // Command field
+	dialog.focusIndex = dialog.indexOf(focusCommand) // Command field
 
 	// Press 'w' to toggle worktree.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
@@ -899,7 +903,7 @@ func TestNewDialog_WorktreeToggle_ViaKeyPress(t *testing.T) {
 	}
 
 	// Press 'w' again to disable (need to be on command field).
-	dialog.focusIndex = 3
+	dialog.focusIndex = dialog.indexOf(focusCommand)
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
 
 	if dialog.worktreeEnabled {
@@ -949,6 +953,55 @@ func TestNewDialog_ShortcutsBlockedDuringTextInput(t *testing.T) {
 	}
 }
 
+// UX top-3 change #3: reorder the hot path to Name -> Tool -> Path and move the
+// Multi-repo toggle below the common fields ("below the fold"). The 90% flow is
+// type name -> Enter (advances to Tool) -> (tool already right) -> Ctrl+S.
+func TestNewDialog_FocusOrder_HotPathNameToolPath(t *testing.T) {
+	d := NewNewDialog()
+	d.Show() // default: shell selected (no model field), multi-repo off.
+
+	if len(d.focusTargets) < 3 {
+		t.Fatalf("focusTargets too short: %v", d.focusTargets)
+	}
+	if d.focusTargets[0] != focusName {
+		t.Fatalf("focusTargets[0] = %v, want focusName", d.focusTargets[0])
+	}
+	if d.focusTargets[1] != focusCommand {
+		t.Fatalf("focusTargets[1] = %v, want focusCommand (Tool immediately after Name)", d.focusTargets[1])
+	}
+	cmdIdx := d.indexOf(focusCommand)
+	pathIdx := d.indexOf(focusPath)
+	mrIdx := d.indexOf(focusMultiRepo)
+	sbIdx := d.indexOf(focusSandbox)
+	if !(cmdIdx < pathIdx) {
+		t.Fatalf("want Tool(%d) before Path(%d) — the hot path is Name->Tool->Path", cmdIdx, pathIdx)
+	}
+	if !(pathIdx < mrIdx) {
+		t.Fatalf("want Path(%d) before Multi-repo(%d) — multi-repo moves below the fold", pathIdx, mrIdx)
+	}
+	if !(sbIdx < mrIdx) {
+		t.Fatalf("want Sandbox(%d) before Multi-repo(%d) — multi-repo is below the common fields", sbIdx, mrIdx)
+	}
+}
+
+// With a model-capable tool the Model field sits between Tool and Path, keeping
+// it grouped with the tool selector while preserving Name -> Tool -> ... -> Path.
+func TestNewDialog_FocusOrder_ModelBetweenToolAndPath(t *testing.T) {
+	d := NewNewDialog()
+	d.SetDefaultTool("claude")
+	d.Show()
+
+	cmdIdx := d.indexOf(focusCommand)
+	modelIdx := d.indexOf(focusModel)
+	pathIdx := d.indexOf(focusPath)
+	if modelIdx < 0 {
+		t.Fatal("focusModel should be present for a model-capable tool (claude)")
+	}
+	if !(cmdIdx < modelIdx && modelIdx < pathIdx) {
+		t.Fatalf("want Tool(%d) < Model(%d) < Path(%d)", cmdIdx, modelIdx, pathIdx)
+	}
+}
+
 func TestNewDialog_TabNavigationWithWorktree(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
@@ -961,7 +1014,8 @@ func TestNewDialog_TabNavigationWithWorktree(t *testing.T) {
 	branchIdx := dialog.indexOf(focusBranch)
 	maxIdx := len(dialog.focusTargets) - 1
 
-	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> branchIdx(branch) -> 0.
+	// Tab walks the focus list sequentially (0 -> 1 -> ... -> wrap). Order is now
+	// Name, Command, Path, Worktree, Sandbox, Branch, Multi-repo (UX top-3 #3).
 	for i := 1; i <= maxIdx; i++ {
 		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 		want := i
@@ -991,7 +1045,8 @@ func TestNewDialog_TabNavigationWithoutWorktree(t *testing.T) {
 
 	maxIdx := len(dialog.focusTargets) - 1
 
-	// Tab through: 0 -> 1 -> 2 -> 3(worktree) -> 4(sandbox) -> 0.
+	// Tab walks the focus list sequentially and wraps. Order is now Name,
+	// Command, Path, Worktree, Sandbox, Multi-repo (UX top-3 #3).
 	for i := 1; i <= maxIdx; i++ {
 		dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyTab})
 		if dialog.focusIndex != i {
@@ -1010,7 +1065,7 @@ func TestNewDialog_View_ShowsWorktreeCheckbox(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.SetSize(80, 40)
 	dialog.Show()
-	dialog.focusIndex = 3 // Command field
+	dialog.focusIndex = dialog.indexOf(focusCommand) // Command field
 
 	view := dialog.View()
 
@@ -1141,7 +1196,7 @@ func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
 	dialog.sandboxEnabled = false
 	dialog.inheritedSettings = nil
 	dialog.rebuildFocusTargets()
-	dialog.focusIndex = 4 // Worktree checkbox
+	dialog.focusIndex = dialog.indexOf(focusWorktree) // Worktree checkbox
 
 	// Space toggles worktree on.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
@@ -1156,7 +1211,7 @@ func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
 	}
 
 	// Navigate back and space again to disable.
-	dialog.focusIndex = 4
+	dialog.focusIndex = dialog.indexOf(focusWorktree)
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 
 	if dialog.worktreeEnabled {
@@ -1167,8 +1222,8 @@ func TestNewDialog_WorktreeCheckbox_SpaceToggle(t *testing.T) {
 func TestNewDialog_SandboxCheckbox_SpaceToggle(t *testing.T) {
 	dialog := NewNewDialog()
 	dialog.Show()
-	dialog.sandboxEnabled = false // Ensure known initial state.
-	dialog.focusIndex = 5         // Sandbox checkbox
+	dialog.sandboxEnabled = false                    // Ensure known initial state.
+	dialog.focusIndex = dialog.indexOf(focusSandbox) // Sandbox checkbox
 
 	// Space toggles sandbox on.
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
@@ -1178,7 +1233,7 @@ func TestNewDialog_SandboxCheckbox_SpaceToggle(t *testing.T) {
 	}
 
 	// Space again toggles off.
-	dialog.focusIndex = 5
+	dialog.focusIndex = dialog.indexOf(focusSandbox)
 	dialog, _ = dialog.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 
 	if dialog.sandboxEnabled {
@@ -1192,7 +1247,7 @@ func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
 	dialog.Show()
 
 	// Focus on worktree checkbox — only it should highlight.
-	dialog.focusIndex = 4
+	dialog.focusIndex = dialog.indexOf(focusWorktree)
 	view := dialog.View()
 
 	// Worktree line should have the focus indicator.
@@ -1201,7 +1256,7 @@ func TestNewDialog_CheckboxesFocusIndependently(t *testing.T) {
 	}
 
 	// Focus on sandbox checkbox — only it should highlight.
-	dialog.focusIndex = 5
+	dialog.focusIndex = dialog.indexOf(focusSandbox)
 	view = dialog.View()
 
 	if !strings.Contains(view, "Run in Docker sandbox") {
@@ -1680,13 +1735,13 @@ func TestNewDialog_NameInput_AcceptsUnderscore(t *testing.T) {
 
 // TestNewDialog_PathInput_AcceptsUnderscore verifies that typing '_' into the
 // path input reaches the textinput buffer (regression test for BUG-02).
-// Focus targets: focusName(0), focusMultiRepo(1), focusPath(2), ...
+// Focus targets (UX top-3 #3 order): focusName(0), focusCommand(1), focusPath(2), ...
 // Two Tabs are required to reach focusPath from focusName.
 func TestNewDialog_PathInput_AcceptsUnderscore(t *testing.T) {
 	d := NewNewDialog()
 	d.Show()
 
-	// Tab twice to reach the path input field (focusName -> focusMultiRepo -> focusPath).
+	// Tab twice to reach the path input field (focusName -> focusCommand -> focusPath).
 	d = sendSpecialKey(d, tea.KeyTab)
 	d = sendSpecialKey(d, tea.KeyTab)
 
@@ -2104,13 +2159,9 @@ func TestNewDialog_CtrlW_BranchField(t *testing.T) {
 // Tests the overlay placement math. Dropdowns are placed relative
 // to the associated dialog's top-left corner.
 //
-// Remote-parity: not applicable. NewDialog is the local new-session dialog
-// only; pressing `n` on a remote group/session routes through
-// createRemoteSession (SSH) and never opens this dialog (#743), so this
-// overlay-positioning fix has no remote surface. That routing — and the fact
-// the dialog never opens on a remote selection — is itself covered by
-// TestRegression743_NOnRemoteSession_QuickCreatesNoDialog and
-// TestRegression743_NOnRemoteGroup_QuickCreatesNoDialog in home_test.go.
+// Remote-parity: NewDialog is also used for remote-aware creation. The routing
+// that marks it remote-targeted is covered by the #743 regression tests in
+// home_test.go; this test remains focused on shared overlay placement math.
 func TestDialogOrigin(t *testing.T) {
 	tests := []struct {
 		name                           string
@@ -2157,8 +2208,10 @@ func TestNewDialog_EnterOnNameAdvancesFocus(t *testing.T) {
 	if d.currentTarget() == before {
 		t.Fatalf("Enter on Name did not advance focus (still %v)", d.currentTarget())
 	}
-	if d.currentTarget() != focusMultiRepo {
-		t.Fatalf("focus after Enter on Name = %v, want focusMultiRepo (next field)", d.currentTarget())
+	// UX top-3 #3: hot path is Name -> Tool, so Enter on Name advances to the
+	// Command (tool) field — the 90% flow: type name, Enter, tool already right.
+	if d.currentTarget() != focusCommand {
+		t.Fatalf("focus after Enter on Name = %v, want focusCommand (next field)", d.currentTarget())
 	}
 }
 
@@ -2359,17 +2412,17 @@ func TestNewDialog_TabFromNameStillAdvances(t *testing.T) {
 	}
 }
 
-// --- Default-preserving behavior (PR #1295: toggle defaults OFF) ---
+// --- Default behavior (UX top-3 #1: Enter-advances is now the DEFAULT) ---
 
-// DEFAULT (toggle off): Enter on the Name field must NOT be handled locally, so
-// home.go runs its submit path — i.e. today's behavior (Enter from Name
-// submits) is preserved. This is the core default-preserving guarantee.
-func TestNewDialog_DefaultEnterOnNameSubmits(t *testing.T) {
+// DEFAULT (Enter-advances ON): Enter on the Name field is handled locally and
+// advances focus instead of submitting — typing a name + Enter no longer
+// silently creates a session with all defaults. This is the behavior flip.
+func TestNewDialog_DefaultEnterOnNameAdvances(t *testing.T) {
 	d := NewNewDialog()
-	// enterAdvances defaults to false (no config → newSessionEnterAdvancesFromConfig
-	// returns false). Assert it explicitly so the default is load-bearing here.
-	if d.enterAdvances {
-		t.Fatal("enterAdvances default = true, want false (must preserve today's behavior)")
+	// enterAdvances now defaults to true (no config → newSessionEnterAdvancesFromConfig
+	// returns true). Assert it explicitly so the new default is load-bearing here.
+	if !d.enterAdvances {
+		t.Fatal("enterAdvances default = false, want true (Enter-advances is now the default)")
 	}
 	d.SetSize(100, 50)
 	d.Show()
@@ -2377,25 +2430,43 @@ func TestNewDialog_DefaultEnterOnNameSubmits(t *testing.T) {
 	if d.currentTarget() != focusName {
 		t.Fatalf("default focus = %v, want focusName", d.currentTarget())
 	}
-	// shouldHandleEnterLocally must be false on Name so home.go submits.
-	if d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Name = true, want false (Enter must submit, not advance)")
+	// shouldHandleEnterLocally must be true on Name so the dialog advances focus.
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Name = false, want true (Enter must advance, not submit)")
 	}
-	// Even if Enter were forwarded to the dialog, the advance guard must not fire
-	// in default mode: focus must stay on Name.
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if d.currentTarget() != before {
-		t.Fatalf("default mode: Enter on Name advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	if d.currentTarget() == before {
+		t.Fatalf("default mode: Enter on Name did not advance focus (still %v)", before)
 	}
 }
 
-// DEFAULT (toggle off): Enter on the Branch field must NOT advance — today's
-// behavior (Enter submits) is preserved.
-func TestNewDialog_DefaultEnterOnBranchSubmits(t *testing.T) {
+// OPT-OUT (new_session_enter_advances = false): Enter on Name submits, the
+// legacy behavior. We simulate the opt-out by forcing enterAdvances = false.
+func TestNewDialog_OptOutEnterOnNameSubmits(t *testing.T) {
 	d := NewNewDialog()
-	if d.enterAdvances {
-		t.Fatal("enterAdvances default = true, want false")
+	d.enterAdvances = false // simulate [ui].new_session_enter_advances = false
+	d.SetSize(100, 50)
+	d.Show()
+
+	if d.currentTarget() != focusName {
+		t.Fatalf("focus = %v, want focusName", d.currentTarget())
+	}
+	if d.shouldHandleEnterLocally() {
+		t.Fatal("opt-out mode: shouldHandleEnterLocally on Name = true, want false (Enter must submit)")
+	}
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() != before {
+		t.Fatalf("opt-out mode: Enter on Name advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+	}
+}
+
+// DEFAULT (Enter-advances ON): Enter on the Branch field advances focus.
+func TestNewDialog_DefaultEnterOnBranchAdvances(t *testing.T) {
+	d := NewNewDialog()
+	if !d.enterAdvances {
+		t.Fatal("enterAdvances default = false, want true")
 	}
 	d.SetSize(100, 50)
 	d.Show()
@@ -2409,13 +2480,39 @@ func TestNewDialog_DefaultEnterOnBranchSubmits(t *testing.T) {
 	d.focusIndex = idx
 	d.updateFocus()
 
+	if !d.shouldHandleEnterLocally() {
+		t.Fatal("default mode: shouldHandleEnterLocally on Branch = false, want true (Enter must advance)")
+	}
+	before := d.currentTarget()
+	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if d.currentTarget() == before {
+		t.Fatalf("default mode: Enter on Branch did not advance focus (still %v)", before)
+	}
+}
+
+// OPT-OUT: Enter on Branch submits (legacy) when enter-advances is disabled.
+func TestNewDialog_OptOutEnterOnBranchSubmits(t *testing.T) {
+	d := NewNewDialog()
+	d.enterAdvances = false // simulate [ui].new_session_enter_advances = false
+	d.SetSize(100, 50)
+	d.Show()
+	d.nameInput.SetValue("demo")
+	d.ToggleWorktree()
+
+	idx := d.indexOf(focusBranch)
+	if idx < 0 {
+		t.Fatal("focusBranch should be present when worktree enabled")
+	}
+	d.focusIndex = idx
+	d.updateFocus()
+
 	if d.shouldHandleEnterLocally() {
-		t.Fatal("default mode: shouldHandleEnterLocally on Branch = true, want false (Enter must submit)")
+		t.Fatal("opt-out mode: shouldHandleEnterLocally on Branch = true, want false (Enter must submit)")
 	}
 	before := d.currentTarget()
 	d, _ = d.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if d.currentTarget() != before {
-		t.Fatalf("default mode: Enter on Branch advanced focus to %v, want unchanged %v", d.currentTarget(), before)
+		t.Fatalf("opt-out mode: Enter on Branch advanced focus to %v, want unchanged %v", d.currentTarget(), before)
 	}
 }
 

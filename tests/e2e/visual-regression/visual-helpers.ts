@@ -1,9 +1,24 @@
 import type { Page, Locator } from '@playwright/test';
 
 /**
+ * Helpers for the visual regression suite, rewritten for the redesigned
+ * Preact shell (internal/web/static/app/): five-zone grid layout
+ * (.topbar / .sidebar / .main / .rightrail / .footer), topbar tabs
+ * (Fleet/Terminal/MCPs/Skills/Conductor/Watchers/Costs/Search), and the
+ * mobile bottom tab bar (.mob-tabs, <=720px).
+ *
+ * Every selector in this file is grounded in the component source:
+ *   Topbar.js, Sidebar.js, Footer.js, MobileTabs.js, AppShell.js,
+ *   CommandPalette.js, TweaksPanel.js, SettingsPanel.js, Toast.js,
+ *   panes/FleetPane.js, panes/CostsPane.js, CostDashboard.js,
+ *   TerminalPanel.js, EmptyStateDashboard.js.
+ */
+
+/**
  * CSS injected to kill ALL animations and transitions instantly.
  * Applied via page.addStyleTag() before every screenshot.
- * Addresses Pitfall 6 (animations not stopped) and Pitfall 19 (skeleton flake).
+ * NOTE: this does not stop <canvas> animations (Chart.js); tests that
+ * show charts mask the canvases instead (see chartMasks()).
  */
 const KILL_ANIMATIONS_CSS = `
   *, *::before, *::after {
@@ -17,10 +32,7 @@ const KILL_ANIMATIONS_CSS = `
 
 /**
  * Inject a <style> tag that kills all CSS animations and transitions.
- * Must be called BEFORE any screenshot capture. The injected style tag
- * uses `!important` to override any inline or utility styles (e.g.,
- * Tailwind's `animate-pulse` on skeleton loaders, `duration-[120ms]`
- * on action button fades).
+ * Must be called BEFORE any screenshot capture.
  */
 export async function killAnimations(page: Page): Promise<void> {
   await page.addStyleTag({ content: KILL_ANIMATIONS_CSS });
@@ -49,29 +61,19 @@ export async function freezeClock(page: Page): Promise<void> {
 }
 
 /**
- * Build an array of Locator objects pointing at dynamic content
- * elements that should be masked in screenshots. Dynamic content
- * includes timestamps, cost values, session IDs, connection status
- * indicators, and version strings.
+ * Locators for dynamic content that should be masked in screenshots.
  *
- * The mask array is passed to `page.screenshot({ mask: [...] })`.
- * Playwright replaces masked regions with a solid color block in
- * the screenshot, eliminating false positives from changing data.
+ * The redesigned shell renders very little non-deterministic content once
+ * all API endpoints are mocked (mockEndpoints) and the clock is frozen
+ * (freezeClock). The only remaining candidates are <time> elements (none
+ * in the current bundle, kept defensively). Chart.js canvases are masked
+ * per-test where charts appear via chartMasks().
  *
- * Only returns locators for elements that actually exist on the page
- * (filters out stale selectors via isVisible check).
+ * Only returns locators for elements that actually exist on the page.
  */
 export async function getDynamicContentMasks(page: Page): Promise<Locator[]> {
   const selectors = [
-    '[data-testid="connection-indicator"]',
-    '[data-testid="cost-today"]',
-    '[data-testid="cost-week"]',
-    '[data-testid="cost-month"]',
-    '[data-testid="cost-projected"]',
-    '[data-testid="profile-indicator"]',
     'time',
-    '[data-testid="session-cost"]',
-    '[data-testid="version-string"]',
   ];
 
   const masks: Locator[] = [];
@@ -86,25 +88,52 @@ export async function getDynamicContentMasks(page: Page): Promise<Locator[]> {
 }
 
 /**
+ * Chart.js renders into <canvas>, which killAnimations() cannot freeze
+ * (canvas animation is driven by JS, not CSS) and whose anti-aliasing is
+ * not bit-stable across runs. Tests that show the Costs dashboard mask
+ * the canvases; the stat cards, titles, and layout chrome around them
+ * stay unmasked and protected.
+ */
+export async function chartMasks(page: Page): Promise<Locator[]> {
+  const masks: Locator[] = [];
+  const canvases = page.locator('.chart-card canvas');
+  if (await canvases.count() > 0) masks.push(canvases);
+  return masks;
+}
+
+/**
  * Wait for the page to reach a visually stable state.
- * Checks that the app root has mounted (header visible), waits for
- * any skeleton-to-loaded transition to complete, and pauses for
- * two animation frames to let the compositor settle.
  *
- * This function does NOT freeze the clock or kill animations; those
- * must be called separately (freezeClock before goto, killAnimations
- * after load).
+ * - Topbar mounted (<header class="topbar">, Topbar.js).
+ * - Profile <select> rendered (Topbar.js renders it only after
+ *   /api/profiles resolves — mocked, so it always arrives). On phones it
+ *   is display:none but still attached.
+ * - Connection pill settled on "disconnected" (mockEndpoints aborts
+ *   /events/menu, and connectionSignal only ever moves from "connecting"
+ *   to "disconnected" in that setup — waiting removes the race between
+ *   the two states).
+ * - Web fonts loaded (index.html pulls Inter/JetBrains Mono from Google
+ *   Fonts; capturing before fonts swap in causes whole-page diffs).
  */
 export async function waitForStable(page: Page): Promise<void> {
-  // Wait for the Preact app to bootstrap (header mounts)
-  await page.waitForSelector('header', { state: 'attached', timeout: 15000 });
+  // Preact shell bootstrapped (Topbar.js renders <header class="topbar">)
+  await page.waitForSelector('header.topbar', { state: 'attached', timeout: 15000 });
 
-  // Wait for skeleton to disappear if present (Pitfall 19)
-  const skeleton = page.locator('[data-testid="sidebar-skeleton"]');
-  const skeletonVisible = await skeleton.isVisible().catch(() => false);
-  if (skeletonVisible) {
-    await skeleton.waitFor({ state: 'detached', timeout: 10000 });
-  }
+  // Profile dropdown present => /api/profiles fixture applied (Topbar.js)
+  await page.waitForSelector('.top-right select', { state: 'attached', timeout: 15000 });
+
+  // SSE is aborted by mockEndpoints, so the pill deterministically ends
+  // on "ws · disconnected". Wait for it so we never capture "connecting".
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('.conn-pill');
+      return !!el && /disconnected/.test(el.textContent || '');
+    },
+    { timeout: 15000 },
+  );
+
+  // Web fonts (prevents fallback-font frames in the screenshot)
+  await page.evaluate(() => (document as any).fonts?.ready);
 
   // Allow two animation frames for compositor to settle
   await page.evaluate(() => new Promise<void>((resolve) => {
@@ -121,8 +150,8 @@ export async function waitForStable(page: Page): Promise<void> {
  * All-in-one preparation before taking a visual regression screenshot.
  * Combines killAnimations + waitForStable in the correct order.
  *
- * Call AFTER page.goto() has completed. freezeClock() must be called
- * BEFORE page.goto() separately.
+ * Call AFTER page.goto() has completed. freezeClock() and mockEndpoints()
+ * must be called BEFORE page.goto() separately.
  *
  * Usage:
  *   await freezeClock(page);        // before goto
@@ -180,12 +209,35 @@ export const FIXTURE_PROFILES = {
   profiles: ['default', 'work', 'personal'],
 };
 
-export const FIXTURE_SETTINGS = { webMutations: true };
+/**
+ * Fully populated so SettingsPanel.js renders every .kv row
+ * deterministically (no "unknown" version, no "loading…" picker tools).
+ */
+export const FIXTURE_SETTINGS = {
+  profile: '_test',
+  version: 'v0.0.0-visualtest',
+  readOnly: false,
+  webMutations: true,
+  hiddenTools: [],
+  pickerTools: ['claude', 'shell'],
+};
+
+/**
+ * Empty stats: Footer.js only renders the cpu/mem segments when the
+ * corresponding blocks are present, so {} deterministically hides them
+ * (real values change every poll and would diff every run).
+ */
+export const FIXTURE_SYSTEM_STATS = {};
 
 /**
  * Mock all API endpoints with deterministic fixture data.
  * Must be called BEFORE page.goto() because page.route()
  * must be installed before the page makes requests.
+ *
+ * Endpoints covered (everything the app calls on boot or per-pane):
+ *   /api/menu, /api/costs/{summary,daily,models}, /api/profiles,
+ *   /api/settings, /api/system/stats, and the /events/menu SSE stream
+ *   (aborted so connection state settles on "disconnected").
  */
 export async function mockEndpoints(page: Page, opts: { menu?: any } = {}): Promise<void> {
   const menu = opts.menu || FIXTURE_MENU;
@@ -195,5 +247,6 @@ export async function mockEndpoints(page: Page, opts: { menu?: any } = {}): Prom
   await page.route('**/api/costs/models*', r => r.fulfill({ json: FIXTURE_COSTS_MODELS }));
   await page.route('**/api/profiles*', r => r.fulfill({ json: FIXTURE_PROFILES }));
   await page.route('**/api/settings*', r => r.fulfill({ json: FIXTURE_SETTINGS }));
+  await page.route('**/api/system/stats*', r => r.fulfill({ json: FIXTURE_SYSTEM_STATS }));
   await page.route('**/events/menu*', r => r.abort());
 }

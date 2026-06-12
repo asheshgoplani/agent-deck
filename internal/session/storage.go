@@ -52,6 +52,7 @@ type InstanceData struct {
 	Status             Status    `json:"status"`
 	CreatedAt          time.Time `json:"created_at"`
 	LastAccessedAt     time.Time `json:"last_accessed_at,omitempty"`
+	ArchivedAt         time.Time `json:"archived_at,omitempty"`
 	TmuxSession        string    `json:"tmux_session"`
 	// TmuxSocketName is the tmux -L selector captured at Instance creation
 	// (issue #687, v1.7.50). Empty for pre-v1.7.50 rows — those keep hitting
@@ -66,6 +67,10 @@ type InstanceData struct {
 	// Account is the per-session named account (issue #924). See
 	// Instance.Account for full semantics.
 	Account string `json:"account,omitempty"`
+
+	// Pin anchors the session to the top/bottom of its group (pin-sessions).
+	// Round-trips through the pin column. Empty = not pinned.
+	Pin PinMode `json:"pin,omitempty"`
 
 	// Claude session (persisted for resume after app restart)
 	ClaudeSessionID  string    `json:"claude_session_id,omitempty"`
@@ -715,6 +720,8 @@ func instanceToRow(inst *Instance) (*statedb.InstanceRow, error) {
 		WorktreeRepo:       inst.WorktreeRepoRoot,
 		WorktreeBranch:     inst.WorktreeBranch,
 		Account:            inst.Account,
+		ArchivedAt:         inst.ArchivedAt,
+		Pin:                string(inst.Pin),
 		ToolData:           toolData,
 	}, nil
 }
@@ -820,12 +827,14 @@ func (s *Storage) LoadLite() ([]*InstanceData, []*GroupData, error) {
 			Status:                    Status(r.Status),
 			CreatedAt:                 r.CreatedAt,
 			LastAccessedAt:            r.LastAccessed,
+			ArchivedAt:                r.ArchivedAt,
 			TmuxSession:               r.TmuxSession,
 			TmuxSocketName:            r.TmuxSocketName,
 			WorktreePath:              r.WorktreePath,
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
 			Account:                   r.Account,
+			Pin:                       PinMode(r.Pin),
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -935,12 +944,14 @@ func (s *Storage) LoadWithGroups() ([]*Instance, []*GroupData, error) {
 			Status:                    Status(r.Status),
 			CreatedAt:                 r.CreatedAt,
 			LastAccessedAt:            r.LastAccessed,
+			ArchivedAt:                r.ArchivedAt,
 			TmuxSession:               r.TmuxSession,
 			TmuxSocketName:            r.TmuxSocketName,
 			WorktreePath:              r.WorktreePath,
 			WorktreeRepoRoot:          r.WorktreeRepo,
 			WorktreeBranch:            r.WorktreeBranch,
 			Account:                   r.Account,
+			Pin:                       PinMode(r.Pin),
 			ClaudeSessionID:           claudeSID,
 			ClaudeDetectedAt:          claudeAt,
 			GeminiSessionID:           geminiSID,
@@ -1186,10 +1197,12 @@ func (s *Storage) convertToInstances(data *StorageData) ([]*Instance, []*GroupDa
 			Status:                    instData.Status,
 			CreatedAt:                 instData.CreatedAt,
 			LastAccessedAt:            instData.LastAccessedAt,
+			ArchivedAt:                instData.ArchivedAt,
 			WorktreePath:              instData.WorktreePath,
 			WorktreeRepoRoot:          instData.WorktreeRepoRoot,
 			WorktreeBranch:            instData.WorktreeBranch,
 			Account:                   instData.Account,
+			Pin:                       instData.Pin,
 			TmuxSocketName:            instData.TmuxSocketName,
 			ClaudeSessionID:           instData.ClaudeSessionID,
 			ClaudeDetectedAt:          instData.ClaudeDetectedAt,

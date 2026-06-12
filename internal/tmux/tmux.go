@@ -4039,11 +4039,25 @@ var keySenderExec = tmuxExec
 // SendKeys sends keys to the tmux session
 // Uses -l flag to treat keys as literal text, preventing tmux special key interpretation
 func (s *Session) SendKeys(keys string) error {
+	return s.sendKeysToTarget(s.Name, keys)
+}
+
+// windowTarget returns the tmux target addressing a specific window index
+// within this session (e.g. "agentdeck_foo_ab12:2"), mirroring the format used
+// by CaptureWindowFullHistory.
+func (s *Session) windowTarget(windowIndex int) string {
+	return fmt.Sprintf("%s:%d", s.Name, windowIndex)
+}
+
+// sendKeysToTarget sends literal text to an explicit tmux target — either the
+// session name (active window) or a "<session>:<windowIndex>" window target.
+// SendKeys delegates here against the active window.
+func (s *Session) sendKeysToTarget(target, keys string) error {
 	s.invalidateCache()
 	// The -l flag makes tmux treat the string as literal text, not key names
 	// This prevents issues like "Enter" being interpreted as the Enter key
 	// and provides a layer of safety against tmux special sequences
-	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", s.Name, "--", keys)
+	cmd := keySenderExec(s.SocketName, "send-keys", "-l", "-t", target, "--", keys)
 	return cmd.Run()
 }
 
@@ -4053,13 +4067,18 @@ func (s *Session) SendKeys(keys string) error {
 // is idempotent — Escape lands in normal mode, `i` enters insert — so it is
 // safe to call when the prompt is already in insert mode. See issue #1264.
 func (s *Session) ensureInsertMode() {
+	s.ensureInsertModeOnTarget(s.Name)
+}
+
+// ensureInsertModeOnTarget is ensureInsertMode against an explicit tmux target.
+func (s *Session) ensureInsertModeOnTarget(target string) {
 	if !s.VimMode {
 		return
 	}
 	// Escape: guarantee normal mode regardless of current state.
-	_ = keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "Escape").Run()
+	_ = keySenderExec(s.SocketName, "send-keys", "-t", target, "Escape").Run()
 	// i: enter insert mode so the following paste/Enter are taken literally.
-	_ = keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "i").Run()
+	_ = keySenderExec(s.SocketName, "send-keys", "-t", target, "i").Run()
 }
 
 // sendEnterRaw emits a single Enter keystroke without the vim-mode insert
@@ -4067,8 +4086,13 @@ func (s *Session) ensureInsertMode() {
 // insert mode before the paste — re-escaping before the trailing Enter would
 // drop the prompt back to normal mode and swallow the submit.
 func (s *Session) sendEnterRaw() error {
+	return s.sendEnterRawToTarget(s.Name)
+}
+
+// sendEnterRawToTarget is sendEnterRaw against an explicit tmux target.
+func (s *Session) sendEnterRawToTarget(target string) error {
 	s.invalidateCache()
-	cmd := keySenderExec(s.SocketName, "send-keys", "-t", s.Name, "Enter")
+	cmd := keySenderExec(s.SocketName, "send-keys", "-t", target, "Enter")
 	return cmd.Run()
 }
 
@@ -4109,13 +4133,27 @@ func (s *Session) SendNamedKey(key string) error {
 // Without the delay, Enter arrives in the same PTY buffer as the paste-end
 // marker and gets swallowed by async TUI frameworks (Ink/Node.js, curses).
 func (s *Session) SendKeysAndEnter(keys string) error {
+	return s.sendKeysAndEnterToTarget(s.Name, keys)
+}
+
+// SendKeysAndEnterToWindow is SendKeysAndEnter aimed at a specific tmux window
+// index rather than the session's active window. Quick-approve (#1369) uses it
+// to deliver "1"+Enter to the exact window showing a Claude prompt, which is
+// often not the active one in a multi-window session.
+func (s *Session) SendKeysAndEnterToWindow(windowIndex int, keys string) error {
+	return s.sendKeysAndEnterToTarget(s.windowTarget(windowIndex), keys)
+}
+
+// sendKeysAndEnterToTarget is the shared implementation behind SendKeysAndEnter
+// (active window) and SendKeysAndEnterToWindow (explicit window).
+func (s *Session) sendKeysAndEnterToTarget(target, keys string) error {
 	s.invalidateCache()
 	// Guarantee the composer is in insert mode BEFORE the paste so a vim
 	// normal-mode prompt doesn't interpret the message body as motion/command
 	// keystrokes (issue #1264). No-op unless VimMode is set.
-	s.ensureInsertMode()
+	s.ensureInsertModeOnTarget(target)
 	// Use chunked sending for large messages to avoid tmux buffer limits
-	if err := s.SendKeysChunked(keys); err != nil {
+	if err := s.sendKeysChunkedToTarget(target, keys); err != nil {
 		return err
 	}
 	// Delay for TUI apps (Ink, curses) to finish processing bracketed paste
@@ -4125,23 +4163,28 @@ func (s *Session) SendKeysAndEnter(keys string) error {
 	// sendEnterRaw (not SendEnter): we already guaranteed insert mode above and
 	// the paste keeps us in insert; re-escaping here would drop back to normal
 	// mode and swallow the submit.
-	return s.sendEnterRaw()
+	return s.sendEnterRawToTarget(target)
 }
 
 // SendKeysChunked sends large content to the tmux session in chunks to avoid
 // tmux/OS buffer limits. Content ≤4KB is sent directly via SendKeys.
 // Larger content is split at newline boundaries with a short delay between chunks.
 func (s *Session) SendKeysChunked(content string) error {
+	return s.sendKeysChunkedToTarget(s.Name, content)
+}
+
+// sendKeysChunkedToTarget is SendKeysChunked against an explicit tmux target.
+func (s *Session) sendKeysChunkedToTarget(target, content string) error {
 	const chunkSize = 4096
 	const chunkDelay = 50 * time.Millisecond
 
 	if len(content) <= chunkSize {
-		return s.SendKeys(content)
+		return s.sendKeysToTarget(target, content)
 	}
 
 	chunks := splitIntoChunks(content, chunkSize)
 	for i, chunk := range chunks {
-		if err := s.SendKeys(chunk); err != nil {
+		if err := s.sendKeysToTarget(target, chunk); err != nil {
 			return fmt.Errorf("failed to send chunk %d/%d: %w", i+1, len(chunks), err)
 		}
 		if i < len(chunks)-1 {

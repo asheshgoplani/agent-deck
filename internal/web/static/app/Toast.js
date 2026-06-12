@@ -64,12 +64,13 @@ function ToastItem({ id, message, type }) {
     : type === 'info'  ? 'ℹ'
     : '✓'
   return html`
-    <div class="toast" style=${{ borderColor, position: 'relative', pointerEvents: 'auto' }}>
+    <div class="toast" data-testid="toast" style=${{ borderColor, position: 'relative', pointerEvents: 'auto' }}>
       <span class="t" style=${{ color: borderColor }}>${sigil}</span>
       <span style="margin-left: 6px;">${message}</span>
       <button type="button"
         onClick=${() => removeToast(id)}
         aria-label="Dismiss"
+        data-testid="toast-dismiss"
         style="background: transparent; border: 0; color: var(--muted); cursor: pointer;
                margin-left: 10px; padding: 0 4px; font-size: 12px;">✕</button>
     </div>

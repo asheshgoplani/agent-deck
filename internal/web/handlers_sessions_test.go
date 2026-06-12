@@ -15,19 +15,21 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn  func(title, tool, projectPath, groupPath, modelID string) (string, error)
-	startSessionFn   func(id string) error
-	stopSessionFn    func(id string) error
-	restartSessionFn func(id string) error
-	deleteSessionFn  func(id string) error
-	closeSessionFn   func(id string) error
-	undoDeleteFn     func() (string, error)
-	forkSessionFn    func(id string) (string, error)
-	updateSessionFn  func(id string, updates map[string]string) ([]string, bool, error)
-	createGroupFn    func(name, parentPath string) (string, error)
-	renameGroupFn    func(groupPath, newName string) error
-	deleteGroupFn    func(groupPath string) error
-	finishWorktreeFn func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
+	createSessionFn    func(title, tool, projectPath, groupPath, modelID string) (string, error)
+	startSessionFn     func(id string) error
+	stopSessionFn      func(id string) error
+	restartSessionFn   func(id string) error
+	deleteSessionFn    func(id string) error
+	closeSessionFn     func(id string) error
+	archiveSessionFn   func(id string) error
+	unarchiveSessionFn func(id string) error
+	undoDeleteFn       func() (string, error)
+	forkSessionFn      func(id string) (string, error)
+	updateSessionFn    func(id string, updates map[string]string) ([]string, bool, error)
+	createGroupFn      func(name, parentPath string) (string, error)
+	renameGroupFn      func(groupPath, newName string) error
+	deleteGroupFn      func(groupPath string) error
+	finishWorktreeFn   func(id string, opts WorktreeFinishOptions) (WorktreeFinishResult, error)
 }
 
 func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath, modelID string) (string, error) {
@@ -70,6 +72,20 @@ func (f *fakeMutator) CloseSession(id string) error {
 		return fmt.Errorf("closeSession not configured")
 	}
 	return f.closeSessionFn(id)
+}
+
+func (f *fakeMutator) ArchiveSession(id string) error {
+	if f.archiveSessionFn == nil {
+		return fmt.Errorf("archiveSession not configured")
+	}
+	return f.archiveSessionFn(id)
+}
+
+func (f *fakeMutator) UnarchiveSession(id string) error {
+	if f.unarchiveSessionFn == nil {
+		return fmt.Errorf("unarchiveSession not configured")
+	}
+	return f.unarchiveSessionFn(id)
 }
 
 func (f *fakeMutator) UndoDelete() (string, error) {
@@ -1083,5 +1099,90 @@ func TestSessionPatchUnicodeAndLongTitle(t *testing.T) {
 	}
 	if gotTitle != newTitle {
 		t.Errorf("title mangled: got %q want %q", gotTitle, newTitle)
+	}
+}
+
+func TestSessionArchiveOK(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		archiveSessionFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/archive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "test-id" {
+		t.Errorf("archive: mutator saw id=%q, want %q", gotID, "test-id")
+	}
+}
+
+func TestSessionUnarchiveOK(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	var gotID string
+	srv.mutator = &fakeMutator{
+		unarchiveSessionFn: func(id string) error {
+			gotID = id
+			return nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/test-id/unarchive", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unarchive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if gotID != "test-id" {
+		t.Errorf("unarchive: mutator saw id=%q, want %q", gotID, "test-id")
+	}
+}
+
+func TestArchivedSessionsList(t *testing.T) {
+	archivedSnap := &MenuSnapshot{
+		Profile:       "test",
+		TotalSessions: 1,
+		Items: []MenuItem{{
+			Type: MenuItemTypeSession,
+			Session: &MenuSession{
+				ID:         "arch-1",
+				Title:      "old",
+				ArchivedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+			},
+		}},
+	}
+	srv := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	srv.menuData = &fakeMenuDataLoader{
+		snapshot:         &MenuSnapshot{},
+		archivedSnapshot: archivedSnap,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/archived", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("archived list: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"arch-1"`) {
+		t.Errorf("archived list: expected arch-1 in body: %s", rr.Body.String())
 	}
 }

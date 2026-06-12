@@ -137,6 +137,45 @@ test.describe('Session lifecycle E2E', () => {
     await expect(page.locator('#preact-session-list button[data-session-id="sess-003"]')).toHaveCount(0)
   })
 
+  test('archive session removes it from sidebar and shows on Archived tab', async ({ page }) => {
+    await page.goto('/?token=test')
+    await waitForAppReady(page)
+    await page.waitForSelector('#preact-session-list', { state: 'attached', timeout: 10000 })
+
+    const sessionRow = page.locator('#preact-session-list button[data-session-id="sess-003"]')
+    await sessionRow.hover()
+
+    const archiveBtn = sessionRow.locator('button[title="Archive"]')
+    await expect(archiveBtn).toBeVisible({ timeout: 3000 })
+    await archiveBtn.click()
+
+    const confirmDialog = page.locator('.overlay')
+    await expect(confirmDialog).toBeVisible({ timeout: 5000 })
+    const archiveResponse = page.waitForResponse(
+      resp => resp.request().method() === 'POST' && resp.url().includes('/archive') && resp.status() === 200,
+    )
+    await confirmDialog.getByRole('button', { name: 'Delete', exact: true }).click()
+    await archiveResponse
+
+    await page.goto('/?token=test')
+    await waitForAppReady(page)
+    await page.waitForSelector('#preact-session-list', { state: 'attached', timeout: 10000 })
+    await expect(page.locator('#preact-session-list button[data-session-id="sess-003"]')).toHaveCount(0)
+
+    await page.getByRole('button', { name: 'Archived' }).click()
+    await expect(page.getByText('Blog drafts')).toBeVisible({ timeout: 5000 })
+
+    const unarchiveResponse = page.waitForResponse(
+      resp => resp.request().method() === 'POST' && resp.url().includes('/unarchive') && resp.status() === 200,
+    )
+    await page.getByRole('button', { name: 'Unarchive' }).click()
+    await unarchiveResponse
+    await page.goto('/?token=test')
+    await waitForAppReady(page)
+    await page.waitForSelector('#preact-session-list', { state: 'attached', timeout: 10000 })
+    await expect(page.locator('#preact-session-list button[data-session-id="sess-003"]')).toBeVisible({ timeout: 5000 })
+  })
+
   test('full lifecycle: create, select, stop, delete in sequence', async ({ page }) => {
     await page.goto('/?token=test')
     await waitForAppReady(page)

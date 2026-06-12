@@ -96,8 +96,19 @@ func findCandidates(repoDir string, matcher *ignore.GitIgnore) ([]string, error)
 		if rel == "." {
 			return nil
 		}
-		if info.IsDir() && rel == ".git" {
-			return filepath.SkipDir
+		if info.IsDir() {
+			if rel == ".git" {
+				return filepath.SkipDir
+			}
+			// Don't descend into nested worktrees or submodules — each has its
+			// own .git entry. Otherwise the walk recurses into agent-deck's own
+			// worktree output dir (e.g. .worktrees/) and copies an ever-growing
+			// nested forest of every other worktree's files into the new one.
+			if path != repoDir {
+				if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr == nil {
+					return filepath.SkipDir
+				}
+			}
 		}
 		if matcher.MatchesPath(rel) {
 			candidates = append(candidates, rel)
