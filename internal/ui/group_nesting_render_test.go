@@ -8,14 +8,16 @@ import (
 	"github.com/asheshgoplani/agent-deck/internal/session"
 )
 
-var ansiStripRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+var groupNestingANSIStripRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
-func stripANSI(s string) string { return ansiStripRe.ReplaceAllString(s, "") }
+func stripANSIForGroupNesting(s string) string {
+	return groupNestingANSIStripRe.ReplaceAllString(s, "")
+}
 
 // triangleCol returns the rune column of the first expand triangle (▾/▸) on a
 // rendered group line, or -1 if none.
 func triangleCol(line string) int {
-	clean := stripANSI(line)
+	clean := stripANSIForGroupNesting(line)
 	for _, marker := range []string{"▾", "▸"} {
 		if i := strings.Index(clean, marker); i >= 0 {
 			return len([]rune(clean[:i]))
@@ -61,7 +63,7 @@ func TestGroupNestingIndent(t *testing.T) {
 	cols := map[string]int{}
 	belowDivider := false
 	for _, line := range strings.Split(rendered, "\n") {
-		clean := stripANSI(line)
+		clean := stripANSIForGroupNesting(line)
 		if strings.Contains(clean, "empty groups") {
 			belowDivider = true
 			continue
@@ -84,11 +86,55 @@ func TestGroupNestingIndent(t *testing.T) {
 
 	// A numbered level-0 root and its level-1 children must NOT share a triangle
 	// column — children must be visibly nested (indented further right).
-	root := cols["doozyx"]
+	root, ok := cols["doozyx"]
+	if !ok {
+		t.Fatalf("missing row doozyx\n--- render ---\n%s", stripANSIForGroupNesting(rendered))
+	}
 	for _, child := range []string{"baba", "infra"} {
+		if _, ok := cols[child]; !ok {
+			t.Fatalf("missing row %s\n--- render ---\n%s", child, stripANSIForGroupNesting(rendered))
+		}
 		if cols[child] <= root {
 			t.Errorf("child %q triangle col %d should be > root doozyx col %d (nested, not flat)\n--- render ---\n%s",
-				child, cols[child], root, stripANSI(rendered))
+				child, cols[child], root, stripANSIForGroupNesting(rendered))
+		}
+	}
+}
+
+func TestDuplicateRootHeadersReuseRootGroupNumber(t *testing.T) {
+	inst := session.NewInstanceWithTool("Add copy session", "/tmp/doozyx/agent-deck", "claude")
+	inst.GroupPath = "doozyx/agent-deck"
+	instances := []*session.Instance{inst}
+
+	groups := []*session.GroupData{
+		{Name: "doozyx", Path: "doozyx", Expanded: true, Order: 0},
+		{Name: "agent-deck", Path: "doozyx/agent-deck", Expanded: true, Order: 0},
+		{Name: "baba", Path: "doozyx/baba", Expanded: true, Order: 1},
+	}
+
+	home := NewHome()
+	home.width = 120
+	home.height = 60
+	home.initialLoading = false
+	home.instancesMu.Lock()
+	home.instances = instances
+	home.instancesMu.Unlock()
+	home.groupTree = session.NewGroupTreeWithGroups(instances, groups)
+	home.groupViewMode = session.GroupViewPopulatedTop
+	home.rebuildFlatItems()
+
+	var nums []int
+	for _, it := range home.flatItems {
+		if it.Type == session.ItemTypeGroup && it.Level == 0 && it.Path == "doozyx" {
+			nums = append(nums, it.RootGroupNum)
+		}
+	}
+	if len(nums) < 2 {
+		t.Fatalf("expected duplicate doozyx headers in partitioned view, got %v", nums)
+	}
+	for _, n := range nums[1:] {
+		if n != nums[0] {
+			t.Fatalf("duplicate root headers must reuse root number, got %v", nums)
 		}
 	}
 }

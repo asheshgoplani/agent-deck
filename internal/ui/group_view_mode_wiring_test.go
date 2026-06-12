@@ -31,19 +31,44 @@ func sessionIndexByTitle(h *Home, title string) int {
 	return -1
 }
 
-func TestActiveTopWiringSplitsList(t *testing.T) {
-	home, _ := buildTwoGroupHome(t)
+func setOnlySessionRunning(t *testing.T, h *Home, title string) {
+	t.Helper()
 
-	// a1 is the only active session; everything else is inactive.
-	home.instancesMu.RLock()
-	for _, inst := range home.instances {
-		if inst.Title == "a1" {
+	h.instancesMu.Lock()
+	defer h.instancesMu.Unlock()
+	for _, inst := range h.instances {
+		if inst.Title == title {
 			inst.Status = session.StatusRunning
 		} else {
 			inst.Status = session.StatusIdle
 		}
 	}
-	home.instancesMu.RUnlock()
+}
+
+func addRemoteFixture(h *Home) {
+	h.remoteSessionsMu.Lock()
+	defer h.remoteSessionsMu.Unlock()
+	h.remoteSessions = map[string][]session.RemoteSessionInfo{
+		"dev": {
+			{ID: "remote-1", Title: "remote one", RemoteName: "dev", Status: string(session.StatusRunning)},
+		},
+	}
+}
+
+func remoteSessionIndexByID(h *Home, id string) int {
+	for i, it := range h.flatItems {
+		if it.Type == session.ItemTypeRemoteSession && it.RemoteSession != nil && it.RemoteSession.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestActiveTopWiringSplitsList(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+
+	// a1 is the only active session; everything else is inactive.
+	setOnlySessionRunning(t, home, "a1")
 
 	home.groupViewMode = session.GroupViewActiveTop
 	home.rebuildFlatItems()
@@ -99,15 +124,7 @@ func TestActiveTopWiringCollapsedRunningGroupStaysTop(t *testing.T) {
 	// alpha holds a running session but is COLLAPSED (its session rows are not
 	// flattened). beta is expanded and idle. Regression guard: a collapsed group
 	// with running work must NOT sink below the "idle / done" divider.
-	home.instancesMu.RLock()
-	for _, inst := range home.instances {
-		if inst.Title == "a1" {
-			inst.Status = session.StatusRunning
-		} else {
-			inst.Status = session.StatusIdle
-		}
-	}
-	home.instancesMu.RUnlock()
+	setOnlySessionRunning(t, home, "a1")
 	home.groupTree.Groups["alpha"].Expanded = false
 
 	home.groupViewMode = session.GroupViewActiveTop
@@ -155,15 +172,7 @@ func TestCycleGroupViewKeyTogglesMode(t *testing.T) {
 
 func TestSkipDividerNavigationGlidesPast(t *testing.T) {
 	home, _ := buildTwoGroupHome(t)
-	home.instancesMu.RLock()
-	for _, inst := range home.instances {
-		if inst.Title == "a1" {
-			inst.Status = session.StatusRunning
-		} else {
-			inst.Status = session.StatusIdle
-		}
-	}
-	home.instancesMu.RUnlock()
+	setOnlySessionRunning(t, home, "a1")
 	home.groupViewMode = session.GroupViewActiveTop
 	home.rebuildFlatItems()
 
@@ -187,4 +196,83 @@ func TestSkipDividerNavigationGlidesPast(t *testing.T) {
 	if home.cursor != div-1 {
 		t.Fatalf("up across divider: cursor=%d, want %d", home.cursor, div-1)
 	}
+}
+
+func TestCycleGroupViewPreservesRemoteSessionSelection(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+	setOnlySessionRunning(t, home, "a1")
+	addRemoteFixture(home)
+	home.rebuildFlatItems()
+
+	remoteIdx := remoteSessionIndexByID(home, "remote-1")
+	if remoteIdx < 0 {
+		t.Fatalf("remote session missing before cycle; flatItems=%v", len(home.flatItems))
+	}
+	home.cursor = remoteIdx
+
+	home.handleMainKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+
+	if got := remoteSessionIndexByID(home, "remote-1"); got < 0 || home.cursor != got {
+		t.Fatalf("remote selection not preserved after view-mode cycle: cursor=%d remoteIdx=%d", home.cursor, got)
+	}
+}
+
+func TestMouseWheelSkipsDividerRows(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+	setOnlySessionRunning(t, home, "a1")
+	home.groupViewMode = session.GroupViewActiveTop
+	home.rebuildFlatItems()
+
+	div := dividerIndex(home)
+	if div <= 0 || div >= len(home.flatItems)-1 {
+		t.Fatalf("divider should be interior, got %d of %d", div, len(home.flatItems))
+	}
+	home.cursor = div - 1
+	home.width = 80
+
+	home.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+
+	if home.cursor != div+1 {
+		t.Fatalf("mouse wheel down across divider: cursor=%d, want %d", home.cursor, div+1)
+	}
+	if home.flatItems[home.cursor].Type == session.ItemTypeDivider {
+		t.Fatal("mouse wheel navigation landed on divider")
+	}
+}
+
+func TestTickRepartitionsActiveTopAfterStatusChange(t *testing.T) {
+	home, _ := buildTwoGroupHome(t)
+	setOnlySessionRunning(t, home, "a1")
+	home.groupViewMode = session.GroupViewActiveTop
+	home.rebuildFlatItems()
+
+	div := dividerIndex(home)
+	if div < 0 {
+		t.Fatalf("expected divider before status flip")
+	}
+	a2 := sessionIndexByTitle(home, "a2")
+	if a2 <= div {
+		t.Fatalf("a2 should start below divider: a2=%d divider=%d", a2, div)
+	}
+
+	home.instancesMu.Lock()
+	for _, inst := range home.instances {
+		if inst.Title == "a2" {
+			inst.Status = session.StatusRunning
+			break
+		}
+	}
+	home.instancesMu.Unlock()
+
+	home.Update(tickMsg{})
+
+	div = dividerIndex(home)
+	a2 = sessionIndexByTitle(home, "a2")
+	if div < 0 || a2 < 0 || a2 >= div {
+		t.Fatalf("a2 should move above divider after tick repartition: a2=%d divider=%d", a2, div)
+	}
+}
+
+func TestViewModePartitionRemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: group view-mode partitioning runs before remote rows are appended; remote parity is selection preservation across rebuilds.")
 }

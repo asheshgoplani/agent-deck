@@ -42,15 +42,7 @@ func TestRestoreState_FallbackOntoDivider_LandsOnSession(t *testing.T) {
 
 	// One running session + the rest idle so ActiveTop splits the list with a
 	// divider between the active and idle sections.
-	home.instancesMu.RLock()
-	for _, inst := range home.instances {
-		if inst.Title == "a1" {
-			inst.Status = session.StatusRunning
-		} else {
-			inst.Status = session.StatusIdle
-		}
-	}
-	home.instancesMu.RUnlock()
+	setOnlySessionRunning(t, home, "a1")
 	home.groupViewMode = session.GroupViewActiveTop
 	home.rebuildFlatItems()
 
@@ -78,4 +70,8 @@ func TestRestoreState_FallbackOntoDivider_LandsOnSession(t *testing.T) {
 		home.flatItems[home.cursor].Session == nil {
 		t.Fatalf("cursor rests on a session row with nil Session: cursor=%d", home.cursor)
 	}
+}
+
+func TestRestoreState_RemoteSessionNotApplicable(t *testing.T) {
+	t.Skip("RemoteSession N/A: restoreState persists local session/group IDs only; remote rows are rebuilt from live SSH fetches and covered by t-cycle selection preservation.")
 }
