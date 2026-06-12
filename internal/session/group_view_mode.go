@@ -146,6 +146,15 @@ func PartitionByViewMode(items []Item, mode GroupViewMode, activity map[string]G
 		if it.Session == nil {
 			return true
 		}
+		// Pin overrides the status split (pin-sessions, requirement 3 "fully
+		// fixed"): a pin-top session stays in the top section even when idle, a
+		// pin-bottom session sinks even when active.
+		switch it.Session.Pin {
+		case PinTop:
+			return true
+		case PinBottom:
+			return false
+		}
 		switch mode {
 		case GroupViewActiveTop:
 			return isActiveStatus(it.Session.Status)
