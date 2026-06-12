@@ -1249,8 +1249,14 @@ async def send_discord_output(channel, text: str, name_tag: str = ""):
         if part_type == "text":
             if not payload.strip():
                 continue
+            # Prepend the one-time prefix BEFORE splitting so it counts toward
+            # the chunk size — otherwise a full DISCORD_MAX_LENGTH first chunk
+            # plus the prefix would exceed Discord's hard limit.
+            if prefix and not prefix_applied:
+                payload = f"{prefix}{payload}"
+                prefix_applied = True
             for chunk in split_message(payload, max_len=DISCORD_MAX_LENGTH):
-                await channel.send(_apply_prefix(chunk))
+                await channel.send(chunk)
             continue
 
         image_path = Path(payload).expanduser()
@@ -1838,8 +1844,8 @@ def create_slack_app(config: dict):
             log.error("Slack say() failed: %s", e)
 
     async def _handle_slack_text(
-        text: str, say, thread_ts: str = None,
-        user_id: str = None, event_channel: str = None,
+        text: str, say, thread_ts: str | None = None,
+        user_id: str | None = None, event_channel: str | None = None,
     ):
         """Shared handler for Slack messages and mentions."""
         conductor_names = get_conductor_names()
@@ -2500,12 +2506,51 @@ def create_discord_bot(config: dict):
             )
             return
 
+        name_tag = f"[{target['name']}] " if len(conductors) > 1 else ""
+
+        # Check if conductor is busy — enqueue instead of blocking, mirroring
+        # the Telegram/Slack handlers (#452), so the reply is delivered
+        # asynchronously once the conductor frees up rather than dropped.
+        loop = asyncio.get_running_loop()
+        conductor_status = await loop.run_in_executor(
+            None,
+            functools.partial(get_session_status, session_title, profile=profile),
+        )
+        if conductor_status in ("running", "active", "starting"):
+            channel = message.channel
+            name_tag_captured = name_tag
+            enqueued_at = time.monotonic()
+
+            async def _discord_reply(response_text: str):
+                elapsed = int(time.monotonic() - enqueued_at)
+                waited = f"{elapsed // 60}m {elapsed % 60}s" if elapsed >= 60 else f"{elapsed}s"
+                header = (
+                    f"{name_tag_captured}Queued response (waited {waited}):\n"
+                    if name_tag_captured
+                    else f"Queued response (waited {waited}):\n"
+                )
+                await send_discord_output(channel, f"{header}{response_text}")
+
+            ok, _, _ = send_to_conductor(
+                session_title, cleaned_msg, profile=profile,
+                wait_for_reply=False, reply_callback=_discord_reply,
+                force_queue=True,
+            )
+            if not ok:
+                await message.channel.send(
+                    f"[Failed to send message to conductor {target['name']}.]",
+                )
+                return
+            await message.channel.send(
+                f"{name_tag}⏳ Conductor busy — message queued, will reply here when done.",
+            )
+            return
+
         log.info(
             "Discord message -> [%s]: %s",
             target["name"], cleaned_msg[:100],
         )
         async with message.channel.typing():
-            loop = asyncio.get_event_loop()
             # send_to_conductor returns (ok, response, still_running) since #1404;
             # the Discord path doesn't yet do async still-running delivery, so we
             # just unpack the third element here.
@@ -2530,9 +2575,6 @@ def create_discord_bot(config: dict):
             target["name"], response[:100],
         )
 
-        name_tag = (
-            f"[{target['name']}] " if len(conductors) > 1 else ""
-        )
         await send_discord_output(message.channel, response, name_tag=name_tag)
 
     log.info(
@@ -2916,8 +2958,31 @@ async def main():
         tasks.append(asyncio.create_task(discord_bot.start(config["discord"]["bot_token"])))
         log.info("Discord bot started")
 
+    # Graceful shutdown on SIGTERM/SIGINT. A service manager (systemd/launchd)
+    # sends SIGTERM; without an explicit handler the process would die before
+    # the cleanup in `finally` runs. Cancel the running tasks so gather()
+    # unwinds into the cleanup below. add_signal_handler is unavailable on some
+    # platforms (e.g. Windows) — fall back to default behavior there.
+    shutdown_loop = asyncio.get_running_loop()
+
+    def _request_shutdown(signame: str) -> None:
+        log.info("Received %s — shutting down conductor bridge", signame)
+        for task in tasks:
+            task.cancel()
+
+    for _signame in ("SIGTERM", "SIGINT"):
+        _sig = getattr(signal, _signame, None)
+        if _sig is None:
+            continue
+        try:
+            shutdown_loop.add_signal_handler(_sig, _request_shutdown, _signame)
+        except (NotImplementedError, RuntimeError):
+            pass
+
     try:
         await asyncio.gather(*tasks)
+    except asyncio.CancelledError:
+        log.info("Conductor bridge tasks cancelled; running cleanup")
     finally:
         heartbeat_task.cancel()
         if telegram_bot:

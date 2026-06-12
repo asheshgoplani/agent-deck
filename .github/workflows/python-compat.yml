@@ -17,9 +17,15 @@ on:
       - 'conductor/tests/**'
       - '.github/workflows/python-compat.yml'
 
+permissions:
+  contents: read
+
 jobs:
   bridge-import:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -30,12 +36,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install runtime deps
+        timeout-minutes: 10
         run: |
           python -m pip install --upgrade pip
           pip install toml aiogram pytest
       - name: Compile-check
+        timeout-minutes: 5
         run: python -m py_compile internal/session/conductor_bridge.py
       - name: Import-check
+        timeout-minutes: 5
         run: python -c "import sys; sys.path.insert(0, 'internal/session'); import conductor_bridge"
       - name: Compatibility test suite
+        timeout-minutes: 15
         run: python -m pytest conductor/tests/test_python_compat.py -v
